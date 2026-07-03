@@ -8,6 +8,9 @@ many scoped agents living in the low end of their context windows over marathon 
 the main context is the decision layer; agents are the sensory organs. keep file scans and
 command output in subagents; only conclusions come home.
 - agents return typed results (schemas) or write journals to disk — never vibes-prose.
+- pure locate/search fan-outs (built-in Explore et al.) spawn with `model: sonnet` — since
+  CC v2.1.198 (as-of 2026-07) Explore inherits the session model, which overprices search.
+  escalate only when the search itself needs judgment, not just eyes.
 - freedom scales with reversibility: read-only fan-outs at will; write-capable agents
   confined to worktrees; outward-facing actions (push, PR, issue edits) through the gates.
 - review non-trivial changes before declaring done; monitor every backgrounded command.
