@@ -5,7 +5,8 @@ fix only when asked (or when running as the ambient cron with standing instructi
 Delegate each numbered section to a scoped agent (sonnet unless noted); reconcile and
 judge the combined report on the conductor.
 
-Scope: the current repo when run inside one; the whole workspace when run from `~/code`.
+Scope: the current repo when run inside one; the whole workspace when run from the
+workspace root (the directory holding the project checkouts, e.g. `~/code`).
 
 ## 1. Doc stack conformance
 
@@ -18,8 +19,8 @@ Scope: the current repo when run inside one; the whole workspace when run from `
   claims spot-check against the code (an agent reads the doc, greps the crate, flags
   statements that no longer hold). For crates WITHOUT domain files, flag only those with
   evident domain depth (own vocabulary, ADR references) as candidates.
-- Workspace registry `~/code/CLAUDE.md`: every listed project exists; every dir in `~/code`
-  that is a real active project is listed (one line each). Staleness cuts both ways.
+- Workspace registry (`CLAUDE.md` at the workspace root): every listed project exists;
+  every dir that is a real active project is listed (one line each). Staleness cuts both ways.
 
 ## 2. Glossary drift
 

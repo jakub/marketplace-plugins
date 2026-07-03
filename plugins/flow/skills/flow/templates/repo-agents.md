@@ -14,5 +14,5 @@
 ## Operating notes
 
 - Build/test: <the commands that matter, e.g. `cargo nextest run --workspace`>
-- Environments: test (agent-owned) / dev (jakub's local) / <prod tier + its rules>
+- Environments: test (agent-owned) / dev (user-local) / <prod tier + its rules>
 - <the 3-5 invariants that bite: DB conventions, feature-flag rules, codegen steps…>

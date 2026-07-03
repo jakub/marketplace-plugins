@@ -5,7 +5,7 @@ description: The flow development framework — doctrine, doc-stack setup, and d
 
 # flow — the development framework
 
-This skill is the single source of doctrine for how jakub and Claude build software
+This skill is the single source of doctrine for how the user and Claude build software
 together. The **charter** (injected every session by this plugin's SessionStart hook)
 carries the always-on rules; this skill carries the full framework, the setup procedure,
 and the drift audit. Commands (`/flow:prep`, `/flow:issue`, `/flow:land`) execute the
@@ -37,8 +37,7 @@ action directly:
 Deploying flow to a project, in order. Each step is idempotent — skip what exists and
 conforms, report what was created or already conformed.
 
-1. **Preconditions**: git repo (stop if not — jakub's rule), `gh` authenticated, origin
-   remote resolvable.
+1. **Preconditions**: git repo (stop if not), `gh` authenticated, origin remote resolvable.
 2. **Workspace layer** (once per machine): `~/code/CLAUDE.md` from
    `templates/workspace-claude.md` — the project registry. Add/refresh this repo's
    one-liner.

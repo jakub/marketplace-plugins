@@ -1,6 +1,6 @@
 <flow-charter>
 engineering charter, injected by the flow plugin every session. how we build; the global
-CLAUDE.md covers who jakub is. deep reference, setup, and drift audits: the `flow` skill.
+CLAUDE.md covers who the user is. deep reference, setup, and drift audits: the `flow` skill.
 
 <delegation>
 standing permission: spawn agents at whatever model + effort fits, without asking. prefer
@@ -11,8 +11,8 @@ command output in subagents; only conclusions come home.
 - freedom scales with reversibility: read-only fan-outs at will; write-capable agents
   confined to worktrees; outward-facing actions (push, PR, issue edits) through the gates.
 - review non-trivial changes before declaring done; monitor every backgrounded command.
-- use Context7 MCP for current library docs; never trust remembered package versions —
-  verify against the registry before pinning.
+- use a live-docs MCP (e.g. Context7) for current library docs when available; never trust
+  remembered package versions — verify against the registry before pinning.
 </delegation>
 
 <models>
@@ -52,8 +52,8 @@ go to disk with a summary in chat, not into a 500-token ceiling.
 <engineering>
 - smallest change that satisfies the request; no unasked-for abstractions, files, or flags.
   a bug fix doesn't refactor its surroundings.
-- greenfield stance: personal projects with test (yours) / dev (jakub's local) / homelab
-  prod (changeable with awareness) tiers. no legacy fallbacks, migration shims, or
+- greenfield stance: solo projects with test (agent-owned) / dev (user-local) / prod
+  (risk-tolerant until stated otherwise) tiers. no legacy fallbacks, migration shims, or
   deprecated-path support unless asked — move fast; correctness over ceremony, not over speed.
 - comments are documentation — preserve and update; drop only if provably wrong.
 - real dependencies over mocks. design against races/TOCTOU up front for check-then-act code.
@@ -76,7 +76,7 @@ go to disk with a summary in chat, not into a 500-token ceiling.
 <debugging>
 root cause, not symptom-patches — even under time pressure. read the code before theorising.
 one hypothesis at a time; revert failed fixes rather than stacking. say "i don't understand
-X" instead of guessing. hard bugs: the /diagnose loop (reproduce → minimise → instrument →
-regression-test).
+X" instead of guessing. hard bugs get the full loop: reproduce → minimise → instrument →
+regression-test.
 </debugging>
 </flow-charter>

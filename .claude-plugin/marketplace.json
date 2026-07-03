@@ -4,14 +4,14 @@
     "name": "jakub"
   },
   "metadata": {
-    "description": "Personal plugin marketplace: the flow development framework.",
-    "version": "0.1.0"
+    "description": "Plugin marketplace for the flow development framework.",
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "flow",
       "description": "The prep → issue → land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "jakub"
       },

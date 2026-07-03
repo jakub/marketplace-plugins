@@ -61,10 +61,12 @@ Otherwise → grill.
 
 ## 4. Grill
 
-Run the **`grill-with-docs`** skill seeded with the open questions: one question at a
-time, each with a recommended answer; challenge terms against the glossary; stress-test
-boundaries with concrete scenarios; update CONTEXT.md / write ADRs inline as decisions
-crystallise.
+If a `grill-with-docs` skill is available, run it seeded with the open questions.
+Otherwise run the grill inline, same discipline: one question at a time, each with a
+recommended answer (weight correctness over minimal-change); challenge terms against the
+glossary; stress-test boundaries with concrete scenarios; cross-reference the code; update
+CONTEXT.md / write ADRs inline as decisions crystallise. Resolve each branch of the design
+tree before moving to the next.
 
 ## 5. Acceptance criteria — testable by construction
 

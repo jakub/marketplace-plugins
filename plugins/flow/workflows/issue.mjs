@@ -1,6 +1,6 @@
 export const meta = {
   name: 'flow-issue',
-  description: 'flow v2: design fan-out → fable synthesis → TDD → review fabric → fix loop → PR → post-push reviews (self ∥ external) → evidence ledger',
+  description: 'flow issue pipeline: design fan-out → synthesis → TDD → review fabric → fix loop → PR → post-push reviews (self ∥ external) → evidence ledger',
   phases: [
     { title: 'Size', detail: 'coarse triage → design/review fabric allocation' },
     { title: 'Design', detail: 'minimal ∥ clean ∥ codex, in parallel' },
@@ -334,7 +334,7 @@ ${here}
 1. \`git -C ${WT} fetch origin\` then attempt \`git -C ${WT} rebase origin/main\`.
    On conflict: \`git -C ${WT} rebase --abort\`, set conflict=true, and continue (push un-rebased — GitHub will surface the conflict; a human or a rebase pass resolves it).
 2. Push: \`git -C ${WT} push -u origin ${A.branch}\`.
-3. Create the PR against main: title from the issue, body = summary narrative (what + why + key decisions) followed by a one-line-per-commit changelog, then "Closes #${A.issueNumber}" and the line "https://claude.ai/code/session_0165qbPf8wVPHUrKuhsvxKiF".
+3. Create the PR against main: title from the issue, body = summary narrative (what + why + key decisions) followed by a one-line-per-commit changelog, then "Closes #${A.issueNumber}". No attribution trailers.
    Use \`gh pr create\`. If a PR for the branch already exists, reuse it.
 ${transientRule}
 Report prNumber, prUrl, rebased, conflict.`

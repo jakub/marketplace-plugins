@@ -1,6 +1,5 @@
 # flow — the full doctrine
 
-Agreed 2026-07-03. Visual map: https://claude.ai/code/artifact/aee926c9-5ba3-4294-a1f7-b939c7c30860
 This file is the prose source of truth; the charter is its always-loaded distillation.
 
 ## 1. The pipeline
@@ -38,7 +37,7 @@ Nothing enters the tracker except through here.
    (`mechanical | standard | hard`) that routes implementation. Blocking ambiguity →
    `needs-info`.
 5. **Implement** (TDD): opus high primary; `mechanical` plans may drop to sonnet;
-   `hard` runs xhigh. The old >6-files rule is dead — difficulty is judged, not counted.
+   `hard` runs xhigh. Difficulty is judged at synthesis, never counted from file totals.
 6. **Build gate** (sonnet low): fmt, clippy, tests. Retry-wrapped; UNKNOWN ≠ pass.
 7. **Internal review fabric** (parallel): codex adversarial (gpt-5.5) · correctness (opus) ·
    security (opus — kept off fable, no classifier roulette) · simplify (sonnet) ·
@@ -103,13 +102,14 @@ threads; typed returns or disk journals; freedom scales with reversibility.
 
 ## 4. The documentation stack
 
-Four layers, each answering one question. Killed: `CONTEXT-MAP.md` (AGENTS.md discloses
-further reading) and `CLAUDE.local.md` (gitignored files never materialise in worktrees —
-the cold implementer would fly blind; domain guidance is committed, always).
+Four layers, each answering one question. Deliberately NOT used: `CONTEXT-MAP.md`-style
+index files (AGENTS.md discloses further reading directly) and `CLAUDE.local.md`
+(gitignored files never materialise in worktrees — the cold implementer would fly blind;
+domain guidance is committed, always).
 
 | layer | file | question |
 |---|---|---|
-| operator | `~/.claude/CLAUDE.md` + this plugin's charter | who is jakub / how do we work |
+| operator | `~/.claude/CLAUDE.md` + this plugin's charter | who the user is / how we build |
 | workspace | `~/code/CLAUDE.md` | what exists (project registry) |
 | repo | `AGENTS.md` ⟵ `CLAUDE.md` symlink | how to operate here (lean; discloses CONTEXT.md, docs/adr/) |
 | domain | `crates/<x>/AGENTS.md` + symlink, `CONTEXT.md` slices | crate-local depth |
