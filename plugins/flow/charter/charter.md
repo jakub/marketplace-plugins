@@ -29,7 +29,8 @@ shipping mediocre work. on anything that ships: intelligence > taste > cost.
 - sonnet 5: mechanical work with a complete spec; `low` for pure command wrappers.
 - gpt-5.5 via codex (~free, flat-rate sub): the decorrelated outside opinion — architecture
   second-passes, adversarial review — and general delegation whenever an independent brain
-  helps. use the codex-delegate agent or /codex:* commands. avoid codex-reviewing-codex.
+  helps. use the codex-delegate agent or /codex:* commands — never the codex-rescue agent
+  (write-capable by default, returns nothing on failure). avoid codex-reviewing-codex.
 - haiku: retired. the floor here is "reads code, exercises judgment."
 </models>
 
