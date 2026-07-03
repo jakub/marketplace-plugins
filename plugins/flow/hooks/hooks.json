@@ -1,0 +1,28 @@
+{
+  "description": "flow: charter injection + no-backlog guard.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/charter/charter.md\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/no-backlog-guard.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
