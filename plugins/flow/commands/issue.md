@@ -60,6 +60,15 @@ asked to stop/restart: `TaskStop`, then resume later with
 
 The workflow returns a structured result. In order:
 
+0. **Handoff verification** — the result's `handoff` field is the workflow's FINAL read of
+   the PR (CI rollup, late external reviews, Closes-link). `ciStatus: "pending"` → the last
+   push's CI outlived the run: watch it to completion (background poll, re-read the
+   rollup) and report the real verdict, never "green" on faith. `"red"` → diagnose before
+   journaling: single pre-existing timing-shaped test → the land skill's rerun-once valve;
+   anything else → treat as a real failure (fix on the branch or escalate `needs-human`).
+   `handoff.finalSummary` is the branch state at close; earlier fields (`implSummary`,
+   `implDeviations`) are mid-run snapshots — prefer `handoff` where they disagree. A
+   missing/null `handoff` is itself UNKNOWN: do the rollup read yourself.
 1. **Escalations** — each also fires a push notification (PushNotification: one line,
    issue #, valve, PR url if any):
    - `needs-info`: post the questions as an issue comment, label `needs-info`, remove
