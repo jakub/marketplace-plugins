@@ -11,12 +11,13 @@ export const meta = {
     { title: 'PR', detail: 'doc-sync, rebase, push, open PR' },
     { title: 'PostPush', detail: 'complementary lenses ∥ external reviewers → fable triage → fix round' },
     { title: 'Ledger', detail: 'per-AC evidence ledger on the PR' },
+    { title: 'Handoff', detail: 'final CI rollup + Closes-link + late-external read' },
   ],
 }
 
 // ── tunables ────────────────────────────────────────────────────────────────
 const FIX_ROUND_CAP = 3
-const EXTERNAL_WAIT_MINUTES = 12 // post-push cap on waiting for coderabbit et al.
+const EXTERNAL_WAIT_MINUTES = 15 // post-push cap on waiting for coderabbit et al. (Handoff re-checks once more at close)
 
 // Design/review breadth by size. Judgment seats (synthesis, adjudication, triage) sit on
 // fable for anything non-trivial; trivial synthesis stays on opus — the fan-out is already
@@ -155,12 +156,25 @@ const ADJUDICATION = {
 
 const PR_INFO = {
   type: 'object', additionalProperties: false,
-  required: ['prNumber', 'prUrl', 'rebased', 'conflict'],
+  required: ['prNumber', 'prUrl', 'rebased', 'conflict', 'closesLinked'],
   properties: {
     prNumber: { type: 'integer' },
     prUrl: { type: 'string' },
     rebased: { type: 'boolean' },
     conflict: { type: 'boolean', description: 'true if rebase onto base hit conflicts (branch pushed un-rebased)' },
+    closesLinked: { type: 'boolean', description: 'closingIssuesReferences contains the issue, verified after creation' },
+  },
+}
+
+const HANDOFF = {
+  type: 'object', additionalProperties: false,
+  required: ['ciStatus', 'ciDetail', 'lateExternalItems', 'closesLinked', 'finalSummary'],
+  properties: {
+    ciStatus: { type: 'string', enum: ['green', 'red', 'pending', 'unknown'] },
+    ciDetail: { type: 'string', description: 'failing/pending check names + one-line cause; empty when green' },
+    lateExternalItems: { type: 'integer', description: 'substantive external-bot items visible now that the poll window missed' },
+    closesLinked: { type: 'boolean', description: 'closingIssuesReferences references the issue, after any repair' },
+    finalSummary: { type: 'string', description: 'the branch as it exists NOW: commit count, diffstat headline, notable post-implementation changes' },
   },
 }
 
@@ -334,10 +348,12 @@ ${here}
 1. \`git -C ${WT} fetch origin\` then attempt \`git -C ${WT} rebase origin/main\`.
    On conflict: \`git -C ${WT} rebase --abort\`, set conflict=true, and continue (push un-rebased — GitHub will surface the conflict; a human or a rebase pass resolves it).
 2. Push: \`git -C ${WT} push -u origin ${A.branch}\`.
-3. Create the PR against main: title from the issue, body = summary narrative (what + why + key decisions) followed by a one-line-per-commit changelog, then "Closes #${A.issueNumber}". No attribution trailers.
-   Use \`gh pr create\`. If a PR for the branch already exists, reuse it.
+3. Create the PR against main: title from the issue, body = summary narrative (what + why + key decisions) followed by a one-line-per-commit changelog. No attribution trailers.
+   The body MUST end with a line containing exactly \`Closes #${A.issueNumber}\` — this is a hard requirement, not styling: it is what links the PR to the issue for the land ritual.
+   Use \`gh pr create\`. If a PR for the branch already exists, reuse it (and still verify the Closes line below).
+4. VERIFY the link: \`gh pr view <number> --json closingIssuesReferences\` must reference issue #${A.issueNumber}. If it does not, edit the body to append the \`Closes #${A.issueNumber}\` line (\`gh pr edit --body-file\` with current body + the line) and re-verify. Report closesLinked from what you OBSERVED, never from having written the line.
 ${transientRule}
-Report prNumber, prUrl, rebased, conflict.`
+Report prNumber, prUrl, rebased, conflict, closesLinked.`
 
 const lensPrompts = {
   tests: `${reviewScope}\nFocus: behavioural test coverage — gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behaviour, missing edge/failure cases.`,
@@ -352,7 +368,8 @@ Poll up to ${EXTERNAL_WAIT_MINUTES} minutes total: check every ~45s with
 \`gh api repos/{owner}/{repo}/pulls/${pr.prNumber}/comments --paginate\` (run from ${WT} via subshell).
 ${here}
 Stop early once at least one listed bot has posted a completed review (not a "reviewing…" placeholder — a placeholder or in-progress marker does NOT count as received).
-Return every substantive item from those bots: kind review|thread, body (trim boilerplate), path/line when anchored, headSha when the API provides it. receivedAny=false + timedOut=true if the window closes silently.
+Return every substantive item from those bots: kind review|thread, body (trim boilerplate), path/line when anchored, headSha when the API provides it.
+receivedAny and timedOut are the two mutually exclusive outcomes of the window: a completed review observed → receivedAny=true, timedOut=false; the window closed without one → receivedAny=false, timedOut=true. Never report false/false.
 ${transientRule}`
 
 const postPushTriagePrompt = (internal, external, headNote) => `Triage post-push review findings for issue #${A.issueNumber} into ONE verdict set.
@@ -372,6 +389,13 @@ ${here}
 For each external item that was fixed: reply naming the fixing commit. For each dismissed as noise/already-fixed: a one-line reasoned reply. Use \`gh api\` review-comment replies where anchored, else a single summary comment on the PR.
 Triage record:
 ${JSON.stringify(triage, null, 2)}`
+
+const handoffPrompt = (pr) => `Final handoff verification for PR #${pr.prNumber} (issue #${A.issueNumber}) — report the PR as it exists NOW, not as earlier stages left it.
+${here}
+1. CI: read \`gh pr view ${pr.prNumber} --json statusCheckRollup\` AND \`gh pr checks ${pr.prNumber}\` (the json rollup mixes CheckRuns with commit statuses — entries with null fields are statuses; judge them via gh pr checks). Every completed check successful → green. Any failure → red; name the failing check(s) and pull the one-line cause from the job log. Anything queued/running → pending. ${transientRule}
+2. Closes-link: \`gh pr view ${pr.prNumber} --json closingIssuesReferences\` must reference issue #${A.issueNumber}. If it does not: append a final line \`Closes #${A.issueNumber}\` to the PR body (\`gh pr edit --body-file\` with the current body plus the line), re-read, and report the observed post-repair state.
+3. Late externals: check reviews/threads from ${EXTERNAL_BOTS.join(', ')} (\`gh pr view ${pr.prNumber} --json reviews\` + \`gh api repos/{owner}/{repo}/pulls/${pr.prNumber}/comments --paginate\`) — count substantive items the run has not replied to (the post-push poll window may have closed before they arrived). Count only; do NOT reply or resolve.
+4. finalSummary: from \`git -C ${WT} log ${BASE}..HEAD --oneline\` and \`git -C ${WT} diff ${BASE}...HEAD --stat\` — commit count, diffstat headline, and anything notable that landed AFTER the implementation stage (post-push fixes, captured evidence, doc syncs).`
 
 const ledgerPrompt = (pr, acCheck) => `Post the evidence ledger on PR #${pr.prNumber} as a comment.
 ${here}
@@ -395,6 +419,18 @@ const normTitle = (t) => (t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').tri
 const softKey = (f) => `${f.file || ''}::${normTitle(f.title)}`
 const acGap = (c) => ({ severity: 'critical', title: `AC ${c.status}: ${c.criterion}`, file: '', line: 0, detail: c.detail || c.evidence || 'acceptance-criteria gap', systemic: false })
 const sentinel = (s) => { const v = (s || '').trim(); return v && !/^(none|n\/a|null|nil|no)\.?$/i.test(v) ? v : '' }
+
+// A dead fan-out agent is signal, not silence: name it before dropping it.
+const keepNamed = (keys, results, stage) => {
+  keys.forEach((k, i) => { if (!results[i]) log(`${stage}:${k} returned null (skipped or died) — dropped from the fabric`) })
+  return results.filter(Boolean)
+}
+
+// Result hygiene for the happy-path return: the conductor journals from this object; full
+// texts already live on the issue (plan) and the PR (ledger, review threads). Escalation
+// returns stay untrimmed — a human acts on those directly.
+const clip = (s, n) => { const v = String(s ?? ''); return v.length > n ? `${v.slice(0, n)} …[+${v.length - n} chars — full text in the issue/PR journal]` : v }
+const slimFinding = (f) => ({ severity: f.severity, title: f.title, file: f.file, line: f.line, round: f.round, detail: clip(f.detail, 240) })
 
 function dedupeFindings(findings) {
   const byKey = new Map()
@@ -457,7 +493,7 @@ const fabric = FABRIC[sized.size] || FABRIC.medium
 log(`size=${sized.size}: ${sized.rationale} → designs[${fabric.designs.join(',')}] synth=${fabric.synthModel} reviews[${fabric.reviews.join(',')}]`)
 
 phase('Design')
-const designs = (await parallel(fabric.designs.map((k) => designThunks[k]))).filter(Boolean)
+const designs = keepNamed(fabric.designs, await parallel(fabric.designs.map((k) => designThunks[k])), 'design')
 
 phase('Synthesize')
 if (designs.length === 0) throw new Error('all design agents returned null — resume the run to retry')
@@ -485,7 +521,7 @@ const impl = (await agent(implPrompt(plan), { label: 'impl', phase: 'Implement',
 phase('Review')
 const gate = (await agent(buildGatePrompt, { label: 'build-gate', phase: 'Review', model: 'sonnet', schema: GATE }))
   || { status: 'unknown', output: 'build-gate agent unavailable' }
-const reviews = (await parallel(fabric.reviews.map((k) => reviewThunks[k]))).filter(Boolean)
+const reviews = keepNamed(fabric.reviews, await parallel(fabric.reviews.map((k) => reviewThunks[k])), 'review')
 const acCheck = (await agent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'high', schema: AC_CHECK }))
   || { criteria: [], scopeCreep: [], unavailable: true }
 const findings = dedupeFindings(reviews.flatMap((r) => r.findings || []))
@@ -573,7 +609,7 @@ const [lensResults, external] = await parallel([
     }))),
   () => agent(externalPollPrompt(pr), { label: 'external:poll', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: EXTERNAL }),
 ])
-const lensFindings = dedupeFindings((lensResults || []).filter(Boolean).flatMap((r) => r.findings || []))
+const lensFindings = dedupeFindings(keepNamed(Object.keys(lensPrompts), lensResults || [], 'lens').flatMap((r) => r.findings || []))
 const ext = external || { items: [], receivedAny: false, timedOut: true }
 log(`post-push: ${lensFindings.length} lens finding(s); external receivedAny=${ext.receivedAny} timedOut=${ext.timedOut}`)
 
@@ -604,11 +640,18 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
 phase('Ledger')
 const ledger = await agent(ledgerPrompt(pr, latestAcCheck), { label: 'ledger', phase: 'Ledger', model: 'sonnet', schema: DONE })
 
+// Final read of the PR as it exists NOW — CI may outlive the run, externals may arrive
+// late, and mid-run summaries go stale; the conductor trusts this field over them.
+phase('Handoff')
+const handoff = (await agent(handoffPrompt(pr), { label: 'handoff', phase: 'Handoff', model: 'sonnet', schema: HANDOFF }))
+  || { ciStatus: 'unknown', ciDetail: 'handoff agent unavailable — conductor must read the rollup itself', lateExternalItems: 0, closesLinked: pr.closesLinked === true, finalSummary: '' }
+log(`handoff: ci=${handoff.ciStatus}${handoff.ciDetail ? ` (${clip(handoff.ciDetail, 120)})` : ''} closes-link=${handoff.closesLinked} late-external=${handoff.lateExternalItems}`)
+
 return {
   escalation: null,
   prNumber: pr.prNumber, prUrl: pr.prUrl, rebased: pr.rebased,
   size: sized.size,
-  plan: { goal: plan.goal, approach: plan.approach, difficulty: plan.difficulty, files: plan.files, milestones: plan.milestones },
+  plan: { goal: plan.goal, approach: clip(plan.approach, 1500), difficulty: plan.difficulty, files: plan.files, milestones: plan.milestones },
   implModel, implSummary: impl.summary, implDeviations: impl.deviations,
   gate: gate.status, fixRounds: round, bonusRound, adjudication,
   postPush: {
@@ -617,6 +660,12 @@ return {
     triage: { fixed: triage.fixes.length, noise: triage.noise.length },
   },
   ledgerPosted: !!(ledger && ledger.done),
-  acLedger: latestAcCheck, scopeCreep: latestAcCheck.scopeCreep || [],
-  resolvedInLoop, escapeHatch, droppedLow,
+  handoff,
+  acLedger: {
+    criteria: (latestAcCheck.criteria || []).map((c) => ({ criterion: c.criterion, status: c.status, evidence: clip(c.evidence, 240), detail: clip(c.detail, 240) })),
+  },
+  scopeCreep: latestAcCheck.scopeCreep || [],
+  resolvedInLoop: resolvedInLoop.map(slimFinding),
+  escapeHatch, // untrimmed: the conductor posts these verbatim as the follow-up draft
+  droppedLow: droppedLow.map(slimFinding),
 }

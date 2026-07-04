@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Plugin marketplace for the flow development framework.",
-    "version": "0.2.2"
+    "version": "0.2.3"
   },
   "plugins": [
     {
       "name": "flow",
       "description": "The prep → issue → land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "author": {
         "name": "jakub"
       },
