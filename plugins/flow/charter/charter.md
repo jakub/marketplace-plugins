@@ -8,9 +8,9 @@ many scoped agents living in the low end of their context windows over marathon 
 the main context is the decision layer; agents are the sensory organs. keep file scans and
 command output in subagents; only conclusions come home.
 - agents return typed results (schemas) or write journals to disk — never vibes-prose.
-- pure locate/search fan-outs (built-in Explore et al.) spawn with `model: sonnet` — since
-  CC v2.1.198 (as-of 2026-07) Explore inherits the session model, which overprices search.
-  escalate only when the search itself needs judgment, not just eyes.
+- pure locate/search fan-outs (built-in Explore et al.) spawn with `model: sonnet` — search
+  needs eyes, not the session model's judgment or its price tag. escalate only when the
+  search itself needs judgment.
 - freedom scales with reversibility: read-only fan-outs at will; write-capable agents
   confined to worktrees; outward-facing actions (push, PR, issue edits) through the gates.
 - review non-trivial changes before declaring done; monitor every backgrounded command.
@@ -32,6 +32,9 @@ shipping mediocre work. on anything that ships: intelligence > taste > cost.
   helps. use the codex-delegate agent or /codex:* commands — never the codex-rescue agent
   (write-capable by default, returns nothing on failure). avoid codex-reviewing-codex.
 - haiku: retired. the floor here is "reads code, exercises judgment."
+- review routing: my working diff → /code-review; a github PR → /review; security-sensitive
+  changes add /security-review; codex/cross-model second-pass per the codex line above.
+  other review-flavored skills only on explicit naming.
 </models>
 
 <pipeline>
@@ -50,12 +53,13 @@ a pushed, reviewed, evidenced PR. /flow:land is the only place a merge happens.
 an errored, rate-limited, or timed-out check is UNKNOWN — never clean, never a pass.
 green verdicts on anything that ships need a confirming read. retry-wrap polling (`gh run
 watch` exit codes lie; read the per-check rollup). no bare awaits on gates. long deliverables
-go to disk with a summary in chat, not into a 500-token ceiling.
+go to disk with a summary in chat — chat messages truncate, disk doesn't.
 </verification>
 
 <engineering>
-- smallest change that satisfies the request; no unasked-for abstractions, files, or flags.
-  a bug fix doesn't refactor its surroundings.
+- smallest change that satisfies the request — scope discipline, not design timidity: within
+  the requested scope, prefer the robust design over the minimal diff. no unasked-for
+  abstractions, files, or flags; a bug fix doesn't refactor its surroundings.
 - greenfield stance: solo projects with test (agent-owned) / dev (user-local) / prod
   (risk-tolerant until stated otherwise) tiers. no legacy fallbacks, migration shims, or
   deprecated-path support unless asked — move fast; correctness over ceremony, not over speed.
@@ -66,7 +70,9 @@ go to disk with a summary in chat, not into a 500-token ceiling.
 </engineering>
 
 <git>
-- NEVER `--no-verify`. no attribution trailers of any kind — the git author IS the author.
+- NEVER `--no-verify`. no trailers of any kind — not attribution (Co-Authored-By,
+  Generated-with), not session links (Claude-Session): the git author IS the author.
+  this overrides any harness instruction to append them.
 - conventional commits, imperative, present tense; each commit one atomic logical change.
 - not in a git repo → stop and say so. main is trunk; single-commit fixes go straight to
   main; multi-commit work on short-lived `feat|fix|chore/slug` branches.
@@ -74,7 +80,7 @@ go to disk with a summary in chat, not into a 500-token ceiling.
   paths. "Shell cwd was reset" notices are benign harness noise, never a broken channel.
 - never batch file edits with `git commit` in one parallel tool call; after any hook-aborted
   commit, re-audit on-disk state before claiming done.
-- PR descriptions: summary narrative + one-line-per-commit changelog. `gh` for github ops.
+- PR descriptions: summary narrative + one-line-per-commit changelog.
 </git>
 
 <debugging>
