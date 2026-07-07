@@ -453,41 +453,52 @@ async function dispatchFixes(items, plan, roundLabel) {
   const results = []
   if (disjoint) {
     const fixed = await parallel(items.map((f) => () =>
-      agent(fixPrompt(f, plan), { label: `fix:${roundLabel}:${f.file}`, phase: 'Fix', model: 'opus', effort: 'high', schema: IMPL_RESULT })))
+      safeAgent(fixPrompt(f, plan), { label: `fix:${roundLabel}:${f.file}`, phase: 'Fix', model: 'opus', effort: 'high', schema: IMPL_RESULT })))
     items.forEach((f, i) => results.push({ ...f, round: roundLabel, fixSummary: fixed[i]?.summary || '' }))
   } else {
     for (const f of items) {
-      const fixed = await agent(fixPrompt(f, plan), { label: `fix:${roundLabel}:${f.file || f.title}`, phase: 'Fix', model: 'opus', effort: 'high', schema: IMPL_RESULT })
+      const fixed = await safeAgent(fixPrompt(f, plan), { label: `fix:${roundLabel}:${f.file || f.title}`, phase: 'Fix', model: 'opus', effort: 'high', schema: IMPL_RESULT })
       results.push({ ...f, round: roundLabel, fixSummary: fixed?.summary || '' })
     }
   }
   return results
 }
 
+// The host agent() resolves to null when a subagent dies on a terminal API error — but a
+// schema'd agent that exhausts its StructuredOutput retry cap THROWS instead (three runs
+// bitten; latest wf_c92d331a-f75, where a COMPLETED impl stage lost only its report and
+// the throw killed the run past its `|| fallback`). Route every call through this shim so
+// a lost result degrades to null — the contract all the fallbacks here are written
+// against. parallel() thunks already null on throw; double-wrapping those is harmless.
+const safeAgent = (prompt, opts) => agent(prompt, opts).catch((e) => {
+  log(`${opts?.label || 'agent'}: threw (${clip(String(e), 160)}) → null; fallbacks engage`)
+  return null
+})
+
 // Fable holds the judgment seats, but its safety classifiers can bounce security-flavored
 // content (agent() → null). Fall back to opus rather than losing the stage.
 async function judge(prompt, opts) {
-  const r = await agent(prompt, { ...opts, model: 'fable', effort: 'high' })
+  const r = await safeAgent(prompt, { ...opts, model: 'fable', effort: 'high' })
   if (r !== null) return r
   log(`${opts.label}: fable returned null (refusal or terminal error) → retrying on opus`)
-  return agent(prompt, { ...opts, model: 'opus', effort: 'xhigh', label: `${opts.label}:opus-fallback` })
+  return safeAgent(prompt, { ...opts, model: 'opus', effort: 'xhigh', label: `${opts.label}:opus-fallback` })
 }
 
 const designThunks = {
-  codex: () => agent(codexDesignPrompt, { label: 'design:codex', phase: 'Design', model: 'sonnet', effort: 'low', schema: DESIGN }),
-  minimal: () => agent(architectPrompt('minimal'), { label: 'design:minimal', phase: 'Design', agentType: 'feature-dev:code-architect', model: 'sonnet', schema: DESIGN }),
-  clean: () => agent(architectPrompt('clean'), { label: 'design:clean', phase: 'Design', agentType: 'feature-dev:code-architect', model: 'opus', effort: 'high', schema: DESIGN }),
+  codex: () => safeAgent(codexDesignPrompt, { label: 'design:codex', phase: 'Design', model: 'sonnet', effort: 'low', schema: DESIGN }),
+  minimal: () => safeAgent(architectPrompt('minimal'), { label: 'design:minimal', phase: 'Design', agentType: 'feature-dev:code-architect', model: 'sonnet', schema: DESIGN }),
+  clean: () => safeAgent(architectPrompt('clean'), { label: 'design:clean', phase: 'Design', agentType: 'feature-dev:code-architect', model: 'opus', effort: 'high', schema: DESIGN }),
 }
 const reviewThunks = {
-  codex: () => agent(codexAdversarialPrompt, { label: 'review:codex', phase: 'Review', model: 'sonnet', effort: 'low', schema: FINDINGS }),
-  correctness: () => agent(correctnessPrompt, { label: 'review:correctness', phase: 'Review', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
-  simplify: () => agent(simplifyPrompt, { label: 'review:simplify', phase: 'Review', model: 'sonnet', schema: FINDINGS }),
-  security: () => agent(securityPrompt, { label: 'review:security', phase: 'Review', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+  codex: () => safeAgent(codexAdversarialPrompt, { label: 'review:codex', phase: 'Review', model: 'sonnet', effort: 'low', schema: FINDINGS }),
+  correctness: () => safeAgent(correctnessPrompt, { label: 'review:correctness', phase: 'Review', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+  simplify: () => safeAgent(simplifyPrompt, { label: 'review:simplify', phase: 'Review', model: 'sonnet', schema: FINDINGS }),
+  security: () => safeAgent(securityPrompt, { label: 'review:security', phase: 'Review', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
 }
 
 // ── pipeline ─────────────────────────────────────────────────────────────────
 phase('Size')
-const sized = (await agent(sizePrompt, { label: 'size', phase: 'Size', model: 'sonnet', schema: SIZE }))
+const sized = (await safeAgent(sizePrompt, { label: 'size', phase: 'Size', model: 'sonnet', schema: SIZE }))
   || { size: 'medium', expectedFiles: 0, rationale: 'size agent unavailable — defaulting to medium' }
 const fabric = FABRIC[sized.size] || FABRIC.medium
 log(`size=${sized.size}: ${sized.rationale} → designs[${fabric.designs.join(',')}] synth=${fabric.synthModel} reviews[${fabric.reviews.join(',')}]`)
@@ -500,7 +511,7 @@ if (designs.length === 0) throw new Error('all design agents returned null — r
 const synthOpts = { label: 'synthesize', phase: 'Synthesize', schema: PLAN }
 const plan = fabric.synthModel === 'fable'
   ? await judge(synthesizePrompt(designs), synthOpts)
-  : await agent(synthesizePrompt(designs), { ...synthOpts, model: 'opus', effort: 'high' })
+  : await safeAgent(synthesizePrompt(designs), { ...synthOpts, model: 'opus', effort: 'high' })
 if (!plan) throw new Error('synthesis returned null on both fable and opus — resume the run to retry')
 const amb = sentinel(plan.blockingAmbiguity)
 if (amb) return { escalation: 'needs-info', questions: amb, plan: { goal: plan.goal } }
@@ -509,20 +520,20 @@ const implModel = plan.difficulty === 'mechanical' ? 'sonnet' : 'opus'
 const implEffort = plan.difficulty === 'hard' ? 'xhigh' : 'high'
 log(`difficulty=${plan.difficulty} → impl on ${implModel}/${implEffort}; ${plan.files.length} file(s), ${plan.milestones.length} milestone(s)`)
 
-await agent(`In ${WT}: mkdir -p docs/working-plans; ensure .gitignore contains docs/working-plans/ (commit that line alone if you add it).
+await safeAgent(`In ${WT}: mkdir -p docs/working-plans; ensure .gitignore contains docs/working-plans/ (commit that line alone if you add it).
 Write this plan to docs/working-plans/plan-issue-${A.issueNumber}.md, then post it as the journal entry: gh issue comment ${A.issueNumber} --body-file docs/working-plans/plan-issue-${A.issueNumber}.md. Do NOT commit the plan file.
 Plan:
 ${JSON.stringify(plan, null, 2)}`, { label: 'plan:persist', phase: 'Synthesize', model: 'sonnet', effort: 'low' })
 
 phase('Implement')
-const impl = (await agent(implPrompt(plan), { label: 'impl', phase: 'Implement', model: implModel, effort: implEffort, schema: IMPL_RESULT }))
+const impl = (await safeAgent(implPrompt(plan), { label: 'impl', phase: 'Implement', model: implModel, effort: implEffort, schema: IMPL_RESULT }))
   || { summary: '(impl agent result lost — commits may exist; the review fabric judges the actual diff)', deviations: 'unknown (impl agent died)' }
 
 phase('Review')
-const gate = (await agent(buildGatePrompt, { label: 'build-gate', phase: 'Review', model: 'sonnet', schema: GATE }))
+const gate = (await safeAgent(buildGatePrompt, { label: 'build-gate', phase: 'Review', model: 'sonnet', schema: GATE }))
   || { status: 'unknown', output: 'build-gate agent unavailable' }
 const reviews = keepNamed(fabric.reviews, await parallel(fabric.reviews.map((k) => reviewThunks[k])), 'review')
-const acCheck = (await agent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'high', schema: AC_CHECK }))
+const acCheck = (await safeAgent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'high', schema: AC_CHECK }))
   || { criteria: [], scopeCreep: [], unavailable: true }
 const findings = dedupeFindings(reviews.flatMap((r) => r.findings || []))
 const escapeHatch = findings.filter((f) => f.systemic && isEscalationGrade(f))
@@ -539,11 +550,11 @@ while (round < FIX_ROUND_CAP && blocking.length > 0) {
   round++
   log(`fix round ${round}: ${blocking.length} blocking item(s)`)
   const attempted = await dispatchFixes(blocking, plan, `r${round}`)
-  const reGate = await agent(buildGatePrompt, { label: `gate:r${round}`, phase: 'Fix', model: 'sonnet', schema: GATE })
+  const reGate = await safeAgent(buildGatePrompt, { label: `gate:r${round}`, phase: 'Fix', model: 'sonnet', schema: GATE })
   const [reCorrectness, reSecurity, reAc] = await parallel([
-    () => agent(correctnessPrompt, { label: `correctness:r${round}`, phase: 'Fix', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
-    () => agent(securityPrompt, { label: `security:r${round}`, phase: 'Fix', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
-    () => agent(acCheckPrompt(plan), { label: `ac:r${round}`, phase: 'Fix', model: 'opus', effort: 'high', schema: AC_CHECK }),
+    () => safeAgent(correctnessPrompt, { label: `correctness:r${round}`, phase: 'Fix', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+    () => safeAgent(securityPrompt, { label: `security:r${round}`, phase: 'Fix', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+    () => safeAgent(acCheckPrompt(plan), { label: `ac:r${round}`, phase: 'Fix', model: 'opus', effort: 'high', schema: AC_CHECK }),
   ])
   if (reAc) latestAcCheck = reAc
   blocking = dedupeFindings((reCorrectness?.findings || []).concat(reSecurity?.findings || [])).filter(isBlocking)
@@ -558,12 +569,12 @@ while (round < FIX_ROUND_CAP && blocking.length > 0) {
 // Cross-model signal survives to the end: codex re-verifies after the loop settles.
 let bonusRound = null
 if (blocking.length === 0 && fabric.reviews.includes('codex')) {
-  const codexVerify = await agent(codexAdversarialPrompt, { label: 'review:codex-final', phase: 'Fix', model: 'sonnet', effort: 'low', schema: FINDINGS })
+  const codexVerify = await safeAgent(codexAdversarialPrompt, { label: 'review:codex-final', phase: 'Fix', model: 'sonnet', effort: 'low', schema: FINDINGS })
   const fresh = dedupeFindings(codexVerify?.findings || []).filter(isEscalationGrade).filter((f) => !f.systemic)
   if (fresh.length > 0) {
     log(`codex final verify: ${fresh.length} fresh critical/high finding(s) → bonus fix round`)
     const attempted = await dispatchFixes(fresh, plan, 'codex-final')
-    const bonusGate = await agent(buildGatePrompt, { label: 'gate:codex-final', phase: 'Fix', model: 'sonnet', schema: GATE })
+    const bonusGate = await safeAgent(buildGatePrompt, { label: 'gate:codex-final', phase: 'Fix', model: 'sonnet', schema: GATE })
     bonusRound = { findings: fresh.length, fixes: attempted.map((f) => f.title), gate: bonusGate?.status || 'unknown' }
     if (bonusGate && bonusGate.status !== 'passed') blocking = [{ severity: 'critical', title: `build gate ${bonusGate.status} after codex-final fixes`, file: '', line: 0, detail: bonusGate.output, systemic: false }]
   }
@@ -579,8 +590,8 @@ if (blocking.length > 0) {
 const escalate = adjudication.realBlockers.length > 0
 
 phase('PR')
-await agent(docSyncPrompt, { label: 'doc-sync', phase: 'PR', model: 'sonnet', schema: DONE })
-const pr = await agent(prPrompt, { label: 'publish', phase: 'PR', model: 'sonnet', schema: PR_INFO })
+await safeAgent(docSyncPrompt, { label: 'doc-sync', phase: 'PR', model: 'sonnet', schema: DONE })
+const pr = await safeAgent(prPrompt, { label: 'publish', phase: 'PR', model: 'sonnet', schema: PR_INFO })
 if (!pr) return {
   escalation: 'needs-human', reason: 'PR publish agent died — branch state unknown; recover from the journal',
   size: sized.size, plan: { goal: plan.goal, difficulty: plan.difficulty }, implSummary: impl.summary,
@@ -603,11 +614,11 @@ if (escalate || pr.conflict) {
 phase('PostPush')
 const [lensResults, external] = await parallel([
   () => parallel(Object.entries(lensPrompts).map(([k, p]) => () =>
-    agent(p, {
+    safeAgent(p, {
       label: `lens:${k}`, phase: 'PostPush', model: 'opus', effort: 'high', schema: FINDINGS,
       agentType: { tests: 'pr-review-toolkit:pr-test-analyzer', 'silent-failures': 'pr-review-toolkit:silent-failure-hunter', comments: 'pr-review-toolkit:comment-analyzer', types: 'pr-review-toolkit:type-design-analyzer' }[k],
     }))),
-  () => agent(externalPollPrompt(pr), { label: 'external:poll', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: EXTERNAL }),
+  () => safeAgent(externalPollPrompt(pr), { label: 'external:poll', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: EXTERNAL }),
 ])
 const lensFindings = dedupeFindings(keepNamed(Object.keys(lensPrompts), lensResults || [], 'lens').flatMap((r) => r.findings || []))
 const ext = external || { items: [], receivedAny: false, timedOut: true }
@@ -620,8 +631,8 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
     || { fixes: lensFindings.filter(isBlocking), noise: [] } // judges died → fix our own blocking lens findings, leave externals to /land's thread gate
   if (triage.fixes.length > 0) {
     await dispatchFixes(triage.fixes, plan, 'postpush')
-    const ppGate = await agent(buildGatePrompt, { label: 'gate:postpush', phase: 'PostPush', model: 'sonnet', schema: GATE })
-    await agent(`Push the fix commits: \`git -C ${WT} push\`. ${transientRule} Report done.`, { label: 'push:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: DONE })
+    const ppGate = await safeAgent(buildGatePrompt, { label: 'gate:postpush', phase: 'PostPush', model: 'sonnet', schema: GATE })
+    await safeAgent(`Push the fix commits: \`git -C ${WT} push\`. ${transientRule} Report done.`, { label: 'push:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: DONE })
     if (ppGate && ppGate.status !== 'passed') {
       return {
         escalation: 'needs-human', reason: `build gate ${ppGate.status} after post-push fixes`,
@@ -633,17 +644,17 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
     }
   }
   if (ext.items.length > 0) {
-    await agent(replyPrompt(pr, triage), { label: 'external:reply', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: DONE })
+    await safeAgent(replyPrompt(pr, triage), { label: 'external:reply', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: DONE })
   }
 }
 
 phase('Ledger')
-const ledger = await agent(ledgerPrompt(pr, latestAcCheck), { label: 'ledger', phase: 'Ledger', model: 'sonnet', schema: DONE })
+const ledger = await safeAgent(ledgerPrompt(pr, latestAcCheck), { label: 'ledger', phase: 'Ledger', model: 'sonnet', schema: DONE })
 
 // Final read of the PR as it exists NOW — CI may outlive the run, externals may arrive
 // late, and mid-run summaries go stale; the conductor trusts this field over them.
 phase('Handoff')
-const handoff = (await agent(handoffPrompt(pr), { label: 'handoff', phase: 'Handoff', model: 'sonnet', schema: HANDOFF }))
+const handoff = (await safeAgent(handoffPrompt(pr), { label: 'handoff', phase: 'Handoff', model: 'sonnet', schema: HANDOFF }))
   || { ciStatus: 'unknown', ciDetail: 'handoff agent unavailable — conductor must read the rollup itself', lateExternalItems: 0, closesLinked: pr.closesLinked === true, finalSummary: '' }
 log(`handoff: ci=${handoff.ciStatus}${handoff.ciDetail ? ` (${clip(handoff.ciDetail, 120)})` : ''} closes-link=${handoff.closesLinked} late-external=${handoff.lateExternalItems}`)
 
