@@ -76,5 +76,5 @@ is designed to be run by cheap models with a judgment pass on top.
 - **Evidence**: every acceptance criterion names its evidence at prep and gets a
   per-criterion verdict + link in the PR ledger.
 - **Verification**: UNKNOWN ≠ clean. Errored/rate-limited/timed-out checks never pass.
-- **Models**: fable judges, opus works, sonnet transcribes, gpt-5.5 decorrelates,
+- **Models**: fable judges, opus works, sonnet transcribes, gpt-5.6-sol decorrelates,
   haiku is retired. Axes (intelligence > taste > cost), never file counts.

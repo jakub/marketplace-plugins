@@ -31,7 +31,7 @@ Nothing enters the tracker except through here.
    mid-run, escalate rather than guess.
 2. **Launch**: worktree off origin/main; context pack (paths, not contents); workflow
    started; **runId stamped as an issue comment** for recovery.
-3. **Design fan-out**: minimal (sonnet) ∥ clean (opus high) ∥ outside (gpt-5.5 high,
+3. **Design fan-out**: minimal (sonnet) ∥ clean (opus high) ∥ outside (gpt-5.6-sol high,
    read-only). Cross-model disagreement is signal, kept even on small work.
 4. **Synthesis** (fable high; opus on trivial): one plan, per-plan difficulty
    (`mechanical | standard | hard`) that routes implementation. Blocking ambiguity →
@@ -39,7 +39,7 @@ Nothing enters the tracker except through here.
 5. **Implement** (TDD): opus high primary; `mechanical` plans may drop to sonnet;
    `hard` runs xhigh. Difficulty is judged at synthesis, never counted from file totals.
 6. **Build gate** (sonnet low): fmt, clippy, tests. Retry-wrapped; UNKNOWN ≠ pass.
-7. **Internal review fabric** (parallel): codex adversarial (gpt-5.5) · correctness (opus) ·
+7. **Internal review fabric** (parallel): codex adversarial (gpt-5.6-sol) · correctness (opus) ·
    security (opus — kept off fable, no classifier roulette) · simplify (sonnet) ·
    **AC evidence check** (opus): per-criterion verdict + evidence pointer against the
    launch snapshot. Dedupe in pure JS; blocking = critical/high/medium + unmet criteria.
@@ -84,7 +84,7 @@ model's output misses the bar.
 | fable 5 | every judgment seat: conduct, grill, synthesise, adjudicate, triage external findings | `high` | security-flavored payloads → route to opus; auto-fallback opus on refusal/null |
 | opus 4.8 | workhorse: implementation, correctness/security review, fixes, PR lenses | `high`, `xhigh` for hard plans | pure judgment calls (fable's seat) |
 | sonnet 5 | mechanical: gates, wrappers, scouts, doc-sync, minimal design leg, ledgers | `low` for wrappers | any embedded design judgment |
-| codex | external decorrelation: outside design opinion, adversarial review, general delegation | codex config default (`~/.codex/config.toml`), unless the call pins `--model`/`--effort` | taste-critical surfaces; codex-reviewing-codex |
+| gpt-5.6-sol | external decorrelation: outside design opinion, adversarial review, general delegation | `high` — codex config default (`~/.codex/config.toml`, as of 2026-07); pin `--model`/`--effort` per call to override | taste-critical surfaces; codex-reviewing-codex |
 | haiku | — retired | | always |
 
 Delegation charter (also in the injected charter): many small-context agents over marathon
@@ -124,7 +124,7 @@ ontology; crate-local vocabulary moves into slices next to the code it describes
 - **escalation pings**: valves push to the phone (PushNotification from the conductor).
 - **nightly lint** (cron, sonnet): label contract, stale worktrees, orphaned branches, doc staleness.
 - **weekly doc sweep** (cron, sonnet): workspace-wide CONTEXT/AGENTS drift vs reality.
-- **scheduled bug hunts** (cron, opus + gpt-5.5): findings adversarially verified, deduped
+- **scheduled bug hunts** (cron, opus + gpt-5.6-sol): findings adversarially verified, deduped
   against open+closed, capped per sweep, filed `agent-found` (`FLOW_SANCTION=hunter`) —
   quarantine; nothing self-promotes past /flow:prep.
 - **recovery**: `resumeFromRunId` same-session; cross-session, a recovery-preamble agent

@@ -23,14 +23,14 @@ command output in subagents; only conclusions come home.
 </delegation>
 
 <models>
-model rankings, higher = better. costs represent the real-world (fable is expensive, codex subscription gives gpt-5.5 at an incredible price). intelligence is how hard a problem you can hand the model unsupervised. taste includes UI/UX, code quality, API design, and copy text.
+model rankings, higher = better. costs represent the real-world (fable is expensive, codex subscription gives gpt-5.6-sol at an incredible price). intelligence is how hard a problem you can hand the model unsupervised. taste includes UI/UX, code quality, API design, and copy text.
 
-| model    | cost | intelligence | taste |
-|-----------------------------------------
-| sonnet-5 | 5    | 5            | 7     |
-| opus-4.8 | 4    | 7            | 8     |
-| gpt-5.5  | 7    | 8            | 5     | 
-| fable 5  | 2    | 9            | 9     |
+| model       | cost | intelligence | taste |
+|--------------------------------------------
+| sonnet-5    | 5    | 5            | 7     |
+| opus-4.8    | 4    | 7            | 8     |
+| gpt-5.6-sol | 7    | 8            | 5     |
+| fable 5     | 2    | 9            | 9     |
 
 - fable 5 (`low`, `medium`, `high` only): every judgment seat — orchestration, planning, architecture, 
 - synthesis, adjudication, grilling. the human replacement. skip for security-flavored payloads
@@ -38,7 +38,7 @@ model rankings, higher = better. costs represent the real-world (fable is expens
 - opus 4.8 (`high`/`xhigh`): the workhorse — implementation, correctness + security
   review, fix loops, anything where wrong answers are expensive.
 - sonnet 5: mechanical work with a complete spec; `low` for pure command wrappers.
-- gpt-5.5 via codex (~free, flat-rate sub): the decorrelated outside opinion — architecture
+- gpt-5.6-sol via codex (`high` default; ~free, flat-rate sub): the decorrelated outside opinion — architecture
   second-passes, adversarial review — and general delegation whenever an independent brain
   helps. use the codex-delegate agent or /codex:* commands — never the codex-rescue agent
   (write-capable by default, returns nothing on failure). avoid codex-reviewing-codex.

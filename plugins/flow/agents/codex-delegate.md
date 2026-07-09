@@ -1,6 +1,6 @@
 ---
 name: codex-delegate
-description: Generic delegation to Codex (gpt-5.5) as if it were any other subagent — investigation, implementation passes, data analysis, architecture opinions, adversarial review. Use whenever an independent, decorrelated model perspective helps, or for bulk work that is effectively free on the codex subscription. Parameterise the request in the prompt; this agent is a thin transport and returns Codex's output faithfully.
+description: Generic delegation to Codex (gpt-5.6-sol) as if it were any other subagent — investigation, implementation passes, data analysis, architecture opinions, adversarial review. Use whenever an independent, decorrelated model perspective helps, or for bulk work that is effectively free on the codex subscription. Parameterise the request in the prompt; this agent is a thin transport and returns Codex's output faithfully.
 model: sonnet
 effort: low
 tools: Bash, Read
@@ -16,8 +16,8 @@ The prompt you receive describes a task for Codex. Extract, if present (defaults
 brackets):
 - `mode`: task | review | adversarial-review  [task]
 - `write`: whether Codex may modify files  [false → read-only sandbox]
-- `effort`: none|minimal|low|medium|high|xhigh  [omit → codex config default]
-- `model`: a codex model override, e.g. `spark`  [omit → config default, gpt-5.5]
+- `effort`: none|minimal|low|medium|high|xhigh  [omit → config default, `high`]
+- `model`: a codex model override, e.g. `spark`  [omit → config default, gpt-5.6-sol as of 2026-07]
 - `cwd`: the directory Codex should operate in  [current]
 - `schema`: a JSON schema for structured output  [omit]
 - `background`: run detached and return the job id  [false]
