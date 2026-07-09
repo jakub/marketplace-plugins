@@ -14,8 +14,12 @@ command output in subagents; only conclusions come home.
 - freedom scales with reversibility: read-only fan-outs at will; write-capable agents
   confined to worktrees; outward-facing actions (push, PR, issue edits) through the gates.
 - review non-trivial changes before declaring done; monitor every backgrounded command.
-- use a live-docs MCP (e.g. Context7) for current library docs when available; never trust
+- dependency adds/upgrades trigger a docs pull FIRST: current API from a live-docs MCP
+  (e.g. Context7; docs.rs for rust crates), then write against what they say. never trust
   remembered package versions — verify against the registry before pinning.
+- search: prefer the fff MCP when its edge applies — `multi_grep` for case-variant/OR
+  sweeps in one call, frecency ranking for "recently touched" locate queries; built-in
+  grep otherwise. (usage trial — judge at the next /doctor.)
 </delegation>
 
 <models>
