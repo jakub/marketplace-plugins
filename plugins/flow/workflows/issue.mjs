@@ -258,7 +258,9 @@ Explore the referenced paths and the code they lead to before designing. Propose
 files to create/modify, key type/module decisions, data flow, error handling, test strategy.
 Flag risks and pattern deviations. Long-term maintainability focus. Read-only — write NO files.
 PROMPT
-If the companion is not found, set approach to "codex skipped (companion not found)" and leave other fields empty.`
+If codex produces no design for ANY reason (companion not found, CLI error, timeout), set
+approach to exactly "CODEX_UNAVAILABLE: <one-line reason>" and leave every other field empty —
+never fill the schema with a design codex did not write.`
 
 const synthesizePrompt = (designs) => `Synthesize ${designs.length} independent designs for issue #${A.issueNumber} into ONE plan.
 ${here}
@@ -300,7 +302,10 @@ ${transientRule}`
 
 const codexAdversarialPrompt = `Run EXACTLY this and convert codex's findings into the findings schema (systemic=false unless the finding is genuinely cross-crate-refactor scale):
 ${CODEX_LOCATE} && node "$COMPANION" adversarial-review --base ${BASE}
-If the companion is not found, return an empty findings array.`
+If codex produces no review for ANY reason (companion not found, CLI error, timeout), return
+exactly one finding: severity "low", title "CODEX_UNAVAILABLE: <one-line reason>", file "",
+line 0, detail the underlying error, systemic false — an errored review must be visible as
+unavailable, never as a clean pass.`
 
 const reviewScope = `Review the diff (\`git -C ${WT} diff ${BASE}...HEAD\`) for issue #${A.issueNumber}. Cite file:line. Severity per finding. Set systemic=true ONLY for cross-crate-refactor-scale work that cannot fit this PR.`
 const correctnessPrompt = `${reviewScope}
@@ -508,7 +513,14 @@ const fabric = FABRIC[sized.size] || FABRIC.medium
 log(`size=${sized.size}: ${sized.rationale} → designs[${fabric.designs.join(',')}] synth=${fabric.synthModel} reviews[${fabric.reviews.join(',')}]`)
 
 phase('Design')
+// CODEX_UNAVAILABLE sentinel: a dead codex leg returns a schema-valid husk (see
+// codexDesignPrompt) — drop it before it dilutes the synthesis panel.
 const designs = keepNamed(fabric.designs, await parallel(fabric.designs.map((k) => designThunks[k])), 'design')
+  .filter((d) => {
+    const dead = typeof d.approach === 'string' && d.approach.startsWith('CODEX_UNAVAILABLE')
+    if (dead) log(`design:codex unavailable (${clip(d.approach, 120)}) — dropped from the synthesis panel`)
+    return !dead
+  })
 
 phase('Synthesize')
 if (designs.length === 0) throw new Error('all design agents returned null — resume the run to retry')
@@ -546,12 +558,18 @@ const impl = implRun
   || { summary: '(impl agent result lost — commits may exist; the review fabric judges the actual diff)', deviations: 'unknown (impl agent died)' }
 
 phase('Review')
-const gate = (await safeAgent(buildGatePrompt, { label: 'build-gate', phase: 'Review', model: 'sonnet', schema: GATE }))
+const gate = (await safeAgent(buildGatePrompt, { label: 'build-gate', phase: 'Review', model: 'sonnet', effort: 'low', schema: GATE }))
   || { status: 'unknown', output: 'build-gate agent unavailable' }
 const reviews = keepNamed(fabric.reviews, await parallel(fabric.reviews.map((k) => reviewThunks[k])), 'review')
 const acCheck = (await safeAgent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'high', schema: AC_CHECK }))
   || { criteria: [], scopeCreep: [], unavailable: true }
-const findings = dedupeFindings(reviews.flatMap((r) => r.findings || []))
+// CODEX_UNAVAILABLE marker findings are observability, not review signal — log and drop.
+const dropCodexMarker = (fs) => fs.filter((f) => {
+  const dead = typeof f.title === 'string' && f.title.startsWith('CODEX_UNAVAILABLE')
+  if (dead) log(`codex review unavailable (${clip(f.detail || f.title, 120)}) — no cross-model signal this pass`)
+  return !dead
+})
+const findings = dedupeFindings(dropCodexMarker(reviews.flatMap((r) => r.findings || [])))
 const escapeHatch = findings.filter((f) => f.systemic && isEscalationGrade(f))
 const droppedLow = findings.filter((f) => !isBlocking(f) && !f.systemic)
 
@@ -566,7 +584,7 @@ while (round < FIX_ROUND_CAP && blocking.length > 0) {
   round++
   log(`fix round ${round}: ${blocking.length} blocking item(s)`)
   const attempted = await dispatchFixes(blocking, plan, `r${round}`)
-  const reGate = await safeAgent(buildGatePrompt, { label: `gate:r${round}`, phase: 'Fix', model: 'sonnet', schema: GATE })
+  const reGate = await safeAgent(buildGatePrompt, { label: `gate:r${round}`, phase: 'Fix', model: 'sonnet', effort: 'low', schema: GATE })
   const [reCorrectness, reSecurity, reAc] = await parallel([
     () => safeAgent(correctnessPrompt, { label: `correctness:r${round}`, phase: 'Fix', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
     () => safeAgent(securityPrompt, { label: `security:r${round}`, phase: 'Fix', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
@@ -586,11 +604,11 @@ while (round < FIX_ROUND_CAP && blocking.length > 0) {
 let bonusRound = null
 if (blocking.length === 0 && fabric.reviews.includes('codex')) {
   const codexVerify = await safeAgent(codexAdversarialPrompt, { label: 'review:codex-final', phase: 'Fix', model: 'sonnet', effort: 'low', schema: FINDINGS })
-  const fresh = dedupeFindings(codexVerify?.findings || []).filter(isEscalationGrade).filter((f) => !f.systemic)
+  const fresh = dedupeFindings(dropCodexMarker(codexVerify?.findings || [])).filter(isEscalationGrade).filter((f) => !f.systemic)
   if (fresh.length > 0) {
     log(`codex final verify: ${fresh.length} fresh critical/high finding(s) → bonus fix round`)
     const attempted = await dispatchFixes(fresh, plan, 'codex-final')
-    const bonusGate = await safeAgent(buildGatePrompt, { label: 'gate:codex-final', phase: 'Fix', model: 'sonnet', schema: GATE })
+    const bonusGate = await safeAgent(buildGatePrompt, { label: 'gate:codex-final', phase: 'Fix', model: 'sonnet', effort: 'low', schema: GATE })
     bonusRound = { findings: fresh.length, fixes: attempted.map((f) => f.title), gate: bonusGate?.status || 'unknown' }
     if (bonusGate && bonusGate.status !== 'passed') blocking = [{ severity: 'critical', title: `build gate ${bonusGate.status} after codex-final fixes`, file: '', line: 0, detail: bonusGate.output, systemic: false }]
   }
@@ -606,7 +624,9 @@ if (blocking.length > 0) {
 const escalate = adjudication.realBlockers.length > 0
 
 phase('PR')
-await safeAgent(docSyncPrompt, { label: 'doc-sync', phase: 'PR', model: 'sonnet', schema: DONE })
+// opus seat: doc-sync output is the only content-producing stage no later review reads —
+// doc rot ships silently, so don't put the cheapest model on it.
+await safeAgent(docSyncPrompt, { label: 'doc-sync', phase: 'PR', model: 'opus', effort: 'high', schema: DONE })
 const pr = await safeAgent(prPrompt, { label: 'publish', phase: 'PR', model: 'sonnet', schema: PR_INFO })
 if (!pr) return {
   escalation: 'needs-human', reason: 'PR publish agent died — branch state unknown; recover from the journal',
@@ -647,7 +667,7 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
     || { fixes: lensFindings.filter(isBlocking), noise: [] } // judges died → fix our own blocking lens findings, leave externals to /land's thread gate
   if (triage.fixes.length > 0) {
     await dispatchFixes(triage.fixes, plan, 'postpush')
-    const ppGate = await safeAgent(buildGatePrompt, { label: 'gate:postpush', phase: 'PostPush', model: 'sonnet', schema: GATE })
+    const ppGate = await safeAgent(buildGatePrompt, { label: 'gate:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: GATE })
     await safeAgent(`Push the fix commits: \`git -C ${WT} push\`. ${transientRule} Report done.`, { label: 'push:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: DONE })
     if (ppGate && ppGate.status !== 'passed') {
       return {
