@@ -1,6 +1,6 @@
 ---
 description: Hands-off implementation of a ready-for-agent issue, through a pushed, reviewed, evidenced PR. Conductor for the flow-issue workflow.
-argument-hint: <issue-number>
+argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh]
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Read, Write, Workflow, TaskOutput, PushNotification, Task, Agent
 ---
 
@@ -11,7 +11,11 @@ CONDUCTOR: pre-flight, claim, launch, journal, result handling. The heavy liftin
 inside the background workflow — do not re-implement its stages inline, and do not pollute
 the main context with file contents that belong in the workflow's agents.
 
-Argument: `$ARGUMENTS` = issue number. Abort with usage if not a positive integer.
+Argument: `$ARGUMENTS` = issue number, optionally followed by `--impl-model <m>` /
+`--impl-effort <e>` to override the difficulty-routed implementer seat (e.g.
+`--impl-model fable` to trial fable as implementer; the workflow clamps fable to
+`high` effort and falls back to the default seat if the override refuses/dies).
+Abort with usage if the first token is not a positive integer.
 
 ## 1. Pre-flight
 
@@ -45,7 +49,9 @@ this snapshot; body edits mid-run are detected at the end (step 5.4).
    variable is unavailable in this context, locate it:
    `ls ~/.claude/plugins/cache/flow/flow/*/workflows/issue.mjs | sort -V | tail -1`.
 4. Launch via the Workflow tool with `scriptPath` and args:
-   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"] }`.
+   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"] }`,
+   plus `implModel` / `implEffort` when the corresponding flags were given (omit otherwise —
+   absent keys mean difficulty-routed defaults).
 5. **Stamp the runId** the tool result returns as an issue journal comment:
    `flow run started — runId <id>, worktree <path>, branch <branch>` — this is the
    recovery anchor for any future session.

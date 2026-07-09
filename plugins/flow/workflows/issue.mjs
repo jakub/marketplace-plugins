@@ -5,7 +5,7 @@ export const meta = {
     { title: 'Size', detail: 'coarse triage → design/review fabric allocation' },
     { title: 'Design', detail: 'minimal ∥ clean ∥ codex, in parallel' },
     { title: 'Synthesize', detail: 'one plan + difficulty routing', model: 'fable' },
-    { title: 'Implement', detail: 'TDD; opus primary, difficulty-routed' },
+    { title: 'Implement', detail: 'TDD; difficulty-routed (opus default; impl seat overridable via args)' },
     { title: 'Review', detail: 'build gate + adversarial/correctness/security/simplify + AC evidence check' },
     { title: 'Fix', detail: '≤3 rounds; parallel over disjoint files; codex re-verify; fable adjudication' },
     { title: 'PR', detail: 'doc-sync, rebase, push, open PR' },
@@ -31,8 +31,12 @@ const FABRIC = {
 
 // args (passed by /flow:issue after pre-flight + claim + worktree creation):
 //   { issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree,
-//     branch, base, externalReviewers? }
+//     branch, base, externalReviewers?, implModel?, implEffort? }
 // May arrive as a parsed object OR a JSON-encoded string; parse defensively.
+// implModel/implEffort override the difficulty-routed impl seat (e.g. implModel: 'fable'
+// to trial fable as implementer). A null result under an override (safety-classifier
+// refusal or terminal error) falls back to the difficulty-routed default so an
+// experiment can't lose the run.
 const A = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const WT = A.worktree
 const BASE = A.base || 'origin/main'
@@ -516,9 +520,12 @@ if (!plan) throw new Error('synthesis returned null on both fable and opus — r
 const amb = sentinel(plan.blockingAmbiguity)
 if (amb) return { escalation: 'needs-info', questions: amb, plan: { goal: plan.goal } }
 
-const implModel = plan.difficulty === 'mechanical' ? 'sonnet' : 'opus'
-const implEffort = plan.difficulty === 'hard' ? 'xhigh' : 'high'
-log(`difficulty=${plan.difficulty} → impl on ${implModel}/${implEffort}; ${plan.files.length} file(s), ${plan.milestones.length} milestone(s)`)
+const implDefaultModel = plan.difficulty === 'mechanical' ? 'sonnet' : 'opus'
+const implDefaultEffort = plan.difficulty === 'hard' ? 'xhigh' : 'high'
+let implModel = A.implModel || implDefaultModel
+let implEffort = A.implEffort || implDefaultEffort
+if (implModel === 'fable' && implEffort === 'xhigh') implEffort = 'high' // fable tops out at high
+log(`difficulty=${plan.difficulty} → impl on ${implModel}/${implEffort}${A.implModel || A.implEffort ? ` (override; default ${implDefaultModel}/${implDefaultEffort})` : ''}; ${plan.files.length} file(s), ${plan.milestones.length} milestone(s)`)
 
 await safeAgent(`In ${WT}: mkdir -p docs/working-plans; ensure .gitignore contains docs/working-plans/ (commit that line alone if you add it).
 Write this plan to docs/working-plans/plan-issue-${A.issueNumber}.md, then post it as the journal entry: gh issue comment ${A.issueNumber} --body-file docs/working-plans/plan-issue-${A.issueNumber}.md. Do NOT commit the plan file.
@@ -526,7 +533,16 @@ Plan:
 ${JSON.stringify(plan, null, 2)}`, { label: 'plan:persist', phase: 'Synthesize', model: 'sonnet', effort: 'low' })
 
 phase('Implement')
-const impl = (await safeAgent(implPrompt(plan), { label: 'impl', phase: 'Implement', model: implModel, effort: implEffort, schema: IMPL_RESULT }))
+let implRun = await safeAgent(implPrompt(plan), { label: 'impl', phase: 'Implement', model: implModel, effort: implEffort, schema: IMPL_RESULT })
+if (implRun === null && (A.implModel || A.implEffort)) {
+  // Overridden seat refused or died — re-run on the difficulty-routed default. Commits
+  // from a partial first attempt are fine: the review fabric judges the actual diff.
+  log(`impl: ${implModel}/${implEffort} returned null (refusal or terminal error) → falling back to ${implDefaultModel}/${implDefaultEffort}`)
+  implModel = implDefaultModel
+  implEffort = implDefaultEffort
+  implRun = await safeAgent(implPrompt(plan), { label: 'impl:fallback', phase: 'Implement', model: implModel, effort: implEffort, schema: IMPL_RESULT })
+}
+const impl = implRun
   || { summary: '(impl agent result lost — commits may exist; the review fabric judges the actual diff)', deviations: 'unknown (impl agent died)' }
 
 phase('Review')
