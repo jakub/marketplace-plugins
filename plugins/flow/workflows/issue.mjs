@@ -251,7 +251,7 @@ ${A.contextPack}
 Propose ONE concrete approach. Flag deviations from existing patterns and any ambiguity the issue + code cannot resolve.`
 
 const codexDesignPrompt = `Run EXACTLY this, then return codex's design verbatim as your "approach" (fill the other fields from it):
-${CODEX_LOCATE} && node "$COMPANION" task --effort high <<'PROMPT'
+${CODEX_LOCATE} && node "$COMPANION" task --cwd "${WT}" --effort high <<'PROMPT'
 You are designing feature architecture for issue #${A.issueNumber} in ${WT}.
 ${A.contextPack}
 Explore the referenced paths and the code they lead to before designing. Propose ONE concrete approach:
@@ -300,10 +300,15 @@ Detect and run the project's lint+test commands (Rust: \`cargo clippy --workspac
 On failure: fix in atomic commits and re-run (max a few rounds), then report.
 ${transientRule}`
 
-const codexAdversarialPrompt = `Run EXACTLY this and convert codex's findings into the findings schema (systemic=false unless the finding is genuinely cross-crate-refactor scale):
-${CODEX_LOCATE} && node "$COMPANION" adversarial-review --base ${BASE}
-If codex produces no review for ANY reason (companion not found, CLI error, timeout), return
-exactly one finding: severity "low", title "CODEX_UNAVAILABLE: <one-line reason>", file "",
+const codexAdversarialPrompt = `Run EXACTLY this:
+${CODEX_LOCATE} && node "$COMPANION" adversarial-review --cwd "${WT}" --base ${BASE} --json
+Stdout is a JSON payload. Map its .result.findings[] into the findings schema MECHANICALLY —
+field transcription, not reinterpretation: severity→severity (same enum), title→title,
+file→file, line_start→line, detail = body plus recommendation if present, systemic=false
+unless the finding is genuinely cross-crate-refactor scale.
+If .result is null or .parseError is set, that is a FAILED review, not an empty one.
+If codex produces no review for ANY reason (companion not found, CLI error, timeout, parse error),
+return exactly one finding: severity "low", title "CODEX_UNAVAILABLE: <one-line reason>", file "",
 line 0, detail the underlying error, systemic false — an errored review must be visible as
 unavailable, never as a clean pass.`
 

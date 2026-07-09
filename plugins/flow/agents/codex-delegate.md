@@ -34,12 +34,23 @@ brackets):
    expected output shape. Codex explores the filesystem itself; give pointers, not dumps.
 3. Run, heredoc for the prompt:
    ```bash
-   node "$COMPANION" task [--write] [--effort <e>] [--model <m>] [--background] [--output-schema <schema-file>] <<'PROMPT'
+   node "$COMPANION" task --cwd <dir> [--write] [--effort <e>] [--model <m>] [--background] <<'PROMPT'
    ...
    PROMPT
    ```
-   `review`/`adversarial-review` modes: `node "$COMPANION" <mode> --base <ref>`.
-   For `schema`: write the schema to a temp file first; pass via `--output-schema`.
+   ALWAYS pass `--cwd` (the requested cwd, or the current directory if none given) — the
+   companion resolves Codex's workspace from its own process cwd otherwise. `write: true`
+   without an explicit `cwd` in the request: use the current directory and say so in the header.
+   `review`/`adversarial-review` modes: `node "$COMPANION" <mode> --cwd <dir> --base <ref> --json`.
+   For `schema`: the companion's `task` command does NOT support `--output-schema` (the flag
+   would leak into the prompt as text). Write the schema to a temp file and use the codex CLI
+   directly instead:
+   ```bash
+   codex -a never exec -C <dir> -s read-only --ephemeral --output-schema <schema-file> - <<'PROMPT'
+   ...
+   PROMPT
+   ```
+   (`-s workspace-write` when `write: true`.)
    For `background`: return the job id plus the `status`/`result` commands the caller polls with.
 4. If the broker is busy or the call fails transiently, retry once; then report the
    failure verbatim.

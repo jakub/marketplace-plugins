@@ -84,7 +84,7 @@ model's output misses the bar.
 | fable 5 | every judgment seat: conduct, grill, synthesise, adjudicate, triage external findings | `high` | security-flavored payloads → route to opus; auto-fallback opus on refusal/null |
 | opus 4.8 | workhorse: implementation, correctness/security review, fixes, PR lenses | `high`, `xhigh` for hard plans | pure judgment calls (fable's seat) |
 | sonnet 5 | mechanical: gates, wrappers, scouts, doc-sync, minimal design leg, ledgers | `low` for wrappers | any embedded design judgment |
-| gpt-5.5 | external decorrelation: outside design opinion, adversarial review, general delegation | (codex-side, config default xhigh) | taste-critical surfaces; codex-reviewing-codex |
+| codex | external decorrelation: outside design opinion, adversarial review, general delegation | codex config default (`~/.codex/config.toml`), unless the call pins `--model`/`--effort` | taste-critical surfaces; codex-reviewing-codex |
 | haiku | — retired | | always |
 
 Delegation charter (also in the injected charter): many small-context agents over marathon
