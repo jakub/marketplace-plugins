@@ -490,14 +490,14 @@ async function judge(prompt, opts) {
 
 const designThunks = {
   codex: () => safeAgent(codexDesignPrompt, { label: 'design:codex', phase: 'Design', model: 'sonnet', effort: 'low', schema: DESIGN }),
-  minimal: () => safeAgent(architectPrompt('minimal'), { label: 'design:minimal', phase: 'Design', agentType: 'feature-dev:code-architect', model: 'sonnet', schema: DESIGN }),
-  clean: () => safeAgent(architectPrompt('clean'), { label: 'design:clean', phase: 'Design', agentType: 'feature-dev:code-architect', model: 'opus', effort: 'high', schema: DESIGN }),
+  minimal: () => safeAgent(architectPrompt('minimal'), { label: 'design:minimal', phase: 'Design', agentType: 'flow:code-architect', model: 'sonnet', schema: DESIGN }),
+  clean: () => safeAgent(architectPrompt('clean'), { label: 'design:clean', phase: 'Design', agentType: 'flow:code-architect', model: 'opus', effort: 'high', schema: DESIGN }),
 }
 const reviewThunks = {
   codex: () => safeAgent(codexAdversarialPrompt, { label: 'review:codex', phase: 'Review', model: 'sonnet', effort: 'low', schema: FINDINGS }),
-  correctness: () => safeAgent(correctnessPrompt, { label: 'review:correctness', phase: 'Review', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+  correctness: () => safeAgent(correctnessPrompt, { label: 'review:correctness', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
   simplify: () => safeAgent(simplifyPrompt, { label: 'review:simplify', phase: 'Review', model: 'sonnet', schema: FINDINGS }),
-  security: () => safeAgent(securityPrompt, { label: 'review:security', phase: 'Review', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+  security: () => safeAgent(securityPrompt, { label: 'review:security', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
 }
 
 // ── pipeline ─────────────────────────────────────────────────────────────────
@@ -568,8 +568,8 @@ while (round < FIX_ROUND_CAP && blocking.length > 0) {
   const attempted = await dispatchFixes(blocking, plan, `r${round}`)
   const reGate = await safeAgent(buildGatePrompt, { label: `gate:r${round}`, phase: 'Fix', model: 'sonnet', schema: GATE })
   const [reCorrectness, reSecurity, reAc] = await parallel([
-    () => safeAgent(correctnessPrompt, { label: `correctness:r${round}`, phase: 'Fix', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
-    () => safeAgent(securityPrompt, { label: `security:r${round}`, phase: 'Fix', agentType: 'feature-dev:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+    () => safeAgent(correctnessPrompt, { label: `correctness:r${round}`, phase: 'Fix', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+    () => safeAgent(securityPrompt, { label: `security:r${round}`, phase: 'Fix', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
     () => safeAgent(acCheckPrompt(plan), { label: `ac:r${round}`, phase: 'Fix', model: 'opus', effort: 'high', schema: AC_CHECK }),
   ])
   if (reAc) latestAcCheck = reAc
