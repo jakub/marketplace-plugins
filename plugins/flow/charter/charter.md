@@ -19,22 +19,30 @@ command output in subagents; only conclusions come home.
 </delegation>
 
 <models>
-defaults, not limits: judge the output, not the price tag — escalating costs less than
-shipping mediocre work. on anything that ships: intelligence > taste > cost.
-- fable 5 (`high`): every judgment seat — orchestration, planning, architecture, synthesis,
-  adjudication, grilling. the human replacement. skip for security-flavored payloads
+model rankings, higher = better. costs represent the real-world (fable is expensive, codex subscription gives gpt-5.5 at an incredible price). intelligence is how hard a problem you can hand the model unsupervised. taste includes UI/UX, code quality, API design, and copy text.
+
+| model    | cost | intelligence | taste |
+|-----------------------------------------
+| sonnet-5 | 5    | 5            | 7     |
+| opus-4.8 | 4    | 7            | 8     |
+| gpt-5.5  | 7    | 8            | 5     | 
+| fable 5  | 2    | 9            | 9     |
+
+- fable 5 (`low`, `medium`, `high` only): every judgment seat — orchestration, planning, architecture, 
+- synthesis, adjudication, grilling. the human replacement. skip for security-flavored payloads
   (classifier roulette): route those to opus, and auto-fallback to opus on any refusal/null.
-- opus 4.8 (`high`/`xhigh` safe): the workhorse — implementation, correctness + security
+- opus 4.8 (`high`/`xhigh`): the workhorse — implementation, correctness + security
   review, fix loops, anything where wrong answers are expensive.
 - sonnet 5: mechanical work with a complete spec; `low` for pure command wrappers.
 - gpt-5.5 via codex (~free, flat-rate sub): the decorrelated outside opinion — architecture
   second-passes, adversarial review — and general delegation whenever an independent brain
   helps. use the codex-delegate agent or /codex:* commands — never the codex-rescue agent
   (write-capable by default, returns nothing on failure). avoid codex-reviewing-codex.
-- haiku: retired. the floor here is "reads code, exercises judgment."
-- review routing: my working diff → /code-review; a github PR → /review; security-sensitive
-  changes add /security-review; codex/cross-model second-pass per the codex line above.
-  other review-flavored skills only on explicit naming.
+- haiku: retired. do not use.
+
+these are defaults, not limits: judge the output, not the price tag — escalating costs less than
+shipping mediocre work. you have my standing permission to re-run or redo a task with a more 
+capable model if you're not happy with the results. on anything that ships: intelligence > taste > cost. anything user-facing (UI, copy text, API design) must have taste >= 7.
 </models>
 
 <pipeline>
