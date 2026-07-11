@@ -12,9 +12,10 @@ inside the background workflow — do not re-implement its stages inline, and do
 the main context with file contents that belong in the workflow's agents.
 
 Argument: `$ARGUMENTS` = issue number, optionally followed by `--impl-model <m>` /
-`--impl-effort <e>` to override the difficulty-routed implementer seat (e.g.
-`--impl-model fable` to trial fable as implementer; the workflow clamps fable to
-`high` effort and falls back to the default seat if the override refuses/dies).
+`--impl-effort <e>` to override the implementer seat (default: fable at `high` for
+non-mechanical difficulty, sonnet for mechanical; the workflow clamps fable to
+`high` effort and any non-fallback seat that refuses/dies re-runs on the
+difficulty-routed opus/sonnet fallback).
 Abort with usage if the first token is not a positive integer.
 
 ## 1. Pre-flight
@@ -51,7 +52,7 @@ this snapshot; body edits mid-run are detected at the end (step 5.4).
 4. Launch via the Workflow tool with `scriptPath` and args:
    `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"] }`,
    plus `implModel` / `implEffort` when the corresponding flags were given (omit otherwise —
-   absent keys mean difficulty-routed defaults).
+   absent keys mean the workflow's defaults: fable/high, sonnet for mechanical).
 5. **Stamp the runId** the tool result returns as an issue journal comment:
    `flow run started — runId <id>, worktree <path>, branch <branch>` — this is the
    recovery anchor for any future session.
