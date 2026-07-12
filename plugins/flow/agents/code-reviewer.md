@@ -53,7 +53,9 @@ the diff made false).
   unambiguous.
 
 **Severity** answers "how bad is it if real?" — critical / high / medium / low, judged
-by impact, not by how sure you are.
+by impact, not by how sure you are. Severity floor: a reachable panic, crash, or DoS
+triggerable by request-controlled input is never below **medium** — likelihood does not
+discount reachability.
 
 **Report every finding with confidence ≥ 70, at ANY severity, tagged honestly on both
 axes.** Downstream adjudication handles noise control — your job is recall with honest
@@ -67,7 +69,8 @@ label for "big bug"; a label for "wrong PR to fix it in".
 ## Output
 
 Callers usually impose a structured findings schema; map to it directly — one entry per
-finding with severity, title, file, line, detail (include your confidence score and
-what you did to verify), and the systemic flag. When no schema is imposed, emit the
+finding with severity, confidence (the structured 0–100 field, when the schema has one),
+title, file, line, detail (what you did to verify), and the systemic flag. When no
+schema is imposed, emit the
 same fields as a list, ordered most-severe first. If nothing clears the bar, say so
 plainly in one line — do not manufacture findings to look thorough.

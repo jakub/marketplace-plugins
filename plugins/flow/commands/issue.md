@@ -46,11 +46,19 @@ this snapshot; body edits mid-run are detected at the end (step 5.4).
 2. **Context pack** — paths, not contents: the issue's likely modules (quick greps), the
    relevant CONTEXT.md slices and ADR paths, the repo's build/test commands (from
    AGENTS.md). Keep it a pointer list; workflow agents explore for themselves.
+   **envNote** (separate arg, not part of the pack): read the repo's hook config
+   (lefthook/husky/pre-push) — what runs on push and which env exports it needs (e.g. a
+   test suite that hard-requires `DATABASE_URL`). One or two sentences; omit the arg
+   entirely when there is nothing to say. This is what the push/gate agents get — they
+   cannot infer it from a one-line prompt.
 3. Resolve the workflow script: `${CLAUDE_PLUGIN_ROOT}/workflows/issue.mjs` — if the
    variable is unavailable in this context, locate it:
    `ls ~/.claude/plugins/cache/flow/flow/*/workflows/issue.mjs | sort -V | tail -1`.
+   Salvage hygiene: `rm -rf /tmp/flow-issue-$N-reports` before launch — the workflow's
+   report-salvage dir is deterministic, and a stale file from an earlier run of the same
+   issue must not be salvageable as fresh.
 4. Launch via the Workflow tool with `scriptPath` and args:
-   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"] }`,
+   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, envNote, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"] }`,
    plus `implModel` / `implEffort` when the corresponding flags were given (omit otherwise —
    absent keys mean the workflow's defaults: fable/high, sonnet for mechanical).
 5. **Stamp the runId** the tool result returns as an issue journal comment:
@@ -68,14 +76,22 @@ asked to stop/restart: `TaskStop`, then resume later with
 The workflow returns a structured result. In order:
 
 0. **Handoff verification** — the result's `handoff` field is the workflow's FINAL read of
-   the PR (CI rollup, late external reviews, Closes-link). `ciStatus: "pending"` → the last
-   push's CI outlived the run: watch it to completion (background poll, re-read the
-   rollup) and report the real verdict, never "green" on faith. `"red"` → diagnose before
+   the PR (head-sync guard, CI rollup, late external reviews, Closes-link).
+   `headInSync: false` → the PR tip on GitHub is NOT the work the run judged: distrust
+   `ciStatus` entirely, push the worktree branch yourself (the envNote you built names the
+   hook exports; use a long timeout — pre-push hooks may run the full suite) or escalate
+   `needs-human` with the divergence. `ciStatus: "pending"` with `headInSync: true` is the
+   NORMAL state right after a repair push → the last push's CI outlived the run: watch it
+   to completion (background poll, re-read the rollup) and report the real verdict, never
+   "green" on faith. `"red"` → diagnose before
    journaling: single pre-existing timing-shaped test → the land skill's rerun-once valve;
    anything else → treat as a real failure (fix on the branch or escalate `needs-human`).
    `handoff.finalSummary` is the branch state at close; earlier fields (`implSummary`,
    `implDeviations`) are mid-run snapshots — prefer `handoff` where they disagree. A
    missing/null `handoff` is itself UNKNOWN: do the rollup read yourself.
+   Escalation results carry push state too (`headPushed` on needs-rebase/needs-human,
+   `postPush.pushed` on the post-push gate escalation): a false value means unpushed
+   local commits exist in the worktree — verify with `git ls-remote` before acting.
 1. **Escalations** — each also fires a push notification (PushNotification: one line,
    issue #, valve, PR url if any):
    - `needs-info`: post the questions as an issue comment, label `needs-info`, remove
