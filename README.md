@@ -1,16 +1,31 @@
-# flow
+# marketplace-plugins
 
-A Claude Code plugin marketplace carrying one plugin: **flow** — a disciplined
-prep → issue → land development pipeline for solo/greenfield projects, plus the
-engineering charter that governs it.
+jakub's personal **Claude Code marketplace** — a single repo that publishes a growing set
+of plugins and skill bundles. Add it once; install the pieces you want à la carte.
 
-The shape: an interactive design gate at the front (`/flow:prep`), a hands-off
-implementation run that ends at a pushed, reviewed, evidenced PR (`/flow:issue`), and a
-human-gated merge ritual (`/flow:land`). Multi-model by design — judgment stages, heavy
-lifting, mechanical work, and an independent cross-model review are routed to different
-models on different effort levels.
+```bash
+claude plugin marketplace add jakub/marketplace-plugins
+claude plugin install flow@jakub
+```
 
-## What the plugin ships
+The `@jakub` suffix is the marketplace name (set in `.claude-plugin/marketplace.json`),
+independent of the repo name. Hooks arm at the next session start. Installs are cache
+copies — after editing this repo, reinstall the affected plugin to go live.
+
+## Plugins
+
+| Plugin | Install | What it is |
+|---|---|---|
+| **flow** | `flow@jakub` | A disciplined prep → issue → land development pipeline for solo/greenfield projects, plus the engineering charter that governs it. See below. |
+
+_More to come — each new plugin is a directory under `plugins/` listed in the marketplace manifest._
+
+## flow
+
+An interactive design gate at the front (`/flow:prep`), a hands-off implementation run that
+ends at a pushed, reviewed, evidenced PR (`/flow:issue`), and a human-gated merge ritual
+(`/flow:land`). Multi-model by design — judgment stages, heavy lifting, mechanical work, and
+an independent cross-model review are routed to different models on different effort levels.
 
 | Component | Path | Purpose |
 |---|---|---|
@@ -21,20 +36,10 @@ models on different effort levels.
 | Agent | `plugins/flow/agents/codex-delegate.md` | Generic "delegate anything to Codex" subagent (role/effort/write/schema parameters, typed returns). Optional — degrades gracefully when the [openai-codex plugin](https://github.com/openai/codex-plugin-cc) isn't installed. |
 | Hooks | `plugins/flow/hooks/` | SessionStart charter injection · PreToolUse no-backlog guard (blocks unsanctioned `gh issue create` — PRs ship complete). |
 
-## Install
+Commands are namespaced (`/flow:prep`, `/flow:issue`, `/flow:land`); the short forms resolve
+when nothing shadows them.
 
-Works from a local clone — no remote required:
-
-```bash
-claude plugin marketplace add <path-or-url-of-this-repo>
-claude plugin install flow@flow
-```
-
-Hooks arm at the next session start. Installs are cache copies: after editing this repo,
-uninstall/reinstall to go live. Commands are namespaced (`/flow:prep`, `/flow:issue`,
-`/flow:land`); the short forms resolve when nothing shadows them.
-
-## Recommended: the CLAUDE.md split
+### Recommended: the CLAUDE.md split
 
 flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction
 preferences, and ALL engineering doctrine arrives via the injected charter — versioned,
@@ -44,6 +49,14 @@ portable, drift-auditable. See `docs/claude-md-split.md`.
 
 ```
 .claude-plugin/marketplace.json   marketplace manifest (this repo IS the marketplace)
-plugins/flow/                     the plugin
+plugins/
+  flow/                           the flow plugin
 docs/claude-md-split.md           the recommended global CLAUDE.md split
 ```
+
+## Adding a plugin to this marketplace
+
+1. Create `plugins/<name>/` with a `.claude-plugin/plugin.json` (`name`, `version`, `description`).
+2. Add whatever it ships — `skills/`, `commands/`, `agents/`, `hooks/`.
+3. Append an entry to `plugins` in `.claude-plugin/marketplace.json` with `"source": "./plugins/<name>"`.
+4. Bump `metadata.version` in the marketplace manifest (the catalog version, tracked separately from each plugin's own version).

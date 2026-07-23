@@ -1,11 +1,11 @@
 {
-  "name": "flow",
+  "name": "jakub",
   "owner": {
     "name": "jakub"
   },
   "metadata": {
-    "description": "Plugin marketplace for the flow development framework.",
-    "version": "0.2.11"
+    "description": "jakub's Claude Code marketplace — plugins and skill bundles.",
+    "version": "0.3.0"
   },
   "plugins": [
     {
