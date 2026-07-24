@@ -23,7 +23,7 @@ spike, a mid-development deviation).
 - **Fold decisions in — don't spawn issues.** Loose ends become acceptance criteria or ADR
   lines. Remove issues, don't create more.
 - **Don't resurrect closed work.** Prior art informs; `wontfix`/`deferred` stay buried.
-- **No code, no worktree.** Prep touches the issue, CONTEXT.md, and ADRs only.
+- **No code, no worktree.** Prep touches the issue, context.md, and ADRs only.
 
 ## 1. Entry
 
@@ -40,7 +40,7 @@ created yet — that happens at finalise, after the design survives the gates.
 Delegate breadth to scoped agents (Explore for the repo sweep; a codex-delegate pass when
 an outside read helps); keep returned findings tight — paths + the seams that matter.
 
-1. **Domain docs**: repo AGENTS.md → the CONTEXT.md slices it discloses → the 1-3 ADRs this
+1. **Domain docs**: repo AGENTS.md → the context.md slices it discloses → the 1-3 ADRs this
    work touches.
 2. **Code seams**: 3-6 keywords from the ask; grep likely modules; read the key seam.
 3. **Prior art**: related/duplicate/closed work — note, never re-propose.
@@ -65,8 +65,21 @@ If a `grill-with-docs` skill is available, run it seeded with the open questions
 Otherwise run the grill inline, same discipline: one question at a time, each with a
 recommended answer (weight correctness over minimal-change); challenge terms against the
 glossary; stress-test boundaries with concrete scenarios; cross-reference the code; update
-CONTEXT.md / write ADRs inline as decisions crystallise. Resolve each branch of the design
+context.md / write ADRs inline as decisions crystallise. Resolve each branch of the design
 tree before moving to the next.
+
+**Seed the skill with this repo's doc-stack conventions** — the upstream skill assumes
+different ones and will otherwise write to the wrong places:
+
+- The glossary file is `context.md`, **lowercase**. Never create or read `CONTEXT.md`;
+  on a case-sensitive filesystem that is a second, competing file.
+- This repo is **multi-context without a `CONTEXT-MAP.md`**. The `## Contexts` section of
+  the root `AGENTS.md` IS the map — read it to find the slices. Do not infer "single
+  context" from the absence of a map file, and never create one.
+- Crate-local vocabulary belongs in `crates/<x>/context.md`; the root `context.md` keeps
+  cross-cutting ontology only. When a new slice appears, add its line to `## Contexts`.
+- ADRs stay in the repo-root `docs/adr/`, sequentially numbered. Do not nest per-context
+  `docs/adr/` directories — the drift audit only scans the root one.
 
 ## 5. Acceptance criteria — testable by construction
 
@@ -77,7 +90,7 @@ numberless "fast" don't pass the front door. Bound the whole set to ONE PR.
 
 ## 6. Finalise
 
-1. **Persist doc artifacts to main**: on up-to-date main, stage ONLY the CONTEXT.md /
+1. **Persist doc artifacts to main**: on up-to-date main, stage ONLY the context.md /
    docs/adr/ changes the grill produced, one `docs(...)` commit, push. Anything non-doc
    staged/dirty → STOP and flag it.
 2. **Issue body → hardened spec** (edit in place): restated goal/why, agreed approach +

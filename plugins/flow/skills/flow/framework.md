@@ -12,12 +12,12 @@ Takes an issue number OR free text (a spike, a hunch, a mid-development deviatio
 Nothing enters the tracker except through here.
 
 1. **Entry**: free-text mode dedupes against open AND closed issues before anything else.
-2. **Scout**: domain docs (CONTEXT slices, ADRs), code seams, prior art — delegated to
+2. **Scout**: domain docs (context.md slices, ADRs), code seams, prior art — delegated to
    scoped agents; the conductor keeps paths and conclusions, never file dumps.
 3. **Triviality gate**: fully specified and small → *do it now* (no ticket theater).
    Too big → split into tracer-bullet slices. Otherwise → grill.
 4. **Grill**: one question at a time, each with a recommended answer, stress-tested against
-   glossary and code. Decisions crystallise into CONTEXT.md edits and ADRs, committed to main.
+   glossary and code. Decisions crystallise into context.md edits and ADRs, committed to main.
 5. **Acceptance criteria, testable by construction**: every criterion names its own
    evidence — the test, command, or screenshot that will prove it. Criteria that cannot be
    validated are rejected here, not discovered mid-run.
@@ -47,7 +47,7 @@ Nothing enters the tracker except through here.
    Mediums are fixed, not deferred. Re-gate + re-review each round; codex re-verifies
    after the loop so cross-model signal survives to the end. Unresolved blockers get a
    **fable adjudication** (real blocker vs reviewer theater) before anything escalates.
-9. **Doc-sync** (sonnet): diff-aware CONTEXT/AGENTS updates travel with the change.
+9. **Doc-sync** (sonnet): diff-aware context.md/AGENTS.md updates travel with the change.
 10. **Push PR** mid-run: summary + changelog description. Externals see code that already
     survived the internal loop.
 11. **Post-push, parallel tracks**: complementary self-review (test quality, silent
@@ -111,11 +111,11 @@ domain guidance is committed, always).
 |---|---|---|
 | operator | `~/.claude/CLAUDE.md` + this plugin's charter | who the user is / how we build |
 | workspace | `~/code/CLAUDE.md` | what exists (project registry) |
-| repo | `AGENTS.md` ⟵ `CLAUDE.md` symlink | how to operate here (lean; discloses CONTEXT.md, docs/adr/) |
-| domain | `crates/<x>/AGENTS.md` + symlink, `CONTEXT.md` slices | crate-local depth |
+| repo | `AGENTS.md` ⟵ `CLAUDE.md` symlink | how to operate here (lean; discloses context.md, docs/adr/) |
+| domain | `crates/<x>/AGENTS.md` + symlink, `context.md` slices | crate-local depth |
 
 One source, both models: codex merges AGENTS.md hierarchically; Claude loads CLAUDE.md —
-the symlink keeps them identical by construction. Root CONTEXT.md keeps cross-cutting
+the symlink keeps them identical by construction. Root context.md keeps cross-cutting
 ontology; crate-local vocabulary moves into slices next to the code it describes.
 
 ## 5. Ambient machinery
@@ -123,7 +123,7 @@ ontology; crate-local vocabulary moves into slices next to the code it describes
 - **no-backlog guard** (hook, ships here): blocks unsanctioned `gh issue create`.
 - **escalation pings**: valves push to the phone (PushNotification from the conductor).
 - **nightly lint** (cron, sonnet): label contract, stale worktrees, orphaned branches, doc staleness.
-- **weekly doc sweep** (cron, sonnet): workspace-wide CONTEXT/AGENTS drift vs reality.
+- **weekly doc sweep** (cron, sonnet): workspace-wide context.md/AGENTS.md drift vs reality.
 - **scheduled bug hunts** (cron, opus + gpt-5.6-sol): findings adversarially verified, deduped
   against open+closed, capped per sweep, filed `agent-found` (`FLOW_SANCTION=hunter`) —
   quarantine; nothing self-promotes past /flow:prep.

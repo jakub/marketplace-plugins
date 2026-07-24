@@ -42,12 +42,14 @@ conforms, report what was created or already conformed.
    `templates/workspace-claude.md` — the project registry. Add/refresh this repo's
    one-liner.
 3. **Repo layer**: `AGENTS.md` from `templates/repo-agents.md`, then `ln -s AGENTS.md CLAUDE.md`.
-   Keep it lean (≤ ~40 lines); it discloses further reading (CONTEXT.md, docs/adr/) rather
-   than containing it. If the repo has a legacy `CONTEXT-MAP.md`, fold its pointers into
-   AGENTS.md and delete it.
+   Keep it lean (≤ ~40 lines); it discloses further reading (context.md, docs/adr/) rather
+   than containing it. Its `## Contexts` section is the context map — that is why no
+   `CONTEXT-MAP.md` exists. If the repo has a legacy one, fold its pointers into that
+   section and delete it.
 4. **Domain layer** (judgment call — propose, don't blanket): for each crate/module with
    real domain depth, `crates/<x>/AGENTS.md` from `templates/crate-agents.md` + the
-   `CLAUDE.md` symlink, and a `CONTEXT.md` slice if the vocabulary is crate-local.
+   `CLAUDE.md` symlink, and a `context.md` slice if the vocabulary is crate-local. Every
+   slice gets a line in the root AGENTS.md `## Contexts` section.
    Committed, always — gitignored guidance never materialises in worktrees.
 5. **Decision records**: ensure `docs/adr/` exists with a `0000-template.md`.
 6. **Labels**: run the `labels` subcommand.

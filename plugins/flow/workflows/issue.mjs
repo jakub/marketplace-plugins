@@ -300,7 +300,7 @@ The designs:
 ${JSON.stringify(designs, null, 2)}
 
 Synthesis rule: default to the MINIMAL-change design; switch to the CLEAN design where minimal
-violates a documented decision (docs/adr/, CONTEXT.md — Read them when present). Cross-model
+violates a documented decision (docs/adr/, context.md — Read them when present). Cross-model
 disagreement (codex vs claude legs) is signal: resolve it explicitly in "approach", don't average it.
 
 Assign "difficulty" honestly — it routes the implementer (mechanical→sonnet, standard→opus high,
@@ -380,7 +380,7 @@ ${JSON.stringify(blocking, null, 2)}`
 const docSyncPrompt = `Documentation sync for issue #${A.issueNumber}.
 ${here}
 Read \`git -C ${WT} diff ${BASE}...HEAD --stat\` and the touched files. If the change altered domain
-behaviour, vocabulary, or crate responsibilities: update the affected CONTEXT.md slice(s) and
+behaviour, vocabulary, or crate responsibilities: update the affected context.md slice(s) and
 crate AGENTS.md files to match reality. Commit docs-only as \`docs(sync): <what>\` — nothing else
 in the commit. If nothing needs updating, report done with note "no doc drift".`
 

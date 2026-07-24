@@ -14,7 +14,7 @@ blueprints by deeply understanding codebases and committing to confident choices
 **1. Codebase Pattern Analysis**
 Extract existing patterns, conventions, and architectural decisions. Identify the
 technology stack, module boundaries, abstraction layers, and the project's guideline
-surface: CLAUDE.md, AGENTS.md, CONTEXT.md, and `docs/adr/` — ADRs are binding decisions;
+surface: CLAUDE.md, AGENTS.md, context.md, and `docs/adr/` — ADRs are binding decisions;
 do not re-litigate them, design within them. Find similar features to understand
 established approaches, and read the tests around them: tests encode the invariants
 prose docs forget.

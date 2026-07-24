@@ -7,9 +7,21 @@
 
 ## Read next (when relevant)
 
-- `CONTEXT.md` — the domain glossary; terms in it are load-bearing, use them precisely.
+- `context.md` — the root domain glossary (cross-cutting ontology only); terms in it are
+  load-bearing, use them precisely.
 - `docs/adr/` — decision records; check before re-litigating architecture.
 - <crate/module domain files, if any: `crates/<x>/AGENTS.md`>
+
+## Contexts
+
+<!-- This section IS the context map — that's why no CONTEXT-MAP.md exists. List every
+     crate/module carrying its own context.md slice, one line each, with the relationship
+     to its neighbours where it isn't obvious. Delete the section in single-context repos. -->
+
+- `crates/<x>/context.md` — <what this context owns, in one clause>
+- `crates/<y>/context.md` — <…>
+
+<relationships worth stating: which context emits what the other consumes, shared types.>
 
 ## Operating notes
 

@@ -12,10 +12,15 @@ workspace root (the directory holding the project checkouts, e.g. `~/code`).
 
 - Repo root: `AGENTS.md` exists, `CLAUDE.md` is a symlink to it (not a divergent copy —
   a real file that shadows the symlink is the worst drift: two sources, both trusted).
-- `AGENTS.md` lean (≤ ~40 lines), discloses CONTEXT.md / docs/adr/ that actually exist.
-- No `CONTEXT-MAP.md` (fold + delete). No `CLAUDE.local.md` (its content belongs in a
-  committed file; flag for migration).
-- Domain layer: for each crate/module with a `CONTEXT.md` slice or `AGENTS.md`, the file's
+- `AGENTS.md` lean (≤ ~40 lines), discloses context.md / docs/adr/ that actually exist.
+- `AGENTS.md` `## Contexts` is the context map and must stay honest both ways: every
+  `crates/<x>/context.md` on disk has a line, every line points at a file that exists.
+  Absent in a single-context repo is correct, not drift.
+- No `CONTEXT-MAP.md` (fold into `## Contexts` + delete). No `CLAUDE.local.md` (its content
+  belongs in a committed file; flag for migration).
+- Glossary files are lowercase `context.md`; an uppercase `CONTEXT.md` is drift (usually a
+  vendored skill writing its own default) — fold it down and delete.
+- Domain layer: for each crate/module with a `context.md` slice or `AGENTS.md`, the file's
   claims spot-check against the code (an agent reads the doc, greps the crate, flags
   statements that no longer hold). For crates WITHOUT domain files, flag only those with
   evident domain depth (own vocabulary, ADR references) as candidates.
@@ -24,7 +29,7 @@ workspace root (the directory holding the project checkouts, e.g. `~/code`).
 
 ## 2. Glossary drift
 
-- Terms defined in CONTEXT.md (root + slices): sampled greps confirm they still name real
+- Terms defined in context.md (root + slices): sampled greps confirm they still name real
   code concepts; flag orphans (defined, never used) and ghosts (pervasive in code,
   undefined in the glossary).
 - ADR index: files in `docs/adr/` are sequentially numbered, referenced ADRs exist, and no

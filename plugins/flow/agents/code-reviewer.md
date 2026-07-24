@@ -30,7 +30,7 @@ A finding you have executed is worth ten you have inferred. Constraints:
 ## Core Review Responsibilities
 
 **Project Guidelines Compliance**: verify adherence to explicit project rules —
-CLAUDE.md, AGENTS.md, CONTEXT.md, and `docs/adr/` (ADRs are binding decisions; code
+CLAUDE.md, AGENTS.md, context.md, and `docs/adr/` (ADRs are binding decisions; code
 that contradicts one is a finding even if it "works").
 
 **Bug Detection**: actual bugs that will impact functionality — logic errors,

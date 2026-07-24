@@ -44,7 +44,7 @@ this snapshot; body edits mid-run are detected at the end (step 5.4).
 1. Worktree off origin/main: branch `feat/issue-$N-<slug>` (or fix/chore by issue type),
    `git worktree add ../<repo>-issue-$N origin/main -b <branch>`.
 2. **Context pack** — paths, not contents: the issue's likely modules (quick greps), the
-   relevant CONTEXT.md slices and ADR paths, the repo's build/test commands (from
+   relevant context.md slices and ADR paths, the repo's build/test commands (from
    AGENTS.md). Keep it a pointer list; workflow agents explore for themselves.
    **envNote** (separate arg, not part of the pack): read the repo's hook config
    (lefthook/husky/pre-push) — what runs on push and which env exports it needs (e.g. a

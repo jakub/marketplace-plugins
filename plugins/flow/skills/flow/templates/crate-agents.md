@@ -8,8 +8,8 @@
 
 ## Vocabulary
 
-<crate-local terms only; cross-cutting ontology stays in the root CONTEXT.md.
-Either define terms here or point at `CONTEXT.md` in this directory.>
+<crate-local terms only; cross-cutting ontology stays in the root context.md.
+Either define terms here or point at `context.md` in this directory.>
 
 ## Invariants
 
