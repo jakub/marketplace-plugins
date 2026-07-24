@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "jakub's Claude Code marketplace — plugins and skill bundles.",
-    "version": "0.5.0"
+    "version": "0.6.0"
   },
   "plugins": [
     {
       "name": "flow",
       "description": "The prep → issue → land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "jakub"
       },
@@ -20,7 +20,7 @@
     {
       "name": "grill",
       "description": "Relentless design interrogation plus the domain-model doc discipline it feeds: grill-with-docs, grilling, domain-modeling. Vendored from Matt Pocock's skills (MIT).",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "jakub"
       },

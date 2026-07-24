@@ -102,7 +102,7 @@ threads; typed returns or disk journals; freedom scales with reversibility.
 
 ## 4. The documentation stack
 
-Four layers, each answering one question. Deliberately NOT used: `CONTEXT-MAP.md`-style
+Four layers, each answering one question. Deliberately NOT used: `context-map.md`-style
 index files (AGENTS.md discloses further reading directly) and `CLAUDE.local.md`
 (gitignored files never materialise in worktrees — the cold implementer would fly blind;
 domain guidance is committed, always).

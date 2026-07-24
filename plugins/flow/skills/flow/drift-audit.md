@@ -16,7 +16,7 @@ workspace root (the directory holding the project checkouts, e.g. `~/code`).
 - `AGENTS.md` `## Contexts` is the context map and must stay honest both ways: every
   `crates/<x>/context.md` on disk has a line, every line points at a file that exists.
   Absent in a single-context repo is correct, not drift.
-- No `CONTEXT-MAP.md` (fold into `## Contexts` + delete). No `CLAUDE.local.md` (its content
+- No `context-map.md` (fold into `## Contexts` + delete). No `CLAUDE.local.md` (its content
   belongs in a committed file; flag for migration).
 - Glossary files are lowercase `context.md`; an uppercase `CONTEXT.md` is drift (usually a
   vendored skill writing its own default) — fold it down and delete.

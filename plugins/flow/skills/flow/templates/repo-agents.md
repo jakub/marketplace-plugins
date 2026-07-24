@@ -14,7 +14,7 @@
 
 ## Contexts
 
-<!-- This section IS the context map — that's why no CONTEXT-MAP.md exists. List every
+<!-- This section IS the context map — that's why no context-map.md exists. List every
      crate/module carrying its own context.md slice, one line each, with the relationship
      to its neighbours where it isn't obvious. Delete the section in single-context repos. -->
 

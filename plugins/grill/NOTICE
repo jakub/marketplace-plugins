@@ -6,7 +6,7 @@ This plugin vendors three skills from Matt Pocock's "Skills for Real Engineers":
     skills/productivity/grilling         -> skills/grilling
     skills/engineering/domain-modeling   -> skills/domain-modeling
 
-Vendored verbatim (including each skill's agents/openai.yaml) from upstream commit:
+Upstream commit:
 
     ed37663cc5fbef691ddfecd080dff42f7e7e350d
 
@@ -14,8 +14,29 @@ Only these three are vendored: `grill-with-docs` is a thin wrapper that runs
 `/grilling` using the `/domain-modeling` skill, so the three form the minimal
 closure. Upstream ships 41 skills; the rest are deliberately not carried here.
 
-To re-sync, clone upstream and copy those three directories over, then update the
-commit SHA above.
+LOCAL MODIFICATIONS
+-------------------
+
+These files are NOT verbatim. One patch is applied on top of upstream:
+
+    patches/0001-lowercase-doc-filenames.patch
+
+It lowercases the doc-artifact names this repo standardises on — CONTEXT.md ->
+context.md, CONTEXT-MAP.md -> context-map.md — and renames the skill's own
+reference docs to match (ADR-FORMAT.md -> adr-format.md, CONTEXT-FORMAT.md ->
+context-format.md). On a case-sensitive filesystem the uppercase names would be
+separate, competing files, so this is a correctness fix rather than a cosmetic one.
+
+Only `domain-modeling` is touched; `grilling` and `grill-with-docs` are verbatim.
+SKILL.md keeps its uppercase name — the skill loader discovers skills by that exact
+filename.
+
+RE-SYNCING
+----------
+
+    1. Copy the three upstream directories over skills/
+    2. git apply patches/0001-lowercase-doc-filenames.patch
+    3. Update the commit SHA above; regenerate the patch if it no longer applies
 
 ---------------------------------------------------------------------------
 

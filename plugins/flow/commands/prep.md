@@ -73,7 +73,7 @@ different ones and will otherwise write to the wrong places:
 
 - The glossary file is `context.md`, **lowercase**. Never create or read `CONTEXT.md`;
   on a case-sensitive filesystem that is a second, competing file.
-- This repo is **multi-context without a `CONTEXT-MAP.md`**. The `## Contexts` section of
+- This repo is **multi-context without a `context-map.md`**. The `## Contexts` section of
   the root `AGENTS.md` IS the map — read it to find the slices. Do not infer "single
   context" from the absence of a map file, and never create one.
 - Crate-local vocabulary belongs in `crates/<x>/context.md`; the root `context.md` keeps

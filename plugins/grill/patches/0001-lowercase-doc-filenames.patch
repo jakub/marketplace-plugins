@@ -1,0 +1,132 @@
+diff --git a/plugins/grill/skills/domain-modeling/SKILL.md b/plugins/grill/skills/domain-modeling/SKILL.md
+index d0f7e1a..2f0c7d7 100644
+--- a/plugins/grill/skills/domain-modeling/SKILL.md
++++ b/plugins/grill/skills/domain-modeling/SKILL.md
+@@ -5,7 +5,7 @@ description: Build and sharpen a project's domain model. Use when the user wants
+ 
+ # Domain Modeling
+ 
+-Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
++Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `context.md` for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
+ 
+ ## File structure
+ 
+@@ -13,7 +13,7 @@ Most repos have a single context:
+ 
+ ```
+ /
+-├── CONTEXT.md
++├── context.md
+ ├── docs/
+ │   └── adr/
+ │       ├── 0001-event-sourced-orders.md
+@@ -21,29 +21,29 @@ Most repos have a single context:
+ └── src/
+ ```
+ 
+-If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
++If a `context-map.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
+ 
+ ```
+ /
+-├── CONTEXT-MAP.md
++├── context-map.md
+ ├── docs/
+ │   └── adr/                          ← system-wide decisions
+ ├── src/
+ │   ├── ordering/
+-│   │   ├── CONTEXT.md
++│   │   ├── context.md
+ │   │   └── docs/adr/                 ← context-specific decisions
+ │   └── billing/
+-│       ├── CONTEXT.md
++│       ├── context.md
+ │       └── docs/adr/
+ ```
+ 
+-Create files lazily — only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
++Create files lazily — only when you have something to write. If no `context.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
+ 
+ ## During the session
+ 
+ ### Challenge against the glossary
+ 
+-When the user uses a term that conflicts with the existing language in `CONTEXT.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y — which is it?"
++When the user uses a term that conflicts with the existing language in `context.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y — which is it?"
+ 
+ ### Sharpen fuzzy language
+ 
+@@ -57,11 +57,11 @@ When domain relationships are being discussed, stress-test them with specific sc
+ 
+ When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible — which is right?"
+ 
+-### Update CONTEXT.md inline
++### Update context.md inline
+ 
+-When a term is resolved, update `CONTEXT.md` right there. Don't batch these up — capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
++When a term is resolved, update `context.md` right there. Don't batch these up — capture them as they happen. Use the format in [context-format.md](./context-format.md).
+ 
+-`CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
++`context.md` should be totally devoid of implementation details. Do not treat `context.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
+ 
+ ### Offer ADRs sparingly
+ 
+@@ -71,4 +71,4 @@ Only offer to create an ADR when all three are true:
+ 2. **Surprising without context** — a future reader will wonder "why did they do it this way?"
+ 3. **The result of a real trade-off** — there were genuine alternatives and you picked one for specific reasons
+ 
+-If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).
++If any of the three is missing, skip the ADR. Use the format in [adr-format.md](./adr-format.md).
+diff --git a/plugins/grill/skills/domain-modeling/ADR-FORMAT.md b/plugins/grill/skills/domain-modeling/adr-format.md
+similarity index 100%
+rename from plugins/grill/skills/domain-modeling/ADR-FORMAT.md
+rename to plugins/grill/skills/domain-modeling/adr-format.md
+diff --git a/plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md b/plugins/grill/skills/domain-modeling/context-format.md
+similarity index 77%
+rename from plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md
+rename to plugins/grill/skills/domain-modeling/context-format.md
+index eaf2a18..a60915a 100644
+--- a/plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md
++++ b/plugins/grill/skills/domain-modeling/context-format.md
+@@ -1,4 +1,4 @@
+-# CONTEXT.md Format
++# context.md Format
+ 
+ ## Structure
+ 
+@@ -31,18 +31,18 @@ _Avoid_: Client, buyer, account
+ 
+ ## Single vs multi-context repos
+ 
+-**Single context (most repos):** One `CONTEXT.md` at the repo root.
++**Single context (most repos):** One `context.md` at the repo root.
+ 
+-**Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the contexts, where they live, and how they relate to each other:
++**Multiple contexts:** A `context-map.md` at the repo root lists the contexts, where they live, and how they relate to each other:
+ 
+ ```md
+ # Context Map
+ 
+ ## Contexts
+ 
+-- [Ordering](./src/ordering/CONTEXT.md) — receives and tracks customer orders
+-- [Billing](./src/billing/CONTEXT.md) — generates invoices and processes payments
+-- [Fulfillment](./src/fulfillment/CONTEXT.md) — manages warehouse picking and shipping
++- [Ordering](./src/ordering/context.md) — receives and tracks customer orders
++- [Billing](./src/billing/context.md) — generates invoices and processes payments
++- [Fulfillment](./src/fulfillment/context.md) — manages warehouse picking and shipping
+ 
+ ## Relationships
+ 
+@@ -53,8 +53,8 @@ _Avoid_: Client, buyer, account
+ 
+ The skill infers which structure applies:
+ 
+-- If `CONTEXT-MAP.md` exists, read it to find contexts
+-- If only a root `CONTEXT.md` exists, single context
+-- If neither exists, create a root `CONTEXT.md` lazily when the first term is resolved
++- If `context-map.md` exists, read it to find contexts
++- If only a root `context.md` exists, single context
++- If neither exists, create a root `context.md` lazily when the first term is resolved
+ 
+ When multiple contexts exist, infer which one the current topic relates to. If unclear, ask.

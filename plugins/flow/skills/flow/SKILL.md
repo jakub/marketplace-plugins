@@ -44,7 +44,7 @@ conforms, report what was created or already conformed.
 3. **Repo layer**: `AGENTS.md` from `templates/repo-agents.md`, then `ln -s AGENTS.md CLAUDE.md`.
    Keep it lean (≤ ~40 lines); it discloses further reading (context.md, docs/adr/) rather
    than containing it. Its `## Contexts` section is the context map — that is why no
-   `CONTEXT-MAP.md` exists. If the repo has a legacy one, fold its pointers into that
+   `context-map.md` exists. If the repo has a legacy one, fold its pointers into that
    section and delete it.
 4. **Domain layer** (judgment call — propose, don't blanket): for each crate/module with
    real domain depth, `crates/<x>/AGENTS.md` from `templates/crate-agents.md` + the

@@ -31,9 +31,15 @@ manifest's `plugins` array. Install strings are `<plugin>@jakub`.
 
 ## grill plugin invariants
 
-- `plugins/grill/skills/` is **vendored verbatim** from https://github.com/mattpocock/skills
-  (MIT). Do not hand-edit those files — local edits destroy the upstream diff. To update,
-  re-copy the three directories and bump the commit SHA recorded in `plugins/grill/NOTICE`.
+- `plugins/grill/skills/` is **vendored** from https://github.com/mattpocock/skills (MIT),
+  upstream-plus-one-patch. Do not hand-edit those files ad hoc — every local change lives in
+  `plugins/grill/patches/` so a re-sync stays mechanical: copy the three upstream dirs over,
+  `git apply` each patch in order, bump the SHA in `plugins/grill/NOTICE`. If a patch stops
+  applying, regenerate it rather than editing files in place and leaving the patch stale.
+- Doc-artifact filenames are lowercase repo-wide (`context.md`, `context-map.md`) — that is
+  what patch 0001 enforces inside the vendored tree. `SKILL.md`, `AGENTS.md`, and `CLAUDE.md`
+  keep their uppercase names: the skill loader and the two agent tools discover them by exact
+  filename, so lowercasing those would silently unload them.
 - The three skills are the minimal closure: `grill-with-docs` is a thin wrapper that runs
   `/grilling` using `/domain-modeling`. Upstream ships 41 skills; carrying more is a
   deliberate decision, not a default.

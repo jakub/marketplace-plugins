@@ -1,6 +1,6 @@
 {
   "name": "grill",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Relentless design interrogation plus the domain-model doc discipline it feeds: grill-with-docs, grilling, domain-modeling. Vendored from Matt Pocock's skills (MIT).",
   "author": {
     "name": "jakub"
