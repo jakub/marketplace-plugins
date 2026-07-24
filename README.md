@@ -17,6 +17,7 @@ copies — after editing this repo, reinstall the affected plugin to go live.
 | Plugin | Install | What it is |
 |---|---|---|
 | **flow** | `flow@jakub` | A disciplined prep → issue → land development pipeline for solo/greenfield projects, plus the engineering charter that governs it. See below. |
+| **grill** | `grill@jakub` | Relentless design interrogation and the domain-model doc discipline it feeds — `grill-with-docs`, `grilling`, `domain-modeling`. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT); see `plugins/grill/NOTICE`. |
 
 _More to come — each new plugin is a directory under `plugins/` listed in the marketplace manifest._
 
@@ -51,6 +52,7 @@ portable, drift-auditable. See `docs/claude-md-split.md`.
 .claude-plugin/marketplace.json   marketplace manifest (this repo IS the marketplace)
 plugins/
   flow/                           the flow plugin
+  grill/                          vendored grill/domain-modeling skills (MIT, see its NOTICE)
 docs/claude-md-split.md           the recommended global CLAUDE.md split
 ```
 

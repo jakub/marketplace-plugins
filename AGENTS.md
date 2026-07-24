@@ -29,6 +29,17 @@ manifest's `plugins` array. Install strings are `<plugin>@jakub`.
 - Version-pinned facts (model pricing, codex CLI surface) carry an `as-of` date. Distrust
   and re-verify anything older than a quarter.
 
+## grill plugin invariants
+
+- `plugins/grill/skills/` is **vendored verbatim** from https://github.com/mattpocock/skills
+  (MIT). Do not hand-edit those files — local edits destroy the upstream diff. To update,
+  re-copy the three directories and bump the commit SHA recorded in `plugins/grill/NOTICE`.
+- The three skills are the minimal closure: `grill-with-docs` is a thin wrapper that runs
+  `/grilling` using `/domain-modeling`. Upstream ships 41 skills; carrying more is a
+  deliberate decision, not a default.
+- `flow`'s `/flow:prep` calls `grill-with-docs` when present and falls back to an inline
+  grill otherwise — the dependency is one-way and soft. Do not make flow require grill.
+
 ## Testing changes
 
 Reinstall to pick up changes: `claude plugin uninstall flow@jakub && claude plugin install flow@jakub`
