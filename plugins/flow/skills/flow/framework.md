@@ -145,6 +145,12 @@ ontology; crate-local vocabulary moves into slices next to the code it describes
 ## 5. Ambient machinery
 
 - **no-backlog guard** (hook, ships here): blocks unsanctioned `gh issue create`.
+- **git guard** (hook, ships here): blocks `--no-verify` and commit trailers
+  (`FLOW_SANCTION=git` for foreign commits that already carry one). Both guards are
+  `PreToolUse`, which is why they hold where the charter does not: hooks fire on subagent
+  tool calls, but the SessionStart charter injection reaches the main session only. A fresh
+  subagent inherits the harness default to append `Co-Authored-By`/`Claude-Session` and never
+  sees the line overriding it — so that rule is enforced structurally, not by prose.
 - **escalation pings**: valves push to the phone (PushNotification from the conductor).
 - **nightly lint** (cron, sonnet): label contract, stale worktrees, orphaned branches, doc staleness.
 - **weekly doc sweep** (cron, sonnet): workspace-wide context.md/AGENTS.md drift vs reality.
