@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Smoke harness for workflows/issue.mjs — the only executable spec of the result
-// contract the /flow:issue conductor reads. Three passes, no network, no agents:
+// contract the /flow:issue conductor reads. Four passes, no network, no agents:
 //   1. parse gate (the script has a top-level export + return; node --check can't load it)
 //   2. null-cascade: every agent dies → salvage paths logged, controlled design-panel throw
 //   3. happy path with one unverified push → headInSync downgrade, reply gating, result shape
+//   4. refused security seat → cross-family retry, then a visible gap (never a clean pass)
 // Every schema passed to agent() is validated: required ⊆ properties, recursively.
 // Run: node plugins/flow/scripts/smoke-issue.mjs
 
@@ -85,8 +86,9 @@ console.log('null cascade (every agent dies)')
 
 // ── pass 3: happy path, one unverified push ──────────────────────────────────
 console.log('happy path (post-push fix round, push NOT verified, handoff claims green)')
+const finding = { severity: 'medium', title: 'lens finding', file: 'x.rs', line: 1, detail: 'd', systemic: false, confidence: 80 }
+let happyStub
 {
-  const finding = { severity: 'medium', title: 'lens finding', file: 'x.rs', line: 1, detail: 'd', systemic: false, confidence: 80 }
   const byLabel = {
     size: { size: 'small', expectedFiles: 1, rationale: 'r' },
     synthesize: { goal: 'g', approach: 'a', difficulty: 'standard', files: ['x.rs'], milestones: ['m1'], testPlan: 'tp', risks: '', blockingAmbiguity: '' },
@@ -103,7 +105,7 @@ console.log('happy path (post-push fix round, push NOT verified, handoff claims 
     ledger: { done: true, note: '' },
     handoff: { ciStatus: 'green', ciDetail: '', headInSync: false, localAhead: 2, lateExternalItems: 0, closesLinked: true, finalSummary: 's' },
   }
-  const stub = async (prompt, opts = {}) => {
+  happyStub = async (prompt, opts = {}) => {
     const label = opts.label || ''
     if (label in byLabel) return byLabel[label]
     if (label.startsWith('design:')) return { approach: `design via ${label}`, files: ['x.rs'], keyDecisions: '', testStrategy: '', risks: '', blockingAmbiguity: '' }
@@ -113,7 +115,7 @@ console.log('happy path (post-push fix round, push NOT verified, handoff claims 
     if (label === 'external:reply') return { done: true, note: '' }
     return null
   }
-  const { result, error, logs, calls, schemaProblems } = await run(stub)
+  const { result, error, logs, calls, schemaProblems } = await run(happyStub)
   check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
   check(schemaProblems.length === 0, `schemas seen are internally consistent (${schemaProblems.join('; ') || 'none broken'})`)
   if (result) {
@@ -133,10 +135,40 @@ console.log('happy path (post-push fix round, push NOT verified, handoff claims 
     check(pushCall && /ls-remote/.test(pushCall.prompt), 'push prompt demands ls-remote verification')
     const publishCall = calls.find((c) => c.label === 'publish')
     check(publishCall && /headPushed/.test(publishCall.prompt) && /Environment note/.test(publishCall.prompt), 'publish prompt verifies the initial push + carries the envNote')
+    check(result.securityReviewUnavailable === false, 'a live security seat leaves securityReviewUnavailable false')
+    const implCall = calls.find((c) => c.label === 'impl')
+    check(implCall && /Do NOT spawn subagents/.test(implCall.prompt), 'impl prompt caps sub-delegation')
+    check(implCall && /report completion only when/.test(implCall.prompt), 'impl prompt guards premature completion')
+    check(logs.some((l) => /difficulty=standard → impl on opus\/medium/.test(l)), 'standard difficulty routes impl to opus/medium')
+    check(logs.some((l) => /fallback opus\/high/.test(l)), 'the impl fallback goes one rung UP, not down')
+    check(result.coverage && result.coverage.reviews.includes('codex'), 'coverage names the configured review lenses')
+    check(result.coverage && result.coverage.reviewsDelivered === 4, `all 4 lenses delivered (got ${result.coverage && result.coverage.reviewsDelivered})`)
   } else {
     failures++
     console.error('  FAIL: no result object returned')
   }
+}
+
+// ── pass 4: refused security seat ────────────────────────────────────────────
+// The one silence the fabric cannot absorb: a classifier refusal returns null, which is
+// indistinguishable from a thinner fabric. The run must retry across model families and,
+// failing that, carry the gap out to the human rather than read as a clean pass.
+console.log('security seat refused on both families')
+{
+  const stub = async (prompt, opts = {}) => {
+    const label = opts.label || ''
+    if (label === 'review:security' || label === 'review:security:fable-fallback') return null
+    if (label === 'review:security:salvage' || label === 'review:security:fable-fallback:salvage') return null
+    return happyStub(prompt, opts)
+  }
+  const { result, error, logs, calls } = await run(stub)
+  check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
+  check(calls.some((c) => c.label === 'review:security:fable-fallback'), 'a null security seat retries on the other model family')
+  check(result && result.securityReviewUnavailable === true, 'both families empty → securityReviewUnavailable surfaces in the result')
+  check(logs.some((l) => /SECURITY REVIEW UNAVAILABLE/.test(l)), 'the gap is logged loudly, not swallowed')
+  check(result && result.escalation === null, 'the gap is reported, not auto-escalated (the conductor decides)')
+  check(result && result.coverage.reviewsDelivered < result.coverage.reviews.length, `coverage shows the shortfall (${result && result.coverage.reviewsDelivered}/${result && result.coverage.reviews.length})`)
+  check(logs.some((l) => /review coverage: 3 of 4/.test(l)), 'the thinned fabric is logged as a coverage line')
 }
 
 console.log(failures === 0 ? '\nsmoke: ALL PASS' : `\nsmoke: ${failures} FAILURE(S)`)
