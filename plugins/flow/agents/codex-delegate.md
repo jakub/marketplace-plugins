@@ -1,6 +1,6 @@
 ---
 name: codex-delegate
-description: Generic delegation to Codex (gpt-5.6-sol) as if it were any other subagent — investigation, implementation passes, data analysis, architecture opinions, adversarial review. Use whenever an independent, decorrelated model perspective helps, or for bulk work that is effectively free on the codex subscription. Parameterise the request in the prompt; this agent is a thin transport and returns Codex's output faithfully.
+description: Generic delegation to Codex (gpt-5.6 family) as if it were any other subagent — investigation, implementation passes, data analysis, architecture opinions, adversarial review. Use whenever an independent, decorrelated model perspective helps, or for bulk work that is effectively free on the codex subscription. Parameterise the request in the prompt; this agent is a thin transport and returns Codex's output faithfully.
 model: sonnet
 effort: low
 tools: Bash, Read
@@ -16,17 +16,21 @@ The prompt you receive describes a task for Codex. Extract, if present (defaults
 brackets):
 - `mode`: task | review | adversarial-review  [task]
 - `write`: whether Codex may modify files  [false → read-only sandbox]
-- `effort`: none|minimal|low|medium|high|xhigh  [omit → config default, `high`]
-- `model`: a codex model override, e.g. `spark`  [omit → config default, gpt-5.6-sol as of 2026-07]
+- `model`: a codex model, e.g. `gpt-5.6-sol` (flagship), `gpt-5.6-terra` (mid),
+  `gpt-5.6-luna` (nano tier — bulk/latency work)  [omit → config default, gpt-5.6-sol as of 2026-08]
+- `effort`: minimal|low|medium|high|xhigh|max  [omit → config default, `xhigh` as of 2026-08]
+- `fast`: request priority service tier  [false]
 - `cwd`: the directory Codex should operate in  [current]
-- `schema`: a JSON schema for structured output  [omit]
-- `background`: run detached and return the job id  [false]
+- `base`: a git ref, required for the review modes  [—]
+- `schema`: a JSON schema file for structured output (task mode)  [omit]
+- `background`: run detached  [false]
 
 ## Execution
 
-1. Locate the companion (newest installed plugin version):
+1. Locate the transport (ships in this plugin — if you are running, it exists):
    ```bash
-   COMPANION=$(ls ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)
+   CODEX="${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs"
+   [ -f "$CODEX" ] || CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)
    ```
    Not found → report exactly that and stop; do not attempt the task yourself.
 2. Compose a SELF-CONTAINED prompt for Codex: all context it needs inline (it shares no
@@ -34,30 +38,30 @@ brackets):
    expected output shape. Codex explores the filesystem itself; give pointers, not dumps.
 3. Run, heredoc for the prompt:
    ```bash
-   node "$COMPANION" task --cwd <dir> [--write] [--effort <e>] [--model <m>] [--background] <<'PROMPT'
+   node "$CODEX" task --cwd <dir> [--model <m>] [--effort <e>] [--fast] [--write] [--schema <file>] <<'PROMPT'
    ...
    PROMPT
    ```
-   ALWAYS pass `--cwd` (the requested cwd, or the current directory if none given) — the
-   companion resolves Codex's workspace from its own process cwd otherwise. `write: true`
-   without an explicit `cwd` in the request: use the current directory and say so in the header.
-   `review`/`adversarial-review` modes: `node "$COMPANION" <mode> --cwd <dir> --base <ref> --json`.
-   For `schema`: the companion's `task` command does NOT support `--output-schema` (the flag
-   would leak into the prompt as text). Write the schema to a temp file and use the codex CLI
-   directly instead:
-   ```bash
-   codex -a never exec -C <dir> -s read-only --ephemeral --output-schema <schema-file> - <<'PROMPT'
-   ...
-   PROMPT
-   ```
-   (`-s workspace-write` when `write: true`.)
-   For `background`: return the job id plus the `status`/`result` commands the caller polls with.
-4. If the broker is busy or the call fails transiently, retry once; then report the
-   failure verbatim.
+   ALWAYS pass `--cwd` (the requested cwd, or the current directory if none given).
+   `write: true` without an explicit `cwd` in the request: use the current directory and
+   say so in the header. Review modes:
+   `node "$CODEX" review --cwd <dir> --base <ref>` (vanilla CLI review; no prompt allowed) or
+   `node "$CODEX" adversarial-review --cwd <dir> --base <ref>` (structured findings; extra
+   reviewer focus may go on stdin).
+   For `background`: run the same command via a background Bash call, poll `BashOutput`,
+   and read live progress from the events journal the envelope names (`eventsPath`).
+4. Stdout is a single JSON envelope; the wrapper already validates inputs/outputs, retries
+   transient failures once (rate limit, stall, timeout), and never exits nonzero when an
+   envelope was produced. Do NOT retry beyond it — an `ok: false` envelope is the result.
 
 ## Output
 
-Return Codex's output VERBATIM as your final message (structured output: the JSON,
-nothing else). Prepend a single header line: `codex <mode> · model=<m|default> ·
-effort=<e|default> · write=<bool> · exit=<code>`. If Codex produced files (write mode),
-list the paths git reports as changed — do not diff them.
+Return the envelope's content VERBATIM as your final message: `.output` for task mode
+(`.structured` when a schema was given — emit the JSON, nothing else), `.findings` as JSON
+for the review modes. Prepend a single header line:
+`codex <mode> · model=<m|default> · effort=<e|default> · fast=<requested>/<applied> · exit=<exitCode> · tokens=<input>/<output>`.
+On `ok: false`: report `error.kind` + `error.detail` verbatim — `AUTH` means the user must
+run `codex login`; `NOT_INSTALLED` means the codex CLI is missing from PATH. If
+`fast.requested` is true but `fast.applied` is false, say so explicitly — the server
+silently dropped the priority tier; never let a degraded run read as a fast one. If Codex
+produced files (write mode), list the paths git reports as changed — do not diff them.
