@@ -55,9 +55,19 @@ else if (mode === 'adversarial') {
   }
   msg('OK after retry')
 } else if (mode === 'stall') {
+  writeFileSync(process.env.FAKE_STATE + '.pid', String(process.pid))
   say({ type: 'thread.started', thread_id: 'fake' })
   setTimeout(() => {}, 120000)
-} else if (mode === 'empty') { say({ type: 'turn.completed', usage: {} }) }
+} else if (mode === 'stale_then_empty') {
+  if (!existsSync(process.env.FAKE_STATE)) {
+    writeFileSync(process.env.FAKE_STATE, '1')
+    const o = process.argv.indexOf('-o')
+    if (o !== -1) writeFileSync(process.argv[o + 1], 'STALE ANSWER FROM ATTEMPT 1')
+    say({ type: 'thread.started', thread_id: 'fake' })
+    setTimeout(() => {}, 120000)
+  } else { say({ type: 'turn.completed', usage: {} }) }
+} else if (mode === 'big') { msg('x'.repeat(200000)) }
+else if (mode === 'empty') { say({ type: 'turn.completed', usage: {} }) }
 else if (mode === 'fast_degrade') {
   console.error('warning: Configured service tier \`priority\` is not advertised as supported for model \`gpt-5.5\` and will be omitted from requests.')
   msg('OK but slow')
@@ -150,11 +160,55 @@ console.log('rate limit → one retry → success')
   check(e.error === null, 'error cleared after successful retry')
 }
 
-console.log('watchdogs')
+console.log('watchdogs (--timeout-secs is TOTAL across attempts)')
 {
-  const e = run('stall', ['task', '--cwd', T, '--stall-secs', '5', '--timeout-secs', '6'], { input: 'p' })
-  check(e.ok === false && ['STALL', 'TIMEOUT'].includes(e.error.kind), `hung codex killed (got ${e.error && e.error.kind})`)
-  check(e.error.retried === true, 'stall/timeout retried once before reporting')
+  const e = run('stall', ['task', '--cwd', T, '--stall-secs', '2', '--timeout-secs', '40'], { input: 'p' })
+  check(e.ok === false && e.error.kind === 'STALL', `hung codex killed (got ${e.error && e.error.kind})`)
+  check(e.error.retried === true, 'stall retried once while budget remained')
+  const e2 = run('stall', ['task', '--cwd', T, '--stall-secs', '30', '--timeout-secs', '6'], { input: 'p' })
+  check(e2.ok === false && e2.error.kind === 'TIMEOUT', `total budget enforced (got ${e2.error && e2.error.kind})`)
+  check(e2.error.retried === false, 'no retry when the total budget cannot fit one')
+}
+
+console.log('wrapper termination reaps the detached child')
+{
+  rmSync(STATE + '.pid', { force: true })
+  const { spawn } = await import('node:child_process')
+  const wrapper = spawn('node', [WRAPPER, 'task', '--cwd', T, '--stall-secs', '60', '--timeout-secs', '120'], {
+    env: { ...process.env, CODEX_BIN: FAKE, FAKE_MODE: 'stall', FAKE_ARGV_FILE: ARGV_FILE, FAKE_STATE: STATE },
+    stdio: ['pipe', 'ignore', 'ignore'],
+  })
+  wrapper.stdin.end('p')
+  await new Promise((res) => setTimeout(res, 1500))
+  const childPid = existsSync(STATE + '.pid') ? Number(readFileSync(STATE + '.pid', 'utf8')) : null
+  check(childPid !== null, 'fake codex started and recorded its pid')
+  wrapper.kill('SIGTERM')
+  await new Promise((res) => setTimeout(res, 800))
+  let alive = true
+  try { process.kill(childPid, 0) } catch { alive = false }
+  check(!alive, 'SIGTERM on the wrapper killed the detached codex process group')
+  if (alive) { try { process.kill(-childPid, 'SIGKILL') } catch {} }
+}
+
+console.log('large envelope survives the stdout pipe')
+{
+  const e = run('big', ['task', '--cwd', T], { input: 'p' })
+  check(e.ok === true && e.output.length === 200000, `200 KB output intact through a pipe (got ${e.output && e.output.length} bytes)`)
+}
+
+console.log('multi-byte prompt survives the 64 KiB stdin chunk boundary')
+{
+  const prompt = 'a'.repeat(65535) + '—em-dash straddles the chunk boundary—' + 'b'.repeat(100)
+  const e = run('happy', ['task', '--cwd', T], { input: prompt })
+  check(e.ok === true, 'run succeeds')
+  check(readFileSync(ARGV_FILE + '.stdin', 'utf8') === prompt, 'prompt arrived byte-identical (no U+FFFD corruption)')
+}
+
+console.log('a killed attempt\'s -o file never launders into the retry')
+{
+  rmSync(STATE, { force: true })
+  const e = run('stale_then_empty', ['task', '--cwd', T, '--stall-secs', '2', '--timeout-secs', '40'], { input: 'p' })
+  check(e.ok === false && e.error.kind === 'EMPTY_OUTPUT', `stale attempt-1 answer rejected (got ${e.ok ? 'ok:true output=' + JSON.stringify(e.output) : e.error.kind})`)
 }
 
 console.log('empty output is UNKNOWN, never a pass')

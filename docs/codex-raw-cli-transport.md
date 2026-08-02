@@ -126,8 +126,10 @@ buy is used fully:
 - **stall watchdog**: no event for `--stall-secs` (default 300 — `max`-effort reasoning
   gaps are long) → kill process group, `STALL`, one retry;
 - **hard deadline** `--timeout-secs` (defaults: task 900, review 1200) owned by the
-  wrapper — callers invoke it via `run_in_background` + Monitor rather than racing the
-  Bash tool's 10-minute ceiling;
+  wrapper and TOTAL across attempts (a per-attempt deadline would silently double under
+  retry). Foreground callers must fit inside the Bash tool's 10-minute ceiling: pass
+  `--timeout-secs 540` and set the tool timeout to 600000; anything longer runs in
+  background with an explicit `--events` path;
 - ERROR lines, usage, and the final `agent_message` captured from the same stream;
   under-development warning items filtered by prefix match.
 
@@ -162,9 +164,11 @@ buy is used fully:
   script ships in the same plugin as the agent, so if the agent is running, the file
   exists. (Verify at impl time whether agent bodies interpolate `${CLAUDE_PLUGIN_ROOT}`;
   the glob works regardless.)
-- `background: true` → `run_in_background` Bash + `BashOutput` polling of the events
-  journal; report progress lines, return the envelope at completion. The companion's job
-  broker is replaced by harness-native tracking.
+- `background: true` → pass an explicit `--events <file>` (the default journal lives in a
+  random tmpdir named only by the final envelope, so it cannot be polled live), then
+  `run_in_background` Bash + `BashOutput` polling of that file; report progress lines,
+  return the envelope at completion. The companion's job broker is replaced by
+  harness-native tracking.
 - Output contract: keep the single header line, sourced from envelope fields, now
   including `fast=<requested>/<applied>`; below it the verbatim `output` (or the findings
   JSON, or the error envelope). Never fabricate on `ok:false` — pass the kind + detail.

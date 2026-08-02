@@ -35,12 +35,13 @@ gpt-5.6-sol is ~free on the codex sub, fable is the expensive one. intelligence 
 problem you can hand the model unsupervised. taste covers UI/UX, code quality, API design,
 and copy text.
 
-| model       | cheapness | intelligence | taste |
+| model        | cheapness | intelligence | taste |
 |-------------------------------------------------
-| sonnet-5    | 5         | 6            | 6     |
-| opus-5      | 4         | 8            | 8     |
-| gpt-5.6-sol | 7         | 8            | 5     |
-| fable 5     | 2         | 9            | 9     |
+| sonnet-5     | 5         | 6            | 6     |
+| opus-5       | 4         | 8            | 8     |
+| fable 5      | 2         | 9            | 9     |
+| gpt-5.6-sol  | 7         | 8            | 5     |
+| gpt-5.6-luna | 9         | 5            | 4     |
 
 opus is the DEFAULT CODE WRITER — implementation, fixes, review, adjudication. it beats fable
 on several coding benchmarks and has the effort ladder fable lacks. reach for fable on DEPTH

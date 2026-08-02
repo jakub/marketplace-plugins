@@ -48,8 +48,14 @@ brackets):
    `node "$CODEX" review --cwd <dir> --base <ref>` (vanilla CLI review; no prompt allowed) or
    `node "$CODEX" adversarial-review --cwd <dir> --base <ref>` (structured findings; extra
    reviewer focus may go on stdin).
-   For `background`: run the same command via a background Bash call, poll `BashOutput`,
-   and read live progress from the events journal the envelope names (`eventsPath`).
+   TIMEOUTS: the transport's default total deadline (task 900s / review 1200s) exceeds what
+   a foreground Bash call survives. Foreground: pass `--timeout-secs 540` AND set the Bash
+   tool's timeout parameter to 600000 — the tool default (120s) kills the run mid-flight
+   with no envelope. Runs that need longer belong in background.
+   For `background`: pick the journal path YOURSELF with `--events /tmp/codex-delegate-<slug>.jsonl`
+   (the default lives in a random tmpdir named only by the final envelope — useless for
+   live polling), run the command via a background Bash call, poll `BashOutput`, and read
+   live progress from that events file.
 4. Stdout is a single JSON envelope; the wrapper already validates inputs/outputs, retries
    transient failures once (rate limit, stall, timeout), and never exits nonzero when an
    envelope was produced. Do NOT retry beyond it — an `ok: false` envelope is the result.

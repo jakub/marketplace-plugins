@@ -25,7 +25,7 @@
 // `exec review` rejects a custom prompt alongside --base/--uncommitted.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -98,6 +98,9 @@ function parseArgs(argv) {
 
 async function readStdin() {
   if (process.stdin.isTTY) return ''
+  // Buffer-by-Buffer += decodes each chunk independently, corrupting a multi-byte
+  // character that straddles a 64 KiB read boundary — decode as one utf8 stream.
+  process.stdin.setEncoding('utf8')
   let buf = ''
   for await (const chunk of process.stdin) buf += chunk
   return buf
@@ -163,6 +166,18 @@ function classify({ spawnError, killedBy, exitCode, errorText }) {
 }
 
 // ── one codex run: spawn, stream JSONL, watchdogs, collect ───────────────────
+// The detached child outlives a killed wrapper unless someone reaps it — a workspace-write
+// codex still mutating a worktree after the workflow moved on is unacceptable. Catchable
+// terminations sweep the process group; only an uncatchable SIGKILL of the wrapper orphans it.
+let activeChild = null
+const reapChild = () => {
+  if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+    try { process.kill(-activeChild.pid, 'SIGKILL') } catch {}
+  }
+}
+process.on('exit', reapChild)
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { reapChild(); process.exit(1) })
+
 function runOnce({ argvTail, promptText, spawnCwd, eventsFile, stallMs, timeoutMs }) {
   return new Promise((resolve) => {
     const r = {
@@ -176,10 +191,13 @@ function runOnce({ argvTail, promptText, spawnCwd, eventsFile, stallMs, timeoutM
       r.spawnError = e
       return resolve(r)
     }
+    activeChild = child
     let done = false
     let lastEvent = Date.now()
     const kill = (why) => {
-      if (done) return
+      // exitCode guard: the timers phase can preempt a queued 'close' — never mark a child
+      // that already exited cleanly as watchdog-killed.
+      if (done || child.exitCode !== null || child.signalCode !== null) return
       r.killedBy = why
       try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch {} }
     }
@@ -192,8 +210,12 @@ function runOnce({ argvTail, promptText, spawnCwd, eventsFile, stallMs, timeoutM
       clearTimeout(deadlineTimer)
       resolve(r)
     }
-    child.on('error', (e) => { r.spawnError = e; clearInterval(stallTimer); clearTimeout(deadlineTimer); finish() })
-    child.on('close', (code) => { r.exitCode = code; finish() })
+    child.on('error', (e) => { r.spawnError = e; finish() })
+    child.on('close', (code) => {
+      r.exitCode = code
+      if (code === 0) r.killedBy = null // belt for the same race: a clean exit was never killed
+      finish()
+    })
     child.stdin.on('error', () => {}) // child may exit before reading the prompt
     if (promptText !== null) child.stdin.end(promptText)
     else child.stdin.end()
@@ -242,9 +264,23 @@ const envelope = (fields) => ({
   error: null, eventsPath: eventsFile,
   ...fields,
 })
+// Emit exactly one envelope, then unwind. `process.exit()` right after a write truncates
+// stdout at the 64 KiB pipe buffer — and a pipe is how every caller reads this — so the
+// exit rides the write callback (fires once the reader has drained us) and an Emitted
+// throw stops the remaining top-level flow. Anything else reaching the unwind handlers is
+// a genuine wrapper bug: stderr + exit 1, the one case callers may treat as "no envelope".
+class Emitted extends Error {}
+const unwind = (e) => {
+  if (e instanceof Emitted) return
+  process.stderr.write(`codex-exec wrapper failure: ${(e && e.stack) || e}\n`)
+  process.exit(1)
+}
+process.on('uncaughtException', unwind)
+process.on('unhandledRejection', unwind)
 const emit = (fields) => {
-  process.stdout.write(JSON.stringify(envelope(fields), null, 2) + '\n')
-  process.exit(0)
+  process.exitCode = 0
+  process.stdout.write(JSON.stringify(envelope(fields), null, 2) + '\n', () => process.exit(0))
+  throw new Emitted()
 }
 const usage = (detail) => emit({ error: { kind: 'USAGE', detail, retried: false } })
 
@@ -255,8 +291,8 @@ if (!a.cwd) usage('--cwd is required (always explicit — never inherited from t
 if (!existsSync(a.cwd) || !statSync(a.cwd).isDirectory()) usage(`--cwd is not a directory: ${a.cwd}`)
 if (a.effort && !EFFORTS.includes(a.effort)) usage(`--effort must be one of ${EFFORTS.join('|')} (got: ${a.effort})`)
 if (a.model && !MODEL_RE.test(a.model)) usage(`--model has an implausible shape: ${a.model}`)
-for (const [name, v] of [['--timeout-secs', a.timeoutSecs], ['--stall-secs', a.stallSecs]]) {
-  if (v !== null && (!Number.isInteger(v) || v < 5 || v > 7200)) usage(`${name} must be an integer in [5, 7200]`)
+for (const [name, v] of [['--timeout-secs (total across attempts)', a.timeoutSecs], ['--stall-secs', a.stallSecs]]) {
+  if (v !== null && (!Number.isInteger(v) || v < 1 || v > 7200)) usage(`${name} must be an integer in [1, 7200]`)
 }
 if (a.write && a.mode !== 'task') usage('--write only applies to task mode — reviews are read-only by definition')
 if (a.schema && a.mode !== 'task') usage('--schema only applies to task mode (adversarial-review has a built-in schema)')
@@ -304,7 +340,9 @@ if (a.mode === 'review') {
   promptText = a.mode === 'adversarial-review' ? adversarialPrompt(a.base, stdinText.trim()) : stdinText
 }
 
-const timeoutMs = (a.timeoutSecs ?? DEFAULT_TIMEOUT[a.mode]) * 1000
+// --timeout-secs is the TOTAL budget across attempts (callers size their Bash-tool timeout
+// against it — a per-attempt deadline would silently double under the retry policy).
+const totalBudgetMs = (a.timeoutSecs ?? DEFAULT_TIMEOUT[a.mode]) * 1000
 const stallMs = (a.stallSecs ?? DEFAULT_STALL) * 1000
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms))
 
@@ -312,11 +350,18 @@ let retried = false
 let attempt = 1
 let run, kind
 for (;;) {
+  // A killed attempt's -o file must never launder into this attempt's result as a false pass.
+  try { rmSync(lastMsgFile, { force: true }) } catch {}
   try { appendFileSync(eventsFile, JSON.stringify({ type: 'wrapper.attempt', n: attempt, argv: [BIN, ...argvTail] }) + '\n') } catch {}
-  run = await runOnce({ argvTail, promptText, spawnCwd: a.cwd, eventsFile, stallMs, timeoutMs })
+  run = await runOnce({
+    argvTail, promptText, spawnCwd: a.cwd, eventsFile, stallMs,
+    timeoutMs: Math.max(totalBudgetMs - (Date.now() - startedAt), 1_000),
+  })
   const failed = run.spawnError || run.killedBy || run.exitCode !== 0
   kind = failed ? classify({ ...run, errorText: run.errorLines.join('\n') + '\n' + run.stderr + '\n' + run.noise.join('\n') }) : null
   if (!failed || retried || !RETRYABLE.includes(kind)) break
+  const remaining = totalBudgetMs - (Date.now() - startedAt)
+  if (remaining < (kind === 'RATE_LIMIT' ? RATE_LIMIT_BACKOFF_MS + 10_000 : 10_000)) break // no budget left for a real retry
   retried = true
   attempt++
   if (kind === 'RATE_LIMIT') await sleep(RATE_LIMIT_BACKOFF_MS)
@@ -345,7 +390,7 @@ const base = {
 
 if (kind) {
   const detail = (run.spawnError ? String(run.spawnError.message || run.spawnError) + '\n' : '')
-    + (run.killedBy ? `killed by wrapper: ${run.killedBy} (stall ${stallMs / 1000}s / timeout ${timeoutMs / 1000}s)\n` : '')
+    + (run.killedBy ? `killed by wrapper: ${run.killedBy} (stall ${stallMs / 1000}s / total budget ${totalBudgetMs / 1000}s)\n` : '')
     + [...run.errorLines, run.stderr.trim()].filter(Boolean).join('\n')
   emit({ ...base, error: { kind, detail: detail.slice(0, 2000) || `exit ${run.exitCode}`, retried } })
 }

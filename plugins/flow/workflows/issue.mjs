@@ -73,7 +73,11 @@ const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const codexEffortReq = sentinel(A.codexEffort)
 const CODEX_EFFORT = CODEX_EFFORTS.includes(codexEffortReq) ? codexEffortReq : ''
 if (codexEffortReq && !CODEX_EFFORT) log(`codexEffort '${codexEffortReq}' not in ${CODEX_EFFORTS.join('|')} — ignored, defaults apply`)
-const CODEX_MODEL = sentinel(A.codexModel)
+const codexModelReq = sentinel(A.codexModel)
+// Same shape check the transport applies — but HERE it protects the generated shell
+// command (the value is interpolated into a Bash one-liner), not just the codex call.
+const CODEX_MODEL = /^[a-z0-9][a-z0-9.-]*$/.test(codexModelReq) ? codexModelReq : ''
+if (codexModelReq && !CODEX_MODEL) log(`codexModel '${codexModelReq}' has an implausible shape — ignored, defaults apply`)
 const CODEX_FAST = A.codexFast === true || A.codexFast === 'true'
 const PLUGIN_ROOT = (A.pluginRoot || '').includes('$') ? '' : sentinel(A.pluginRoot)
 const CODEX_LOCATE = PLUGIN_ROOT
@@ -316,8 +320,8 @@ ${A.contextPack}
 
 Propose ONE concrete approach. Flag deviations from existing patterns and any ambiguity the issue + code cannot resolve.`
 
-const codexDesignPrompt = `Run EXACTLY this, then handle the single JSON envelope it prints on stdout:
-${CODEX_LOCATE} && node "$CODEX" task --cwd "${WT}" --effort ${CODEX_EFFORT || 'high'}${codexTuning} <<'PROMPT'
+const codexDesignPrompt = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this leg would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:
+${CODEX_LOCATE} && node "$CODEX" task --cwd "${WT}" --effort ${CODEX_EFFORT || 'high'} --timeout-secs 540${codexTuning} <<'PROMPT'
 You are designing feature architecture for issue #${A.issueNumber} in ${WT}.
 ${A.contextPack}
 Explore the referenced paths and the code they lead to before designing. Propose ONE concrete approach:
@@ -370,8 +374,8 @@ Detect and run the project's lint+test commands (Rust: \`cargo clippy --workspac
 On failure: fix in atomic commits and re-run (max a few rounds), then report.
 ${transientRule}`
 
-const codexAdversarialPrompt = `Run EXACTLY this, then handle the single JSON envelope it prints on stdout:
-${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE}${CODEX_EFFORT ? ` --effort ${CODEX_EFFORT}` : ''}${codexTuning}
+const codexAdversarialPrompt = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this seat would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:
+${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE} --timeout-secs 540${CODEX_EFFORT ? ` --effort ${CODEX_EFFORT}` : ''}${codexTuning}
 .ok true → map .findings[] into the findings schema MECHANICALLY — field transcription, not
 reinterpretation: severity→severity (same enum), title→title, file→file, line→line,
 detail = detail plus " Recommendation: <recommendation>" when non-empty, systemic=false

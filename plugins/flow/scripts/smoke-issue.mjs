@@ -194,6 +194,10 @@ console.log('codex seat overrides (luna/max/fast, explicit pluginRoot)')
   const review = calls.find((c) => c.label === 'review:codex')
   check(review && /adversarial-review --cwd/.test(review.prompt) && /--effort max/.test(review.prompt), 'adversarial leg runs the transport with the effort override')
   check(review && /confidence = 55/.test(review.prompt), 'codex findings keep the inferred-not-executed confidence rule')
+  for (const [name, c] of [['design', design], ['review', review]]) {
+    check(c && /timeout parameter set to 600000/.test(c.prompt) && /--timeout-secs 540/.test(c.prompt),
+      `${name} leg sizes the Bash timeout against the transport's 540s total budget`)
+  }
   check(logs.some((l) => /codex seat overrides: model=gpt-5\.6-luna effort=max fast=true/.test(l)), 'overrides are logged at launch')
   check(logs.some((l) => /fast tier silently dropped/.test(l)), 'CODEX_FAST_DEGRADED marker is logged')
   check(result && !(result.droppedLow || []).some((f) => /CODEX_FAST_DEGRADED/.test(f.title)), 'marker finding dropped, not surfaced as review signal')
