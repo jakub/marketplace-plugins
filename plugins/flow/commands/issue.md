@@ -1,6 +1,6 @@
 ---
 description: Hands-off implementation of a ready-for-agent issue, through a pushed, reviewed, evidenced PR. Conductor for the flow-issue workflow.
-argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh]
+argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh] [--codex-model <m>] [--codex-effort minimal|low|medium|high|xhigh|max] [--codex-fast]
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Read, Write, Workflow, TaskOutput, PushNotification, Task, Agent
 ---
 
@@ -16,6 +16,10 @@ Argument: `$ARGUMENTS` = issue number, optionally followed by `--impl-model <m>`
 difficulty — mechanical `sonnet/medium`, standard `opus/medium`, hard `opus/xhigh`; the
 workflow clamps an explicit `--impl-model fable` to `high`, and a seat that refuses/dies
 re-runs one rung UP, or on the routed model when an override put a different one in).
+`--codex-model <m>` / `--codex-effort <e>` / `--codex-fast` override the codex seats
+(design leg + adversarial review; default: config-default model, design pinned at `high`,
+review at the codex config default). Luna is the nano tier — overriding the review seat
+onto it trades away the decorrelated-intelligence signal; that is an experiment, not a default.
 Abort with usage if the first token is not a positive integer.
 
 ## 1. Pre-flight
@@ -53,14 +57,17 @@ this snapshot; body edits mid-run are detected at the end (step 5.4).
    cannot infer it from a one-line prompt.
 3. Resolve the workflow script: `${CLAUDE_PLUGIN_ROOT}/workflows/issue.mjs` — if the
    variable is unavailable in this context, locate it:
-   `ls ~/.claude/plugins/cache/flow/flow/*/workflows/issue.mjs | sort -V | tail -1`.
+   `ls ~/.claude/plugins/cache/*/flow/*/workflows/issue.mjs | sort -V | tail -1`.
    Salvage hygiene: `rm -rf /tmp/flow-issue-$N-reports` before launch — the workflow's
    report-salvage dir is deterministic, and a stale file from an earlier run of the same
    issue must not be salvageable as fresh.
 4. Launch via the Workflow tool with `scriptPath` and args:
-   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, envNote, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"] }`,
-   plus `implModel` / `implEffort` when the corresponding flags were given (omit otherwise —
-   absent keys mean the workflow's defaults: difficulty-routed, see the argument note above).
+   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, envNote, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"], pluginRoot: "${CLAUDE_PLUGIN_ROOT}" }`,
+   plus `implModel` / `implEffort` / `codexModel` / `codexEffort` / `codexFast` when the
+   corresponding flags were given (omit otherwise — absent keys mean the workflow's
+   defaults: difficulty-routed impl, config-default codex). `pluginRoot` is how the
+   workflow's codex legs find the codex-exec transport without a glob; if the variable
+   did not interpolate, pass the directory you resolved the script from in step 3.
 5. **Stamp the runId** the tool result returns as an issue journal comment:
    `flow run started — runId <id>, worktree <path>, branch <branch>` — this is the
    recovery anchor for any future session.

@@ -5,6 +5,7 @@
 //   2. null-cascade: every agent dies → salvage paths logged, controlled design-panel throw
 //   3. happy path with one unverified push → headInSync downgrade, reply gating, result shape
 //   4. refused security seat → cross-family retry, then a visible gap (never a clean pass)
+//   5. codex seat overrides → transport flags in the prompts, marker findings logged+dropped
 // Every schema passed to agent() is validated: required ⊆ properties, recursively.
 // Run: node plugins/flow/scripts/smoke-issue.mjs
 
@@ -56,7 +57,7 @@ const baseArgs = {
   envNote: 'pre-push hook runs the full nextest suite; export DATABASE_URL=postgres://x',
 }
 
-async function run(stubAgent) {
+async function run(stubAgent, argsOverride) {
   const logs = []
   const calls = [] // { label, prompt }
   const schemaProblems = []
@@ -68,7 +69,7 @@ async function run(stubAgent) {
   const parallel = (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)))
   let result = null, error = null
   try {
-    result = await script(baseArgs, (m) => logs.push(String(m)), () => {}, agent, parallel, null, null)
+    result = await script(argsOverride || baseArgs, (m) => logs.push(String(m)), () => {}, agent, parallel, null, null)
   } catch (e) { error = e }
   return { result, error, logs, calls, schemaProblems }
 }
@@ -169,6 +170,45 @@ console.log('security seat refused on both families')
   check(result && result.escalation === null, 'the gap is reported, not auto-escalated (the conductor decides)')
   check(result && result.coverage.reviewsDelivered < result.coverage.reviews.length, `coverage shows the shortfall (${result && result.coverage.reviewsDelivered}/${result && result.coverage.reviews.length})`)
   check(logs.some((l) => /review coverage: 3 of 4/.test(l)), 'the thinned fabric is logged as a coverage line')
+}
+
+// ── pass 5: codex seat overrides + marker hygiene ────────────────────────────
+// The codex legs run on the codex-exec transport that ships in this plugin. Overrides must
+// reach the shell command verbatim; marker findings (CODEX_UNAVAILABLE / CODEX_FAST_DEGRADED)
+// are observability and must be logged then dropped, never surfaced as review signal.
+console.log('codex seat overrides (luna/max/fast, explicit pluginRoot)')
+{
+  const stub = async (prompt, opts = {}) => {
+    if ((opts.label || '') === 'review:codex') return { findings: [
+      { severity: 'low', title: 'CODEX_FAST_DEGRADED', file: '', line: 0, detail: 'tier omitted', systemic: false, confidence: 100 },
+    ] }
+    return happyStub(prompt, opts)
+  }
+  const args = { ...baseArgs, codexModel: 'gpt-5.6-luna', codexEffort: 'max', codexFast: true, pluginRoot: '/plugroot' }
+  const { result, error, logs, calls } = await run(stub, args)
+  check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
+  const design = calls.find((c) => c.label === 'design:codex')
+  check(design && design.prompt.includes('CODEX="/plugroot/scripts/codex-exec.mjs"'), 'explicit pluginRoot resolves the transport without a glob')
+  check(design && /--model gpt-5\.6-luna/.test(design.prompt) && /--effort max/.test(design.prompt) && /--fast/.test(design.prompt), 'design leg carries model/effort/fast overrides')
+  check(design && /CODEX_UNAVAILABLE: <error\.kind>/.test(design.prompt), 'design leg keeps the envelope-aware unavailable sentinel')
+  const review = calls.find((c) => c.label === 'review:codex')
+  check(review && /adversarial-review --cwd/.test(review.prompt) && /--effort max/.test(review.prompt), 'adversarial leg runs the transport with the effort override')
+  check(review && /confidence = 55/.test(review.prompt), 'codex findings keep the inferred-not-executed confidence rule')
+  check(logs.some((l) => /codex seat overrides: model=gpt-5\.6-luna effort=max fast=true/.test(l)), 'overrides are logged at launch')
+  check(logs.some((l) => /fast tier silently dropped/.test(l)), 'CODEX_FAST_DEGRADED marker is logged')
+  check(result && !(result.droppedLow || []).some((f) => /CODEX_FAST_DEGRADED/.test(f.title)), 'marker finding dropped, not surfaced as review signal')
+}
+console.log('codex defaults (bad effort ignored, uninterpolated pluginRoot falls back to glob)')
+{
+  const args = { ...baseArgs, codexEffort: 'turbo', pluginRoot: '${CLAUDE_PLUGIN_ROOT}' }
+  const { logs, calls, error } = await run(happyStub, args)
+  check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
+  check(logs.some((l) => /codexEffort 'turbo'.*ignored/.test(l)), 'invalid codexEffort is ignored with a visible log')
+  const design = calls.find((c) => c.label === 'design:codex')
+  check(design && design.prompt.includes('cache/*/flow/*/scripts/codex-exec.mjs'), 'uninterpolated ${CLAUDE_PLUGIN_ROOT} falls back to the same-plugin glob')
+  check(design && /--effort high/.test(design.prompt), 'design leg default effort stays pinned at high')
+  const review = calls.find((c) => c.label === 'review:codex')
+  check(review && !/--effort/.test(review.prompt), 'adversarial leg defaults to the codex config effort (no flag)')
 }
 
 console.log(failures === 0 ? '\nsmoke: ALL PASS' : `\nsmoke: ${failures} FAILURE(S)`)

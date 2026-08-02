@@ -41,7 +41,8 @@ const FABRIC = {
 
 // args (passed by /flow:issue after pre-flight + claim + worktree creation):
 //   { issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree,
-//     branch, base, externalReviewers?, implModel?, implEffort?, envNote? }
+//     branch, base, externalReviewers?, implModel?, implEffort?, envNote?,
+//     codexModel?, codexEffort?, codexFast?, pluginRoot? }
 // May arrive as a parsed object OR a JSON-encoded string; parse defensively.
 // implModel/implEffort override the impl seat (default since 2026-07-25: effort routed by
 // the synthesizer's difficulty verdict — mechanical sonnet/medium, standard opus/medium,
@@ -62,7 +63,24 @@ const ENV_NOTE = sentinel(A.envNote)
   ? `\nEnvironment note (hooks/tests need this — e.g. exports required by pre-push hooks): ${sentinel(A.envNote)}`
   : ''
 
-const CODEX_LOCATE = `COMPANION=$(ls ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)`
+// Codex legs run on the codex-exec transport that ships in THIS plugin (the retired
+// companion plugin's cache path broke silently once — never again a dependency we don't
+// carry). Seat overrides are validated here so a typo degrades to the default, visibly,
+// instead of burning the leg on a USAGE envelope. pluginRoot arrives from the conductor's
+// ${CLAUDE_PLUGIN_ROOT}; an uninterpolated literal still contains '$' — treat as unset
+// and fall back to the same-plugin glob (if this workflow runs, flow is installed).
+const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+const codexEffortReq = sentinel(A.codexEffort)
+const CODEX_EFFORT = CODEX_EFFORTS.includes(codexEffortReq) ? codexEffortReq : ''
+if (codexEffortReq && !CODEX_EFFORT) log(`codexEffort '${codexEffortReq}' not in ${CODEX_EFFORTS.join('|')} — ignored, defaults apply`)
+const CODEX_MODEL = sentinel(A.codexModel)
+const CODEX_FAST = A.codexFast === true || A.codexFast === 'true'
+const PLUGIN_ROOT = (A.pluginRoot || '').includes('$') ? '' : sentinel(A.pluginRoot)
+const CODEX_LOCATE = PLUGIN_ROOT
+  ? `CODEX="${PLUGIN_ROOT}/scripts/codex-exec.mjs"`
+  : `CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)`
+const codexTuning = `${CODEX_MODEL ? ` --model ${CODEX_MODEL}` : ''}${CODEX_FAST ? ' --fast' : ''}`
+if (CODEX_MODEL || CODEX_EFFORT || CODEX_FAST) log(`codex seat overrides: model=${CODEX_MODEL || 'default'} effort=${CODEX_EFFORT || 'default'} fast=${CODEX_FAST}`)
 
 // ── schemas ─────────────────────────────────────────────────────────────────
 const SIZE = {
@@ -298,17 +316,19 @@ ${A.contextPack}
 
 Propose ONE concrete approach. Flag deviations from existing patterns and any ambiguity the issue + code cannot resolve.`
 
-const codexDesignPrompt = `Run EXACTLY this, then return codex's design verbatim as your "approach" (fill the other fields from it):
-${CODEX_LOCATE} && node "$COMPANION" task --cwd "${WT}" --effort high <<'PROMPT'
+const codexDesignPrompt = `Run EXACTLY this, then handle the single JSON envelope it prints on stdout:
+${CODEX_LOCATE} && node "$CODEX" task --cwd "${WT}" --effort ${CODEX_EFFORT || 'high'}${codexTuning} <<'PROMPT'
 You are designing feature architecture for issue #${A.issueNumber} in ${WT}.
 ${A.contextPack}
 Explore the referenced paths and the code they lead to before designing. Propose ONE concrete approach:
 files to create/modify, key type/module decisions, data flow, error handling, test strategy.
 Flag risks and pattern deviations. Long-term maintainability focus. Read-only — write NO files.
 PROMPT
-If codex produces no design for ANY reason (companion not found, CLI error, timeout), set
-approach to exactly "CODEX_UNAVAILABLE: <one-line reason>" and leave every other field empty —
-never fill the schema with a design codex did not write.`
+.ok true → return .output verbatim as your "approach" (fill the other fields from it).
+.ok false, or the command itself fails for ANY reason (transport not found, node error,
+unparseable stdout): set approach to exactly "CODEX_UNAVAILABLE: <error.kind> — <one-line reason>"
+(kind UNKNOWN when there is no envelope) and leave every other field empty — never fill the
+schema with a design codex did not write.`
 
 const synthesizePrompt = (designs, panelNote) => `Synthesize ${designs.length} independent designs for issue #${A.issueNumber} into ONE plan.${panelNote}
 ${here}
@@ -350,18 +370,22 @@ Detect and run the project's lint+test commands (Rust: \`cargo clippy --workspac
 On failure: fix in atomic commits and re-run (max a few rounds), then report.
 ${transientRule}`
 
-const codexAdversarialPrompt = `Run EXACTLY this:
-${CODEX_LOCATE} && node "$COMPANION" adversarial-review --cwd "${WT}" --base ${BASE} --json
-Stdout is a JSON payload. Map its .result.findings[] into the findings schema MECHANICALLY —
-field transcription, not reinterpretation: severity→severity (same enum), title→title,
-file→file, line_start→line, detail = body plus recommendation if present, systemic=false
+const codexAdversarialPrompt = `Run EXACTLY this, then handle the single JSON envelope it prints on stdout:
+${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE}${CODEX_EFFORT ? ` --effort ${CODEX_EFFORT}` : ''}${codexTuning}
+.ok true → map .findings[] into the findings schema MECHANICALLY — field transcription, not
+reinterpretation: severity→severity (same enum), title→title, file→file, line→line,
+detail = detail plus " Recommendation: <recommendation>" when non-empty, systemic=false
 unless the finding is genuinely cross-crate-refactor scale, confidence = 55 (codex findings
-arrive inferred from reading, unverified by execution) unless the payload carries its own score.
-If .result is null or .parseError is set, that is a FAILED review, not an empty one.
-If codex produces no review for ANY reason (companion not found, CLI error, timeout, parse error),
-return exactly one finding: severity "low", title "CODEX_UNAVAILABLE: <one-line reason>", file "",
-line 0, detail the underlying error, systemic false, confidence 100 — an errored review must be
-visible as unavailable, never as a clean pass.`
+arrive inferred from reading, unverified by execution). Empty .findings → empty findings.
+If .fast.requested is true and .fast.applied is false, ADD one finding: severity "low",
+title "CODEX_FAST_DEGRADED", file "", line 0, detail = the envelope's fast/error context,
+systemic false, confidence 100 — the workflow logs and drops it; it is observability, not review signal.
+.ok false, or the command itself fails for ANY reason (transport not found, node error,
+unparseable stdout): return exactly one finding: severity "low",
+title "CODEX_UNAVAILABLE: <error.kind> — <one-line reason>" (kind UNKNOWN when there is no
+envelope), file "", line 0, detail = the envelope's error.detail or the raw failure,
+systemic false, confidence 100 — an errored review must be visible as unavailable, never as
+a clean pass.`
 
 const reviewScope = `Review the diff (\`git -C ${WT} diff ${BASE}...HEAD\`) for issue #${A.issueNumber}. Cite file:line. Severity per finding — severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium. Set confidence per finding (0-100: is it real — not severity). Set systemic=true ONLY for cross-crate-refactor-scale work that cannot fit this PR.`
 const correctnessPrompt = `${reviewScope}
@@ -750,11 +774,12 @@ if (secIdx !== -1 && !rawReviews[secIdx]) {
 const reviews = keepNamed(fabric.reviews, rawReviews, 'review')
 const acCheck = (await salvageableAgent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'xhigh', schema: AC_CHECK }))
   || { criteria: [], scopeCreep: [], unavailable: true }
-// CODEX_UNAVAILABLE marker findings are observability, not review signal — log and drop.
+// CODEX_* marker findings are observability, not review signal — log and drop.
 const dropCodexMarker = (fs) => fs.filter((f) => {
-  const dead = typeof f.title === 'string' && f.title.startsWith('CODEX_UNAVAILABLE')
-  if (dead) log(`codex review unavailable (${clip(f.detail || f.title, 120)}) — no cross-model signal this pass`)
-  return !dead
+  const t = typeof f.title === 'string' ? f.title : ''
+  if (t.startsWith('CODEX_UNAVAILABLE')) { log(`codex review unavailable (${clip(f.detail || t, 120)}) — no cross-model signal this pass`); return false }
+  if (t.startsWith('CODEX_FAST_DEGRADED')) { log('codex fast tier silently dropped by the server — the review ran, at standard tier'); return false }
+  return true
 })
 // What actually looked at this diff. Configured vs delivered are different numbers — a seat
 // can be dropped by keepNamed — and the conductor should not have to know FABRIC to report
