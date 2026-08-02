@@ -9,7 +9,7 @@ export const meta = {
     { title: 'Review', detail: 'build gate + adversarial/correctness/security/simplify + AC evidence check' },
     { title: 'Fix', detail: '≤3 rounds; effort by severity; parallel over disjoint files; codex re-verify; opus max adjudication' },
     { title: 'PR', detail: 'doc-sync, rebase, push, open PR' },
-    { title: 'PostPush', detail: 'complementary lenses ∥ external reviewers → fable triage → fix round' },
+    { title: 'PostPush', detail: 'complementary codex lenses (sol high; comments on luna max) ∥ external reviewers → fable triage → fix round' },
     { title: 'Ledger', detail: 'per-AC evidence ledger on the PR' },
     { title: 'Handoff', detail: 'head-sync guard + final CI rollup + Closes-link + late-external read' },
   ],
@@ -374,9 +374,13 @@ Detect and run the project's lint+test commands (Rust: \`cargo clippy --workspac
 On failure: fix in atomic commits and re-run (max a few rounds), then report.
 ${transientRule}`
 
-const codexAdversarialPrompt = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this seat would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:
-${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE} --timeout-secs 540${CODEX_EFFORT ? ` --effort ${CODEX_EFFORT}` : ''}${codexTuning}
-.ok true → map .findings[] into the findings schema MECHANICALLY — field transcription, not
+// Every codex review seat (the fabric's adversarial leg AND the post-push lenses) shares
+// one command builder and one envelope contract — if a mapping rule appears twice, one
+// copy is a bug.
+const codexBashNote = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this seat would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:`
+const codexReviewCmd = ({ model = CODEX_MODEL, effort = CODEX_EFFORT, fast = CODEX_FAST } = {}) =>
+  `${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE} --timeout-secs 540${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}${fast ? ' --fast' : ''}`
+const codexEnvelopeRules = `.ok true → map .findings[] into the findings schema MECHANICALLY — field transcription, not
 reinterpretation: severity→severity (same enum), title→title, file→file, line→line,
 detail = detail plus " Recommendation: <recommendation>" when non-empty, systemic=false
 unless the finding is genuinely cross-crate-refactor scale, confidence = 55 (codex findings
@@ -390,6 +394,10 @@ title "CODEX_UNAVAILABLE: <error.kind> — <one-line reason>" (kind UNKNOWN when
 envelope), file "", line 0, detail = the envelope's error.detail or the raw failure,
 systemic false, confidence 100 — an errored review must be visible as unavailable, never as
 a clean pass.`
+
+const codexAdversarialPrompt = `${codexBashNote}
+${codexReviewCmd()}
+${codexEnvelopeRules}`
 
 const reviewScope = `Review the diff (\`git -C ${WT} diff ${BASE}...HEAD\`) for issue #${A.issueNumber}. Cite file:line. Severity per finding — severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium. Set confidence per finding (0-100: is it real — not severity). Set systemic=true ONLY for cross-crate-refactor-scale work that cannot fit this PR.`
 const correctnessPrompt = `${reviewScope}
@@ -457,12 +465,29 @@ ${here}${ENV_NOTE}
 ${transientRule}
 Report prNumber, prUrl, rebased, conflict, headPushed, closesLinked.`
 
-const lensPrompts = {
-  tests: `${reviewScope}\nFocus: behavioural test coverage — gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behaviour, missing edge/failure cases.`,
-  'silent-failures': `${reviewScope}\nFocus: silent failures — swallowed errors, catch-and-continue, fallbacks masking faults, missing error propagation/logging.`,
-  comments: `${reviewScope}\nFocus: comment accuracy — comments the diff made stale, missing constraint documentation on non-obvious code, comment rot.`,
-  types: `${reviewScope}\nFocus: type design in added/modified types — invariant expression, encapsulation, impossible-states-representable problems.`,
+// Post-push lenses run on the codex transport — the complementary sweep is cross-model,
+// not opus re-reading its own family's diff. sol/high holds the judgment-heavy lenses;
+// comments is the most mechanical of the four, so it takes luna/max (the cheap-depth seat,
+// framework §2 — sanctioned here precisely because it is NOT the decorrelation seat).
+// Seats are pinned: --codex-model/--codex-effort tune the fabric seats only; --codex-fast
+// passes through. This also drops the pr-review-toolkit agentType dependency.
+const LENS_SEATS = {
+  tests: { model: 'gpt-5.6-sol', effort: 'high' },
+  'silent-failures': { model: 'gpt-5.6-sol', effort: 'high' },
+  comments: { model: 'gpt-5.6-luna', effort: 'max' },
+  types: { model: 'gpt-5.6-sol', effort: 'high' },
 }
+const LENS_FOCUS = {
+  tests: 'Focus ONLY: behavioural test coverage — gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behaviour, missing edge/failure cases.',
+  'silent-failures': 'Focus ONLY: silent failures — swallowed errors, catch-and-continue, fallbacks masking faults, missing error propagation/logging.',
+  comments: 'Focus ONLY: comment accuracy — comments the diff made stale, missing constraint documentation on non-obvious code, comment rot.',
+  types: 'Focus ONLY: type design in added/modified types — invariant expression, encapsulation, impossible-states-representable problems.',
+}
+const lensPrompts = Object.fromEntries(Object.keys(LENS_SEATS).map((k) => [k, `${codexBashNote}
+${codexReviewCmd(LENS_SEATS[k])} <<'FOCUS'
+${LENS_FOCUS[k]}
+FOCUS
+${codexEnvelopeRules}`]))
 
 const externalPollPrompt = (pr) => `Collect external reviewer feedback on PR #${pr.prNumber} (bots: ${EXTERNAL_BOTS.join(', ')}).
 Poll up to ${EXTERNAL_WAIT_MINUTES} minutes total: check every ~45s with
@@ -884,13 +909,10 @@ if (escalate || pr.conflict) {
 phase('PostPush')
 const [lensResults, external] = await parallel([
   () => parallel(Object.entries(lensPrompts).map(([k, p]) => () =>
-    salvageableAgent(p, {
-      label: `lens:${k}`, phase: 'PostPush', model: 'opus', effort: 'high', schema: FINDINGS,
-      agentType: { tests: 'pr-review-toolkit:pr-test-analyzer', 'silent-failures': 'pr-review-toolkit:silent-failure-hunter', comments: 'pr-review-toolkit:comment-analyzer', types: 'pr-review-toolkit:type-design-analyzer' }[k],
-    }))),
+    salvageableAgent(p, { label: `lens:${k}`, phase: 'PostPush', model: 'sonnet', effort: 'low', schema: FINDINGS }))),
   () => safeAgent(externalPollPrompt(pr), { label: 'external:poll', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: EXTERNAL }),
 ])
-const lensFindings = dedupeFindings(keepNamed(Object.keys(lensPrompts), lensResults || [], 'lens').flatMap((r) => r.findings || []))
+const lensFindings = dedupeFindings(dropCodexMarker(keepNamed(Object.keys(lensPrompts), lensResults || [], 'lens').flatMap((r) => r.findings || [])))
 const ext = external || { items: [], receivedAny: false, timedOut: true }
 log(`post-push: ${lensFindings.length} lens finding(s); external receivedAny=${ext.receivedAny} timedOut=${ext.timedOut}`)
 

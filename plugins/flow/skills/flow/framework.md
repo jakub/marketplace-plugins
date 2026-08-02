@@ -62,8 +62,9 @@ Nothing enters the tracker except through here.
    edited in place — docs correct what the diff made false, they do not grow per PR.
 10. **Push PR** mid-run: summary + changelog description. Externals see code that already
     survived the internal loop.
-11. **Post-push, parallel tracks**: complementary self-review (test quality, silent
-    failures, comment rot, type design — the lenses the fabric doesn't cover) ∥ external
+11. **Post-push, parallel tracks**: complementary review on the codex transport (test
+    quality, silent failures, type design at sol `high`; comment rot on luna `max` — the
+    most mechanical lens takes the cheap-depth seat) ∥ external
     reviewers (coderabbit et al.): poll for review-posted, ~10–15 min cap; silent externals
     never stall the run; stale-SHA findings revalidated against HEAD.
 12. **Synthesis fix round** (fable → opus; taste seat — signal vs noise): fold internal + external findings into one
@@ -99,10 +100,10 @@ plan, fix this bug — is opus's, and opus has the `xhigh`/`max` rungs fable doe
 | | role | effort | skip when |
 |---|---|---|---|
 | fable 5 | taste seats: conduct, grill, synthesise, clean-design leg, triage external findings | `high` (its ceiling — no xhigh/max) | security-flavored payloads → route to opus; auto-fallback opus on refusal/null |
-| opus 5 | workhorse: implementation, both design-adjacent review seats, fixes, adjudication, PR lenses | routed, not pinned: `medium` is the default working rung (it reads instructions more literally and scopes tighter), `xhigh` where a miss ships — hard plans, critical/high fixes, correctness/security/AC — `max` for adjudication alone | pure taste calls (fable's seat) |
+| opus 5 | workhorse: implementation, both design-adjacent review seats, fixes, adjudication | routed, not pinned: `medium` is the default working rung (it reads instructions more literally and scopes tighter), `xhigh` where a miss ships — hard plans, critical/high fixes, correctness/security/AC — `max` for adjudication alone | pure taste calls (fable's seat) |
 | sonnet 5 | mechanical: gates, wrappers, transports, scouts, ledgers, salvage reads | `low` for wrappers, `medium` for anything with a verdict in it; `xhigh` exists on this tier now — try it before escalating a tier on hard mechanical work | any embedded design judgment |
 | gpt-5.6-sol | external decorrelation: outside design opinion, adversarial review, general delegation. reach it ONLY via the **codex-delegate** agent or the codex-exec transport (`plugins/flow/scripts/codex-exec.mjs`) — the companion plugin, `/codex:*` commands, and codex-rescue agent no longer exist | efforts `minimal…max`, server-gated per model; `xhigh` — codex config default (`~/.codex/config.toml`, as of 2026-08); pin `--model`/`--effort` per call. `--fast` = priority service tier — fails OPEN upstream (unsupported tier silently dropped), so trust the envelope's `fast.applied`, never the request | taste-critical surfaces; codex-reviewing-codex |
-| gpt-5.6-terra / -luna | mid / nano tiers for bulk, latency-sensitive, or high-volume delegation through the same transport; luna+`max`+`--fast` is the cheap-depth combo for mechanical sweeps | same surface as sol | the adversarial-review seat — decorrelation needs intelligence, not throughput |
+| gpt-5.6-terra / -luna | mid / nano tiers for bulk, latency-sensitive, or high-volume delegation through the same transport; luna+`max`+`--fast` is the cheap-depth combo for mechanical sweeps (it holds the post-push comments lens) | same surface as sol | the adversarial-review seat — decorrelation needs intelligence, not throughput |
 | haiku | — retired | | always |
 
 **Refusals are a routing constraint, not an edge case.** Both fable and opus 5 run cyber

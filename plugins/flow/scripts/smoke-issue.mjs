@@ -144,6 +144,15 @@ let happyStub
     check(logs.some((l) => /fallback opus\/high/.test(l)), 'the impl fallback goes one rung UP, not down')
     check(result.coverage && result.coverage.reviews.includes('codex'), 'coverage names the configured review lenses')
     check(result.coverage && result.coverage.reviewsDelivered === 4, `all 4 lenses delivered (got ${result.coverage && result.coverage.reviewsDelivered})`)
+    const lensComments = calls.find((c) => c.label === 'lens:comments')
+    check(lensComments && /adversarial-review/.test(lensComments.prompt) && /--effort max/.test(lensComments.prompt) && /--model gpt-5\.6-luna/.test(lensComments.prompt),
+      'comments lens runs luna/max on the codex transport')
+    for (const k of ['tests', 'silent-failures', 'types']) {
+      const c = calls.find((x) => x.label === `lens:${k}`)
+      check(c && /--effort high/.test(c.prompt) && /--model gpt-5\.6-sol/.test(c.prompt), `${k} lens runs sol/high on the codex transport`)
+    }
+    const lensTests = calls.find((c) => c.label === 'lens:tests')
+    check(lensTests && /behavioural test coverage/.test(lensTests.prompt) && /<<'FOCUS'/.test(lensTests.prompt), 'lens focus rides the transport stdin')
   } else {
     failures++
     console.error('  FAIL: no result object returned')
@@ -198,6 +207,9 @@ console.log('codex seat overrides (luna/max/fast, explicit pluginRoot)')
     check(c && /timeout parameter set to 600000/.test(c.prompt) && /--timeout-secs 540/.test(c.prompt),
       `${name} leg sizes the Bash timeout against the transport's 540s total budget`)
   }
+  const lensT = calls.find((c) => c.label === 'lens:tests')
+  check(lensT && /--model gpt-5\.6-sol/.test(lensT.prompt) && /--effort high/.test(lensT.prompt), 'lens seats stay pinned under --codex-* overrides')
+  check(lensT && /--fast/.test(lensT.prompt), '--codex-fast passes through to the lens seats')
   check(logs.some((l) => /codex seat overrides: model=gpt-5\.6-luna effort=max fast=true/.test(l)), 'overrides are logged at launch')
   check(logs.some((l) => /fast tier silently dropped/.test(l)), 'CODEX_FAST_DEGRADED marker is logged')
   check(result && !(result.droppedLow || []).some((f) => /CODEX_FAST_DEGRADED/.test(f.title)), 'marker finding dropped, not surfaced as review signal')
