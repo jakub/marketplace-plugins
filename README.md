@@ -18,6 +18,7 @@ copies — after editing this repo, reinstall the affected plugin to go live.
 |---|---|---|
 | **flow** | `flow@jakub` | A disciplined prep → issue → land development pipeline for solo/greenfield projects, plus the engineering charter that governs it. See below. |
 | **grill** | `grill@jakub` | Relentless design interrogation and the domain-model doc discipline it feeds — `grill-with-docs`, `grilling`, `domain-modeling`. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT); see `plugins/grill/NOTICE`. |
+| **simple-english** | `simple-english@jakub` | Write or check technical text against ASD-STE100 Simplified Technical English — docs, runbooks, error messages, release notes, agent prompts. Vendored from [AminBlg/SimpleEnglish](https://github.com/AminBlg/SimpleEnglish) (MIT); see `plugins/simple-english/NOTICE`. |
 
 _More to come — each new plugin is a directory under `plugins/` listed in the marketplace manifest._
 

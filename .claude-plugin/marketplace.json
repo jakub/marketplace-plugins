@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "jakub's Claude Code marketplace — plugins and skill bundles.",
-    "version": "0.7.0"
+    "version": "0.8.0"
   },
   "plugins": [
     {
@@ -25,6 +25,15 @@
         "name": "jakub"
       },
       "source": "./plugins/grill"
+    },
+    {
+      "name": "simple-english",
+      "description": "Write or check technical text against ASD-STE100 Simplified Technical English — docs, runbooks, error messages, release notes, agent prompts. Vendored from AminBlg/SimpleEnglish (MIT).",
+      "version": "0.1.0",
+      "author": {
+        "name": "jakub"
+      },
+      "source": "./plugins/simple-english"
     }
   ]
 }
