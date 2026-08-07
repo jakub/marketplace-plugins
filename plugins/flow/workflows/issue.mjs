@@ -457,9 +457,14 @@ ${here}
 Build a markdown table: Criterion | Verdict | Evidence — one row per acceptance criterion, from the
 AC check below. Evidence cells carry the concrete pointer (test name + result, command + output tail,
 file:line). Where the diff touches a web UI AND a dev/test server can be started cheaply AND
-playwright (npx playwright) is available: capture a screenshot per UI-facing criterion, commit
-screenshots to the branch \`flow-evidence\` (create orphan if missing, never main), and link the
-blob URLs. Skip screenshots cleanly if any precondition is missing — say so in the ledger.
+playwright (npx playwright) is available: capture a screenshot per UI-facing criterion. Home the
+images in the repo's own committed-evidence convention when one exists (e.g. a visual-evidence/
+dir already on the branch); otherwise commit them to the branch \`flow-evidence\` (create orphan
+if missing, never main). Either way EMBED the key screenshots inline in the ledger — markdown
+image syntax over SHA-pinned raw URLs (\`![label](https://github.com/<owner>/<repo>/raw/<commit-sha>/<path>)\`,
+exact commit SHA, never a branch name, so embeds survive branch deletion and rebase) — and link
+the rest from their Evidence cells. Skip screenshots cleanly if any precondition is missing — say
+so in the ledger.
 Post with \`gh pr comment ${pr.prNumber} --body-file <tmpfile>\`. Write long output to a temp file, not the chat.
 ${transientRule}
 
