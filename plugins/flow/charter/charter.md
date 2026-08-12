@@ -3,11 +3,18 @@ engineering charter, injected by the flow plugin every session. how we build; th
 CLAUDE.md covers who the user is. deep reference, setup, and drift audits: the `flow` skill.
 
 <delegation>
-standing permission: spawn agents at whatever model + effort fits, without asking. prefer
-many scoped agents living in the low end of their context windows over marathon threads —
-the main context is the decision layer; agents are the sensory organs. keep file scans and
-command output in subagents; only conclusions come home.
+standing permission: spawn agents at whatever model + effort fits, without asking. the main
+context is the decision layer, agents are the sensory organs: keep file scans and command
+output in subagents; only conclusions come home.
+- delegation is not free: each agent re-establishes context and reports back, and you re-read
+  the report. delegate for genuinely independent, sizeable tracks — not for work you could
+  finish in a handful of tool calls, and never to verify your own work (that belongs in your
+  own loop). keep spawn counts low; commit to a delegation rather than re-deriving it. never
+  more than 20 parallel agents unless i ask.
 - agents return typed results (schemas) or write journals to disk — never vibes-prose.
+- subagents do NOT inherit this charter — only `fork` does, by copying your context. a fresh
+  agent gets the harness defaults instead, including the ones this charter overrides. carry
+  anything non-negotiable into the prompt yourself; the git rules are hooks, so they travel.
 - pure locate/search fan-outs (built-in Explore et al.) spawn with `model: sonnet` — search
   needs eyes, not the session model's judgment or its price tag. escalate only when the
   search itself needs judgment.
@@ -19,34 +26,37 @@ command output in subagents; only conclusions come home.
   remembered package versions — verify against the registry before pinning.
 - search: prefer the fff MCP when its edge applies — `multi_grep` for case-variant/OR
   sweeps in one call, frecency ranking for "recently touched" locate queries; built-in
-  grep otherwise. (usage trial — judge at the next /doctor.)
+  grep otherwise. (usage trial — judge at the next `/flow drift`.)
 </delegation>
 
 <models>
-model rankings, higher = better. costs represent the real-world (fable is expensive, codex subscription gives gpt-5.6-sol at an incredible price). intelligence is how hard a problem you can hand the model unsupervised. taste includes UI/UX, code quality, API design, and copy text.
+model rankings, higher = better on every axis. cheapness is per-token spend inverted —
+gpt-5.6-sol is ~free on the codex sub, fable is the expensive one. intelligence is how hard a
+problem you can hand the model unsupervised. taste covers UI/UX, code quality, API design,
+and copy text.
 
-| model       | cost | intelligence | taste |
-|--------------------------------------------
-| sonnet-5    | 5    | 5            | 7     |
-| opus-4.8    | 4    | 7            | 8     |
-| gpt-5.6-sol | 7    | 8            | 5     |
-| fable 5     | 2    | 9            | 9     |
+| model        | cheapness | intelligence | taste |
+|-------------------------------------------------
+| sonnet-5     | 5         | 6            | 6     |
+| opus-5       | 4         | 8            | 8     |
+| fable 5      | 2         | 9            | 9     |
+| gpt-5.6-sol  | 7         | 8            | 5     |
+| gpt-5.6-luna | 9         | 5            | 4     |
 
-- fable 5 (`low`, `medium`, `high` only): every judgment seat — orchestration, planning, architecture, 
-- synthesis, adjudication, grilling. the human replacement. skip for security-flavored payloads
-  (classifier roulette): route those to opus, and auto-fallback to opus on any refusal/null.
-- opus 4.8 (`high`/`xhigh`): the workhorse — implementation, correctness + security
-  review, fix loops, anything where wrong answers are expensive.
-- sonnet 5: mechanical work with a complete spec; `low` for pure command wrappers.
-- gpt-5.6-sol via codex (`high` default; ~free, flat-rate sub): the decorrelated outside opinion — architecture
-  second-passes, adversarial review — and general delegation whenever an independent brain
-  helps. use the codex-delegate agent or /codex:* commands — never the codex-rescue agent
-  (write-capable by default, returns nothing on failure). avoid codex-reviewing-codex.
-- haiku: retired. do not use.
-
-these are defaults, not limits: judge the output, not the price tag — escalating costs less than
-shipping mediocre work. you have my standing permission to re-run or redo a task with a more 
-capable model if you're not happy with the results. on anything that ships: intelligence > taste > cost. anything user-facing (UI, copy text, API design) must have taste >= 7.
+opus is the DEFAULT CODE WRITER — implementation, fixes, review, adjudication. it beats fable
+on several coding benchmarks and has the effort ladder fable lacks. reach for fable on DEPTH
+and TASTE: deep architectural calls, reconciling rival designs, "best long-term shape",
+reviewer signal-vs-noise, copy and UI — not for turning a settled plan into code. sonnet
+transcribes a complete spec; gpt-5.6-sol is the decorrelated outside brain. per-model effort
+ladders, seat assignments, and which codex agent to use: the `flow` skill. haiku is retired.
+- fable and opus both run cyber classifiers: a refused seat returns null, indistinguishable
+  from a dead agent. every refusable seat needs a fallback on the OTHER family and a visible
+  marker when both come back empty — a review seat that silently vanishes reads as a pass.
+- route effort off a signal you already have (difficulty, severity), never one pinned number.
+  lower effort reads instructions more literally and scopes tighter — the anti-wandering lever.
+- defaults, not limits: standing permission to re-run or escalate whenever you're not happy
+  with the output — escalating costs less than shipping mediocre work. on anything that
+  ships: intelligence > taste > cost. anything user-facing must have taste >= 7.
 </models>
 
 <pipeline>
@@ -59,6 +69,9 @@ a pushed, reviewed, evidenced PR. /flow:land is the only place a merge happens.
 - the issue is the record: body = living spec (edit in place), comments = append-only stage
   journal. permanent decisions graduate to ADRs on main.
 - acceptance criteria leave evidence: tests, transcripts, screenshots — linked per criterion.
+- ad-hoc work (spikes, hunches, mid-session deviations) gets prep's discipline without the
+  ticket: blind-spot pass first — name what i haven't told you that would change the shape —
+  then interview me one question at a time, prioritising answers that change the architecture.
 </pipeline>
 
 <verification>
@@ -96,9 +109,7 @@ go to disk with a summary in chat — chat messages truncate, disk doesn't.
 </git>
 
 <debugging>
-root cause, not symptom-patches — even under time pressure. read the code before theorising.
-one hypothesis at a time; revert failed fixes rather than stacking. say "i don't understand
-X" instead of guessing. hard bugs get the full loop: reproduce → minimise → instrument →
-regression-test.
+root cause, not symptom-patches — even under time pressure. revert failed fixes rather than
+stacking them. hard bugs get the full loop: reproduce → minimise → instrument → regression-test.
 </debugging>
 </flow-charter>

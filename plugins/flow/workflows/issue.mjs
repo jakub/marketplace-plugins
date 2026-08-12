@@ -5,11 +5,11 @@ export const meta = {
     { title: 'Size', detail: 'coarse triage → design/review fabric allocation' },
     { title: 'Design', detail: 'minimal ∥ clean ∥ codex, in parallel' },
     { title: 'Synthesize', detail: 'one plan + difficulty routing', model: 'fable' },
-    { title: 'Implement', detail: 'TDD; fable default (opus/sonnet fallback; impl seat overridable via args)' },
+    { title: 'Implement', detail: 'TDD; effort routed by difficulty (sonnet for mechanical; impl seat overridable via args)' },
     { title: 'Review', detail: 'build gate + adversarial/correctness/security/simplify + AC evidence check' },
-    { title: 'Fix', detail: '≤3 rounds; parallel over disjoint files; codex re-verify; fable adjudication' },
+    { title: 'Fix', detail: '≤3 rounds; effort by severity; parallel over disjoint files; codex re-verify; opus max adjudication' },
     { title: 'PR', detail: 'doc-sync, rebase, push, open PR' },
-    { title: 'PostPush', detail: 'complementary lenses ∥ external reviewers → fable triage → fix round' },
+    { title: 'PostPush', detail: 'complementary codex lenses (sol high; comments on luna max) ∥ external reviewers → fable triage → fix round' },
     { title: 'Ledger', detail: 'per-AC evidence ledger on the PR' },
     { title: 'Handoff', detail: 'head-sync guard + final CI rollup + Closes-link + late-external read' },
   ],
@@ -19,11 +19,21 @@ export const meta = {
 const FIX_ROUND_CAP = 3
 const EXTERNAL_WAIT_MINUTES = 15 // post-push cap on waiting for coderabbit et al. (Handoff re-checks once more at close)
 
-// Design/review breadth by size. Judgment seats (synthesis, adjudication, triage) sit on
-// fable for anything non-trivial; trivial synthesis stays on opus — the fan-out is already
-// two designs and the decision space is small.
+// Design/review breadth by size. Seat routing splits by what the seat is actually doing:
+// taste-mixed judgment (reconciling rival designs, separating reviewer noise from signal)
+// sits on fable; pure reasoning and coding (adjudication, implementation, fixes) sits on
+// opus at the top of its effort ladder, which fable does not have. Trivial synthesis stays
+// on opus — the fan-out is already two designs and the decision space is small.
+// The codex leg is in EVERY row deliberately. It is a sonnet/low transport over a
+// flat-rate subscription, so it is the cheapest seat in the fabric — and it is the only
+// cross-model signal in the run, and the gate on the post-loop re-verification. Cutting it
+// from the smallest bucket saved almost nothing and meant a misclassified issue got no
+// decorrelated review at all, which reads as a clean fabric because fewer things looked.
+// `medium` and `large` are intentionally identical — the panel is already at full width by
+// `medium`, so `large` buys nothing here and exists as a journal-level signal only. Do not
+// read the duplicate row as an oversight.
 const FABRIC = {
-  trivial: { designs: ['minimal', 'codex'],          synthModel: 'opus',  reviews: ['correctness', 'security'] },
+  trivial: { designs: ['minimal', 'codex'],          synthModel: 'opus',  reviews: ['codex', 'correctness', 'security'] },
   small:   { designs: ['minimal', 'codex'],          synthModel: 'fable', reviews: ['codex', 'correctness', 'simplify', 'security'] },
   medium:  { designs: ['codex', 'minimal', 'clean'], synthModel: 'fable', reviews: ['codex', 'correctness', 'simplify', 'security'] },
   large:   { designs: ['codex', 'minimal', 'clean'], synthModel: 'fable', reviews: ['codex', 'correctness', 'simplify', 'security'] },
@@ -31,13 +41,14 @@ const FABRIC = {
 
 // args (passed by /flow:issue after pre-flight + claim + worktree creation):
 //   { issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree,
-//     branch, base, externalReviewers?, implModel?, implEffort?, envNote? }
+//     branch, base, externalReviewers?, implModel?, implEffort?, envNote?,
+//     codexModel?, codexEffort?, codexFast?, pluginRoot? }
 // May arrive as a parsed object OR a JSON-encoded string; parse defensively.
-// implModel/implEffort override the impl seat (default since 2026-07-11: fable/high for
-// non-mechanical difficulty — slice-C trial worked well; mechanical stays sonnet per the
-// charter's routing). A null result from any seat other than the difficulty-routed
-// opus/sonnet fallback (safety-classifier refusal or terminal error) re-runs on that
-// fallback, so neither an override experiment nor fable roulette can lose the run.
+// implModel/implEffort override the impl seat (default since 2026-07-25: effort routed by
+// the synthesizer's difficulty verdict — mechanical sonnet/medium, standard opus/medium,
+// hard opus/xhigh). A null result re-runs one rung UP on the same tier, or on the routed
+// model when an override put a different one in the seat, so neither an override
+// experiment nor a classifier refusal can lose the run.
 const A = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const WT = A.worktree
 const BASE = A.base || 'origin/main'
@@ -52,7 +63,28 @@ const ENV_NOTE = sentinel(A.envNote)
   ? `\nEnvironment note (hooks/tests need this — e.g. exports required by pre-push hooks): ${sentinel(A.envNote)}`
   : ''
 
-const CODEX_LOCATE = `COMPANION=$(ls ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)`
+// Codex legs run on the codex-exec transport that ships in THIS plugin (the retired
+// companion plugin's cache path broke silently once — never again a dependency we don't
+// carry). Seat overrides are validated here so a typo degrades to the default, visibly,
+// instead of burning the leg on a USAGE envelope. pluginRoot arrives from the conductor's
+// ${CLAUDE_PLUGIN_ROOT}; an uninterpolated literal still contains '$' — treat as unset
+// and fall back to the same-plugin glob (if this workflow runs, flow is installed).
+const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+const codexEffortReq = sentinel(A.codexEffort)
+const CODEX_EFFORT = CODEX_EFFORTS.includes(codexEffortReq) ? codexEffortReq : ''
+if (codexEffortReq && !CODEX_EFFORT) log(`codexEffort '${codexEffortReq}' not in ${CODEX_EFFORTS.join('|')} — ignored, defaults apply`)
+const codexModelReq = sentinel(A.codexModel)
+// Same shape check the transport applies — but HERE it protects the generated shell
+// command (the value is interpolated into a Bash one-liner), not just the codex call.
+const CODEX_MODEL = /^[a-z0-9][a-z0-9.-]*$/.test(codexModelReq) ? codexModelReq : ''
+if (codexModelReq && !CODEX_MODEL) log(`codexModel '${codexModelReq}' has an implausible shape — ignored, defaults apply`)
+const CODEX_FAST = A.codexFast === true || A.codexFast === 'true'
+const PLUGIN_ROOT = (A.pluginRoot || '').includes('$') ? '' : sentinel(A.pluginRoot)
+const CODEX_LOCATE = PLUGIN_ROOT
+  ? `CODEX="${PLUGIN_ROOT}/scripts/codex-exec.mjs"`
+  : `CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)`
+const codexTuning = `${CODEX_MODEL ? ` --model ${CODEX_MODEL}` : ''}${CODEX_FAST ? ' --fast' : ''}`
+if (CODEX_MODEL || CODEX_EFFORT || CODEX_FAST) log(`codex seat overrides: model=${CODEX_MODEL || 'default'} effort=${CODEX_EFFORT || 'default'} fast=${CODEX_FAST}`)
 
 // ── schemas ─────────────────────────────────────────────────────────────────
 const SIZE = {
@@ -257,12 +289,25 @@ const here = `All work happens in the worktree at ${WT}. Keep the persistent she
 
 const transientRule = `If a command fails transiently (rate limit, 401/5xx, network), retry up to 3 times with backoff. If you still cannot get a definitive result, report status "unknown" with the reason — NEVER report a pass you did not observe.`
 
+// You are already a leaf of a fan-out: the workflow spawns the parallelism, the seat does
+// the work. Left uncapped, a write-capable seat opens a second fan-out underneath this one
+// — cost and wall-clock multiply, and two agents editing one file in a shared worktree is a
+// merge conflict with extra steps.
+const delegationRule = `Do the work yourself in this agent. Do NOT spawn subagents: you are already one leaf of a parallel fan-out, and this worktree is shared with sibling agents. Verification belongs in your own loop, never in a delegate.`
+
+// Opus-5-class models expand scope and can call a partially-finished task done; both are
+// cheaper to prevent here than to catch in the review fabric (each costs a fix round).
+const scopeRule = `Deliver the plan's scope and nothing beyond it: no unasked-for abstractions, files, flags, or error handling for cases that cannot happen. Finish the whole task — report completion only when every milestone is genuinely done. If something is truly blocked, complete everything else and say plainly what is missing and why, rather than reporting done.`
+
 const sizePrompt = `Classify the IMPLEMENTATION size of issue #${A.issueNumber} — coarse triage, not a design.
 ${here}
 ${A.contextPack}
 
-Buckets: trivial (one file, mechanical/test-only) · small (1-2 files, contained, obvious shape) · medium (3-6 files or non-obvious design) · large (cross-cutting / new subsystem / migration).
-When torn, pick the smaller unless there is a genuine design decision to make.`
+Buckets: trivial (no production-code risk at all — test-only, doc-only, config-only) · small (1-2 files, contained, obvious shape) · medium (3-6 files or non-obvious design) · large (cross-cutting / new subsystem / migration).
+
+Between small, medium and large: when torn, pick the smaller unless there is a genuine design decision to make.
+
+trivial is NOT "small enough" — it is a separate and stronger claim: that no production code path can regress, however few lines moved. Any change to production code is at minimum small. The verdict buys review coverage, so judge it on what could break, not on line count.`
 
 const architectPrompt = (framing) => `Design the architecture for issue #${A.issueNumber}.
 ${here}
@@ -275,17 +320,19 @@ ${A.contextPack}
 
 Propose ONE concrete approach. Flag deviations from existing patterns and any ambiguity the issue + code cannot resolve.`
 
-const codexDesignPrompt = `Run EXACTLY this, then return codex's design verbatim as your "approach" (fill the other fields from it):
-${CODEX_LOCATE} && node "$COMPANION" task --cwd "${WT}" --effort high <<'PROMPT'
+const codexDesignPrompt = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this leg would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:
+${CODEX_LOCATE} && node "$CODEX" task --cwd "${WT}" --effort ${CODEX_EFFORT || 'high'} --timeout-secs 540${codexTuning} <<'PROMPT'
 You are designing feature architecture for issue #${A.issueNumber} in ${WT}.
 ${A.contextPack}
 Explore the referenced paths and the code they lead to before designing. Propose ONE concrete approach:
 files to create/modify, key type/module decisions, data flow, error handling, test strategy.
 Flag risks and pattern deviations. Long-term maintainability focus. Read-only — write NO files.
 PROMPT
-If codex produces no design for ANY reason (companion not found, CLI error, timeout), set
-approach to exactly "CODEX_UNAVAILABLE: <one-line reason>" and leave every other field empty —
-never fill the schema with a design codex did not write.`
+.ok true → return .output verbatim as your "approach" (fill the other fields from it).
+.ok false, or the command itself fails for ANY reason (transport not found, node error,
+unparseable stdout): set approach to exactly "CODEX_UNAVAILABLE: <error.kind> — <one-line reason>"
+(kind UNKNOWN when there is no envelope) and leave every other field empty — never fill the
+schema with a design codex did not write.`
 
 const synthesizePrompt = (designs, panelNote) => `Synthesize ${designs.length} independent designs for issue #${A.issueNumber} into ONE plan.${panelNote}
 ${here}
@@ -303,8 +350,8 @@ Synthesis rule: default to the MINIMAL-change design; switch to the CLEAN design
 violates a documented decision (docs/adr/, context.md — Read them when present). Cross-model
 disagreement (codex vs claude legs) is signal: resolve it explicitly in "approach", don't average it.
 
-Assign "difficulty" honestly — it routes the implementer (mechanical→sonnet, standard→opus high,
-hard→opus xhigh). Break work into ordered milestones the implementer commits atomically.
+Assign "difficulty" honestly — it routes the implementer (mechanical→sonnet, everything else→opus
+at the top of its effort ladder). Break work into ordered milestones the implementer commits atomically.
 Set blockingAmbiguity ONLY for a blocker that issue+code+docs genuinely cannot settle.`
 
 const implPrompt = (plan) => `Implement issue #${A.issueNumber} against the plan, strict TDD (red → green → refactor).
@@ -317,7 +364,9 @@ Rules:
 - Milestones in order: failing test FIRST, minimum code to pass, refactor.
 - Run the project's test command to see red→green at each step.
 - Commit each milestone atomically (conventional messages, present tense, NO attribution trailers, NEVER --no-verify).
-- Structural deviation from the plan → note it in "deviations". Local deviation → adapt, note in the commit message, keep going.`
+- Structural deviation from the plan → note it in "deviations". Local deviation → adapt, note in the commit message, keep going.
+- ${scopeRule}
+- ${delegationRule}`
 
 const buildGatePrompt = `Run the build gate in the worktree and report status passed/failed/unknown.
 ${here}${ENV_NOTE}
@@ -325,18 +374,30 @@ Detect and run the project's lint+test commands (Rust: \`cargo clippy --workspac
 On failure: fix in atomic commits and re-run (max a few rounds), then report.
 ${transientRule}`
 
-const codexAdversarialPrompt = `Run EXACTLY this:
-${CODEX_LOCATE} && node "$COMPANION" adversarial-review --cwd "${WT}" --base ${BASE} --json
-Stdout is a JSON payload. Map its .result.findings[] into the findings schema MECHANICALLY —
-field transcription, not reinterpretation: severity→severity (same enum), title→title,
-file→file, line_start→line, detail = body plus recommendation if present, systemic=false
+// Every codex review seat (the fabric's adversarial leg AND the post-push lenses) shares
+// one command builder and one envelope contract — if a mapping rule appears twice, one
+// copy is a bug.
+const codexBashNote = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this seat would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:`
+const codexReviewCmd = ({ model = CODEX_MODEL, effort = CODEX_EFFORT, fast = CODEX_FAST } = {}) =>
+  `${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE} --timeout-secs 540${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}${fast ? ' --fast' : ''}`
+const codexEnvelopeRules = `.ok true → map .findings[] into the findings schema MECHANICALLY — field transcription, not
+reinterpretation: severity→severity (same enum), title→title, file→file, line→line,
+detail = detail plus " Recommendation: <recommendation>" when non-empty, systemic=false
 unless the finding is genuinely cross-crate-refactor scale, confidence = 55 (codex findings
-arrive inferred from reading, unverified by execution) unless the payload carries its own score.
-If .result is null or .parseError is set, that is a FAILED review, not an empty one.
-If codex produces no review for ANY reason (companion not found, CLI error, timeout, parse error),
-return exactly one finding: severity "low", title "CODEX_UNAVAILABLE: <one-line reason>", file "",
-line 0, detail the underlying error, systemic false, confidence 100 — an errored review must be
-visible as unavailable, never as a clean pass.`
+arrive inferred from reading, unverified by execution). Empty .findings → empty findings.
+If .fast.requested is true and .fast.applied is false, ADD one finding: severity "low",
+title "CODEX_FAST_DEGRADED", file "", line 0, detail = the envelope's fast/error context,
+systemic false, confidence 100 — the workflow logs and drops it; it is observability, not review signal.
+.ok false, or the command itself fails for ANY reason (transport not found, node error,
+unparseable stdout): return exactly one finding: severity "low",
+title "CODEX_UNAVAILABLE: <error.kind> — <one-line reason>" (kind UNKNOWN when there is no
+envelope), file "", line 0, detail = the envelope's error.detail or the raw failure,
+systemic false, confidence 100 — an errored review must be visible as unavailable, never as
+a clean pass.`
+
+const codexAdversarialPrompt = `${codexBashNote}
+${codexReviewCmd()}
+${codexEnvelopeRules}`
 
 const reviewScope = `Review the diff (\`git -C ${WT} diff ${BASE}...HEAD\`) for issue #${A.issueNumber}. Cite file:line. Severity per finding — severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium. Set confidence per finding (0-100: is it real — not severity). Set systemic=true ONLY for cross-crate-refactor-scale work that cannot fit this PR.`
 const correctnessPrompt = `${reviewScope}
@@ -366,7 +427,9 @@ ${here}
 Finding [${f.severity}] ${f.title} @ ${f.file}:${f.line}
 ${f.detail}
 Plan goal (stay in scope): ${plan.goal}
-Smallest correct fix; commit conventionally (NEVER --no-verify); report what changed.`
+Smallest correct fix; commit conventionally (NEVER --no-verify); report what changed.
+Fix exactly this finding — do not refactor its surroundings or fold in adjacent improvements.
+${delegationRule}`
 
 const adjudicatePrompt = (blocking) => `Adjudicate the blocking findings that survived ${FIX_ROUND_CAP} fix rounds for issue #${A.issueNumber}.
 ${here}
@@ -382,7 +445,11 @@ ${here}
 Read \`git -C ${WT} diff ${BASE}...HEAD --stat\` and the touched files. If the change altered domain
 behaviour, vocabulary, or crate responsibilities: update the affected context.md slice(s) and
 crate AGENTS.md files to match reality. Commit docs-only as \`docs(sync): <what>\` — nothing else
-in the commit. If nothing needs updating, report done with note "no doc drift".`
+in the commit. If nothing needs updating, report done with note "no doc drift".
+Edit the existing prose in place and keep these files as short as they were: correct what the
+diff made false, do not append summary sections, restate the changelog, or pad with context the
+reader can get from the code. A doc that grows on every PR stops being read.
+${delegationRule}`
 
 const prPrompt = `Publish the branch for issue #${A.issueNumber} as a PR.
 ${here}${ENV_NOTE}
@@ -398,12 +465,29 @@ ${here}${ENV_NOTE}
 ${transientRule}
 Report prNumber, prUrl, rebased, conflict, headPushed, closesLinked.`
 
-const lensPrompts = {
-  tests: `${reviewScope}\nFocus: behavioural test coverage — gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behaviour, missing edge/failure cases.`,
-  'silent-failures': `${reviewScope}\nFocus: silent failures — swallowed errors, catch-and-continue, fallbacks masking faults, missing error propagation/logging.`,
-  comments: `${reviewScope}\nFocus: comment accuracy — comments the diff made stale, missing constraint documentation on non-obvious code, comment rot.`,
-  types: `${reviewScope}\nFocus: type design in added/modified types — invariant expression, encapsulation, impossible-states-representable problems.`,
+// Post-push lenses run on the codex transport — the complementary sweep is cross-model,
+// not opus re-reading its own family's diff. sol/high holds the judgment-heavy lenses;
+// comments is the most mechanical of the four, so it takes luna/max (the cheap-depth seat,
+// framework §2 — sanctioned here precisely because it is NOT the decorrelation seat).
+// Seats are pinned: --codex-model/--codex-effort tune the fabric seats only; --codex-fast
+// passes through. This also drops the pr-review-toolkit agentType dependency.
+const LENS_SEATS = {
+  tests: { model: 'gpt-5.6-sol', effort: 'high' },
+  'silent-failures': { model: 'gpt-5.6-sol', effort: 'high' },
+  comments: { model: 'gpt-5.6-luna', effort: 'max' },
+  types: { model: 'gpt-5.6-sol', effort: 'high' },
 }
+const LENS_FOCUS = {
+  tests: 'Focus ONLY: behavioural test coverage — gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behaviour, missing edge/failure cases.',
+  'silent-failures': 'Focus ONLY: silent failures — swallowed errors, catch-and-continue, fallbacks masking faults, missing error propagation/logging.',
+  comments: 'Focus ONLY: comment accuracy — comments the diff made stale, missing constraint documentation on non-obvious code, comment rot.',
+  types: 'Focus ONLY: type design in added/modified types — invariant expression, encapsulation, impossible-states-representable problems.',
+}
+const lensPrompts = Object.fromEntries(Object.keys(LENS_SEATS).map((k) => [k, `${codexBashNote}
+${codexReviewCmd(LENS_SEATS[k])} <<'FOCUS'
+${LENS_FOCUS[k]}
+FOCUS
+${codexEnvelopeRules}`]))
 
 const externalPollPrompt = (pr) => `Collect external reviewer feedback on PR #${pr.prNumber} (bots: ${EXTERNAL_BOTS.join(', ')}).
 Poll up to ${EXTERNAL_WAIT_MINUTES} minutes total: check every ~45s with
@@ -473,6 +557,15 @@ ${JSON.stringify(acCheck, null, 2)}`
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
 const SEV_RANK = { critical: 3, high: 2, medium: 1, low: 0 }
+const EFFORT_LADDER = ['low', 'medium', 'high', 'xhigh', 'max']
+const XHIGH = EFFORT_LADDER.indexOf('xhigh')
+// One rung up, capped at xhigh (max is reserved for adjudication) and never downward.
+const bumpEffort = (e) => {
+  const i = EFFORT_LADDER.indexOf(e)
+  return i === -1 ? 'xhigh' : EFFORT_LADDER[Math.max(i, Math.min(i + 1, XHIGH))]
+}
+// Harness ceiling — re-verify when the tier's effort range changes: fable has no xhigh/max.
+const clampFable = (m, e) => (m === 'fable' && (e === 'xhigh' || e === 'max') ? 'high' : e)
 const isBlocking = (f) => SEV_RANK[f.severity] >= 1 && !f.systemic // crit/high/medium in-diff: fix, don't defer
 const isEscalationGrade = (f) => SEV_RANK[f.severity] >= 2
 const normTitle = (t) => (t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
@@ -504,6 +597,12 @@ function dedupeFindings(findings) {
   return [...byKey.values()].sort((a, b) => SEV_RANK[b.severity] - SEV_RANK[a.severity])
 }
 
+// Fix effort by severity. The re-gate + re-review at the end of every round IS the
+// verification, so a routine fix does not need to be the most expensive agent in the run —
+// a wrong one gets caught and re-dispatched. Criticals and highs keep the headroom because
+// their fixes are the ones that burn a round when they land wrong.
+const fixEffort = (f) => (SEV_RANK[f.severity] >= 2 ? 'xhigh' : 'medium')
+
 // Dispatch fixes concurrently when every finding names a distinct file; serially otherwise
 // (shared worktree — two agents editing one file is a merge conflict with extra steps).
 async function dispatchFixes(items, plan, roundLabel) {
@@ -512,11 +611,11 @@ async function dispatchFixes(items, plan, roundLabel) {
   const results = []
   if (disjoint) {
     const fixed = await parallel(items.map((f) => () =>
-      salvageableAgent(fixPrompt(f, plan), { label: `fix:${roundLabel}:${f.file}`, phase: 'Fix', model: 'opus', effort: 'high', schema: IMPL_RESULT })))
+      salvageableAgent(fixPrompt(f, plan), { label: `fix:${roundLabel}:${f.file}`, phase: 'Fix', model: 'opus', effort: fixEffort(f), schema: IMPL_RESULT })))
     items.forEach((f, i) => results.push({ ...f, round: roundLabel, fixSummary: fixed[i]?.summary || '' }))
   } else {
     for (const f of items) {
-      const fixed = await salvageableAgent(fixPrompt(f, plan), { label: `fix:${roundLabel}:${f.file || f.title}`, phase: 'Fix', model: 'opus', effort: 'high', schema: IMPL_RESULT })
+      const fixed = await salvageableAgent(fixPrompt(f, plan), { label: `fix:${roundLabel}:${f.file || f.title}`, phase: 'Fix', model: 'opus', effort: fixEffort(f), schema: IMPL_RESULT })
       results.push({ ...f, round: roundLabel, fixSummary: fixed?.summary || '' })
     }
   }
@@ -557,9 +656,11 @@ Report durability: immediately BEFORE emitting your structured report, also writ
     { label: `${opts.label}:salvage`, phase: opts.phase, model: 'sonnet', effort: 'low', schema: opts.schema })
 }
 
-// Fable holds the judgment seats, but its safety classifiers can bounce security-flavored
-// content (agent() → null). Fall back to opus rather than losing the stage. Both legs are
-// salvageable: fable → salvage fable's report → opus → salvage opus's report.
+// Fable holds the TASTE seats — reconciling rival designs, separating reviewer signal from
+// noise — where its judgment edge shows and its `high` ceiling doesn't bite. Its safety
+// classifiers can still bounce security-flavored content (agent() → null), so fall back to
+// opus rather than losing the stage. Both legs are salvageable: fable → salvage fable's
+// report → opus → salvage opus's report.
 async function judge(prompt, opts) {
   const r = await salvageableAgent(prompt, { ...opts, model: 'fable', effort: 'high' })
   if (r !== null) return r
@@ -567,21 +668,45 @@ async function judge(prompt, opts) {
   return salvageableAgent(prompt, { ...opts, model: 'opus', effort: 'xhigh', label: `${opts.label}:opus-fallback` })
 }
 
+// Opus holds the REASONING seats — is this finding real, does this code do what it claims —
+// at the top of an effort ladder fable does not have. The retry is one notch down on the
+// same tier: insurance against a terminal error, not against a refusal (a payload the
+// classifiers decline at `max` declines at `high` too — that case falls through to the
+// caller's own null handling, which escalates rather than swallows).
+async function reason(prompt, opts) {
+  const top = opts.effort || 'max'
+  const r = await salvageableAgent(prompt, { ...opts, model: 'opus', effort: top })
+  if (r !== null) return r
+  log(`${opts.label}: opus/${top} returned null → retrying at high`)
+  return salvageableAgent(prompt, { ...opts, model: 'opus', effort: 'high', label: `${opts.label}:retry` })
+}
+
 const designThunks = {
   codex: () => salvageableAgent(codexDesignPrompt, { label: 'design:codex', phase: 'Design', model: 'sonnet', effort: 'low', schema: DESIGN }),
-  minimal: () => salvageableAgent(architectPrompt('minimal'), { label: 'design:minimal', phase: 'Design', agentType: 'flow:code-architect', model: 'sonnet', schema: DESIGN }),
-  clean: () => salvageableAgent(architectPrompt('clean'), { label: 'design:clean', phase: 'Design', agentType: 'flow:code-architect', model: 'opus', effort: 'high', schema: DESIGN }),
+  // The modal winner: synthesis defaults to the minimal design, and this leg appears in
+  // every size bucket (on trivial/small it is one of only two). Staffing the design most
+  // likely to BECOME the plan cheaper than the panel around it was backwards.
+  minimal: () => salvageableAgent(architectPrompt('minimal'), { label: 'design:minimal', phase: 'Design', agentType: 'flow:code-architect', model: 'opus', effort: 'medium', schema: DESIGN }),
+  // Taste seat — "the best long-term design" is the axis fable leads on, and it is the
+  // agent's own declared default. A refusal here costs a thinned panel, which the
+  // panelNote already discloses to the synthesizer; it cannot lose the run.
+  clean: () => salvageableAgent(architectPrompt('clean'), { label: 'design:clean', phase: 'Design', agentType: 'flow:code-architect', model: 'fable', effort: 'high', schema: DESIGN }),
 }
+// Blocking-signal seats (correctness, security) run at xhigh: reviewing a diff with
+// execution is agentic work, and a miss here ships. The complementary seats stay a notch
+// down — start high where it matters, sweep from measurements, not from the price tag.
 const reviewThunks = {
   codex: () => salvageableAgent(codexAdversarialPrompt, { label: 'review:codex', phase: 'Review', model: 'sonnet', effort: 'low', schema: FINDINGS }),
-  correctness: () => salvageableAgent(correctnessPrompt, { label: 'review:correctness', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
-  simplify: () => salvageableAgent(simplifyPrompt, { label: 'review:simplify', phase: 'Review', model: 'sonnet', schema: FINDINGS }),
-  security: () => salvageableAgent(securityPrompt, { label: 'review:security', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
+  correctness: () => salvageableAgent(correctnessPrompt, { label: 'review:correctness', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'xhigh', schema: FINDINGS }),
+  // Not a cheap seat: its findings are authorised up to `medium`, and medium is the
+  // blocking threshold — so this seat decides what enters the fix loop on a taste axis.
+  simplify: () => salvageableAgent(simplifyPrompt, { label: 'review:simplify', phase: 'Review', model: 'opus', effort: 'medium', schema: FINDINGS }),
+  security: () => salvageableAgent(securityPrompt, { label: 'review:security', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'xhigh', schema: FINDINGS }),
 }
 
 // ── pipeline ─────────────────────────────────────────────────────────────────
 phase('Size')
-const sized = (await safeAgent(sizePrompt, { label: 'size', phase: 'Size', model: 'sonnet', schema: SIZE }))
+const sized = (await safeAgent(sizePrompt, { label: 'size', phase: 'Size', model: 'sonnet', effort: 'medium', schema: SIZE }))
   || { size: 'medium', expectedFiles: 0, rationale: 'size agent unavailable — defaulting to medium' }
 const fabric = FABRIC[sized.size] || FABRIC.medium
 log(`size=${sized.size}: ${sized.rationale} → designs[${fabric.designs.join(',')}] synth=${fabric.synthModel} reviews[${fabric.reviews.join(',')}]`)
@@ -613,14 +738,27 @@ if (!plan) throw new Error('synthesis returned null on both fable and opus — r
 const amb = sentinel(plan.blockingAmbiguity)
 if (amb) return { escalation: 'needs-info', questions: amb, plan: { goal: plan.goal } }
 
-// Implementer seat: fable/high by default for anything non-mechanical; mechanical work
-// with a complete spec stays on sonnet (charter routing). The old difficulty-routed
-// opus/sonnet seat survives as the fallback for a null result.
-const implFallbackModel = plan.difficulty === 'mechanical' ? 'sonnet' : 'opus'
-const implFallbackEffort = plan.difficulty === 'hard' ? 'xhigh' : 'high'
-let implModel = A.implModel || (plan.difficulty === 'mechanical' ? 'sonnet' : 'fable')
-let implEffort = A.implEffort || (implModel === 'fable' ? 'high' : implFallbackEffort)
-if (implModel === 'fable' && implEffort === 'xhigh') implEffort = 'high' // fable tops out at high
+// Implementer seat: EFFORT is routed by the synthesizer's difficulty verdict, not pinned.
+// Lower effort makes these models read the plan more literally and scope to what was asked
+// — the anti-wandering lever — while higher effort buys the depth that subtle invariants
+// need. `standard` (the modal plan) takes medium; `hard` keeps the headroom; mechanical
+// transcription stays on sonnet. This is the second thing the difficulty call now routes.
+const implRouted = {
+  mechanical: { model: 'sonnet', effort: 'medium' },
+  standard:   { model: 'opus',   effort: 'medium' },
+  hard:       { model: 'opus',   effort: 'xhigh'  },
+}[plan.difficulty] || { model: 'opus', effort: 'medium' }
+
+const implModelReq = A.implModel || implRouted.model
+let implModel = implModelReq
+let implEffort = clampFable(implModel, A.implEffort || implRouted.effort)
+// Fallback goes one rung UP, not down: a seat that died is weak evidence the task was
+// harder than the synthesizer judged. When an override put a different model in the seat,
+// fall back to the ROUTED model instead — that preserves the cross-family escape for an
+// override that was refused rather than merely erroring.
+const overridden = implModelReq !== implRouted.model
+const implFallbackModel = overridden ? implRouted.model : implModel
+const implFallbackEffort = clampFable(implFallbackModel, overridden ? implRouted.effort : bumpEffort(implEffort))
 log(`difficulty=${plan.difficulty} → impl on ${implModel}/${implEffort}${A.implModel || A.implEffort ? ' (override)' : ''}, fallback ${implFallbackModel}/${implFallbackEffort}; ${plan.files.length} file(s), ${plan.milestones.length} milestone(s)`)
 
 await safeAgent(`In ${WT}: mkdir -p docs/working-plans; ensure .gitignore contains docs/working-plans/ (commit that line alone if you add it).
@@ -630,10 +768,13 @@ ${JSON.stringify(plan, null, 2)}`, { label: 'plan:persist', phase: 'Synthesize',
 
 phase('Implement')
 let implRun = await salvageableAgent(implPrompt(plan), { label: 'impl', phase: 'Implement', model: implModel, effort: implEffort, schema: IMPL_RESULT })
-if (implRun === null && (implModel !== implFallbackModel || implEffort !== implFallbackEffort)) {
-  // Seat refused or died (override experiment or fable safety-classifier roulette) —
-  // re-run on the difficulty-routed fallback. Commits from a partial first attempt are
-  // fine: the review fabric judges the actual diff.
+if (implRun === null) {
+  // Seat refused or died (terminal error, or an override experiment's classifier roulette)
+  // — re-run once on the fallback. Unconditional: on a `hard` plan the bump is already at
+  // the xhigh cap so the fallback config equals the primary, and a plain re-run is still
+  // the right answer to a terminal error — that is the seat we can least afford to lose.
+  // Commits from a partial first attempt are fine: the review fabric judges the actual
+  // diff, not this report.
   log(`impl: ${implModel}/${implEffort} returned null (refusal or terminal error) → falling back to ${implFallbackModel}/${implFallbackEffort}`)
   implModel = implFallbackModel
   implEffort = implFallbackEffort
@@ -645,15 +786,46 @@ const impl = implRun
 phase('Review')
 const gate = (await salvageableAgent(buildGatePrompt, { label: 'build-gate', phase: 'Review', model: 'sonnet', effort: 'low', schema: GATE }))
   || { status: 'unknown', output: 'build-gate agent unavailable' }
-const reviews = keepNamed(fabric.reviews, await parallel(fabric.reviews.map((k) => reviewThunks[k])), 'review')
-const acCheck = (await salvageableAgent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'high', schema: AC_CHECK }))
+const rawReviews = await parallel(fabric.reviews.map((k) => reviewThunks[k]))
+
+// A dead security seat is the one silence this fabric cannot absorb. `securityPrompt` is
+// exactly the payload shape current cyber classifiers decline, and a refusal arrives as a
+// null indistinguishable from a thinner fabric — the run then reads clean because nobody
+// looked. Retry once on a different model family (different classifier), and if that also
+// comes back empty, carry the gap all the way out to the human: absence of security
+// findings below is absence of evidence, not evidence of absence.
+let securityReviewUnavailable = false
+const secIdx = fabric.reviews.indexOf('security')
+if (secIdx !== -1 && !rawReviews[secIdx]) {
+  log('review:security returned null (refusal or terminal error) → retrying on fable')
+  rawReviews[secIdx] = await salvageableAgent(securityPrompt, { label: 'review:security:fable-fallback', phase: 'Review', model: 'fable', effort: 'high', schema: FINDINGS })
+  if (!rawReviews[secIdx]) {
+    securityReviewUnavailable = true
+    log('SECURITY REVIEW UNAVAILABLE — no security seat produced a result on opus or fable; this diff has NOT been security-reviewed')
+  }
+}
+
+const reviews = keepNamed(fabric.reviews, rawReviews, 'review')
+const acCheck = (await salvageableAgent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'xhigh', schema: AC_CHECK }))
   || { criteria: [], scopeCreep: [], unavailable: true }
-// CODEX_UNAVAILABLE marker findings are observability, not review signal — log and drop.
+// CODEX_* marker findings are observability, not review signal — log and drop.
 const dropCodexMarker = (fs) => fs.filter((f) => {
-  const dead = typeof f.title === 'string' && f.title.startsWith('CODEX_UNAVAILABLE')
-  if (dead) log(`codex review unavailable (${clip(f.detail || f.title, 120)}) — no cross-model signal this pass`)
-  return !dead
+  const t = typeof f.title === 'string' ? f.title : ''
+  if (t.startsWith('CODEX_UNAVAILABLE')) { log(`codex review unavailable (${clip(f.detail || t, 120)}) — no cross-model signal this pass`); return false }
+  if (t.startsWith('CODEX_FAST_DEGRADED')) { log('codex fast tier silently dropped by the server — the review ran, at standard tier'); return false }
+  return true
 })
+// What actually looked at this diff. Configured vs delivered are different numbers — a seat
+// can be dropped by keepNamed — and the conductor should not have to know FABRIC to report
+// coverage in the journal. "reviewed by 3 of 4 lenses" is a fact a human wants at land.
+const coverage = {
+  size: sized.size,
+  designs: fabric.designs, designsDelivered: designs.length,
+  reviews: fabric.reviews, reviewsDelivered: reviews.length,
+  synthModel: fabric.synthModel,
+}
+if (reviews.length < fabric.reviews.length) log(`review coverage: ${reviews.length} of ${fabric.reviews.length} lens(es) delivered — the finding set below is thinner than the fabric intended`)
+
 const findings = dedupeFindings(dropCodexMarker(reviews.flatMap((r) => r.findings || [])))
 const escapeHatch = findings.filter((f) => f.systemic && isEscalationGrade(f))
 const droppedLow = findings.filter((f) => !isBlocking(f) && !f.systemic)
@@ -673,11 +845,13 @@ while (round < FIX_ROUND_CAP && blocking.length > 0) {
   const attempted = await dispatchFixes(blocking, plan, `r${round}`)
   const reGate = await salvageableAgent(buildGatePrompt, { label: `gate:r${round}`, phase: 'Fix', model: 'sonnet', effort: 'low', schema: GATE })
   const [reCorrectness, reSecurity, reAc] = await parallel([
-    () => salvageableAgent(correctnessPrompt, { label: `correctness:r${round}`, phase: 'Fix', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
-    () => salvageableAgent(securityPrompt, { label: `security:r${round}`, phase: 'Fix', agentType: 'flow:code-reviewer', model: 'opus', effort: 'high', schema: FINDINGS }),
-    () => salvageableAgent(acCheckPrompt(plan), { label: `ac:r${round}`, phase: 'Fix', model: 'opus', effort: 'high', schema: AC_CHECK }),
+    () => salvageableAgent(correctnessPrompt, { label: `correctness:r${round}`, phase: 'Fix', agentType: 'flow:code-reviewer', model: 'opus', effort: 'xhigh', schema: FINDINGS }),
+    () => salvageableAgent(securityPrompt, { label: `security:r${round}`, phase: 'Fix', agentType: 'flow:code-reviewer', model: 'opus', effort: 'xhigh', schema: FINDINGS }),
+    () => salvageableAgent(acCheckPrompt(plan), { label: `ac:r${round}`, phase: 'Fix', model: 'opus', effort: 'xhigh', schema: AC_CHECK }),
   ])
   if (reAc) latestAcCheck = reAc
+  // Same silence, per round: fixes land unreviewed for security if this seat is refused.
+  if (!reSecurity) { securityReviewUnavailable = true; log(`security:r${round} returned null — round ${round} fixes are NOT security-reviewed`) }
   blocking = dedupeFindings((reCorrectness?.findings || []).concat(reSecurity?.findings || [])).filter(isBlocking)
     // null reGate = unverified, not failed — don't manufacture a critical from a dead agent,
     // but a FAILED or UNKNOWN observed gate is blocking (unknown ≠ pass).
@@ -701,11 +875,13 @@ if (blocking.length === 0 && fabric.reviews.includes('codex')) {
   }
 }
 
-// Judgment before escalation: only adjudicated-real blockers interrupt the human.
+// Judgment before escalation: only adjudicated-real blockers interrupt the human. This is
+// the reasoning seat, not the taste seat — "is this finding real, or is it wrong about the
+// code" is settled by reading the code at maximum effort, not by discrimination.
 let adjudication = { realBlockers: [], dismissed: [] }
 if (blocking.length > 0) {
-  adjudication = (await judge(adjudicatePrompt(blocking), { label: 'adjudicate', phase: 'Fix', schema: ADJUDICATION }))
-    || { realBlockers: blocking, dismissed: [] } // both judges died → escalate everything rather than swallow
+  adjudication = (await reason(adjudicatePrompt(blocking), { label: 'adjudicate', phase: 'Fix', effort: 'max', schema: ADJUDICATION }))
+    || { realBlockers: blocking, dismissed: [] } // both passes died → escalate everything rather than swallow
   log(`adjudication: ${adjudication.realBlockers.length} real, ${adjudication.dismissed.length} dismissed`)
 }
 const escalate = adjudication.realBlockers.length > 0
@@ -719,6 +895,7 @@ if (!pr) return {
   escalation: 'needs-human', reason: 'PR publish agent died — branch and push state unknown; check `git ls-remote` against the worktree HEAD yourself and recover from the journal',
   size: sized.size, plan: { goal: plan.goal, difficulty: plan.difficulty }, implSummary: impl.summary,
   fixRounds: round, unresolvedBlocking: adjudication.realBlockers, resolvedInLoop, escapeHatch, droppedLow,
+  securityReviewUnavailable, coverage,
 }
 
 // Blocked runs still publish (work preserved, reviewable) but skip the post-push machinery.
@@ -730,20 +907,17 @@ if (escalate || pr.conflict) {
     implModel, implSummary: impl.summary, implDeviations: impl.deviations,
     gate: gate.status, fixRounds: round, bonusRound, adjudication,
     unresolvedBlocking: adjudication.realBlockers, resolvedInLoop, escapeHatch, droppedLow,
-    acLedger: latestAcCheck, scopeCreep: latestAcCheck.scopeCreep || [],
+    acLedger: latestAcCheck, scopeCreep: latestAcCheck.scopeCreep || [], securityReviewUnavailable, coverage,
   }
 }
 
 phase('PostPush')
 const [lensResults, external] = await parallel([
   () => parallel(Object.entries(lensPrompts).map(([k, p]) => () =>
-    salvageableAgent(p, {
-      label: `lens:${k}`, phase: 'PostPush', model: 'opus', effort: 'high', schema: FINDINGS,
-      agentType: { tests: 'pr-review-toolkit:pr-test-analyzer', 'silent-failures': 'pr-review-toolkit:silent-failure-hunter', comments: 'pr-review-toolkit:comment-analyzer', types: 'pr-review-toolkit:type-design-analyzer' }[k],
-    }))),
+    salvageableAgent(p, { label: `lens:${k}`, phase: 'PostPush', model: 'sonnet', effort: 'low', schema: FINDINGS }))),
   () => safeAgent(externalPollPrompt(pr), { label: 'external:poll', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: EXTERNAL }),
 ])
-const lensFindings = dedupeFindings(keepNamed(Object.keys(lensPrompts), lensResults || [], 'lens').flatMap((r) => r.findings || []))
+const lensFindings = dedupeFindings(dropCodexMarker(keepNamed(Object.keys(lensPrompts), lensResults || [], 'lens').flatMap((r) => r.findings || [])))
 const ext = external || { items: [], receivedAny: false, timedOut: true }
 log(`post-push: ${lensFindings.length} lens finding(s); external receivedAny=${ext.receivedAny} timedOut=${ext.timedOut}`)
 
@@ -767,6 +941,7 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
         plan: { goal: plan.goal, difficulty: plan.difficulty }, implSummary: impl.summary,
         gate: ppGate.status, fixRounds: round, bonusRound, adjudication, postPush: { lensFindings: lensFindings.length, external: { receivedAny: ext.receivedAny, timedOut: ext.timedOut }, triage: { fixed: triage.fixes.length, noise: triage.noise.length }, pushed: ppPush.pushed, pushNote: clip(ppPush.note, 300) },
         unresolvedBlocking: [], resolvedInLoop, escapeHatch, droppedLow, acLedger: latestAcCheck,
+        securityReviewUnavailable, coverage,
       }
     }
   }
@@ -779,7 +954,7 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
 }
 
 phase('Ledger')
-const ledger = await safeAgent(ledgerPrompt(pr, latestAcCheck), { label: 'ledger', phase: 'Ledger', model: 'sonnet', schema: DONE })
+const ledger = await safeAgent(ledgerPrompt(pr, latestAcCheck), { label: 'ledger', phase: 'Ledger', model: 'sonnet', effort: 'medium', schema: DONE })
 
 // Final read of the PR as it exists NOW — CI may outlive the run, externals may arrive
 // late, and mid-run summaries go stale; the conductor trusts this field over them.
@@ -800,7 +975,7 @@ log(`handoff: ci=${handoff.ciStatus}${handoff.ciDetail ? ` (${clip(handoff.ciDet
 return {
   escalation: null,
   prNumber: pr.prNumber, prUrl: pr.prUrl, rebased: pr.rebased,
-  size: sized.size,
+  size: sized.size, coverage,
   plan: { goal: plan.goal, approach: clip(plan.approach, 1500), difficulty: plan.difficulty, files: plan.files, milestones: plan.milestones },
   implModel, implSummary: impl.summary, implDeviations: impl.deviations,
   gate: gate.status, fixRounds: round, bonusRound, adjudication,
@@ -811,6 +986,7 @@ return {
     pushed: ppPush ? ppPush.pushed : null, // null = no post-push fix round, nothing new to push
   },
   ledgerPosted: !!(ledger && ledger.done),
+  securityReviewUnavailable, // true = no security seat produced a result; report it to the human
   handoff,
   acLedger: {
     criteria: (latestAcCheck.criteria || []).map((c) => ({ criterion: c.criterion, status: c.status, evidence: clip(c.evidence, 240), detail: clip(c.detail, 240) })),

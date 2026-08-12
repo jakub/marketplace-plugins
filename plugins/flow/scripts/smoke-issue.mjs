@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Smoke harness for workflows/issue.mjs — the only executable spec of the result
-// contract the /flow:issue conductor reads. Three passes, no network, no agents:
+// contract the /flow:issue conductor reads. Four passes, no network, no agents:
 //   1. parse gate (the script has a top-level export + return; node --check can't load it)
 //   2. null-cascade: every agent dies → salvage paths logged, controlled design-panel throw
 //   3. happy path with one unverified push → headInSync downgrade, reply gating, result shape
+//   4. refused security seat → cross-family retry, then a visible gap (never a clean pass)
+//   5. codex seat overrides → transport flags in the prompts, marker findings logged+dropped
 // Every schema passed to agent() is validated: required ⊆ properties, recursively.
 // Run: node plugins/flow/scripts/smoke-issue.mjs
 
@@ -55,7 +57,7 @@ const baseArgs = {
   envNote: 'pre-push hook runs the full nextest suite; export DATABASE_URL=postgres://x',
 }
 
-async function run(stubAgent) {
+async function run(stubAgent, argsOverride) {
   const logs = []
   const calls = [] // { label, prompt }
   const schemaProblems = []
@@ -67,7 +69,7 @@ async function run(stubAgent) {
   const parallel = (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)))
   let result = null, error = null
   try {
-    result = await script(baseArgs, (m) => logs.push(String(m)), () => {}, agent, parallel, null, null)
+    result = await script(argsOverride || baseArgs, (m) => logs.push(String(m)), () => {}, agent, parallel, null, null)
   } catch (e) { error = e }
   return { result, error, logs, calls, schemaProblems }
 }
@@ -85,8 +87,9 @@ console.log('null cascade (every agent dies)')
 
 // ── pass 3: happy path, one unverified push ──────────────────────────────────
 console.log('happy path (post-push fix round, push NOT verified, handoff claims green)')
+const finding = { severity: 'medium', title: 'lens finding', file: 'x.rs', line: 1, detail: 'd', systemic: false, confidence: 80 }
+let happyStub
 {
-  const finding = { severity: 'medium', title: 'lens finding', file: 'x.rs', line: 1, detail: 'd', systemic: false, confidence: 80 }
   const byLabel = {
     size: { size: 'small', expectedFiles: 1, rationale: 'r' },
     synthesize: { goal: 'g', approach: 'a', difficulty: 'standard', files: ['x.rs'], milestones: ['m1'], testPlan: 'tp', risks: '', blockingAmbiguity: '' },
@@ -103,7 +106,7 @@ console.log('happy path (post-push fix round, push NOT verified, handoff claims 
     ledger: { done: true, note: '' },
     handoff: { ciStatus: 'green', ciDetail: '', headInSync: false, localAhead: 2, lateExternalItems: 0, closesLinked: true, finalSummary: 's' },
   }
-  const stub = async (prompt, opts = {}) => {
+  happyStub = async (prompt, opts = {}) => {
     const label = opts.label || ''
     if (label in byLabel) return byLabel[label]
     if (label.startsWith('design:')) return { approach: `design via ${label}`, files: ['x.rs'], keyDecisions: '', testStrategy: '', risks: '', blockingAmbiguity: '' }
@@ -113,7 +116,7 @@ console.log('happy path (post-push fix round, push NOT verified, handoff claims 
     if (label === 'external:reply') return { done: true, note: '' }
     return null
   }
-  const { result, error, logs, calls, schemaProblems } = await run(stub)
+  const { result, error, logs, calls, schemaProblems } = await run(happyStub)
   check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
   check(schemaProblems.length === 0, `schemas seen are internally consistent (${schemaProblems.join('; ') || 'none broken'})`)
   if (result) {
@@ -133,10 +136,95 @@ console.log('happy path (post-push fix round, push NOT verified, handoff claims 
     check(pushCall && /ls-remote/.test(pushCall.prompt), 'push prompt demands ls-remote verification')
     const publishCall = calls.find((c) => c.label === 'publish')
     check(publishCall && /headPushed/.test(publishCall.prompt) && /Environment note/.test(publishCall.prompt), 'publish prompt verifies the initial push + carries the envNote')
+    check(result.securityReviewUnavailable === false, 'a live security seat leaves securityReviewUnavailable false')
+    const implCall = calls.find((c) => c.label === 'impl')
+    check(implCall && /Do NOT spawn subagents/.test(implCall.prompt), 'impl prompt caps sub-delegation')
+    check(implCall && /report completion only when/.test(implCall.prompt), 'impl prompt guards premature completion')
+    check(logs.some((l) => /difficulty=standard → impl on opus\/medium/.test(l)), 'standard difficulty routes impl to opus/medium')
+    check(logs.some((l) => /fallback opus\/high/.test(l)), 'the impl fallback goes one rung UP, not down')
+    check(result.coverage && result.coverage.reviews.includes('codex'), 'coverage names the configured review lenses')
+    check(result.coverage && result.coverage.reviewsDelivered === 4, `all 4 lenses delivered (got ${result.coverage && result.coverage.reviewsDelivered})`)
+    const lensComments = calls.find((c) => c.label === 'lens:comments')
+    check(lensComments && /adversarial-review/.test(lensComments.prompt) && /--effort max/.test(lensComments.prompt) && /--model gpt-5\.6-luna/.test(lensComments.prompt),
+      'comments lens runs luna/max on the codex transport')
+    for (const k of ['tests', 'silent-failures', 'types']) {
+      const c = calls.find((x) => x.label === `lens:${k}`)
+      check(c && /--effort high/.test(c.prompt) && /--model gpt-5\.6-sol/.test(c.prompt), `${k} lens runs sol/high on the codex transport`)
+    }
+    const lensTests = calls.find((c) => c.label === 'lens:tests')
+    check(lensTests && /behavioural test coverage/.test(lensTests.prompt) && /<<'FOCUS'/.test(lensTests.prompt), 'lens focus rides the transport stdin')
   } else {
     failures++
     console.error('  FAIL: no result object returned')
   }
+}
+
+// ── pass 4: refused security seat ────────────────────────────────────────────
+// The one silence the fabric cannot absorb: a classifier refusal returns null, which is
+// indistinguishable from a thinner fabric. The run must retry across model families and,
+// failing that, carry the gap out to the human rather than read as a clean pass.
+console.log('security seat refused on both families')
+{
+  const stub = async (prompt, opts = {}) => {
+    const label = opts.label || ''
+    if (label === 'review:security' || label === 'review:security:fable-fallback') return null
+    if (label === 'review:security:salvage' || label === 'review:security:fable-fallback:salvage') return null
+    return happyStub(prompt, opts)
+  }
+  const { result, error, logs, calls } = await run(stub)
+  check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
+  check(calls.some((c) => c.label === 'review:security:fable-fallback'), 'a null security seat retries on the other model family')
+  check(result && result.securityReviewUnavailable === true, 'both families empty → securityReviewUnavailable surfaces in the result')
+  check(logs.some((l) => /SECURITY REVIEW UNAVAILABLE/.test(l)), 'the gap is logged loudly, not swallowed')
+  check(result && result.escalation === null, 'the gap is reported, not auto-escalated (the conductor decides)')
+  check(result && result.coverage.reviewsDelivered < result.coverage.reviews.length, `coverage shows the shortfall (${result && result.coverage.reviewsDelivered}/${result && result.coverage.reviews.length})`)
+  check(logs.some((l) => /review coverage: 3 of 4/.test(l)), 'the thinned fabric is logged as a coverage line')
+}
+
+// ── pass 5: codex seat overrides + marker hygiene ────────────────────────────
+// The codex legs run on the codex-exec transport that ships in this plugin. Overrides must
+// reach the shell command verbatim; marker findings (CODEX_UNAVAILABLE / CODEX_FAST_DEGRADED)
+// are observability and must be logged then dropped, never surfaced as review signal.
+console.log('codex seat overrides (luna/max/fast, explicit pluginRoot)')
+{
+  const stub = async (prompt, opts = {}) => {
+    if ((opts.label || '') === 'review:codex') return { findings: [
+      { severity: 'low', title: 'CODEX_FAST_DEGRADED', file: '', line: 0, detail: 'tier omitted', systemic: false, confidence: 100 },
+    ] }
+    return happyStub(prompt, opts)
+  }
+  const args = { ...baseArgs, codexModel: 'gpt-5.6-luna', codexEffort: 'max', codexFast: true, pluginRoot: '/plugroot' }
+  const { result, error, logs, calls } = await run(stub, args)
+  check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
+  const design = calls.find((c) => c.label === 'design:codex')
+  check(design && design.prompt.includes('CODEX="/plugroot/scripts/codex-exec.mjs"'), 'explicit pluginRoot resolves the transport without a glob')
+  check(design && /--model gpt-5\.6-luna/.test(design.prompt) && /--effort max/.test(design.prompt) && /--fast/.test(design.prompt), 'design leg carries model/effort/fast overrides')
+  check(design && /CODEX_UNAVAILABLE: <error\.kind>/.test(design.prompt), 'design leg keeps the envelope-aware unavailable sentinel')
+  const review = calls.find((c) => c.label === 'review:codex')
+  check(review && /adversarial-review --cwd/.test(review.prompt) && /--effort max/.test(review.prompt), 'adversarial leg runs the transport with the effort override')
+  check(review && /confidence = 55/.test(review.prompt), 'codex findings keep the inferred-not-executed confidence rule')
+  for (const [name, c] of [['design', design], ['review', review]]) {
+    check(c && /timeout parameter set to 600000/.test(c.prompt) && /--timeout-secs 540/.test(c.prompt),
+      `${name} leg sizes the Bash timeout against the transport's 540s total budget`)
+  }
+  const lensT = calls.find((c) => c.label === 'lens:tests')
+  check(lensT && /--model gpt-5\.6-sol/.test(lensT.prompt) && /--effort high/.test(lensT.prompt), 'lens seats stay pinned under --codex-* overrides')
+  check(lensT && /--fast/.test(lensT.prompt), '--codex-fast passes through to the lens seats')
+  check(logs.some((l) => /codex seat overrides: model=gpt-5\.6-luna effort=max fast=true/.test(l)), 'overrides are logged at launch')
+  check(logs.some((l) => /fast tier silently dropped/.test(l)), 'CODEX_FAST_DEGRADED marker is logged')
+  check(result && !(result.droppedLow || []).some((f) => /CODEX_FAST_DEGRADED/.test(f.title)), 'marker finding dropped, not surfaced as review signal')
+}
+console.log('codex defaults (bad effort ignored, uninterpolated pluginRoot falls back to glob)')
+{
+  const args = { ...baseArgs, codexEffort: 'turbo', pluginRoot: '${CLAUDE_PLUGIN_ROOT}' }
+  const { logs, calls, error } = await run(happyStub, args)
+  check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
+  check(logs.some((l) => /codexEffort 'turbo'.*ignored/.test(l)), 'invalid codexEffort is ignored with a visible log')
+  const design = calls.find((c) => c.label === 'design:codex')
+  check(design && design.prompt.includes('cache/*/flow/*/scripts/codex-exec.mjs'), 'uninterpolated ${CLAUDE_PLUGIN_ROOT} falls back to the same-plugin glob')
+  check(design && /--effort high/.test(design.prompt), 'design leg default effort stays pinned at high')
+  const review = calls.find((c) => c.label === 'review:codex')
+  check(review && !/--effort/.test(review.prompt), 'adversarial leg defaults to the codex config effort (no flag)')
 }
 
 console.log(failures === 0 ? '\nsmoke: ALL PASS' : `\nsmoke: ${failures} FAILURE(S)`)

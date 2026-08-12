@@ -26,35 +26,48 @@ Nothing enters the tracker except through here.
 
 ### /flow:issue — one run, through the PR (hands-off)
 
+0. **Size**: coarse triage that buys the fabric. `trivial` is a claim that no production
+   code path can regress — not a line count — because it is the one bucket that thins review.
 1. **Claim** (atomic): assign + `in-progress` label via check-and-set; concurrent runs
    cannot grab the same issue. Snapshot the acceptance criteria — if the body moves
    mid-run, escalate rather than guess.
 2. **Launch**: worktree off origin/main; context pack (paths, not contents); workflow
    started; **runId stamped as an issue comment** for recovery.
-3. **Design fan-out**: minimal (sonnet) ∥ clean (opus high) ∥ outside (gpt-5.6-sol high,
-   read-only). Cross-model disagreement is signal, kept even on small work.
+3. **Design fan-out**: minimal (opus medium — the modal winner) ∥ clean (fable high — the taste seat) ∥ outside
+   (gpt-5.6-sol high, read-only). Cross-model disagreement is signal, kept even on small work.
 4. **Synthesis** (fable high; opus on trivial): one plan, per-plan difficulty
    (`mechanical | standard | hard`) that routes implementation. Blocking ambiguity →
    `needs-info`.
-5. **Implement** (TDD): opus high primary; `mechanical` plans may drop to sonnet;
-   `hard` runs xhigh. Difficulty is judged at synthesis, never counted from file totals.
+5. **Implement** (TDD): difficulty routes BOTH model and effort — `mechanical` sonnet/medium,
+   `standard` opus/medium, `hard` opus/xhigh. Lower effort reads the plan more literally and
+   scopes to what was asked; higher effort buys depth for subtle invariants. Difficulty is
+   judged at synthesis, never counted from file totals. The seat is prompted against scope
+   expansion, premature completion, and sub-delegation — a leaf of a fan-out does its own work.
 6. **Build gate** (sonnet low): fmt, clippy, tests. Retry-wrapped; UNKNOWN ≠ pass.
-7. **Internal review fabric** (parallel): codex adversarial (gpt-5.6-sol) · correctness (opus) ·
-   security (opus — kept off fable, no classifier roulette) · simplify (sonnet) ·
-   **AC evidence check** (opus): per-criterion verdict + evidence pointer against the
-   launch snapshot. Dedupe in pure JS; blocking = critical/high/medium + unmet criteria.
-8. **Fix loop** (≤3 rounds, opus): parallel across disjoint files, serial otherwise.
+7. **Internal review fabric** (parallel): codex adversarial (gpt-5.6-sol) · correctness
+   (opus xhigh) · security (opus xhigh) · simplify (opus medium — its mediums block) · **AC evidence check**
+   (opus xhigh): per-criterion verdict + evidence pointer against the launch snapshot.
+   Dedupe in pure JS; blocking = critical/high/medium + unmet criteria. A null security seat
+   (opus carries its own cyber classifiers) retries on fable, then surfaces
+   `securityReviewUnavailable` to the human — never a silently thinner fabric. The codex leg
+   is in every size bucket: it is the cheapest seat in the fabric and the only cross-model
+   signal, so no bucket ships without one. What actually looked at the diff rides out in
+   `coverage` (configured vs delivered) for the journal.
+8. **Fix loop** (≤3 rounds, opus; xhigh for critical/high findings, medium below — the
+   per-round re-gate and re-review are the real verification): parallel across disjoint files, serial otherwise.
    Mediums are fixed, not deferred. Re-gate + re-review each round; codex re-verifies
-   after the loop so cross-model signal survives to the end. Unresolved blockers get a
-   **fable adjudication** (real blocker vs reviewer theater) before anything escalates.
-9. **Doc-sync** (sonnet): diff-aware context.md/AGENTS.md updates travel with the change.
+   after the loop so cross-model signal survives to the end. Unresolved blockers get an
+   **opus max adjudication** (real blocker vs reviewer theater) before anything escalates.
+9. **Doc-sync** (opus high): diff-aware context.md/AGENTS.md updates travel with the change,
+   edited in place — docs correct what the diff made false, they do not grow per PR.
 10. **Push PR** mid-run: summary + changelog description. Externals see code that already
     survived the internal loop.
-11. **Post-push, parallel tracks**: complementary self-review (test quality, silent
-    failures, comment rot, type design — the lenses the fabric doesn't cover) ∥ external
+11. **Post-push, parallel tracks**: complementary review on the codex transport (test
+    quality, silent failures, type design at sol `high`; comment rot on luna `max` — the
+    most mechanical lens takes the cheap-depth seat) ∥ external
     reviewers (coderabbit et al.): poll for review-posted, ~10–15 min cap; silent externals
     never stall the run; stale-SHA findings revalidated against HEAD.
-12. **Synthesis fix round** (fable → opus): fold internal + external findings into one
+12. **Synthesis fix round** (fable → opus; taste seat — signal vs noise): fold internal + external findings into one
     verdict set (fix / noise / already-fixed); apply; push; reply to external threads.
 13. **Evidence ledger**: final PR comment — criterion → verdict → evidence link (test name
     + output, command transcript, headless-playwright screenshot where UI is involved).
@@ -79,16 +92,29 @@ Axes over file counts: **intelligence > taste > cost** on anything that ships. D
 not limits — judge the output, not the price tag; escalate without asking when a cheaper
 model's output misses the bar.
 
+Seats split by what the work **is**, not by how important it feels. **Taste** — reconciling
+rival designs, judging the best long-term shape, separating reviewer signal from noise, copy
+and UI — is fable's edge. **Reasoning and coding** — is this finding real, implement this
+plan, fix this bug — is opus's, and opus has the `xhigh`/`max` rungs fable does not.
+
 | | role | effort | skip when |
 |---|---|---|---|
-| fable 5 | every judgment seat: conduct, grill, synthesise, adjudicate, triage external findings | `high` | security-flavored payloads → route to opus; auto-fallback opus on refusal/null |
-| opus 4.8 | workhorse: implementation, correctness/security review, fixes, PR lenses | `high`, `xhigh` for hard plans | pure judgment calls (fable's seat) |
-| sonnet 5 | mechanical: gates, wrappers, scouts, doc-sync, minimal design leg, ledgers | `low` for wrappers | any embedded design judgment |
-| gpt-5.6-sol | external decorrelation: outside design opinion, adversarial review, general delegation | `high` — codex config default (`~/.codex/config.toml`, as of 2026-07); pin `--model`/`--effort` per call to override | taste-critical surfaces; codex-reviewing-codex |
+| fable 5 | taste seats: conduct, grill, synthesise, clean-design leg, triage external findings | `high` (its ceiling — no xhigh/max) | security-flavored payloads → route to opus; auto-fallback opus on refusal/null |
+| opus 5 | workhorse: implementation, both design-adjacent review seats, fixes, adjudication | routed, not pinned: `medium` is the default working rung (it reads instructions more literally and scopes tighter), `xhigh` where a miss ships — hard plans, critical/high fixes, correctness/security/AC — `max` for adjudication alone | pure taste calls (fable's seat) |
+| sonnet 5 | mechanical: gates, wrappers, transports, scouts, ledgers, salvage reads | `low` for wrappers, `medium` for anything with a verdict in it; `xhigh` exists on this tier now — try it before escalating a tier on hard mechanical work | any embedded design judgment |
+| gpt-5.6-sol | external decorrelation: outside design opinion, adversarial review, general delegation. reach it ONLY via the **codex-delegate** agent or the codex-exec transport (`plugins/flow/scripts/codex-exec.mjs`) — the companion plugin, `/codex:*` commands, and codex-rescue agent no longer exist | efforts `minimal…max`, server-gated per model; `xhigh` — codex config default (`~/.codex/config.toml`, as of 2026-08); pin `--model`/`--effort` per call. `--fast` = priority service tier — fails OPEN upstream (unsupported tier silently dropped), so trust the envelope's `fast.applied`, never the request | taste-critical surfaces; codex-reviewing-codex |
+| gpt-5.6-terra / -luna | mid / nano tiers for bulk, latency-sensitive, or high-volume delegation through the same transport; luna+`max`+`--fast` is the cheap-depth combo for mechanical sweeps (it holds the post-push comments lens) | same surface as sol | the adversarial-review seat — decorrelation needs intelligence, not throughput |
 | haiku | — retired | | always |
 
-Delegation charter (also in the injected charter): many small-context agents over marathon
-threads; typed returns or disk journals; freedom scales with reversibility.
+**Refusals are a routing constraint, not an edge case.** Both fable and opus 5 run cyber
+classifiers; a declined request returns null, indistinguishable from a dead agent. Every
+seat that can be refused needs a fallback on a different family *and* a visible marker when
+both come back empty. A review seat that silently vanishes reads as a clean pass.
+
+Delegation charter (also in the injected charter): agents for genuinely independent,
+sizeable tracks — not for work finishable in a handful of tool calls, and never to verify
+your own work. Typed returns or disk journals; freedom scales with reversibility; spawn
+counts stay low.
 
 ## 3. The issue is the record
 
@@ -121,6 +147,12 @@ ontology; crate-local vocabulary moves into slices next to the code it describes
 ## 5. Ambient machinery
 
 - **no-backlog guard** (hook, ships here): blocks unsanctioned `gh issue create`.
+- **git guard** (hook, ships here): blocks `--no-verify` and commit trailers
+  (`FLOW_SANCTION=git` for foreign commits that already carry one). Both guards are
+  `PreToolUse`, which is why they hold where the charter does not: hooks fire on subagent
+  tool calls, but the SessionStart charter injection reaches the main session only. A fresh
+  subagent inherits the harness default to append `Co-Authored-By`/`Claude-Session` and never
+  sees the line overriding it — so that rule is enforced structurally, not by prose.
 - **escalation pings**: valves push to the phone (PushNotification from the conductor).
 - **nightly lint** (cron, sonnet): label contract, stale worktrees, orphaned branches, doc staleness.
 - **weekly doc sweep** (cron, sonnet): workspace-wide context.md/AGENTS.md drift vs reality.

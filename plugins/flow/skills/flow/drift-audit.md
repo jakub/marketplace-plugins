@@ -55,6 +55,9 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
   charter.
 - Facts with `as-of` dates older than a quarter (model pricing, codex CLI surface):
   flag for re-verification.
+- `node plugins/flow/scripts/smoke-codex-exec.mjs` passes (add `CODEX_LIVE=1` when codex
+  auth is available) — the transport's encoded CLI facts (model catalog, effort surface,
+  service-tier fail-open behaviour, JSONL event shapes) drift with codex releases.
 
 ## Output format
 

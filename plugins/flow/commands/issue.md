@@ -1,6 +1,6 @@
 ---
 description: Hands-off implementation of a ready-for-agent issue, through a pushed, reviewed, evidenced PR. Conductor for the flow-issue workflow.
-argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh]
+argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh] [--codex-model <m>] [--codex-effort minimal|low|medium|high|xhigh|max] [--codex-fast]
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Read, Write, Workflow, TaskOutput, PushNotification, Task, Agent
 ---
 
@@ -12,10 +12,14 @@ inside the background workflow — do not re-implement its stages inline, and do
 the main context with file contents that belong in the workflow's agents.
 
 Argument: `$ARGUMENTS` = issue number, optionally followed by `--impl-model <m>` /
-`--impl-effort <e>` to override the implementer seat (default: fable at `high` for
-non-mechanical difficulty, sonnet for mechanical; the workflow clamps fable to
-`high` effort and any non-fallback seat that refuses/dies re-runs on the
-difficulty-routed opus/sonnet fallback).
+`--impl-effort <e>` to override the implementer seat (default: effort routed by the plan's
+difficulty — mechanical `sonnet/medium`, standard `opus/medium`, hard `opus/xhigh`; the
+workflow clamps an explicit `--impl-model fable` to `high`, and a seat that refuses/dies
+re-runs one rung UP, or on the routed model when an override put a different one in).
+`--codex-model <m>` / `--codex-effort <e>` / `--codex-fast` override the codex seats
+(design leg + adversarial review; default: config-default model, design pinned at `high`,
+review at the codex config default). Luna is the nano tier — overriding the review seat
+onto it trades away the decorrelated-intelligence signal; that is an experiment, not a default.
 Abort with usage if the first token is not a positive integer.
 
 ## 1. Pre-flight
@@ -53,14 +57,17 @@ this snapshot; body edits mid-run are detected at the end (step 5.4).
    cannot infer it from a one-line prompt.
 3. Resolve the workflow script: `${CLAUDE_PLUGIN_ROOT}/workflows/issue.mjs` — if the
    variable is unavailable in this context, locate it:
-   `ls ~/.claude/plugins/cache/flow/flow/*/workflows/issue.mjs | sort -V | tail -1`.
+   `ls ~/.claude/plugins/cache/*/flow/*/workflows/issue.mjs | sort -V | tail -1`.
    Salvage hygiene: `rm -rf /tmp/flow-issue-$N-reports` before launch — the workflow's
    report-salvage dir is deterministic, and a stale file from an earlier run of the same
    issue must not be salvageable as fresh.
 4. Launch via the Workflow tool with `scriptPath` and args:
-   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, envNote, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"] }`,
-   plus `implModel` / `implEffort` when the corresponding flags were given (omit otherwise —
-   absent keys mean the workflow's defaults: fable/high, sonnet for mechanical).
+   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, envNote, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"], pluginRoot: "${CLAUDE_PLUGIN_ROOT}" }`,
+   plus `implModel` / `implEffort` / `codexModel` / `codexEffort` / `codexFast` when the
+   corresponding flags were given (omit otherwise — absent keys mean the workflow's
+   defaults: difficulty-routed impl, config-default codex). `pluginRoot` is how the
+   workflow's codex legs find the codex-exec transport without a glob; if the variable
+   did not interpolate, pass the directory you resolved the script from in step 3.
 5. **Stamp the runId** the tool result returns as an issue journal comment:
    `flow run started — runId <id>, worktree <path>, branch <branch>` — this is the
    recovery anchor for any future session.
@@ -99,6 +106,12 @@ The workflow returns a structured result. In order:
    - `needs-human`: label, comment the adjudicated-real blockers (`unresolvedBlocking`)
      with file:line. The PR exists — say so.
    - `needs-rebase`: label, comment; the PR exists with conflicts surfaced.
+1.5. **Unreviewed-security gate** (`securityReviewUnavailable: true`): no security seat
+   produced a result on either model family — this diff is NOT security-reviewed, and the
+   empty finding set is absence of evidence, not evidence of absence. Say so in the final
+   report AND in the journal comment, in those words. Do not let it read as a clean pass.
+   On a diff that touches a trust boundary (auth, input parsing, shell/SQL/template
+   construction, secret handling), escalate `needs-human` rather than handing it to /land.
 2. **Escape hatch** (`escapeHatch` non-empty): post ONE draft comment on the PR —
    `## follow-up draft (cross-crate scale — requires human ack at /flow:land)` with the
    systemic findings. Do NOT create an issue (the hook would block it anyway; filing
@@ -107,8 +120,11 @@ The workflow returns a structured result. In order:
    from the launch snapshot, flag it prominently in the final comment — the run judged
    against the snapshot.
 4. **Final journal comment** on the issue: outcome (PR #, url), plan goal + difficulty,
-   fix rounds + adjudication summary, post-push triage counts (fixed/noise, external
-   received/timed-out), dropped-low count, deviations. Terse table > prose.
+   **review coverage** (`coverage.reviewsDelivered` of `coverage.reviews.length` lenses, by
+   name — a run judged by a thinned fabric is not the same evidence as a full one, and the
+   human at land cannot infer it from the finding count), fix rounds + adjudication summary,
+   post-push triage counts (fixed/noise, external received/timed-out), dropped-low count,
+   deviations. Terse table > prose.
 5. **Report to the human**: one screenful — PR url, evidence-ledger state, anything
    dropped or dismissed, next step (`/flow:land <PR>` when happy).
 

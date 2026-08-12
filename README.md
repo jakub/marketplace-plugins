@@ -18,6 +18,7 @@ copies — after editing this repo, reinstall the affected plugin to go live.
 |---|---|---|
 | **flow** | `flow@jakub` | A disciplined prep → issue → land development pipeline for solo/greenfield projects, plus the engineering charter that governs it. See below. |
 | **grill** | `grill@jakub` | Relentless design interrogation and the domain-model doc discipline it feeds — `grill-with-docs`, `grilling`, `domain-modeling`. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT); see `plugins/grill/NOTICE`. |
+| **simple-english** | `simple-english@jakub` | Write or check technical text against ASD-STE100 Simplified Technical English — docs, runbooks, error messages, release notes, agent prompts. Vendored from [AminBlg/SimpleEnglish](https://github.com/AminBlg/SimpleEnglish) (MIT); see `plugins/simple-english/NOTICE`. |
 
 _More to come — each new plugin is a directory under `plugins/` listed in the marketplace manifest._
 
@@ -34,7 +35,7 @@ an independent cross-model review are routed to different models on different ef
 | Skill | `plugins/flow/skills/flow/` | Self-documenting framework: doctrine, doc-stack setup, drift audit, label contract. `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`. |
 | Commands | `plugins/flow/commands/` | `/flow:prep` (the single front door for issues, ideas, and spikes), `/flow:issue` (through-the-PR run), `/flow:land` (the only merge path). |
 | Workflow | `plugins/flow/workflows/issue.mjs` | The hands-off implementation workflow — design fan-out → synthesis → TDD → review fabric → fix loop → PR → post-push reviews (self ∥ external) → per-criterion evidence ledger. |
-| Agent | `plugins/flow/agents/codex-delegate.md` | Generic "delegate anything to Codex" subagent (role/effort/write/schema parameters, typed returns). Optional — degrades gracefully when the [openai-codex plugin](https://github.com/openai/codex-plugin-cc) isn't installed. |
+| Agent | `plugins/flow/agents/codex-delegate.md` | Generic "delegate anything to Codex" subagent (mode/model/effort/fast/write/schema parameters, typed envelope returns) over the vendored raw-CLI transport `plugins/flow/scripts/codex-exec.mjs`. Needs the `codex` CLI on PATH; degrades to a visible error envelope otherwise. |
 | Hooks | `plugins/flow/hooks/` | SessionStart charter injection · PreToolUse no-backlog guard (blocks unsanctioned `gh issue create` — PRs ship complete). |
 
 Commands are namespaced (`/flow:prep`, `/flow:issue`, `/flow:land`); the short forms resolve
