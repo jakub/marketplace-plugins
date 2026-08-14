@@ -78,7 +78,10 @@ Nothing enters the tracker except through here.
     verdict set (fix / noise / already-fixed); apply; push; reply to external threads.
 13. **Evidence ledger**: final PR comment — criterion → verdict → evidence link (test name
     + output, command transcript, headless-playwright screenshot where UI is involved).
-    Evidence files live on a dedicated ref, never on main.
+    Capture files (screenshots, recordings) host on plans (`plans publish --keep` — typed
+    artifacts, permanent retention ONLY; a TTL'd URL is not evidence) when the CLI is
+    available, else on a dedicated ref — never on main. Testable claims still need the
+    committed test or script; plans hosts captures, not proof.
 14. **Stop**: an open, reviewed, evidenced PR. Never auto-merge. Final journal comment on
     the issue. Escalation valves (`needs-info`, `needs-human`, `needs-rebase`) each fire a
     push notification — blocked hands-off runs interrupt the human; nothing else does.

@@ -547,8 +547,12 @@ dir already on the branch); otherwise commit them to the branch \`flow-evidence\
 if missing, never main). Either way EMBED the key screenshots inline in the ledger — markdown
 image syntax over SHA-pinned raw URLs (\`![label](https://github.com/<owner>/<repo>/raw/<commit-sha>/<path>)\`,
 exact commit SHA, never a branch name, so embeds survive branch deletion and rebase) — and link
-the rest from their Evidence cells. Skip screenshots cleanly if any precondition is missing — say
-so in the ledger.
+the rest from their Evidence cells. Heavyweight captures (screen recordings, video, oversized
+image sets) go to plans instead when the CLI is available (\`command -v plans\`):
+\`plans publish --keep <file>\` — permanent retention ONLY, never --ttl (a TTL'd URL is not
+evidence) — linked from their Evidence cells (plans URLs do not render inline on GitHub — link,
+don't embed). Captures are illustration, not proof: the criterion's test/command pointer stays
+alongside. Skip screenshots cleanly if any precondition is missing — say so in the ledger.
 Post with \`gh pr comment ${pr.prNumber} --body-file <tmpfile>\`. Write long output to a temp file, not the chat.
 ${transientRule}
 

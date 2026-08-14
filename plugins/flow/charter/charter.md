@@ -94,6 +94,12 @@ an errored, rate-limited, or timed-out check is UNKNOWN — never clean, never a
 green verdicts on anything that ships need a confirming read. retry-wrap polling (`gh run
 watch` exit codes lie; read the per-check rollup). no bare awaits on gates. long deliverables
 go to disk with a summary in chat — chat messages truncate, disk doesn't.
+
+- standing permission, used SPARINGLY: when structure or visuals genuinely beat prose — a
+  pipeline walkthrough, an architecture explainer, a comparison — publish an HTML artifact
+  via the plans client (`plans publish --keep`) and hand back the URL. rare, for the
+  record, never routine. PR evidence captures (screenshots, recordings) may host on plans
+  with `--keep`; a TTL'd URL is never evidence.
 </verification>
 
 <engineering>

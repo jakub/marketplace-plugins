@@ -67,7 +67,11 @@ final journal.
    committed artifact. Journal prose describing a heroic verification (fuzz totals,
    sweep counts, browser differentials) is narrative, not evidence; an expiring capability
    URL is evidence with a TTL. If it can't survive `git clone` on a fresh machine, the
-   ledger entry isn't done. Judged against the launch snapshot; a body that moved mid-run
+   ledger entry isn't done. One carve-out: CAPTURES (screenshots, recordings) may host on
+   plans via `plans publish --keep` — permanent retention only, linked per-criterion —
+   since a capture is not re-executable anyway and plans beats bloating the repo with
+   media. Plans hosts captures, never proof: the testable claim behind the capture still
+   needs its committed test. Judged against the launch snapshot; a body that moved mid-run
    is flagged, not chased.
 6. **Termination on evidence, not counters** — risk-tiered convergence:
    - standard work: ONE clean cross-family adversarial pass (different family than the
