@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flow 0.9.0 — pipeline walkthrough</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --ink:#e6edf3; --dim:#9aa7b4;
+    --line:#2a3441; --green:#7ee787; --blue:#79c0ff; --orange:#f0883e; --red:#ff7b72;
+    --purple:#d2a8ff; --codex:#56d364;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;font-size:15.5px}
+  .wrap{max-width:860px;margin:0 auto;padding:0 16px 100px}
+  header{padding:44px 16px 30px;border-bottom:1px solid var(--line);background:
+    radial-gradient(120% 90% at 0% 0%, rgba(126,231,135,.07), transparent 60%),
+    radial-gradient(120% 90% at 100% 0%, rgba(210,168,255,.07), transparent 60%)}
+  header .wrap{padding-bottom:0}
+  .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--green);margin:0 0 10px}
+  h1{font-size:clamp(24px,6vw,36px);line-height:1.12;margin:0 0 10px;letter-spacing:-.02em}
+  .sub{color:var(--dim);max-width:64ch;margin:0;font-size:clamp(14px,2.4vw,16.5px)}
+  h2{font-size:22px;margin:52px 0 4px;letter-spacing:-.01em}
+  h2 .act{font-family:var(--mono);font-size:12px;color:var(--dim);display:block;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+  h2 .who{font-size:13px;font-weight:400;color:var(--dim)}
+  .lede{color:var(--dim);margin:4px 0 14px;max-width:66ch;font-size:14.5px}
+  code{font-family:var(--mono);font-size:.88em;background:var(--panel2);padding:1px 5px;border-radius:5px;color:#c9d7e6}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+
+  /* model chips */
+  .chip{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:5px;border:1px solid var(--line);white-space:nowrap;display:inline-block;line-height:1.5}
+  .m-fable{color:var(--purple);border-color:#3d2a52;background:#1e1526}
+  .m-opus{color:var(--blue);border-color:#1f3a52;background:#0f1c28}
+  .m-sonnet{color:#8b949e;border-color:#333b44;background:#161b22}
+  .m-codex{color:var(--codex);border-color:#1f4028;background:#0f1f14}
+  .m-human{color:var(--orange);border-color:#4a3420;background:#231708}
+
+  /* step cards */
+  .flow{display:flex;flex-direction:column;margin:14px 0}
+  .step{display:grid;grid-template-columns:34px 1fr;position:relative}
+  .rail{display:flex;flex-direction:column;align-items:center}
+  .dot{width:13px;height:13px;border-radius:50%;background:var(--green);margin-top:16px;box-shadow:0 0 0 4px rgba(126,231,135,.13);z-index:1;flex-shrink:0}
+  .dot.human{background:var(--orange);box-shadow:0 0 0 4px rgba(240,136,62,.13)}
+  .dot.gate{background:var(--blue);box-shadow:0 0 0 4px rgba(121,192,255,.13)}
+  .dot.loop{background:var(--purple);box-shadow:0 0 0 4px rgba(210,168,255,.13)}
+  .dot.skip{background:var(--dim);box-shadow:0 0 0 4px rgba(154,167,180,.1)}
+  .ln{width:2px;flex:1;background:var(--line);min-height:6px}
+  .step:last-child .ln{display:none}
+  .body{padding:8px 0 18px 6px;min-width:0}
+  .body h3{margin:0 0 2px;font-size:15.5px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .body h3 .n{font-family:var(--mono);color:var(--green);font-size:13px}
+  .what{color:var(--dim);font-size:13.8px;margin:2px 0 0;max-width:64ch}
+  .how{font-size:13.2px;margin:6px 0 0;max-width:64ch;color:#b8c4d0;border-left:2px solid var(--line);padding-left:10px}
+  .how b{color:var(--ink)}
+  .seats{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13px;display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);white-space:nowrap;font-weight:600}
+  tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:14px 0}
+  .call{border-left:3px solid var(--green);background:var(--panel2);border-radius:0 10px 10px 0;padding:10px 14px;margin:12px 0;font-size:13.8px}
+  .call .lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--green);margin:0 0 3px;font-weight:700}
+  .call.o{border-color:var(--orange)} .call.o .lbl{color:var(--orange)}
+  .call.p{border-color:var(--purple)} .call.p .lbl{color:var(--purple)}
+  .call p{margin:3px 0;max-width:66ch}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:8px 0 0}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block;flex-shrink:0}
+  .handoff{font-family:var(--mono);font-size:12px;color:var(--dim);text-align:center;padding:16px 0 2px;letter-spacing:.05em}
+  .handoff b{color:var(--green)}
+  .foot{margin-top:56px;padding-top:20px;border-top:1px solid var(--line);color:var(--dim);font-size:12.5px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <p class="kicker">flow 0.9.0 · prep → issue → land</p>
+    <h1>the pipeline, step by step</h1>
+    <p class="sub">Three commands, two human touchpoints, everything between them hands-off. Prep is where <b>models argue and the human decides</b>; issue is where <b>models build and models check</b>; land is the only place a merge happens. Every step below shows what it does, how it works, and who sits in the seat.</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+<div class="card">
+  <b>The seat table</b> — who gets which work, from the charter:
+  <table>
+    <tr><th>model</th><th>role</th><th>effort range</th><th>rule of thumb</th></tr>
+    <tr><td><span class="chip m-fable">fable 5</span></td><td>taste + judgment: conducting, synthesis, signal-vs-noise, grilling</td><td>low–high (no xhigh/max)</td><td>the human replacement; falls back to opus on classifier refusal</td></tr>
+    <tr><td><span class="chip m-opus">opus 5</span></td><td>default code writer: implement, review, fix, adjudicate</td><td>medium default · xhigh where a miss ships · max to adjudicate</td><td>lower effort reads plans more literally — the anti-wandering lever</td></tr>
+    <tr><td><span class="chip m-sonnet">sonnet 5</span></td><td>mechanical: gates, pushes, ledgers, scouts, salvage</td><td>low–medium</td><td>anything with embedded judgment escalates</td></tr>
+    <tr><td><span class="chip m-codex">gpt-5.6-sol</span></td><td>the decorrelated outside brain: designer, spec-gap hunter, adversarial reviewer, shadow</td><td>high default (flat-rate sub, ~free)</td><td>never codex-reviewing-codex; luna/max for cheap mechanical depth</td></tr>
+    <tr><td><span class="chip m-human">human</span></td><td>decides forks, adjudicates arguments, owns every merge</td><td>—</td><td>interrupted only by valves, fork questions, and the breaker</td></tr>
+  </table>
+  <div class="legend">
+    <span><span class="sw" style="background:var(--green)"></span> agent work</span>
+    <span><span class="sw" style="background:var(--orange)"></span> human in the loop</span>
+    <span><span class="sw" style="background:var(--blue)"></span> gate (UNKNOWN ≠ pass)</span>
+    <span><span class="sw" style="background:var(--purple)"></span> loop (evidence-terminated)</span>
+    <span><span class="sw" style="background:var(--dim)"></span> exit ramp</span>
+  </div>
+</div>
+
+<!-- ═══════════════ ACT I ═══════════════ -->
+<h2><span class="act">act i · interactive · the only lane that creates issues</span>/flow:prep <span class="who">— the front door</span></h2>
+<p class="lede">Takes an issue number or a free-text idea. Output: a design-hardened, <code>ready-for-agent</code> issue — or the work just gets done, or split. Nothing enters the tracker except through here.</p>
+
+<div class="flow">
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">1</span>Entry &amp; dedupe</h3>
+    <p class="what">Load the issue, or — free-text mode — search open AND closed issues + PRs first. Closed/wontfix matches surface and stop; nothing gets resurrected, no issue is created yet.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">2</span>Scout</h3>
+    <p class="what">Domain docs (AGENTS.md → context.md slices → the 1–3 ADRs this touches), code seams, prior art — then a design-readiness read: what's clear, what's ambiguous, what a cold implementer would trip on.</p>
+    <p class="how"><b>How:</b> breadth delegated to scoped agents; only paths + seams come home, never file dumps. The main context is the decision layer.</p>
+    <div class="seats"><span class="chip m-sonnet">Explore agents · sonnet</span><span class="chip m-codex">outside read · sol</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot skip"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">3</span>Triviality gate <span style="color:var(--dim);font-weight:400;font-size:12.5px">(the exit ramps)</span></h3>
+    <p class="what">Fully specified and small → <b>do it now</b>, no ticket theater. Too big for one PR → split into tracer-bullet slices, each getting its own prep pass. Only survivors continue — which keeps the heavy machinery below off quick work.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">4</span>Design dialectic <span style="color:var(--purple);font-weight:400;font-size:12.5px">— where ADRs are minted (new in 0.9.0)</span></h3>
+    <p class="what">Two blind proposals at the product/architecture level — shape, boundaries, protocol surfaces, trust models. Then each leg critiques the other and returns the strongest version of the disagreement. No averaging: the synthesizer is the human, in the grill.</p>
+    <p class="how"><b>How:</b> the claude leg designs from the scout's seams; the sol leg designs independently AND hunts spec gaps — what the human <i>hasn't said</i> that an implementer would decide silently. The resolved <b>argument</b> becomes grill material. Code-level joinery (placement, signatures) deliberately stays out: it's drawn at run time against live HEAD, because prep-time design goes stale.</p>
+    <div class="seats"><span class="chip m-opus">claude leg · opus/high</span><span class="chip m-codex">sol leg · high, blind</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot human"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">5</span>Grill</h3>
+    <p class="what">One question at a time, each with a recommended answer (correctness weighted over minimal-change). Agreements from the dialectic arrive pre-packaged; disagreements arrive as questions the human adjudicates. Trust-model forks are ALWAYS presented — runs are forbidden from guessing these, so this is where they get settled cheaply.</p>
+    <p class="how"><b>How:</b> decisions crystallise as they land — context.md edits and ADRs written inline, stress-tested against glossary and code. This is why the dialectic lives here: a thorough discussion at the moment of minting, with the human already present.</p>
+    <div class="seats"><span class="chip m-fable">fable asks · session</span><span class="chip m-human">human decides</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">6</span>Acceptance criteria — testable by construction</h3>
+    <p class="what">Every criterion names its own evidence: the test, command, transcript, or screenshot that will prove it. "Works well" and numberless "fast" don't pass the front door. Whole set bounded to one PR.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span><span class="chip m-human">human approves</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot gate"></div></div><div class="body">
+    <h3><span class="n">7</span>Finalise</h3>
+    <p class="what">Doc artifacts (context.md, ADRs) committed to main in one <code>docs(...)</code> commit. Issue body rewritten in place into the hardened spec; design trail posted as a journal comment; the <b>label contract</b> validated — including explicit design closure (shape decided, or declared free within bounds) — then <code>ready-for-agent</code>.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span><span class="chip m-sonnet">contract lint · sonnet</span></div>
+  </div></div>
+</div>
+
+<div class="call o"><p class="lbl">the 0.9.0 invariant</p><p>An issue may not reach a run with an open design question — one anywhere in the spec fails the contract and the nightly lint strips the label. Design debate belongs here, where arguing is cheap and the human is present; a run that discovers open design escalates back through this door.</p></div>
+
+<p class="handoff">issue is now <b>ready-for-agent</b> · the human walks away ▼</p>
+
+<!-- ═══════════════ ACT II ═══════════════ -->
+<h2><span class="act">act ii · hands-off · fable conducts inline</span>/flow:issue-beta <span class="who">— one run, through the PR</span></h2>
+<p class="lede">No fixed pipeline — the conductor composes the fabric per issue above eight non-negotiable invariants, journaling the composition before work starts and every deviation as it happens. Output: a pushed, reviewed, evidenced PR. Never a merge.</p>
+
+<div class="flow">
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">0</span>Claim, snapshot, compose</h3>
+    <p class="what">Atomic claim (assign + <code>in-progress</code>, verify it landed), snapshot the AC section, worktree off origin/main. Then the launch journal comment: which seats, which modes, why — the human audits the composition, not just the outcome.</p>
+    <div class="seats"><span class="chip m-fable">fable conductor · inline</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">1</span>Design pass — always on</h3>
+    <p class="what">The code-level joinery prep deliberately left open: placement map, single-source-of-truth declarations + drift guards, API shapes with signatures (streaming vs buffered is decided HERE, on paper), invariant ownership, milestones with per-milestone difficulty, and the "not-alone" list — decisions the implementer may not make without a checkpoint.</p>
+    <p class="how"><b>How:</b> blind pair — the opus leg frames minimal-change against the actual seams; the sol leg proposes independently and hunts what the spec left unsaid. The conductor synthesizes, resolving disagreement explicitly (a disagreement here costs a paragraph; at review time it costs a fix round). Flexes: widen to three legs (add the fable taste leg) on new subsystems or hard disagreement; shrink to a lone sol pre-flight only when there's no code-design space at all. <b>Never zero</b> — skip to zero and the implementer becomes the architect by default, unreviewed.</p>
+    <div class="seats"><span class="chip m-opus">minimal leg · opus/medium</span><span class="chip m-codex">blind leg + gap hunt · sol/high</span><span class="chip m-fable">synthesis · conductor</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot loop"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">2</span>Implement + shadow <span style="color:var(--dim);font-weight:400;font-size:12.5px">(milestone loop)</span></h3>
+    <p class="what">Strict TDD (red → green → refactor), one milestone at a time, atomic conventional commits. Effort routed <b>per milestone</b>: transcription-grade work at medium (reads the plan literally, scopes tight), subtle-invariant milestones at xhigh.</p>
+    <p class="how"><b>How:</b> a sol shadow reads commits as they land, accumulating findings silently. At each milestone boundary the conductor triages the pile and hands blocking items over before the next milestone starts — early signal, zero mid-thought interruption. The shadow's watchlist includes the design pass's not-alone list, so structural drift is a checkpoint finding, not just behavioral bugs.</p>
+    <div class="seats"><span class="chip m-opus">implementer · opus med→xhigh</span><span class="chip m-codex">shadow · sol/high</span><span class="chip m-fable">checkpoint triage · conductor</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot gate"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">3</span>Build gate</h3>
+    <p class="what">The repo's canonical check (<code>just check</code>, <code>cargo</code> + clippy, …), race-enabled where documented, retry-wrapped. An errored, rate-limited, or timed-out run is UNKNOWN — its own state, never a pass.</p>
+    <div class="seats"><span class="chip m-sonnet">sonnet · low</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">4</span>Review fabric <span style="color:var(--dim);font-weight:400;font-size:12.5px">(composed width, parallel)</span></h3>
+    <p class="what">The lenses the conductor composed at launch. Standard: an adversarial seat prompted to BREAK the change (with the demonstration fast lane — a finding backed by a failing test is confidence 100, skips adjudication, and its fix inherits the test), correctness, security, and the per-criterion AC evidence check.</p>
+    <p class="how"><b>How:</b> at least one seat is always cross-family from the implementer (decorrelation invariant). A refused security seat retries on the other family; a double-null rides out to the human as <code>securityReviewUnavailable</code> — a review that never happened must never read as a review that found nothing.</p>
+    <div class="seats"><span class="chip m-codex">adversarial · sol/high</span><span class="chip m-opus">security · opus/xhigh</span><span class="chip m-opus">correctness · opus/xhigh</span><span class="chip m-opus">AC check · opus/medium</span><span class="chip m-fable">security fallback · fable/high</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot loop"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">5</span>Fix loop → convergence <span style="color:var(--purple);font-weight:400;font-size:12.5px">(evidence-terminated)</span></h3>
+    <p class="what">Blocking findings fixed — parallel across disjoint files, serial otherwise; crit/high fixes at xhigh, the rest at medium (the re-review is the real verification). The loop ends on EVIDENCE, not a counter: one clean cross-family pass for standard work, two consecutive from different seats at a trust boundary or after churn.</p>
+    <p class="how"><b>How:</b> the final pass carries the breadth backstop — it sweeps the whole diff at file granularity and lists what it read and skipped; any file no reviewer has named since the last fix round is an automatic gap (churn depth never discharges closing breadth). Past ~5 rounds the breaker fires: stop fixing, adjudicate survivors at max effort — real blocker vs reviewer theater, judged by reading the code — and escalate the real ones. The breaker interrupts a human; it never ships silently.</p>
+    <div class="seats"><span class="chip m-opus">fixes · opus med/xhigh</span><span class="chip m-codex">convergence pass · sol/high</span><span class="chip m-opus">adjudication · opus/max</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">6</span>Doc-sync, push, PR</h3>
+    <p class="what">Diff-aware context.md/AGENTS.md corrections, edited in place (docs correct what the diff made false; they don't grow per PR). Rebase, push, open the PR — summary + per-commit changelog, ending in <code>Closes #N</code>.</p>
+    <p class="how"><b>How:</b> every push is verified by sha comparison (<code>rev-parse HEAD</code> vs <code>ls-remote</code>), never by exit status; the Closes-link is re-read from <code>closingIssuesReferences</code> after creation, never assumed from having written the line.</p>
+    <div class="seats"><span class="chip m-opus">doc-sync · opus/high</span><span class="chip m-sonnet">publish · sonnet/low</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">7</span>Post-push · self ∥ external</h3>
+    <p class="what">Complementary lenses the internal fabric didn't run — test quality, silent failures, type design on sol; comment rot on the cheap-depth luna/max combo — in parallel with external bots (coderabbit et al., ~15 min poll cap; silence never stalls the run).</p>
+    <p class="how"><b>How:</b> everything triages into one verdict set: fix / noise / already-fixed (stale-SHA findings re-verified against current HEAD first). <b>Two-key dismissal</b>: a medium+ finding is dismissed as noise only when both model families agree it is. Fixes push with sha verification; external threads get reasoned replies naming the fixing commit.</p>
+    <div class="seats"><span class="chip m-codex">lenses · sol/high + luna/max</span><span class="chip m-fable">triage · conductor</span><span class="chip m-opus">fixes · opus</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot gate"></div></div><div class="body">
+    <h3><span class="n">8</span>Ledger &amp; handoff</h3>
+    <p class="what">Per-criterion evidence table on the PR — verdict + pointer, every entry <b>re-executable from the merged tree</b> (committed test, committed script, committed artifact; journal prose and expiring URLs are not evidence). Then the final read of the PR as it exists NOW: head-sync guard, per-check CI rollup, late-external count, and the coverage report — seats composed vs delivered, by name.</p>
+    <p class="how"><b>How:</b> CI may be "green" ONLY on a head verified in sync. The final journal comment closes the issue's run record; escalation valves (<code>needs-info</code> / <code>needs-human</code> / <code>needs-rebase</code>) each fire a phone push — blocked runs interrupt the human, nothing else does.</p>
+    <div class="seats"><span class="chip m-sonnet">ledger + handoff · sonnet</span><span class="chip m-fable">coverage · conductor</span></div>
+  </div></div>
+</div>
+
+<div class="call p"><p class="lbl">what makes beta beta</p><p>v1 (<code>/flow:issue</code>, the stable path) runs this same contract through a fixed 993-line workflow — static fabric table, 3-round fix cap, one difficulty for the whole run. Beta trades the lookup table for a conductor bound by invariants: fabric width, per-milestone effort, and loop termination all flex to the issue, and mid-run tripwires (unmentioned trust boundary, 2× file count, fix churn, hard cross-family disagreement) force a fabric re-think, each firing journaled.</p></div>
+
+<p class="handoff">an open, reviewed, evidenced PR · the human returns ▼</p>
+
+<!-- ═══════════════ ACT III ═══════════════ -->
+<h2><span class="act">act iii · interactive · the only merge path</span>/flow:land <span class="who">— the human gate</span></h2>
+<p class="lede">The deterministic closing ritual. Merging is hard to reverse, so every gate reads real state and anything off gets presented, not powered through.</p>
+
+<div class="flow">
+  <div class="step"><div class="rail"><div class="dot gate"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">1</span>Resolve + stacked-chain guard</h3>
+    <p class="what">Full PR state read; linked issues recovered even when the Closes-ref is mangled (branch name, title, body — ask before closing nothing). A PR based on another branch doesn't merge until its parent lands; children get retargeted first.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot gate"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">2</span>CI gate — per-check, UNKNOWN ≠ clean</h3>
+    <p class="what">The rollup is partitioned check by check; <code>--watch</code> exit codes are never trusted. Known flakes merge through only if listed in the repo's <code>.github/known-flakes.txt</code>. One narrow rerun valve exists for a pre-existing, timing-shaped, non-overlapping single-test failure — once. Red twice on identical code is real: abort.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span><span class="chip m-sonnet">rollup reads · sonnet</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot gate"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">3</span>External-threads gate</h3>
+    <p class="what">Unresolved external reviewer threads BLOCK the merge. Each is fixed (resolve, note the commit), answered (the reply stands — resolve), or genuinely open (fix now or send back through a fix round). Late-arriving reviews are caught here by design.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot human"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">4</span>Escape-hatch ack</h3>
+    <p class="what">If the run drafted a follow-up (cross-crate-refactor scale only — the single exception to no-backlog), the human acks it into a real issue or consciously drops it. Either way the decision is recorded on the PR.</p>
+    <div class="seats"><span class="chip m-human">human decides</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">5</span>Merge + close — prove it</h3>
+    <p class="what">Squash-merge, then <b>read back</b> <code>state == MERGED</code> — never inferred from exit codes. Remote branch deleted; every linked issue checked and closed by hand if the ref didn't do it (parenthetical refs don't auto-close).</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot"></div><div class="ln"></div></div><div class="body">
+    <h3><span class="n">6</span>Cleanup + memory</h3>
+    <p class="what">Main pulled, worktree retired, local branch deleted, remote-tracking refs pruned, per-worktree resources (test DBs, containers) torn down best-effort. Project memory stamped so finished work is never re-suggested.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span></div>
+  </div></div>
+
+  <div class="step"><div class="rail"><div class="dot human"></div></div><div class="body">
+    <h3><span class="n">7</span>Survey</h3>
+    <p class="what">Open PRs with one-word statuses, issues bucketed by lifecycle label, stale state — synthesised into a ranked 3–6 line menu, highest-leverage move first. The human picks; nothing auto-starts.</p>
+    <div class="seats"><span class="chip m-fable">fable · session</span><span class="chip m-human">human picks</span></div>
+  </div></div>
+</div>
+
+<div class="call"><p class="lbl">the through-line</p><p>Every gate in all three acts enforces the same epistemics: <b>UNKNOWN ≠ pass</b>. Errored checks are their own state, pushes are verified by sha, merges are read back, evidence must survive <code>git clone</code>, and a review seat that silently vanishes is surfaced — because the one failure this whole system is built to prevent is <i>a check that never happened reading as a check that passed</i>.</p></div>
+
+<div class="foot">
+  <p><b>flow 0.9.0</b> · doctrine: the <code>flow</code> skill (framework.md) · beta doctrine: <code>skills/issue-beta/SKILL.md</code> · deep-dive on the beta's decision logic + marked-up prompts: <a href="https://plans.lab.ktle.net/WPfu7z1V85lVBQPV1qXgHw">the issue-beta design doc</a>.</p>
+  <p style="margin-top:4px;color:#5c6773">Shaped by the plans#1 A/B (2026-08-13): v1 vs beta on one spec — v1's PR won, beta's paranoia made it better, and four doctrine lessons plus the prep-dialectic restructure came out of the wreckage.</p>
+</div>
+
+</div>
+</body>
+</html>
