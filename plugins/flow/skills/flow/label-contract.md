@@ -41,7 +41,11 @@ auto-implementation; keep it strict.
 
 1. **Restated why**: the body opens with goal + why, current enough that a cold reader
    needs no archaeology.
-2. **Agreed approach**: the design decision(s), with ADR links where permanent.
+2. **Agreed approach — design closure is explicit**: the design decision(s), with ADR
+   links where permanent. Either the shape is decided (ADR / body records it) or the body
+   explicitly declares the shape free within stated bounds. An open design question
+   anywhere in the spec fails the contract — design debate belongs in prep's dialectic,
+   not in a run.
 3. **`## Acceptance Criteria`** section where every criterion:
    - is observable/testable as written (no "works well", no "should be fast" without a number);
    - **names its evidence**: the test, command, transcript, or screenshot that will prove it;

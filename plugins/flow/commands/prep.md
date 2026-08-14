@@ -57,11 +57,32 @@ Fully specified and small (clear AC, no open questions, no design forks) →
 Too big for one PR → recommend splitting into tracer-bullet vertical slices (each slice
 gets its own prep pass); don't auto-spawn tickets.
 
-Otherwise → grill.
+Otherwise → dialectic, then grill.
 
-## 4. Grill
+## 4. Design dialectic — where ADRs are minted
 
-If a `grill-with-docs` skill is available, run it seeded with the open questions.
+Issues that survive the triviality gate get a cross-model dialectic BEFORE the grill: if
+we're minting an ADR, it deserves a thorough discussion. The do-it-now and split paths
+never see this stage.
+
+1. **Blind proposals**, parallel, neither sees the other: a claude leg (architecture from
+   the scout's seams) and a sol leg on the codex transport — which ALSO hunts spec gaps
+   (what has the human NOT said that an implementer would decide silently). Both work at
+   the product/architecture level: shape, boundaries, protocol surfaces, trust models.
+   Code-level joinery (placement, signatures) belongs to the run's design pass, not here —
+   it must be drawn against the HEAD being implemented on, and prep-time design goes stale.
+2. **Mutual critique**: each leg reads the rival and returns the strongest version of the
+   disagreement. No averaging — the synthesizer is the human, in the grill.
+3. **The argument becomes grill material**: agreements arrive as recommended answers;
+   disagreements become grill questions, adjudicated one at a time. Trust-model forks
+   (who may reach what, what an unattended tool will read or publish) are ALWAYS presented
+   for human decision, never auto-resolved — runs are forbidden from guessing these, so
+   prep is where they get settled cheaply.
+
+## 5. Grill
+
+If a `grill-with-docs` skill is available, run it seeded with the dialectic's argument and
+the open questions.
 Otherwise run the grill inline, same discipline: one question at a time, each with a
 recommended answer (weight correctness over minimal-change); challenge terms against the
 glossary; stress-test boundaries with concrete scenarios; cross-reference the code; update
@@ -81,14 +102,14 @@ different ones and will otherwise write to the wrong places:
 - ADRs stay in the repo-root `docs/adr/`, sequentially numbered. Do not nest per-context
   `docs/adr/` directories — the drift audit only scans the root one.
 
-## 5. Acceptance criteria — testable by construction
+## 6. Acceptance criteria — testable by construction
 
 Draft `## Acceptance Criteria` where EVERY criterion **names its own evidence**: the test,
 command, transcript, or screenshot that will prove it (the run's AC check and evidence
 ledger key off this). Reject criteria that can't be validated — "works well" and
 numberless "fast" don't pass the front door. Bound the whole set to ONE PR.
 
-## 6. Finalise
+## 7. Finalise
 
 1. **Persist doc artifacts to main**: on up-to-date main, stage ONLY the context.md /
    docs/adr/ changes the grill produced, one `docs(...)` commit, push. Anything non-doc
@@ -102,7 +123,7 @@ numberless "fast" don't pass the front door. Bound the whole set to ONE PR.
 5. **Blocked on info only the human/externals can supply** → `needs-info` + comment the
    questions + stop.
 
-## 7. Hand-off
+## 8. Hand-off
 
 One line: `#N design-hardened → ready-for-agent → /flow:issue N` (or: done-now / split /
 needs-info). State decisions made and any ADR touched.

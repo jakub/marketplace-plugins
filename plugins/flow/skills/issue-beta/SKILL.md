@@ -20,7 +20,9 @@ delegation discipline is survival, not style — file scans, command output, and
 in subagents; only conclusions come home.
 
 *Amended 2026-08-14 from the plans#1 A/B verdict (v1 won; four lessons folded in below:
-trust forks, design floor, breadth backstop, re-executable evidence).*
+trust forks, design floor, breadth backstop, re-executable evidence) and the prep
+restructure (the design dialectic moved to /flow:prep — framework §1; runs receive
+design-closed issues only).*
 
 ## The contract (unchanged from v1)
 
@@ -124,10 +126,13 @@ unreviewed (both structural defects that decided the plans#1 A/B were exactly th
 - **Widen to three legs** (add the fable clean/taste leg): new subsystem, public API
   surface, taste-heavy work — or the pair disagrees hard, which is tripwire-grade signal
   to widen rather than adjudicate thin.
-- **Upgrade to full dialectic** (blind → mutual critique → synthesis): design genuinely
-  open — no ADR, greenfield, or prep explicitly deferred the shape.
 - **Shrink to a lone sol pre-flight**: only for changes with no code-design space at all
   (doc-only, config-only, comment-only). Never zero.
+- **Open design discovered mid-run is a prep failure, not a mode.** The full dialectic
+  (blind → argue → human adjudicates) lives at /flow:prep, where models argue and the
+  human decides; the label contract forbids an issue arriving here with open shape
+  questions. A small shape question mid-run → fork question, journaled as a prep-gap
+  event; genuinely open design → `needs-info`, back through the front door.
 
 ## Freedoms — yours to flex, per issue and mid-run
 
@@ -166,10 +171,10 @@ the economics of every pattern below from "can we afford it" to "does it help":
 - **Standing consult**: when torn at any judgment point (synthesis, triage, adjudication),
   ask sol for a decorrelated second opinion before deciding. Two-key dismissal: a
   medium+ finding is dismissed as noise only when both families agree it is.
-- **Design dialectic — blind, then argue**: the flex-ladder upgrade for genuinely open
-  design. Both families design INDEPENDENTLY first (decorrelation preserved), then each
-  critiques the other's design, then you synthesize proposals + critiques + rebuttals.
-  The argument, not the monologues, is what you synthesize.
+- **Dialectic is prep's, not yours**: the blind → argue → synthesize pattern runs at
+  /flow:prep, where the human adjudicates the argument into ADRs. At issue-stage the
+  design pair stays blind + conductor-synthesized; wanting a dialectic mid-run means the
+  issue should not have passed the front door.
 - **Shadow reviewer — milestone checkpoints**: sol reads commits as they land during
   implementation, accumulating findings silently. At each milestone boundary the conductor
   triages the accumulated set and hands blocking items to the implementer before the next

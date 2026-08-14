@@ -15,13 +15,20 @@ Nothing enters the tracker except through here.
 2. **Scout**: domain docs (context.md slices, ADRs), code seams, prior art — delegated to
    scoped agents; the conductor keeps paths and conclusions, never file dumps.
 3. **Triviality gate**: fully specified and small → *do it now* (no ticket theater).
-   Too big → split into tracer-bullet slices. Otherwise → grill.
-4. **Grill**: one question at a time, each with a recommended answer, stress-tested against
+   Too big → split into tracer-bullet slices. Otherwise → dialectic, then grill.
+4. **Design dialectic** (post-gate, pre-grill — where ADRs are minted): blind claude + sol
+   proposals at the product/architecture level (the sol leg also hunts spec gaps), mutual
+   critique, and the resolved *argument* — not the monologues — becomes grill material.
+   The human adjudicates disagreements in the grill; trust-model forks are always the
+   human's, never auto-resolved. Code-level joinery stays with the run's design pass
+   (prep-time design goes stale against a moving HEAD). Nothing reaches /flow:issue with
+   open design questions — that is contract point 2.
+5. **Grill**: one question at a time, each with a recommended answer, stress-tested against
    glossary and code. Decisions crystallise into context.md edits and ADRs, committed to main.
-5. **Acceptance criteria, testable by construction**: every criterion names its own
+6. **Acceptance criteria, testable by construction**: every criterion names its own
    evidence — the test, command, or screenshot that will prove it. Criteria that cannot be
    validated are rejected here, not discovered mid-run.
-6. **Finalise**: issue body = hardened spec (edited in place); design synthesis posted as a
+7. **Finalise**: issue body = hardened spec (edited in place); design synthesis posted as a
    journal comment; `ready-for-agent` applied only if the label contract validates.
 
 ### /flow:issue — one run, through the PR (hands-off)
