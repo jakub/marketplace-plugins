@@ -1,8 +1,0 @@
-{
-  "name": "simple-english",
-  "version": "0.1.0",
-  "description": "Write or check technical text against ASD-STE100 Simplified Technical English — docs, runbooks, error messages, release notes, agent prompts. Vendored from AminBlg/SimpleEnglish (MIT).",
-  "author": {
-    "name": "jakub"
-  }
-}

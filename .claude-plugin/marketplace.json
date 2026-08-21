@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "jakub's Claude Code marketplace — plugins and skill bundles.",
-    "version": "0.15.0"
+    "version": "0.16.0"
   },
   "plugins": [
     {
@@ -27,13 +27,13 @@
       "source": "./plugins/grill"
     },
     {
-      "name": "simple-english",
-      "description": "Write or check technical text against ASD-STE100 Simplified Technical English — docs, runbooks, error messages, release notes, agent prompts. Vendored from AminBlg/SimpleEnglish (MIT).",
+      "name": "unslop",
+      "description": "Cut AI tells from writing and put a voice back in. Vendored from Lauren Tan's pstack skill in cursor/plugins (MIT).",
       "version": "0.1.0",
       "author": {
         "name": "jakub"
       },
-      "source": "./plugins/simple-english"
+      "source": "./plugins/unslop"
     }
   ]
 }

@@ -46,6 +46,17 @@ manifest's `plugins` array. Install strings are `<plugin>@jakub`.
 - `flow`'s `/flow:prep` calls `grill-with-docs` when present and falls back to an inline
   grill otherwise — the dependency is one-way and soft. Do not make flow require grill.
 
+## unslop plugin invariants
+
+- `plugins/unslop/skills/unslop/SKILL.md` is **vendored verbatim** from Lauren Tan's pstack
+  skill in `cursor/plugins` (MIT). No patches dir yet, by design. If it needs changing, add
+  `plugins/unslop/patches/0001-*.patch` following the grill pattern rather than hand-editing,
+  and bump the SHA in `plugins/unslop/NOTICE`.
+- Upstream's frontmatter description ends "Must always apply", so the skill triggers on
+  nearly every turn. That is a deliberate trial, not an oversight — see the NOTICE. Its rules
+  (no em dashes, no "harness"/"surface") conflict with the yospos output style in chat.
+  Narrowing the description is the first patch to write if it proves too loud.
+
 ## Testing changes
 
 Reinstall to pick up changes: `claude plugin uninstall flow@jakub && claude plugin install flow@jakub`

@@ -1,0 +1,62 @@
+This plugin vendors one skill from Lauren Tan's "pstack" plugin, shipped in Cursor's
+official plugin repo:
+
+    https://github.com/cursor/plugins/tree/main/pstack
+
+    pstack/skills/unslop/SKILL.md -> skills/unslop/SKILL.md
+
+Upstream commit:
+
+    99559f2f52047978602ef365589275831e76af07
+
+SKILL.md is the whole skill upstream: no references/, no scripts, nothing else to
+carry. The rest of pstack (agents, automations, docs) is a Cursor-oriented plugin
+and is deliberately not vendored here.
+
+The upstream repo root carries no licence file. `pstack/LICENSE` is MIT and covers
+this file; it is reproduced below.
+
+LOCAL MODIFICATIONS
+-------------------
+
+None. The vendored file is byte-for-byte upstream, including the frontmatter
+description ("Must always apply").
+
+That description is worth watching. In Claude Code the description drives skill
+triggering, so "must always apply" means it fires on nearly every turn, chat replies
+included, where its rules collide with the active output style: rule 13 bans em
+dashes and the parentheses people reach for instead, and rule 26 bans "harness" and
+"surface", which are terms of art in plugin work. Vendored verbatim on purpose, to
+find out how that actually feels in use before patching anything. If it turns out to
+be too loud, the fix is a `patches/0001-*.patch` narrowing the description to prose
+artifacts, following the `plugins/grill` pattern.
+
+RE-SYNCING
+----------
+
+    1. Copy pstack/skills/unslop/SKILL.md over skills/unslop/SKILL.md
+    2. Update the commit SHA above
+
+---------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2026 Lauren Tan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
