@@ -17,8 +17,8 @@ brackets):
 - `mode`: task | review | adversarial-review  [task]
 - `write`: whether Codex may modify files  [false → read-only sandbox]
 - `model`: a codex model, e.g. `gpt-5.6-sol` (flagship), `gpt-5.6-terra` (mid),
-  `gpt-5.6-luna` (nano tier — bulk/latency work)  [omit → config default, gpt-5.6-sol as of 2026-08]
-- `effort`: minimal|low|medium|high|xhigh|max  [omit → config default, `xhigh` as of 2026-08]
+  `gpt-5.6-luna` (nano tier — bulk/latency work)  [omit → `gpt-5.6-sol`; never config.toml]
+- `effort`: minimal|low|medium|high|xhigh|max  [omit → `high`; the transport pins it, so config.toml is never inherited]
 - `fast`: request priority service tier  [false]
 - `cwd`: the directory Codex should operate in  [current]
 - `base`: a git ref, required for the review modes  [—]

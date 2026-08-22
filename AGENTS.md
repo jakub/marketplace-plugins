@@ -17,12 +17,26 @@ manifest's `plugins` array. Install strings are `<plugin>@jakub`.
 ## flow plugin invariants
 
 - `plugins/flow/charter/charter.md` is injected into **every** Claude session via the
-  SessionStart hook — keep it terse (~80 lines), directive, and free of anything that
-  belongs in the skill's long-form docs. Every line costs context in every session.
-- The skill (`plugins/flow/skills/flow/`) is the single source of doctrine. Commands and
-  the charter POINT at it; they do not restate it. If a rule appears twice, one copy is a bug.
-- `workflows/issue.mjs` is plain JavaScript for the Workflow tool — no TypeScript syntax,
+  SessionStart hook. It carries the always-on rules AND the model policy (rankings + the
+  seat/effort table), because seat routing has to be in context wherever an agent is
+  composed. Currently ~165 lines; it is over budget by intent while the docs are being
+  reworked, and a trim pass is owed. Every line costs context in every session.
+- Doctrine lives in exactly two places. The **charter** holds what must be true in every
+  session. The **command bodies** (`prep.md`, `issue.md`, `land.md`) hold the steps each
+  command executes. The skill (`plugins/flow/skills/flow/`) holds only what neither needs
+  at runtime: setup, the doc stack, ambient machinery, label contract, drift audit. If a
+  rule appears twice, one copy is a bug — `framework.md` was retired for exactly this.
+- `/flow:issue` is the dynamic run — the conductor composes the fabric per issue. The fixed
+  pipeline is deprecated at `/flow:issue-fixed` + `workflows/issue-fixed.mjs` — fallback and
+  parts library only, no new behaviour lands there.
+- `workflows/issue-fixed.mjs` (and any ad-hoc Workflow script) is plain JavaScript for the
+  Workflow tool — no TypeScript syntax,
   no `Date.now()`/`Math.random()`/argless `new Date()` (they break resume).
+- A behavioural change to an `issue-fixed.mjs` stage updates that stage in `skills/flow/SKILL.md`
+  § Inside the v1 run. That section is the one sanctioned duplicate in the plugin — reference,
+  not instruction, with the script as source of truth — so it only stays honest if the person
+  editing the script mirrors it. Both drifts found so far came from editing the script, never
+  from reading the doc.
 - On any behavioural change to flow, bump `version` in `plugins/flow/.claude-plugin/plugin.json`,
   mirror it in the plugin's entry in `.claude-plugin/marketplace.json`, and bump the
   marketplace `metadata.version`.

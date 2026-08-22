@@ -95,6 +95,21 @@ const has = (arr, ...seq) => {
   return i !== -1
 }
 
+console.log('model triple is always explicit — never inherited from config.toml')
+{
+  // ~/.codex/config.toml is mutable state: the Codex TUI writes the user's interactive model
+  // and effort picks back to it. An omitted flag would therefore couple every flow seat to an
+  // unrelated session's leftovers, silently. All three knobs are sent on every call.
+  const e = run('happy', ['task', '--cwd', T], { input: 'p' })
+  check(e.ok === true, 'envelope ok with no tuning flags')
+  const av = argvSeen()
+  check(has(av, '-m', 'gpt-5.6-sol'), 'argv: model defaulted explicitly, not omitted')
+  check(has(av, '-c', 'model_reasoning_effort=high'), 'argv: effort defaulted explicitly, not omitted')
+  check(has(av, '-c', 'service_tier=default'), 'argv: service tier pinned to default when --fast is absent')
+  check(e.model === 'gpt-5.6-sol' && e.effort === 'high', 'envelope reports what actually ran, not null')
+  check(e.fast.requested === false, 'fast not requested')
+}
+
 console.log('happy path + flag mapping')
 {
   const e = run('happy', ['task', '--cwd', T, '--model', 'gpt-5.6-luna', '--effort', 'max', '--fast'], { input: 'do the thing' })

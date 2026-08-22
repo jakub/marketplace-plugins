@@ -1,19 +1,19 @@
 #!/usr/bin/env node
-// Smoke harness for workflows/issue.mjs — the only executable spec of the result
-// contract the /flow:issue conductor reads. Four passes, no network, no agents:
+// Smoke harness for workflows/issue-fixed.mjs — the only executable spec of the result
+// contract the /flow:issue-fixed conductor reads. Four passes, no network, no agents:
 //   1. parse gate (the script has a top-level export + return; node --check can't load it)
 //   2. null-cascade: every agent dies → salvage paths logged, controlled design-panel throw
 //   3. happy path with one unverified push → headInSync downgrade, reply gating, result shape
 //   4. refused security seat → cross-family retry, then a visible gap (never a clean pass)
 //   5. codex seat overrides → transport flags in the prompts, marker findings logged+dropped
 // Every schema passed to agent() is validated: required ⊆ properties, recursively.
-// Run: node plugins/flow/scripts/smoke-issue.mjs
+// Run: node plugins/flow/scripts/smoke-issue-fixed.mjs
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'workflows', 'issue.mjs')
+const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'workflows', 'issue-fixed.mjs')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
 let failures = 0
@@ -45,9 +45,9 @@ let script
 try {
   script = new AsyncFunction('args', 'log', 'phase', 'agent', 'parallel', 'budget', 'workflow', body)
   console.log('parse gate')
-  check(true, 'issue.mjs parses inside the workflow wrapper')
+  check(true, 'issue-fixed.mjs parses inside the workflow wrapper')
 } catch (e) {
-  console.error(`  FAIL: issue.mjs does not parse: ${e.message}`)
+  console.error(`  FAIL: issue-fixed.mjs does not parse: ${e.message}`)
   process.exit(1)
 }
 
@@ -152,7 +152,7 @@ let happyStub
       check(c && /--effort high/.test(c.prompt) && /--model gpt-5\.6-sol/.test(c.prompt), `${k} lens runs sol/high on the codex transport`)
     }
     const lensTests = calls.find((c) => c.label === 'lens:tests')
-    check(lensTests && /behavioural test coverage/.test(lensTests.prompt) && /<<'FOCUS'/.test(lensTests.prompt), 'lens focus rides the transport stdin')
+    check(lensTests && /behavioral test coverage/.test(lensTests.prompt) && /<<'FOCUS'/.test(lensTests.prompt), 'lens focus rides the transport stdin')
   } else {
     failures++
     console.error('  FAIL: no result object returned')
@@ -210,7 +210,7 @@ console.log('codex seat overrides (luna/max/fast, explicit pluginRoot)')
   const lensT = calls.find((c) => c.label === 'lens:tests')
   check(lensT && /--model gpt-5\.6-sol/.test(lensT.prompt) && /--effort high/.test(lensT.prompt), 'lens seats stay pinned under --codex-* overrides')
   check(lensT && /--fast/.test(lensT.prompt), '--codex-fast passes through to the lens seats')
-  check(logs.some((l) => /codex seat overrides: model=gpt-5\.6-luna effort=max fast=true/.test(l)), 'overrides are logged at launch')
+  check(logs.some((l) => /codex seats: model=gpt-5\.6-luna \(override\) effort=max \(override\) fast=true/.test(l)), 'overrides are logged at launch, marked as overrides')
   check(logs.some((l) => /fast tier silently dropped/.test(l)), 'CODEX_FAST_DEGRADED marker is logged')
   check(result && !(result.droppedLow || []).some((f) => /CODEX_FAST_DEGRADED/.test(f.title)), 'marker finding dropped, not surfaced as review signal')
 }
@@ -224,7 +224,34 @@ console.log('codex defaults (bad effort ignored, uninterpolated pluginRoot falls
   check(design && design.prompt.includes('cache/*/flow/*/scripts/codex-exec.mjs'), 'uninterpolated ${CLAUDE_PLUGIN_ROOT} falls back to the same-plugin glob')
   check(design && /--effort high/.test(design.prompt), 'design leg default effort stays pinned at high')
   const review = calls.find((c) => c.label === 'review:codex')
-  check(review && !/--effort/.test(review.prompt), 'adversarial leg defaults to the codex config effort (no flag)')
+  // Regression guard: an omitted flag would inherit ~/.codex/config.toml, which the Codex TUI
+  // rewrites with the user's interactive picks — the review seat's strength must not drift
+  // with unrelated sessions. Both knobs are stated, always.
+  check(review && /--effort high/.test(review.prompt) && /--model gpt-5\.6-sol/.test(review.prompt),
+    'adversarial leg pins its own model+effort rather than inheriting config.toml')
+  check(design && /--model gpt-5\.6-sol/.test(design.prompt), 'design leg pins its model too')
+  check(logs.some((l) => /codex seats: model=gpt-5\.6-sol effort=high fast=false/.test(l)),
+    'seat defaults are logged concretely, never as "default"')
+}
+
+// ── pass 6: evidence visibility gate ─────────────────────────────────────────
+// Publishing a capture to the public plans host needs the `evidence-public` ack AND a
+// per-criterion `visibility: public`. The ack is a conductor-resolved boolean, never a
+// ledger judgment, and its absence must shut the public host regardless of the AC text.
+console.log('evidence visibility gate')
+{
+  const acText = '- [ ] Banner names the field.\n  - evidence: screenshot\n  - surface: artifact\n  - visibility: public'
+  const withAck = await run(happyStub, { ...baseArgs, acceptanceCriteria: acText, evidencePublic: true })
+  const ledgerOn = withAck.calls.find((c) => c.label === 'ledger')
+  check(ledgerOn && /carries the `evidence-public` ack/.test(ledgerOn.prompt), 'acked run tells the ledger public is available')
+  check(ledgerOn && /plans publish --public --keep/.test(ledgerOn.prompt), 'acked run names the --public invocation')
+  check(ledgerOn && ledgerOn.prompt.includes('visibility: public'), 'declared AC fields reach the ledger verbatim')
+
+  const noAck = await run(happyStub, { ...baseArgs, acceptanceCriteria: acText })
+  const ledgerOff = noAck.calls.find((c) => c.label === 'ledger')
+  check(ledgerOff && /NO `evidence-public` ack/.test(ledgerOff.prompt), 'unacked run tells the ledger nothing publishes publicly')
+  check(ledgerOff && !/--public/.test(ledgerOff.prompt), 'unacked run never names --public, even with visibility: public in the AC text')
+  check(ledgerOff && /unacked is unpublished/.test(ledgerOff.prompt), 'unacked run states the override explicitly')
 }
 
 console.log(failures === 0 ? '\nsmoke: ALL PASS' : `\nsmoke: ${failures} FAILURE(S)`)

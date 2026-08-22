@@ -48,7 +48,7 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
   recent CI runs (a flake entry for a renamed check is dead lore).
 - Isolated test DBs (where the repo uses them): no orphans beyond live worktrees.
 
-## 5. Charter/framework version skew
+## 5. Charter version skew
 
 - Installed plugin version vs this repo's HEAD (`claude plugin list` vs
   `plugins/flow/.claude-plugin/plugin.json`) — a stale install means sessions run an old
@@ -57,7 +57,7 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
   flag for re-verification.
 - `node plugins/flow/scripts/smoke-codex-exec.mjs` passes (add `CODEX_LIVE=1` when codex
   auth is available) — the transport's encoded CLI facts (model catalog, effort surface,
-  service-tier fail-open behaviour, JSONL event shapes) drift with codex releases.
+  service-tier fail-open behavior, JSONL event shapes) drift with codex releases.
 
 ## Output format
 

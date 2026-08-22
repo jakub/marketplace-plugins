@@ -18,11 +18,18 @@
 // produced (even ok:false — the envelope IS the report). Nonzero exit = the wrapper itself
 // broke. Callers branch on .ok / .error.kind, never on grep.
 //
-// Facts this file encodes (as-of 2026-08-02, codex-cli 0.146.0 — re-verify quarterly):
+// Facts this file encodes (as-of 2026-08-21, codex-cli 0.146.0 — re-verify quarterly):
 // effort only exists as `-c model_reasoning_effort=`; fast mode is `-c service_tier=priority`
 // and an unsupported tier is OMITTED with only a stderr warning (fail-open — we detect and
 // report it); request errors surface as `ERROR: {json}` lines and/or error-type items;
 // `exec review` rejects a custom prompt alongside --base/--uncommitted.
+//
+// The model triple (model, effort, service tier) is ALWAYS sent explicitly, defaulted here
+// when a caller omits it. `~/.codex/config.toml` is mutable state — the Codex TUI writes the
+// user's interactive picks back to it — so an omitted flag does not mean "the documented
+// default", it means "whatever that user last selected in an unrelated session". Inheriting
+// it makes a seat's strength drift silently and undetectably. Same rule as --cwd: explicit
+// or nothing.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -33,6 +40,8 @@ import { createInterface } from 'node:readline'
 const MODES = ['task', 'review', 'adversarial-review']
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const MODEL_RE = /^[a-z0-9][a-z0-9.-]*$/ // shape check only — the catalog is server-driven
+const DEFAULT_MODEL = 'gpt-5.6-sol' // the decorrelation seat; never inherited from config.toml
+const DEFAULT_EFFORT = 'high'
 const DEFAULT_TIMEOUT = { task: 900, review: 1200, 'adversarial-review': 1200 }
 const DEFAULT_STALL = 300 // max-effort reasoning gaps are long; stall ≠ slow thinking
 const RETRYABLE = ['RATE_LIMIT', 'STALL', 'TIMEOUT']
@@ -315,11 +324,17 @@ const stdinText = await readStdin()
 if (a.mode === 'task' && !stdinText.trim()) usage('task mode needs a prompt on stdin')
 if (a.mode === 'review' && stdinText.trim()) usage('review mode takes no prompt — the CLI rejects a custom prompt alongside --base/--uncommitted (use adversarial-review for framed reviews)')
 
-// argv assembly
+// Pin the model triple AFTER validation, so an explicit bad value still errors rather than
+// being silently replaced. From here on a.model/a.effort are concrete and the envelope
+// reports what actually ran instead of a null that means "ask config.toml".
+a.model = a.model || DEFAULT_MODEL
+a.effort = a.effort || DEFAULT_EFFORT
+
+// argv assembly — all three always sent; nothing falls through to config.toml
 const tuning = [
-  ...(a.model ? ['-m', a.model] : []),
-  ...(a.effort ? ['-c', `model_reasoning_effort=${a.effort}`] : []),
-  ...(a.fast ? ['-c', 'service_tier=priority'] : []),
+  '-m', a.model,
+  '-c', `model_reasoning_effort=${a.effort}`,
+  '-c', `service_tier=${a.fast ? 'priority' : 'default'}`,
 ]
 let argvTail, promptText
 if (a.mode === 'review') {

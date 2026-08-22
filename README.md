@@ -33,8 +33,8 @@ an independent cross-model review are routed to different models on different ef
 |---|---|---|
 | Charter | `plugins/flow/charter/charter.md` | The "how we build" engineering charter, injected into every session by a SessionStart hook — delegation policy, model routing, verification semantics, git discipline. |
 | Skill | `plugins/flow/skills/flow/` | Self-documenting framework: doctrine, doc-stack setup, drift audit, label contract. `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`. |
-| Commands | `plugins/flow/commands/` | `/flow:prep` (the single front door for issues, ideas, and spikes), `/flow:issue` (through-the-PR run), `/flow:land` (the only merge path). |
-| Workflow | `plugins/flow/workflows/issue.mjs` | The hands-off implementation workflow — design fan-out → synthesis → TDD → review fabric → fix loop → PR → post-push reviews (self ∥ external) → per-criterion evidence ledger. |
+| Commands | `plugins/flow/commands/` | `/flow:prep` (the single front door for issues, ideas, and spikes), `/flow:issue` (through-the-PR run — dynamic, conductor-composed fabric), `/flow:issue-fixed` (deprecated fixed-pipeline predecessor), `/flow:land` (the only merge path). |
+| Workflow | `plugins/flow/workflows/issue-fixed.mjs` | (Deprecated, kept as fallback + parts library.) The fixed hands-off implementation workflow — design fan-out → synthesis → TDD → review fabric → fix loop → PR → post-push reviews (self ∥ external) → per-criterion evidence ledger. |
 | Agent | `plugins/flow/agents/codex-delegate.md` | Generic "delegate anything to Codex" subagent (mode/model/effort/fast/write/schema parameters, typed envelope returns) over the vendored raw-CLI transport `plugins/flow/scripts/codex-exec.mjs`. Needs the `codex` CLI on PATH; degrades to a visible error envelope otherwise. |
 | Hooks | `plugins/flow/hooks/` | SessionStart charter injection · PreToolUse no-backlog guard (blocks unsanctioned `gh issue create` — PRs ship complete). |
 

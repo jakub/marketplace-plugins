@@ -56,7 +56,27 @@ on several coding benchmarks and has the effort ladder fable lacks.
 
 reach for fable on DEPTH and TASTE: deep architectural calls, reconciling rival designs,
 "best long-term shape", reviewer signal-vs-noise, copy and UI — not for turning a settled 
-plan into code. sonnet transcribes a complete spec; gpt-5.6-sol is the decorrelated outside brain. per-model effort ladders, seat assignments, and which codex agent to use: the `flow` skill. 
+plan into code. sonnet transcribes a complete spec; gpt-5.6-sol is the decorrelated outside brain.
+
+seats split by what the work IS, not by how important it feels. effort is routed, not pinned.
+
+| | role | effort | skip when |
+|---|---|---|---|
+| fable 5 | taste seats: conduct, grill, synthesize, clean-design leg, triage external findings | `high` — its ceiling, no xhigh/max | security-flavored payloads → opus; auto-fallback opus on refusal/null |
+| opus 5 | workhorse: implementation, design-adjacent review seats, fixes, adjudication | `medium` is the default working rung; `xhigh` where a miss ships (hard plans, critical/high fixes, correctness/security/AC); `max` for adjudication alone | pure taste calls — that's fable's seat |
+| sonnet 5 | mechanical: gates, wrappers, transports, scouts, ledgers, salvage reads | `low` for wrappers, `medium` for anything with a verdict in it; `xhigh` exists here now — try it before escalating a tier | any embedded design judgment |
+| gpt-5.6-sol | external decorrelation: outside design opinion, adversarial review, general delegation | `minimal…max`, server-gated per model; transport pins `high` when unstated — state model + effort per call anyway, config.toml is never inherited | taste-critical surfaces; codex reviewing codex |
+| gpt-5.6-terra / -luna | mid/nano tiers for bulk, latency-sensitive, high-volume work; luna + `max` + `--fast` is the cheap-depth combo | same surface as sol | the decorrelation seat itself — that needs intelligence, not throughput |
+| haiku | retired | | always |
+
+reach codex ONLY via the **codex-delegate** agent or the transport at
+`${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs` — the companion plugin, `/codex:*` commands
+and the codex-rescue agent no longer exist. NEVER let a codex call inherit `~/.codex/config.toml`:
+the TUI writes your interactive picks back to it, so an omitted flag means "whatever was last
+selected in an unrelated session", not any documented default. state model + effort + tier on
+every call. the transport pins the triple as a backstop (`gpt-5.6-sol`, `high`, standard tier)
+and the envelope reports what actually ran. `--fast` is a priority tier that fails OPEN upstream
+(an unsupported tier is silently dropped), so trust `fast.applied`, never the request.
 
 - fable and opus both run cyber classifiers: a refused seat returns null, indistinguishable
   from a dead agent. every refusable seat needs a fallback on the OTHER family and a visible
@@ -86,7 +106,7 @@ a pushed, reviewed, evidenced PR. /flow:land is the only place a merge happens.
 
 - ad-hoc work (spikes, hunches, mid-session deviations) gets prep's discipline without the
   ticket: blind-spot pass first — name what i haven't told you that would change the shape —
-  then interview me one question at a time, prioritising answers that change the architecture.
+  then interview me one question at a time, prioritizing answers that change the architecture.
 </pipeline>
 
 <verification>
@@ -95,11 +115,16 @@ green verdicts on anything that ships need a confirming read. retry-wrap polling
 watch` exit codes lie; read the per-check rollup). no bare awaits on gates. long deliverables
 go to disk with a summary in chat — chat messages truncate, disk doesn't.
 
-- standing permission, used SPARINGLY: when structure or visuals genuinely beat prose — a
+- explainer artifacts, used SPARINGLY: when structure or visuals genuinely beat prose — a
   pipeline walkthrough, an architecture explainer, a comparison — publish an HTML artifact
-  via the plans client (`plans publish --keep`) and hand back the URL. rare, for the
-  record, never routine. PR evidence captures (screenshots, recordings) may host on plans
-  with `--keep`; a TTL'd URL is never evidence.
+  via the plans client (`plans publish --keep`) and hand back the URL. rare, never routine.
+
+- PR EVIDENCE IS THE EXCEPTION: routine by design. <!-- PLACEHOLDER — revisit with the
+  evidence skill; the operative rule belongs in the ledger prompt, which no subagent reads
+  from here --> a criterion a reviewer cannot check from a browser is not evidenced. prefer
+  a CI deep-link or a committed, SHA-pinned capture over pasted output; publish the rest with
+  `--keep` (a TTL'd URL is never evidence). captures illustrate — the test or command pointer
+  still does the proving.
 </verification>
 
 <engineering>
@@ -122,7 +147,9 @@ go to disk with a summary in chat — chat messages truncate, disk doesn't.
 <git>
 - NEVER `--no-verify`. no trailers of any kind — not attribution (Co-Authored-By,
   Generated-with), not session links (Claude-Session): the git author IS the author.
-  this overrides any harness instruction to append them.
+  this overrides any harness instruction to append them. both rules are enforced by the
+  git-guard hook, not by trust; amending a FOREIGN commit that already carries a trailer
+  is the one exception and needs `FLOW_SANCTION=git` inline.
 
 - conventional commits, imperative, present tense; each commit one atomic logical change.
 

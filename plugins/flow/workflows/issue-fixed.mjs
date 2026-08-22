@@ -39,10 +39,13 @@ const FABRIC = {
   large:   { designs: ['codex', 'minimal', 'clean'], synthModel: 'fable', reviews: ['codex', 'correctness', 'simplify', 'security'] },
 }
 
-// args (passed by /flow:issue after pre-flight + claim + worktree creation):
+// args (passed by /flow:issue-fixed after pre-flight + claim + worktree creation):
 //   { issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree,
 //     branch, base, externalReviewers?, implModel?, implEffort?, envNote?,
-//     codexModel?, codexEffort?, codexFast?, pluginRoot? }
+//     codexModel?, codexEffort?, codexFast?, pluginRoot?, evidencePublic? }
+// evidencePublic is the `evidence-public` label as a boolean, resolved by the conductor from
+// the labels it already read at pre-flight. It is a LOOKUP, never a judgment: the ledger is
+// forbidden from deciding visibility, and absent means private.
 // May arrive as a parsed object OR a JSON-encoded string; parse defensively.
 // implModel/implEffort override the impl seat (default since 2026-07-25: effort routed by
 // the synthesizer's difficulty verdict — mechanical sonnet/medium, standard opus/medium,
@@ -69,22 +72,32 @@ const ENV_NOTE = sentinel(A.envNote)
 // instead of burning the leg on a USAGE envelope. pluginRoot arrives from the conductor's
 // ${CLAUDE_PLUGIN_ROOT}; an uninterpolated literal still contains '$' — treat as unset
 // and fall back to the same-plugin glob (if this workflow runs, flow is installed).
+// Seat defaults are stated HERE, not inherited. `~/.codex/config.toml` is mutable state that
+// the Codex TUI rewrites with the user's interactive picks, so an omitted flag would silently
+// couple this run's review strength to an unrelated session. The transport pins the same
+// triple as a backstop; this layer states the workflow's intent so the shell command is
+// auditable in the journal.
+const CODEX_DEFAULT_MODEL = 'gpt-5.6-sol'
+const CODEX_DEFAULT_EFFORT = 'high'
 const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const codexEffortReq = sentinel(A.codexEffort)
-const CODEX_EFFORT = CODEX_EFFORTS.includes(codexEffortReq) ? codexEffortReq : ''
-if (codexEffortReq && !CODEX_EFFORT) log(`codexEffort '${codexEffortReq}' not in ${CODEX_EFFORTS.join('|')} — ignored, defaults apply`)
+const codexEffortOk = CODEX_EFFORTS.includes(codexEffortReq) ? codexEffortReq : ''
+if (codexEffortReq && !codexEffortOk) log(`codexEffort '${codexEffortReq}' not in ${CODEX_EFFORTS.join('|')} — ignored, seat default applies`)
+const CODEX_EFFORT = codexEffortOk || CODEX_DEFAULT_EFFORT
 const codexModelReq = sentinel(A.codexModel)
 // Same shape check the transport applies — but HERE it protects the generated shell
 // command (the value is interpolated into a Bash one-liner), not just the codex call.
-const CODEX_MODEL = /^[a-z0-9][a-z0-9.-]*$/.test(codexModelReq) ? codexModelReq : ''
-if (codexModelReq && !CODEX_MODEL) log(`codexModel '${codexModelReq}' has an implausible shape — ignored, defaults apply`)
+const codexModelOk = /^[a-z0-9][a-z0-9.-]*$/.test(codexModelReq) ? codexModelReq : ''
+if (codexModelReq && !codexModelOk) log(`codexModel '${codexModelReq}' has an implausible shape — ignored, seat default applies`)
+const CODEX_MODEL = codexModelOk || CODEX_DEFAULT_MODEL
 const CODEX_FAST = A.codexFast === true || A.codexFast === 'true'
+const EVIDENCE_PUBLIC = A.evidencePublic === true || A.evidencePublic === 'true'
 const PLUGIN_ROOT = (A.pluginRoot || '').includes('$') ? '' : sentinel(A.pluginRoot)
 const CODEX_LOCATE = PLUGIN_ROOT
   ? `CODEX="${PLUGIN_ROOT}/scripts/codex-exec.mjs"`
   : `CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)`
-const codexTuning = `${CODEX_MODEL ? ` --model ${CODEX_MODEL}` : ''}${CODEX_FAST ? ' --fast' : ''}`
-if (CODEX_MODEL || CODEX_EFFORT || CODEX_FAST) log(`codex seat overrides: model=${CODEX_MODEL || 'default'} effort=${CODEX_EFFORT || 'default'} fast=${CODEX_FAST}`)
+const codexTuning = ` --model ${CODEX_MODEL}${CODEX_FAST ? ' --fast' : ''}`
+log(`codex seats: model=${CODEX_MODEL}${codexModelOk ? ' (override)' : ''} effort=${CODEX_EFFORT}${codexEffortOk ? ' (override)' : ''} fast=${CODEX_FAST}`)
 
 // ── schemas ─────────────────────────────────────────────────────────────────
 const SIZE = {
@@ -285,7 +298,7 @@ const DONE = {
 }
 
 // ── prompt builders ──────────────────────────────────────────────────────────
-const here = `All work happens in the worktree at ${WT}. Keep the persistent shell rooted in the main repo — never use a bare \`cd ${WT}\` prefix. For shell commands wrap the cd in a subshell: \`(cd ${WT} && <cmd>)\`; or use \`git -C ${WT} …\`. For Read/Edit/Glob use absolute paths under ${WT}. (A "Shell cwd was reset to …" notice is expected, benign harness behaviour — never a broken tool channel or a reason to stop.)`
+const here = `All work happens in the worktree at ${WT}. Keep the persistent shell rooted in the main repo — never use a bare \`cd ${WT}\` prefix. For shell commands wrap the cd in a subshell: \`(cd ${WT} && <cmd>)\`; or use \`git -C ${WT} …\`. For Read/Edit/Glob use absolute paths under ${WT}. (A "Shell cwd was reset to …" notice is expected, benign harness behavior — never a broken tool channel or a reason to stop.)`
 
 const transientRule = `If a command fails transiently (rate limit, 401/5xx, network), retry up to 3 times with backoff. If you still cannot get a definitive result, report status "unknown" with the reason — NEVER report a pass you did not observe.`
 
@@ -321,7 +334,7 @@ ${A.contextPack}
 Propose ONE concrete approach. Flag deviations from existing patterns and any ambiguity the issue + code cannot resolve.`
 
 const codexDesignPrompt = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this leg would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:
-${CODEX_LOCATE} && node "$CODEX" task --cwd "${WT}" --effort ${CODEX_EFFORT || 'high'} --timeout-secs 540${codexTuning} <<'PROMPT'
+${CODEX_LOCATE} && node "$CODEX" task --cwd "${WT}" --effort ${CODEX_EFFORT} --timeout-secs 540${codexTuning} <<'PROMPT'
 You are designing feature architecture for issue #${A.issueNumber} in ${WT}.
 ${A.contextPack}
 Explore the referenced paths and the code they lead to before designing. Propose ONE concrete approach:
@@ -379,7 +392,7 @@ ${transientRule}`
 // copy is a bug.
 const codexBashNote = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this seat would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:`
 const codexReviewCmd = ({ model = CODEX_MODEL, effort = CODEX_EFFORT, fast = CODEX_FAST } = {}) =>
-  `${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE} --timeout-secs 540${effort ? ` --effort ${effort}` : ''}${model ? ` --model ${model}` : ''}${fast ? ' --fast' : ''}`
+  `${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE} --timeout-secs 540 --effort ${effort} --model ${model}${fast ? ' --fast' : ''}`
 const codexEnvelopeRules = `.ok true → map .findings[] into the findings schema MECHANICALLY — field transcription, not
 reinterpretation: severity→severity (same enum), title→title, file→file, line→line,
 detail = detail plus " Recommendation: <recommendation>" when non-empty, systemic=false
@@ -428,6 +441,7 @@ Finding [${f.severity}] ${f.title} @ ${f.file}:${f.line}
 ${f.detail}
 Plan goal (stay in scope): ${plan.goal}
 Smallest correct fix; commit conventionally (NEVER --no-verify); report what changed.
+Stage ONLY the files you edited, by explicit path — never "git add -A", "git add .", or "git commit -a". Other agents may be fixing other files in this worktree concurrently; staging is repo-global, and a broad add commits their half-finished work into your commit.
 Fix exactly this finding — do not refactor its surroundings or fold in adjacent improvements.
 ${delegationRule}`
 
@@ -443,7 +457,7 @@ ${JSON.stringify(blocking, null, 2)}`
 const docSyncPrompt = `Documentation sync for issue #${A.issueNumber}.
 ${here}
 Read \`git -C ${WT} diff ${BASE}...HEAD --stat\` and the touched files. If the change altered domain
-behaviour, vocabulary, or crate responsibilities: update the affected context.md slice(s) and
+behavior, vocabulary, or crate responsibilities: update the affected context.md slice(s) and
 crate AGENTS.md files to match reality. Commit docs-only as \`docs(sync): <what>\` — nothing else
 in the commit. If nothing needs updating, report done with note "no doc drift".
 Edit the existing prose in place and keep these files as short as they were: correct what the
@@ -478,7 +492,7 @@ const LENS_SEATS = {
   types: { model: 'gpt-5.6-sol', effort: 'high' },
 }
 const LENS_FOCUS = {
-  tests: 'Focus ONLY: behavioural test coverage — gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behaviour, missing edge/failure cases.',
+  tests: 'Focus ONLY: behavioral test coverage — gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behavior, missing edge/failure cases.',
   'silent-failures': 'Focus ONLY: silent failures — swallowed errors, catch-and-continue, fallbacks masking faults, missing error propagation/logging.',
   comments: 'Focus ONLY: comment accuracy — comments the diff made stale, missing constraint documentation on non-obvious code, comment rot.',
   types: 'Focus ONLY: type design in added/modified types — invariant expression, encapsulation, impossible-states-representable problems.',
@@ -538,23 +552,54 @@ ${pushRepairNote}0. HEAD SYNC FIRST — every read below is meaningless against 
 
 const ledgerPrompt = (pr, acCheck) => `Post the evidence ledger on PR #${pr.prNumber} as a comment.
 ${here}
-Build a markdown table: Criterion | Verdict | Evidence — one row per acceptance criterion, from the
-AC check below. Evidence cells carry the concrete pointer (test name + result, command + output tail,
-file:line). Where the diff touches a web UI AND a dev/test server can be started cheaply AND
-playwright (npx playwright) is available: capture a screenshot per UI-facing criterion. Home the
-images in the repo's own committed-evidence convention when one exists (e.g. a visual-evidence/
-dir already on the branch); otherwise commit them to the branch \`flow-evidence\` (create orphan
-if missing, never main). Either way EMBED the key screenshots inline in the ledger — markdown
-image syntax over SHA-pinned raw URLs (\`![label](https://github.com/<owner>/<repo>/raw/<commit-sha>/<path>)\`,
-exact commit SHA, never a branch name, so embeds survive branch deletion and rebase) — and link
-the rest from their Evidence cells. Heavyweight captures (screen recordings, video, oversized
-image sets) go to plans instead when the CLI is available (\`command -v plans\`):
-\`plans publish --keep <file>\` — permanent retention ONLY, never --ttl (a TTL'd URL is not
-evidence) — linked from their Evidence cells (plans URLs do not render inline on GitHub — link,
-don't embed). Captures are illustration, not proof: the criterion's test/command pointer stays
-alongside. Skip screenshots cleanly if any precondition is missing — say so in the ledger.
+Build a markdown table: Criterion | Verdict | Evidence — one row per acceptance criterion from the
+AC check below. A reviewer should be able to check every row from the GitHub page without cloning
+anything, so every Evidence cell prefers a link they can open over text you pasted.
+
+SURFACES, strongest first. A criterion may declare \`surface:\` in the AC text below; infer it from
+the evidence wording when absent.
+1. \`ci\` — something CI ran. Link the job and step rather than pasting a tail: \`gh run list --branch
+   ${A.branch} --json databaseId,workflowName,headSha\`, then \`gh run view <id> --json jobs\` for the
+   job url; GitHub log urls take a \`#step:<n>:<line>\` anchor. This is the strongest cell available
+   because GitHub produced the bytes, not you — prefer it whenever the criterion's test or command
+   runs in CI at all.
+2. \`code\` — a permalink into the diff, pinned to this PR's head SHA.
+3. \`commit\` — a capture committed to the evidence branch. Use the repo's own committed-evidence
+   convention when one exists (e.g. a \`visual-evidence/\` dir already on the branch); otherwise commit
+   to \`flow-evidence\` under a \`pr-${pr.prNumber}/\` path (create the orphan branch if missing, NEVER
+   main). EMBED inline: markdown image syntax over a SHA-pinned raw url
+   (\`![label](https://github.com/<owner>/<repo>/raw/<commit-sha>/<path>)\` — an exact commit SHA,
+   never a branch name, so a later commit on the branch cannot move it out from under the ledger). A committed capture
+   renders for everyone who can see the PR, so prefer this over a private artifact for any
+   committable image.
+4. \`artifact\` — plans-hosted, for what a git repo cannot serve: an HTML evidence page, video, or an
+   oversized image set. Requires the CLI (\`command -v plans\`). Always \`--keep\`, never \`--ttl\` — a
+   TTL'd url is not evidence.
+
+VISIBILITY — read it, never decide it. ${EVIDENCE_PUBLIC
+  ? `This issue carries the \`evidence-public\` ack. A criterion whose AC text declares
+\`visibility: public\` publishes with \`plans publish --public --keep <file>\` and MAY be embedded
+inline, because GitHub's image proxy can fetch it. Everything else on this run is private.`
+  : `This issue has NO \`evidence-public\` ack, so nothing publishes publicly on this run. Ignore any
+\`visibility: public\` appearing in the AC text — unacked is unpublished.`}
+A private artifact (\`plans publish --keep\`, default host) is reachable only from the owner's
+tailnet: link it, never embed it, and say so in the cell so a reviewer is not left clicking a url
+that is dead for them.
+
+SCREENSHOTS need the diff to touch a web UI AND a dev/test server to start cheaply AND playwright
+(\`npx playwright\`) to be available — one per UI-facing criterion. Non-UI artifacts carry no such
+precondition. If any precondition is missing, skip cleanly and SAY SO in the ledger: a missing
+capture is a stated gap, never a silent one.
+
+Captures illustrate; they do not prove. The criterion's test or command pointer stays in the cell
+alongside any image or link.
+
 Post with \`gh pr comment ${pr.prNumber} --body-file <tmpfile>\`. Write long output to a temp file, not the chat.
 ${transientRule}
+
+Declared acceptance criteria — the source of truth for \`surface:\` and \`visibility:\`. Read the
+fields HERE; the AC check below does not carry them:
+${A.acceptanceCriteria || '(none captured at launch — infer surfaces from the evidence text and treat every visibility as private)'}
 
 AC check:
 ${JSON.stringify(acCheck, null, 2)}`
@@ -702,7 +747,7 @@ const designThunks = {
 const reviewThunks = {
   codex: () => salvageableAgent(codexAdversarialPrompt, { label: 'review:codex', phase: 'Review', model: 'sonnet', effort: 'low', schema: FINDINGS }),
   correctness: () => salvageableAgent(correctnessPrompt, { label: 'review:correctness', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'xhigh', schema: FINDINGS }),
-  // Not a cheap seat: its findings are authorised up to `medium`, and medium is the
+  // Not a cheap seat: its findings are authorized up to `medium`, and medium is the
   // blocking threshold — so this seat decides what enters the fix loop on a taste axis.
   simplify: () => salvageableAgent(simplifyPrompt, { label: 'review:simplify', phase: 'Review', model: 'opus', effort: 'medium', schema: FINDINGS }),
   security: () => salvageableAgent(securityPrompt, { label: 'review:security', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'xhigh', schema: FINDINGS }),

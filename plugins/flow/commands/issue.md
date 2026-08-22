@@ -1,141 +1,252 @@
 ---
-description: Hands-off implementation of a ready-for-agent issue, through a pushed, reviewed, evidenced PR. Conductor for the flow-issue workflow.
-argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh] [--codex-model <m>] [--codex-effort minimal|low|medium|high|xhigh|max] [--codex-fast]
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Read, Write, Workflow, TaskOutput, PushNotification, Task, Agent
+description: Hands-off implementation of a ready-for-agent issue, through a pushed, reviewed, evidenced PR. The conductor composes the run per issue — seats, models, rounds — inside a short list of non-negotiable invariants.
+argument-hint: <issue-number>
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Write, Workflow, TaskOutput, TaskStop, PushNotification, Task, Agent, AskUserQuestion, Skill
 ---
 
-# /flow:issue — one run, through the PR
+# /flow:issue
 
-Middle of **prep → issue → land** (doctrine: `flow` skill, `framework.md` §1). You are the
-CONDUCTOR: pre-flight, claim, launch, journal, result handling. The heavy lifting happens
-inside the background workflow — do not re-implement its stages inline, and do not pollute
-the main context with file contents that belong in the workflow's agents.
+/flow:issue is the middle of the **prep → issue → land** process. Prep hardened the issue;
+this command drives it hands-off to a pushed, reviewed, evidenced PR and stops there.
 
-Argument: `$ARGUMENTS` = issue number, optionally followed by `--impl-model <m>` /
-`--impl-effort <e>` to override the implementer seat (default: effort routed by the plan's
-difficulty — mechanical `sonnet/medium`, standard `opus/medium`, hard `opus/xhigh`; the
-workflow clamps an explicit `--impl-model fable` to `high`, and a seat that refuses/dies
-re-runs one rung UP, or on the routed model when an override put a different one in).
-`--codex-model <m>` / `--codex-effort <e>` / `--codex-fast` override the codex seats
-(design leg + adversarial review; default: config-default model, design pinned at `high`,
-review at the codex config default). Luna is the nano tier — overriding the review seat
-onto it trades away the decorrelated-intelligence signal; that is an experiment, not a default.
-Abort with usage if the first token is not a positive integer.
+There is no fixed pipeline and no hardcoded stage list. YOU — the session model, **in the
+main session, inline** — are the CONDUCTOR, and you compose the run to fit the issue,
+flexing seats, models, and rounds as the work reveals itself. What you hold is trust plus
+a short list of things you are not allowed to trade away. The premise: a capability table
+plus rules of engagement, held by a strong conductor, beats a lookup table — judge the
+output, not the price tag.
 
-## 1. Pre-flight
+The argument must be an issue number; abort with usage if it isn't a positive integer.
 
-1. `gh issue view $N --json number,title,body,labels,state,url`. Abort if closed, or if
-   NOT labelled `ready-for-agent` (route to `/flow:prep $N` instead — the contract is the
-   safety case; don't run cold on an unvalidated spec).
-2. Repo sanity: on a clean checkout, `git fetch origin main`.
+## Core principles
 
-## 2. Claim — atomic
+1) You conduct inline, so the session is occupied for the run and its context is precious.
+   Delegation discipline is survival, not style — file scans, command output, and diffs live
+   in subagents; only conclusions come home.
+2) The invariants in §2 bind however you orchestrate. Everything else — fabric width, seats,
+   modes, rounds — is yours to flex, and every flex gets journaled.
+3) Hands-off by default, with rare fork questions. The only mid-run questions are forks
+   genuinely the human's to pick — and trust-model forks are NEVER guessed.
+4) The issue is the record. The journal comments are what a human reads to audit the run,
+   and the only recovery trail there is.
+5) Never merge, and never retire the worktree. The PR is where this command stops —
+   `/flow:land` is the only merge path, and it cleans up after itself.
 
-Check-and-set so concurrent runs (or a future cron) can't double-grab:
+## 1. The contract
 
-```bash
-gh issue edit $N --add-label in-progress --add-assignee @me
-gh issue view $N --json assignees,labels   # verify OUR claim landed; if another assignee/claim beat us, STOP
-```
+**In**: an open issue labelled `ready-for-agent`. If the label is missing, stop and route
+the user to `/flow:prep $N` instead — the contract is the safety case; don't run cold on a
+spec nobody validated. Claim it atomically: assign + `in-progress`, then re-read to verify
+OUR claim landed — a check-and-set, so two concurrent runs can't grab the same issue. If a
+live worktree, branch, or PR already exists behind it, surface the existing run rather than
+double-running. Snapshot `## Acceptance Criteria` at claim: the run is judged against the
+snapshot, and a body that moves mid-run is flagged, not chased. All work happens in a
+worktree off origin/main, branch `feat|fix|chore/issue-$N-<slug>`.
 
-If already `in-progress` with a live worktree/branch (check `git worktree list`,
-`gh pr list --head`), stop and surface the existing run instead of double-running.
-**Snapshot the `## Acceptance Criteria` section text now** — the workflow judges against
-this snapshot; body edits mid-run are detected at the end (step 5.4).
+**Out**: an open PR — pushed, reviewed, evidenced, `Closes #N`-linked — or a clean
+escalation (`needs-info` / `needs-human` / `needs-rebase`: label it, comment what's
+blocking, fire a push notification). Never merge.
 
-## 3. Launch
+**Hands-off, with rare fork questions.** Default fully autonomous. AskUserQuestion is
+allowed mid-run ONLY when a fork is genuinely the human's to pick — rival designs both
+defensible on the merits, a contested finding whose dismissal changes the risk posture, a
+scope smell the issue cannot settle. Same bar as `needs-info`, cheaper than escalating. If
+no answer comes, decide, journal the guess as an event, and keep moving — **except
+trust-model forks, which are never guessed**: a fork that sets the posture of a trust
+boundary (who may reach what, what an unattended tool will read or publish, where
+authority ends) is a MANDATORY ask. The review fabric will ratify a plausible trust
+ruling rather than contest it — a coherent trust model reads as intentional — so the
+guess-and-journal path is closed here. Unanswered, the only permissible default is the
+conservative posture (confine, refuse, least reach), flagged provisionally-decided in the
+final journal.
 
-1. Worktree off origin/main: branch `feat/issue-$N-<slug>` (or fix/chore by issue type),
-   `git worktree add ../<repo>-issue-$N origin/main -b <branch>`.
-2. **Context pack** — paths, not contents: the issue's likely modules (quick greps), the
-   relevant context.md slices and ADR paths, the repo's build/test commands (from
-   AGENTS.md). Keep it a pointer list; workflow agents explore for themselves.
-   **envNote** (separate arg, not part of the pack): read the repo's hook config
-   (lefthook/husky/pre-push) — what runs on push and which env exports it needs (e.g. a
-   test suite that hard-requires `DATABASE_URL`). One or two sentences; omit the arg
-   entirely when there is nothing to say. This is what the push/gate agents get — they
-   cannot infer it from a one-line prompt.
-3. Resolve the workflow script: `${CLAUDE_PLUGIN_ROOT}/workflows/issue.mjs` — if the
-   variable is unavailable in this context, locate it:
-   `ls ~/.claude/plugins/cache/*/flow/*/workflows/issue.mjs | sort -V | tail -1`.
-   Salvage hygiene: `rm -rf /tmp/flow-issue-$N-reports` before launch — the workflow's
-   report-salvage dir is deterministic, and a stale file from an earlier run of the same
-   issue must not be salvageable as fresh.
-4. Launch via the Workflow tool with `scriptPath` and args:
-   `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, envNote, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"], pluginRoot: "${CLAUDE_PLUGIN_ROOT}" }`,
-   plus `implModel` / `implEffort` / `codexModel` / `codexEffort` / `codexFast` when the
-   corresponding flags were given (omit otherwise — absent keys mean the workflow's
-   defaults: difficulty-routed impl, config-default codex). `pluginRoot` is how the
-   workflow's codex legs find the codex-exec transport without a glob; if the variable
-   did not interpolate, pass the directory you resolved the script from in step 3.
-5. **Stamp the runId** the tool result returns as an issue journal comment:
-   `flow run started — runId <id>, worktree <path>, branch <branch>` — this is the
-   recovery anchor for any future session.
+## 2. Invariants — not negotiable, however you orchestrate
 
-## 4. While it runs
+1. **Decorrelation**: every diff that ships is reviewed by at least one seat from a
+   different model family than the one that wrote it. Claude-reviewing-claude and
+   codex-reviewing-codex are both correlation failures.
+2. **Adversarial floor**: at least one review seat is prompted to REFUTE — to break the
+   change — not to summarize it. Confirmation-shaped review is not review.
+   **Demonstration fast lane**: a finding backed by a failing test it wrote is
+   confidence 100 by construction — it skips adjudication entirely, and its fix inherits
+   the test as the regression guard. Prose-refute remains the floor (design flaws and
+   missing coverage aren't demonstrable); demonstration is the incentive, not a gate.
+3. **Security visibility**: a refused/dead/errored security seat is surfaced as
+   `securityReviewUnavailable` all the way to the human. Absence of findings from a seat
+   that never ran is absence of evidence. Retry across families before declaring it.
+4. **UNKNOWN ≠ pass**: errored, rate-limited, timed-out checks are their own state. CI is
+   green only on a head verified in sync (local sha == PR headRefOid, observed, never
+   inferred from exit status).
+5. **Evidence per criterion, re-executable from the tree**: every acceptance criterion
+   gets a verdict + concrete pointer in a PR ledger, and the evidence must be reproducible
+   by a stranger holding only the merged repo — a committed test, a committed script, a
+   committed artifact. Journal prose describing a heroic verification (fuzz totals,
+   sweep counts, browser differentials) is narrative, not evidence; an expiring capability
+   URL is evidence with a TTL. If it can't survive `git clone` on a fresh machine, the
+   ledger entry isn't done. One carve-out: CAPTURES (screenshots, recordings) may host on
+   plans via `plans publish --keep` — permanent retention only, linked per-criterion —
+   since a capture is not re-executable anyway and plans beats bloating the repo with
+   media. Plans hosts captures, never proof: the testable claim behind the capture still
+   needs its committed test. Judged against the claim snapshot; a body that moved mid-run
+   is flagged, not chased.
+6. **Termination on evidence, not counters** — risk-tiered convergence:
+   - standard work: ONE clean cross-family adversarial pass (different family than the
+     fixer, fresh eyes, nothing blocking) → converged.
+   - trust-boundary contact or a churny run: TWO consecutive clean passes from different
+     seats.
+   - **breadth backstop**: churn tripwires concentrate the fabric on the file that fights
+     back, and depth there is not coverage elsewhere. The final pass before convergence is
+     declared must sweep the whole diff surface at file granularity and list what it read
+     and what it skipped; any file no reviewer has named since the last fix round is an
+     automatic gap. Churn depth and closing breadth are separate obligations — one never
+     discharges the other.
+   - circuit breaker: past ~5 fix rounds, stop fixing — adjudicate the survivors at
+     maximum reasoning effort, escalate the real ones. The breaker interrupts a human;
+     it never ships silently.
+7. **Containment**: all writes in the worktree; leaf agents do not sub-delegate; two
+   agents never edit one file concurrently — and because staging is repo-global even when
+   the edits are disjoint, parallel fixers stage ONLY their own files by explicit path
+   (never `git add -A`/`commit -a`) or their commits serialize; no `--no-verify`, no
+   trailers (hooks enforce).
+8. **Refusal routing**: any seat can come back null (classifier roulette on both fable and
+   opus). Every judgment/security seat needs a cross-family fallback, and a double-null is
+   reported, never swallowed.
 
-Nothing. Do not poll, do not narrate. The workflow notifies on completion. If YOU are
-asked to stop/restart: `TaskStop`, then resume later with
-`Workflow({scriptPath, resumeFromRunId})` (same session) or follow **Recovery** below.
+## 3. The design pass — always on
 
-## 5. Result handling
+Every production-code run gets a design pass. "The ADR / prep settled it" is not a
+qualifying skip reason: that claim covers forks the spec *named*, and the code-level
+design space — where things live, what signatures stream, which table is canonical — is
+never in that set. Skip to zero and the implementer becomes the architect by default,
+unreviewed — the defect class this pass exists to kill.
 
-The workflow returns a structured result. In order:
+**The standard: a blind cross-model pair + conductor synthesis.**
 
-0. **Handoff verification** — the result's `handoff` field is the workflow's FINAL read of
-   the PR (head-sync guard, CI rollup, late external reviews, Closes-link).
-   `headInSync: false` → the PR tip on GitHub is NOT the work the run judged: distrust
-   `ciStatus` entirely, push the worktree branch yourself (the envNote you built names the
-   hook exports; use a long timeout — pre-push hooks may run the full suite) or escalate
-   `needs-human` with the divergence. `ciStatus: "pending"` with `headInSync: true` is the
-   NORMAL state right after a repair push → the last push's CI outlived the run: watch it
-   to completion (background poll, re-read the rollup) and report the real verdict, never
-   "green" on faith. `"red"` → diagnose before
-   journaling: single pre-existing timing-shaped test → the land skill's rerun-once valve;
-   anything else → treat as a real failure (fix on the branch or escalate `needs-human`).
-   `handoff.finalSummary` is the branch state at close; earlier fields (`implSummary`,
-   `implDeviations`) are mid-run snapshots — prefer `handoff` where they disagree. A
-   missing/null `handoff` is itself UNKNOWN: do the rollup read yourself.
-   Escalation results carry push state too (`headPushed` on needs-rebase/needs-human,
-   `postPush.pushed` on the post-push gate escalation): a false value means unpushed
-   local commits exist in the worktree — verify with `git ls-remote` before acting.
-1. **Escalations** — each also fires a push notification (PushNotification: one line,
-   issue #, valve, PR url if any):
-   - `needs-info`: post the questions as an issue comment, label `needs-info`, remove
-     `in-progress`, retire nothing (worktree may be reused after answers).
-   - `needs-human`: label, comment the adjudicated-real blockers (`unresolvedBlocking`)
-     with file:line. The PR exists — say so.
-   - `needs-rebase`: label, comment; the PR exists with conflicts surfaced.
-1.5. **Unreviewed-security gate** (`securityReviewUnavailable: true`): no security seat
-   produced a result on either model family — this diff is NOT security-reviewed, and the
-   empty finding set is absence of evidence, not evidence of absence. Say so in the final
-   report AND in the journal comment, in those words. Do not let it read as a clean pass.
-   On a diff that touches a trust boundary (auth, input parsing, shell/SQL/template
-   construction, secret handling), escalate `needs-human` rather than handing it to /land.
-2. **Escape hatch** (`escapeHatch` non-empty): post ONE draft comment on the PR —
-   `## follow-up draft (cross-crate scale — requires human ack at /flow:land)` with the
-   systemic findings. Do NOT create an issue (the hook would block it anyway; filing
-   happens at land, on ack).
-3. **AC body-move check**: re-fetch the issue body; if `## Acceptance Criteria` differs
-   from the launch snapshot, flag it prominently in the final comment — the run judged
-   against the snapshot.
-4. **Final journal comment** on the issue: outcome (PR #, url), plan goal + difficulty,
-   **review coverage** (`coverage.reviewsDelivered` of `coverage.reviews.length` lenses, by
-   name — a run judged by a thinned fabric is not the same evidence as a full one, and the
-   human at land cannot infer it from the finding count), fix rounds + adjudication summary,
-   post-push triage counts (fixed/noise, external received/timed-out), dropped-low count,
-   deviations. Terse table > prose.
-5. **Report to the human**: one screenful — PR url, evidence-ledger state, anything
-   dropped or dismissed, next step (`/flow:land <PR>` when happy).
+- **opus leg** (medium): the minimal framing — smallest change, maximum reuse, grounded
+  in the actual code seams. The modal synthesis winner; the anchor.
+- **sol leg** (blind, parallel): not "ask codex for an approach" — a decorrelated design
+  sheet with two explicit jobs: propose its own shape independently, and **hunt spec
+  gaps** — name what the issue didn't say that the implementer would otherwise decide
+  silently. The outside brain finds different holes; decorrelation is cheapest per
+  finding at design time.
+- **conductor synthesis, inline** (no extra seat): resolve disagreements explicitly,
+  never average. A disagreement here costs a paragraph; the same disagreement at review
+  time costs a fix round.
 
-Never merge. The worktree stays (land retires it).
+**Required outputs** (the defect-class killers — a pass without these didn't happen):
 
-## Recovery (cross-session)
+1. **Placement map** — where each new thing lives and why there.
+2. **Single-source-of-truth declarations** + the drift guards that enforce them.
+3. **API shapes with signatures** — streaming vs buffered is decided here, on paper.
+4. **Invariant ownership** — which layer enforces what.
+5. **Milestones with per-milestone difficulty** — routes implementer effort per milestone.
+6. **The "not-alone" list** — decisions the implementer may not make without a
+   checkpoint; doubles as the shadow reviewer's structural watchlist, so the shadow
+   covers design drift, not just behavior.
 
-The runId comment on the issue is the anchor. Same session: `resumeFromRunId`. Fresh
-session: read the workflow journal
-(`<transcriptDir>/journal.jsonl` if available) and the worktree state
-(`git -C <wt> log origin/main..HEAD`, diff), then either resume via a continuation script
-or re-launch with a context pack noting which stages' commits already exist — the
-workflow's stages are idempotent-guarded by the review fabric (re-reviewing done work is
-cheap; re-implementing it is not — say what exists).
+**The flex ladder** (conductor's call, each move journaled):
+
+- **Widen to three legs** (add the fable clean/taste leg): new subsystem, public API
+  surface, taste-heavy work — or the pair disagrees hard, which is tripwire-grade signal
+  to widen rather than adjudicate thin.
+- **Shrink to a lone sol pre-flight**: only for changes with no code-design space at all
+  (doc-only, config-only, comment-only). Never zero.
+- **Open design discovered mid-run is a prep failure, not a mode.** The full dialectic
+  (blind → argue → human adjudicates) lives at /flow:prep, where models argue and the
+  human decides; the label contract forbids an issue arriving here with open shape
+  questions. A small shape question mid-run → fork question, journaled as a prep-gap
+  event; genuinely open design → `needs-info`, back through the front door.
+
+## 4. Freedoms — yours to flex, per issue and mid-run
+
+- **Fabric width**: how many review lenses, whether a post-push stage exists at all — but
+  the design pass has a floor (§3), and an auth-touching "trivial" needs the full
+  security panel regardless of its size label.
+- **Continuous re-sizing — tripwires + taste**: size is not a launch-time verdict. These
+  tripwires FORCE a fabric re-think, and each firing is journaled as an event:
+  - the diff touches a trust boundary the issue never mentioned (auth, input parsing,
+    shell/SQL/template construction, secret handling);
+  - the diff exceeds ~2× the plan's expected file count;
+  - fix rounds churn on the same area (a fix spawning findings where it landed);
+  - cross-family reviewers disagree hard on the same code.
+  Beyond the tripwires: standing permission to widen on any hunch. Narrowing is also
+  legal (a "medium" that turned out mechanical) — journal that too.
+- **Seat assignment**: route by the charter's capability table (taste → fable, top-effort
+  reasoning → opus, mechanical → sonnet, decorrelation + bulk → codex tiers), but re-run
+  any output that misses the bar on a stronger seat without asking. Escalation is cheaper
+  than shipping mediocre work.
+- **Orchestration medium — your call per fan-out**: drive Agent calls directly when a
+  stage is adaptive or small; author a short ad-hoc Workflow script when a fan-out is
+  deterministic and worth resume + progress UI (a 4-lens review fabric, parallel disjoint
+  fixes). `workflows/issue-fixed.mjs` is a parts library (salvage pattern, envelope
+  rules, schemas, push-verify prompts) — steal from it, don't re-derive it.
+- **Mode selection**: parallel-blind, collaborative (propose → critique → revise across
+  families), or adversarial (red team vs blue team) — pick per stage. Cross-model
+  disagreement is signal: resolve it explicitly, never average it.
+
+## 5. The codex seats — flat-rate, use them like it
+
+gpt-5.6-sol (intelligence 8) costs effectively nothing on the subscription. That changes
+the economics of every pattern below from "can we afford it" to "does it help":
+
+- **Designer, every run**: the sol design leg (§3) is a first-class seat, not a consult —
+  sol proposes blind and hunts spec gaps before a line is written.
+- **Standing consult**: when torn at any judgment point (synthesis, triage, adjudication),
+  ask sol for a decorrelated second opinion before deciding. Two-key dismissal: a
+  medium+ finding is dismissed as noise only when both families agree it is.
+- **Dialectic is prep's, not yours**: the blind → argue → synthesize pattern runs at
+  /flow:prep, where the human adjudicates the argument into ADRs. At issue-stage the
+  design pair stays blind + conductor-synthesized; wanting a dialectic mid-run means the
+  issue should not have passed the front door.
+- **Shadow reviewer — milestone checkpoints**: sol reads commits as they land during
+  implementation, accumulating findings silently. At each milestone boundary the conductor
+  triages the accumulated set and hands blocking items to the implementer before the next
+  milestone starts — early signal, zero mid-thought interruption. The shadow's watchlist
+  includes the design pass's "not-alone" list — structural drift is a checkpoint finding,
+  not just behavioral bugs. The shadow complements the final adversarial pass; it never
+  replaces it (convergence still needs fresh eyes on the finished diff).
+- **Red team**: sol tries to break claude's implementation and vice versa; route
+  demonstrable claims through the fast lane (§2, invariant 2) — "prove it or drop it"
+  beats prose severity debates.
+- **Bulk tiers**: terra/luna for mechanical sweeps (comment rot, evidence collection,
+  transcript reads) — luna + max + `--fast` is the cheap-depth combo. Never the
+  decorrelation seat itself; that needs intelligence.
+
+Transport: `${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs` (`task` / `adversarial-review`
+subcommands, JSON envelope, `.ok`/`.fast.applied` are the truth — see the envelope rules
+in `workflows/issue-fixed.mjs`). Bash timeout 600000; the transport holds 540s inside it.
+Verify the configured model before pinning one in a prompt: subscription auth can reject
+specific tiers (`--model gpt-5.6-sol` bounced under ChatGPT auth, 2026-08) — the envelope
+error names it; fall back to the transport's pinned default rather than losing the seat.
+
+## 6. Rules of engagement
+
+- **Journal = composition + events + final.** Three kinds of issue comments:
+  1. *Launch*: the composed fabric — which seats, which modes, why — before work starts.
+     The human audits the composition, not just the outcome.
+  2. *Events*, appended as they happen: tripwire fired, fabric widened/narrowed, fork
+     guessed (question unanswered), seat re-run on a stronger model, breaker tripped.
+  3. *Final*: outcomes + coverage. Quiet runs have exactly two comments; eventful runs
+     show their history. The journal is also the recovery trail — there is no runId to
+     resume, so the run must be reconstructible from the issue alone.
+- **Coverage is a deliverable**: the final journal states what actually looked at the diff
+  (seats composed vs delivered, by name). A thinned fabric that reads as a clean pass is
+  the failure mode this whole system exists to prevent.
+- **Escalate early on ambiguity**: a blocking question issue + code + docs cannot settle is
+  `needs-info` at the moment you find it, not after an implementation guess. (Fork
+  questions are for choices you COULD make but the human should; needs-info is for
+  blockers you can't.)
+- **Budget sense, not budget fear**: opus xhigh on a rename is waste; sonnet on an
+  invariant is a different kind of waste. When unsure between two seats, take the smarter
+  one on anything that ships and the cheaper one on anything that gets re-verified anyway.
+
+## Known gaps
+
+- **No cross-session resume** — there is no runId to pick back up. Mitigation is the
+  event journal above: a fresh session reads the issue comments + worktree diff and
+  reconstructs the run state.
+- **Calibration ledger (planned, location decided)**: per-seat finding precision — what
+  fraction of each seat's findings survive adjudication — tracked across runs, in the
+  flow-adjacent memory space (cross-repo: sol's precision is a property of sol, not of the
+  repo), updated by a post-run post-mortem seat, read at composition time. Not yet built;
+  compose from the charter table until it exists.
