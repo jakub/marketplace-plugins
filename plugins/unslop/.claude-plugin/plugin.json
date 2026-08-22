@@ -1,6 +1,6 @@
 {
   "name": "unslop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cut AI tells from writing and put a voice back in. Vendored from Lauren Tan's pstack skill in cursor/plugins (MIT).",
   "author": {
     "name": "jakub"
