@@ -66,10 +66,13 @@ manifest's `plugins` array. Install strings are `<plugin>@jakub`.
   skill in `cursor/plugins` (MIT). No patches dir yet, by design. If it needs changing, add
   `plugins/unslop/patches/0001-*.patch` following the grill pattern rather than hand-editing,
   and bump the SHA in `plugins/unslop/NOTICE`.
-- Upstream's frontmatter description ends "Must always apply", so the skill triggers on
-  nearly every turn. That is a deliberate trial, not an oversight — see the NOTICE. Its rules
-  (no em dashes, no "harness"/"surface") conflict with the yospos output style in chat.
-  Narrowing the description is the first patch to write if it proves too loud.
+- Delivery is the SessionStart hook (`hooks/scripts/inject-unslop.mjs`), not the skill
+  description — "Must always apply" in the frontmatter is an advertisement the model acts on
+  unreliably, so the hook injects the body every session inside a plugin-local scoping
+  wrapper: full ruleset for deliverables; jargon + plain-speech rules for technical
+  explanations in chat; the output style wins mechanical style conflicts (em dashes,
+  "harness"/"surface") in conversation. Scoping changes go in the wrapper, never in a patch
+  to the vendored file.
 
 ## Testing changes
 
