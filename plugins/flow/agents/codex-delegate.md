@@ -97,7 +97,7 @@ cat > "$B.prompt" <<'CODEX_PROMPT_EOF'
 CODEX_PROMPT_EOF
 nohup node "$CODEX" <mode> --cwd <dir> [--base <ref>] [--model <m>] --effort <e> \
   --timeout-secs <N> --events "$B.events.jsonl" > "$B.envelope.json" 2>"$B.err" <"$B.prompt" & disown
-echo "codex detached pid=$! envelope=$B.envelope.json events=$B.events.jsonl"
+echo "codex detached pid=$! envelope=$B.envelope.json events=$B.events.jsonl stderr=$B.err"
 ```
 
       `<N>` is the real budget you allow — size it to the work (the transport caps at 7200),
@@ -118,9 +118,12 @@ echo "codex detached pid=$! envelope=$B.envelope.json events=$B.events.jsonl"
       `DONE`.
    c. Read the printed envelope path — it holds the same single JSON envelope the sync path
       returns; apply the Output rules below to it. An empty or unparseable envelope file with
-      the pid already gone is a wrapper failure: report it, do NOT re-launch blindly. The
-      events file is progress you MAY glance at for a liveness line; it is never the
-      completion signal — the envelope is.
+      the pid already gone is a wrapper failure: `cat` the printed stderr path and report
+      what it says, then stop. Do NOT re-launch blindly. That file is the only record of the
+      reason — the wrapper writes its own failures to stderr and puts nothing in the
+      envelope, so skipping it turns a named cause into "codex broke". The events file is
+      progress you MAY glance at for a liveness line; it is never the completion signal —
+      the envelope is.
 4. Stdout is a single JSON envelope; the wrapper already validates inputs/outputs, retries
    transient failures once (rate limit, stall, timeout), and never exits nonzero when an
    envelope was produced. Do NOT retry beyond it — an `ok: false` envelope is the result.
