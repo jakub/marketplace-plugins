@@ -42,7 +42,7 @@
 // as --cwd: explicit or nothing.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -275,6 +275,23 @@ try {
   a = { mode: process.argv[2], parseError: e.message }
 }
 const tmpBase = mkdtempSync(join(tmpdir(), 'codex-exec-'))
+
+// This run's dir has to outlive the process: with no --events, the envelope's eventsPath
+// points inside it, and deleting it on exit would hand the caller a path that no longer
+// resolves. So sweep the PREVIOUS runs' dirs instead — otherwise every nightly lint and
+// every delegate call leaves one behind until the machine reboots. A run can hold its dir
+// open for at most --timeout-secs, which the arg check caps at 7200s, so a 24h floor
+// cannot race a live sibling; nobody reads yesterday's event journal either.
+const STALE_TMP_MS = 24 * 60 * 60 * 1000
+try {
+  for (const name of readdirSync(tmpdir())) {
+    if (!name.startsWith('codex-exec-')) continue
+    const p = join(tmpdir(), name)
+    if (p === tmpBase) continue
+    try { if (Date.now() - statSync(p).mtimeMs > STALE_TMP_MS) rmSync(p, { recursive: true, force: true }) } catch {}
+  }
+} catch {}
+
 const eventsFile = (a && a.events) || join(tmpBase, 'events.jsonl')
 const lastMsgFile = join(tmpBase, 'last-message.txt')
 

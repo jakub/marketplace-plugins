@@ -6,7 +6,7 @@
 // and the fast-mode silent-degrade detection. One env-gated live case (CODEX_LIVE=1) hits
 // the real CLI. Run: node plugins/flow/scripts/smoke-codex-exec.mjs
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -131,6 +131,26 @@ console.log('happy path + flag mapping')
   const stdinSeen = readFileSync(ARGV_FILE + '.stdin', 'utf8')
   check(stdinSeen === 'do the thing', 'prompt passed through verbatim')
   check(existsSync(e.eventsPath), 'events journal written')
+}
+
+console.log('stale temp dirs from previous runs are swept')
+{
+  // The run's own dir must survive — the envelope advertises eventsPath inside it — so the
+  // wrapper collects the previous runs' instead. Without that, every nightly lint and every
+  // delegate call left one in /tmp until reboot.
+  const stale = join(tmpdir(), 'codex-exec-smoke-stale')
+  const fresh = join(tmpdir(), 'codex-exec-smoke-fresh')
+  mkdirSync(stale, { recursive: true })
+  mkdirSync(fresh, { recursive: true })
+  writeFileSync(join(stale, 'events.jsonl'), 'x')
+  const old = (Date.now() - 48 * 60 * 60 * 1000) / 1000
+  utimesSync(stale, old, old)
+  const e = run('happy', ['task', '--cwd', T], { input: 'p' })
+  check(e.ok === true, 'run succeeds')
+  check(!existsSync(stale), 'a 48h-old codex-exec- dir is collected, contents and all')
+  check(existsSync(fresh), 'a fresh one — a concurrent run — is left alone')
+  check(existsSync(e.eventsPath), 'this run keeps the journal its own envelope points at')
+  rmSync(fresh, { recursive: true, force: true })
 }
 
 console.log('write mode + under-development noise filtered')
