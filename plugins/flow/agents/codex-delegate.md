@@ -73,17 +73,24 @@ brackets):
    envelope path, and you paste those literals into every later call. A `$PID` that is unset
    in a fresh call makes `kill -0` fail instantly and fakes an early `DONE` over an empty
    envelope — so never carry a variable across calls; carry the printed number and path.
-   a. Launch detached — self-contained call, envelope and events to files, print the pid:
+   a. Launch detached — self-contained call, envelope and events to files, print the pid.
+      stdin carries the same content the sync path would: the task prompt (task mode), the
+      extra reviewer focus (adversarial-review), or nothing (plain review). Write it to a
+      file and redirect from that — a bare `</dev/null` here would hand task mode an empty
+      prompt and the transport rejects it. An empty file is correct for a focus-less review.
       ```bash
       CODEX="${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs"; [ -f "$CODEX" ] || CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)
       B=$(mktemp -u /tmp/codex-delegate.XXXXXX)
+      cat > "$B.prompt" <<'PROMPT'
+      ...the self-contained prompt / reviewer focus, or leave empty for plain review...
+      PROMPT
       nohup node "$CODEX" <mode> --cwd <dir> [--base <ref>] [--model <m>] --effort <e> \
-        --timeout-secs <N> --events "$B.events.jsonl" > "$B.envelope.json" 2>"$B.err" </dev/null & disown
+        --timeout-secs <N> --events "$B.events.jsonl" > "$B.envelope.json" 2>"$B.err" <"$B.prompt" & disown
       echo "codex detached pid=$! envelope=$B.envelope.json events=$B.events.jsonl"
       ```
       `<N>` is the real budget you allow — size it to the work (the transport caps at 7200),
       e.g. 1800 for a big xhigh review. `nohup` preserves the pid (`$!`) and ignores SIGHUP;
-      the redirects and `</dev/null` free the Bash tool to return at the echo. This is a
+      the redirects and the prompt file free the Bash tool to return at the echo. This is a
       NORMAL foreground Bash call — it returns immediately, printing the literal pid and paths.
    b. Block on that literal pid, one wait round per foreground Bash call, each under the
       ceiling (substitute the printed number for `<pid>`):
