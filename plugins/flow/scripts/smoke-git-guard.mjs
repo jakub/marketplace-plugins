@@ -27,6 +27,16 @@ expect(true, 'git commit -m "x\n\nGenerated with [Claude Code]"', 'Generated-wit
 expect(true, 'git commit --no-verify -m hi', 'commit --no-verify')
 expect(true, 'git push --no-verify', 'push --no-verify')
 expect(true, 'cd /tmp/wt && git commit -m "a\n\nSigned-off-by: X"', 'compound cmd + trailer')
+// Irreversible git, ported from trawl/.claude/hooks/block-dangerous.sh.
+expect(true, 'git push --force origin main', 'bare force-push')
+expect(true, 'git push -f origin main', 'force-push short flag')
+expect(true, 'git push origin main --force', 'force flag trailing')
+expect(true, 'git log --oneline && git push --force origin main', 'force-push after a read')
+expect(true, 'git checkout .', 'checkout bare dot')
+expect(true, 'git restore .', 'restore bare dot')
+expect(true, 'git clean -fd', 'clean force')
+expect(true, 'git clean --force -d', 'clean --force')
+expect(true, 'git clean -xdf', 'clean force in a flag cluster')
 console.log('cron mode (FLOW_CRON_JOB) — deny-by-default git')
 const lint = { FLOW_CRON_JOB: 'lint' }
 const sweep = { FLOW_CRON_JOB: 'doc-sweep' }
@@ -91,6 +101,17 @@ expect(false, "echo 'git commit --no-verify is banned here'", '--no-verify insid
 expect(false, 'git commit -m "docs: explain why --no-verify is banned"', '--no-verify named in a commit subject')
 expect(false, `gripe add <<'G'\ngit-guard fires on --no-verify in prose\nG`, '--no-verify in a heredoc body')
 expect(false, 'FLOW_SANCTION=git git commit --amend --no-edit', 'sanctioned amend')
+// The safe spellings of the rules above must stay usable, including the dry run the deny
+// message tells you to run.
+expect(false, 'git push --force-with-lease origin feat/x', 'force-with-lease')
+expect(false, 'git push --force-with-lease', 'force-with-lease, no refspec')
+expect(false, 'git checkout ./src/lib.rs', 'checkout a path starting with ./')
+expect(false, 'git checkout -- src/lib.rs', 'checkout -- path')
+expect(false, 'git restore --staged src/lib.rs', 'restore a named path')
+expect(false, 'git clean -n', 'clean dry run')
+expect(false, 'git clean -nd', 'clean dry run with -d')
+expect(false, 'git clean --dry-run -d', 'clean --dry-run')
+expect(false, 'gh pr comment -b "this repo bans git push --force"', 'force-push named in prose')
 expect(false, 'cargo test --no-fail-fast', 'non-git')
 expect(false, 'gh pr create --title x', 'gh')
 console.log(bad === 0 ? '\ngit-guard: ALL PASS' : `\ngit-guard: ${bad} FAILURE(S)`)

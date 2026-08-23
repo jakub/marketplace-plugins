@@ -1,5 +1,5 @@
 {
-  "description": "flow: charter injection + no-backlog guard + git non-negotiables.",
+  "description": "flow: charter injection + no-backlog, git, publish and protected-file guards.",
   "hooks": {
     "SessionStart": [
       {
@@ -29,6 +29,21 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/git-guard.mjs\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/publish-guard.mjs\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/protect-files.mjs\"",
             "timeout": 10
           }
         ]

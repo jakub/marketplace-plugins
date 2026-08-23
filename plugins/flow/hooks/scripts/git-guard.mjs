@@ -46,6 +46,35 @@ const stripLiterals = (s) =>
     .replace(/'[^']*'/g, ' ')
     .replace(/"[^"]*"/g, ' ')
 
+// Irreversible git: operations that destroy work no reflog returns. The bar is deliberately
+// narrow. `reset --hard` and `branch -D` are NOT here — the reflog does return those, and
+// blocking them breaks the ordinary squash-merge flow (a squashed branch is no ancestor of
+// main, so `-d` refuses it) for no safety earned. Ported from the user's trawl repo, where
+// this set had already been trimmed to what actually matters.
+//
+// Each pattern is bounded to a single shell command with `[^;&|]*`, so a later invocation
+// cannot hide behind an earlier read (`git log && git push --force`), and every one is
+// matched against stripLiterals(cmd) so prose about a rule is not a breach of it.
+const DESTRUCTIVE = [
+  [
+    /\bgit\b[^;&|]*\bpush\b[^;&|]*(?:--force(?!-with-lease)|\s-f(?=\s|$))/,
+    'flow charter: no bare force-push. --force overwrites whatever the remote holds, ' +
+      'including commits you pushed from another worktree. Use --force-with-lease: it ' +
+      'refuses when the remote moved under you, which is the only thing bare --force gets wrong.',
+  ],
+  [
+    /\bgit\b[^;&|]*\b(?:checkout|restore)\s+\.(?:\s|$)/,
+    'flow charter: `git checkout .` and `git restore .` discard every uncommitted change in ' +
+      'the tree, with no reflog entry to recover from. Name the paths you mean, or `git stash` ' +
+      'first if you want them back.',
+  ],
+]
+
+// `git clean -f` deletes untracked files permanently. Handled outside DESTRUCTIVE because the
+// dry run is the fix we recommend, and a flag-cluster regex alone would block `-ndf` too.
+const CLEAN_FORCE = /\bgit\b[^;&|]*\bclean\b[^;&|]*\s-{1,2}[a-zA-Z]*f/
+const CLEAN_DRYRUN = /\bgit\b[^;&|]*\bclean\b[^;&|]*(?:\s-[a-zA-Z]*n\b|--dry-run)/
+
 const deny = (reason) => {
   process.stdout.write(
     JSON.stringify({
@@ -184,6 +213,17 @@ process.stdin.on('end', () => {
       'flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad ' +
         'commits out of history. Fix what the hook is failing on, or say plainly that the ' +
         'hook itself is broken — do not route around it.',
+    )
+  }
+
+  const bare = stripLiterals(cmd)
+
+  for (const [re, why] of DESTRUCTIVE) if (re.test(bare)) deny(why)
+
+  if (CLEAN_FORCE.test(bare) && !CLEAN_DRYRUN.test(bare)) {
+    deny(
+      'flow charter: `git clean -f` deletes untracked files permanently — nothing recovers ' +
+        'them. Run `git clean -n` first to see what would go, then delete only what you mean.',
     )
   }
 
