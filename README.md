@@ -1,67 +1,49 @@
 # marketplace-plugins
 
-jakub's personal **Claude Code marketplace** — a single repo that publishes a growing set
-of plugins and skill bundles. Add it once; install the pieces you want à la carte.
+jakub's personal Claude Code marketplace — one repo publishing a small set of plugins. Add it once, install what you want.
 
 ```bash
 claude plugin marketplace add jakub/marketplace-plugins
 claude plugin install flow@jakub
 ```
 
-The `@jakub` suffix is the marketplace name (set in `.claude-plugin/marketplace.json`),
-independent of the repo name. Hooks arm at the next session start. Installs pull from the
-pinned GitHub clone, not a local checkout — push, then reinstall the affected plugin to go live.
+`@jakub` is the marketplace name from `.claude-plugin/marketplace.json`, not the repo name. Hooks arm at the next session start. Installs pull from the pinned GitHub clone, so after editing this repo: push, then reinstall the plugin.
 
 ## Plugins
 
 | Plugin | Install | What it is |
 |---|---|---|
-| **flow** | `flow@jakub` | A disciplined prep → issue → land development pipeline for solo/greenfield projects, plus the engineering charter that governs it. See below. |
-| **grill** | `grill@jakub` | Relentless design interrogation and the domain-model doc discipline it feeds — `grill-with-docs`, `grilling`, `domain-modeling`. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT); see `plugins/grill/NOTICE`. |
-| **unslop** | `unslop@jakub` | Cut AI tells from writing and put a voice back in — puffery, filler, hedging, synonym cycling, boldface spam, and the rest of the slop taxonomy. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT); see `plugins/unslop/NOTICE`. |
-
-_More to come — each new plugin is a directory under `plugins/` listed in the marketplace manifest._
+| **flow** | `flow@jakub` | The prep → issue → land development pipeline and the engineering charter that governs it. Details below. |
+| **grill** | `grill@jakub` | Relentless design interrogation and the domain-model doc discipline it feeds: `grill-with-docs`, `grilling`, `domain-modeling`. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT); see `plugins/grill/NOTICE`. |
+| **unslop** | `unslop@jakub` | Cuts AI tells from writing — puffery, filler, hedging, synonym cycling, boldface spam — and puts a voice back in. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT); see `plugins/unslop/NOTICE`. |
 
 ## flow
 
-An interactive design gate at the front (`/flow:prep`), a hands-off implementation run that
-ends at a pushed, reviewed, evidenced PR (`/flow:issue`), and a human-gated merge ritual
-(`/flow:land`). Multi-model by design — judgment stages, heavy lifting, mechanical work, and
-an independent cross-model review are routed to different models on different effort levels.
+Three commands in order. `/flow:prep` is the front door: an interactive design gate that turns an issue or a free-text idea into a `ready-for-agent` spec, with a cross-model dialectic and a grill where decisions get minted as ADRs. `/flow:issue` is the hands-off run: the session model conducts a fabric of subagents — design pair, contained implementer, cross-family adversarial review, evidence ledger — to a pushed, reviewed, evidenced PR and stops there. `/flow:land` is the human gate and the only merge path: CI and review-thread checks, squash merge, cleanup, and a survey of what to do next.
 
-| Component | Path | Purpose |
-|---|---|---|
-| Charter | `plugins/flow/charter/charter.md` | The "how we build" engineering charter, injected into every session by a SessionStart hook — delegation policy, model routing, verification semantics, git discipline. |
-| Skill | `plugins/flow/skills/flow/` | Project setup, the doc stack, drift audit, label contract, and a reference description of the deprecated fixed pipeline. `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`. |
-| Commands | `plugins/flow/commands/` | `/flow:prep` (the single front door for issues, ideas, and spikes), `/flow:issue` (through-the-PR run — dynamic, conductor-composed fabric), `/flow:issue-fixed` (deprecated fixed-pipeline predecessor), `/flow:land` (the only merge path). |
-| Workflow | `plugins/flow/workflows/issue-fixed.mjs` | (Deprecated, kept as fallback + parts library.) The fixed hands-off implementation workflow — design fan-out → synthesis → TDD → review fabric → fix loop → PR → post-push reviews (self ∥ external) → per-criterion evidence ledger. |
-| Agent | `plugins/flow/agents/codex-delegate.md` | Generic "delegate anything to Codex" subagent (mode/model/effort/fast/write/schema parameters, typed envelope returns) over the vendored raw-CLI transport `plugins/flow/scripts/codex-exec.mjs`. Needs the `codex` CLI on PATH; degrades to a visible error envelope otherwise. |
-| Agent | `plugins/flow/agents/implementer.md` | The contained write seat for `/flow:issue` — no Agent tool (sub-delegation impossible), synchronous-run and explicit-path-staging discipline, completion reports shaped as claims the conductor verifies against the worktree. Model/effort set per difficulty at spawn. |
-| Hooks | `plugins/flow/hooks/` | SessionStart charter injection · PreToolUse no-backlog guard (blocks unsanctioned `gh issue create` — PRs ship complete) · PreToolUse git guard (blocks `--no-verify` and commit trailers). |
+The charter is the other half. It's injected into every session by a SessionStart hook and says how we build — delegation, the model table and per-model rules of engagement, verification, git. Two PreToolUse hooks back up the parts that shouldn't depend on memory: a no-backlog guard that blocks unsanctioned `gh issue create` (PRs ship complete), and a git guard that blocks `--no-verify` and commit trailers.
 
-Commands are namespaced (`/flow:prep`, `/flow:issue`, `/flow:land`); the short forms resolve
-when nothing shadows them.
+| Path | What's there |
+|---|---|
+| `plugins/flow/charter/charter.md` | The engineering charter. Hand-authored; source of truth. |
+| `plugins/flow/commands/` | `prep.md`, `issue.md`, `land.md`, and the deprecated `issue-fixed.md`. |
+| `plugins/flow/agents/` | `implementer` (the contained write seat — no Agent tool, synchronous runs, claim-shaped reports), `codex-delegate` (a thin transport to Codex: sol, daybreak, luna), `code-architect`, `code-reviewer`. Models and efforts are set by the conductor at spawn. |
+| `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`: project setup, the doc stack, the label contract, the drift audit. |
+| `plugins/flow/scripts/codex-exec.mjs` | The raw-CLI Codex transport with a JSON envelope. Needs `codex` on PATH; returns a visible error envelope otherwise. |
+| `plugins/flow/workflows/issue-fixed.mjs` | The deprecated fixed pipeline, kept as a fallback and a parts library for ad-hoc Workflow scripts. |
+| `plugins/flow/hooks/` | Charter injection, no-backlog guard, git guard. |
 
-### Recommended: the CLAUDE.md split
-
-flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction
-preferences, and ALL engineering doctrine arrives via the injected charter — versioned,
-portable, drift-auditable. See `docs/claude-md-split.md`.
+flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction preferences and all engineering doctrine arrives through the charter, where it's versioned and auditable. `docs/claude-md-split.md` explains the split.
 
 ## Layout
 
 ```
-.claude-plugin/marketplace.json   marketplace manifest (this repo IS the marketplace)
-plugins/
-  flow/                           the flow plugin
-  grill/                          vendored grill/domain-modeling skills (MIT, see its NOTICE)
-  unslop/                         vendored anti-slop writing skill (MIT, see its NOTICE)
+.claude-plugin/marketplace.json   the marketplace manifest (this repo IS the marketplace)
+plugins/flow/                     the flow plugin
+plugins/grill/                    vendored grill skills (MIT, see its NOTICE)
+plugins/unslop/                   vendored anti-slop skill (MIT, see its NOTICE)
 docs/claude-md-split.md           the recommended global CLAUDE.md split
+AGENTS.md                         how to work in this repo (CLAUDE.md symlinks to it)
 ```
 
-## Adding a plugin to this marketplace
-
-1. Create `plugins/<name>/` with a `.claude-plugin/plugin.json` (`name`, `version`, `description`).
-2. Add whatever it ships — `skills/`, `commands/`, `agents/`, `hooks/`.
-3. Append an entry to `plugins` in `.claude-plugin/marketplace.json` with `"source": "./plugins/<name>"`.
-4. Bump `metadata.version` in the marketplace manifest (the catalog version, tracked separately from each plugin's own version).
+Adding a plugin: create `plugins/<name>/` with a `.claude-plugin/plugin.json` (`name`, `version`, `description`) and whatever it ships (`skills/`, `commands/`, `agents/`, `hooks/`), append an entry to `plugins` in the manifest with `"source": "./plugins/<name>"`, and bump the manifest's `metadata.version` — the catalog version, separate from each plugin's own.
