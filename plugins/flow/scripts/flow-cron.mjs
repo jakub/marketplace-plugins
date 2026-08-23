@@ -22,33 +22,64 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const JOBS = {
+// Allowlists are the job's entire write authority and stay deliberately narrow: no
+// bare `bash`/`node` (arbitrary execution), no `gh api`/`gh repo` (exfiltration and
+// arbitrary REST writes), gh verbs enumerated per job, scripts allowed by exact
+// installed path. `git` stays broad ONLY because reads need `git -C <repo>` and prefix
+// patterns cannot see the subcommand; the git-guard hook closes that gap: it reads
+// FLOW_CRON_JOB from its env (exported below, unforgeable from inside the session) and
+// denies every git subcommand outside the job's standing permissions, ignoring
+// FLOW_SANCTION. Keep the guard's write set, these lists, and the prompts' standing
+// permissions in step — they are three views of one contract.
+const jobs = (root) => ({
   lint: {
-    // node + `claude plugin list` are for drift-audit §5 on the marketplace repo.
-    allowedTools: ["Read", "Glob", "Grep", "Agent", "Bash(git:*)", "Bash(gh:*)", "Bash(bash:*)", "Bash(node:*)", "Bash(claude plugin list:*)"],
+    allowedTools: [
+      "Read", "Glob", "Grep", "Agent",
+      "Bash(git:*)", // guarded: reads + `worktree remove|prune` + `branch -D` (git-guard.mjs cron mode)
+      "Bash(gh issue list:*)", "Bash(gh issue view:*)", "Bash(gh issue edit:*)", "Bash(gh issue comment:*)",
+      "Bash(gh pr list:*)", "Bash(gh pr view:*)",
+      "Bash(gh run list:*)", "Bash(gh run view:*)",
+      "Bash(gh label list:*)",
+      `Bash(bash ${root}/scripts/worktree-audit.sh:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs:*)`, // the ONLY mutating git path
+
+      // drift-audit §5 on the marketplace repo:
+      `Bash(node ${root}/hooks/scripts/inject-charter.mjs:*)`,
+      `Bash(node ${root}/scripts/smoke-codex-exec.mjs:*)`,
+      "Bash(claude plugin list:*)",
+    ],
     summary: "flow nightly lint",
   },
   "doc-sweep": {
-    allowedTools: ["Read", "Glob", "Grep", "Agent", "Bash(git:*)", "Bash(gh:*)"],
+    allowedTools: [
+      "Read", "Glob", "Grep", "Agent",
+      "Bash(git:*)", // guarded read-only in cron mode (git-guard.mjs)
+      "Bash(gh issue list:*)", "Bash(gh issue view:*)",
+      "Bash(gh pr list:*)", "Bash(gh pr view:*)",
+      "Bash(gh label list:*)",
+    ],
     summary: "flow weekly doc sweep",
   },
-};
+});
 
 const [job, ...flags] = process.argv.slice(2);
-if (!JOBS[job]) {
-  console.error(`usage: flow-cron.mjs <${Object.keys(JOBS).join("|")}> [--dry-run]`);
-  process.exit(2);
-}
 const dryRun = flags.includes("--dry-run");
 
 const root = process.env.CLAUDE_PLUGIN_ROOT || join(dirname(fileURLToPath(import.meta.url)), "..");
+const JOBS = jobs(root);
+if (!JOBS[job]) {
+  console.error(`usage: flow-cron.mjs <lint|doc-sweep> [--dry-run]`);
+  process.exit(2);
+}
 const workspace = process.env.FLOW_WORKSPACE || join(homedir(), "code");
 const state = process.env.FLOW_STATE || join(homedir(), ".local", "state", "flow");
 const model = process.env.FLOW_MODEL || "sonnet";
 const timeoutMs = Number(process.env.FLOW_CRON_TIMEOUT_MIN || 40) * 60_000;
 const reports = join(state, "reports");
 const date = new Date().toISOString().slice(0, 10);
-const reportPath = join(reports, `${job}-${date}.md`);
+// Full timestamp in the name so a rerun never overwrites the failure it is diagnosing.
+const stamp = new Date().toISOString().replace(/:/g, "-").replace(/\..*/, "Z");
+const reportPath = join(reports, `${job}-${stamp}.md`);
 
 const promptFile = join(root, "skills", "flow", "cron", `${job}.md`);
 const prompt = readFileSync(promptFile, "utf8")
@@ -79,7 +110,12 @@ const run = spawnSync("claude", args, {
   encoding: "utf8",
   timeout: timeoutMs,
   maxBuffer: 64 * 1024 * 1024,
-  env: { ...process.env, FLOW_CRON_JOB: job },
+  env: {
+    ...process.env,
+    FLOW_CRON_JOB: job,
+    // ssh must never prompt in an unattended session; a prompt is a silent hang.
+    GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes -o ConnectTimeout=10",
+  },
   stdio: ["ignore", "pipe", "pipe"],
 });
 const minutes = ((Date.now() - started) / 60_000).toFixed(1);

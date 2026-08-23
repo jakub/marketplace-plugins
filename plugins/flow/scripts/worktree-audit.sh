@@ -23,9 +23,10 @@ repo="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 cd "$repo" || exit 1
 
 # Main worktree is the first entry; everything else is a candidate.
-main_wt=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+main_wt=$(git worktree list --porcelain -z | tr '\0' '\n' | sed -n 's/^worktree //p' | head -1)
 
-git fetch origin main --quiet 2>/dev/null || echo "warn: could not fetch origin/main; MERGED column may be stale" >&2
+fetch_ok=1
+git fetch origin main --quiet 2>/dev/null || { fetch_ok=0; echo "warn: could not fetch origin/main; failing closed — nothing will bucket safe" >&2; }
 
 # PR state by branch, fetched once. Empty if gh is unavailable.
 prs=$(mktemp)
@@ -33,13 +34,11 @@ gh pr list --state all --limit 1000 --json number,state,headRefName 2>/dev/null 
 
 # Claude Code keeps per-project transcripts under ~/.claude/projects/<slug>/ where
 # the slug is the absolute path with every "/" replaced by "-".
-slug=$(printf '%s' "$main_wt" | sed 's#/#-#g')
-transcripts="$HOME/.claude/projects/$slug"
 now=$(date +%s)
 
 printf "SIZE\tAGE\tMERGED\tDIRTY\tREMOTE\tPR\tLAST_SESSION\tBUCKET\tWORKTREE\n"
 
-git worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r wt; do
+git worktree list --porcelain -z | tr '\0' '\n' | sed -n 's/^worktree //p' | while IFS= read -r wt; do
 	[ "$wt" = "$main_wt" ] && continue
 
 	size=$(du -sh "$wt" 2>/dev/null | awk '{print $1}')
@@ -70,22 +69,34 @@ git worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r wt;
 		'.[] | select(.headRefName==$b) | "#\(.number)/\(.state)"' "$prs" 2>/dev/null | head -1)
 	[ -z "$pr" ] && pr="-"
 
-	# Most recent session whose transcript mentions this worktree path. Match the
-	# path followed by "/" or a quote so trawl-issue-49 does not match trawl-issue-490.
+	# Most recent session whose transcript mentions this worktree path — searched in
+	# BOTH the main checkout's project dir and the worktree's own (a session launched
+	# with cwd inside the worktree files under the worktree's slug). Fixed-string
+	# match, path followed by "/" or a quote, so issue-49 does not match issue-490.
 	last="-"; last_ts=0
-	if [ -d "$transcripts" ]; then
-		f=$(rg -l --glob '*.jsonl' -e "${wt}/" -e "${wt}\"" "$transcripts" 2>/dev/null \
-			| xargs -r stat -c '%Y %n' 2>/dev/null | sort -rn | head -1)
-		if [ -n "$f" ]; then last_ts=${f%% *}
+	for tdir in "$HOME/.claude/projects/$(printf '%s' "$main_wt" | sed 's#/#-#g')" \
+	            "$HOME/.claude/projects/$(printf '%s' "$wt" | sed 's#/#-#g')"; do
+		[ -d "$tdir" ] || continue
+		f=$(rg -lF --null --glob '*.jsonl' -e "${wt}/" -e "${wt}\"" "$tdir" 2>/dev/null \
+			| xargs -0 -r stat -c '%Y %n' 2>/dev/null | sort -rn | head -1)
+		if [ -n "$f" ] && [ "${f%% *}" -gt "$last_ts" ]; then last_ts=${f%% *}
 			last=$(date -d "@$last_ts" '+%Y-%m-%d' 2>/dev/null); fi
-	fi
+	done
 	recent=$([ "$last_ts" -gt 0 ] 2>/dev/null && [ $(( (now - last_ts) / 86400 )) -le 4 ] && echo yes || echo no)
 
-	case "$dirty" in wip:*) bucket=hold-wip ;; *)
+	# Only a fully clean, non-recent worktree with fresh remote state and a remote-
+	# reproducible tip can be `safe`; scratch (untracked files) is data too, never
+	# safe. The lint's executor (lint-actions.mjs) re-derives all of this before
+	# acting — this bucket is a candidate list, not an authorization.
+	case "$dirty" in
+	wip:*) bucket=hold-wip ;;
+	scratch:*) bucket=review ;;
+	*)
 		case "$pr" in *OPEN*) bucket=hold-open-pr ;; *)
 			if [ "$recent" = yes ]; then bucket=verify-recent-session
+			elif [ "$fetch_ok" != 1 ]; then bucket=review
 			else case "$remote" in
-				ahead*|no-remote) bucket=review ;;   # unpushed commits would be lost
+				ahead*|no-remote|detached) bucket=review ;;   # unpushed commits would be lost
 				*) if [ "$merged" = YES ] || [ "$pr" != "-" ]; then bucket=safe
 				   else bucket=review; fi ;;
 			esac; fi ;;

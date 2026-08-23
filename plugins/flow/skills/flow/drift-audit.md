@@ -43,8 +43,8 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
 ## 4. Repo state hygiene
 
 - `bash ${CLAUDE_PLUGIN_ROOT}/scripts/worktree-audit.sh <repo>`: include the TSV; `safe` rows
-  are prunable (the nightly lint does this under standing permission), `review` rows need a
-  human, and `hold-*` rows are fine. Squash merges mean the MERGED column is usually `no`
+  are candidates the nightly lint routes through `scripts/lint-actions.mjs` (which re-checks
+  everything and refuses on any doubt), `review` rows need a human, and `hold-*` rows are fine. Squash merges mean the MERGED column is usually `no`
   for landed branches; PR state is the signal.
 - Local branches whose PR is merged/closed and which have nothing beyond `origin/<branch>`:
   stale, delete. `git branch --merged main` misses these after a squash.

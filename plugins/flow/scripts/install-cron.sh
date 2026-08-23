@@ -18,27 +18,40 @@ jobs="lint doc-sweep"
 
 case "${1:-status}" in
 install)
+  systemctl --user show-environment >/dev/null 2>&1 || { echo "no running systemd user manager; these timers need one — skipping install" >&2; exit 1; }
   command -v claude >/dev/null || { echo "claude is not on PATH; install Claude Code first" >&2; exit 1; }
   command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
-  [ -f "$HOME/.claude/plugins/installed_plugins.json" ] || { echo "no installed_plugins.json; install flow@jakub first" >&2; exit 1; }
-  mkdir -p "$(dirname "$launcher")" "$units_dir" "$state/reports"
+  mkdir -p "$(dirname "$launcher")" "$units_dir" "$state/reports" "$HOME/.config/flow"
+  # Persist the config the units need: systemctl does not carry the installer's env.
+  env_file="$HOME/.config/flow/cron.env"
+  {
+    echo "FLOW_WORKSPACE=${FLOW_WORKSPACE:-$HOME/code}"
+    echo "FLOW_STATE=$state"
+    echo "FLOW_MODEL=${FLOW_MODEL:-sonnet}"
+    echo "FLOW_CRON_TIMEOUT_MIN=${FLOW_CRON_TIMEOUT_MIN:-40}"
+  } > "$env_file"
+  chmod 0600 "$env_file"
   install -m 0755 "$tpl/flow-cron.launcher" "$launcher"
+  # Prove the launcher resolves the installed plugin BEFORE arming anything: a
+  # persistent timer that is overdue fires the moment it is enabled.
+  for j in $jobs; do "$launcher" "$j" --dry-run >/dev/null || { echo "launcher dry-run failed for $j; not enabling timers" >&2; exit 1; }; done
   for j in $jobs; do
     install -m 0644 "$tpl/flow-$j.service" "$units_dir/flow-$j.service"
     install -m 0644 "$tpl/flow-$j.timer" "$units_dir/flow-$j.timer"
   done
   systemctl --user daemon-reload
   for j in $jobs; do systemctl --user enable --now "flow-$j.timer"; done
-  echo "installed: $launcher, $units_dir/flow-{lint,doc-sweep}.{service,timer}; reports in $state/reports"
+  echo "installed: $launcher, $units_dir/flow-{lint,doc-sweep}.{service,timer}, $env_file; reports in $state/reports"
   systemctl --user list-timers --no-pager 'flow-*'
   ;;
 status)
   echo "launcher: $([ -x "$launcher" ] && echo "$launcher" || echo "not installed")"
   systemctl --user list-timers --all --no-pager 'flow-*' 2>/dev/null || true
   for j in $jobs; do
+    newest=$(find "$state/reports" -maxdepth 1 -name "$j-*.md" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     printf '%s: last result %s; newest report %s\n' "$j" \
       "$(systemctl --user show "flow-$j.service" -p Result --value 2>/dev/null || echo n/a)" \
-      "$(ls -1t "$state/reports/$j-"*.md 2>/dev/null | head -1 || echo none)"
+      "${newest:-none}"
   done
   ;;
 run)
@@ -46,10 +59,17 @@ run)
   if [ -x "$launcher" ]; then exec "$launcher" "$job"; else CLAUDE_PLUGIN_ROOT="$root" exec node "$root/scripts/flow-cron.mjs" "$job"; fi
   ;;
 uninstall)
-  for j in $jobs; do systemctl --user disable --now "flow-$j.timer" 2>/dev/null || true; rm -f "$units_dir/flow-$j.service" "$units_dir/flow-$j.timer"; done
+  for j in $jobs; do
+    systemctl --user disable --now "flow-$j.timer" 2>/dev/null || true
+    systemctl --user stop "flow-$j.service" 2>/dev/null || true   # a mid-run job dies with its unit
+    rm -f "$units_dir/flow-$j.service" "$units_dir/flow-$j.timer"
+  done
   rm -f "$launcher"
   systemctl --user daemon-reload
-  echo "removed timers, units, and launcher; reports in $state/reports were kept"
+  for j in $jobs; do
+    systemctl --user is-active --quiet "flow-$j.service" 2>/dev/null && echo "warn: flow-$j.service is still active" >&2 || true
+  done
+  echo "removed timers, units, and launcher; reports in $state/reports and $HOME/.config/flow/cron.env were kept"
   ;;
 *)
   echo "usage: install-cron.sh <install|status|run <job>|uninstall>" >&2; exit 2 ;;
