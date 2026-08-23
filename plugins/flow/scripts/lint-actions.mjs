@@ -45,9 +45,32 @@ const prsFor = (branch) => {
   } catch { out(false, "gh pr list failed; refusing to act without PR state"); }
 };
 
-// The tip is safe when the remote can reproduce it: same-tip remote branch,
-// merged/closed PR head at this tip, or ancestry of origin/main (pre-squash merges).
-// An OPEN PR refuses outright — content aside, an active run owns that branch.
+// Two independent questions, both of which must answer yes before a branch dies.
+//
+// SAFETY (tipJustification): are the commits recoverable after the delete? Yes when the
+// remote can reproduce the tip — same-tip remote branch, merged/closed PR head at this
+// tip, or ancestry of origin/main (pre-squash merges). An OPEN PR refuses outright:
+// content aside, an active run owns that branch.
+//
+// WARRANT (deathWarrant): is the branch actually dead? Safety alone is not a reason to
+// delete: a pushed spike with no PR is perfectly recoverable AND perfectly alive. Only a
+// merged/closed PR or a tip already in origin/main proves the work landed or was
+// abandoned on purpose. This gate used to live in the lint prompt, which meant it held
+// only as long as the model remembered it — it did not, twice.
+// Branches that are infrastructure, not work: never deletable regardless of state.
+// `flow-evidence` carries PR evidence captures that outlive every PR pointing at them.
+const PROTECTED = new Set(["main", "master", "flow-evidence"]);
+
+const deathWarrant = (branch, tip) => {
+  if (PROTECTED.has(branch)) return { deny: `${branch} is a protected branch` };
+  const pr = prsFor(branch).find((p) => p.state === "MERGED" || p.state === "CLOSED");
+  if (pr) return { why: `PR #${pr.number} is ${pr.state}` };
+  if (tryGit("merge-base", "--is-ancestor", tip, "refs/remotes/origin/main") !== null) {
+    return { why: "tip is already in origin/main" };
+  }
+  return { deny: "no merged or closed PR and the tip is not in origin/main; the branch is recoverable but not demonstrably dead — a human decides" };
+};
+
 const tipJustification = (branch, tip) => {
   const prs = prsFor(branch);
   if (prs.some((p) => p.state === "OPEN")) return { deny: `branch has an open PR (#${prs.find((p) => p.state === "OPEN").number})` };
@@ -89,9 +112,11 @@ if (action === "delete-branch") {
   if (!tip) out(false, "branch does not exist");
   const co = tryGit("worktree", "list", "--porcelain", "-z") || "";
   if (co.split("\0").includes(`branch refs/heads/${target}`)) out(false, "branch is checked out in a worktree");
+  const w = deathWarrant(target, tip);
+  if (w.deny) out(false, w.deny);
   const v = tipJustification(target, tip);
   if (v.deny) out(false, v.deny);
-  if (check) out(true, `check only: would delete (${v.why})`);
+  if (check) out(true, `check only: would delete (${w.why}; ${v.why})`);
   try { git("branch", "-D", target); } catch (e) { out(false, `git branch -D refused: ${String(e.stderr || e.message).trim().slice(0, 200)}`); }
-  out(true, `deleted (${v.why})`);
+  out(true, `deleted (${w.why}; ${v.why})`);
 }
