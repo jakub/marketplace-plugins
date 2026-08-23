@@ -143,4 +143,7 @@ PR descriptions: summary narrative + one-line-per-commit changelog.
 
 Find the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
 
+## Gripes
+You should have a tool called `gripe` available. It's just for you, the agent, to make a note of things that go wrong, that annoy you, that just seem weird. Hooks will fire throughout this session, making automatic notes where possible. You're free to invoke it yourself any time you want.
+
 </flow-charter>
