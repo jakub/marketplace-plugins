@@ -1,5 +1,5 @@
 ---
-description: Hands-off implementation of a ready-for-agent issue, through a pushed, reviewed, evidenced PR. The conductor composes the run per issue — seats, models, rounds — inside a short list of non-negotiable invariants.
+description: Hands-off implementation of a ready-for-agent issue, through a pushed, reviewed, evidenced PR.
 argument-hint: <issue-number>
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Write, Workflow, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill
 ---

@@ -78,8 +78,6 @@ Daybreak Blue is a version of Sol without cyber classifiers, intended for defens
 ### Fable
 Fable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.
 
-Fable's effort ceiling in the Agent harness is high — xhigh and max requests are clamped down, so don't plan on them.
-
 Fable runs the same cyber classifiers as Opus, tuned stricter. A refusal returns null, not a weaker answer. Retry on Daybreak Blue first, then Opus; a double-null is reported to the user, never swallowed.
 
 ## Rules of Engagement - Model Contracts
