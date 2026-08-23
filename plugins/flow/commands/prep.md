@@ -1,10 +1,10 @@
 ---
-description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; use this skill when either you or the user wants to create a new issue or revise an existing issue.
+description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; use this command when either you or the user wants to create a new issue or revise an existing issue.
 argument-hint: <issue-number | free-text idea>
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Read, Edit, Write, Skill, AskUserQuestion, Task, Agent
 ---
 
-# /flow:prep — the front door for the prep->issue->land workflow
+# /flow:prep — the front door for the prep → issue → land workflow
 
 /flow:prep is the entry point for all new development work. The argument is either an issue number — well-defined or a bare placeholder — or free text: an idea, a spike, a mid-development deviation.
 
@@ -15,7 +15,7 @@ Prep is the only lane where a new issue may be born: the `no-backlog-guard.mjs` 
 ## Core principles
 
 1) The issue is both the spec and the implementation record. The body is a living document, edited in place. Everything you find along the way goes in as a journal comment, because a human reviews this run by reading those comments back in order.
-2) Bias towards correctness. On a design fork recommend the correct answer over the easy or quick one, and actually pick one — say what you would do and why, never a menu of neutral options. The human overrides you if they disagree.
+2) Bias toward correctness. On a design fork recommend the correct answer over the easy or quick one, and actually pick one — say what you would do and why, never a menu of neutral options. The human overrides you if they disagree.
 3) When a loose end turns up, turn it into an acceptance criterion or an ADR line and fold it into this issue. Never open a second issue for it. We are trying to shrink the backlog.
 4) Don't resurrect closed work. Closed issues are good background and you should read them, but a proposal already litigated as `wontfix` or `deferred` stays buried: surface what you found and stop, unless the human explicitly overrides.
 5) Prep itself never writes code and never creates a worktree — it edits the issue, context.md, and ADRs, and nothing else. The one exception is the triviality gate in §3: when the work is small enough to skip the tracker entirely, prep hands off to a normal quick fix and exits.

@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: The flow implementer seat — a contained leaf of a /flow:issue fan-out that writes code in a shared worktree. Cannot spawn subagents (the Agent tool is stripped), runs every command synchronously in its own Bash, and reports completion only as verifiable claims against the tree. The conductor sets model and effort per difficulty at spawn time; do not hardcode them here.
+description: The flow implementer seat — a contained leaf of a /flow:issue fan-out that writes code in a shared worktree. Cannot spawn subagents (the Agent tool is stripped), runs every command synchronously in its own Bash, and reports completion only as verifiable claims against the tree. The conductor sets model and effort per difficulty at spawn time.
 tools: Bash, Read, Edit, Write, Glob, Grep, LS, BashOutput, KillShell, WebFetch, WebSearch
 color: green
 ---

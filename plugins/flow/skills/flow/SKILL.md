@@ -1,118 +1,72 @@
 ---
 name: flow
-description: The flow development framework — doctrine, doc-stack setup, and drift audits for the prep → issue → land pipeline. Use when setting up a new project's documentation stack, auditing an existing project for drift against the framework, validating ready-for-agent issues, or answering "how do we work" questions the charter doesn't settle.
+description: The flow development framework — project setup, the documentation stack, drift audits, and the label contract for the prep → issue → land pipeline. Use when setting up a new project's docs, auditing a project for drift, validating ready-for-agent issues, or answering a "how do we work" question the charter doesn't settle.
 ---
 
 # flow — the development framework
 
-This framework is the doctrine for how the user and Claude build software
-together. The **charter** (injected every session by this plugin's SessionStart hook)
-carries the always-on rules; this skill carries the full framework, the setup procedure,
-and the drift audit. Commands (`/flow:prep`, `/flow:issue`, `/flow:land`) execute the
-pipeline; they point here for shared doctrine rather than restating it.
+The charter is in your context already; it says how we build and delegate. The command bodies (`prep.md`, `issue.md`, `land.md`) say what each command does. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, the machinery running in the background, and a reference description of the deprecated fixed pipeline. Don't restate the charter here — if something is true in every session, it belongs there.
 
-Base directory for this skill contains:
+Files in this directory:
 
 | File | Contents |
 |---|---|
-| `label-contract.md` | Label state machine + the `ready-for-agent` contract and its lint. |
-| `drift-audit.md` | The audit procedure for `drift`. |
+| `label-contract.md` | Label state machine, the `ready-for-agent` contract, and its lint. |
+| `drift-audit.md` | The procedure `drift` runs. |
 | `templates/` | Seed files for `setup`: workspace CLAUDE.md, repo AGENTS.md, crate AGENTS.md. |
-
-Doctrine lives in two places: The **charter** (hook-injected every session)
-carries the always-on rules and the model policy. The **command bodies** (`prep.md`,
-`issue.md`, `land.md`) carry the steps each command executes. This file carries what neither
-needs at runtime: the setup procedure, the doc stack, the ambient machinery, and a reference
-description of what the deprecated fixed workflow (v1, `/flow:issue-fixed`) does inside
-the black box.
 
 ## Subcommands
 
-If the user request is a bare subcommand string (e.g. `/flow drift`), follow the matching
-action directly:
+A bare subcommand (e.g. `/flow drift`) runs the matching action:
 
 | Subcommand | Action |
 |---|---|
-| `setup` | Deploy the doc stack to a project. Read **The documentation stack** + all of `templates/`, then follow **Setup** below. |
-| `drift` | Audit the current project (or the workspace, if run from `~/code`) against the framework. Read `drift-audit.md` and execute it. |
-| `labels` | Reconcile the repo's GitHub labels with `label-contract.md` § taxonomy, and lint every `ready-for-agent` issue against the contract. |
-| `charter` | Print the currently-installed charter (`../../charter/charter.md`) so the human can review what every session is being told. |
+| `setup` | Deploy the doc stack to a project. Read **The documentation stack** and `templates/`, then follow **Setup**. |
+| `drift` | Audit the current project (or the whole workspace, from `~/code`) against the framework. Read and execute `drift-audit.md`. |
+| `labels` | Reconcile the repo's GitHub labels with `label-contract.md` and lint every `ready-for-agent` issue against the contract. |
+| `charter` | Print the installed charter (`${CLAUDE_PLUGIN_ROOT}/charter/charter.md`) so the user can review what every session is told. |
 
 ## Setup
 
-Deploying flow to a project, in order. Each step is idempotent — skip what exists and
-conforms, report what was created or already conformed.
+Deploy flow to a project, in this order. Every step is idempotent: skip what already exists and conforms, report what you created.
 
-1. **Preconditions**: git repo (stop if not), `gh` authenticated, origin remote resolvable.
-2. **Workspace layer** (once per machine): `~/code/CLAUDE.md` from
-   `templates/workspace-claude.md` — the project registry. Add/refresh this repo's
-   one-liner.
-3. **Repo layer**: `AGENTS.md` from `templates/repo-agents.md`, then `ln -s AGENTS.md CLAUDE.md`.
-   Ask for the **evidence posture** — `public-by-intent` for open-source or soon-to-be-open
-   repos, `private` otherwise — and record it in `## Operating notes`. It is the one line a
-   run cannot infer, and prep reads it to decide whether PR captures may publish publicly.
-   Never guess it: absent posture means private.
-   Keep it lean (≤ ~40 lines); it discloses further reading (context.md, docs/adr/) rather
-   than containing it. Its `## Contexts` section is the context map — that is why no
-   `context-map.md` exists. If the repo has a legacy one, fold its pointers into that
-   section and delete it.
-4. **Domain layer** (judgment call — propose, don't blanket): for each crate/module with
-   real domain depth, `crates/<x>/AGENTS.md` from `templates/crate-agents.md` + the
-   `CLAUDE.md` symlink, and a `context.md` slice if the vocabulary is crate-local. Every
-   slice gets a line in the root AGENTS.md `## Contexts` section.
-   Committed, always — gitignored guidance never materialises in worktrees.
-5. **Decision records**: ensure `docs/adr/` exists with a `0000-template.md`.
+1. **Preconditions**: a git repo (stop if not), `gh` authenticated, origin remote resolvable.
+2. **Workspace layer**, once per machine: `~/code/CLAUDE.md` from `templates/workspace-claude.md` — the project registry. Add or refresh this repo's one-liner.
+3. **Repo layer**: `AGENTS.md` from `templates/repo-agents.md`, then `ln -s AGENTS.md CLAUDE.md`. Ask for the **evidence posture** — `public-by-intent` for open-source or soon-to-be-open repos, `private` otherwise — and record it under `## Operating notes`. It's the one line a run can't infer; prep reads it to decide whether PR captures may publish publicly. Never guess it: no posture means private. Keep the file lean (≤ ~40 lines); it points at further reading (context.md, docs/adr/) rather than containing it. Its `## Contexts` section is the context map, which is why no `context-map.md` exists — fold a legacy one into that section and delete it.
+4. **Domain layer**, a judgment call — propose, don't blanket: for each crate or module with real domain depth, `crates/<x>/AGENTS.md` from `templates/crate-agents.md` plus the `CLAUDE.md` symlink, and a `context.md` slice if the vocabulary is crate-local. Every slice gets a line in the root `## Contexts`. Always committed — gitignored guidance never materializes in worktrees.
+5. **Decision records**: `docs/adr/` with a `0000-template.md`.
 6. **Labels**: run the `labels` subcommand.
-7. **Known flakes**: create `.github/known-flakes.txt` (empty) — `/flow:land` reads it;
-   one CI check name per line that the repo consciously merges through. Lore lives in the
-   repo, not in command prompts.
-8. **Report**: what was created, what conformed, what needs a human decision (e.g. which
-   crates deserve domain files) — as a checklist, not an essay.
+7. **Known flakes**: create `.github/known-flakes.txt` (empty). `/flow:land` reads it — one CI check name per line that the repo consciously merges through. Lore lives in the repo, not in command prompts.
+8. **Report**: what was created, what already conformed, what needs a human decision (e.g. which crates deserve domain files). A checklist, not an essay.
 
 ## Drift
 
-`drift` re-runs the framework's invariants against reality — see `drift-audit.md` for the
-full procedure. Run it: on a schedule (the ambient nightly/weekly crons), after large
-merges, or when documentation feels stale. It reports; it does not auto-fix without being
-asked. Delegate the scanning to scoped agents and return the reconciled report — the audit
-is designed to be run by cheap models with a judgment pass on top.
+`drift` re-checks the framework's invariants against reality; `drift-audit.md` is the procedure. Run it on a schedule (the nightly/weekly crons), after large merges, or when the docs feel stale. It reports and doesn't fix unless asked. Delegate the scanning to scoped cheap agents and return a reconciled report with a judgment pass on top.
 
 ## The documentation stack
 
-Four layers, each answering one question. Deliberately NOT used: `context-map.md`-style
-index files (AGENTS.md discloses further reading directly) and `CLAUDE.local.md`
-(gitignored files never materialise in worktrees — the cold implementer would fly blind;
-domain guidance is committed, always).
+Four layers, each answering one question:
 
 | layer | file | question |
 |---|---|---|
-| operator | `~/.claude/CLAUDE.md` + this plugin's charter | who the user is / how we build |
+| operator | `~/.claude/CLAUDE.md` + the charter | who the user is / how we build |
 | workspace | `~/code/CLAUDE.md` | what exists (project registry) |
-| repo | `AGENTS.md` ⟵ `CLAUDE.md` symlink | how to operate here (lean; discloses context.md, docs/adr/) |
+| repo | `AGENTS.md` ⟵ `CLAUDE.md` symlink | how to operate here (lean; points at context.md, docs/adr/) |
 | domain | `crates/<x>/AGENTS.md` + symlink, `context.md` slices | crate-local depth |
 
-One source, both models: codex merges AGENTS.md hierarchically; Claude loads CLAUDE.md —
-the symlink keeps them identical by construction. Root context.md keeps cross-cutting
-ontology; crate-local vocabulary moves into slices next to the code it describes.
+One source, both model families: codex merges AGENTS.md hierarchically, Claude loads CLAUDE.md, and the symlink keeps them identical by construction. Root `context.md` holds cross-cutting ontology; crate-local vocabulary lives in slices next to the code.
+
+Deliberately not used: `context-map.md`-style index files (AGENTS.md points at further reading directly) and `CLAUDE.local.md` (gitignored, so a cold implementer in a worktree never sees it).
 
 ## Ambient machinery
 
-- **no-backlog guard** (hook, ships here): blocks unsanctioned `gh issue create`.
-- **git guard** (hook, ships here): blocks `--no-verify` and commit trailers
-  (`FLOW_SANCTION=git` for foreign commits that already carry one). Both guards are
-  `PreToolUse`, which is why they hold where the charter does not: hooks fire on subagent
-  tool calls, but the SessionStart charter injection reaches the main session only. A fresh
-  subagent inherits the harness default to append `Co-Authored-By`/`Claude-Session` and never
-  sees the line overriding it — so that rule is enforced structurally, not by prose.
-- **escalation pings**: valves push to the phone (PushNotification from the conductor).
+- **no-backlog guard** (PreToolUse hook): blocks unsanctioned `gh issue create`.
+- **git guard** (PreToolUse hook): blocks `--no-verify` and commit trailers; `FLOW_SANCTION=git` for a foreign commit that already carries one. Hooks fire on subagent tool calls, so these two rules hold in every seat even though the charter itself doesn't reach them.
+- **escalation pings**: valves push to the phone via PushNotification from the conductor.
 - **nightly lint** (cron, sonnet): label contract, stale worktrees, orphaned branches, doc staleness.
 - **weekly doc sweep** (cron, sonnet): workspace-wide context.md/AGENTS.md drift vs reality.
-- **scheduled bug hunts** (cron, opus + gpt-5.6-sol): findings adversarially verified, deduped
-  against open+closed, capped per sweep, filed `agent-found` (`FLOW_SANCTION=hunter`) —
-  quarantine; nothing self-promotes past /flow:prep.
-- **recovery**: `resumeFromRunId` same-session; cross-session, a recovery-preamble agent
-  reads the journal + worktree diff and skips completed stages (procedure: `issue-fixed.md`
-  § Recovery; the dynamic `/flow:issue` reconstructs from its event journal + worktree instead).
+- **scheduled bug hunts** (cron, opus + sol): findings adversarially verified, deduped against open and closed issues, capped per sweep, filed `agent-found` with `FLOW_SANCTION=hunter`. Quarantine — nothing self-promotes past `/flow:prep`.
+- **recovery**: `/flow:issue` has no runId; a fresh session reconstructs the run from the issue's event journal plus the worktree diff. The deprecated fixed pipeline resumes via `resumeFromRunId` same-session and a recovery-preamble agent cross-session (`issue-fixed.md` § Recovery).
 
 ## Inside the v1 run — what `workflows/issue-fixed.mjs` does
 
@@ -176,21 +130,4 @@ instead of running these.
 
 ## Endgame
 
-Once `ready-for-agent` has proven watertight through the label lint and a body of clean
-runs: a cron picks up validated issues and fires /flow:issue unattended. The contract is
-the safety case; do not ship the cron before the contract has earned it.
-
-## Doctrine quick-reference
-
-- **Pipeline**: `/flow:prep` (front door, interactive) → `/flow:issue` (hands-off through
-  a pushed, reviewed, evidenced PR) → `/flow:land` (the only merge path, human-gated).
-- **The issue is the spec AND the record**: body = living spec, edited in place; comments =
-  append-only stage journal; PR = evidence. ADRs for permanent decisions only.
-- **No-backlog**: PRs ship complete. The only follow-up path is the escape hatch
-  (cross-crate-refactor scale), drafted on the PR, filed on human ack at land.
-- **Evidence**: every acceptance criterion names its evidence at prep and gets a
-  per-criterion verdict + link in the PR ledger.
-- **Verification**: UNKNOWN ≠ clean. Errored/rate-limited/timed-out checks never pass.
-- **Models**: fable tastes, opus 5 reasons and codes, sonnet transcribes, gpt-5.6-sol
-  decorrelates, haiku is retired. Axes (intelligence > taste > cost), never file counts.
-  A refused seat returns null — fall back across families, then surface the gap.
+Once `ready-for-agent` has proven watertight through the label lint and a body of clean runs, a cron picks up validated issues and fires `/flow:issue` unattended. The contract is the safety case; don't ship the cron before the contract has earned it.

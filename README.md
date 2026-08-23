@@ -9,8 +9,8 @@ claude plugin install flow@jakub
 ```
 
 The `@jakub` suffix is the marketplace name (set in `.claude-plugin/marketplace.json`),
-independent of the repo name. Hooks arm at the next session start. Installs are cache
-copies — after editing this repo, reinstall the affected plugin to go live.
+independent of the repo name. Hooks arm at the next session start. Installs pull from the
+pinned GitHub clone, not a local checkout — push, then reinstall the affected plugin to go live.
 
 ## Plugins
 
@@ -32,12 +32,12 @@ an independent cross-model review are routed to different models on different ef
 | Component | Path | Purpose |
 |---|---|---|
 | Charter | `plugins/flow/charter/charter.md` | The "how we build" engineering charter, injected into every session by a SessionStart hook — delegation policy, model routing, verification semantics, git discipline. |
-| Skill | `plugins/flow/skills/flow/` | Self-documenting framework: doctrine, doc-stack setup, drift audit, label contract. `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`. |
+| Skill | `plugins/flow/skills/flow/` | Project setup, the doc stack, drift audit, label contract, and a reference description of the deprecated fixed pipeline. `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`. |
 | Commands | `plugins/flow/commands/` | `/flow:prep` (the single front door for issues, ideas, and spikes), `/flow:issue` (through-the-PR run — dynamic, conductor-composed fabric), `/flow:issue-fixed` (deprecated fixed-pipeline predecessor), `/flow:land` (the only merge path). |
 | Workflow | `plugins/flow/workflows/issue-fixed.mjs` | (Deprecated, kept as fallback + parts library.) The fixed hands-off implementation workflow — design fan-out → synthesis → TDD → review fabric → fix loop → PR → post-push reviews (self ∥ external) → per-criterion evidence ledger. |
 | Agent | `plugins/flow/agents/codex-delegate.md` | Generic "delegate anything to Codex" subagent (mode/model/effort/fast/write/schema parameters, typed envelope returns) over the vendored raw-CLI transport `plugins/flow/scripts/codex-exec.mjs`. Needs the `codex` CLI on PATH; degrades to a visible error envelope otherwise. |
 | Agent | `plugins/flow/agents/implementer.md` | The contained write seat for `/flow:issue` — no Agent tool (sub-delegation impossible), synchronous-run and explicit-path-staging discipline, completion reports shaped as claims the conductor verifies against the worktree. Model/effort set per difficulty at spawn. |
-| Hooks | `plugins/flow/hooks/` | SessionStart charter injection · PreToolUse no-backlog guard (blocks unsanctioned `gh issue create` — PRs ship complete). |
+| Hooks | `plugins/flow/hooks/` | SessionStart charter injection · PreToolUse no-backlog guard (blocks unsanctioned `gh issue create` — PRs ship complete) · PreToolUse git guard (blocks `--no-verify` and commit trailers). |
 
 Commands are namespaced (`/flow:prep`, `/flow:issue`, `/flow:land`); the short forms resolve
 when nothing shadows them.

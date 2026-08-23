@@ -78,8 +78,8 @@ auto-implementation; keep it strict.
 
 ## Lint procedure (`/flow labels`)
 
-1. `gh label list` → create any taxonomy labels missing (colors: intake grey, staging
-   green, active blue, blocked red, buried dark grey).
+1. `gh label list` → create any taxonomy labels missing (colors: intake gray, staging
+   green, active blue, blocked red, buried dark gray).
 2. For every open `ready-for-agent` issue: validate the six contract points (a scoped
    sonnet agent per issue; judgment calls escalate to the conductor). Non-conforming →
    remove label, add `needs-triage`, comment the specific failures.

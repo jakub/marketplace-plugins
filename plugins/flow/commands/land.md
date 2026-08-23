@@ -13,7 +13,7 @@ The argument is a PR number, or nothing at all: with no argument, resolve the PR
 ## Core principles
 
 1) You are the gate, not another autonomous stage. A merge is the hardest thing in this pipeline to reverse, so anything that looks off gets presented to the human instead of resolved by you.
-2) A check that errored, went stale, or is still pending is UNKNOWN — never a pass. Read the rollup yourself; exit codes from watch commands lie.
+2) A check that errored, went stale, or is still pending is UNKNOWN — never a pass. Read the rollup yourself.
 3) Prove outcomes, don't infer them. The merge and every issue closure get confirmed by re-reading state afterwards, because a failed command and a silent no-op both look like success from here.
 4) Nothing external is lost. An unresolved reviewer thread blocks the merge even when it arrived after the run had already finished.
 5) Housekeeping never blocks the land, and the survey at the end takes NO action — it is a menu, not a plan.
@@ -36,7 +36,7 @@ If other open PRs are based on THIS branch, retarget them to main FIRST (`gh pr 
 
 ## 3. CI gate
 
-Partition `statusCheckRollup` by conclusion. Never trust a `--watch` exit code — re-read the rollup for the verdict.
+Partition `statusCheckRollup` by conclusion.
 
 The JSON rollup mixes CheckRuns with commit statuses, which is how external reviewers like CodeRabbit report. A commit status can surface as an entry with a null name and null conclusion, so before writing one off as UNKNOWN, cross-read `gh pr checks $PR` — that renders both kinds.
 
@@ -75,7 +75,7 @@ On decline, reply to the draft comment saying it was consciously dropped, so the
 
 ## 7. Local cleanup
 
-1) Get main current: `git switch main && git pull --ff-only`. Never bare-`cd` into a worktree.
+1) Get main current: `git switch main && git pull --ff-only`.
 
 2) Retire the worktree (`git worktree remove`), then delete the local branch. `git branch -d` will refuse: a squash-merged branch is no ancestor of main, so once its upstream ref is pruned git can't see that it landed. You proved `state == MERGED` back in step 6, so `git branch -D <branch>` is the correct call. Finish with `git fetch --prune`, so stale remote-tracking refs don't survey as live branches.
 

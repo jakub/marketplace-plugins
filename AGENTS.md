@@ -17,10 +17,13 @@ manifest's `plugins` array. Install strings are `<plugin>@jakub`.
 ## flow plugin invariants
 
 - `plugins/flow/charter/charter.md` is injected into **every** Claude session via the
-  SessionStart hook. It carries the always-on rules AND the model policy (rankings + the
-  seat/effort table), because seat routing has to be in context wherever an agent is
-  composed. Currently ~165 lines; it is over budget by intent while the docs are being
-  reworked, and a trim pass is owed. Every line costs context in every session.
+  SessionStart hook, wrapped in `<flow-charter>` tags that the global CLAUDE.md checks for.
+  It is the source of truth for how we build: delegation, the model rankings and per-model
+  rules of engagement, pipeline, verification, git. Written as prose to a capable colleague,
+  not as a config file — keep it that way. It reaches the main session only (not subagents;
+  CLAUDE.md and hooks do), and every line costs context in every session, so anything that
+  isn't true in every session goes in the skill or a command body instead. Currently ~140
+  lines.
 - Doctrine lives in exactly two places. The **charter** holds what must be true in every
   session. The **command bodies** (`prep.md`, `issue.md`, `land.md`) hold the steps each
   command executes. The skill (`plugins/flow/skills/flow/`) holds only what neither needs
@@ -28,16 +31,16 @@ manifest's `plugins` array. Install strings are `<plugin>@jakub`.
   rule appears twice, one copy is a bug — `framework.md` was retired for exactly this.
 - `/flow:issue` is the dynamic run — the conductor composes the fabric per issue. The fixed
   pipeline is deprecated at `/flow:issue-fixed` + `workflows/issue-fixed.mjs` — fallback and
-  parts library only, no new behaviour lands there.
+  parts library only, no new behavior lands there.
 - `workflows/issue-fixed.mjs` (and any ad-hoc Workflow script) is plain JavaScript for the
   Workflow tool — no TypeScript syntax,
   no `Date.now()`/`Math.random()`/argless `new Date()` (they break resume).
-- A behavioural change to an `issue-fixed.mjs` stage updates that stage in `skills/flow/SKILL.md`
+- A behavioral change to an `issue-fixed.mjs` stage updates that stage in `skills/flow/SKILL.md`
   § Inside the v1 run. That section is the one sanctioned duplicate in the plugin — reference,
   not instruction, with the script as source of truth — so it only stays honest if the person
   editing the script mirrors it. Both drifts found so far came from editing the script, never
   from reading the doc.
-- On any behavioural change to flow, bump `version` in `plugins/flow/.claude-plugin/plugin.json`,
+- On any behavioral change to flow, bump `version` in `plugins/flow/.claude-plugin/plugin.json`,
   mirror it in the plugin's entry in `.claude-plugin/marketplace.json`, and bump the
   marketplace `metadata.version`.
 - Version-pinned facts (model pricing, codex CLI surface) carry an `as-of` date. Distrust
@@ -77,5 +80,5 @@ manifest's `plugins` array. Install strings are `<plugin>@jakub`.
 ## Testing changes
 
 Reinstall to pick up changes: `claude plugin uninstall flow@jakub && claude plugin install flow@jakub`
-(the install copies the plugin — edits to this repo do not go live until reinstalled).
+(the install pulls the pinned GitHub clone, not this working tree — commit and push first, or the reinstall picks up the old version).
 Hook scripts run standalone: `echo '<json>' | node plugins/flow/hooks/scripts/no-backlog-guard.mjs`.

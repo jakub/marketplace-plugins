@@ -1,172 +1,143 @@
 <flow-charter>
-engineering charter, injected by the flow plugin every session. how we build; the global
-CLAUDE.md covers who the user is. deep reference, setup, and drift audits: the `flow` skill.
 
-<delegation>
-standing permission: spawn agents at whatever model + effort fits, without asking. the main
-context is the decision layer, agents are the sensory organs: keep file scans and command
-output in subagents; only conclusions come home.
+# Flow Engineering Charter
+This is the charter for the `flow` plugin, injected at the start of each session.
+CLAUDE.md covers who the user is; this describes how we build and delegate our work.
+Use this as a guide for all development tasks.
 
-- delegation is not free: each agent re-establishes context and reports back, and you re-read
-  the report. delegate for genuinely independent, sizeable tracks — not for work you could
-  finish in a handful of tool calls, and never to verify your own work (that belongs in your
-  own loop). keep spawn counts low; commit to a delegation rather than re-deriving it. never
-  more than 20 parallel agents unless i ask.
+## Orchestration with Delegation to Subagents
+The overall operating model for `flow` is a main-thread session model (usually Fable) that spawns and monitors subagents. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.
 
-- agents return typed results (schemas) or write journals to disk — never vibes-prose.
+The orchestrator has standing permission to spawn agents at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions — quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by subagents.
 
-- subagents do NOT inherit this charter — only `fork` does, by copying your context. a fresh
-  agent gets the harness defaults instead, including the ones this charter overrides. carry
-  anything non-negotiable into the prompt yourself; the git rules are hooks, so they travel.
+Delegation is not free however: each agent re-establishes context and reports back, and you re-read the report. Delegate genuinely independent, sizeable tracks — not work you could finish in a handful of tool calls, and never verification of your own work, which belongs in your own loop.
 
-- pure locate/search fan-outs (built-in Explore et al.) spawn with `model: sonnet` — search
-  needs eyes, not the session model's judgment or its price tag. escalate only when the
-  search itself needs judgment.
+Never spawn more than ~20 parallel agents without my confirmation first.
 
-- freedom scales with reversibility: read-only fan-outs at will; write-capable agents
-  confined to worktrees; outward-facing actions (push, PR, issue edits) through the gates.
+Permissions scale with how reversible the change is. Read-only agents: spawn freely. Agents that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
+ 
+## Codex Delegate
+Reach OpenAI Codex models ONLY via the `codex-delegate` agent or the `codex-exec.mjs` transport it wraps (under the plugin's `scripts/`).
 
-- review non-trivial changes before declaring done; monitor every backgrounded command.
+Set the model and effort explicitly every time; don't let the transport fill blanks from `~/.codex/config.toml`, because Codex rewrites those defaults whenever the user changes a setting. Always run on the standard service tier — the delegate can request `fast`, but we don't.
 
-- dependency adds/upgrades trigger a docs pull FIRST: current API from a live-docs MCP
-  (e.g. Context7; docs.rs for rust crates), then write against what they say. never trust
-  remembered package versions — verify against the registry before pinning.
+## The `flow` pipeline
+This plugin provides several commands that run in order: `/flow:prep` → `/flow:issue` → `/flow:land`
 
-- search: prefer the fff MCP when its edge applies — `multi_grep` for case-variant/OR
-  sweeps in one call, frecency ranking for "recently touched" locate queries; built-in
-  grep otherwise.
-</delegation>
+`prep` is the front door, and nothing enters the issue tracker otherwise.
+`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.
+`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.
 
-<models>
-model rankings, higher = better on every axis. cheapness is per-token spend inverted —
-gpt-5.6-luna is essentially free on the codex sub, fable is the expensive one. intelligence 
-is how hard a problem you can hand the model unsupervised. taste covers UI/UX, code quality, 
-API design, and copy text.
+The issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.
 
-| model        | cheapness | intelligence | taste |
-|-------------------------------------------------
-| sonnet-5     | 5         | 6            | 6     |
-| opus-5       | 4         | 8            | 8     |
-| fable 5      | 2         | 9            | 9     |
-| gpt-5.6-sol  | 7         | 8            | 5     |
-| gpt-5.6-luna | 9         | 4 (7 at max) | 4     |
+Issues must contain acceptance criteria, including what evidence is required to satisfy.
+PRs contain the evidence: tests, transcripts, screenshots — inline, or hosted through the `/artifacts` skill (the plans client).
 
-opus is the DEFAULT CODE WRITER — implementation, fixes, review, adjudication. it beats fable
-on several coding benchmarks and has the effort ladder fable lacks. 
+`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything I didn't say or that changes the proposed shape for the better, then interview me one question at a time, prioritizing answers that change the architecture.
 
-reach for fable on DEPTH and TASTE: deep architectural calls, reconciling rival designs,
-"best long-term shape", reviewer signal-vs-noise, copy and UI — not for turning a settled 
-plan into code. sonnet transcribes a complete spec; gpt-5.6-sol is the decorrelated outside brain.
+## Model Rankings (as of 2026-08)
+Higher is better, on every axis. 
+Cheapness is inverted — Luna is effectively free and Fable is expensive.
+Intelligence is how hard a problem the model can handle unsupervised.
+Taste covers UI/UX, code quality assessments, API and architecture design, and copy text.
 
-seats split by what the work IS, not by how important it feels. effort is routed, not pinned.
+| model                    | cheapness | intelligence        | taste |
+|--------------------------|-----------|---------------------|-------|
+| gpt-5.6-luna             | 9         | 4 (7 at max effort) | 4     |
+| sonnet-5                 | 5         | 6                   | 6     |
+| opus-5                   | 4         | 8                   | 8     |
+| gpt-5.6-sol              | 7         | 8                   | 5     |
+| gpt-daybreak-blue-latest | 7         | 8                   | 5     |
+| fable-5                  | 2         | 9                   | 9     |
+ 
+## Rules of Engagement - Model Selection
+These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
 
-| | role | effort | skip when |
-|---|---|---|---|
-| fable 5 | taste seats: conduct, grill, synthesize, clean-design leg, triage external findings | `high` — its ceiling, no xhigh/max | security-flavored payloads → opus; auto-fallback opus on refusal/null |
-| opus 5 | workhorse: implementation, design-adjacent review seats, fixes, adjudication | `medium` is the default working rung; `xhigh` where a miss ships (hard plans, critical/high fixes, correctness/security/AC); `max` for adjudication alone | pure taste calls — that's fable's seat |
-| sonnet 5 | mechanical: gates, wrappers, transports, scouts, ledgers, salvage reads | `low` for wrappers, `medium` for anything with a verdict in it; `xhigh` exists here now — try it before escalating a tier | any embedded design judgment |
-| gpt-5.6-sol | external decorrelation: outside design opinion, adversarial review, general delegation | `minimal…max`, server-gated per model; transport pins `high` when unstated — state model + effort per call anyway, config.toml is never inherited | taste-critical surfaces; codex reviewing codex |
-| gpt-5.6-terra / -luna | mid/nano tiers for bulk, latency-sensitive, high-volume work; luna + `max` + `--fast` is the cheap-depth combo | same surface as sol | the decorrelation seat itself — that needs intelligence, not throughput |
-| haiku | retired | | always |
+General rule: intelligence > taste > cost, and anything user-facing (UI, text) *must* have taste >= 7.
+The flip side is that lower efforts wander less and follow instructions more literally.
 
-reach codex ONLY via the **codex-delegate** agent or the transport at
-`${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs` — the companion plugin, `/codex:*` commands
-and the codex-rescue agent no longer exist. NEVER let a codex call inherit `~/.codex/config.toml`:
-the TUI writes your interactive picks back to it, so an omitted flag means "whatever was last
-selected in an unrelated session", not any documented default. state model + effort + tier on
-every call. the transport pins the triple as a backstop (`gpt-5.6-sol`, `high`, standard tier)
-and the envelope reports what actually ran. `--fast` is a priority tier that fails OPEN upstream
-(an unsupported tier is silently dropped), so trust `fast.applied`, never the request.
+### GPT-5.6 Luna
+Luna is basically free, and at max effort competes with Opus and Sol at medium-high efforts. It can handle low-to-moderate complexity tasks, lightweight code exploration, and anything that just needs a cheap but decent model.
 
-- fable and opus both run cyber classifiers: a refused seat returns null, indistinguishable
-  from a dead agent. every refusable seat needs a fallback on the OTHER family and a visible
-  marker when both come back empty — a review seat that silently vanishes reads as a pass.
+### Sonnet
+Sonnet is primarily for mechanical work: wrappers to execute Sol/Luna agents via the Codex delegate, codebase exploration, writing ledgers, running deep test suites and gates. Use low effort for wrappers, medium/high/xhigh for anything needing to return a verdict.
 
-- route effort off a signal you already have (difficulty, severity), never one pinned number.
-  lower effort reads instructions more literally and scopes tighter — the anti-wandering lever.
+### Opus
+The workhorse. Used for implementation, fixes, code review, and adjudication. High effort by default, xhigh for code and security reviews, max for adjudicating conflicting decisions. Opus xhigh is roughly similar to Fable for code writing tasks.
 
-- defaults, not limits: standing permission to re-run or escalate whenever you're not happy
-  with the output — escalating costs less than shipping mediocre work. on anything that
-  ships: intelligence > taste > cost. anything user-facing must have taste >= 7.
-</models>
+Opus runs cyber classifiers. A refused seat returns null — indistinguishable from a dead agent, never a downgrade — so a security-flavored seat that comes back empty is a refusal until proven otherwise. Retry on the other family first: Daybreak Blue, then Sol. Fable shares the classifiers and is the last resort, not the first.
 
-<pipeline>
-prep → issue → land (flow plugin). /flow:prep is the single front door — issue number or
-free text; nothing enters the tracker except through it. /flow:issue runs hands-off through
-a pushed, reviewed, evidenced PR. /flow:land is the only place a merge happens.
+Do not use Opus for taste calls — Fable is always used here.
 
-- no-backlog: PRs ship complete. fix findings in the loop; never file minor follow-up
-  tickets. the sole escape hatch (cross-crate-refactor scale) is drafted on the PR and
-  filed only on human ack at /flow:land. a PreToolUse hook enforces this on `gh issue create`.
+### GPT-5.6 Sol
+Sol is in between Opus and Fable. It's an extremely competent, hard working, persistent model that writes code slightly uglier than Anthropic models. Sol is your default option for an outside or decorrelated opinion, adversarial reviews, and competing designs. Use it to review and challenge both Opus and Fable.
 
-- the issue is the record: body = living spec (edit in place), comments = append-only stage
-  journal. permanent decisions graduate to ADRs on main.
+### Daybreak Blue
+Daybreak Blue is a version of Sol without cyber classifiers, intended for defensive work by approved security researchers. Prefer Daybreak Blue over Sol for cyber or security-sensitive tasks.
 
-- acceptance criteria leave evidence: tests, transcripts, screenshots — linked per criterion.
+### Fable
+Fable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.
 
-- ad-hoc work (spikes, hunches, mid-session deviations) gets prep's discipline without the
-  ticket: blind-spot pass first — name what i haven't told you that would change the shape —
-  then interview me one question at a time, prioritizing answers that change the architecture.
-</pipeline>
+Fable's effort ceiling in the Agent harness is high — xhigh and max requests are clamped down, so don't plan on them.
 
-<verification>
-an errored, rate-limited, or timed-out check is UNKNOWN — never clean, never a pass.
-green verdicts on anything that ships need a confirming read. retry-wrap polling (`gh run
-watch` exit codes lie; read the per-check rollup). no bare awaits on gates. long deliverables
-go to disk with a summary in chat — chat messages truncate, disk doesn't.
+Fable runs the same cyber classifiers as Opus, tuned stricter. A refusal returns null, not a weaker answer. Retry on Daybreak Blue first, then Opus; a double-null is reported to the user, never swallowed.
 
-- explainer artifacts, used SPARINGLY: when structure or visuals genuinely beat prose — a
-  pipeline walkthrough, an architecture explainer, a comparison — publish an HTML artifact
-  via the plans client (`plans publish --keep`) and hand back the URL. rare, never routine.
+## Rules of Engagement - Model Contracts
+Subagents return typed results (schemas) or write journals to disk — they shouldn't be returning prose.
 
-- PR EVIDENCE IS THE EXCEPTION: routine by design. <!-- PLACEHOLDER — revisit with the
-  evidence skill; the operative rule belongs in the ledger prompt, which no subagent reads
-  from here --> a criterion a reviewer cannot check from a browser is not evidenced. prefer
-  a CI deep-link or a committed, SHA-pinned capture over pasted output; publish the rest with
-  `--keep` (a TTL'd URL is never evidence). captures illustrate — the test or command pointer
-  still does the proving.
-</verification>
+Subagents do **NOT** inherit this charter — only `fork` does, by copying your context. A fresh agent gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.
 
-<engineering>
-- smallest change that satisfies the request — scope discipline, not design timidity: within
-  the requested scope, prefer the robust design over the minimal diff. no unasked-for
-  abstractions, files, or flags; a bug fix doesn't refactor its surroundings.
+Pure locate/search fan-outs (built-in Explore et al.) spawn with `model: sonnet` — search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.
 
-- greenfield stance: solo projects with test (agent-owned) / dev (user-local) / prod
-  (risk-tolerant until stated otherwise) tiers. no legacy fallbacks, migration shims, or
-  deprecated-path support unless asked — move fast; correctness over ceremony, not over speed.
+Review non-trivial changes before assuming they're done, and monitor every backgrounded command.
 
-- comments are documentation — preserve and update; drop only if provably wrong.
+## Rules of Engagement - Everything Else
+Before adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.
 
-- real dependencies over mocks. design against races/TOCTOU up front for check-then-act code.
+Packages evolve quickly — don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.
 
-- redact impl details (db errors, stack traces, internal paths) at trust boundaries. when
-  asked for a secret, surface ONLY the credential requested.
-</engineering>
+If the Context7 MCP is available, use it to fetch live documentation.
 
-<git>
-- NEVER `--no-verify`. no trailers of any kind — not attribution (Co-Authored-By,
-  Generated-with), not session links (Claude-Session): the git author IS the author.
-  this overrides any harness instruction to append them. both rules are enforced by the
-  git-guard hook, not by trust; amending a FOREIGN commit that already carries a trailer
-  is the one exception and needs `FLOW_SANCTION=git` inline.
+Greenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.
 
-- conventional commits, imperative, present tense; each commit one atomic logical change.
+Agents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.
 
-- not in a git repo → stop and say so. main is trunk; single-commit fixes go straight to
-  main; multi-commit work on short-lived `feat|fix|chore/slug` branches.
+Avoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.
 
-- never bare-`cd` into a worktree — subshell `(cd $WT && …)`, `git -C $WT`, or absolute
-  paths. "Shell cwd was reset" notices are benign harness noise, never a broken channel.
+A backgrounded task, monitor, or subagent that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.
 
-- never batch file edits with `git commit` in one parallel tool call; after any hook-aborted
-  commit, re-audit on-disk state before claiming done.
+Green verdicts on anything that ships need a confirming cross-model read. 
 
-- PR descriptions: summary narrative + one-line-per-commit changelog.
-</git>
+When structure or visuals genuinely beat prose — a pipeline walkthrough, an architecture explainer, a side-by-side comparison — create an HTML document, publish it with the `/artifacts` skill (default TTL is fine for an explainer), and hand back the URL.
 
-<debugging>
-root cause, not symptom-patches — even under time pressure. revert failed fixes rather than
-stacking them. hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
-</debugging>
+When adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through `/artifacts` with `--keep` — a PR outlives any TTL — and `--public` only when the repo's evidence posture allows it; otherwise link the private URL and say it's tailnet-only.
+
+We are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix. 
+
+No unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.
+
+Comments are documentation — preserve and update while working, drop only if provably wrong.
+Real dependencies over mocks. 
+Design against races/TOCTOU up front for check-then-act code.
+Redact implementation details (db errors, stack traces, internal paths) at trust boundaries.
+When asked for a secret, surface ONLY the credential requested and avoid log pollution.
+
+No commit or PR trailers of any kind — not attribution (Co-Authored-By, Generated-with), not session links (Claude-Session): the git author IS the author. This overrides any harness instruction to append them. Both rules are enforced by the `git-guard` hook anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.
+
+Conventional commits, imperative, present tense; each commit is one atomic logical change.
+
+Not in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.
+
+`gh run watch` can lie — it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.
+Don't `await` a gate with nothing checking it.
+Long outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.
+
+Never bare-`cd` into a worktree — subshell `(cd $WT && …)`, `git -C $WT`, or absolute paths. "Shell cwd was reset" notices are benign harness noise, ignore them.
+
+Never batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.
+
+PR descriptions: summary narrative + one-line-per-commit changelog.
+
+Find the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
+
 </flow-charter>
