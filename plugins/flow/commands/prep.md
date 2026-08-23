@@ -95,25 +95,14 @@ Write each criterion as a task-list item with its evidence on a sub-bullet:
 
 Add `surface:` when the landing spot isn't obvious from the evidence text — `ci` for something CI runs, `code` for a permalink into the diff, `commit` for a capture committed to the evidence branch, `artifact` for a plans-hosted page, recording, or oversized image set.
 
-**Visibility comes from the repo's declared posture, not from your read of the issue.** Check the evidence posture in `## Operating notes` of the repo's `AGENTS.md`, and `gh repo view --json visibility` — on a public repo the evidence branch is world-readable anyway, so there is nothing to decide. On a private repo declaring `public-by-intent`, propose `visibility: public` and let the human confirm it; anywhere else, propose private.
-
-Mark a criterion only where it DEVIATES from that posture, and say why. A public artifact is permanently readable by anyone holding the URL, gets cached by GitHub's image proxy the moment it renders, and cannot be redacted afterwards — deleting it no longer removes the cached copy. So on any hesitation, silence, or doubt: private wins.
-
-```markdown
-- [ ] The validation banner names the offending field.
-  - evidence: screenshot of the banner after submitting an empty name
-  - surface: artifact
-  - visibility: public
-```
-
-If ANY criterion lands on `visibility: public`, apply the `evidence-public` label at finalize (§7.4). The run publishes to the public host only where the label AND the field agree, so the label is the human's ack and the field is the per-criterion selection — neither one can expose a capture alone.
+Artifact evidence publishes to the tailnet-private plans host, always — there is no public-publish path from a run, and no per-criterion visibility field to fill in.
 
 ## 7. Finalize
 
 1) **Persist doc artifacts to main**: On up-to-date main, stage ONLY the `context.md` or ADR changes the grill produced, one `docs(...)` commit, then push. Anything staged/dirty that isn't a documentation change: STOP and flag it.
 2) **Issue body → hardened spec** (edit in place): Restate the goal/why, context, agreed approach, key decisions (ADR links), and the acceptance criteria. For free-text mode, create the issue now — `FLOW_SANCTION=prep gh issue create …` to pass the hook.
 3) **Journal comment**: The synthesized design and decisions trail.
-4) **Labels**: Validate the ready-for-agent contract (`flow` skill, `label-contract.md`), apply `ready-for-agent`, and clear `needs-triage`/`agent-found`/`needs-info` tags. Add `evidence-public` ONLY if the human explicitly acked a public artifact in §6 — if no criterion carries `visibility: public`, the label must not be there.
+4) **Labels**: Validate the ready-for-agent contract (`flow` skill, `label-contract.md`), apply `ready-for-agent`, and clear `needs-triage`/`agent-found`/`needs-info` tags.
 5) **Blocked on info only the human/externals can supply**: tag as `needs-info`, comment the questions, and stop.
 
 ## 8. Hand-off
