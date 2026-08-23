@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "jakub's Claude Code marketplace \u2014 plugins and skill bundles.",
-    "version": "0.22.0"
+    "version": "0.22.1"
   },
   "plugins": [
     {
@@ -20,7 +20,7 @@
     {
       "name": "flow",
       "description": "The prep \u2192 issue \u2192 land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
-      "version": "0.16.1",
+      "version": "0.16.2",
       "author": {
         "name": "jakub"
       },
@@ -38,7 +38,7 @@
     {
       "name": "unslop",
       "description": "Cut AI tells from writing and put a voice back in. Vendored from Lauren Tan's pstack skill in cursor/plugins (MIT).",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "jakub"
       },
