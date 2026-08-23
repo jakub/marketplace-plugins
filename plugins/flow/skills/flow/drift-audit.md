@@ -53,6 +53,11 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
 - Installed plugin version vs this repo's HEAD (`claude plugin list` vs
   `plugins/flow/.claude-plugin/plugin.json`) — a stale install means sessions run an old
   charter.
+- Charter delivery: `node plugins/flow/hooks/scripts/inject-charter.mjs 1 | wc -m` and the
+  same for `2` are both under 9,000 characters. Claude Code caps one hook's stdout at
+  10,000 and replaces anything larger with a 2KB preview plus a file path, which is why
+  the charter ships as two SessionStart hooks; a half over the cap means sessions run on a
+  fragment and the `<flow-charter>` presence check in the global CLAUDE.md still passes.
 - Facts with `as-of` dates older than a quarter (model pricing, codex CLI surface):
   flag for re-verification.
 - `node plugins/flow/scripts/smoke-codex-exec.mjs` passes (add `CODEX_LIVE=1` when codex

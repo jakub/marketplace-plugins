@@ -6,7 +6,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/charter/charter.md\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" 1",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" 2",
             "timeout": 5
           }
         ]
