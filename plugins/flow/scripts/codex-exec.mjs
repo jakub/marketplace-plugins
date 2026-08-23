@@ -18,18 +18,28 @@
 // produced (even ok:false — the envelope IS the report). Nonzero exit = the wrapper itself
 // broke. Callers branch on .ok / .error.kind, never on grep.
 //
-// Facts this file encodes (as-of 2026-08-21, codex-cli 0.146.0 — re-verify quarterly):
+// Facts this file encodes (as-of 2026-08-23, codex-cli 0.149.0 — re-verify quarterly):
 // effort only exists as `-c model_reasoning_effort=`; fast mode is `-c service_tier=priority`
 // and an unsupported tier is OMITTED with only a stderr warning (fail-open — we detect and
 // report it); request errors surface as `ERROR: {json}` lines and/or error-type items;
 // `exec review` rejects a custom prompt alongside --base/--uncommitted.
 //
-// The model triple (model, effort, service tier) is ALWAYS sent explicitly, defaulted here
-// when a caller omits it. `~/.codex/config.toml` is mutable state — the Codex TUI writes the
-// user's interactive picks back to it — so an omitted flag does not mean "the documented
-// default", it means "whatever that user last selected in an unrelated session". Inheriting
-// it makes a seat's strength drift silently and undetectably. Same rule as --cwd: explicit
-// or nothing.
+// `exec --json` streams whole items, never token deltas — the delta notifications
+// (AgentMessageDelta, ReasoningSummaryTextDelta, CommandExecutionOutputDelta) exist only in
+// the experimental app-server JSON-RPC protocol. So the ONLY liveness signal during a turn is
+// the reasoning-summary item, which lands every ~10s while the model thinks. Measured on
+// 0.149.0: summaries on = an event every 9-10s across a 143s think; `model_reasoning_summary
+// = "none"` = a flat zero events for the whole think. Final-message generation is silent
+// either way (137s of nothing for a 4000-word answer), as is a running command (item.started,
+// then nothing until it completes — item.updated does not carry aggregated output).
+//
+// The tuning set (model, effort, service tier, reasoning summary) is ALWAYS sent explicitly,
+// defaulted here when a caller omits it. `~/.codex/config.toml` is mutable state — the Codex
+// TUI writes the user's interactive picks back to it — so an omitted flag does not mean "the
+// documented default", it means "whatever that user last selected in an unrelated session".
+// Inheriting it makes a seat's strength drift silently and undetectably, and for the summary
+// setting it silences the heartbeat and hands every long run to the stall watchdog. Same rule
+// as --cwd: explicit or nothing.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -43,7 +53,10 @@ const MODEL_RE = /^[a-z0-9][a-z0-9.-]*$/ // shape check only — the catalog is 
 const DEFAULT_MODEL = 'gpt-5.6-sol' // the decorrelation seat; never inherited from config.toml
 const DEFAULT_EFFORT = 'high'
 const DEFAULT_TIMEOUT = { task: 900, review: 1200, 'adversarial-review': 1200 }
-const DEFAULT_STALL = 300 // max-effort reasoning gaps are long; stall ≠ slow thinking
+// Sized against the longest window the CLI reports nothing through: final-message
+// generation, which scales with answer length (137s measured for ~4000 words). The pinned
+// reasoning summary covers the thinking phase at ~10s. Silence past this is wedged, not slow.
+const DEFAULT_STALL = 420
 const RETRYABLE = ['RATE_LIMIT', 'STALL', 'TIMEOUT']
 const RATE_LIMIT_BACKOFF_MS = Number(process.env.CODEX_EXEC_BACKOFF_MS || 30_000)
 const BIN = process.env.CODEX_BIN || 'codex'
@@ -324,17 +337,20 @@ const stdinText = await readStdin()
 if (a.mode === 'task' && !stdinText.trim()) usage('task mode needs a prompt on stdin')
 if (a.mode === 'review' && stdinText.trim()) usage('review mode takes no prompt — the CLI rejects a custom prompt alongside --base/--uncommitted (use adversarial-review for framed reviews)')
 
-// Pin the model triple AFTER validation, so an explicit bad value still errors rather than
+// Pin the tuning set AFTER validation, so an explicit bad value still errors rather than
 // being silently replaced. From here on a.model/a.effort are concrete and the envelope
 // reports what actually ran instead of a null that means "ask config.toml".
 a.model = a.model || DEFAULT_MODEL
 a.effort = a.effort || DEFAULT_EFFORT
 
-// argv assembly — all three always sent; nothing falls through to config.toml
+// argv assembly — all four always sent; nothing falls through to config.toml
 const tuning = [
   '-m', a.model,
   '-c', `model_reasoning_effort=${a.effort}`,
   '-c', `service_tier=${a.fast ? 'priority' : 'default'}`,
+  // Not a quality knob: this is the watchdog's heartbeat. `none` in config.toml makes an
+  // entire thinking phase emit zero events, and the stall timer then kills a healthy run.
+  '-c', 'model_reasoning_summary=detailed',
 ]
 let argvTail, promptText
 if (a.mode === 'review') {
