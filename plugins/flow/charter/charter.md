@@ -1,3 +1,8 @@
+Note to agents: this charter outlines how we use `flow` to work on bigger projects. 
+If we're working on a smaller project that *isn't* using `flow`, don't ignore this file! 
+There's good stuff here that I want you to follow, so skip the ceremony but apply the principles: follow everything except the `flow` pipeline section.
+Orchestration, delegation, model selection, and rules of engagement ALWAYS apply.
+
 <flow-charter>
 
 # Flow Engineering Charter
