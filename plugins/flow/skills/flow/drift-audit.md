@@ -53,10 +53,15 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
   are candidates the nightly lint routes through `scripts/lint-actions.mjs` (which re-checks
   everything and refuses on any doubt), `review` rows need a human, and `hold-*` rows are fine. Squash merges mean the MERGED column is usually `no`
   for landed branches; PR state is the signal.
-- **Local** branches whose PR is merged/closed and which have nothing beyond
-  `origin/<branch>`: stale, delete. `git branch --merged main` misses these after a squash.
-  This is the only branch class any flow job can act on — permission 2 routes it through
-  `lint-actions.mjs`, which runs `git branch -D` and nothing else.
+- **Local** branches are the only class any flow job can act on: permission 2 routes them
+  through `lint-actions.mjs`, which runs `git branch -D` and nothing else. That executor
+  asks two separate questions and needs yes to both. Is the branch dead — a merged or
+  closed PR, or a tip already in `origin/main`? And do the commits survive the delete — a
+  same-tip `origin/<branch>`, a merged/closed PR head at this tip, or ancestry of
+  `origin/main`? A pushed spike with no PR passes the second and fails the first, which is
+  correct: perfectly recoverable, perfectly alive. `main`, `master`, and `flow-evidence`
+  are refused outright. `git branch --merged main` misses squash-merged branches, so it is
+  not the death test.
 - **Remote** (`origin/*`) branches are report-only and stay that way: deleting one needs a
   push, which no cron job has and never will. Classify them against a fixed history depth of
   `gh pr list --state all --limit 200`, so two nights are comparable. A remote branch whose
