@@ -5,8 +5,8 @@
 // SubagentStop. Its job is the friction that never raises an error: a command that exits 0
 // while doing the wrong thing, an ambiguous instruction the agent guessed at, a dead end
 // where every individual call succeeded. It also cites repeated identical failures, which
-// PostToolUseFailure nudges on mid-run; the design's shared gate state is the dedup
-// contract between the two once that hook exists.
+// PostToolUseFailure nudges on mid-run; fingerprints that hook already nudged arrive via
+// the shared gate state and are excluded here, so one fight buys one interruption.
 //
 // The note it emits always cites concrete events read out of the transcript. It never asks
 // the agent to search its memory for annoyance, and it never requires a reply, because a
@@ -23,7 +23,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import {
+  MAX_COUNTER_KEYS, capKeys, clean, fingerprint, loadGate, stateDir, target,
+} from '../../lib/gate.mjs'
+import { safeId } from '../../lib/context.mjs'
 
 // A session with fewer tool calls than this had no room to develop friction worth filing.
 const MIN_TOOL_CALLS = 15
@@ -34,15 +37,6 @@ const REPEAT_THRESHOLD = 2
 // Bound on the tool_use_id to tool-name map. A failing result nearly always follows its
 // call immediately, so this only has to survive a chunk boundary, not a whole session.
 const MAX_TOOL_NAMES = 4000
-// Bounds on the counter maps, so a pathological session of all-distinct failures or
-// targets cannot grow the state file without limit. Oldest entries are evicted first,
-// which loses old fights, not the current one.
-const MAX_COUNTER_KEYS = 400
-// Targets become map keys and cited text; a huge glob pattern should not become either.
-const MAX_TARGET_LEN = 200
-
-const stateDir = () =>
-  join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'gripe')
 
 // Keyed by session id plus actor: every subagent in a fan-out shares its parent's session
 // id, so a session-only key would apply one transcript's byte offset to another and let
@@ -73,51 +67,6 @@ function saveState(sessionId, actor, state) {
   } catch {
     // Losing state costs a rescan next turn, which is slow rather than wrong.
   }
-}
-
-/** Strip control characters from text that will be echoed in the hook's trusted voice. */
-const clean = (s) =>
-  String(s).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, ' ').trim()
-
-/** Evict oldest keys past a bound; insertion order is preserved on plain objects. */
-function capKeys(map, max) {
-  const keys = Object.keys(map)
-  if (keys.length > max) {
-    for (const k of keys.slice(0, keys.length - max)) delete map[k]
-  }
-}
-
-/** Collapse an error string to something that matches again next time it happens. */
-function fingerprint(toolName, text) {
-  const norm = String(text)
-    .toLowerCase()
-    .replace(/\/[^\s'"]+/g, '/P') // paths differ per run, the shape does not
-    .replace(/\b[0-9a-f]{7,}\b/g, 'H') // shas, ids
-    .replace(/\d+/g, 'N')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 100)
-  return `${toolName}::${norm}`
-}
-
-/** What a tool call was aimed at, for spotting repetition without an error. */
-function target(toolName, input) {
-  if (!input || typeof input !== 'object') return null
-  if (input.file_path) return String(input.file_path).slice(0, MAX_TARGET_LEN)
-  if (input.command) {
-    // Leading bare words only, stopping at the first argument. `gh run watch 123` and
-    // `gh run watch --exit-status` are the same fight; `gh run list` is a different one,
-    // so a flat two-token slice would wrongly merge them.
-    const words = []
-    for (const tok of String(input.command).trim().split(/\s+/)) {
-      if (words.length === 3) break
-      if (!/^[A-Za-z][\w.-]*$/.test(tok)) break
-      words.push(tok)
-    }
-    return words.join(' ') || null
-  }
-  if (input.pattern) return String(input.pattern).slice(0, MAX_TARGET_LEN)
-  return null
 }
 
 /** Read only what was appended since the last run and fold it into the counters. */
@@ -198,8 +147,11 @@ async function scanNew(path, state) {
 }
 
 /** Build the note, or return null when there is nothing concrete to point at. */
-function buildNote(state) {
-  const repeats = Object.values(state.failures).filter((f) => f.count >= REPEAT_THRESHOLD)
+function buildNote(state, nudged, flags) {
+  // Fingerprints the error nudge already interrupted for are its fights, not ours.
+  const repeats = Object.entries(state.failures)
+    .filter(([fp, f]) => f.count >= REPEAT_THRESHOLD && !nudged.has(fp))
+    .map(([, f]) => f)
   const churned = Object.values(state.churn).filter((c) => c.count >= CHURN_THRESHOLD)
 
   // No concrete evidence means no honest question to ask. Stay quiet. Two unrelated
@@ -225,7 +177,7 @@ function buildNote(state) {
     `If any of that was avoidable friction in the tooling or the workflow rather than ordinary`,
     `work, file the specific problem:`,
     ``,
-    `gripe add --via checkpoint <<'EOF'`,
+    `gripe add ${flags.join(' ')} <<'EOF'`,
     `<what you expected, what happened instead, what it cost>`,
     `EOF`,
     ``,
@@ -260,10 +212,7 @@ async function main() {
   // actor is the only thing keeping their scans apart. The id lands in a filename, so
   // anything outside a safe alphabet is treated as absent rather than becoming a path.
   const transcript = input.transcript_path || input.agent_transcript_path
-  const actor =
-    typeof input.agent_id === 'string' && /^[\w.-]{1,64}$/.test(input.agent_id)
-      ? input.agent_id
-      : 'main'
+  const actor = safeId(input.agent_id) ?? 'main'
   if (!sessionId || !transcript) return
 
   const state = loadState(sessionId, actor)
@@ -274,7 +223,17 @@ async function main() {
   // scanNew returns the state to use: on a truncated transcript it hands back a fresh
   // one rather than the object passed in, so the return value is not optional.
   const scanned = await scanNew(transcript, state)
-  const note = buildNote(scanned)
+  const gate = loadGate(sessionId, actor)
+  const nudged = new Set(
+    Object.entries(gate.fingerprints).filter(([, r]) => r.nudgedAt).map(([fp]) => fp),
+  )
+  // Attribution is baked into the recipe as literals, so a subagent's filing carries its
+  // own id without the agent deciding anything.
+  const flags = ['--via checkpoint']
+  if (actor !== 'main') flags.push(`--agent ${actor}`)
+  const prompt = safeId(input.prompt_id)
+  if (prompt) flags.push(`--prompt ${prompt}`)
+  const note = buildNote(scanned, nudged, flags)
   if (note) scanned.asked = true
 
   // Always persist, note or not. Recording that we looked is the whole point of the

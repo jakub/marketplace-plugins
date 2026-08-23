@@ -1,0 +1,69 @@
+#!/usr/bin/env node
+// gripe: PermissionDenied. Writes an observed row directly, through the storage module
+// and never a shell. The gate matters more here than anywhere: jakub's own hooks deny
+// by design, so a first denial is a guard working correctly. The fourth identical one
+// means the agent kept trying and kept being stopped, which is real friction.
+//
+// The body is a template over tool_name, reason and a normalised target, never raw
+// tool_input, which can carry credentials into durable storage.
+//
+// Contract: read hook JSON on stdin, write to the database, no output, always exit 0.
+
+import { clean, fingerprint, loadGate, saveGate, target } from '../../lib/gate.mjs'
+
+// The fourth identical denial is friction; one through three are a guard doing its job.
+const DENIAL_THRESHOLD = 4
+
+async function main() {
+  let raw = ''
+  for await (const chunk of process.stdin) raw += chunk
+  let input
+  try { input = JSON.parse(raw) } catch { return }
+  if (!input.session_id || !input.tool_name) return
+
+  const { safeId } = await import('../../lib/context.mjs')
+  const actor = safeId(input.agent_id) ?? 'main'
+  const aimedAt = target(input.tool_name, input.tool_input)
+
+  const gate = loadGate(input.session_id, actor)
+  const fp = fingerprint(`deny:${input.tool_name}`, `${input.reason ?? ''} ${aimedAt ?? ''}`)
+  const rec = gate.fingerprints[fp] ?? { count: 0 }
+  rec.count++
+  rec.lastSeen = Date.now()
+  const file = rec.count >= DENIAL_THRESHOLD && !rec.filedAt
+  if (file) rec.filedAt = Date.now()
+  gate.fingerprints[fp] = rec
+  saveGate(input.session_id, actor, gate)
+  if (!file) return
+
+  try {
+    const [store, { captureContext }] = await Promise.all([
+      import('../../lib/store.mjs'), import('../../lib/context.mjs'),
+    ])
+    const db = store.openStore()
+    try {
+      store.addGripe(db, {
+        body:
+          `Permission denied ${rec.count} times in one session: ${clean(input.tool_name)}` +
+          (aimedAt ? ` aimed at "${clean(aimedAt)}"` : '') +
+          (input.reason ? `. Reason: ${clean(input.reason).slice(0, 300)}` : '') +
+          `. The agent kept trying and kept being stopped, which points at a policy it does not understand or a policy that is wrong.`,
+        elicitation: 'observed',
+        ...captureContext(),
+        session_id: input.session_id,
+        prompt_id: safeId(input.prompt_id),
+        agent_id: actor === 'main' ? null : actor,
+        agent_type: safeId(input.agent_type),
+        trigger: safeId(input.tool_name),
+      })
+    } finally {
+      db.close()
+    }
+  } catch (e) {
+    process.stderr.write(`gripe: observed row skipped: ${String(e?.message ?? e).split('\n')[0]}\n`)
+  }
+}
+
+main()
+  .catch(() => {}) // a broken observer must never fail the run
+  .finally(() => process.exit(0))
