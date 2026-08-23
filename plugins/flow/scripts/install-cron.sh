@@ -5,7 +5,9 @@
 #
 #   install-cron.sh install    write launcher + units, daemon-reload, enable --now
 #   install-cron.sh status     timers, last result per job, newest report per job
-#   install-cron.sh run <job>  start one job now in the foreground (same env as the timer)
+#   install-cron.sh run <job> [flags…]  run one job now in the foreground (timer env).
+#                              Flags after <job> go to flow-cron.mjs — notably --dry-run,
+#                              which prints the command instead of spending a real session.
 #   install-cron.sh uninstall  disable timers and remove launcher + units
 set -eu
 
@@ -55,8 +57,11 @@ status)
   done
   ;;
 run)
-  job="${2:?usage: install-cron.sh run <lint|doc-sweep>}"
-  if [ -x "$launcher" ]; then exec "$launcher" "$job"; else CLAUDE_PLUGIN_ROOT="$root" exec node "$root/scripts/flow-cron.mjs" "$job"; fi
+  job="${2:?usage: install-cron.sh run <lint|doc-sweep> [--dry-run]}"
+  # Everything after the job name belongs to flow-cron.mjs. Dropping it silently swallowed
+  # --dry-run, so `run lint --dry-run` spent a real headless session instead of printing one.
+  shift 2
+  if [ -x "$launcher" ]; then exec "$launcher" "$job" "$@"; else CLAUDE_PLUGIN_ROOT="$root" exec node "$root/scripts/flow-cron.mjs" "$job" "$@"; fi
   ;;
 uninstall)
   for j in $jobs; do
@@ -72,5 +77,5 @@ uninstall)
   echo "removed timers, units, and launcher; reports in $state/reports and $HOME/.config/flow/cron.env were kept"
   ;;
 *)
-  echo "usage: install-cron.sh <install|status|run <job>|uninstall>" >&2; exit 2 ;;
+  echo "usage: install-cron.sh <install|status|run <job> [--dry-run]|uninstall>" >&2; exit 2 ;;
 esac
