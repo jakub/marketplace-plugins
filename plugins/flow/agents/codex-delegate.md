@@ -82,16 +82,24 @@ brackets):
       `CODEX_PROMPT_EOF` is deliberately distinctive, but if the prompt could contain that
       exact line, pick another token — a lone delimiter line would end the heredoc early and
       truncate the prompt.
-      ```bash
-      CODEX="${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs"; [ -f "$CODEX" ] || CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)
-      B=$(mktemp -u /tmp/codex-delegate.XXXXXX)
-      cat > "$B.prompt" <<'CODEX_PROMPT_EOF'
-      ...the self-contained prompt / reviewer focus, or leave empty for plain review...
-      CODEX_PROMPT_EOF
-      nohup node "$CODEX" <mode> --cwd <dir> [--base <ref>] [--model <m>] --effort <e> \
-        --timeout-secs <N> --events "$B.events.jsonl" > "$B.envelope.json" 2>"$B.err" <"$B.prompt" & disown
-      echo "codex detached pid=$! envelope=$B.envelope.json events=$B.events.jsonl"
-      ```
+
+      TYPE THE BLOCK BELOW WITH NO LEADING INDENT. It is printed flush left on purpose.
+      `<<'WORD'` closes only on a line that is exactly `WORD` starting in column 0, so an
+      indented closing delimiter never closes anything: the launch line and the echo get
+      eaten as prompt text, bash prints a `delimited by end-of-file` warning to stderr, and
+      the call still exits 0 having launched nothing. You then poll a pid you never got.
+
+```bash
+CODEX="${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs"; [ -f "$CODEX" ] || CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)
+B=$(mktemp -u /tmp/codex-delegate.XXXXXX)
+cat > "$B.prompt" <<'CODEX_PROMPT_EOF'
+...the self-contained prompt / reviewer focus, or leave empty for plain review...
+CODEX_PROMPT_EOF
+nohup node "$CODEX" <mode> --cwd <dir> [--base <ref>] [--model <m>] --effort <e> \
+  --timeout-secs <N> --events "$B.events.jsonl" > "$B.envelope.json" 2>"$B.err" <"$B.prompt" & disown
+echo "codex detached pid=$! envelope=$B.envelope.json events=$B.events.jsonl"
+```
+
       `<N>` is the real budget you allow — size it to the work (the transport caps at 7200),
       e.g. 1800 for a big xhigh review. `nohup` preserves the pid (`$!`) and ignores SIGHUP;
       the redirects and the prompt file free the Bash tool to return at the echo. This is a
