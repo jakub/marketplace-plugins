@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 // gripe: Stop checkpoint.
 //
-// Fires at the end of a main-agent turn. Its job is the friction that never raises an
-// error: a command that exits 0 while doing the wrong thing, an ambiguous instruction the
-// agent guessed at, a dead end where every individual call succeeded. PostToolUseFailure
-// already owns error-shaped friction, so this hook must not duplicate it.
+// Fires at the end of a turn, for the main agent via Stop and for subagents via
+// SubagentStop. Its job is the friction that never raises an error: a command that exits 0
+// while doing the wrong thing, an ambiguous instruction the agent guessed at, a dead end
+// where every individual call succeeded. It also cites repeated identical failures, which
+// PostToolUseFailure nudges on mid-run; the design's shared gate state is the dedup
+// contract between the two once that hook exists.
 //
 // The note it emits always cites concrete events read out of the transcript. It never asks
 // the agent to search its memory for annoyance, and it never requires a reply, because a
 // question that expects an answer will get one whether or not anything went wrong.
 //
 // Scanning is incremental. Transcripts only grow, and a quiet session would otherwise
-// re-read and re-parse the whole file at every turn end, so per-session state carries a
+// re-read and re-parse the whole file at every turn end, so per-actor state carries a
 // byte offset and the running counters and each run consumes only what was appended.
 //
 // Contract: read hook JSON on stdin, optionally write hookSpecificOutput JSON, always
@@ -32,11 +34,20 @@ const REPEAT_THRESHOLD = 2
 // Bound on the tool_use_id to tool-name map. A failing result nearly always follows its
 // call immediately, so this only has to survive a chunk boundary, not a whole session.
 const MAX_TOOL_NAMES = 4000
+// Bounds on the counter maps, so a pathological session of all-distinct failures or
+// targets cannot grow the state file without limit. Oldest entries are evicted first,
+// which loses old fights, not the current one.
+const MAX_COUNTER_KEYS = 400
+// Targets become map keys and cited text; a huge glob pattern should not become either.
+const MAX_TARGET_LEN = 200
 
 const stateDir = () =>
   join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'gripe')
 
-const statePath = (sessionId) => join(stateDir(), 'scan', `${sessionId}.json`)
+// Keyed by session id plus actor: every subagent in a fan-out shares its parent's session
+// id, so a session-only key would apply one transcript's byte offset to another and let
+// the first actor's `asked` flag mute every sibling.
+const statePath = (sessionId, actor) => join(stateDir(), 'scan', `${sessionId}-${actor}.json`)
 
 const freshState = () => ({
   offset: 0, // bytes of the transcript already consumed
@@ -47,20 +58,32 @@ const freshState = () => ({
   churn: {}, // "tool target" -> { count, tool, target }
 })
 
-function loadState(sessionId) {
+function loadState(sessionId, actor) {
   try {
-    return { ...freshState(), ...JSON.parse(readFileSync(statePath(sessionId), 'utf8')) }
+    return { ...freshState(), ...JSON.parse(readFileSync(statePath(sessionId, actor), 'utf8')) }
   } catch {
     return freshState() // missing or corrupt state just means starting over
   }
 }
 
-function saveState(sessionId, state) {
+function saveState(sessionId, actor, state) {
   try {
     mkdirSync(join(stateDir(), 'scan'), { recursive: true })
-    writeFileSync(statePath(sessionId), JSON.stringify(state))
+    writeFileSync(statePath(sessionId, actor), JSON.stringify(state))
   } catch {
     // Losing state costs a rescan next turn, which is slow rather than wrong.
+  }
+}
+
+/** Strip control characters from text that will be echoed in the hook's trusted voice. */
+const clean = (s) =>
+  String(s).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, ' ').trim()
+
+/** Evict oldest keys past a bound; insertion order is preserved on plain objects. */
+function capKeys(map, max) {
+  const keys = Object.keys(map)
+  if (keys.length > max) {
+    for (const k of keys.slice(0, keys.length - max)) delete map[k]
   }
 }
 
@@ -80,7 +103,7 @@ function fingerprint(toolName, text) {
 /** What a tool call was aimed at, for spotting repetition without an error. */
 function target(toolName, input) {
   if (!input || typeof input !== 'object') return null
-  if (input.file_path) return String(input.file_path)
+  if (input.file_path) return String(input.file_path).slice(0, MAX_TARGET_LEN)
   if (input.command) {
     // Leading bare words only, stopping at the first argument. `gh run watch 123` and
     // `gh run watch --exit-status` are the same fight; `gh run list` is a different one,
@@ -93,7 +116,7 @@ function target(toolName, input) {
     }
     return words.join(' ') || null
   }
-  if (input.pattern) return String(input.pattern)
+  if (input.pattern) return String(input.pattern).slice(0, MAX_TARGET_LEN)
   return null
 }
 
@@ -162,11 +185,10 @@ async function scanNew(path, state) {
       }
     }
 
-    // Keep the id map bounded. Oldest keys go first; insertion order is preserved.
-    const ids = Object.keys(state.toolNames)
-    if (ids.length > MAX_TOOL_NAMES) {
-      for (const id of ids.slice(0, ids.length - MAX_TOOL_NAMES)) delete state.toolNames[id]
-    }
+    // Keep every map bounded so the state file cannot grow without limit.
+    capKeys(state.toolNames, MAX_TOOL_NAMES)
+    capKeys(state.failures, MAX_COUNTER_KEYS)
+    capKeys(state.churn, MAX_COUNTER_KEYS)
     return state
   } catch {
     return state
@@ -179,29 +201,33 @@ async function scanNew(path, state) {
 function buildNote(state) {
   const repeats = Object.values(state.failures).filter((f) => f.count >= REPEAT_THRESHOLD)
   const churned = Object.values(state.churn).filter((c) => c.count >= CHURN_THRESHOLD)
-  const totalFailures = Object.values(state.failures).reduce((n, f) => n + f.count, 0)
 
-  // No concrete evidence means no honest question to ask. Stay quiet.
-  if (!repeats.length && !churned.length && totalFailures < 2) return null
+  // No concrete evidence means no honest question to ask. Stay quiet. Two unrelated
+  // failures are not evidence: only repeats of one shape count, or this fires on every
+  // ordinary session that hit two different transient errors.
+  if (!repeats.length && !churned.length) return null
   if (state.toolCalls < MIN_TOOL_CALLS) return null
 
+  // Cited text is echoed in the hook's trusted voice but comes out of the transcript,
+  // so control characters are stripped before it enters the note.
   const cited = []
   for (const f of repeats.slice(0, 2)) {
-    cited.push(`${f.tool} failed ${f.count} times the same way (${f.sample.replace(/\s+/g, ' ').trim()})`)
+    cited.push(`${f.tool} failed ${f.count} times the same way (${clean(f.sample)})`)
   }
   for (const c of churned.slice(0, 2)) {
-    cited.push(`${c.tool} was aimed at "${c.target}" ${c.count} times`)
-  }
-  if (!cited.length && totalFailures >= 2) {
-    cited.push(`${totalFailures} tool calls failed`)
+    cited.push(`${c.tool} was aimed at "${clean(c.target)}" ${c.count} times`)
   }
 
+  // The body travels as a quoted heredoc, never a double-quoted argument: complaints quote
+  // tool output, and tool output contains $(, backticks and quotes.
   return [
     `gripe: this run, ${cited.join('; ')}.`,
     `If any of that was avoidable friction in the tooling or the workflow rather than ordinary`,
     `work, file the specific problem:`,
     ``,
-    `  gripe add --via checkpoint "<what you expected, what happened instead, what it cost>"`,
+    `gripe add --via checkpoint <<'EOF'`,
+    `<what you expected, what happened instead, what it cost>`,
+    `EOF`,
     ``,
     `If it was just the work, carry on. No reply is expected and saying nothing costs nothing.`,
   ].join('\n')
@@ -229,12 +255,20 @@ async function main() {
   if (pending) return
 
   const sessionId = input.session_id
-  const transcript = input.transcript_path
+  // SubagentStop delivers agent_transcript_path instead of transcript_path, and an
+  // agent_id that scopes the state: subagents share their parent's session id, so the
+  // actor is the only thing keeping their scans apart. The id lands in a filename, so
+  // anything outside a safe alphabet is treated as absent rather than becoming a path.
+  const transcript = input.transcript_path || input.agent_transcript_path
+  const actor =
+    typeof input.agent_id === 'string' && /^[\w.-]{1,64}$/.test(input.agent_id)
+      ? input.agent_id
+      : 'main'
   if (!sessionId || !transcript) return
 
-  const state = loadState(sessionId)
-  // One checkpoint per session. Repeated asking is what teaches an agent to answer "none",
-  // and once asked there is nothing left to scan for.
+  const state = loadState(sessionId, actor)
+  // One checkpoint per session per actor. Repeated asking is what teaches an agent to
+  // answer "none", and once asked there is nothing left to scan for.
   if (state.asked) return
 
   // scanNew returns the state to use: on a truncated transcript it hands back a fresh
@@ -245,12 +279,15 @@ async function main() {
 
   // Always persist, note or not. Recording that we looked is the whole point of the
   // offset: a quiet session must not re-parse the transcript at every turn end.
-  saveState(sessionId, scanned)
+  saveState(sessionId, actor, scanned)
 
   if (!note) return
+  // Echo the incoming event name: additionalContext under a mismatched hookEventName is
+  // dropped, and this script serves both Stop and SubagentStop.
+  const eventName = input.hook_event_name === 'SubagentStop' ? 'SubagentStop' : 'Stop'
   process.stdout.write(
     JSON.stringify({
-      hookSpecificOutput: { hookEventName: 'Stop', additionalContext: note },
+      hookSpecificOutput: { hookEventName: eventName, additionalContext: note },
     }),
   )
 }
