@@ -6,9 +6,13 @@ summarises the pile for jakub once a month.
 Status: built. The storage module, CLI, shim and all seven hooks exist and are tested; the
 open items below are install-time verifications. Every claim marked "measured" was run on
 this machine on 2026-08-23. The reader
-side is deferred: v1 only collects, and the summarising workflow gets designed once there is
-a month of real rows to design against. Until then `gripe dump` piped into a model by hand is
-the entire read story.
+side is deferred as a *mechanism*: v1 only collects, and any automated summarising workflow
+gets designed once there is a month of real rows to design against. The analysis *method*
+ships now, as the plugin's skill (`skills/gripe/SKILL.md`), so a session jakub points at the
+log can run the review itself: doctor first, semantic clustering, distinct-session rates
+against the `sessions` denominator, lane weighting, recurrence as status. The skill triggers
+on being asked to review the log; it does not advertise the read commands to working agents,
+so decision 2 stands.
 
 ## What it is
 
