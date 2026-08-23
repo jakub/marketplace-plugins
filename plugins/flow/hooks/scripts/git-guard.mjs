@@ -66,11 +66,23 @@ const BRANCH_LIST_OPTS = new Set([
 // the job's authority. Cron git is READ-ONLY for every job: the lint's two destructive
 // actions run through scripts/lint-actions.mjs, which re-derives the safety conditions
 // deterministically; the model never runs the mutating git itself.
+//
+// Tokenizing on whitespace alone loses any invocation glued to a shell operator:
+// `git log --oneline&&git push` split as [git, log, --oneline&&git, push], the scan saw
+// only the allowed `log`, and the push went through both this guard and `Bash(git:*)`.
+// So every operator and quote character becomes its own token first. That also uncovers
+// `bash -c "git push"` and `$(git push)`. It over-blocks a quoted "git push" inside a
+// --grep, which is the direction this file already chose.
+// Variable indirection (`G=git; $G push`) still slips past — only a real shell parser
+// closes that — so a `=git` suffix counts as a git token and the Bash allowlist, which
+// permits no bare assignment prefix, carries the rest.
+const isGitToken = (t) => /(^|[/=])git$/.test(t)
+
 const cronVerdict = (cmd, job) => {
-  const tokens = cmd.split(/\s+/).filter(Boolean)
+  const tokens = cmd.replace(/[;|&()<>\n`'"]/g, ' $& ').split(/\s+/).filter(Boolean)
   const valueOpts = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'])
   for (let i = 0; i < tokens.length; i++) {
-    if (!(tokens[i] === 'git' || tokens[i].endsWith('/git'))) continue
+    if (!isGitToken(tokens[i])) continue
     // Skip global options (and their values) to find the subcommand.
     let j = i + 1
     while (j < tokens.length && tokens[j].startsWith('-')) {

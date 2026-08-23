@@ -49,6 +49,17 @@ expectEnv(true, 'git branch newbranch origin/main', lint, 'lint: branch create w
 expectEnv(true, 'git symbolic-ref HEAD refs/heads/evil', lint, 'lint: symbolic-ref repoint')
 expectEnv(true, 'git symbolic-ref -d HEAD', lint, 'lint: symbolic-ref delete')
 expectEnv(true, 'git fetch origin main:refs/heads/hijack', lint, 'lint: fetch writing refspec')
+// A shell operator glued to the previous word once hid the invocation behind it from a
+// whitespace-only split, and `Bash(git:*)` waved the same command through.
+expectEnv(true, 'git log --oneline&&git push origin main', lint, 'lint: push glued to && after a read')
+expectEnv(true, 'git log --oneline&&git branch -D feat/x', lint, 'lint: branch delete glued to &&')
+expectEnv(true, 'git log -1|git push origin main', lint, 'lint: push behind an unspaced pipe')
+expectEnv(true, 'git log --grep=$(git push origin main)', lint, 'lint: push in a command substitution')
+expectEnv(true, 'bash -c "git push origin main"', lint, 'lint: push quoted inside bash -c')
+expectEnv(true, "sh -c 'git push'", lint, 'lint: push quoted inside sh -c')
+// …and the quoting normalization must not break the commands the lint actually runs.
+expectEnv(false, "git -C /home/x/code/r branch --format='%(refname:short) %(upstream:track)'", lint, 'lint: the real branch-audit command')
+expectEnv(false, "git log --format='%H %s' -5", lint, 'lint: quoted format string still reads')
 expectEnv(false, 'git branch --merged main', lint, 'lint: branch --merged <ref> read')
 expectEnv(false, 'git branch --contains abc123', lint, 'lint: branch --contains read')
 expectEnv(false, 'git branch -a -v', lint, 'lint: branch -a -v read')
