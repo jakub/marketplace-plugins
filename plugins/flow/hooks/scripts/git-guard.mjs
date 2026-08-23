@@ -32,6 +32,20 @@ const TRAILERS = [
 // (no whitespace before the word) or `git log | grep -i co-authored-by` (no commit token).
 const GIT_COMMIT = /\bgit\b(?:\s+\S+)*?\s+commit\b/
 
+// Prose about a rule is not a breach of it. `--no-verify` inside a quoted string or a heredoc
+// body is text being handed to some other command — a PR comment, a commit body, a gripe
+// describing this very guard — not a flag being handed to git. Matching the raw command
+// string blocked all three, which is how a guard turns into something people route around.
+// Strip shell literals first, then match.
+//
+// The trailer check below deliberately does NOT strip: a trailer lives inside the quoted
+// commit message, which is precisely where it has to be caught.
+const stripLiterals = (s) =>
+  s
+    .replace(/<<-?\s*(['"]?)(\w+)\1[\s\S]*?^\s*\2/gm, ' ')
+    .replace(/'[^']*'/g, ' ')
+    .replace(/"[^"]*"/g, ' ')
+
 const deny = (reason) => {
   process.stdout.write(
     JSON.stringify({
@@ -165,7 +179,7 @@ process.stdin.on('end', () => {
 
   if (/\bFLOW_SANCTION=git\b/.test(cmd)) process.exit(0)
 
-  if (/--no-verify\b/.test(cmd)) {
+  if (/--no-verify\b/.test(stripLiterals(cmd))) {
     deny(
       'flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad ' +
         'commits out of history. Fix what the hook is failing on, or say plainly that the ' +

@@ -84,6 +84,12 @@ expect(false, 'git commit -m "refactor: drop the Co-Authored-By trailers from do
 expect(false, 'git log --format=%B | grep -i co-authored-by', 'auditing history')
 expect(false, 'git log --grep=commit --oneline', 'git log --grep=commit')
 expect(false, 'grep -rn "Co-Authored-By" .', 'grepping repo')
+// Writing about the flag is not passing the flag. Each of these blocked a real tool call
+// before stripLiterals landed: a PR comment, a smoke fixture, and a gripe heredoc.
+expect(false, 'gh pr comment -b "this repo bans --no-verify"', '--no-verify named in a PR comment')
+expect(false, "echo 'git commit --no-verify is banned here'", '--no-verify inside single quotes')
+expect(false, 'git commit -m "docs: explain why --no-verify is banned"', '--no-verify named in a commit subject')
+expect(false, `gripe add <<'G'\ngit-guard fires on --no-verify in prose\nG`, '--no-verify in a heredoc body')
 expect(false, 'FLOW_SANCTION=git git commit --amend --no-edit', 'sanctioned amend')
 expect(false, 'cargo test --no-fail-fast', 'non-git')
 expect(false, 'gh pr create --title x', 'gh')
