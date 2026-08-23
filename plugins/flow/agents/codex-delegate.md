@@ -48,14 +48,21 @@ brackets):
    `node "$CODEX" review --cwd <dir> --base <ref>` (vanilla CLI review; no prompt allowed) or
    `node "$CODEX" adversarial-review --cwd <dir> --base <ref>` (structured findings; extra
    reviewer focus may go on stdin).
-   TIMEOUTS: the transport's default total deadline (task 900s / review 1200s) exceeds what
-   a foreground Bash call survives. Foreground: pass `--timeout-secs 540` AND set the Bash
-   tool's timeout parameter to 600000 — the tool default (120s) kills the run mid-flight
-   with no envelope. Runs that need longer belong in background.
-   For `background`: pick the journal path YOURSELF with `--events /tmp/codex-delegate-<slug>.jsonl`
-   (the default lives in a random tmpdir named only by the final envelope — useless for
-   live polling), run the command via a background Bash call, poll `BashOutput`, and read
-   live progress from that events file.
+   TIMEOUTS — ONE synchronous call, full timeout, never park: run the transport as a
+   single foreground Bash call with `--timeout-secs 540` AND the Bash tool's `timeout`
+   parameter set to 600000 (the tool default of 120s kills the run mid-flight with no
+   envelope). Wait for that call to return. Do NOT end your turn while the transport is
+   running — nothing will call you back, and a turn that ends with "launched, will wait"
+   or "kicked off the monitor" delivers nothing; the caller sees a dead seat. If the
+   envelope comes back dead (timeout/stall kind), retry the same call once, then report
+   the `ok: false` envelope verbatim.
+   Only when the caller explicitly asked for `background: true` (work expected to exceed
+   the 540s ceiling): pick the journal path YOURSELF with
+   `--events /tmp/codex-delegate-<slug>.jsonl` (the default lives in a random tmpdir named
+   only by the final envelope — useless for live polling), run the command via a
+   background Bash call, then poll `BashOutput` in a loop IN THIS SAME TURN, reading
+   progress from the events file, until the envelope lands. Background changes where the
+   process runs, not whether you wait for it.
 4. Stdout is a single JSON envelope; the wrapper already validates inputs/outputs, retries
    transient failures once (rate limit, stall, timeout), and never exits nonzero when an
    envelope was produced. Do NOT retry beyond it — an `ok: false` envelope is the result.

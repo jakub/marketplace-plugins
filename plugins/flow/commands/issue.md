@@ -108,9 +108,24 @@ final journal.
    the edits are disjoint, parallel fixers stage ONLY their own files by explicit path
    (never `git add -A`/`commit -a`) or their commits serialize; no `--no-verify`, no
    trailers (hooks enforce).
+   **Mechanism, not memory**: every write-capable seat (implementation, fixes, doc-sync)
+   spawns as `flow:implementer` — its toolset has no Agent tool, so sub-delegation is
+   impossible rather than discouraged, and its system prompt carries the sync-run,
+   scope, and report discipline. A `general-purpose` seat holding Edit is a containment
+   violation. Seats that edit nothing (scouts, reviewers, transports) keep their own
+   defs. The prompt still names the worktree and the milestones; the def carries the
+   rules so no conductor has to remember them.
 8. **Refusal routing**: any seat can come back null (classifier roulette on both fable and
    opus). Every judgment/security seat needs a cross-family fallback, and a double-null is
    reported, never swallowed.
+9. **Seat reports are claims; the conductor verifies against the worktree.** A seat's
+   final message is prose from a model that may have hallucinated its own progress —
+   "launched a background agent", "waiting on the monitor", a commit annexed from a
+   sibling. Before acting on any completion or blocker report: `git -C <wt> log` and
+   `git -C <wt> status`, and compare against what the seat claims it did. A seat that
+   stopped mid-task gets a `SendMessage` nudge carrying the conductor-verified state
+   (which commits exist, what the tree holds) so it cannot re-litigate what is done;
+   a seat that fabricates twice is re-run on a stronger model, journaled as an event.
 
 ## 3. The design pass — always on
 
@@ -171,10 +186,17 @@ unreviewed — the defect class this pass exists to kill.
   - cross-family reviewers disagree hard on the same code.
   Beyond the tripwires: standing permission to widen on any hunch. Narrowing is also
   legal (a "medium" that turned out mechanical) — journal that too.
-- **Seat assignment**: route by the charter's capability table (taste → fable, top-effort
-  reasoning → opus, mechanical → sonnet, decorrelation + bulk → codex tiers), but re-run
-  any output that misses the bar on a stronger seat without asking. Escalation is cheaper
-  than shipping mediocre work.
+- **Seat assignment — one ladder**: the design pass names a difficulty per milestone
+  (`mechanical | standard | hard`), judged on what could break, never counted from file
+  totals. Difficulty routes BOTH model and effort on the `flow:implementer` seat:
+  `mechanical` → sonnet/medium (transcribing a complete spec, the shape already decided);
+  `standard` → opus/medium (the default — anything with a code-design decision left in
+  it, a new test harness, an unfamiliar toolchain); `hard` → opus/xhigh (a miss ships).
+  When torn between two rungs, take the higher. Opus is the default code writer; sonnet
+  on an implementer seat is the exception you justify in the launch journal, not the
+  economy you reach for. Non-writing seats route by the charter's table (taste → fable,
+  decorrelation + bulk → codex tiers). Re-run any output that misses the bar on a
+  stronger seat without asking — escalation is cheaper than shipping mediocre work.
 - **Orchestration medium — your call per fan-out**: drive Agent calls directly when a
   stage is adaptive or small; author a short ad-hoc Workflow script when a fan-out is
   deterministic and worth resume + progress UI (a 4-lens review fabric, parallel disjoint
