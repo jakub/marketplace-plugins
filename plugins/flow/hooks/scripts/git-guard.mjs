@@ -45,12 +45,19 @@ const deny = (reason) => {
   process.exit(0)
 }
 
-// Read subcommands any cron job may run. `fetch` writes only local remote-tracking refs.
+// Subcommands that cannot write a ref in any form. `symbolic-ref`, `fetch`, and
+// `branch` each have read AND write forms and are NOT here — they're handled below.
 const CRON_READ = new Set([
   'status', 'log', 'shortlog', 'show', 'diff', 'blame', 'grep',
   'rev-parse', 'rev-list', 'merge-base', 'describe', 'cat-file', 'check-ignore',
-  'ls-files', 'ls-tree', 'ls-remote', 'for-each-ref', 'show-ref', 'symbolic-ref',
-  'fetch', 'version', 'help',
+  'ls-files', 'ls-tree', 'ls-remote', 'for-each-ref', 'show-ref',
+  'version', 'help',
+])
+// Branch options that put `branch` in list/read mode and legitimately take a ref
+// argument (so a positional after them is not a create target).
+const BRANCH_LIST_OPTS = new Set([
+  '--list', '--merged', '--no-merged', '--contains', '--no-contains',
+  '--points-at', '--sort', '--format', '--show-current', '-l',
 ])
 
 // Return a deny reason, or null to allow. Evaluates EVERY git invocation in the command
@@ -84,9 +91,30 @@ const cronVerdict = (cmd, job) => {
       return no('only `worktree list` here')
     }
     if (sub === 'branch') {
-      const writes = rest.filter((t) => /^-(D|d|m|M|c|C)$/.test(t) || /^--(delete|move|copy|force|set-upstream|unset-upstream|edit-description)/.test(t))
-      if (writes.length === 0) continue // listing forms
-      return no('branch may only be listed')
+      // Any short bundle carrying a write letter (D/d delete, m/M move, c/C copy,
+      // f force) — catches -Df and other combined forms the old single-char test missed.
+      const shortWrite = rest.some((t) => /^-[a-zA-Z]*[DdmMcCf]/.test(t) && !t.startsWith('--'))
+      const longWrite = rest.some((t) => /^--(delete|move|copy|force|set-upstream|unset-upstream|edit-description)/.test(t))
+      if (shortWrite || longWrite) return no('branch may only be listed')
+      // A bare positional with no list-mode option present is a create target
+      // (`git branch <name> [<start>]`). List forms always carry a list option.
+      const hasListOpt = rest.some((t) => BRANCH_LIST_OPTS.has(t) || /^--(sort|format|points-at|contains|no-contains|merged|no-merged)=/.test(t))
+      const positional = rest.some((t) => !t.startsWith('-'))
+      if (positional && !hasListOpt) return no('branch may only be listed, not created')
+      continue
+    }
+    if (sub === 'symbolic-ref') {
+      // Read: `symbolic-ref [--short] <name>` (one positional). Write: a second
+      // positional (the target ref) or -d/--delete.
+      if (rest.some((t) => t === '-d' || t === '--delete')) return no('symbolic-ref is read-only')
+      if (rest.filter((t) => !t.startsWith('-')).length > 1) return no('symbolic-ref may not repoint a ref')
+      continue
+    }
+    if (sub === 'fetch') {
+      // A refspec with an explicit destination (`<src>:<dst>`) writes an arbitrary
+      // local ref. Plain `fetch origin main` / `--prune` carries no colon.
+      if (rest.some((t) => !t.startsWith('-') && t.includes(':'))) return no('fetch may not write an explicit refspec destination')
+      continue
     }
     if (sub === 'remote') {
       if (next === '' || next === 'get-url' || next === 'show') continue
