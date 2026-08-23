@@ -19,17 +19,10 @@ const skill = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills'
 const body = readFileSync(skill, 'utf8').replace(/^---\n[\s\S]*?\n---\n/, '').trim()
 
 console.log(`<unslop>
-Anti-slop writing rules, injected every session. Scope (local wrapper, not upstream text):
-
-- Written deliverables get the FULL ruleset: docs, commit messages, PR and issue prose,
-  reports, journal comments, published artifacts -- anything that outlives the conversation.
-- Technical explanations and architectural designs get the jargon and plain-speech rules
-  (26-31) plus the content rules, IN CHAT TOO: explaining a bug, how something works, or a
-  design trade-off means plain words, named mechanisms, and concrete examples -- not terms
-  of art doing the work of an explanation.
-- Conversational voice belongs to the active output style. Where a mechanical style rule
-  (punctuation, casing, emphasis) fights that style in chat, the style wins; in
-  deliverables, unslop wins.
+Anti-slop writing rules, injected every session:
+- Written deliverables get the FULL ruleset: docs, commit messages, PR and issue prose, reports, journal comments, published artifacts -- anything that outlives the conversation.
+- Technical explanations and architectural designs get the jargon and plain-speech rules (26-31) plus the content rules, IN CHAT TOO: explaining a bug, how something works, or a design trade-off means plain words, named mechanisms, and concrete examples -- not terms of art doing the work of an explanation.
+- Conversational voice belongs to the active output style. Where a mechanical style rule (punctuation, casing, emphasis) fights that style in chat, the style wins; in deliverables, unslop wins.
 
 ${body}
 </unslop>`)
