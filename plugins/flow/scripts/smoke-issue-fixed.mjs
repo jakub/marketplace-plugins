@@ -6,6 +6,8 @@
 //   3. happy path with one unverified push → headInSync downgrade, reply gating, result shape
 //   4. refused security seat → cross-family retry, then a visible gap (never a clean pass)
 //   5. codex seat overrides → transport flags in the prompts, marker findings logged+dropped
+//   6. evidence visibility → the `evidence-public` ack gates what the ledger may publish
+//   7. dead post-push build gate → escalates as unknown, never falls through as passed
 // Every schema passed to agent() is validated: required ⊆ properties, recursively.
 // Run: node plugins/flow/scripts/smoke-issue-fixed.mjs
 
@@ -252,6 +254,23 @@ console.log('evidence visibility gate')
   check(ledgerOff && /NO `evidence-public` ack/.test(ledgerOff.prompt), 'unacked run tells the ledger nothing publishes publicly')
   check(ledgerOff && !/--public/.test(ledgerOff.prompt), 'unacked run never names --public, even with visibility: public in the AC text')
   check(ledgerOff && /unacked is unpublished/.test(ledgerOff.prompt), 'unacked run states the override explicitly')
+}
+
+// ── pass 7: dead post-push build gate ────────────────────────────────────────
+// UNKNOWN ≠ pass covers the post-push gate too. It once guarded on `ppGate &&`, so a null
+// skipped the escalation and returned a run whose post-push build was never verified.
+console.log('post-push build gate dies')
+{
+  const stub = async (prompt, opts = {}) => {
+    const label = opts.label || ''
+    if (label === 'gate:postpush' || label === 'gate:postpush:salvage') return null
+    return happyStub(prompt, opts)
+  }
+  const { result, error } = await run(stub)
+  check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
+  check(result && result.escalation === 'needs-human', `a dead post-push gate escalates (got ${result && result.escalation})`)
+  check(result && result.gate === 'unknown', `the unknown verdict is reported, never read as passed (got ${result && result.gate})`)
+  check(result && /build gate unknown after post-push fixes/.test(result.reason || ''), 'the escalation reason names the gate')
 }
 
 console.log(failures === 0 ? '\nsmoke: ALL PASS' : `\nsmoke: ${failures} FAILURE(S)`)

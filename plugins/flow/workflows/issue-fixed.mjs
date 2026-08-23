@@ -976,12 +976,16 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
     || { fixes: lensFindings.filter(isBlocking), noise: [] } // judges died → fix our own blocking lens findings, leave externals to /land's thread gate
   if (triage.fixes.length > 0) {
     await dispatchFixes(triage.fixes, plan, 'postpush')
-    const ppGate = await salvageableAgent(buildGatePrompt, { label: 'gate:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: GATE })
+    // Same fallback as the Review gate: a dead gate agent is UNKNOWN, and unknown is not
+    // passed. Guarding on `ppGate &&` instead let a null skip the escalation entirely and
+    // hand the conductor a run that never had its post-push build verified.
+    const ppGate = (await salvageableAgent(buildGatePrompt, { label: 'gate:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: GATE }))
+      || { status: 'unknown', output: 'post-push build-gate agent unavailable' }
     // Push before the gate verdict either way — preserve the work remotely even when escalating.
     ppPush = (await safeAgent(pushPrompt, { label: 'push:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: PUSH_RESULT }))
       || { pushed: false, headSha: '', remoteSha: '', note: 'push agent died — push state unknown' }
     if (!ppPush.pushed) log(`push:postpush NOT VERIFIED — ${clip(ppPush.note, 200)}; handoff step 0 must repair`)
-    if (ppGate && ppGate.status !== 'passed') {
+    if (ppGate.status !== 'passed') {
       return {
         escalation: 'needs-human', reason: `build gate ${ppGate.status} after post-push fixes`,
         prNumber: pr.prNumber, prUrl: pr.prUrl, size: sized.size,
