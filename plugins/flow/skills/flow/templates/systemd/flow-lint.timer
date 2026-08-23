@@ -1,0 +1,11 @@
+[Unit]
+Description=flow nightly lint at 03:30
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=5min
+Unit=flow-lint.service
+
+[Install]
+WantedBy=timers.target

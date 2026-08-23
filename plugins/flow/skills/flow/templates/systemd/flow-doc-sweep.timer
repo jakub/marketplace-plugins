@@ -1,0 +1,11 @@
+[Unit]
+Description=flow weekly doc sweep, Sunday 04:00
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=5min
+Unit=flow-doc-sweep.service
+
+[Install]
+WantedBy=timers.target

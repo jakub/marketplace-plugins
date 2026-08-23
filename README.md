@@ -19,7 +19,7 @@ claude plugin install flow@jakub
 
 ## flow
 
-Three commands in order. `/flow:prep` is the front door: an interactive design gate that turns an issue or a free-text idea into a `ready-for-agent` spec, with a cross-model dialectic and a grill where decisions get minted as ADRs. `/flow:issue` is the hands-off run: the session model conducts a fabric of subagents — design pair, contained implementer, cross-family adversarial review, evidence ledger — to a pushed, reviewed, evidenced PR and stops there. `/flow:land` is the human gate and the only merge path: CI and review-thread checks, squash merge, cleanup, and a survey of what to do next.
+Three commands in order. `/flow:prep` is the front door: an interactive design gate that turns an issue or a free-text idea into a `ready-for-agent` spec, with a cross-model dialectic and a grill where decisions get minted as ADRs. `/flow:issue` is the hands-off run: the session model conducts a fabric of subagents — design pair, contained implementer, cross-family adversarial review, evidence ledger — to a pushed, reviewed, evidenced PR and stops there. `/flow:land` is the human gate and the only merge path: CI and review-thread checks, squash merge, cleanup, and a survey of what to do next. Two timers run in the background once `/flow setup` has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly report-only doc sweep.
 
 The charter is the other half. It's injected into every session by a SessionStart hook and says how we build — delegation, the model table and per-model rules of engagement, verification, git. Two PreToolUse hooks back up the parts that shouldn't depend on memory: a no-backlog guard that blocks unsanctioned `gh issue create` (PRs ship complete), and a git guard that blocks `--no-verify` and commit trailers.
 
@@ -32,6 +32,7 @@ The charter is the other half. It's injected into every session by a SessionStar
 | `plugins/flow/scripts/codex-exec.mjs` | The raw-CLI Codex transport with a JSON envelope. Needs `codex` on PATH; returns a visible error envelope otherwise. |
 | `plugins/flow/workflows/issue-fixed.mjs` | The deprecated fixed pipeline, kept as a fallback and a parts library for ad-hoc Workflow scripts. |
 | `plugins/flow/hooks/` | Charter injection, no-backlog guard, git guard. |
+| `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs: a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow cron` installs and reports on them. |
 
 flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction preferences and all engineering doctrine arrives through the charter, where it's versioned and auditable. `docs/claude-md-split.md` explains the split.
 

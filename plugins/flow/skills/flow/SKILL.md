@@ -13,7 +13,8 @@ Files in this directory:
 |---|---|
 | `label-contract.md` | Label state machine, the `ready-for-agent` contract, and its lint. |
 | `drift-audit.md` | The procedure `drift` runs. |
-| `templates/` | Seed files for `setup`: workspace CLAUDE.md, repo AGENTS.md, crate AGENTS.md. |
+| `templates/` | Seed files for `setup`: workspace CLAUDE.md, repo AGENTS.md, crate AGENTS.md, and the systemd units under `templates/systemd/`. |
+| `cron/` | Standing instructions for the scheduled jobs (`lint.md`, `doc-sweep.md`); `scripts/flow-cron.mjs` runs them. |
 
 ## Subcommands
 
@@ -25,6 +26,7 @@ A bare subcommand (e.g. `/flow drift`) runs the matching action:
 | `drift` | Audit the current project (or the whole workspace, from `~/code`) against the framework. Read and execute `drift-audit.md`. |
 | `labels` | Reconcile the repo's GitHub labels with `label-contract.md` and lint every `ready-for-agent` issue against the contract. |
 | `charter` | Print the installed charter (`${CLAUDE_PLUGIN_ROOT}/charter/charter.md`) so the user can review what every session is told. |
+| `cron` | The scheduled jobs. Bare `cron` runs `scripts/install-cron.sh status`; `cron install`, `cron run <lint\|doc-sweep>`, and `cron uninstall` pass through. Show the output; don't paraphrase it. |
 
 ## Setup
 
@@ -32,6 +34,7 @@ Deploy flow to a project, in this order. Every step is idempotent: skip what alr
 
 1. **Preconditions**: a git repo (stop if not), `gh` authenticated, origin remote resolvable.
 2. **Workspace layer**, once per machine: `~/code/CLAUDE.md` from `templates/workspace-claude.md` — the project registry. Add or refresh this repo's one-liner.
+2b. **Machine layer**, once per machine: `bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-cron.sh status`; if the launcher is missing, run `install`. This arms the nightly lint and the weekly doc sweep (see **Ambient machinery**). Skip on a machine without systemd user sessions and say so.
 3. **Repo layer**: `AGENTS.md` from `templates/repo-agents.md`, then `ln -s AGENTS.md CLAUDE.md`. Ask for the **evidence posture** — `public-by-intent` for open-source or soon-to-be-open repos, `private` otherwise — and record it under `## Operating notes`. It's the one line a run can't infer; prep reads it to decide whether PR captures may publish publicly. Never guess it: no posture means private. Keep the file lean (≤ ~40 lines); it points at further reading (context.md, docs/adr/) rather than containing it. Its `## Contexts` section is the context map, which is why no `context-map.md` exists — fold a legacy one into that section and delete it.
 4. **Domain layer**, a judgment call — propose, don't blanket: for each crate or module with real domain depth, `crates/<x>/AGENTS.md` from `templates/crate-agents.md` plus the `CLAUDE.md` symlink, and a `context.md` slice if the vocabulary is crate-local. Every slice gets a line in the root `## Contexts`. Always committed — gitignored guidance never materializes in worktrees.
 5. **Decision records**: `docs/adr/` with a `0000-template.md`.
@@ -63,9 +66,10 @@ Deliberately not used: `context-map.md`-style index files (AGENTS.md points at f
 - **no-backlog guard** (PreToolUse hook): blocks unsanctioned `gh issue create`.
 - **git guard** (PreToolUse hook): blocks `--no-verify` and commit trailers; `FLOW_SANCTION=git` for a foreign commit that already carries one. Hooks fire on subagent tool calls, so these two rules hold in every seat even though the charter itself doesn't reach them.
 - **escalation pings**: valves push to the phone via PushNotification from the conductor.
-- **nightly lint** (cron, sonnet): label contract, stale worktrees, orphaned branches, doc staleness.
-- **weekly doc sweep** (cron, sonnet): workspace-wide context.md/AGENTS.md drift vs reality.
-- **scheduled bug hunts** (cron, opus + sol): findings adversarially verified, deduped against open and closed issues, capped per sweep, filed `agent-found` with `FLOW_SANCTION=hunter`. Quarantine — nothing self-promotes past `/flow:prep`.
+- **nightly lint** (systemd user timer, 03:30, sonnet): drift-audit §3–4 across every repo in the workspace — label contract, worktrees, branches, known flakes — plus §5 for the marketplace repo. Standing permissions, and nothing else: worktree removal and stale-branch deletion, both ONLY through `scripts/lint-actions.mjs` (a deterministic executor that re-derives every safety condition from a fresh fetch and refuses otherwise — the model proposes, the code decides), plus the label moves the contract prescribes (each with a comment). Report-only otherwise.
+- **weekly doc sweep** (systemd user timer, Sunday 04:00, sonnet): drift-audit §1–2 across the workspace, report-only, findings carry the fix as a pasteable diff. It gets write access once a month of its reports has been boring.
+- Both run `claude -p --permission-mode dontAsk` with a per-job tool allowlist in `scripts/flow-cron.mjs`; the allowlist is the job's whole write authority, the prompt in `skills/flow/cron/` can't widen it. Hooks fire under `-p`, so the job has the charter and both guards — and the git guard's cron mode makes git read-only for the session (deny-by-default subcommands, sanctions ignored) whenever `FLOW_CRON_JOB` is in the env, which the model cannot change. Reports land in `~/.local/state/flow/reports/`, the newest 30 per job, with a desktop notification carrying the headline; a failed or timed-out session exits non-zero so `systemctl --user status flow-lint` shows it. `scripts/install-cron.sh` writes a stable launcher at `~/.local/libexec/flow-cron` that resolves the installed plugin on each run, so a plugin upgrade changes the jobs without touching the units. The desktop app's own scheduler is deliberately not used: it strips hooks and only runs while the app is open.
+- **scheduled bug hunts** (planned, not built): opus + sol, findings adversarially verified, deduped against open and closed issues, capped per sweep, filed `agent-found` with `FLOW_SANCTION=hunter`. Quarantine — nothing self-promotes past `/flow:prep`. Waits on a clean month of lint reports.
 - **recovery**: `/flow:issue` has no runId; a fresh session reconstructs the run from the issue's event journal plus the worktree diff. The deprecated fixed pipeline resumes via `resumeFromRunId` same-session and a recovery-preamble agent cross-session (`issue-fixed.md` § Recovery).
 
 ## Inside the v1 run — what `workflows/issue-fixed.mjs` does

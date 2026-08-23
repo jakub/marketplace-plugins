@@ -1,0 +1,34 @@
+flow is jakub's own work except for one file:
+
+    scripts/worktree-audit.sh
+
+which is ported from Lauren Tan's "pstack" plugin in Cursor's plugin repo
+(https://github.com/cursor/plugins/tree/main/pstack, skills/poteto-mode/scripts/
+worktree-audit.sh, upstream commit 99559f2f52047978602ef365589275831e76af07), MIT.
+Local changes: Linux `stat -c`, Claude Code transcript layout under
+~/.claude/projects/<slug>/, a `review` bucket for unpushed work, and the bucket
+rename verify-recent-chat → verify-recent-session. The MIT licence text is reproduced below.
+
+---------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2026 Lauren Tan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

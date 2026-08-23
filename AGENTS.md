@@ -22,6 +22,10 @@ Doctrine lives in two places and no more. The charter holds what must be true in
 
 `/flow:issue` is the dynamic run: the conductor composes the fabric per issue inside the invariants in `issue.md`. The fixed pipeline, `/flow:issue-fixed` plus `workflows/issue-fixed.mjs`, is deprecated and kept as a fallback and parts library; nothing new lands there. When a stage in the script does change, mirror it in SKILL.md under "Inside the v1 run" — that section is the one sanctioned duplicate, with the script as truth, and both drifts so far came from editing the script without touching the doc.
 
+The scheduled jobs are three files each: the prompt in `skills/flow/cron/<job>.md`, the allowlist in `scripts/flow-cron.mjs`, and the unit pair in `skills/flow/templates/systemd/`. A job's authority is the allowlist plus two mechanisms, never the prompt: git-guard's cron mode (deny-by-default git subcommands whenever FLOW_CRON_JOB is in the env, sanctions ignored) and `scripts/lint-actions.mjs`, the deterministic executor that alone performs the lint's worktree/branch mutations after re-deriving the safety conditions from fresh state; widening what a job may do is an edit to `flow-cron.mjs` and a version bump, and the prompt's "standing permissions" paragraph must match it. Test a prompt change without installing anything: `CLAUDE_PLUGIN_ROOT=$PWD/plugins/flow FLOW_STATE=/tmp/x bash plugins/flow/scripts/install-cron.sh run lint`. The installed timers resolve the plugin through `installed_plugins.json`, so they pick up a new version at the next reinstall with no further step.
+
+`scripts/worktree-audit.sh` is ported from pstack (see `plugins/flow/NOTICE`); unlike grill's vendoring it is a fork, edit it freely.
+
 Workflow scripts (`issue-fixed.mjs` and any ad-hoc one) are plain JavaScript for the Workflow tool: no TypeScript syntax, and no `Date.now()`, `Math.random()`, or argless `new Date()`, because they break resume.
 
 Agent defs under `agents/` don't pin a model; the conductor sets model and effort at spawn. The explicit `tools:` list is load-bearing — a subagent without one can call Agent, and `implementer.md` relies on not having it.

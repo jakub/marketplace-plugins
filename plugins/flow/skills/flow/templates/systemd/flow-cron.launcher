@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stable entry point for flow's systemd timers. Resolves the installed flow plugin
+# each run so a plugin upgrade changes the job without touching the units.
+# Installed to ~/.local/libexec/flow-cron by plugins/flow/scripts/install-cron.sh.
+set -eu
+export HOME="${HOME:-/home/$(id -un)}"
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+root=$(node -e '
+  const p = require(process.env.HOME + "/.claude/plugins/installed_plugins.json");
+  const e = (p.plugins["flow@jakub"] || []).find(x => x.scope === "user");
+  if (!e) { console.error("flow@jakub is not installed at user scope; these are machine-wide timers"); process.exit(1); }
+  process.stdout.write(e.installPath);
+')
+export CLAUDE_PLUGIN_ROOT="$root"
+exec node "$root/scripts/flow-cron.mjs" "$@"
