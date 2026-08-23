@@ -613,8 +613,6 @@ const bumpEffort = (e) => {
   const i = EFFORT_LADDER.indexOf(e)
   return i === -1 ? 'xhigh' : EFFORT_LADDER[Math.max(i, Math.min(i + 1, XHIGH))]
 }
-// Harness ceiling — re-verify when the tier's effort range changes: fable has no xhigh/max.
-const clampFable = (m, e) => (m === 'fable' && (e === 'xhigh' || e === 'max') ? 'high' : e)
 const isBlocking = (f) => SEV_RANK[f.severity] >= 1 && !f.systemic // crit/high/medium in-diff: fix, don't defer
 const isEscalationGrade = (f) => SEV_RANK[f.severity] >= 2
 const normTitle = (t) => (t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
@@ -800,14 +798,14 @@ const implRouted = {
 
 const implModelReq = A.implModel || implRouted.model
 let implModel = implModelReq
-let implEffort = clampFable(implModel, A.implEffort || implRouted.effort)
+let implEffort = A.implEffort || implRouted.effort
 // Fallback goes one rung UP, not down: a seat that died is weak evidence the task was
 // harder than the synthesizer judged. When an override put a different model in the seat,
 // fall back to the ROUTED model instead — that preserves the cross-family escape for an
 // override that was refused rather than merely erroring.
 const overridden = implModelReq !== implRouted.model
 const implFallbackModel = overridden ? implRouted.model : implModel
-const implFallbackEffort = clampFable(implFallbackModel, overridden ? implRouted.effort : bumpEffort(implEffort))
+const implFallbackEffort = overridden ? implRouted.effort : bumpEffort(implEffort)
 log(`difficulty=${plan.difficulty} → impl on ${implModel}/${implEffort}${A.implModel || A.implEffort ? ' (override)' : ''}, fallback ${implFallbackModel}/${implFallbackEffort}; ${plan.files.length} file(s), ${plan.milestones.length} milestone(s)`)
 
 await safeAgent(`In ${WT}: mkdir -p docs/working-plans; ensure .gitignore contains docs/working-plans/ (commit that line alone if you add it).
