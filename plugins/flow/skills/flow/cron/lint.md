@@ -8,7 +8,7 @@ Standing permissions (the full list; anything not here is report-only):
 
 Never: create issues or PRs, push, force anything, run mutating git directly, edit files.
 
-Tool notes: the allowlist is exact — read-only tools, `git` (a guard denies every subcommand outside the standing permissions), enumerated `gh` verbs (`issue list|view|edit|comment`, `pr list|view`, `run list|view`, `label list`), and the audit/smoke scripts by absolute path. Shell loops, pipelines, `bash -c`, and `node -e` are refused; run one allowlisted command per call. A refusal on something the procedure needs is itself a warning-level finding: report it, don't work around it.
+Tool notes: the allowlist is exact — read-only tools, `git` (a guard denies every subcommand outside the standing permissions), enumerated `gh` verbs (`issue list|view|edit|comment`, `pr list|view`, `run list|view`, `label list`), and the audit/smoke scripts by absolute path. Shell loops, pipelines, `bash -c`, and `node -e` are refused; run one allowlisted command per call. Matching is a literal prefix on the command string, so global flags go after the subcommand: `gh issue list --repo <owner>/<name>` matches and `gh --repo <owner>/<name> issue list` is denied. Scripts match only at the exact absolute path under `${CLAUDE_PLUGIN_ROOT}` that the allowlist names, never a repo-relative one. A refusal on something the procedure needs is itself a warning-level finding: report it, don't work around it.
 
 ## Headless rules
 

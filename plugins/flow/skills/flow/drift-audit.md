@@ -57,14 +57,19 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
 - Installed plugin version vs this repo's HEAD (`claude plugin list` vs
   `plugins/flow/.claude-plugin/plugin.json`) — a stale install means sessions run an old
   charter.
-- Charter delivery: `node plugins/flow/hooks/scripts/inject-charter.mjs 1 | wc -m` and the
-  same for `2` are both under 9,000 characters. Claude Code caps one hook's stdout at
-  10,000 and replaces anything larger with a 2KB preview plus a file path, which is why
-  the charter ships as two SessionStart hooks; a half over the cap means sessions run on a
-  fragment and the `<flow-charter>` presence check in the global CLAUDE.md still passes.
+- Charter delivery: run `node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs 1` and
+  read its first line. The script prints a `<!-- flow-charter WARNING: ... -->` comment
+  naming any half at or over 9,000 characters, so read that instead of piping to `wc`: the
+  nightly lint allows this script only at that exact absolute path and refuses pipelines.
+  Claude Code caps one hook's stdout at 10,000 and replaces anything larger with a 2KB
+  preview plus a file path, which is why the charter ships as two SessionStart hooks; a half
+  over the cap means sessions run on a fragment while the `<flow-charter>` presence check in
+  the global CLAUDE.md still passes. The script resolves the charter through
+  `CLAUDE_PLUGIN_ROOT`, so this measures the installed charter, not the working tree's; the
+  version-skew bullet above is what tells you whether those are the same file.
 - Facts with `as-of` dates older than a quarter (model pricing, codex CLI surface):
   flag for re-verification.
-- `node plugins/flow/scripts/smoke-codex-exec.mjs` passes (add `CODEX_LIVE=1` when codex
+- `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-codex-exec.mjs` passes (add `CODEX_LIVE=1` when codex
   auth is available) — the transport's encoded CLI facts (model catalog, effort surface,
   service-tier fail-open behavior, JSONL event shapes) drift with codex releases.
 
