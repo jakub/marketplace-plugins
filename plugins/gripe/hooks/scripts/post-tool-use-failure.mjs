@@ -6,7 +6,7 @@
 //
 // Contract: read hook JSON on stdin, optionally emit hookSpecificOutput JSON, exit 0.
 
-import { clean, fingerprint, loadGate, saveGate } from '../../lib/gate.mjs'
+import { clean, fingerprint, heredocDelim, loadGate, saveGate } from '../../lib/gate.mjs'
 import { safeId } from '../../lib/context.mjs'
 
 // The second identical failure is a pattern; the first is ordinary work.
@@ -51,14 +51,15 @@ async function main() {
   if (prompt) flags.push(`--prompt ${prompt}`)
   if (agent) flags.push(`--agent ${agent}`)
 
+  const d = heredocDelim() // random per advertisement; a fixed delimiter is an injection path
   const note = [
     `gripe: ${clean(input.tool_name)} has now failed ${rec.count} times with the same error shape.`,
     `If that is avoidable friction in the tooling or the workflow rather than ordinary work,`,
     `file the specific problem:`,
     ``,
-    `gripe add ${flags.join(' ')} <<'EOF'`,
+    `gripe add ${flags.join(' ')} <<'${d}'`,
     `<what you expected, what happened instead, what it cost>`,
-    `EOF`,
+    d,
     ``,
     `If it is just the work, carry on. No reply is expected and saying nothing costs nothing.`,
   ].join('\n')
@@ -70,6 +71,6 @@ async function main() {
   )
 }
 
-main()
-  .catch(() => {}) // a broken nudge must never fail the run
-  .finally(() => process.exit(0))
+// No process.exit(): an explicit exit can truncate stdout before the pipe drains, and a
+// swallowed rejection already leaves the default exit code of 0.
+main().catch(() => {})

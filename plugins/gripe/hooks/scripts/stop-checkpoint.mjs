@@ -20,11 +20,12 @@
 // exit 0. Stop's additionalContext is non-error feedback and the conversation continues,
 // so the agent can act on it without the turn being marked as failed.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
-  MAX_COUNTER_KEYS, capKeys, clean, fingerprint, loadGate, stateDir, target,
+  MAX_COUNTER_KEYS, atomicWrite, capKeys, clean, fingerprint, heredocDelim, loadGate,
+  stateDir, target,
 } from '../../lib/gate.mjs'
 import { safeId } from '../../lib/context.mjs'
 
@@ -37,6 +38,10 @@ const REPEAT_THRESHOLD = 2
 // Bound on the tool_use_id to tool-name map. A failing result nearly always follows its
 // call immediately, so this only has to survive a chunk boundary, not a whole session.
 const MAX_TOOL_NAMES = 4000
+// Bound on bytes consumed per invocation. An enormous unscanned tail gets its middle
+// skipped rather than buffered whole: losing counts is slow-path degradation, while an
+// OOM or a timeout on every subsequent turn end would break the never-fail contract.
+const MAX_SCAN_BYTES = 4 * 1024 * 1024
 
 // Keyed by session id plus actor: every subagent in a fan-out shares its parent's session
 // id, so a session-only key would apply one transcript's byte offset to another and let
@@ -63,7 +68,7 @@ function loadState(sessionId, actor) {
 function saveState(sessionId, actor, state) {
   try {
     mkdirSync(join(stateDir(), 'scan'), { recursive: true })
-    writeFileSync(statePath(sessionId, actor), JSON.stringify(state))
+    atomicWrite(statePath(sessionId, actor), JSON.stringify(state))
   } catch {
     // Losing state costs a rescan next turn, which is slow rather than wrong.
   }
@@ -85,6 +90,8 @@ async function scanNew(path, state) {
       reset.asked = state.asked
       state = reset
     }
+    // A tail past the byte budget gets its middle skipped, not buffered whole.
+    if (size - state.offset > MAX_SCAN_BYTES) state.offset = size - MAX_SCAN_BYTES
     const len = size - state.offset
     if (len <= 0) return state
 
@@ -171,15 +178,17 @@ function buildNote(state, nudged, flags) {
   }
 
   // The body travels as a quoted heredoc, never a double-quoted argument: complaints quote
-  // tool output, and tool output contains $(, backticks and quotes.
+  // tool output, and tool output contains $(, backticks and quotes. The delimiter is
+  // random per advertisement; see heredocDelim for why a fixed one is an injection path.
+  const d = heredocDelim()
   return [
     `gripe: this run, ${cited.join('; ')}.`,
     `If any of that was avoidable friction in the tooling or the workflow rather than ordinary`,
     `work, file the specific problem:`,
     ``,
-    `gripe add ${flags.join(' ')} <<'EOF'`,
+    `gripe add ${flags.join(' ')} <<'${d}'`,
     `<what you expected, what happened instead, what it cost>`,
-    `EOF`,
+    d,
     ``,
     `If it was just the work, carry on. No reply is expected and saying nothing costs nothing.`,
   ].join('\n')
@@ -251,6 +260,6 @@ async function main() {
   )
 }
 
-main()
-  .catch(() => {}) // a broken checkpoint must never fail the run
-  .finally(() => process.exit(0))
+// No process.exit(): an explicit exit can truncate stdout before the pipe drains, and a
+// swallowed rejection already leaves the default exit code of 0.
+main().catch(() => {})

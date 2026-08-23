@@ -19,8 +19,14 @@ async function loadStore() {
 
 async function readStdin() {
   if (process.stdin.isTTY) return ''
+  // Bounded: the body cap is enforced later anyway, so buffering an unbounded producer
+  // would only risk an OOM that no catch block can turn into a clean exit 0.
+  const { BODY_CAP } = await loadStore()
   let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
+  for await (const chunk of process.stdin) {
+    raw += chunk
+    if (raw.length > BODY_CAP + 1024) break
+  }
   return raw
 }
 

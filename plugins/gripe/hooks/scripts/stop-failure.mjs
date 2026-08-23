@@ -40,6 +40,5 @@ async function main() {
   }
 }
 
-main()
-  .catch(() => {}) // a broken observer must never fail the run
-  .finally(() => process.exit(0))
+// No process.exit(): a swallowed rejection already leaves the default exit code of 0.
+main().catch(() => {})

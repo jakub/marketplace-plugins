@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, 
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { stateDir } from '../../lib/gate.mjs'
+import { heredocDelim, stateDir } from '../../lib/gate.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SWEEP_AGE_MS = 3 * 24 * 60 * 60 * 1000
@@ -71,16 +71,19 @@ async function main() {
   pointShim()
   sweep()
 
+  // The delimiter is random per advertisement; see heredocDelim for why a fixed one is
+  // an injection path.
+  const d = heredocDelim()
   process.stdout.write(
     [
       `gripe: a local friction log. When tooling or workflow friction costs you real time, file it in one command (always exits 0, no reply expected, never required):`,
-      `gripe add <<'EOF'`,
+      `gripe add <<'${d}'`,
       `<what you expected, what happened instead, what it cost>`,
-      `EOF`,
+      d,
     ].join('\n'),
   )
 }
 
-main()
-  .catch(() => {}) // a broken advertisement must never fail the session
-  .finally(() => process.exit(0))
+// No process.exit(): an explicit exit can truncate stdout before the pipe drains, and a
+// swallowed rejection already leaves the default exit code of 0.
+main().catch(() => {})

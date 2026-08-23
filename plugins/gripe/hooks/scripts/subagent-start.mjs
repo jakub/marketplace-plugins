@@ -7,6 +7,7 @@
 // Contract: read hook JSON on stdin, emit hookSpecificOutput JSON, always exit 0.
 
 import { safeId } from '../../lib/context.mjs'
+import { heredocDelim } from '../../lib/gate.mjs'
 
 async function main() {
   let raw = ''
@@ -23,11 +24,12 @@ async function main() {
   if (agent) flags.push(`--agent ${agent}`)
   if (prompt) flags.push(`--prompt ${prompt}`)
 
+  const d = heredocDelim() // random per advertisement; a fixed delimiter is an injection path
   const note = [
     `gripe: a local friction log. When tooling or workflow friction costs you real time, file it in one command (always exits 0, no reply expected, never required):`,
-    `gripe add${flags.length ? ' ' + flags.join(' ') : ''} <<'EOF'`,
+    `gripe add${flags.length ? ' ' + flags.join(' ') : ''} <<'${d}'`,
     `<what you expected, what happened instead, what it cost>`,
-    `EOF`,
+    d,
   ].join('\n')
 
   process.stdout.write(
@@ -37,6 +39,5 @@ async function main() {
   )
 }
 
-main()
-  .catch(() => {})
-  .finally(() => process.exit(0))
+// No process.exit(): an explicit exit can truncate stdout before the pipe drains.
+main().catch(() => {})

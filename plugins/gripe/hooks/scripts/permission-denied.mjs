@@ -24,6 +24,10 @@ async function main() {
   const { safeId } = await import('../../lib/context.mjs')
   const actor = safeId(input.agent_id) ?? 'main'
   const aimedAt = target(input.tool_name, input.tool_input)
+  // Search patterns can carry secrets the agent was hunting for. They stay in the
+  // fingerprint, which lives in a short-lived local state file, but never in the durable
+  // body; paths and command prefixes are low-risk and diagnostic, so those do.
+  const storedTarget = input.tool_input?.pattern ? null : aimedAt
 
   const gate = loadGate(input.session_id, actor)
   const fp = fingerprint(`deny:${input.tool_name}`, `${input.reason ?? ''} ${aimedAt ?? ''}`)
@@ -45,7 +49,7 @@ async function main() {
       store.addGripe(db, {
         body:
           `Permission denied ${rec.count} times in one session: ${clean(input.tool_name)}` +
-          (aimedAt ? ` aimed at "${clean(aimedAt)}"` : '') +
+          (storedTarget ? ` aimed at "${clean(storedTarget)}"` : '') +
           (input.reason ? `. Reason: ${clean(input.reason).slice(0, 300)}` : '') +
           `. The agent kept trying and kept being stopped, which points at a policy it does not understand or a policy that is wrong.`,
         elicitation: 'observed',
@@ -64,6 +68,5 @@ async function main() {
   }
 }
 
-main()
-  .catch(() => {}) // a broken observer must never fail the run
-  .finally(() => process.exit(0))
+// No process.exit(): a swallowed rejection already leaves the default exit code of 0.
+main().catch(() => {})

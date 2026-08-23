@@ -144,6 +144,11 @@ tool output, and tool output contains `$(`, backticks and quotes; a double-quote
 all of that to the shell before gripe ever runs. A body as a plain argument still works for a
 human at a terminal.
 
+The delimiter is random per advertisement, never a fixed `EOF`. A fixed delimiter lets a
+hostile body close the heredoc early with a matching literal line, and everything after it
+runs as shell commands, auto-approved under the very allowlist invariant 2 requires.
+Attacker text is written before the delimiter exists, so it cannot contain it.
+
 Every flag is a literal the advertising hook bakes into the recipe at advertisement time,
 never a value the agent chooses: `--via` always, the rest when the hook knows them at that
 moment (SubagentStart knows the agent and prompt, an error nudge knows the trigger and
@@ -385,6 +390,11 @@ directory with its `.claude-plugin/plugin.json`, a manifest entry with
   it and nobody has checked. If the plugin system cannot grant permissions, the fallback is a
   documented one-time settings.json edit, which weakens "never prompts" to "never prompts
   after setup". Fold into the first install test.
+- **Verify which denials actually reach PermissionDenied.** The cross-model review claims
+  PreToolUse hook blocks and config deny rules dispatch elsewhere and only classifier
+  denials arrive here, which would leave flow's guards uncounted. If so, the hook still
+  works, just over a smaller population; scope the docs to match what the install test
+  shows. Fold into the first install test.
 - **Tune the gate thresholds.** Fifteen tool calls, two identical failures, three repetitions on
   one target. All guesses, all cheap to change.
 - **Behaviour when `$XDG_STATE_HOME` and `$HOME` are both unusable.** Covered by invariant 1, but

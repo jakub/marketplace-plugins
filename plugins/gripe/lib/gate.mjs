@@ -5,9 +5,10 @@
 // Deliberately free of node:sqlite: hooks that only touch state files must run, and
 // exit 0, on a node too old for the storage module.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 
 // Mirrors store.mjs, which cannot be imported here without dragging in node:sqlite.
 export const stateDir = () =>
@@ -36,11 +37,26 @@ export function saveGate(sessionId, actor, gate) {
   try {
     capKeys(gate.fingerprints, MAX_COUNTER_KEYS)
     mkdirSync(join(stateDir(), 'gate'), { recursive: true })
-    writeFileSync(gatePath(sessionId, actor), JSON.stringify(gate))
+    atomicWrite(gatePath(sessionId, actor), JSON.stringify(gate))
   } catch {
     // Losing gate state costs an extra nudge, which is annoying rather than wrong.
   }
 }
+
+/** Write via temp file plus rename, so a concurrent reader never sees a torn file. */
+export function atomicWrite(path, data) {
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, data)
+  renameSync(tmp, path)
+}
+
+/**
+ * A heredoc delimiter for the advertised filing recipe. Random per advertisement: a
+ * fixed delimiter lets a hostile body close the heredoc early with a literal matching
+ * line and run whatever follows as shell commands, auto-approved under the allowlist.
+ * Attacker text is written before the delimiter exists, so it cannot contain it.
+ */
+export const heredocDelim = () => `GRIPE_${randomBytes(4).toString('hex')}`
 
 /** Strip control characters from text that will be echoed in a hook's trusted voice. */
 export const clean = (s) =>

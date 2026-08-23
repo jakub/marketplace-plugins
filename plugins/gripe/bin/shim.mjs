@@ -13,18 +13,25 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 
+// Distinguishes a readable registry with no gripe entry (uninstalled: the stale cache
+// must NOT keep answering) from an unreadable one (fall back to the cache scan).
 function fromRegistry() {
+  let reg
   try {
-    const reg = JSON.parse(
+    reg = JSON.parse(
       readFileSync(join(homedir(), '.claude', 'plugins', 'installed_plugins.json'), 'utf8'))
-    for (const [key, entries] of Object.entries(reg.plugins ?? {})) {
-      if (!key.startsWith('gripe@')) continue
-      for (const e of entries ?? []) {
-        if (e?.installPath && existsSync(join(e.installPath, 'bin', 'gripe'))) return e.installPath
+  } catch {
+    return { readable: false, root: null }
+  }
+  for (const [key, entries] of Object.entries(reg.plugins ?? {})) {
+    if (!key.startsWith('gripe@')) continue
+    for (const e of entries ?? []) {
+      if (e?.installPath && existsSync(join(e.installPath, 'bin', 'gripe'))) {
+        return { readable: true, root: e.installPath }
       }
     }
-  } catch {}
-  return null
+  }
+  return { readable: true, root: null }
 }
 
 function fromCacheScan() {
@@ -48,7 +55,9 @@ function fromCacheScan() {
 function resolveRoot() {
   const home = process.env.GRIPE_HOME
   if (home && existsSync(join(home, 'bin', 'gripe'))) return home
-  return fromRegistry() ?? fromCacheScan()
+  const reg = fromRegistry()
+  if (reg.readable) return reg.root // a readable registry is authoritative, even when empty
+  return fromCacheScan()
 }
 
 const root = resolveRoot()
