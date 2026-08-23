@@ -78,12 +78,16 @@ brackets):
       extra reviewer focus (adversarial-review), or nothing (plain review). Write it to a
       file and redirect from that — a bare `</dev/null` here would hand task mode an empty
       prompt and the transport rejects it. An empty file is correct for a focus-less review.
+      The heredoc delimiter must not appear as a standalone line inside the content;
+      `CODEX_PROMPT_EOF` is deliberately distinctive, but if the prompt could contain that
+      exact line, pick another token — a lone delimiter line would end the heredoc early and
+      truncate the prompt.
       ```bash
       CODEX="${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs"; [ -f "$CODEX" ] || CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)
       B=$(mktemp -u /tmp/codex-delegate.XXXXXX)
-      cat > "$B.prompt" <<'PROMPT'
+      cat > "$B.prompt" <<'CODEX_PROMPT_EOF'
       ...the self-contained prompt / reviewer focus, or leave empty for plain review...
-      PROMPT
+      CODEX_PROMPT_EOF
       nohup node "$CODEX" <mode> --cwd <dir> [--base <ref>] [--model <m>] --effort <e> \
         --timeout-secs <N> --events "$B.events.jsonl" > "$B.envelope.json" 2>"$B.err" <"$B.prompt" & disown
       echo "codex detached pid=$! envelope=$B.envelope.json events=$B.events.jsonl"
