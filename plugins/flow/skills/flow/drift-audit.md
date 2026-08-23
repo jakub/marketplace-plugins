@@ -42,8 +42,12 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
 
 ## 4. Repo state hygiene
 
-- `git worktree list`: no worktrees for merged/deleted branches.
-- `git branch --merged main`: no stale local branches.
+- `bash ${CLAUDE_PLUGIN_ROOT}/scripts/worktree-audit.sh <repo>`: include the TSV; `safe` rows
+  are prunable (the nightly lint does this under standing permission), `review` rows need a
+  human, and `hold-*` rows are fine. Squash merges mean the MERGED column is usually `no`
+  for landed branches; PR state is the signal.
+- Local branches whose PR is merged/closed and which have nothing beyond `origin/<branch>`:
+  stale, delete. `git branch --merged main` misses these after a squash.
 - `.github/known-flakes.txt` exists; every entry names a check that actually exists in
   recent CI runs (a flake entry for a renamed check is dead lore).
 - Isolated test DBs (where the repo uses them): no orphans beyond live worktrees.

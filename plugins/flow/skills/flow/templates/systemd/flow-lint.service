@@ -1,0 +1,11 @@
+[Unit]
+Description=flow nightly lint: label contract, worktrees, branches, known flakes
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/libexec/flow-cron lint
+TimeoutStartSec=50min
+UMask=0077
+NoNewPrivileges=true

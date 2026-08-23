@@ -1,0 +1,11 @@
+[Unit]
+Description=flow weekly doc sweep: doc stack, contexts, glossary, ADRs (report-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/libexec/flow-cron doc-sweep
+TimeoutStartSec=50min
+UMask=0077
+NoNewPrivileges=true
