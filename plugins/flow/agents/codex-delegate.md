@@ -26,7 +26,8 @@ brackets):
 - `cwd`: the directory Codex should operate in  [current]
 - `base`: a git ref, required for the review modes  [—]
 - `schema`: a JSON schema file for structured output (task mode)  [omit]
-- `background`: run detached  [false]
+- `background`: force the detached long-run path (below), for work expected to think past
+  the ~9-min foreground ceiling  [false; auto-on for xhigh/max reviews]
 
 ## Execution
 
@@ -51,21 +52,56 @@ brackets):
    `node "$CODEX" review --cwd <dir> --base <ref>` (vanilla CLI review; no prompt allowed) or
    `node "$CODEX" adversarial-review --cwd <dir> --base <ref>` (structured findings; extra
    reviewer focus may go on stdin).
-   TIMEOUTS — ONE synchronous call, full timeout, never park: run the transport as a
-   single foreground Bash call with `--timeout-secs 540` AND the Bash tool's `timeout`
-   parameter set to 600000 (the tool default of 120s kills the run mid-flight with no
-   envelope). Wait for that call to return. Do NOT end your turn while the transport is
-   running — nothing will call you back, and a turn that ends with "launched, will wait"
-   or "kicked off the monitor" delivers nothing; the caller sees a dead seat. If the
-   envelope comes back dead (timeout/stall kind), retry the same call once, then report
-   the `ok: false` envelope verbatim.
-   Only when the caller explicitly asked for `background: true` (work expected to exceed
-   the 540s ceiling): pick the journal path YOURSELF with
-   `--events /tmp/codex-delegate-<slug>.jsonl` (the default lives in a random tmpdir named
-   only by the final envelope — useless for live polling), run the command via a
-   background Bash call, then poll `BashOutput` in a loop IN THIS SAME TURN, reading
-   progress from the events file, until the envelope lands. Background changes where the
-   process runs, not whether you wait for it.
+   Whichever path you take, ONE rule holds: you return exactly one envelope at the end of
+   ONE turn, and you NEVER end your turn while codex is still running. Nothing calls a
+   subagent back; a turn that ends with "launched, will wait" or "kicked off the monitor"
+   delivers nothing and the caller sees a dead seat. Pick the path by expected think time.
+
+   SYNC path (the default, for anything that finishes inside ~9 min): ONE synchronous
+   foreground Bash call — `--timeout-secs 540` AND the Bash tool's `timeout` parameter set
+   to 600000 (its max; the tool default of 120s kills the run mid-flight with no envelope).
+   Wait for it to return. If the envelope comes back dead (timeout/stall kind), retry the
+   same call once, then report the `ok: false` envelope verbatim.
+
+   BACKGROUND path (for work that will think longer — `background: true`, or auto-on when
+   mode is review/adversarial-review AND effort is xhigh or max): the 600000ms Bash ceiling
+   is a HARD wall — no foreground call can hold a codex run past ~9 min. So detach codex
+   past that wall, then block IN THIS SAME TURN across bounded waits. codex runs outside the
+   ceiling; you still return one envelope from one turn, exactly like the sync path.
+   Shell state does NOT persist between Bash tool calls, so this path spans several calls
+   bound together by LITERAL values, not variables: the launch prints the pid and the
+   envelope path, and you paste those literals into every later call. A `$PID` that is unset
+   in a fresh call makes `kill -0` fail instantly and fakes an early `DONE` over an empty
+   envelope — so never carry a variable across calls; carry the printed number and path.
+   a. Launch detached — self-contained call, envelope and events to files, print the pid:
+      ```bash
+      CODEX="${CLAUDE_PLUGIN_ROOT}/scripts/codex-exec.mjs"; [ -f "$CODEX" ] || CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)
+      B=$(mktemp -u /tmp/codex-delegate.XXXXXX)
+      nohup node "$CODEX" <mode> --cwd <dir> [--base <ref>] [--model <m>] --effort <e> \
+        --timeout-secs <N> --events "$B.events.jsonl" > "$B.envelope.json" 2>"$B.err" </dev/null & disown
+      echo "codex detached pid=$! envelope=$B.envelope.json events=$B.events.jsonl"
+      ```
+      `<N>` is the real budget you allow — size it to the work (the transport caps at 7200),
+      e.g. 1800 for a big xhigh review. `nohup` preserves the pid (`$!`) and ignores SIGHUP;
+      the redirects and `</dev/null` free the Bash tool to return at the echo. This is a
+      NORMAL foreground Bash call — it returns immediately, printing the literal pid and paths.
+   b. Block on that literal pid, one wait round per foreground Bash call, each under the
+      ceiling (substitute the printed number for `<pid>`):
+      ```bash
+      timeout 575 bash -c 'while kill -0 <pid> 2>/dev/null; do sleep 5; done'
+      kill -0 <pid> 2>/dev/null && echo STILL-RUNNING || echo DONE
+      ```
+      `DONE` → codex exited and the envelope file is complete; go to (c). `STILL-RUNNING` →
+      its budget outran one 575s round; issue the identical wait round again. Cap at
+      ⌈N/540⌉+1 rounds; if it is still alive past that, `kill <pid>` and report a wrapper
+      timeout — though it should never get there, because the transport self-terminates at
+      `--timeout-secs <N>` and writes a TIMEOUT envelope first, which flips the next round to
+      `DONE`.
+   c. Read the printed envelope path — it holds the same single JSON envelope the sync path
+      returns; apply the Output rules below to it. An empty or unparseable envelope file with
+      the pid already gone is a wrapper failure: report it, do NOT re-launch blindly. The
+      events file is progress you MAY glance at for a liveness line; it is never the
+      completion signal — the envelope is.
 4. Stdout is a single JSON envelope; the wrapper already validates inputs/outputs, retries
    transient failures once (rate limit, stall, timeout), and never exits nonzero when an
    envelope was produced. Do NOT retry beyond it — an `ok: false` envelope is the result.
