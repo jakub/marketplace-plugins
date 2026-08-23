@@ -390,10 +390,11 @@ directory with its `.claude-plugin/plugin.json`, a manifest entry with
 - **Confirm PostToolUseFailure fires for subagent tool calls.** PreToolUse is verified to and the
   two share a mechanism, so this is a confirmation rather than an open risk. Fold it into the
   first install test.
-- **Verify a plugin can actually ship the `Bash(gripe add:*)` allowlist.** Invariant 2 assumes
-  it and nobody has checked. If the plugin system cannot grant permissions, the fallback is a
-  documented one-time settings.json edit, which weakens "never prompts" to "never prompts
-  after setup". Fold into the first install test.
+- ~~Verify a plugin can actually ship the `Bash(gripe add:*)` allowlist.~~ Answered at the
+  0.1.0 install, 2026-08-23: it cannot. Installing registers only an enabled-plugin flag;
+  no permission appears. The fallback is now the mechanism: `Bash(gripe add:*)` sits in
+  `~/.claude/settings.json` `permissions.allow`, added once by hand, so invariant 2 reads
+  "never prompts after setup" and setup has happened on this machine.
 - **Verify which denials actually reach PermissionDenied.** The cross-model review claims
   PreToolUse hook blocks and config deny rules dispatch elsewhere and only classifier
   denials arrive here, which would leave flow's guards uncounted. If so, the hook still
