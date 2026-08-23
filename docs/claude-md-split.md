@@ -1,37 +1,24 @@
 # The CLAUDE.md split
 
-The principle: `~/.claude/CLAUDE.md` answers **who the user is** — voice, tone,
-epistemic calibration, interaction contract (how to disagree, when to ask, how to batch
-questions). The flow **charter** answers **how we build** — delegation, model routing,
-pipeline rules, verification semantics, git discipline — and is injected into every
-session by this plugin's SessionStart hook.
+`~/.claude/CLAUDE.md` says who the user is: voice, how to disagree, when to ask, what the machine looks like. The flow charter says how we build: delegation, the model table, the pipeline, verification, git. The charter is injected into every session by the plugin's SessionStart hook, so the personal file never has to carry engineering doctrine.
 
-Why split:
+Why split them:
 
-- **Versioned**: the engineering half lives in a git repo instead of a loose dotfile;
-  changes are diffable, revertable, and reviewable.
-- **Portable**: one `plugin install` carries the whole practice to a new machine; the
-  personal file stays personal.
-- **Drift-auditable**: `/flow drift` can lint the charter against the framework; nobody
-  lints a dotfile.
-- **Same cost**: what leaves CLAUDE.md arrives via the hook — net context is ~flat.
+- The engineering half lives in a git repo, so changes are diffable, revertable, and reviewable. Nobody reviews a dotfile.
+- One `plugin install` carries the whole practice to a new machine. The personal file stays personal.
+- `/flow drift` can audit the charter against the framework and flag stale facts by their as-of dates.
+- The context cost is the same: what leaves CLAUDE.md arrives through the hook.
 
-What stays in the personal CLAUDE.md: style/tone, reasoning and hedging calibration,
-response-format preferences, anti-patterns, disagreement and autonomy contracts — plus a
-short pointer so sessions can DETECT a missing charter instead of improvising:
+What stays in the personal file: style and tone, hedging calibration, response-format preferences, the autonomy and disagreement contract, system details — and a short pointer so a session can notice a missing charter instead of improvising one. This is what jakub's says:
 
 ```markdown
-<flow>
-the engineering charter — how we build: delegation, models, pipeline, git, debugging — is
-injected every session by the flow plugin (SessionStart hook). deep doctrine, project
-setup, and drift audits live in the /flow skill. if a <flow-charter> block is NOT present
+The engineering charter — how we build: delegation, models, pipeline, git, debugging — is
+injected every session by the `flow` plugin (SessionStart hook). Deep doctrine, project
+setup, and drift audits live in the /flow skill. If a <flow-charter> block is NOT present
 in context, the plugin is missing or broken: say so and fix that before substantive
 engineering work, don't wing it from memory.
-</flow>
 ```
 
-Migration: install the plugin, move engineering/workflow/debugging content out of the
-personal file (keep a dated backup), add the pointer block, start a fresh session, and
-compare `/flow charter` output against what got injected. Customise the charter by editing
-`plugins/flow/charter/charter.md` in your clone and reinstalling — it is deliberately
-short (~80 lines); every line is a standing order paid for in every session's context.
+Migrating: install the plugin, move the engineering and workflow content out of the personal file (keep a dated backup), add the pointer, start a fresh session, and compare `/flow charter` against what got injected. To change the charter, edit `plugins/flow/charter/charter.md` in your clone, push, and reinstall. It runs about 140 lines, and every one of them is read in every session, so anything that isn't true in every session belongs in a command body or the skill instead.
+
+One caveat: desktop and claude.ai bridge sessions load plugins from service-pushed snapshots with hooks stripped, so the charter doesn't arrive there. The pointer is what makes that visible — the session says the block is missing rather than guessing.
