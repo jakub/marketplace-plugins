@@ -3,8 +3,9 @@
 A local complaint log for coding agents. An agent files friction as it hits it; a model
 summarises the pile for jakub once a month.
 
-Status: designed and partly measured. The Stop hook is built and tested. The CLI is not
-written yet. Every claim marked "measured" was run on this machine on 2026-08-23. The reader
+Status: built. The storage module, CLI, shim and all seven hooks exist and are tested; the
+open items below are install-time verifications. Every claim marked "measured" was run on
+this machine on 2026-08-23. The reader
 side is deferred: v1 only collects, and the summarising workflow gets designed once there is
 a month of real rows to design against. Until then `gripe dump` piped into a model by hand is
 the entire read story.

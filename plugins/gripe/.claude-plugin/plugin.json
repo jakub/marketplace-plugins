@@ -1,0 +1,8 @@
+{
+  "name": "gripe",
+  "version": "0.1.0",
+  "description": "A local complaint log for coding agents: friction gets filed as it happens, observed or self-reported, into one SQLite file a model summarises for jakub later.",
+  "author": {
+    "name": "jakub"
+  }
+}
