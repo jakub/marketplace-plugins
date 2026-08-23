@@ -42,12 +42,28 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
 
 ## 4. Repo state hygiene
 
+The operator is the owner of the marketplace repo's `origin` (the repo whose
+`.claude-plugin/marketplace.json` names marketplace `jakub`). A repo whose `origin` owner is
+someone else is third-party: it gets one report line saying so, and neither the label
+taxonomy check in section 3 nor any branch or worktree proposal here runs against it. Flow's
+taxonomy is not a contract anyone else's repo agreed to, and proposing a mutation on a fork
+you do not own is out of scope no matter how safe the executor is. Read the URL with `git -C <repo> remote get-url origin`.
+
 - `bash ${CLAUDE_PLUGIN_ROOT}/scripts/worktree-audit.sh <repo>`: include the TSV; `safe` rows
   are candidates the nightly lint routes through `scripts/lint-actions.mjs` (which re-checks
   everything and refuses on any doubt), `review` rows need a human, and `hold-*` rows are fine. Squash merges mean the MERGED column is usually `no`
   for landed branches; PR state is the signal.
-- Local branches whose PR is merged/closed and which have nothing beyond `origin/<branch>`:
-  stale, delete. `git branch --merged main` misses these after a squash.
+- **Local** branches whose PR is merged/closed and which have nothing beyond
+  `origin/<branch>`: stale, delete. `git branch --merged main` misses these after a squash.
+  This is the only branch class any flow job can act on — permission 2 routes it through
+  `lint-actions.mjs`, which runs `git branch -D` and nothing else.
+- **Remote** (`origin/*`) branches are report-only and stay that way: deleting one needs a
+  push, which no cron job has and never will. Classify them against a fixed history depth of
+  `gh pr list --state all --limit 200`, so two nights are comparable. A remote branch whose
+  PR is merged or closed is stale; one whose PR falls below that floor is `unclassified`,
+  never stale. Report stale remotes as a count plus at most ten names, and report the
+  unclassified count next to the floor that produced it. A bare `branches ✓` is only honest
+  when both classes were checked — say which one you mean.
 - `.github/known-flakes.txt` exists; every entry names a check that actually exists in
   recent CI runs (a flake entry for a renamed check is dead lore).
 - Isolated test DBs (where the repo uses them): no orphans beyond live worktrees.

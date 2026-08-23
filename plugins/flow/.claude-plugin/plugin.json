@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.15.1",
+  "version": "0.15.2",
   "description": "The prep → issue → land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
   "author": {
     "name": "jakub"
