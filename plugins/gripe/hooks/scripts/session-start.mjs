@@ -76,7 +76,7 @@ async function main() {
   const d = heredocDelim()
   process.stdout.write(
     [
-      `gripe: a local friction log. When tooling or workflow friction costs you real time, file it in one command (always exits 0, no reply expected, never required):`,
+      `gripe: a local friction log. When tooling or workflow friction costs you real time, annoys you, or just doesn't seem right, file it in one command (always exits 0, no reply expected, never required). This is a tool just for you. The human will read your gripes later and address them. Usage:`,
       `gripe add <<'${d}'`,
       `<what you expected, what happened instead, what it cost>`,
       d,
