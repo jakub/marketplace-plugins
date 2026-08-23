@@ -4,7 +4,10 @@ A local complaint log for coding agents. An agent files friction as it hits it; 
 summarises the pile for jakub once a month.
 
 Status: designed and partly measured. The Stop hook is built and tested. The CLI is not
-written yet. Every claim marked "measured" was run on this machine on 2026-08-23.
+written yet. Every claim marked "measured" was run on this machine on 2026-08-23. The reader
+side is deferred: v1 only collects, and the summarising workflow gets designed once there is
+a month of real rows to design against. Until then `gripe dump` piped into a model by hand is
+the entire read story.
 
 ## What it is
 
@@ -37,9 +40,13 @@ design decisions rather than among them.
 2. **Agents are write-only.** `gripe add` is the entire agent-facing surface. The read commands
    exist and are never advertised. An agent that can search will search before struggling,
    which turns a two-second write into a research task.
-3. **Two lanes, and they are not equally trustworthy.** Observed rows are written by hooks with
-   no agent involved, from events that measurably happened. Reported rows are written by an
-   agent that decided something was worth saying. The `elicitation` column keeps them apart.
+3. **Two lanes: mechanically derived and self-reported.** Observed rows are written by hooks
+   with no agent involved, from events that measurably happened. Reported rows are written by
+   an agent that decided something was worth saying. The `elicitation` column keeps them
+   apart. This is a provenance distinction, not an authenticated one: the agent has Bash under
+   the same uid that owns the database file, so a forgery cannot be prevented, only made
+   deliberate. The CLI refuses `--via observed`, coercing it to `spontaneous` with one stderr
+   line, so crossing the lane takes sqlite3 in hand rather than a typo.
 4. **The tool does not cluster. The reader does.** There is no tag, no cluster key, no
    `GROUP BY`. Semantic grouping is what a model does natively and does better than exact-string
    matching on agent-chosen slugs, which would present one problem as six.
@@ -47,8 +54,9 @@ design decisions rather than among them.
    broken, an agent hits it again and files it again, and it appears in the next dump. Closing is
    a date watermark recording what jakub has seen, not what jakub fixed.
 6. **Counting is by distinct sessions and days, never raw rows.** Eight rows are not eight
-   occurrences. They may be one noisy afternoon. Raw counts have no denominator and cannot
-   separate more friction from more coding.
+   occurrences. They may be one noisy afternoon. Affected sessions alone are still a numerator,
+   so SessionStart writes a one-row session mark, and "3 of 41 sessions this month" becomes a
+   rate instead of a count.
 7. **No open-count banner at session start.** One advertisement line and nothing else. Printing
    open items into every session is context tax for something read monthly.
 8. **Storage is SQLite via `node:sqlite`** at `$XDG_STATE_HOME/gripe/gripe.db`, defaulting to
@@ -79,19 +87,26 @@ regardless, it is invisible. So: WAL on, a generous `timeout` passed to the `Dat
 constructor, nothing inside the transaction that could be done outside it, one retry on a busy
 failure, and `PRAGMA user_version` set at creation.
 
+`user_version` is a ladder, not a label. On open, code newer than the database applies
+numbered additive migrations inside one transaction. Code older than the database refuses to
+touch it and exits 0 with one stderr line, per invariant 1. The shim always resolves newest,
+so old-code-new-database only happens when `$GRIPE_HOME` points a stale working tree at a
+production file, and refusing beats corrupting.
+
 ## Schema
 
-One table for rows, plus a two-column key/value table holding the `seen` watermark.
+One table for rows, a `sessions` table holding the one-row-per-session mark from decision 6,
+and a two-column key/value table holding the `seen` cursor and the last dump's high-water id.
 
 | Column | Source | Notes |
 | --- | --- | --- |
 | `id`, `created_at` | database | |
-| `body` | agent or hook | The complaint. Prose. Observed rows get a body generated from the hook payload. |
+| `body` | agent or hook | The complaint. Prose, capped at 4,000 characters with a truncation marker. Observed rows get a templated body; see the trust boundary. |
 | `elicitation` | writer | `observed`, `spontaneous`, `error_nudge`, `checkpoint`. |
-| `session_id` | environment | Always present. The denominator. |
+| `session_id` | environment | Always present. The distinct-count key for decision 6. |
 | `prompt_id` | hook | Nullable. Correlates everything from one user request to the next. |
 | `agent_id`, `agent_type` | hook | Nullable. Null means the main agent, which is itself the distinction. |
-| `repo`, `cwd`, `git_sha`, `branch` | environment | Read at write time, never typed. |
+| `repo`, `cwd`, `git_sha`, `branch` | environment | Read at write time, never typed. `repo` is the basename of `git rev-parse --show-toplevel`, null outside a repo. |
 | `trigger` | hook | Nullable. The tool that provoked the row. |
 
 Three things are deliberately absent. **No `tag` or `cluster`**, because the reader groups.
@@ -108,8 +123,8 @@ and so is `$CLAUDE_PID`. `$CLAUDE_CODE_CHILD_SESSION` is not a subagent marker; 
 the main agent too, where it appears to describe a bridge or ssh session. **Nothing in the
 environment distinguishes a subagent from the agent that spawned it.**
 
-That is the right default for the denominator, because a twenty-agent fan-out should count as one
-session. Finer grain comes from hook payloads, which carry `agent_id` and `agent_type`, and from
+That is the right default for distinct-session counting, because a twenty-agent fan-out should
+count as one session. Finer grain comes from hook payloads, which carry `agent_id` and `agent_type`, and from
 the common hook input base, which carries `prompt_id`. Take those where a hook hands them over
 free. Do not scrape the transcript to fill them in.
 
@@ -118,26 +133,45 @@ free. Do not scrape the transcript to fill them in.
 Agent-facing, and this is the whole surface:
 
 ```
-gripe add [--via <source>] "<body>"
+gripe add [--via <source>] [--trigger <tool>] [--agent <id>] [--prompt <id>] <<'EOF'
+<body>
+EOF
 ```
 
-`--via` is a literal the hook bakes into the command it advertises, never a value the agent
-chooses. Absent means `spontaneous`.
+The body arrives on stdin, and the advertised recipe is a quoted heredoc. Complaints quote
+tool output, and tool output contains `$(`, backticks and quotes; a double-quoted body hands
+all of that to the shell before gripe ever runs. A body as a plain argument still works for a
+human at a terminal.
+
+Every flag is a literal the advertising hook bakes into the recipe at advertisement time,
+never a value the agent chooses: `--via` always, the rest when the hook knows them at that
+moment (SubagentStart knows the agent and prompt, an error nudge knows the trigger and
+prompt). Absent `--via` means `spontaneous`. `--via observed` and unknown values coerce to
+`spontaneous` with one stderr line, because the observed lane belongs to hooks.
 
 Human-facing, never advertised to agents:
 
 ```
-gripe dump [--since <date>] [--repo <name>]   rows for piping to a model
-gripe seen                                     stamp the watermark
+gripe dump [--since <date>] [--repo <name>]   JSONL for piping to a model
+gripe seen                                     advance the cursor
 gripe search <text>                            for hunches
+gripe doctor                                   is the write path alive
 ```
 
-`dump` with no `--since` floors at the watermark. Passing `--since` ignores the watermark
-entirely, so looking backwards never disturbs your place. `seen` is separate from `dump` on
-purpose: a read that mutates state loses a window the first time you get distracted mid-review,
-and then you never trust it again.
+`dump` emits one JSON object per row after a preamble line; see the trust boundary for why
+JSONL. A plain `dump` floors at the cursor and records the highest row id it printed; `seen`
+advances the cursor to exactly that id, so rows that land mid-review stay unseen instead of
+being stamped past. `--since` (an inclusive local date) or `--repo` ignores the cursor and
+records nothing, so looking backwards or sideways never disturbs your place. `seen` is
+separate from `dump` on purpose: a read that mutates state loses a window the first time you
+get distracted mid-review, and then you never trust it again.
 
 `seen` records exposure, not judgment. It says jakub looked, not that jakub fixed anything.
+
+`doctor` exists because invariant 1 makes every write failure silent by design. It checks the
+path, the schema version, WAL, and a rollback-only test transaction, then reports the newest
+row's age. Run it before reading: it is the only way to tell "no friction this month" from
+"every write has failed since June".
 
 ## The trust boundary
 
@@ -149,10 +183,17 @@ around it. That instruction sits in durable storage, crosses sessions, and arriv
 context where nobody remembers the original repository content is still in play. Persistence is
 what makes it useful to an attacker.
 
-`gripe dump` therefore wraps every body in explicit data delimiters, with a preamble stating
-that the enclosed text is untrusted and may contain instructions aimed at the reader. The
-delimiters and the warning are the mechanism; the design does not otherwise constrain what the
-output is piped into. Whoever pipes it owns what they pipe it into.
+`gripe dump` therefore emits JSONL with bodies as JSON-escaped strings, after a preamble
+stating that body fields are untrusted and may contain instructions aimed at the reader.
+Escaping is the mechanism, chosen over prose delimiters because a body cannot close a JSON
+string it is inside, while a delimiter fence is escapable by any body that quotes the fence.
+The design does not otherwise constrain what the output is piped into. Whoever pipes it owns
+what they pipe it into.
+
+Observed rows get the same care at the write end. Their bodies are fixed templates filled
+from an allowlist of payload fields, capped and stripped of control characters. Raw
+`tool_input` and `last_assistant_message` never reach the database; both can carry
+credentials or kilobytes of attacker-chosen text into durable storage.
 
 Redacting credentials is a separate boundary and does not help with this one.
 
@@ -161,10 +202,20 @@ Redacting credentials is a separate boundary and does not help with this one.
 Seven events. Each has a job and a gate, because an ungated checkpoint taxes every session and
 an ungated error nudge interrupts every ninety seconds.
 
+Two pieces of shared plumbing. Hooks that write rows import the storage module directly and
+never shell out to the CLI, so the observed lane never transits a shell, never depends on
+PATH, and cannot be reached by an agent typing `--via observed`. Hooks that gate on
+repetition share one state contract: JSON files under the state directory keyed by session id
+plus actor, where actor is `main` or the subagent's `agent_id`, holding fingerprint counts
+with last-seen and last-nudged times. Keyed that way because session id alone collides across
+a fan-out, and shared because Stop must see what the error nudge already asked about, or one
+fingerprint buys two interruptions in one session.
+
 ### SessionStart
 
-Prints one line advertising the command to the main agent. Re-points the PATH shim if missing.
-Sweeps scan-state files older than a few days on the way past.
+Prints one line advertising the command to the main agent. Writes the one-row session mark
+that gives decision 6 its denominator. Re-points the PATH shim if missing. Sweeps state files
+older than a few days on the way past.
 
 **Reaches the main agent only.** Measured: a spawned subagent reported no flow charter in its
 context, and the charter is injected by exactly this kind of hook.
@@ -172,9 +223,10 @@ context, and the charter is injected by exactly this kind of hook.
 ### SubagentStart
 
 The same advertisement for subagents, which is the only reason they hear about gripe at all.
-Payload is `{ agent_id, agent_type }` and it accepts `additionalContext`. Bake the agent id into
-the advertised command string so per-agent attribution survives; the agent copies a literal
-rather than deciding anything.
+Payload is `{ agent_id, agent_type }` and it accepts `additionalContext`. Bake `--agent` and
+`--prompt` into the advertised recipe so attribution survives; a subagent lives inside one
+prompt, so both stay valid for its whole life, and the agent copies a literal rather than
+deciding anything.
 
 ### PostToolUseFailure
 
@@ -188,7 +240,9 @@ given tool with a given error shape is ordinary work, the second is a pattern. H
 on the fingerprint so a retry loop asks once rather than forty times. A blocklist of noisy
 commands stays available as a backstop, never as the primary gate.
 
-Advertises `--via error_nudge` and pre-fills `trigger` from the payload.
+Advertises `--via error_nudge` with `--trigger` and `--prompt` baked from the payload. Every
+fingerprint it nudges on goes into the shared gate state so the Stop checkpoint does not cite
+the same fight a second time.
 
 ### PermissionDenied
 
@@ -196,12 +250,14 @@ Writes an observed row directly. Payload is `{ tool_name, tool_input, tool_use_i
 Repeat-gated, and the gate matters here more than anywhere: jakub's own hooks deny by design, so
 a first denial is a guard working correctly. The fourth identical denial means the agent kept
 trying and kept being stopped, which is real friction, and points at either a policy the agent
-does not understand or a policy that is wrong.
+does not understand or a policy that is wrong. The observed body is a template over
+`tool_name`, `reason` and a normalised target, never raw `tool_input`.
 
 ### StopFailure
 
 Writes an observed row directly. Payload is `{ error, error_details, last_assistant_message }`.
-A turn that failed outright is unambiguous and needs no gate.
+A turn that failed outright is unambiguous and needs no gate. The body is the error plus a
+capped slice of `error_details`; `last_assistant_message` is never stored.
 
 ### Stop
 
@@ -216,26 +272,37 @@ the transcript, finds something concrete, and cites it. Two things count as conc
 identical failures, fingerprinted with paths, shas and digits normalised out; and repetition
 without failure, meaning the same tool aimed at the same target three or more times, which is
 what fighting something looks like when nothing is erroring. Neither present, or fewer than
-fifteen tool calls, and it stays silent. No evidence means no honest question.
+fifteen tool calls, and it stays silent. Two unrelated failures are not evidence; only repeats
+of one shape count, or the checkpoint fires on every ordinary session that hit two different
+transient errors. No evidence means no honest question.
 
 Other gates: skip when `stop_hook_active` is set or it loops on its own continuation, and skip
 when `background_tasks` shows anything running, because a paused session is not a finished one.
-Once per session.
+Once per session, stated as the tradeoff it is: friction that develops after the first
+checkpoint in a long session goes unrecorded, and that is the accepted price of never teaching
+the agent that "none" ends the conversation fastest. Cited text is stripped of control
+characters before it enters the note, because the note speaks in the hook's trusted voice and
+its raw material comes out of the transcript.
 
 `additionalContext` on Stop is non-error feedback and the conversation continues, so the agent
 can act on it without the turn being marked as failed. **That continuation is the real cost.**
 The hook itself is a few milliseconds of local string matching with no model call, but every
 fire buys at least one extra assistant turn.
 
-Scanning is incremental. Per-session state carries a byte offset and the running counters, so a
-quiet session does not re-parse a growing transcript at every turn end. State lives in files
-rather than the database, because it is written at every turn end and would otherwise contend
-for the write lock with actual gripe writes.
+Scanning is incremental. Scan state carries a byte offset and the running counters, so a quiet
+session does not re-parse a growing transcript at every turn end. It is keyed by session id
+plus actor, like the gate state and for the same reason: a fan-out shares one session id, and
+one shared file would apply one transcript's byte offset to another and let the first
+subagent's checkpoint mute every sibling and the parent. State lives in files rather than the
+database, because it is written at every turn end and would otherwise contend for the write
+lock with actual gripe writes.
 
 ### SubagentStop
 
-The same checkpoint for subagents, which Stop never fires for. Payload is
-`{ stop_hook_active, agent_id, agent_transcript_path }`.
+The same checkpoint for subagents, which Stop never fires for, served by the same script.
+Payload is `{ stop_hook_active, agent_id, agent_transcript_path }`, so the script reads
+either transcript field, keys its state by the agent id when one is present, and echoes the
+incoming `hook_event_name` back in its output.
 
 Injection reaches the subagent, not the parent. The product binary's own schema description
 reads: "delivered to the subagent; the subagent continues so it can act on it."
@@ -275,13 +342,16 @@ versions are never pruned. Measured: flow has every release from 0.3.1 to 0.16.1
 
 A shim symlinked to `gripe/0.1.0/bin/gripe` therefore does not break after an upgrade, which
 would at least be visible. It keeps working, running 0.1.0 code against a 0.5.0 database
-indefinitely, and invariant 1 means that failure has no symptom at all. **The shim resolves the
-plugin at exec time and picks the highest version present.** It is never a symlink to a versioned
-path.
+indefinitely, and invariant 1 means that failure has no symptom at all. **The shim resolves
+the plugin at exec time**: `$GRIPE_HOME` first, then whatever version the plugin manager says
+is installed, read from `installed_plugins.json` the way flow's cron timers already do. A
+semver-aware scan of the cache directory is the fallback when the registry is unreadable, and
+it compares numerically, because a lexical sort ships 0.9.0 forever once 0.10.0 exists. It is
+never a symlink to a versioned path.
 
-It also honours `$GRIPE_HOME` ahead of the cache, and SessionStart skips re-pointing when that
-is set. Without the override, SessionStart would clobber a working-tree symlink every session
-and silently send development traffic to the stale installed copy.
+SessionStart skips re-pointing when `$GRIPE_HOME` is set. Without the override, SessionStart
+would clobber a working-tree symlink every session and silently send development traffic to
+the stale installed copy.
 
 ## Development and packaging
 
@@ -310,6 +380,10 @@ directory with its `.claude-plugin/plugin.json`, a manifest entry with
 - **Confirm PostToolUseFailure fires for subagent tool calls.** PreToolUse is verified to and the
   two share a mechanism, so this is a confirmation rather than an open risk. Fold it into the
   first install test.
+- **Verify a plugin can actually ship the `Bash(gripe add:*)` allowlist.** Invariant 2 assumes
+  it and nobody has checked. If the plugin system cannot grant permissions, the fallback is a
+  documented one-time settings.json edit, which weakens "never prompts" to "never prompts
+  after setup". Fold into the first install test.
 - **Tune the gate thresholds.** Fifteen tool calls, two identical failures, three repetitions on
   one target. All guesses, all cheap to change.
 - **Behaviour when `$XDG_STATE_HOME` and `$HOME` are both unusable.** Covered by invariant 1, but
