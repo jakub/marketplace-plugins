@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "jakub's Claude Code marketplace - plugins and skill bundles.",
-    "version": "0.27.2"
+    "version": "0.28.0"
   },
   "plugins": [
     {
@@ -20,7 +20,7 @@
     {
       "name": "flow",
       "description": "The prep \u2192 issue \u2192 land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
-      "version": "0.18.3",
+      "version": "0.19.0",
       "author": {
         "name": "jakub"
       },
@@ -29,7 +29,7 @@
     {
       "name": "grill",
       "description": "Relentless design interrogation plus the domain-model doc discipline it feeds: grill-with-docs, grilling, domain-modeling. Vendored from Matt Pocock's skills (MIT).",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "author": {
         "name": "jakub"
       },
@@ -38,7 +38,7 @@
     {
       "name": "unslop",
       "description": "Cut AI tells from writing and put a voice back in. Vendored from Lauren Tan's pstack skill in cursor/plugins (MIT).",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "jakub"
       },
