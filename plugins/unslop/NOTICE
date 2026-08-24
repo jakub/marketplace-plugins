@@ -31,8 +31,9 @@ scoping wrapper: full ruleset for written deliverables; jargon + plain-speech ru
 (26-31) for technical explanations and design discussion in chat; the active output
 style wins mechanical style conflicts (rule 13's em-dash ban, rule 26's "harness"/
 "surface") in conversation, unslop wins them in deliverables. Scoping changes belong
-in the wrapper; rule changes go through `patches/0001-*.patch` following the
-`plugins/grill` pattern. The vendored file itself stays byte-for-byte upstream.
+in the wrapper; a rule change would go through a patch under `patches/`, following
+the `plugins/grill` pattern - none exists today. The vendored file itself stays
+byte-for-byte upstream.
 
 RE-SYNCING
 ----------
