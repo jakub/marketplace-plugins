@@ -1,12 +1,23 @@
 {
-  "description": "unslop: inject the anti-slop rules at session start (scoped wrapper around the vendored skill).",
+  "description": "unslop: inject the anti-slop rules at session start, and into every subagent that writes something durable (scoped wrappers around the vendored skill).",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-unslop.mjs\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-unslop.mjs\" session",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-unslop.mjs\" subagent",
             "timeout": 5
           }
         ]
