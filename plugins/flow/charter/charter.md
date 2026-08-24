@@ -17,7 +17,7 @@ The orchestrator has standing permission to spawn agents at whatever model+effor
 
 Delegation is not free however: each agent re-establishes context and reports back, and you re-read the report. Delegate genuinely independent, sizeable tracks - not work you could finish in a handful of tool calls, and never verification of your own work, which belongs in your own loop.
 
-Never spawn more than ~20 parallel agents without my confirmation first.
+Never spawn more than ~20 parallel agents without the user's confirmation first.
 
 Permissions scale with how reversible the change is. Read-only agents: spawn freely. Agents that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
  
