@@ -18,9 +18,9 @@ Adding a plugin: `plugins/<name>/` with a `.claude-plugin/plugin.json`, plus an 
 
 `plugins/flow/charter/charter.md` is hand-authored by jakub and is the source of truth. The SessionStart hooks deliver it to every session wrapped in `<flow-charter>` tags, which the global CLAUDE.md checks for. There are two hooks because Claude Code caps one hook's stdout at 10,000 characters and swaps anything larger for a 2KB preview plus a file path; `hooks/scripts/inject-charter.mjs` splits the file at the `## ` heading nearest the middle and prints a warning line if either half passes 9,000. Keep each half under that, or the session silently runs on a fragment while the presence check still passes. It's prose to a capable colleague, and it should stay that way. Every line costs context in every session, so anything that isn't true in every session goes somewhere else. The charter reaches the main session only - subagents get CLAUDE.md and the hooks, not the charter - which is why the implementer agent def restates the seat rules instead of assuming them.
 
-Doctrine lives in two places and no more. The charter holds what must be true in every session; the command bodies (`commands/prep.md`, `issue.md`, `land.md`) hold the steps each command executes. If something appears in both, delete one copy. The skill under `skills/flow/` holds what neither needs at runtime: setup, the doc stack, the ambient crons and hooks, the label contract, the drift audit, and a reference description of the deprecated fixed pipeline.
+Doctrine lives in two places and no more. The charter holds what must be true in every session; the command bodies (`commands/prep.md`, `issue.md`, `land.md`) hold the steps each command executes. If something appears in both, delete one copy. The skill under `skills/flow/` holds what neither needs at runtime: setup, the doc stack, the ambient crons and hooks, the label contract, and the drift audit.
 
-`/flow:issue` is the dynamic run: the conductor composes the fabric per issue inside the invariants in `issue.md`. The fixed pipeline, `/flow:issue-fixed` plus `workflows/issue-fixed.mjs`, is deprecated and kept as a fallback and parts library; nothing new lands there. When a stage in the script does change, mirror it in SKILL.md under "Inside the v1 run" - that section is the one sanctioned duplicate, with the script as truth, and both drifts so far came from editing the script without touching the doc.
+`/flow:issue` is the dynamic run: the conductor composes the fabric per issue inside the invariants in `issue.md`. The fixed pipeline, `/flow:issue-fixed` plus `workflows/issue-fixed.mjs`, is deprecated and kept as a fallback and parts library; nothing new lands there, and the script is its only stage-level documentation - SKILL.md points at it rather than mirroring it, so there is no duplicate to keep in step.
 
 The scheduled jobs are three files each: the prompt in `skills/flow/cron/<job>.md`, the allowlist in `scripts/flow-cron.mjs`, and the unit pair in `skills/flow/templates/systemd/`. A job's authority is the allowlist plus two mechanisms, never the prompt: git-guard's cron mode (deny-by-default git subcommands whenever FLOW_CRON_JOB is in the env, sanctions ignored) and `scripts/lint-actions.mjs`, the deterministic executor that alone performs the lint's worktree/branch mutations after re-deriving the safety conditions from fresh state; widening what a job may do is an edit to `flow-cron.mjs` and a version bump, and the prompt's "standing permissions" paragraph must match it. Test a prompt change without installing anything: `CLAUDE_PLUGIN_ROOT=$PWD/plugins/flow FLOW_STATE=/tmp/x bash plugins/flow/scripts/install-cron.sh run lint`. The installed timers resolve the plugin through `installed_plugins.json`, so they pick up a new version at the next reinstall with no further step.
 
@@ -32,17 +32,23 @@ Agent defs under `agents/` don't pin a model; the conductor sets model and effor
 
 Facts that go stale (model pricing, the codex CLI surface encoded in `scripts/codex-exec.mjs`) carry an as-of date. Re-verify anything older than a quarter; `scripts/smoke-codex-exec.mjs` checks the transport's assumptions against the installed CLI.
 
+## gripe
+
+`plugins/gripe/` is first-party, no vendoring. Three layers: `lib/` (`store.mjs` owns the SQLite file and its migrations, `context.mjs` derives repo and session identity, `gate.mjs` holds the noise thresholds), the hook scripts under `hooks/scripts/` (seven events across six scripts, registered in `hooks.json`), and `bin/gripe` plus `bin/shim.mjs`, the CLI and the resolver that finds the installed plugin at exec time. The design rationale with the measured claims is `docs/gripe/DESIGN.md`; the reader-side analysis method is the skill under `skills/gripe/`.
+
+Filing must stay free: `gripe add` always exits 0 and never prompts. Any change that can make it exit non-zero or block on input breaks the contract every hook relies on. `scripts/collision-test.mjs` exercises concurrent writers against one database.
+
 ## grill
 
-`plugins/grill/skills/` is vendored from https://github.com/mattpocock/skills (MIT), upstream plus two patches. Don't hand-edit the vendored files. A local change is a patch in `plugins/grill/patches/`, so a re-sync stays mechanical: copy the three upstream dirs over, `git apply` each patch in order, bump the SHA in `plugins/grill/NOTICE`. If a patch stops applying, regenerate it.
+`plugins/grill/skills/` is vendored from https://github.com/mattpocock/skills (MIT), upstream plus three patches. Don't hand-edit the vendored files. A local change is a patch in `plugins/grill/patches/`, so a re-sync stays mechanical: copy the three upstream dirs over, `git apply` each patch in order, bump the SHA in `plugins/grill/NOTICE`. If a patch stops applying, regenerate it.
 
-Patch 0001 lowercases the doc-artifact filenames (`context.md`, `context-map.md`) to match the rest of the repo. `SKILL.md`, `AGENTS.md`, and `CLAUDE.md` keep their uppercase names because the loaders find them by exact filename.
+Patch 0001 lowercases the doc-artifact filenames (`context.md`) and the skill's own reference docs (`adr-format.md`, `context-format.md`) to match the rest of the repo. `SKILL.md`, `AGENTS.md`, and `CLAUDE.md` keep their uppercase names because the loaders find them by exact filename.
 
 Patch 0002 routes a `grilling` round through the AskUserQuestion tool, up to 4 questions per call with selectable options, instead of upstream's numbered prose block with emoji headers. Upstream's design-tree and frontier model survives untouched; only the delivery changes. Verify a regenerated patch by applying both to a fresh upstream copy and diffing against `skills/` - identical or it is wrong.
 
 Patch 0003 strips the `context-map.md` mechanism out of `domain-modeling`. We keep the map in a repo's `## Contexts` section instead, so the file never exists. It stays neutral on how many contexts a repo has, because `prep.md` explicitly forbids inferring "single context" from a missing map file.
 
-Three skills is the minimal closure - `grill-with-docs` wraps `/grilling` using `/domain-modeling`. Upstream ships 36 across five buckets; carrying another one is a decision, not a default.
+Three skills is the minimal closure - `grill-with-docs` wraps `/grilling` using `/domain-modeling`. Upstream ships 36 across four buckets; carrying another one is a decision, not a default.
 
 ## unslop
 
@@ -54,4 +60,4 @@ Each mode wraps the vendored body in its own plugin-local scoping note. The sess
 
 The subagent mode's `SKIP` set is the whole cost control: `Explore` and the search fan-outs return file paths and would buy the ruleset once per agent, `fork` already carries the session block in its copied context, and `codex-delegate` relays Codex output that editing rules would corrupt. Everything else is on by default - the point is covering ad-hoc `general-purpose` and `claude` spawns that have no agent definition to carry the rules for them.
 
-Watch the 10,000-character hook stdout cap that forced flow's charter into two hooks. The subagent payload is JSON-wrapped, so it is the larger of the two: 7,790 bytes as of unslop 0.3.0, about 2KB of headroom. A re-sync that grows `SKILL.md` past that eats the rules silently. Measure after any vendor bump: `echo '{"agent_type":"claude"}' | node plugins/unslop/hooks/scripts/inject-unslop.mjs subagent | wc -c`.
+Watch the 10,000-character hook stdout cap that forced flow's charter into two hooks. The subagent payload is JSON-wrapped, so it is the larger of the two: 7,786 bytes as of unslop 0.3.1, about 2KB of headroom. A re-sync that grows `SKILL.md` past that eats the rules silently. Measure after any vendor bump: `echo '{"agent_type":"claude"}' | node plugins/unslop/hooks/scripts/inject-unslop.mjs subagent | wc -c`.

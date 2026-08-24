@@ -47,7 +47,7 @@ Two timers run in the background once `/flow setup` has armed them: a nightly li
 | `plugins/flow/charter/charter.md` | The engineering charter. |
 | `plugins/flow/commands/` | `prep.md`, `issue.md`, `land.md`, and the deprecated `issue-fixed.md`. |
 | `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool and a fixed schema output), `codex-delegate` (a thin transport to run Codex models), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
-| `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter` - not needed day-to-day, housekeeping tasks. |
+| `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`, `/flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/scripts/codex-exec.mjs` | The raw-CLI Codex transport with a JSON envelope. Requires `codex` in $PATH, already authenticated. |
 | `plugins/flow/workflows/issue-fixed.mjs` | The deprecated fixed pipeline, kept as a fallback and a parts library for ad-hoc Workflow scripts. |
 | `plugins/flow/hooks/` | Hooks to inject the charter, prevent unsanctioned issues from being created, and stops destructive Git actions that aren't easily recoverable from the reflog. |
@@ -57,7 +57,7 @@ flow works best when the global `~/.claude/CLAUDE.md` carries only persona and i
 
 ## gripe
 
-Agents hit the same friction over and over and forget all of it when the session ends. Memory helps, but it persists.
+Agents hit the same friction over and over and forget all of it when the session ends. Memory doesn't catch it either - it keeps facts, and nobody files a fact about the tool that ate five minutes.
 
 **gripe** is a complaint box for that. One SQLite file on this machine, agents write to it, and every so often I get a model to read the pile and tell me what it means.
 
