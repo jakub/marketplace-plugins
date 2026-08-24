@@ -17,10 +17,11 @@ closure. Upstream ships 41 skills; the rest are deliberately not carried here.
 LOCAL MODIFICATIONS
 -------------------
 
-These files are NOT verbatim. Two patches apply on top of upstream, in order:
+These files are NOT verbatim. Three patches apply on top of upstream, in order:
 
     patches/0001-lowercase-doc-filenames.patch
     patches/0002-askuserquestion-rounds.patch
+    patches/0003-drop-context-map.patch
 
 0001 lowercases the doc-artifact names this repo standardises on - CONTEXT.md ->
 context.md, CONTEXT-MAP.md -> context-map.md - and renames the skill's own
@@ -36,6 +37,16 @@ tool instead: up to 4 questions per call, 2-4 selectable options each, the
 recommendation first. Upstream's design-tree and frontier model is kept intact. It
 touches `grilling/SKILL.md` only.
 
+0003 removes the `context-map.md` mechanism from `domain-modeling`: the multi-context
+directory tree in SKILL.md, and the map file plus the structure-inference list in
+context-format.md. We do not use a map file; the `## Contexts` section of a repo's
+AGENTS.md is the map. Note what it deliberately does NOT do. It does not assert that a
+repo is single-context, because flow's prep.md forbids inferring that from a missing
+map file, and it keeps "when multiple contexts exist, infer which one the topic relates
+to", which still applies when the map lives elsewhere. 0001 still lowercases
+CONTEXT-MAP.md; that hunk builds the intermediate state 0003 then deletes, so the order
+matters.
+
 `grill-with-docs` is verbatim. SKILL.md keeps its uppercase name - the skill loader
 discovers skills by that exact filename.
 
@@ -45,7 +56,8 @@ RE-SYNCING
     1. Copy the three upstream directories over skills/
     2. git apply patches/0001-lowercase-doc-filenames.patch
     3. git apply patches/0002-askuserquestion-rounds.patch
-    4. Update the commit SHA above; regenerate any patch that stops applying
+    4. git apply patches/0003-drop-context-map.patch
+    5. Update the commit SHA above; regenerate any patch that stops applying
 
 To regenerate: commit the upstream-verbatim state, redo the change on top of it,
 and `git diff -M` the two commits. Verify by applying every patch to a fresh copy

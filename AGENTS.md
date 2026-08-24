@@ -40,6 +40,8 @@ Patch 0001 lowercases the doc-artifact filenames (`context.md`, `context-map.md`
 
 Patch 0002 routes a `grilling` round through the AskUserQuestion tool, up to 4 questions per call with selectable options, instead of upstream's numbered prose block with emoji headers. Upstream's design-tree and frontier model survives untouched; only the delivery changes. Verify a regenerated patch by applying both to a fresh upstream copy and diffing against `skills/` - identical or it is wrong.
 
+Patch 0003 strips the `context-map.md` mechanism out of `domain-modeling`. We keep the map in a repo's `## Contexts` section instead, so the file never exists. It stays neutral on how many contexts a repo has, because `prep.md` explicitly forbids inferring "single context" from a missing map file.
+
 Three skills is the minimal closure - `grill-with-docs` wraps `/grilling` using `/domain-modeling`. Upstream ships 36 across five buckets; carrying another one is a decision, not a default.
 
 ## unslop

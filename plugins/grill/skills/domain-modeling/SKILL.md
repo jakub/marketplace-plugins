@@ -21,22 +21,6 @@ Most repos have a single context:
 └── src/
 ```
 
-If a `context-map.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
-
-```
-/
-├── context-map.md
-├── docs/
-│   └── adr/                          ← system-wide decisions
-├── src/
-│   ├── ordering/
-│   │   ├── context.md
-│   │   └── docs/adr/                 ← context-specific decisions
-│   └── billing/
-│       ├── context.md
-│       └── docs/adr/
-```
-
 Create files lazily: only when you have something to write. If no `context.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
 
 ## During the session
