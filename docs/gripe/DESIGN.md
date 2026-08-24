@@ -1,14 +1,13 @@
 # gripe
 
 A local complaint log for coding agents. An agent files friction as it hits it; a model
-summarises the pile for jakub once a month.
+summarises the pile for the user once a month.
 
-Status: built. The storage module, CLI, shim and all seven hooks exist and are tested; the
-open items below are install-time verifications. Every claim marked "measured" was run on
-this machine on 2026-08-23. The reader
+These are the design notes for the shipped plugin (`plugins/gripe/`). Every claim marked
+"measured" was run on the author's machine on 2026-08-23. The reader
 side is deferred as a *mechanism*: v1 only collects, and any automated summarising workflow
 gets designed once there is a month of real rows to design against. The analysis *method*
-ships now, as the plugin's skill (`skills/gripe/SKILL.md`), so a session jakub points at the
+ships now, as the plugin's skill (`skills/gripe/SKILL.md`), so a session pointed at the
 log can run the review itself: doctor first, semantic clustering, distinct-session rates
 against the `sessions` denominator, lane weighting, recurrence as status. The skill triggers
 on being asked to review the log; it does not advertise the read commands to working agents,
@@ -322,7 +321,7 @@ since subagents share their parent's session id and a whole fan-out therefore co
 
 ### Considered and rejected
 
-The full event list is longer than early drafts assumed: PreToolUse, PostToolUse,
+The full event list: PreToolUse, PostToolUse,
 PostToolUseFailure, PostToolBatch, Notification, UserPromptSubmit, UserPromptExpansion,
 SessionStart, SessionEnd, Setup, Stop, StopFailure, SubagentStart, SubagentStop, PreCompact,
 PostCompact, PermissionRequest, PermissionDenied, TeammateIdle, TaskCreated, TaskCompleted,
@@ -342,13 +341,13 @@ FileChanged.
   normally. That is the evidence that tool-call hooks reach subagents at all.
 - **Notification** covers permission prompts and idle, but `PermissionDenied` carries the same
   friction with a structured payload.
-- **UserPromptSubmit** could sniff for the user correcting the agent, but that is jakub's
+- **UserPromptSubmit** could sniff for the user correcting the agent, but that is the user's
   channel, and inferring annoyance from prompt text produces garbage rows.
 
 ## The shim
 
 Installed plugins live at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, and old
-versions are never pruned. Measured: flow has every release from 0.3.1 to 0.16.1 on disk.
+versions are never pruned. Measured: flow has every release since 0.3.1 on disk.
 
 A shim symlinked to `gripe/0.1.0/bin/gripe` therefore does not break after an upgrade, which
 would at least be visible. It keeps working, running 0.1.0 code against a 0.5.0 database
@@ -365,7 +364,7 @@ the stale installed copy.
 
 ## Development and packaging
 
-These are separate mechanisms and early drafts conflated them.
+These are separate mechanisms.
 
 The CLI is an ordinary Node script and runs from anywhere. Only *hook registration* needs the
 plugin system, and that is not the only route: `~/.claude/settings.json` registers hooks by
@@ -376,32 +375,16 @@ working tree, export `GRIPE_HOME`, and iterate with instant feedback. Piping a J
 hook script with node tests the script; it does not test the wiring.
 
 Packaging is the last step, not the loop. An install is a byte-for-byte copy of the
-`plugins/gripe/` subdirectory: measured against flow, 37 files and 380K in the source tree, 37
-files and 380K in the cache, identical top-level listing apart from a zero-byte `.in_use` marker.
+`plugins/gripe/` subdirectory: measured against flow, the cache matches the source tree file
+for file, identical apart from a zero-byte `.in_use` marker.
 Nothing is filtered. **Everything in that directory ships to every install, forever**, which is
 why these design notes live in `docs/gripe/` rather than inside the plugin.
+
+One install step is manual: a plugin cannot ship a permission allowlist entry (installing
+registers only an enabled-plugin flag), so `Bash(gripe add:*)` goes into
+`~/.claude/settings.json` `permissions.allow` by hand, once per machine. That line is what
+makes invariant 2 ("never prompts after setup") hold.
 
 Publishing is the three-edit ritual documented in the marketplace repo's CLAUDE.md: the plugin
 directory with its `.claude-plugin/plugin.json`, a manifest entry with
 `"source": "./plugins/gripe"`, and a catalog version bump.
-
-## Open
-
-- **Confirm PostToolUseFailure fires for subagent tool calls.** PreToolUse is verified to and the
-  two share a mechanism, so this is a confirmation rather than an open risk. Fold it into the
-  first install test.
-- ~~Verify a plugin can actually ship the `Bash(gripe add:*)` allowlist.~~ Answered at the
-  0.1.0 install, 2026-08-23: it cannot. Installing registers only an enabled-plugin flag;
-  no permission appears. The fallback is now the mechanism: `Bash(gripe add:*)` sits in
-  `~/.claude/settings.json` `permissions.allow`, added once by hand, so invariant 2 reads
-  "never prompts after setup" and setup has happened on this machine.
-- **Verify which denials actually reach PermissionDenied.** The cross-model review claims
-  PreToolUse hook blocks and config deny rules dispatch elsewhere and only classifier
-  denials arrive here, which would leave flow's guards uncounted. If so, the hook still
-  works, just over a smaller population; scope the docs to match what the install test
-  shows. Fold into the first install test.
-- **Tune the gate thresholds.** Fifteen tool calls, two identical failures, three repetitions on
-  one target. All guesses, all cheap to change.
-- **Behaviour when `$XDG_STATE_HOME` and `$HOME` are both unusable.** Covered by invariant 1, but
-  `$CLAUDE_CODE_ENVIRONMENT_KIND` reads `bridge` in ordinary desktop-bridge sessions, so this
-  is not exotic and the CLI should be exercised there deliberately.
