@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 // codex-exec.mjs - the single transport between flow and the Codex CLI.
 //
-// Replaces the retired openai-codex companion plugin (its cache path stopped existing and
-// every codex leg silently degraded to CODEX_UNAVAILABLE). Everything here talks to the
-// raw `codex` binary; the delegate agent and the issue workflow call this script and
-// nothing else, so there is exactly one place where flags, parsing, retries, and
-// validation live.
+// Everything here talks to the raw `codex` binary; the delegate agent and the issue
+// workflow call this script and nothing else, so there is exactly one place where flags,
+// parsing, retries, and validation live. The transport ships in this plugin so no external
+// path can silently break it.
 //
 // Modes:
 //   task                 codex exec: read-only by default, optional --write / --schema
@@ -57,7 +56,9 @@ const DEFAULT_TIMEOUT = { task: 900, review: 1200, 'adversarial-review': 1200 }
 // generation, which scales with answer length (137s measured for ~4000 words). The pinned
 // reasoning summary covers the thinking phase at ~10s. Silence past this is wedged, not slow.
 const DEFAULT_STALL = 420
-const RETRYABLE = ['RATE_LIMIT', 'STALL', 'TIMEOUT']
+// No TIMEOUT here: the attempt deadline is the whole remaining budget, so a TIMEOUT means
+// the budget is spent and the remaining-budget check below would refuse the retry anyway.
+const RETRYABLE = ['RATE_LIMIT', 'STALL']
 const RATE_LIMIT_BACKOFF_MS = Number(process.env.CODEX_EXEC_BACKOFF_MS || 30_000)
 const BIN = process.env.CODEX_BIN || 'codex'
 
