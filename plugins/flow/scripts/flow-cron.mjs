@@ -35,7 +35,7 @@ const jobs = (root) => ({
   lint: {
     allowedTools: [
       "Read", "Glob", "Grep", "Agent",
-      "Bash(git:*)", // guarded: reads + `worktree remove|prune` + `branch -D` (git-guard.mjs cron mode)
+      "Bash(git:*)", // guarded read-only in cron mode (git-guard.mjs); lint-actions.mjs below is the mutating path
       "Bash(gh issue list:*)", "Bash(gh issue view:*)", "Bash(gh issue edit:*)", "Bash(gh issue comment:*)",
       "Bash(gh pr list:*)", "Bash(gh pr view:*)",
       "Bash(gh run list:*)", "Bash(gh run view:*)",
