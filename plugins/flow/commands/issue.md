@@ -114,4 +114,4 @@ Transport: `codex-exec.mjs` under the plugin's `scripts/` (`task` / `adversarial
 ## Known gaps
 
 - **No cross-session resume** - there is no runId to pick back up. The event journal is the mitigation: a fresh session reads the issue comments plus the worktree diff and reconstructs the run state.
-- **Calibration ledger (planned, location decided)**: per-seat finding precision - what fraction of each seat's findings survive adjudication - tracked across runs in the flow-adjacent memory space (cross-repo, since sol's precision is a property of sol, not of the repo), updated by a post-run post-mortem seat, read at composition time. Not built yet; compose from the charter table until it exists.
+- **No calibration ledger**: per-seat finding precision is not tracked across runs; compose from the charter's model table.

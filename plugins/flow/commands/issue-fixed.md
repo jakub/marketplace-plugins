@@ -1,12 +1,12 @@
 ---
 description: DEPRECATED - the fixed-pipeline predecessor of /flow:issue, conductor for workflows/issue-fixed.mjs. Kept as a fallback and parts library; run only when explicitly invoked.
 argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh] [--codex-model <m>] [--codex-effort minimal|low|medium|high|xhigh|max] [--codex-fast]
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Read, Write, Workflow, TaskOutput, PushNotification, Task, Agent
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Read, Write, Workflow, TaskOutput, PushNotification, Agent
 ---
 
 # /flow:issue-fixed - the fixed pipeline (deprecated)
 
-**DEPRECATED 2026-08-21.** The dynamic run - formerly `issue-beta` - was promoted to `/flow:issue` after the comparison PRs. This command and its workflow (`workflows/issue-fixed.mjs`) are kept as a fallback and as the parts library the dynamic run steals from (salvage pattern, envelope rules, schemas, push-verify prompts). Run it only when explicitly invoked as `/flow:issue-fixed`; no new behavior lands here.
+**DEPRECATED 2026-08-21**, superseded by `/flow:issue`. This command and its workflow (`workflows/issue-fixed.mjs`) are kept as a fallback and as the parts library the dynamic run steals from (salvage pattern, envelope rules, schemas, push-verify prompts). Run it only when explicitly invoked as `/flow:issue-fixed`; no new behavior lands here.
 
 /flow:issue-fixed runs the same middle leg of the **prep → issue → land** process as /flow:issue - hands-off to a pushed, reviewed, evidenced PR, stopping there - but through the fixed workflow instead of a composed fabric.
 

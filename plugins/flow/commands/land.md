@@ -87,7 +87,7 @@ Then confirm the evidence held. Take one committed capture out of the ledger com
 
 4) Repo-specific teardown: if the repo's `AGENTS.md` documents per-worktree resources - isolated test databases, containers - run the documented teardown, best effort. Never block the land on housekeeping, and never touch the canonical or shared instance.
 
-5) Memory stamp: update the project memory note tracking this work to MERGED with its issues CLOSED, so it doesn't get re-suggested later. Light touch.
+5) Memory stamp: if a project memory note tracks this work, update it to MERGED with its issues CLOSED, so it doesn't get re-suggested later. Light touch; skip if the project keeps no such notes.
 
 ## 8. Survey
 

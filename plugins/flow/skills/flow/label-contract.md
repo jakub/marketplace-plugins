@@ -43,15 +43,14 @@ Rules:
   from every issue repo-wide with no undo; that is a human's call).
 - No agent creates issues outside `FLOW_SANCTION` lanes (enforced by the no-backlog hook).
 - Nothing self-promotes: `agent-found → ready-for-agent` requires a /flow:prep pass.
+- `agent-found` is reserved ahead of need: no scheduled hunters exist yet, and nothing
+  else may file into that lane.
 
 Retired - do not recreate:
-- `ready-for-human` (2026-08): staging for human-shaped work. Killed because the category
-  was empty in practice - prep hardens the spec, the assignee field records who builds it,
-  and umbrella epics live in `needs-triage` until prep decomposes them into bounded issues.
-- `evidence-public` (2026-08): the public-publish ack, killed together with the
-  per-criterion `visibility:` field. Runs publish artifact evidence to the tailnet-private
-  plans host, always; there is no public-publish path from a run. If a repo ever declares
-  `public-by-intent`, design that interlock fresh.
+- `ready-for-human`: staging for human-shaped work; prep hardens the spec and the assignee
+  field records who builds it, so the lane stays empty.
+- `evidence-public`: a public-publish ack. Runs publish artifact evidence to the
+  tailnet-private plans host, always; there is nothing to ack.
 
 ## The ready-for-agent contract
 

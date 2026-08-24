@@ -1,7 +1,7 @@
 ---
 description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; use this command when either you or the user wants to create a new issue or revise an existing issue.
 argument-hint: <issue-number | free-text idea>
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Read, Edit, Write, Skill, AskUserQuestion, Task, Agent
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Read, Edit, Write, Skill, AskUserQuestion, Agent
 ---
 
 # /flow:prep - the front door for the prep → issue → land workflow
@@ -74,7 +74,7 @@ Resolve each branch of the design tree before moving to the next.
 **Seed the skill with this repo's doc-stack conventions** - the upstream grill-with-docs and grilling skills assume different conventions and will otherwise write to the wrong places:
 
 - The glossary file is `context.md`, **lowercase**. Never create or read `CONTEXT.md` - on a case-sensitive filesystem that is a second, competing file.
-- This repo is **multi-context without a `context-map.md`**. The `## Contexts` section of the root `AGENTS.md` IS the map - read it to find the slices. Do not infer "single context" from the absence of a map file, and never create one.
+- The `## Contexts` section of the root `AGENTS.md` IS the context map - read it to find the slices. There is never a `context-map.md`: do not create one, and do not infer "single context" from the absence of a map file.
 - Crate-local vocabulary belongs in `crates/<x>/context.md`; the root `context.md` keeps cross-cutting ontology only. When a new slice appears, add its line to `## Contexts` in `AGENTS.md`.
 - ADRs stay in the repo-root `docs/adr/`, sequentially numbered. Do not nest per-context `docs/adr/` directories - the drift audit only scans the root one.
 
