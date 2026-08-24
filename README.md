@@ -1,50 +1,55 @@
 # marketplace-plugins
 
-jakub's personal Claude Code marketplace - one repo publishing a small set of plugins. Add it once, install what you want.
+Jakub's personal Claude Code marketplace.
 
 ```bash
 claude plugin marketplace add jakub/marketplace-plugins
 claude plugin install flow@jakub
 ```
 
-`@jakub` is the marketplace name from `.claude-plugin/marketplace.json`, not the repo name. Hooks arm at the next session start. Installs pull from the pinned GitHub clone, so after editing this repo: push, then reinstall the plugin.
+(`@jakub` is the marketplace name from `.claude-plugin/marketplace.json`, it's not a repo name.)
+
+
+Hooks arm at the next session start. Installs pull from the pinned GitHub clone, so after editing this repo: push, then reinstall the plugin.
 
 ## Plugins
 
 | Plugin | Install | What it is |
 |---|---|---|
-| **flow** | `flow@jakub` | The prep → issue → land development pipeline and the engineering charter that governs it. Details below. |
-| **grill** | `grill@jakub` | Relentless design interrogation and the domain-model doc discipline it feeds: `grill-with-docs`, `grilling`, `domain-modeling`. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT); see `plugins/grill/NOTICE`. |
-| **unslop** | `unslop@jakub` | Cuts AI tells from writing - puffery, filler, hedging, synonym cycling, boldface spam - and puts a voice back in. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT); see `plugins/unslop/NOTICE`. |
+| **flow** | `flow@jakub` | This is my main agentic development process. It runs through three stages: `prep` (scope, design, refine) → `issue` (hands-off all the way to a reviewed, evidenced PR) → `land` (ceremony to do final checks, rebase, and merge it in.) |
+| **grill** | `grill@jakub` | Used by `prep` to hammer out the issue design. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT). |
+| **unslop** | `unslop@jakub` | Cuts AI tells from writing. ***Under evaluation.*** Adds hooks to forcefully inject the skill into agents and subagents instead of relying on front matter. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
 
 ## flow
+**flow** is my attempt at an agentic development framework. It consists of a charter, three commands, and a couple of hooks. It's by no means perfect, but produces code I can live with.
 
-Three commands in order. `/flow:prep` is the front door: an interactive design gate that turns an issue or a free-text idea into a `ready-for-agent` spec, with a cross-model dialectic and a grill where decisions get minted as ADRs. `/flow:issue` is the hands-off run: the session model conducts a fabric of subagents - design pair, contained implementer, cross-family adversarial review, evidence ledger - to a pushed, reviewed, evidenced PR and stops there. `/flow:land` is the human gate and the only merge path: CI and review-thread checks, squash merge, cleanup, and a survey of what to do next. Two timers run in the background once `/flow setup` has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly report-only doc sweep.
+The charter is injected into every agent (at `SessionStart`), and defines *how* we work together. It attempts to give the agent guidance on how to delegate and pick models for subagent calls, some general rules of engagement, and some requirements that must be met.
 
-The charter is the other half. It's injected into every session by a SessionStart hook and says how we build - delegation, the model table and per-model rules of engagement, verification, git. Two PreToolUse hooks back up the parts that shouldn't depend on memory: a no-backlog guard that blocks unsanctioned `gh issue create` (PRs ship complete), and a git guard that blocks `--no-verify` and commit trailers.
+The orchestrator (Fable) is then allowed to flex what resources it allocates to what problem, and when, instead of running a hard-coded pipeline. The agent scoring table idea is stolen from @Theo.
+
+We also integrate Codex models as almost-first-class citizens, and use GPT-5.6 Sol and Daybreak Blue for adversarial reviews and challenges, second opinions, and alternative designs/architectures.
+
+---
+
+Three commands in order:
+
+`/flow:prep` is the front door, and turns an issue or a free-text idea into a `ready-for-agent` spec. Github issues can **only** be created here. `prep` uses the grilling skills, along with codebase analysis, to size the problem, create ADRs, define acceptance criteria for the issue -- and also specify the **evidence** required to satisfy the acceptance criteria. 
+
+`/flow:issue` is the automated part. The orchestrator again spins up subagents to do code design against the spec, an Anthropic implementer with an OpenAI reviewer at each commit, and most importantly - evidence production. The acceptance criteria can only be signed off if there's a specific test, Actions log entry, screenshot, or end-to-end Playwright test that confirms it.
+
+`/flow:land` is the human gate and the only merge path. We run CI and review-thread checks, rebase, squash merge, cleanup, and then perform a survey of what tasks are up next.
+
+Two timers run in the background once `/flow setup` has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly report-only doc sweep that raises bug fix issues.
 
 | Path | What's there |
 |---|---|
-| `plugins/flow/charter/charter.md` | The engineering charter. Hand-authored; source of truth. |
+| `plugins/flow/charter/charter.md` | The engineering charter. |
 | `plugins/flow/commands/` | `prep.md`, `issue.md`, `land.md`, and the deprecated `issue-fixed.md`. |
-| `plugins/flow/agents/` | `implementer` (the contained write seat - no Agent tool, synchronous runs, claim-shaped reports), `codex-delegate` (a thin transport to Codex: sol, daybreak, luna), `code-architect`, `code-reviewer`. Models and efforts are set by the conductor at spawn. |
-| `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`: project setup, the doc stack, the label contract, the drift audit. |
-| `plugins/flow/scripts/codex-exec.mjs` | The raw-CLI Codex transport with a JSON envelope. Needs `codex` on PATH; returns a visible error envelope otherwise. |
+| `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool and a fixed schema output), `codex-delegate` (a thin transport to run Codex models), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
+| `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter` - not needed day-to-day, housekeeping tasks. |
+| `plugins/flow/scripts/codex-exec.mjs` | The raw-CLI Codex transport with a JSON envelope. Requires `codex` in $PATH, already authenticated. |
 | `plugins/flow/workflows/issue-fixed.mjs` | The deprecated fixed pipeline, kept as a fallback and a parts library for ad-hoc Workflow scripts. |
-| `plugins/flow/hooks/` | Charter injection, no-backlog guard, git guard. |
-| `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs: a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow cron` installs and reports on them. |
+| `plugins/flow/hooks/` | Hooks to inject the charter, prevent unsanctioned issues from being created, and stops destructive Git actions that aren't easily recoverable from the reflog. |
+| `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs - a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow cron` installs and reports on them. |
 
 flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction preferences and all engineering doctrine arrives through the charter, where it's versioned and auditable. `docs/claude-md-split.md` explains the split.
-
-## Layout
-
-```
-.claude-plugin/marketplace.json   the marketplace manifest (this repo IS the marketplace)
-plugins/flow/                     the flow plugin
-plugins/grill/                    vendored grill skills (MIT, see its NOTICE)
-plugins/unslop/                   vendored anti-slop skill (MIT, see its NOTICE)
-docs/claude-md-split.md           the recommended global CLAUDE.md split
-AGENTS.md                         how to work in this repo (CLAUDE.md symlinks to it)
-```
-
-Adding a plugin: create `plugins/<name>/` with a `.claude-plugin/plugin.json` (`name`, `version`, `description`) and whatever it ships (`skills/`, `commands/`, `agents/`, `hooks/`), append an entry to `plugins` in the manifest with `"source": "./plugins/<name>"`, and bump the manifest's `metadata.version` - the catalog version, separate from each plugin's own.
