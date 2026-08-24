@@ -19,7 +19,7 @@ Spot-check budget: for domain docs, sample up to five claims per file and say wh
 ## Report format
 
 ```
-# flow weekly doc sweep — ${DATE}
+# flow weekly doc sweep - ${DATE}
 <one line: N repos, N critical, N warnings, N candidates>
 
 ## critical   (two trusted sources, e.g. a real CLAUDE.md shadowing AGENTS.md)

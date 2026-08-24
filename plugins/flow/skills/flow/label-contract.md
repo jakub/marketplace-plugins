@@ -15,7 +15,7 @@
                  terminal-buried: wontfix · deferred  (never resurrected by agents)
 ```
 
-The tuple (name, color, description) is the contract — `/flow labels` reconciles all three,
+The tuple (name, color, description) is the contract - `/flow labels` reconciles all three,
 so a label with the right name but a drifted color or description is still drift. One color
 per lane, and the descriptions below are verbatim.
 
@@ -31,22 +31,22 @@ per lane, and the descriptions below are verbatim.
 | `wontfix` | buried | `6e6e6e` | Buried by human decision; agents never resurrect | human | human |
 | `deferred` | buried | `6e6e6e` | Consciously parked; agents never resurrect | human | human |
 
-Type modifiers — orthogonal, stack with anything, GitHub stock colors and descriptions:
+Type modifiers - orthogonal, stack with anything, GitHub stock colors and descriptions:
 `bug` (`d73a4a`), `enhancement` (`a2eeef`), `documentation` (`0075ca`).
 
 Rules:
-- Every open issue carries exactly ONE lifecycle label — no limbo. An open issue with none
+- Every open issue carries exactly ONE lifecycle label - no limbo. An open issue with none
   is drift; the lint adds `needs-triage` with a comment. Blocked-lane labels stack on top of
   the lifecycle label they interrupt.
 - The taxonomy is CLOSED: the table plus the three modifiers is the complete legal set. Any
-  other label is drift — the lint reports it and never deletes it (deletion strips the label
+  other label is drift - the lint reports it and never deletes it (deletion strips the label
   from every issue repo-wide with no undo; that is a human's call).
 - No agent creates issues outside `FLOW_SANCTION` lanes (enforced by the no-backlog hook).
 - Nothing self-promotes: `agent-found → ready-for-agent` requires a /flow:prep pass.
 
-Retired — do not recreate:
+Retired - do not recreate:
 - `ready-for-human` (2026-08): staging for human-shaped work. Killed because the category
-  was empty in practice — prep hardens the spec, the assignee field records who builds it,
+  was empty in practice - prep hardens the spec, the assignee field records who builds it,
   and umbrella epics live in `needs-triage` until prep decomposes them into bounded issues.
 - `evidence-public` (2026-08): the public-publish ack, killed together with the
   per-criterion `visibility:` field. Runs publish artifact evidence to the tailnet-private
@@ -56,23 +56,23 @@ Retired — do not recreate:
 ## The ready-for-agent contract
 
 An issue may hold `ready-for-agent` only while ALL of these validate. The nightly lint
-removes the label (and comments why) from any issue that stops conforming — the label is a
+removes the label (and comments why) from any issue that stops conforming - the label is a
 contract, not a vibe. This contract is the safety case for eventual unattended
 auto-implementation; keep it strict.
 
 1. **Restated why**: the body opens with goal + why, current enough that a cold reader
    needs no archaeology.
-2. **Agreed approach — design closure is explicit**: the design decision(s), with ADR
+2. **Agreed approach - design closure is explicit**: the design decision(s), with ADR
    links where permanent. Either the shape is decided (ADR / body records it) or the body
    explicitly declares the shape free within stated bounds. An open design question
-   anywhere in the spec fails the contract — design debate belongs in prep's dialectic,
+   anywhere in the spec fails the contract - design debate belongs in prep's dialectic,
    not in a run.
-3. **`## Acceptance Criteria`** — the heading spelled exactly that way. The claim step
+3. **`## Acceptance Criteria`** - the heading spelled exactly that way. The claim step
    snapshots the section by exact string match, so `Acceptance criteria` or `acceptance
    criteria` silently snapshots nothing and the run judges against an empty set. Every
    criterion:
    - is observable/testable as written (no "works well", no "should be fast" without a number);
-   - is a task-list item (`- [ ]`) carrying an `evidence:` sub-bullet — the test, command,
+   - is a task-list item (`- [ ]`) carrying an `evidence:` sub-bullet - the test, command,
      transcript, or capture that will prove it;
    - resolves to something a reviewer can open in a browser. Evidence obtainable only by
      cloning and running locally fails the point;
@@ -101,5 +101,5 @@ auto-implementation; keep it strict.
 
 The nightly cron runs a narrower version: its allowlist has `gh label list` only, so step 1
 is report-only there (tuple drift is a finding, not a fix), and it performs only the label
-moves its standing permissions name — steps 2–4. Full reconciliation is this subcommand's
+moves its standing permissions name - steps 2-4. Full reconciliation is this subcommand's
 job, run interactively.

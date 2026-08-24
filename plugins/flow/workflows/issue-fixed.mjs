@@ -23,13 +23,13 @@ const EXTERNAL_WAIT_MINUTES = 15 // post-push cap on waiting for coderabbit et a
 // taste-mixed judgment (reconciling rival designs, separating reviewer noise from signal)
 // sits on fable; pure reasoning and coding (adjudication, implementation, fixes) sits on
 // opus at the top of its effort ladder, which fable does not have. Trivial synthesis stays
-// on opus — the fan-out is already two designs and the decision space is small.
+// on opus - the fan-out is already two designs and the decision space is small.
 // The codex leg is in EVERY row deliberately. It is a sonnet/low transport over a
-// flat-rate subscription, so it is the cheapest seat in the fabric — and it is the only
+// flat-rate subscription, so it is the cheapest seat in the fabric - and it is the only
 // cross-model signal in the run, and the gate on the post-loop re-verification. Cutting it
 // from the smallest bucket saved almost nothing and meant a misclassified issue got no
 // decorrelated review at all, which reads as a clean fabric because fewer things looked.
-// `medium` and `large` are intentionally identical — the panel is already at full width by
+// `medium` and `large` are intentionally identical - the panel is already at full width by
 // `medium`, so `large` buys nothing here and exists as a journal-level signal only. Do not
 // read the duplicate row as an oversight.
 const FABRIC = {
@@ -48,7 +48,7 @@ const FABRIC = {
 // forbidden from deciding visibility, and absent means private.
 // May arrive as a parsed object OR a JSON-encoded string; parse defensively.
 // implModel/implEffort override the impl seat (default since 2026-07-25: effort routed by
-// the synthesizer's difficulty verdict — mechanical sonnet/medium, standard opus/medium,
+// the synthesizer's difficulty verdict - mechanical sonnet/medium, standard opus/medium,
 // hard opus/xhigh). A null result re-runs one rung UP on the same tier, or on the routed
 // model when an override put a different one in the seat, so neither an override
 // experiment nor a classifier refusal can lose the run.
@@ -60,17 +60,17 @@ const EXTERNAL_BOTS = A.externalReviewers || ['coderabbitai']
 const sentinel = (s) => { const v = (s || '').trim(); return v && !/^(none|n\/a|null|nil|no)\.?$/i.test(v) ? v : '' }
 
 // envNote: repo-specific environment the push/gate agents cannot infer from a one-line
-// prompt — e.g. exports a pre-push hook's test suite needs (the wf_512af7b9 false-green:
+// prompt - e.g. exports a pre-push hook's test suite needs (the wf_512af7b9 false-green:
 // hook needed DATABASE_URL, bare push agent didn't have it). Empty → adds nothing.
 const ENV_NOTE = sentinel(A.envNote)
-  ? `\nEnvironment note (hooks/tests need this — e.g. exports required by pre-push hooks): ${sentinel(A.envNote)}`
+  ? `\nEnvironment note (hooks/tests need this - e.g. exports required by pre-push hooks): ${sentinel(A.envNote)}`
   : ''
 
 // Codex legs run on the codex-exec transport that ships in THIS plugin (the retired
-// companion plugin's cache path broke silently once — never again a dependency we don't
+// companion plugin's cache path broke silently once - never again a dependency we don't
 // carry). Seat overrides are validated here so a typo degrades to the default, visibly,
 // instead of burning the leg on a USAGE envelope. pluginRoot arrives from the conductor's
-// ${CLAUDE_PLUGIN_ROOT}; an uninterpolated literal still contains '$' — treat as unset
+// ${CLAUDE_PLUGIN_ROOT}; an uninterpolated literal still contains '$' - treat as unset
 // and fall back to the same-plugin glob (if this workflow runs, flow is installed).
 // Seat defaults are stated HERE, not inherited. `~/.codex/config.toml` is mutable state that
 // the Codex TUI rewrites with the user's interactive picks, so an omitted flag would silently
@@ -82,13 +82,13 @@ const CODEX_DEFAULT_EFFORT = 'high'
 const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const codexEffortReq = sentinel(A.codexEffort)
 const codexEffortOk = CODEX_EFFORTS.includes(codexEffortReq) ? codexEffortReq : ''
-if (codexEffortReq && !codexEffortOk) log(`codexEffort '${codexEffortReq}' not in ${CODEX_EFFORTS.join('|')} — ignored, seat default applies`)
+if (codexEffortReq && !codexEffortOk) log(`codexEffort '${codexEffortReq}' not in ${CODEX_EFFORTS.join('|')} - ignored, seat default applies`)
 const CODEX_EFFORT = codexEffortOk || CODEX_DEFAULT_EFFORT
 const codexModelReq = sentinel(A.codexModel)
-// Same shape check the transport applies — but HERE it protects the generated shell
+// Same shape check the transport applies - but HERE it protects the generated shell
 // command (the value is interpolated into a Bash one-liner), not just the codex call.
 const codexModelOk = /^[a-z0-9][a-z0-9.-]*$/.test(codexModelReq) ? codexModelReq : ''
-if (codexModelReq && !codexModelOk) log(`codexModel '${codexModelReq}' has an implausible shape — ignored, seat default applies`)
+if (codexModelReq && !codexModelOk) log(`codexModel '${codexModelReq}' has an implausible shape - ignored, seat default applies`)
 const CODEX_MODEL = codexModelOk || CODEX_DEFAULT_MODEL
 const CODEX_FAST = A.codexFast === true || A.codexFast === 'true'
 const EVIDENCE_PUBLIC = A.evidencePublic === true || A.evidencePublic === 'true'
@@ -222,7 +222,7 @@ const PR_INFO = {
     prUrl: { type: 'string' },
     rebased: { type: 'boolean' },
     conflict: { type: 'boolean', description: 'true if rebase onto base hit conflicts (branch pushed un-rebased)' },
-    headPushed: { type: 'boolean', description: 'observed after the push: git ls-remote sha for the branch equals local HEAD — never inferred from push exit status alone' },
+    headPushed: { type: 'boolean', description: 'observed after the push: git ls-remote sha for the branch equals local HEAD - never inferred from push exit status alone' },
     closesLinked: { type: 'boolean', description: 'closingIssuesReferences contains the issue, verified after creation' },
   },
 }
@@ -298,53 +298,53 @@ const DONE = {
 }
 
 // ── prompt builders ──────────────────────────────────────────────────────────
-const here = `All work happens in the worktree at ${WT}. Keep the persistent shell rooted in the main repo — never use a bare \`cd ${WT}\` prefix. For shell commands wrap the cd in a subshell: \`(cd ${WT} && <cmd>)\`; or use \`git -C ${WT} …\`. For Read/Edit/Glob use absolute paths under ${WT}. (A "Shell cwd was reset to …" notice is expected, benign harness behavior — never a broken tool channel or a reason to stop.)`
+const here = `All work happens in the worktree at ${WT}. Keep the persistent shell rooted in the main repo - never use a bare \`cd ${WT}\` prefix. For shell commands wrap the cd in a subshell: \`(cd ${WT} && <cmd>)\`; or use \`git -C ${WT} …\`. For Read/Edit/Glob use absolute paths under ${WT}. (A "Shell cwd was reset to …" notice is expected, benign harness behavior - never a broken tool channel or a reason to stop.)`
 
-const transientRule = `If a command fails transiently (rate limit, 401/5xx, network), retry up to 3 times with backoff. If you still cannot get a definitive result, report status "unknown" with the reason — NEVER report a pass you did not observe.`
+const transientRule = `If a command fails transiently (rate limit, 401/5xx, network), retry up to 3 times with backoff. If you still cannot get a definitive result, report status "unknown" with the reason - NEVER report a pass you did not observe.`
 
 // You are already a leaf of a fan-out: the workflow spawns the parallelism, the seat does
 // the work. Left uncapped, a write-capable seat opens a second fan-out underneath this one
-// — cost and wall-clock multiply, and two agents editing one file in a shared worktree is a
+// - cost and wall-clock multiply, and two agents editing one file in a shared worktree is a
 // merge conflict with extra steps.
 const delegationRule = `Do the work yourself in this agent. Do NOT spawn subagents: you are already one leaf of a parallel fan-out, and this worktree is shared with sibling agents. Verification belongs in your own loop, never in a delegate.`
 
 // Opus-5-class models expand scope and can call a partially-finished task done; both are
 // cheaper to prevent here than to catch in the review fabric (each costs a fix round).
-const scopeRule = `Deliver the plan's scope and nothing beyond it: no unasked-for abstractions, files, flags, or error handling for cases that cannot happen. Finish the whole task — report completion only when every milestone is genuinely done. If something is truly blocked, complete everything else and say plainly what is missing and why, rather than reporting done.`
+const scopeRule = `Deliver the plan's scope and nothing beyond it: no unasked-for abstractions, files, flags, or error handling for cases that cannot happen. Finish the whole task - report completion only when every milestone is genuinely done. If something is truly blocked, complete everything else and say plainly what is missing and why, rather than reporting done.`
 
-const sizePrompt = `Classify the IMPLEMENTATION size of issue #${A.issueNumber} — coarse triage, not a design.
+const sizePrompt = `Classify the IMPLEMENTATION size of issue #${A.issueNumber} - coarse triage, not a design.
 ${here}
 ${A.contextPack}
 
-Buckets: trivial (no production-code risk at all — test-only, doc-only, config-only) · small (1-2 files, contained, obvious shape) · medium (3-6 files or non-obvious design) · large (cross-cutting / new subsystem / migration).
+Buckets: trivial (no production-code risk at all - test-only, doc-only, config-only) · small (1-2 files, contained, obvious shape) · medium (3-6 files or non-obvious design) · large (cross-cutting / new subsystem / migration).
 
 Between small, medium and large: when torn, pick the smaller unless there is a genuine design decision to make.
 
-trivial is NOT "small enough" — it is a separate and stronger claim: that no production code path can regress, however few lines moved. Any change to production code is at minimum small. The verdict buys review coverage, so judge it on what could break, not on line count.`
+trivial is NOT "small enough" - it is a separate and stronger claim: that no production code path can regress, however few lines moved. Any change to production code is at minimum small. The verdict buys review coverage, so judge it on what could break, not on line count.`
 
 const architectPrompt = (framing) => `Design the architecture for issue #${A.issueNumber}.
 ${here}
 Framing: ${framing === 'minimal'
   ? 'the SMALLEST change that satisfies the issue, maximum reuse of existing code.'
-  : 'the best long-term design — elegant abstractions, new structure where it pays off.'}
+  : 'the best long-term design - elegant abstractions, new structure where it pays off.'}
 
-Context pack (explore independently from these pointers — Read referenced files, follow imports, run your own greps):
+Context pack (explore independently from these pointers - Read referenced files, follow imports, run your own greps):
 ${A.contextPack}
 
 Propose ONE concrete approach. Flag deviations from existing patterns and any ambiguity the issue + code cannot resolve.`
 
-const codexDesignPrompt = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this leg would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:
+const codexDesignPrompt = `Run EXACTLY this - through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this leg would falsely read as unavailable) - then handle the single JSON envelope it prints on stdout:
 ${CODEX_LOCATE} && node "$CODEX" task --cwd "${WT}" --effort ${CODEX_EFFORT} --timeout-secs 540${codexTuning} <<'PROMPT'
 You are designing feature architecture for issue #${A.issueNumber} in ${WT}.
 ${A.contextPack}
 Explore the referenced paths and the code they lead to before designing. Propose ONE concrete approach:
 files to create/modify, key type/module decisions, data flow, error handling, test strategy.
-Flag risks and pattern deviations. Long-term maintainability focus. Read-only — write NO files.
+Flag risks and pattern deviations. Long-term maintainability focus. Read-only - write NO files.
 PROMPT
 .ok true → return .output verbatim as your "approach" (fill the other fields from it).
 .ok false, or the command itself fails for ANY reason (transport not found, node error,
-unparseable stdout): set approach to exactly "CODEX_UNAVAILABLE: <error.kind> — <one-line reason>"
-(kind UNKNOWN when there is no envelope) and leave every other field empty — never fill the
+unparseable stdout): set approach to exactly "CODEX_UNAVAILABLE: <error.kind> - <one-line reason>"
+(kind UNKNOWN when there is no envelope) and leave every other field empty - never fill the
 schema with a design codex did not write.`
 
 const synthesizePrompt = (designs, panelNote) => `Synthesize ${designs.length} independent designs for issue #${A.issueNumber} into ONE plan.${panelNote}
@@ -354,16 +354,16 @@ Issue body:
 ${A.issueBody}
 
 Acceptance criteria (the contract the run will be measured against):
-${A.acceptanceCriteria || '(none stated — weak signal; consider blockingAmbiguity)'}
+${A.acceptanceCriteria || '(none stated - weak signal; consider blockingAmbiguity)'}
 
 The designs:
 ${JSON.stringify(designs, null, 2)}
 
 Synthesis rule: default to the MINIMAL-change design; switch to the CLEAN design where minimal
-violates a documented decision (docs/adr/, context.md — Read them when present). Cross-model
+violates a documented decision (docs/adr/, context.md - Read them when present). Cross-model
 disagreement (codex vs claude legs) is signal: resolve it explicitly in "approach", don't average it.
 
-Assign "difficulty" honestly — it routes the implementer (mechanical→sonnet, everything else→opus
+Assign "difficulty" honestly - it routes the implementer (mechanical→sonnet, everything else→opus
 at the top of its effort ladder). Break work into ordered milestones the implementer commits atomically.
 Set blockingAmbiguity ONLY for a blocker that issue+code+docs genuinely cannot settle.`
 
@@ -388,45 +388,45 @@ On failure: fix in atomic commits and re-run (max a few rounds), then report.
 ${transientRule}`
 
 // Every codex review seat (the fabric's adversarial leg AND the post-push lenses) shares
-// one command builder and one envelope contract — if a mapping rule appears twice, one
+// one command builder and one envelope contract - if a mapping rule appears twice, one
 // copy is a bug.
-const codexBashNote = `Run EXACTLY this — through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this seat would falsely read as unavailable) — then handle the single JSON envelope it prints on stdout:`
+const codexBashNote = `Run EXACTLY this - through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this seat would falsely read as unavailable) - then handle the single JSON envelope it prints on stdout:`
 const codexReviewCmd = ({ model = CODEX_MODEL, effort = CODEX_EFFORT, fast = CODEX_FAST } = {}) =>
   `${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE} --timeout-secs 540 --effort ${effort} --model ${model}${fast ? ' --fast' : ''}`
-const codexEnvelopeRules = `.ok true → map .findings[] into the findings schema MECHANICALLY — field transcription, not
+const codexEnvelopeRules = `.ok true → map .findings[] into the findings schema MECHANICALLY - field transcription, not
 reinterpretation: severity→severity (same enum), title→title, file→file, line→line,
 detail = detail plus " Recommendation: <recommendation>" when non-empty, systemic=false
 unless the finding is genuinely cross-crate-refactor scale, confidence = 55 (codex findings
 arrive inferred from reading, unverified by execution). Empty .findings → empty findings.
 If .fast.requested is true and .fast.applied is false, ADD one finding: severity "low",
 title "CODEX_FAST_DEGRADED", file "", line 0, detail = the envelope's fast/error context,
-systemic false, confidence 100 — the workflow logs and drops it; it is observability, not review signal.
+systemic false, confidence 100 - the workflow logs and drops it; it is observability, not review signal.
 .ok false, or the command itself fails for ANY reason (transport not found, node error,
 unparseable stdout): return exactly one finding: severity "low",
-title "CODEX_UNAVAILABLE: <error.kind> — <one-line reason>" (kind UNKNOWN when there is no
+title "CODEX_UNAVAILABLE: <error.kind> - <one-line reason>" (kind UNKNOWN when there is no
 envelope), file "", line 0, detail = the envelope's error.detail or the raw failure,
-systemic false, confidence 100 — an errored review must be visible as unavailable, never as
+systemic false, confidence 100 - an errored review must be visible as unavailable, never as
 a clean pass.`
 
 const codexAdversarialPrompt = `${codexBashNote}
 ${codexReviewCmd()}
 ${codexEnvelopeRules}`
 
-const reviewScope = `Review the diff (\`git -C ${WT} diff ${BASE}...HEAD\`) for issue #${A.issueNumber}. Cite file:line. Severity per finding — severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium. Set confidence per finding (0-100: is it real — not severity). Set systemic=true ONLY for cross-crate-refactor-scale work that cannot fit this PR.`
+const reviewScope = `Review the diff (\`git -C ${WT} diff ${BASE}...HEAD\`) for issue #${A.issueNumber}. Cite file:line. Severity per finding - severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium. Set confidence per finding (0-100: is it real - not severity). Set systemic=true ONLY for cross-crate-refactor-scale work that cannot fit this PR.`
 const correctnessPrompt = `${reviewScope}
 Focus: correctness bugs, races, TOCTOU, data-flow errors, error-handling holes, edge cases.`
 const simplifyPrompt = `${reviewScope}
-Focus ONLY: reuse, simplification, efficiency, altitude drift — not bugs. Severity medium/low.`
+Focus ONLY: reuse, simplification, efficiency, altitude drift - not bugs. Severity medium/low.`
 const securityPrompt = `${reviewScope}
 Hunt: injection (SQL/HTML/shell/template), secret handling, authz gaps, unsafe deserialization, TOCTOU, panics in prod paths, trust-boundary leaks.`
 
-const acCheckPrompt = (plan) => `Verify the diff against issue #${A.issueNumber}'s acceptance criteria — per criterion, with evidence.
+const acCheckPrompt = (plan) => `Verify the diff against issue #${A.issueNumber}'s acceptance criteria - per criterion, with evidence.
 ${here}
 Diff: \`git -C ${WT} diff ${BASE}...HEAD\`. Run tests/commands as needed to OBSERVE each criterion; do not infer from reading alone where execution is possible.
-${transientRule} (an unobservable criterion is status "unknown" — unknown is NOT met.)
+${transientRule} (an unobservable criterion is status "unknown" - unknown is NOT met.)
 
-Acceptance criteria (snapshot taken at launch — judge against THIS text):
-${A.acceptanceCriteria || '(none — derive the criteria list from the issue body, flag that AC were missing)'}
+Acceptance criteria (snapshot taken at launch - judge against THIS text):
+${A.acceptanceCriteria || '(none - derive the criteria list from the issue body, flag that AC were missing)'}
 
 Issue body:
 ${A.issueBody}
@@ -441,14 +441,14 @@ Finding [${f.severity}] ${f.title} @ ${f.file}:${f.line}
 ${f.detail}
 Plan goal (stay in scope): ${plan.goal}
 Smallest correct fix; commit conventionally (NEVER --no-verify); report what changed.
-Stage ONLY the files you edited, by explicit path — never "git add -A", "git add .", or "git commit -a". Other agents may be fixing other files in this worktree concurrently; staging is repo-global, and a broad add commits their half-finished work into your commit.
-Fix exactly this finding — do not refactor its surroundings or fold in adjacent improvements.
+Stage ONLY the files you edited, by explicit path - never "git add -A", "git add .", or "git commit -a". Other agents may be fixing other files in this worktree concurrently; staging is repo-global, and a broad add commits their half-finished work into your commit.
+Fix exactly this finding - do not refactor its surroundings or fold in adjacent improvements.
 ${delegationRule}`
 
 const adjudicatePrompt = (blocking) => `Adjudicate the blocking findings that survived ${FIX_ROUND_CAP} fix rounds for issue #${A.issueNumber}.
 ${here}
-For each: is it a REAL blocker (ship-stopping if merged) or reviewer theater (style dressed as severity, already mitigated, wrong about the code)? Read the actual code before judging — do not take the finding's word for it.
-Severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium — do not dismiss or downgrade such a finding as low-impact. Findings carry a structured confidence (is-it-real, 0-100): weigh low-confidence criticals skeptically; do not dismiss high-confidence mediums as noise.
+For each: is it a REAL blocker (ship-stopping if merged) or reviewer theater (style dressed as severity, already mitigated, wrong about the code)? Read the actual code before judging - do not take the finding's word for it.
+Severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium - do not dismiss or downgrade such a finding as low-impact. Findings carry a structured confidence (is-it-real, 0-100): weigh low-confidence criticals skeptically; do not dismiss high-confidence mediums as noise.
 realBlockers → escalates to a human. dismissed → recorded with your reason. Be strict about what interrupts a human.
 
 Findings:
@@ -458,7 +458,7 @@ const docSyncPrompt = `Documentation sync for issue #${A.issueNumber}.
 ${here}
 Read \`git -C ${WT} diff ${BASE}...HEAD --stat\` and the touched files. If the change altered domain
 behavior, vocabulary, or crate responsibilities: update the affected context.md slice(s) and
-crate AGENTS.md files to match reality. Commit docs-only as \`docs(sync): <what>\` — nothing else
+crate AGENTS.md files to match reality. Commit docs-only as \`docs(sync): <what>\` - nothing else
 in the commit. If nothing needs updating, report done with note "no doc drift".
 Edit the existing prose in place and keep these files as short as they were: correct what the
 diff made false, do not append summary sections, restate the changelog, or pad with context the
@@ -468,21 +468,21 @@ ${delegationRule}`
 const prPrompt = `Publish the branch for issue #${A.issueNumber} as a PR.
 ${here}${ENV_NOTE}
 1. \`git -C ${WT} fetch origin\` then attempt \`git -C ${WT} rebase origin/main\`.
-   On conflict: \`git -C ${WT} rebase --abort\`, set conflict=true, and continue (push un-rebased — GitHub will surface the conflict; a human or a rebase pass resolves it).
-2. Push: \`git -C ${WT} push -u origin ${A.branch}\` (NEVER --no-verify; if a pre-push hook fails, capture its output — the environment note above may name required exports). Then VERIFY:
-   compare \`git -C ${WT} rev-parse HEAD\` with the first field of \`git ls-remote origin refs/heads/${A.branch}\`. headPushed=true ONLY when they match — never inferred from the push exit status.
-   If the push failed but a PR already exists for the branch, still report it — with headPushed=false and the hook/push output noted.
+   On conflict: \`git -C ${WT} rebase --abort\`, set conflict=true, and continue (push un-rebased - GitHub will surface the conflict; a human or a rebase pass resolves it).
+2. Push: \`git -C ${WT} push -u origin ${A.branch}\` (NEVER --no-verify; if a pre-push hook fails, capture its output - the environment note above may name required exports). Then VERIFY:
+   compare \`git -C ${WT} rev-parse HEAD\` with the first field of \`git ls-remote origin refs/heads/${A.branch}\`. headPushed=true ONLY when they match - never inferred from the push exit status.
+   If the push failed but a PR already exists for the branch, still report it - with headPushed=false and the hook/push output noted.
 3. Create the PR against main: title from the issue, body = summary narrative (what + why + key decisions) followed by a one-line-per-commit changelog. No attribution trailers.
-   The body MUST end with a line containing exactly \`Closes #${A.issueNumber}\` — this is a hard requirement, not styling: it is what links the PR to the issue for the land ritual.
+   The body MUST end with a line containing exactly \`Closes #${A.issueNumber}\` - this is a hard requirement, not styling: it is what links the PR to the issue for the land ritual.
    Use \`gh pr create\`. If a PR for the branch already exists, reuse it (and still verify the Closes line below).
 4. VERIFY the link: \`gh pr view <number> --json closingIssuesReferences\` must reference issue #${A.issueNumber}. If it does not, edit the body to append the \`Closes #${A.issueNumber}\` line (\`gh pr edit --body-file\` with current body + the line) and re-verify. Report closesLinked from what you OBSERVED, never from having written the line.
 ${transientRule}
 Report prNumber, prUrl, rebased, conflict, headPushed, closesLinked.`
 
-// Post-push lenses run on the codex transport — the complementary sweep is cross-model,
+// Post-push lenses run on the codex transport - the complementary sweep is cross-model,
 // not opus re-reading its own family's diff. sol/high holds the judgment-heavy lenses;
 // comments is the most mechanical of the four, so it takes luna/max (the cheap-depth seat,
-// framework §2 — sanctioned here precisely because it is NOT the decorrelation seat).
+// framework §2 - sanctioned here precisely because it is NOT the decorrelation seat).
 // Seats are pinned: --codex-model/--codex-effort tune the fabric seats only; --codex-fast
 // passes through. This also drops the pr-review-toolkit agentType dependency.
 const LENS_SEATS = {
@@ -492,10 +492,10 @@ const LENS_SEATS = {
   types: { model: 'gpt-5.6-sol', effort: 'high' },
 }
 const LENS_FOCUS = {
-  tests: 'Focus ONLY: behavioral test coverage — gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behavior, missing edge/failure cases.',
-  'silent-failures': 'Focus ONLY: silent failures — swallowed errors, catch-and-continue, fallbacks masking faults, missing error propagation/logging.',
-  comments: 'Focus ONLY: comment accuracy — comments the diff made stale, missing constraint documentation on non-obvious code, comment rot.',
-  types: 'Focus ONLY: type design in added/modified types — invariant expression, encapsulation, impossible-states-representable problems.',
+  tests: 'Focus ONLY: behavioral test coverage - gaps where new logic lacks a test that would catch its regression, tests asserting implementation instead of behavior, missing edge/failure cases.',
+  'silent-failures': 'Focus ONLY: silent failures - swallowed errors, catch-and-continue, fallbacks masking faults, missing error propagation/logging.',
+  comments: 'Focus ONLY: comment accuracy - comments the diff made stale, missing constraint documentation on non-obvious code, comment rot.',
+  types: 'Focus ONLY: type design in added/modified types - invariant expression, encapsulation, impossible-states-representable problems.',
 }
 const lensPrompts = Object.fromEntries(Object.keys(LENS_SEATS).map((k) => [k, `${codexBashNote}
 ${codexReviewCmd(LENS_SEATS[k])} <<'FOCUS'
@@ -508,7 +508,7 @@ Poll up to ${EXTERNAL_WAIT_MINUTES} minutes total: check every ~45s with
 \`gh pr view ${pr.prNumber} --json reviews,comments\` and
 \`gh api repos/{owner}/{repo}/pulls/${pr.prNumber}/comments --paginate\` (run from ${WT} via subshell).
 ${here}
-Stop early once at least one listed bot has posted a completed review (not a "reviewing…" placeholder — a placeholder or in-progress marker does NOT count as received).
+Stop early once at least one listed bot has posted a completed review (not a "reviewing…" placeholder - a placeholder or in-progress marker does NOT count as received).
 Return every substantive item from those bots: kind review|thread, body (trim boilerplate), path/line when anchored, headSha when the API provides it.
 receivedAny and timedOut are the two mutually exclusive outcomes of the window: a completed review observed → receivedAny=true, timedOut=false; the window closed without one → receivedAny=false, timedOut=true. Never report false/false.
 ${transientRule}`
@@ -516,8 +516,8 @@ ${transientRule}`
 const postPushTriagePrompt = (internal, external, headNote) => `Triage post-push review findings for issue #${A.issueNumber} into ONE verdict set.
 ${here}
 ${headNote}
-Sources: (a) complementary self-review lenses, (b) external reviewer items. For each: fix (real, in scope, actionable now), noise (wrong, stylistic, out of scope — with reason), or already-fixed (anchored to a stale SHA — VERIFY against current HEAD before dismissing; check the cited path/line in the code as it exists now).
-Mediums get fixed, not deferred. Severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium — do not dismiss or downgrade such a finding as low-impact. Findings carry a structured confidence (is-it-real, 0-100): weigh low-confidence criticals skeptically; do not dismiss high-confidence mediums as noise. systemic=true only for cross-crate-refactor scale.
+Sources: (a) complementary self-review lenses, (b) external reviewer items. For each: fix (real, in scope, actionable now), noise (wrong, stylistic, out of scope - with reason), or already-fixed (anchored to a stale SHA - VERIFY against current HEAD before dismissing; check the cited path/line in the code as it exists now).
+Mediums get fixed, not deferred. Severity floor: a reachable panic, crash, or DoS triggerable by request-controlled input is never below medium - do not dismiss or downgrade such a finding as low-impact. Findings carry a structured confidence (is-it-real, 0-100): weigh low-confidence criticals skeptically; do not dismiss high-confidence mediums as noise. systemic=true only for cross-crate-refactor scale.
 
 Self-review findings:
 ${JSON.stringify(internal, null, 2)}
@@ -525,7 +525,7 @@ ${JSON.stringify(internal, null, 2)}
 External items:
 ${JSON.stringify(external, null, 2)}`
 
-const replyPrompt = (pr, triage) => `Reply to external reviewer threads on PR #${pr.prNumber} so the record is clean. Best effort — never fail the run over a reply.
+const replyPrompt = (pr, triage) => `Reply to external reviewer threads on PR #${pr.prNumber} so the record is clean. Best effort - never fail the run over a reply.
 ${here}
 For each external item that was fixed: reply naming the fixing commit. For each dismissed as noise/already-fixed: a one-line reasoned reply. Use \`gh api\` review-comment replies where anchored, else a single summary comment on the PR.
 Triage record:
@@ -533,61 +533,61 @@ ${JSON.stringify(triage, null, 2)}`
 
 const pushPrompt = `Push the post-push fix commits and VERIFY they arrived.
 ${here}${ENV_NOTE}
-1. \`git -C ${WT} push origin ${A.branch}\` — NEVER --no-verify. If a pre-push hook fails, do not bypass it; capture the failing output.
+1. \`git -C ${WT} push origin ${A.branch}\` - NEVER --no-verify. If a pre-push hook fails, do not bypass it; capture the failing output.
 2. Verify regardless of what step 1's exit status claimed: headSha = \`git -C ${WT} rev-parse HEAD\`; remoteSha = first field of \`git ls-remote origin refs/heads/${A.branch}\`.
-3. pushed=true ONLY when headSha equals remoteSha. Otherwise pushed=false and note = the exact tail of the hook/push output — surfacing the failure IS the job; never report success you did not observe.
+3. pushed=true ONLY when headSha equals remoteSha. Otherwise pushed=false and note = the exact tail of the hook/push output - surfacing the failure IS the job; never report success you did not observe.
 ${transientRule}`
 
-const handoffPrompt = (pr, pushRepairNote) => `Final handoff verification for PR #${pr.prNumber} (issue #${A.issueNumber}) — report the PR as it exists NOW, not as earlier stages left it.
+const handoffPrompt = (pr, pushRepairNote) => `Final handoff verification for PR #${pr.prNumber} (issue #${A.issueNumber}) - report the PR as it exists NOW, not as earlier stages left it.
 ${here}${ENV_NOTE}
-${pushRepairNote}0. HEAD SYNC FIRST — every read below is meaningless against a stale head. Compare local = \`git -C ${WT} rev-parse HEAD\` with remote = \`gh pr view ${pr.prNumber} --json headRefOid -q .headRefOid\`.
+${pushRepairNote}0. HEAD SYNC FIRST - every read below is meaningless against a stale head. Compare local = \`git -C ${WT} rev-parse HEAD\` with remote = \`gh pr view ${pr.prNumber} --json headRefOid -q .headRefOid\`.
    - Match → headInSync=true, localAhead=0.
    - Local ahead (the remote oid is an ancestor of HEAD): push \`git -C ${WT} push origin ${A.branch}\` (the environment note above names exports pre-push hooks may need; NEVER --no-verify), re-read headRefOid, re-compare, and report the FINAL observed state with localAhead = commits still unpushed.
-   - Remote ahead or histories diverged: do NOT push or force — headInSync=false, describe the divergence in ciDetail.
+   - Remote ahead or histories diverged: do NOT push or force - headInSync=false, describe the divergence in ciDetail.
    HARD RULE: ciStatus may be "green" ONLY when headInSync=true. If the head is stale or your push failed, ciStatus is "pending" (CI has not run on the real work) or "unknown", and ciDetail names the divergence and the push/hook error verbatim.
-1. CI: read \`gh pr view ${pr.prNumber} --json statusCheckRollup\` AND \`gh pr checks ${pr.prNumber}\` (the json rollup mixes CheckRuns with commit statuses — entries with null fields are statuses; judge them via gh pr checks). Every completed check successful → green. Any failure → red; name the failing check(s) and pull the one-line cause from the job log. Anything queued/running → pending. ${transientRule}
+1. CI: read \`gh pr view ${pr.prNumber} --json statusCheckRollup\` AND \`gh pr checks ${pr.prNumber}\` (the json rollup mixes CheckRuns with commit statuses - entries with null fields are statuses; judge them via gh pr checks). Every completed check successful → green. Any failure → red; name the failing check(s) and pull the one-line cause from the job log. Anything queued/running → pending. ${transientRule}
 2. Closes-link: \`gh pr view ${pr.prNumber} --json closingIssuesReferences\` must reference issue #${A.issueNumber}. If it does not: append a final line \`Closes #${A.issueNumber}\` to the PR body (\`gh pr edit --body-file\` with the current body plus the line), re-read, and report the observed post-repair state.
-3. Late externals: check reviews/threads from ${EXTERNAL_BOTS.join(', ')} (\`gh pr view ${pr.prNumber} --json reviews\` + \`gh api repos/{owner}/{repo}/pulls/${pr.prNumber}/comments --paginate\`) — count substantive items the run has not replied to (the post-push poll window may have closed before they arrived). Count only; do NOT reply or resolve.
-4. finalSummary: from \`git -C ${WT} log ${BASE}..HEAD --oneline\` and \`git -C ${WT} diff ${BASE}...HEAD --stat\` — commit count, diffstat headline, and anything notable that landed AFTER the implementation stage (post-push fixes, captured evidence, doc syncs).`
+3. Late externals: check reviews/threads from ${EXTERNAL_BOTS.join(', ')} (\`gh pr view ${pr.prNumber} --json reviews\` + \`gh api repos/{owner}/{repo}/pulls/${pr.prNumber}/comments --paginate\`) - count substantive items the run has not replied to (the post-push poll window may have closed before they arrived). Count only; do NOT reply or resolve.
+4. finalSummary: from \`git -C ${WT} log ${BASE}..HEAD --oneline\` and \`git -C ${WT} diff ${BASE}...HEAD --stat\` - commit count, diffstat headline, and anything notable that landed AFTER the implementation stage (post-push fixes, captured evidence, doc syncs).`
 
 const ledgerPrompt = (pr, acCheck) => `Post the evidence ledger on PR #${pr.prNumber} as a comment.
 ${here}
-Build a markdown table: Criterion | Verdict | Evidence — one row per acceptance criterion from the
+Build a markdown table: Criterion | Verdict | Evidence - one row per acceptance criterion from the
 AC check below. A reviewer should be able to check every row from the GitHub page without cloning
 anything, so every Evidence cell prefers a link they can open over text you pasted.
 
 SURFACES, strongest first. A criterion may declare \`surface:\` in the AC text below; infer it from
 the evidence wording when absent.
-1. \`ci\` — something CI ran. Link the job and step rather than pasting a tail: \`gh run list --branch
+1. \`ci\` - something CI ran. Link the job and step rather than pasting a tail: \`gh run list --branch
    ${A.branch} --json databaseId,workflowName,headSha\`, then \`gh run view <id> --json jobs\` for the
    job url; GitHub log urls take a \`#step:<n>:<line>\` anchor. This is the strongest cell available
-   because GitHub produced the bytes, not you — prefer it whenever the criterion's test or command
+   because GitHub produced the bytes, not you - prefer it whenever the criterion's test or command
    runs in CI at all.
-2. \`code\` — a permalink into the diff, pinned to this PR's head SHA.
-3. \`commit\` — a capture committed to the evidence branch. Use the repo's own committed-evidence
+2. \`code\` - a permalink into the diff, pinned to this PR's head SHA.
+3. \`commit\` - a capture committed to the evidence branch. Use the repo's own committed-evidence
    convention when one exists (e.g. a \`visual-evidence/\` dir already on the branch); otherwise commit
    to \`flow-evidence\` under a \`pr-${pr.prNumber}/\` path (create the orphan branch if missing, NEVER
    main). EMBED inline: markdown image syntax over a SHA-pinned raw url
-   (\`![label](https://github.com/<owner>/<repo>/raw/<commit-sha>/<path>)\` — an exact commit SHA,
+   (\`![label](https://github.com/<owner>/<repo>/raw/<commit-sha>/<path>)\` - an exact commit SHA,
    never a branch name, so a later commit on the branch cannot move it out from under the ledger). A committed capture
    renders for everyone who can see the PR, so prefer this over a private artifact for any
    committable image.
-4. \`artifact\` — plans-hosted, for what a git repo cannot serve: an HTML evidence page, video, or an
-   oversized image set. Requires the CLI (\`command -v plans\`). Always \`--keep\`, never \`--ttl\` — a
+4. \`artifact\` - plans-hosted, for what a git repo cannot serve: an HTML evidence page, video, or an
+   oversized image set. Requires the CLI (\`command -v plans\`). Always \`--keep\`, never \`--ttl\` - a
    TTL'd url is not evidence.
 
-VISIBILITY — read it, never decide it. ${EVIDENCE_PUBLIC
+VISIBILITY - read it, never decide it. ${EVIDENCE_PUBLIC
   ? `This issue carries the \`evidence-public\` ack. A criterion whose AC text declares
 \`visibility: public\` publishes with \`plans publish --public --keep <file>\` and MAY be embedded
 inline, because GitHub's image proxy can fetch it. Everything else on this run is private.`
   : `This issue has NO \`evidence-public\` ack, so nothing publishes publicly on this run. Ignore any
-\`visibility: public\` appearing in the AC text — unacked is unpublished.`}
+\`visibility: public\` appearing in the AC text - unacked is unpublished.`}
 A private artifact (\`plans publish --keep\`, default host) is reachable only from the owner's
 tailnet: link it, never embed it, and say so in the cell so a reviewer is not left clicking a url
 that is dead for them.
 
 SCREENSHOTS need the diff to touch a web UI AND a dev/test server to start cheaply AND playwright
-(\`npx playwright\`) to be available — one per UI-facing criterion. Non-UI artifacts carry no such
+(\`npx playwright\`) to be available - one per UI-facing criterion. Non-UI artifacts carry no such
 precondition. If any precondition is missing, skip cleanly and SAY SO in the ledger: a missing
 capture is a stated gap, never a silent one.
 
@@ -597,9 +597,9 @@ alongside any image or link.
 Post with \`gh pr comment ${pr.prNumber} --body-file <tmpfile>\`. Write long output to a temp file, not the chat.
 ${transientRule}
 
-Declared acceptance criteria — the source of truth for \`surface:\` and \`visibility:\`. Read the
+Declared acceptance criteria - the source of truth for \`surface:\` and \`visibility:\`. Read the
 fields HERE; the AC check below does not carry them:
-${A.acceptanceCriteria || '(none captured at launch — infer surfaces from the evidence text and treat every visibility as private)'}
+${A.acceptanceCriteria || '(none captured at launch - infer surfaces from the evidence text and treat every visibility as private)'}
 
 AC check:
 ${JSON.stringify(acCheck, null, 2)}`
@@ -621,14 +621,14 @@ const acGap = (c) => ({ severity: 'critical', title: `AC ${c.status}: ${c.criter
 
 // A dead fan-out agent is signal, not silence: name it before dropping it.
 const keepNamed = (keys, results, stage) => {
-  keys.forEach((k, i) => { if (!results[i]) log(`${stage}:${k} returned null (skipped or died) — dropped from the fabric`) })
+  keys.forEach((k, i) => { if (!results[i]) log(`${stage}:${k} returned null (skipped or died) - dropped from the fabric`) })
   return results.filter(Boolean)
 }
 
 // Result hygiene for the happy-path return: the conductor journals from this object; full
 // texts already live on the issue (plan) and the PR (ledger, review threads). Escalation
-// returns stay untrimmed — a human acts on those directly.
-const clip = (s, n) => { const v = String(s ?? ''); return v.length > n ? `${v.slice(0, n)} …[+${v.length - n} chars — full text in the issue/PR journal]` : v }
+// returns stay untrimmed - a human acts on those directly.
+const clip = (s, n) => { const v = String(s ?? ''); return v.length > n ? `${v.slice(0, n)} …[+${v.length - n} chars - full text in the issue/PR journal]` : v }
 const slimFinding = (f) => ({ severity: f.severity, confidence: f.confidence, title: f.title, file: f.file, line: f.line, round: f.round, detail: clip(f.detail, 240) })
 
 function dedupeFindings(findings) {
@@ -645,13 +645,13 @@ function dedupeFindings(findings) {
 }
 
 // Fix effort by severity. The re-gate + re-review at the end of every round IS the
-// verification, so a routine fix does not need to be the most expensive agent in the run —
+// verification, so a routine fix does not need to be the most expensive agent in the run -
 // a wrong one gets caught and re-dispatched. Criticals and highs keep the headroom because
 // their fixes are the ones that burn a round when they land wrong.
 const fixEffort = (f) => (SEV_RANK[f.severity] >= 2 ? 'xhigh' : 'medium')
 
 // Dispatch fixes concurrently when every finding names a distinct file; serially otherwise
-// (shared worktree — two agents editing one file is a merge conflict with extra steps).
+// (shared worktree - two agents editing one file is a merge conflict with extra steps).
 async function dispatchFixes(items, plan, roundLabel) {
   const files = items.map((f) => f.file || '')
   const disjoint = files.every(Boolean) && new Set(files).size === files.length
@@ -669,11 +669,11 @@ async function dispatchFixes(items, plan, roundLabel) {
   return results
 }
 
-// The host agent() resolves to null when a subagent dies on a terminal API error — but a
+// The host agent() resolves to null when a subagent dies on a terminal API error - but a
 // schema'd agent that exhausts its StructuredOutput retry cap THROWS instead (three runs
 // bitten; latest wf_c92d331a-f75, where a COMPLETED impl stage lost only its report and
 // the throw killed the run past its `|| fallback`). Route every call through this shim so
-// a lost result degrades to null — the contract all the fallbacks here are written
+// a lost result degrades to null - the contract all the fallbacks here are written
 // against. parallel() thunks already null on throw; double-wrapping those is harmless.
 const safeAgent = (prompt, opts) => agent(prompt, opts).catch((e) => {
   log(`${opts?.label || 'agent'}: threw (${clip(String(e), 160)}) → null; fallbacks engage`)
@@ -684,10 +684,10 @@ const safeAgent = (prompt, opts) => agent(prompt, opts).catch((e) => {
 // cap loses only its report (5 deaths in wf_512af7b9 alone). Heavy seats mirror the report
 // to a file OUTSIDE the worktree (a fixer's `git add -A` can never sweep it); on a null
 // result a cheap reader re-emits it through the schema. Zero cost when healthy. The dir is
-// deterministic (no Date.now in workflow scripts) — the conductor rm -rf's it at launch.
+// deterministic (no Date.now in workflow scripts) - the conductor rm -rf's it at launch.
 const REPORT_DIR = `/tmp/flow-issue-${A.issueNumber}-reports`
 const slugify = (s) => {
-  // char-replacement alone can collide (src/a.rs vs src_a.rs) — append a djb2 hash
+  // char-replacement alone can collide (src/a.rs vs src_a.rs) - append a djb2 hash
   const t = String(s); let h = 5381
   for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0
   return `${t.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80)}-${h.toString(36)}`
@@ -696,15 +696,15 @@ const salvageableAgent = async (prompt, opts) => {
   const reportFile = `${REPORT_DIR}/${slugify(opts.label || 'agent')}.json`
   const r = await safeAgent(`${prompt}
 
-Report durability: immediately BEFORE emitting your structured report, also write the identical JSON to ${reportFile} (mkdir -p ${REPORT_DIR} first). That file is run bookkeeping outside the worktree — never commit it, never mention it in the report itself.`, opts)
+Report durability: immediately BEFORE emitting your structured report, also write the identical JSON to ${reportFile} (mkdir -p ${REPORT_DIR} first). That file is run bookkeeping outside the worktree - never commit it, never mention it in the report itself.`, opts)
   if (r !== null) return r
-  log(`${opts.label}: result lost — attempting salvage from ${reportFile}`)
-  return safeAgent(`Read the file ${reportFile}. If it exists and parses as JSON, emit its contents VERBATIM through the structured output schema — pure transcription, zero reinterpretation. If it is missing, unparseable, or plainly describes different work than issue #${A.issueNumber}, emit nothing and stop.`,
+  log(`${opts.label}: result lost - attempting salvage from ${reportFile}`)
+  return safeAgent(`Read the file ${reportFile}. If it exists and parses as JSON, emit its contents VERBATIM through the structured output schema - pure transcription, zero reinterpretation. If it is missing, unparseable, or plainly describes different work than issue #${A.issueNumber}, emit nothing and stop.`,
     { label: `${opts.label}:salvage`, phase: opts.phase, model: 'sonnet', effort: 'low', schema: opts.schema })
 }
 
-// Fable holds the TASTE seats — reconciling rival designs, separating reviewer signal from
-// noise — where its judgment edge shows and its `high` ceiling doesn't bite. Its safety
+// Fable holds the TASTE seats - reconciling rival designs, separating reviewer signal from
+// noise - where its judgment edge shows and its `high` ceiling doesn't bite. Its safety
 // classifiers can still bounce security-flavored content (agent() → null), so fall back to
 // opus rather than losing the stage. Both legs are salvageable: fable → salvage fable's
 // report → opus → salvage opus's report.
@@ -715,10 +715,10 @@ async function judge(prompt, opts) {
   return salvageableAgent(prompt, { ...opts, model: 'opus', effort: 'xhigh', label: `${opts.label}:opus-fallback` })
 }
 
-// Opus holds the REASONING seats — is this finding real, does this code do what it claims —
+// Opus holds the REASONING seats - is this finding real, does this code do what it claims -
 // at the top of an effort ladder fable does not have. The retry is one notch down on the
 // same tier: insurance against a terminal error, not against a refusal (a payload the
-// classifiers decline at `max` declines at `high` too — that case falls through to the
+// classifiers decline at `max` declines at `high` too - that case falls through to the
 // caller's own null handling, which escalates rather than swallows).
 async function reason(prompt, opts) {
   const top = opts.effort || 'max'
@@ -734,19 +734,19 @@ const designThunks = {
   // every size bucket (on trivial/small it is one of only two). Staffing the design most
   // likely to BECOME the plan cheaper than the panel around it was backwards.
   minimal: () => salvageableAgent(architectPrompt('minimal'), { label: 'design:minimal', phase: 'Design', agentType: 'flow:code-architect', model: 'opus', effort: 'medium', schema: DESIGN }),
-  // Taste seat — "the best long-term design" is the axis fable leads on, and it is the
+  // Taste seat - "the best long-term design" is the axis fable leads on, and it is the
   // agent's own declared default. A refusal here costs a thinned panel, which the
   // panelNote already discloses to the synthesizer; it cannot lose the run.
   clean: () => salvageableAgent(architectPrompt('clean'), { label: 'design:clean', phase: 'Design', agentType: 'flow:code-architect', model: 'fable', effort: 'high', schema: DESIGN }),
 }
 // Blocking-signal seats (correctness, security) run at xhigh: reviewing a diff with
 // execution is agentic work, and a miss here ships. The complementary seats stay a notch
-// down — start high where it matters, sweep from measurements, not from the price tag.
+// down - start high where it matters, sweep from measurements, not from the price tag.
 const reviewThunks = {
   codex: () => salvageableAgent(codexAdversarialPrompt, { label: 'review:codex', phase: 'Review', model: 'sonnet', effort: 'low', schema: FINDINGS }),
   correctness: () => salvageableAgent(correctnessPrompt, { label: 'review:correctness', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'xhigh', schema: FINDINGS }),
   // Not a cheap seat: its findings are authorized up to `medium`, and medium is the
-  // blocking threshold — so this seat decides what enters the fix loop on a taste axis.
+  // blocking threshold - so this seat decides what enters the fix loop on a taste axis.
   simplify: () => salvageableAgent(simplifyPrompt, { label: 'review:simplify', phase: 'Review', model: 'opus', effort: 'medium', schema: FINDINGS }),
   security: () => salvageableAgent(securityPrompt, { label: 'review:security', phase: 'Review', agentType: 'flow:code-reviewer', model: 'opus', effort: 'xhigh', schema: FINDINGS }),
 }
@@ -754,40 +754,40 @@ const reviewThunks = {
 // ── pipeline ─────────────────────────────────────────────────────────────────
 phase('Size')
 const sized = (await safeAgent(sizePrompt, { label: 'size', phase: 'Size', model: 'sonnet', effort: 'medium', schema: SIZE }))
-  || { size: 'medium', expectedFiles: 0, rationale: 'size agent unavailable — defaulting to medium' }
+  || { size: 'medium', expectedFiles: 0, rationale: 'size agent unavailable - defaulting to medium' }
 const fabric = FABRIC[sized.size] || FABRIC.medium
 log(`size=${sized.size}: ${sized.rationale} → designs[${fabric.designs.join(',')}] synth=${fabric.synthModel} reviews[${fabric.reviews.join(',')}]`)
 
 phase('Design')
 // CODEX_UNAVAILABLE sentinel: a dead codex leg returns a schema-valid husk (see
-// codexDesignPrompt) — drop it before it dilutes the synthesis panel.
+// codexDesignPrompt) - drop it before it dilutes the synthesis panel.
 const rawDesigns = await parallel(fabric.designs.map((k) => designThunks[k]))
 const designs = keepNamed(fabric.designs, rawDesigns, 'design')
   .filter((d) => {
     const dead = typeof d.approach === 'string' && d.approach.startsWith('CODEX_UNAVAILABLE')
-    if (dead) log(`design:codex unavailable (${clip(d.approach, 120)}) — dropped from the synthesis panel`)
+    if (dead) log(`design:codex unavailable (${clip(d.approach, 120)}) - dropped from the synthesis panel`)
     return !dead
   })
 // A thinned panel is disclosed to the synthesizer, not silently averaged over.
 const missingSeats = fabric.designs.filter((k, i) => !rawDesigns[i]
   || (typeof rawDesigns[i].approach === 'string' && rawDesigns[i].approach.startsWith('CODEX_UNAVAILABLE')))
 const panelNote = missingSeats.length
-  ? `\nPANEL THINNED: ${designs.length} of ${fabric.designs.length} design seats delivered — missing: ${missingSeats.join(', ')}. Recommendations present in only one design lack cross-checking; treat them with proportionate suspicion and verify against the code yourself.`
+  ? `\nPANEL THINNED: ${designs.length} of ${fabric.designs.length} design seats delivered - missing: ${missingSeats.join(', ')}. Recommendations present in only one design lack cross-checking; treat them with proportionate suspicion and verify against the code yourself.`
   : ''
 
 phase('Synthesize')
-if (designs.length === 0) throw new Error('all design agents returned null — resume the run to retry')
+if (designs.length === 0) throw new Error('all design agents returned null - resume the run to retry')
 const synthOpts = { label: 'synthesize', phase: 'Synthesize', schema: PLAN }
 const plan = fabric.synthModel === 'fable'
   ? await judge(synthesizePrompt(designs, panelNote), synthOpts)
   : await salvageableAgent(synthesizePrompt(designs, panelNote), { ...synthOpts, model: 'opus', effort: 'high' })
-if (!plan) throw new Error('synthesis returned null on both fable and opus — resume the run to retry')
+if (!plan) throw new Error('synthesis returned null on both fable and opus - resume the run to retry')
 const amb = sentinel(plan.blockingAmbiguity)
 if (amb) return { escalation: 'needs-info', questions: amb, plan: { goal: plan.goal } }
 
 // Implementer seat: EFFORT is routed by the synthesizer's difficulty verdict, not pinned.
 // Lower effort makes these models read the plan more literally and scope to what was asked
-// — the anti-wandering lever — while higher effort buys the depth that subtle invariants
+// - the anti-wandering lever - while higher effort buys the depth that subtle invariants
 // need. `standard` (the modal plan) takes medium; `hard` keeps the headroom; mechanical
 // transcription stays on sonnet. This is the second thing the difficulty call now routes.
 const implRouted = {
@@ -801,7 +801,7 @@ let implModel = implModelReq
 let implEffort = A.implEffort || implRouted.effort
 // Fallback goes one rung UP, not down: a seat that died is weak evidence the task was
 // harder than the synthesizer judged. When an override put a different model in the seat,
-// fall back to the ROUTED model instead — that preserves the cross-family escape for an
+// fall back to the ROUTED model instead - that preserves the cross-family escape for an
 // override that was refused rather than merely erroring.
 const overridden = implModelReq !== implRouted.model
 const implFallbackModel = overridden ? implRouted.model : implModel
@@ -817,9 +817,9 @@ phase('Implement')
 let implRun = await salvageableAgent(implPrompt(plan), { label: 'impl', phase: 'Implement', model: implModel, effort: implEffort, schema: IMPL_RESULT })
 if (implRun === null) {
   // Seat refused or died (terminal error, or an override experiment's classifier roulette)
-  // — re-run once on the fallback. Unconditional: on a `hard` plan the bump is already at
+  // - re-run once on the fallback. Unconditional: on a `hard` plan the bump is already at
   // the xhigh cap so the fallback config equals the primary, and a plain re-run is still
-  // the right answer to a terminal error — that is the seat we can least afford to lose.
+  // the right answer to a terminal error - that is the seat we can least afford to lose.
   // Commits from a partial first attempt are fine: the review fabric judges the actual
   // diff, not this report.
   log(`impl: ${implModel}/${implEffort} returned null (refusal or terminal error) → falling back to ${implFallbackModel}/${implFallbackEffort}`)
@@ -828,7 +828,7 @@ if (implRun === null) {
   implRun = await salvageableAgent(implPrompt(plan), { label: 'impl:fallback', phase: 'Implement', model: implModel, effort: implEffort, schema: IMPL_RESULT })
 }
 const impl = implRun
-  || { summary: '(impl agent result lost — commits may exist; the review fabric judges the actual diff)', deviations: 'unknown (impl agent died)' }
+  || { summary: '(impl agent result lost - commits may exist; the review fabric judges the actual diff)', deviations: 'unknown (impl agent died)' }
 
 phase('Review')
 const gate = (await salvageableAgent(buildGatePrompt, { label: 'build-gate', phase: 'Review', model: 'sonnet', effort: 'low', schema: GATE }))
@@ -837,7 +837,7 @@ const rawReviews = await parallel(fabric.reviews.map((k) => reviewThunks[k]))
 
 // A dead security seat is the one silence this fabric cannot absorb. `securityPrompt` is
 // exactly the payload shape current cyber classifiers decline, and a refusal arrives as a
-// null indistinguishable from a thinner fabric — the run then reads clean because nobody
+// null indistinguishable from a thinner fabric - the run then reads clean because nobody
 // looked. Retry once on a different model family (different classifier), and if that also
 // comes back empty, carry the gap all the way out to the human: absence of security
 // findings below is absence of evidence, not evidence of absence.
@@ -848,22 +848,22 @@ if (secIdx !== -1 && !rawReviews[secIdx]) {
   rawReviews[secIdx] = await salvageableAgent(securityPrompt, { label: 'review:security:fable-fallback', phase: 'Review', model: 'fable', effort: 'high', schema: FINDINGS })
   if (!rawReviews[secIdx]) {
     securityReviewUnavailable = true
-    log('SECURITY REVIEW UNAVAILABLE — no security seat produced a result on opus or fable; this diff has NOT been security-reviewed')
+    log('SECURITY REVIEW UNAVAILABLE - no security seat produced a result on opus or fable; this diff has NOT been security-reviewed')
   }
 }
 
 const reviews = keepNamed(fabric.reviews, rawReviews, 'review')
 const acCheck = (await salvageableAgent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'xhigh', schema: AC_CHECK }))
   || { criteria: [], scopeCreep: [], unavailable: true }
-// CODEX_* marker findings are observability, not review signal — log and drop.
+// CODEX_* marker findings are observability, not review signal - log and drop.
 const dropCodexMarker = (fs) => fs.filter((f) => {
   const t = typeof f.title === 'string' ? f.title : ''
-  if (t.startsWith('CODEX_UNAVAILABLE')) { log(`codex review unavailable (${clip(f.detail || t, 120)}) — no cross-model signal this pass`); return false }
-  if (t.startsWith('CODEX_FAST_DEGRADED')) { log('codex fast tier silently dropped by the server — the review ran, at standard tier'); return false }
+  if (t.startsWith('CODEX_UNAVAILABLE')) { log(`codex review unavailable (${clip(f.detail || t, 120)}) - no cross-model signal this pass`); return false }
+  if (t.startsWith('CODEX_FAST_DEGRADED')) { log('codex fast tier silently dropped by the server - the review ran, at standard tier'); return false }
   return true
 })
-// What actually looked at this diff. Configured vs delivered are different numbers — a seat
-// can be dropped by keepNamed — and the conductor should not have to know FABRIC to report
+// What actually looked at this diff. Configured vs delivered are different numbers - a seat
+// can be dropped by keepNamed - and the conductor should not have to know FABRIC to report
 // coverage in the journal. "reviewed by 3 of 4 lenses" is a fact a human wants at land.
 const coverage = {
   size: sized.size,
@@ -871,7 +871,7 @@ const coverage = {
   reviews: fabric.reviews, reviewsDelivered: reviews.length,
   synthModel: fabric.synthModel,
 }
-if (reviews.length < fabric.reviews.length) log(`review coverage: ${reviews.length} of ${fabric.reviews.length} lens(es) delivered — the finding set below is thinner than the fabric intended`)
+if (reviews.length < fabric.reviews.length) log(`review coverage: ${reviews.length} of ${fabric.reviews.length} lens(es) delivered - the finding set below is thinner than the fabric intended`)
 
 const findings = dedupeFindings(dropCodexMarker(reviews.flatMap((r) => r.findings || [])))
 const escapeHatch = findings.filter((f) => f.systemic && isEscalationGrade(f))
@@ -898,9 +898,9 @@ while (round < FIX_ROUND_CAP && blocking.length > 0) {
   ])
   if (reAc) latestAcCheck = reAc
   // Same silence, per round: fixes land unreviewed for security if this seat is refused.
-  if (!reSecurity) { securityReviewUnavailable = true; log(`security:r${round} returned null — round ${round} fixes are NOT security-reviewed`) }
+  if (!reSecurity) { securityReviewUnavailable = true; log(`security:r${round} returned null - round ${round} fixes are NOT security-reviewed`) }
   blocking = dedupeFindings((reCorrectness?.findings || []).concat(reSecurity?.findings || [])).filter(isBlocking)
-    // null reGate = unverified, not failed — don't manufacture a critical from a dead agent,
+    // null reGate = unverified, not failed - don't manufacture a critical from a dead agent,
     // but a FAILED or UNKNOWN observed gate is blocking (unknown ≠ pass).
     .concat(reGate && reGate.status !== 'passed' ? [{ severity: 'critical', title: `build gate ${reGate.status}`, file: '', line: 0, detail: reGate.output, systemic: false, confidence: 100 }] : [])
     .concat((reAc?.criteria || []).filter((c) => c.status !== 'met').map(acGap))
@@ -923,7 +923,7 @@ if (blocking.length === 0 && fabric.reviews.includes('codex')) {
 }
 
 // Judgment before escalation: only adjudicated-real blockers interrupt the human. This is
-// the reasoning seat, not the taste seat — "is this finding real, or is it wrong about the
+// the reasoning seat, not the taste seat - "is this finding real, or is it wrong about the
 // code" is settled by reading the code at maximum effort, not by discrimination.
 let adjudication = { realBlockers: [], dismissed: [] }
 if (blocking.length > 0) {
@@ -934,12 +934,12 @@ if (blocking.length > 0) {
 const escalate = adjudication.realBlockers.length > 0
 
 phase('PR')
-// opus seat: doc-sync output is the only content-producing stage no later review reads —
+// opus seat: doc-sync output is the only content-producing stage no later review reads -
 // doc rot ships silently, so don't put the cheapest model on it.
 await safeAgent(docSyncPrompt, { label: 'doc-sync', phase: 'PR', model: 'opus', effort: 'high', schema: DONE })
 const pr = await salvageableAgent(prPrompt, { label: 'publish', phase: 'PR', model: 'sonnet', schema: PR_INFO })
 if (!pr) return {
-  escalation: 'needs-human', reason: 'PR publish agent died — branch and push state unknown; check `git ls-remote` against the worktree HEAD yourself and recover from the journal',
+  escalation: 'needs-human', reason: 'PR publish agent died - branch and push state unknown; check `git ls-remote` against the worktree HEAD yourself and recover from the journal',
   size: sized.size, plan: { goal: plan.goal, difficulty: plan.difficulty }, implSummary: impl.summary,
   fixRounds: round, unresolvedBlocking: adjudication.realBlockers, resolvedInLoop, escapeHatch, droppedLow,
   securityReviewUnavailable, coverage,
@@ -971,7 +971,7 @@ log(`post-push: ${lensFindings.length} lens finding(s); external receivedAny=${e
 let triage = { fixes: [], noise: [] }
 let ppPush = null // push result of the post-push fix round; null = no fix round ran, nothing new to push
 if (lensFindings.length > 0 || ext.items.length > 0) {
-  const headNote = 'Current HEAD is the pushed branch tip; external items may anchor to an older SHA (headSha field) — verify against the code as it exists NOW.'
+  const headNote = 'Current HEAD is the pushed branch tip; external items may anchor to an older SHA (headSha field) - verify against the code as it exists NOW.'
   triage = (await judge(postPushTriagePrompt(lensFindings, ext.items, headNote), { label: 'triage', phase: 'PostPush', schema: TRIAGE }))
     || { fixes: lensFindings.filter(isBlocking), noise: [] } // judges died → fix our own blocking lens findings, leave externals to /land's thread gate
   if (triage.fixes.length > 0) {
@@ -981,10 +981,10 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
     // hand the conductor a run that never had its post-push build verified.
     const ppGate = (await salvageableAgent(buildGatePrompt, { label: 'gate:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: GATE }))
       || { status: 'unknown', output: 'post-push build-gate agent unavailable' }
-    // Push before the gate verdict either way — preserve the work remotely even when escalating.
+    // Push before the gate verdict either way - preserve the work remotely even when escalating.
     ppPush = (await safeAgent(pushPrompt, { label: 'push:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: PUSH_RESULT }))
-      || { pushed: false, headSha: '', remoteSha: '', note: 'push agent died — push state unknown' }
-    if (!ppPush.pushed) log(`push:postpush NOT VERIFIED — ${clip(ppPush.note, 200)}; handoff step 0 must repair`)
+      || { pushed: false, headSha: '', remoteSha: '', note: 'push agent died - push state unknown' }
+    if (!ppPush.pushed) log(`push:postpush NOT VERIFIED - ${clip(ppPush.note, 200)}; handoff step 0 must repair`)
     if (ppGate.status !== 'passed') {
       return {
         escalation: 'needs-human', reason: `build gate ${ppGate.status} after post-push fixes`,
@@ -996,28 +996,28 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
       }
     }
   }
-  // Replies name fixing commits — phantom references if those commits never left the worktree.
+  // Replies name fixing commits - phantom references if those commits never left the worktree.
   if (ext.items.length > 0 && (!ppPush || ppPush.pushed)) {
     await safeAgent(replyPrompt(pr, triage), { label: 'external:reply', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: DONE })
   } else if (ext.items.length > 0) {
-    log('skipping external replies — fix commits not verifiably pushed; /land thread gate covers them')
+    log('skipping external replies - fix commits not verifiably pushed; /land thread gate covers them')
   }
 }
 
 phase('Ledger')
 const ledger = await safeAgent(ledgerPrompt(pr, latestAcCheck), { label: 'ledger', phase: 'Ledger', model: 'sonnet', effort: 'medium', schema: DONE })
 
-// Final read of the PR as it exists NOW — CI may outlive the run, externals may arrive
+// Final read of the PR as it exists NOW - CI may outlive the run, externals may arrive
 // late, and mid-run summaries go stale; the conductor trusts this field over them.
 phase('Handoff')
 const pushRepairNote = ppPush && !ppPush.pushed
-  ? `NOTE: a post-push fix round could not verify its push (${clip(ppPush.note, 200)}) — expect the local head to be ahead; step 0 must repair this before reading CI.\n`
+  ? `NOTE: a post-push fix round could not verify its push (${clip(ppPush.note, 200)}) - expect the local head to be ahead; step 0 must repair this before reading CI.\n`
   : ''
 const handoff = (await safeAgent(handoffPrompt(pr, pushRepairNote), { label: 'handoff', phase: 'Handoff', model: 'sonnet', schema: HANDOFF }))
-  || { ciStatus: 'unknown', ciDetail: 'handoff agent unavailable — conductor must read the rollup itself', headInSync: false, lateExternalItems: 0, closesLinked: pr.closesLinked === true, finalSummary: '' }
+  || { ciStatus: 'unknown', ciDetail: 'handoff agent unavailable - conductor must read the rollup itself', headInSync: false, lateExternalItems: 0, closesLinked: pr.closesLinked === true, finalSummary: '' }
 // Belt and braces for the prompt's hard rule: green is only green on the head we judged.
 if (handoff.ciStatus === 'green' && handoff.headInSync !== true) {
-  log('handoff claimed green with headInSync!=true — downgrading to pending (hard rule)')
+  log('handoff claimed green with headInSync!=true - downgrading to pending (hard rule)')
   handoff.ciStatus = 'pending'
   if (!handoff.ciDetail) handoff.ciDetail = 'downgraded: PR head not verified in sync with the worktree'
 }

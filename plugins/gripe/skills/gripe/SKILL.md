@@ -1,9 +1,9 @@
 ---
 name: gripe
-description: The agent friction log — what it is, how the pieces work, and the analysis method for reading a dump. Use when asked to review, analyze, or summarise the gripe log ("monthly gripe review", "what's been annoying the agents", "read the complaints"), when debugging why a gripe hook or the CLI is misbehaving, or when deciding whether something is worth filing.
+description: The agent friction log - what it is, how the pieces work, and the analysis method for reading a dump. Use when asked to review, analyze, or summarise the gripe log ("monthly gripe review", "what's been annoying the agents", "read the complaints"), when debugging why a gripe hook or the CLI is misbehaving, or when deciding whether something is worth filing.
 ---
 
-# gripe — the friction log and how to read it
+# gripe - the friction log and how to read it
 
 Agents hit friction in every session and forget it at the end of every session. `gh run
 watch` exits 0 on a failed check, the agent believes CI passed, nothing errors, nothing is

@@ -21,14 +21,14 @@ These files are NOT verbatim. One patch is applied on top of upstream:
 
     patches/0001-lowercase-doc-filenames.patch
 
-It lowercases the doc-artifact names this repo standardises on — CONTEXT.md ->
-context.md, CONTEXT-MAP.md -> context-map.md — and renames the skill's own
+It lowercases the doc-artifact names this repo standardises on - CONTEXT.md ->
+context.md, CONTEXT-MAP.md -> context-map.md - and renames the skill's own
 reference docs to match (ADR-FORMAT.md -> adr-format.md, CONTEXT-FORMAT.md ->
 context-format.md). On a case-sensitive filesystem the uppercase names would be
 separate, competing files, so this is a correctness fix rather than a cosmetic one.
 
 Only `domain-modeling` is touched; `grilling` and `grill-with-docs` are verbatim.
-SKILL.md keeps its uppercase name — the skill loader discovers skills by that exact
+SKILL.md keeps its uppercase name - the skill loader discovers skills by that exact
 filename.
 
 RE-SYNCING

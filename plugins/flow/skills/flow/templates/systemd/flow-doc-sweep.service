@@ -1,7 +1,7 @@
 [Unit]
 Description=flow weekly doc sweep: doc stack, contexts, glossary, ADRs (report-only)
 # No network-online dependency: that target is a no-op in the user manager. The
-# jobs fail closed instead — a failed fetch means nothing buckets safe and the
+# jobs fail closed instead - a failed fetch means nothing buckets safe and the
 # report says so.
 [Service]
 Type=oneshot

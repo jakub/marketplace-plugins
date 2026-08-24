@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Smoke harness for hooks/scripts/git-guard.mjs — the charter git rules that must survive
+// Smoke harness for hooks/scripts/git-guard.mjs - the charter git rules that must survive
 // delegation. Deny cases are the rules; allow cases are the false positives that would make
 // the guard something people route around. Run: node plugins/flow/scripts/smoke-git-guard.mjs
 import { execFileSync } from 'node:child_process'
@@ -37,7 +37,7 @@ expect(true, 'git restore .', 'restore bare dot')
 expect(true, 'git clean -fd', 'clean force')
 expect(true, 'git clean --force -d', 'clean --force')
 expect(true, 'git clean -xdf', 'clean force in a flag cluster')
-console.log('cron mode (FLOW_CRON_JOB) — deny-by-default git')
+console.log('cron mode (FLOW_CRON_JOB) - deny-by-default git')
 const lint = { FLOW_CRON_JOB: 'lint' }
 const sweep = { FLOW_CRON_JOB: 'doc-sweep' }
 const expectEnv = (want, command, env, name) => {

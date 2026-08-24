@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Smoke harness for scripts/codex-exec.mjs — the raw-CLI codex transport. A PATH-shimmed
+// Smoke harness for scripts/codex-exec.mjs - the raw-CLI codex transport. A PATH-shimmed
 // fake `codex` (CODEX_BIN) replays canned JSONL so every envelope path is exercised with
 // no network: flag mapping, pre-spawn USAGE rejections, error classification, the
 // retry-once policy, stall/timeout watchdogs, schema validation, review-comment parsing,
@@ -95,7 +95,7 @@ const has = (arr, ...seq) => {
   return i !== -1
 }
 
-console.log('the tuning set is always explicit — never inherited from config.toml')
+console.log('the tuning set is always explicit - never inherited from config.toml')
 {
   // ~/.codex/config.toml is mutable state: the Codex TUI writes the user's interactive model
   // and effort picks back to it. An omitted flag would therefore couple every flow seat to an
@@ -108,7 +108,7 @@ console.log('the tuning set is always explicit — never inherited from config.t
   check(has(av, '-c', 'service_tier=default'), 'argv: service tier pinned to default when --fast is absent')
   // Not a quality setting: reasoning summaries are the only thing the CLI emits during a long
   // think, so `none` in config.toml would hand every slow run to the stall watchdog.
-  check(has(av, '-c', 'model_reasoning_summary=detailed'), 'argv: reasoning summary pinned — the stall watchdog heartbeat')
+  check(has(av, '-c', 'model_reasoning_summary=detailed'), 'argv: reasoning summary pinned - the stall watchdog heartbeat')
   check(e.model === 'gpt-5.6-sol' && e.effort === 'high', 'envelope reports what actually ran, not null')
   check(e.fast.requested === false, 'fast not requested')
 }
@@ -135,7 +135,7 @@ console.log('happy path + flag mapping')
 
 console.log('stale temp dirs from previous runs are swept')
 {
-  // The run's own dir must survive — the envelope advertises eventsPath inside it — so the
+  // The run's own dir must survive - the envelope advertises eventsPath inside it - so the
   // wrapper collects the previous runs' instead. Without that, every nightly lint and every
   // delegate call left one in /tmp until reboot.
   const stale = join(tmpdir(), 'codex-exec-smoke-stale')
@@ -148,7 +148,7 @@ console.log('stale temp dirs from previous runs are swept')
   const e = run('happy', ['task', '--cwd', T], { input: 'p' })
   check(e.ok === true, 'run succeeds')
   check(!existsSync(stale), 'a 48h-old codex-exec- dir is collected, contents and all')
-  check(existsSync(fresh), 'a fresh one — a concurrent run — is left alone')
+  check(existsSync(fresh), 'a fresh one - a concurrent run - is left alone')
   check(existsSync(e.eventsPath), 'this run keeps the journal its own envelope points at')
   rmSync(fresh, { recursive: true, force: true })
 }

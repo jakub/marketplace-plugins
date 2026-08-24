@@ -6,9 +6,9 @@
 # permission, everything else is a human decision.
 #
 # Buckets:
-#   hold-wip               tracked uncommitted changes — never prune
-#   hold-open-pr           branch has an open PR — keep until land
-#   verify-recent-session  a session touched it in the last 4 days — check first
+#   hold-wip               tracked uncommitted changes - never prune
+#   hold-open-pr           branch has an open PR - keep until land
+#   verify-recent-session  a session touched it in the last 4 days - check first
 #   safe                   clean, pushed (or nothing to push), PR merged/closed
 #   review                 none of the above fit (no remote, no PR, old)
 #
@@ -26,7 +26,7 @@ cd "$repo" || exit 1
 main_wt=$(git worktree list --porcelain -z | tr '\0' '\n' | sed -n 's/^worktree //p' | head -1)
 
 fetch_ok=1
-git fetch origin main --quiet 2>/dev/null || { fetch_ok=0; echo "warn: could not fetch origin/main; failing closed — nothing will bucket safe" >&2; }
+git fetch origin main --quiet 2>/dev/null || { fetch_ok=0; echo "warn: could not fetch origin/main; failing closed - nothing will bucket safe" >&2; }
 
 # PR state by branch, fetched once. Empty if gh is unavailable.
 prs=$(mktemp)
@@ -69,7 +69,7 @@ git worktree list --porcelain -z | tr '\0' '\n' | sed -n 's/^worktree //p' | whi
 		'.[] | select(.headRefName==$b) | "#\(.number)/\(.state)"' "$prs" 2>/dev/null | head -1)
 	[ -z "$pr" ] && pr="-"
 
-	# Most recent session whose transcript mentions this worktree path — searched in
+	# Most recent session whose transcript mentions this worktree path - searched in
 	# BOTH the main checkout's project dir and the worktree's own (a session launched
 	# with cwd inside the worktree files under the worktree's slug). Fixed-string
 	# match, path followed by "/" or a quote, so issue-49 does not match issue-490.
@@ -87,7 +87,7 @@ git worktree list --porcelain -z | tr '\0' '\n' | sed -n 's/^worktree //p' | whi
 	# Only a fully clean, non-recent worktree with fresh remote state and a remote-
 	# reproducible tip can be `safe`; scratch (untracked files) is data too, never
 	# safe. The lint's executor (lint-actions.mjs) re-derives all of this before
-	# acting — this bucket is a candidate list, not an authorization.
+	# acting - this bucket is a candidate list, not an authorization.
 	case "$dirty" in
 	wip:*) bucket=hold-wip ;;
 	scratch:*) bucket=review ;;

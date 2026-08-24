@@ -10,7 +10,7 @@ workspace root (the directory holding the project checkouts, e.g. `~/code`).
 
 ## 1. Doc stack conformance
 
-- Repo root: `AGENTS.md` exists, `CLAUDE.md` is a symlink to it (not a divergent copy —
+- Repo root: `AGENTS.md` exists, `CLAUDE.md` is a symlink to it (not a divergent copy -
   a real file that shadows the symlink is the worst drift: two sources, both trusted).
 - `AGENTS.md` lean (≤ ~40 lines), discloses context.md / docs/adr/ that actually exist.
 - `AGENTS.md` `## Contexts` is the context map and must stay honest both ways: every
@@ -19,7 +19,7 @@ workspace root (the directory holding the project checkouts, e.g. `~/code`).
 - No `context-map.md` (fold into `## Contexts` + delete). No `CLAUDE.local.md` (its content
   belongs in a committed file; flag for migration).
 - Glossary files are lowercase `context.md`; an uppercase `CONTEXT.md` is drift (usually a
-  vendored skill writing its own default) — fold it down and delete.
+  vendored skill writing its own default) - fold it down and delete.
 - Domain layer: for each crate/module with a `context.md` slice or `AGENTS.md`, the file's
   claims spot-check against the code (an agent reads the doc, greps the crate, flags
   statements that no longer hold). For crates WITHOUT domain files, flag only those with
@@ -55,8 +55,8 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
   for landed branches; PR state is the signal.
 - **Local** branches are the only class any flow job can act on: permission 2 routes them
   through `lint-actions.mjs`, which runs `git branch -D` and nothing else. That executor
-  asks two separate questions and needs yes to both. Is the branch dead — a merged or
-  closed PR, or a tip already in `origin/main`? And do the commits survive the delete — a
+  asks two separate questions and needs yes to both. Is the branch dead - a merged or
+  closed PR, or a tip already in `origin/main`? And do the commits survive the delete - a
   same-tip `origin/<branch>`, a merged/closed PR head at this tip, or ancestry of
   `origin/main`? A pushed spike with no PR passes the second and fails the first, which is
   correct: perfectly recoverable, perfectly alive. `main`, `master`, and `flow-evidence`
@@ -68,7 +68,7 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
   PR is merged or closed is stale; one whose PR falls below that floor is `unclassified`,
   never stale. Report stale remotes as a count plus at most ten names, and report the
   unclassified count next to the floor that produced it. A bare `branches ✓` is only honest
-  when both classes were checked — say which one you mean.
+  when both classes were checked - say which one you mean.
 - `.github/known-flakes.txt` exists; every entry names a check that actually exists in
   recent CI runs (a flake entry for a renamed check is dead lore).
 - Isolated test DBs (where the repo uses them): no orphans beyond live worktrees.
@@ -76,7 +76,7 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
 ## 5. Charter version skew
 
 - Installed plugin version vs this repo's HEAD (`claude plugin list` vs
-  `plugins/flow/.claude-plugin/plugin.json`) — a stale install means sessions run an old
+  `plugins/flow/.claude-plugin/plugin.json`) - a stale install means sessions run an old
   charter.
 - Charter delivery: run `node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs 1` and
   read its first line. The script prints a `<!-- flow-charter WARNING: ... -->` comment
@@ -91,17 +91,17 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
 - Facts with `as-of` dates older than a quarter (model pricing, codex CLI surface):
   flag for re-verification.
 - `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-codex-exec.mjs` passes (add `CODEX_LIVE=1` when codex
-  auth is available) — the transport's encoded CLI facts (model catalog, effort surface,
+  auth is available) - the transport's encoded CLI facts (model catalog, effort surface,
   service-tier fail-open behavior, JSONL event shapes) drift with codex releases.
 
 ## Output format
 
 ```
-# drift report — <repo|workspace> — <date>
+# drift report - <repo|workspace> - <date>
 ## critical   (framework violated in a way that will corrupt runs)
 ## warning    (stale/nonconforming, will mislead agents)
 ## candidate  (improvements to propose, e.g. crates deserving domain files)
-## clean      (sections that fully conform — one line each)
+## clean      (sections that fully conform - one line each)
 ```
 Each finding: what, where (path/issue#), the specific invariant violated, proposed fix.
-No silent caps — if a section was sampled rather than exhaustive, say so.
+No silent caps - if a section was sampled rather than exhaustive, say so.

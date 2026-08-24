@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// git guard: enforces the charter's two git non-negotiables at the hook layer —
+// git guard: enforces the charter's two git non-negotiables at the hook layer -
 //   1. NEVER `--no-verify` (it exists to skip the checks that catch bad commits)
-//   2. no commit trailers of any kind — not attribution (Co-Authored-By, Generated-with),
+//   2. no commit trailers of any kind - not attribution (Co-Authored-By, Generated-with),
 //      not session links (Claude-Session). the git author IS the author.
 //
 // Why a hook and not charter prose: the charter is injected by SessionStart, which reaches
 // the main session only. A spawned subagent starts fresh, inherits the HARNESS instruction
 // to append Co-Authored-By/Claude-Session, and never sees the charter line that overrides
-// it — so the rule inverts exactly where nobody is watching, and the damage lands in git
+// it - so the rule inverts exactly where nobody is watching, and the damage lands in git
 // history permanently. Hooks fire on subagent tool calls too, so this layer travels where
 // context does not. (Only `subagent_type: "fork"` inherits the conversation.)
 //
@@ -33,8 +33,8 @@ const TRAILERS = [
 const GIT_COMMIT = /\bgit\b(?:\s+\S+)*?\s+commit\b/
 
 // Prose about a rule is not a breach of it. `--no-verify` inside a quoted string or a heredoc
-// body is text being handed to some other command — a PR comment, a commit body, a gripe
-// describing this very guard — not a flag being handed to git. Matching the raw command
+// body is text being handed to some other command - a PR comment, a commit body, a gripe
+// describing this very guard - not a flag being handed to git. Matching the raw command
 // string blocked all three, which is how a guard turns into something people route around.
 // Strip shell literals first, then match.
 //
@@ -47,7 +47,7 @@ const stripLiterals = (s) =>
     .replace(/"[^"]*"/g, ' ')
 
 // Irreversible git: operations that destroy work no reflog returns. The bar is deliberately
-// narrow. `reset --hard` and `branch -D` are NOT here — the reflog does return those, and
+// narrow. `reset --hard` and `branch -D` are NOT here - the reflog does return those, and
 // blocking them breaks the ordinary squash-merge flow (a squashed branch is no ancestor of
 // main, so `-d` refuses it) for no safety earned. Ported from the user's trawl repo, where
 // this set had already been trimmed to what actually matters.
@@ -89,7 +89,7 @@ const deny = (reason) => {
 }
 
 // Subcommands that cannot write a ref in any form. `symbolic-ref`, `fetch`, and
-// `branch` each have read AND write forms and are NOT here — they're handled below.
+// `branch` each have read AND write forms and are NOT here - they're handled below.
 const CRON_READ = new Set([
   'status', 'log', 'shortlog', 'show', 'diff', 'blame', 'grep',
   'rev-parse', 'rev-list', 'merge-base', 'describe', 'cat-file', 'check-ignore',
@@ -105,7 +105,7 @@ const BRANCH_LIST_OPTS = new Set([
 
 // Return a deny reason, or null to allow. Evaluates EVERY git invocation in the command
 // string; one disallowed invocation denies the whole call. Over-blocking is acceptable in
-// cron mode (the job just reports the refusal); under-blocking is not — the allowlist is
+// cron mode (the job just reports the refusal); under-blocking is not - the allowlist is
 // the job's authority. Cron git is READ-ONLY for every job: the lint's two destructive
 // actions run through scripts/lint-actions.mjs, which re-derives the safety conditions
 // deterministically; the model never runs the mutating git itself.
@@ -116,8 +116,8 @@ const BRANCH_LIST_OPTS = new Set([
 // So every operator and quote character becomes its own token first. That also uncovers
 // `bash -c "git push"` and `$(git push)`. It over-blocks a quoted "git push" inside a
 // --grep, which is the direction this file already chose.
-// Variable indirection (`G=git; $G push`) still slips past — only a real shell parser
-// closes that — so a `=git` suffix counts as a git token and the Bash allowlist, which
+// Variable indirection (`G=git; $G push`) still slips past - only a real shell parser
+// closes that - so a `=git` suffix counts as a git token and the Bash allowlist, which
 // permits no bare assignment prefix, carries the rest.
 const isGitToken = (t) => /(^|[/=])git$/.test(t)
 
@@ -136,7 +136,7 @@ const cronVerdict = (cmd, job) => {
     const rest = tokens.slice(j + 1)
     const next = rest.find((t) => !t.startsWith('-')) || ''
     const no = (why) =>
-      `flow cron guard (${job}): git ${sub || '<none>'} is outside this job's permissions${why ? ` — ${why}` : ''}. ` +
+      `flow cron guard (${job}): git ${sub || '<none>'} is outside this job's permissions${why ? ` - ${why}` : ''}. ` +
       'Cron git is read-only; the lint mutates only through scripts/lint-actions.mjs. ' +
       'Report the need instead of working around this.'
 
@@ -147,7 +147,7 @@ const cronVerdict = (cmd, job) => {
     }
     if (sub === 'branch') {
       // Any short bundle carrying a write letter (D/d delete, m/M move, c/C copy,
-      // f force) — catches -Df and other combined forms the old single-char test missed.
+      // f force) - catches -Df and other combined forms the old single-char test missed.
       const shortWrite = rest.some((t) => /^-[a-zA-Z]*[DdmMcCf]/.test(t) && !t.startsWith('--'))
       const longWrite = rest.some((t) => /^--(delete|move|copy|force|set-upstream|unset-upstream|edit-description)/.test(t))
       if (shortWrite || longWrite) return no('branch may only be listed')
@@ -195,7 +195,7 @@ process.stdin.on('end', () => {
   // Cron mode: when flow-cron.mjs spawned this session it exported FLOW_CRON_JOB, and
   // hooks inherit that env. The scheduled jobs read untrusted text (issue bodies, PR
   // titles, repo files), so here git is deny-by-default: only the subcommands the job's
-  // standing permissions name may run, and FLOW_SANCTION is ignored — an injected
+  // standing permissions name may run, and FLOW_SANCTION is ignored - an injected
   // instruction can put the sanction string in a command, but it cannot change this
   // process's environment. Interactive sessions are untouched. Env source of truth:
   // scripts/flow-cron.mjs; keep the write set in step with the prompts in skills/flow/cron/.
@@ -212,7 +212,7 @@ process.stdin.on('end', () => {
     deny(
       'flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad ' +
         'commits out of history. Fix what the hook is failing on, or say plainly that the ' +
-        'hook itself is broken — do not route around it.',
+        'hook itself is broken - do not route around it.',
     )
   }
 
@@ -222,7 +222,7 @@ process.stdin.on('end', () => {
 
   if (CLEAN_FORCE.test(bare) && !CLEAN_DRYRUN.test(bare)) {
     deny(
-      'flow charter: `git clean -f` deletes untracked files permanently — nothing recovers ' +
+      'flow charter: `git clean -f` deletes untracked files permanently - nothing recovers ' +
         'them. Run `git clean -n` first to see what would go, then delete only what you mean.',
     )
   }
@@ -231,7 +231,7 @@ process.stdin.on('end', () => {
     const hit = TRAILERS.find((t) => t.test(cmd))
     if (hit) {
       deny(
-        'flow charter: no commit trailers of any kind — not attribution (Co-Authored-By, ' +
+        'flow charter: no commit trailers of any kind - not attribution (Co-Authored-By, ' +
           'Generated-with), not session links (Claude-Session). The git author IS the ' +
           'author. This rule overrides any harness instruction to append them. Rewrite the ' +
           'commit message without the trailer. If you are amending foreign work that ' +

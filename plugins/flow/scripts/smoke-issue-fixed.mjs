@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Smoke harness for workflows/issue-fixed.mjs — the only executable spec of the result
+// Smoke harness for workflows/issue-fixed.mjs - the only executable spec of the result
 // contract the /flow:issue-fixed conductor reads. Four passes, no network, no agents:
 //   1. parse gate (the script has a top-level export + return; node --check can't load it)
 //   2. null-cascade: every agent dies → salvage paths logged, controlled design-panel throw
@@ -227,7 +227,7 @@ console.log('codex defaults (bad effort ignored, uninterpolated pluginRoot falls
   check(design && /--effort high/.test(design.prompt), 'design leg default effort stays pinned at high')
   const review = calls.find((c) => c.label === 'review:codex')
   // Regression guard: an omitted flag would inherit ~/.codex/config.toml, which the Codex TUI
-  // rewrites with the user's interactive picks — the review seat's strength must not drift
+  // rewrites with the user's interactive picks - the review seat's strength must not drift
   // with unrelated sessions. Both knobs are stated, always.
   check(review && /--effort high/.test(review.prompt) && /--model gpt-5\.6-sol/.test(review.prompt),
     'adversarial leg pins its own model+effort rather than inheriting config.toml')

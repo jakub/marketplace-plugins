@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// codex-exec.mjs — the single transport between flow and the Codex CLI.
+// codex-exec.mjs - the single transport between flow and the Codex CLI.
 //
 // Replaces the retired openai-codex companion plugin (its cache path stopped existing and
 // every codex leg silently degraded to CODEX_UNAVAILABLE). Everything here talks to the
@@ -10,32 +10,32 @@
 // Modes:
 //   task                 codex exec: read-only by default, optional --write / --schema
 //   review               codex exec review (--base <ref> | --uncommitted): prose reviewed
-//                        into findings via the CLI's stable "[P1] title — file:line" format
+//                        into findings via the CLI's stable "[P1] title - file:line" format
 //   adversarial-review   codex exec + --output-schema over `git diff <base>...HEAD` with an
-//                        adversarial framing — structured findings, no parsing heuristics
+//                        adversarial framing - structured findings, no parsing heuristics
 //
 // Contract: stdout carries exactly ONE JSON envelope; exit 0 whenever an envelope was
-// produced (even ok:false — the envelope IS the report). Nonzero exit = the wrapper itself
+// produced (even ok:false - the envelope IS the report). Nonzero exit = the wrapper itself
 // broke. Callers branch on .ok / .error.kind, never on grep.
 //
-// Facts this file encodes (as-of 2026-08-23, codex-cli 0.149.0 — re-verify quarterly):
+// Facts this file encodes (as-of 2026-08-23, codex-cli 0.149.0 - re-verify quarterly):
 // effort only exists as `-c model_reasoning_effort=`; fast mode is `-c service_tier=priority`
-// and an unsupported tier is OMITTED with only a stderr warning (fail-open — we detect and
+// and an unsupported tier is OMITTED with only a stderr warning (fail-open - we detect and
 // report it); request errors surface as `ERROR: {json}` lines and/or error-type items;
 // `exec review` rejects a custom prompt alongside --base/--uncommitted.
 //
-// `exec --json` streams whole items, never token deltas — the delta notifications
+// `exec --json` streams whole items, never token deltas - the delta notifications
 // (AgentMessageDelta, ReasoningSummaryTextDelta, CommandExecutionOutputDelta) exist only in
 // the experimental app-server JSON-RPC protocol. So the ONLY liveness signal during a turn is
 // the reasoning-summary item, which lands every ~10s while the model thinks. Measured on
 // 0.149.0: summaries on = an event every 9-10s across a 143s think; `model_reasoning_summary
 // = "none"` = a flat zero events for the whole think. Final-message generation is silent
 // either way (137s of nothing for a 4000-word answer), as is a running command (item.started,
-// then nothing until it completes — item.updated does not carry aggregated output).
+// then nothing until it completes - item.updated does not carry aggregated output).
 //
 // The tuning set (model, effort, service tier, reasoning summary) is ALWAYS sent explicitly,
-// defaulted here when a caller omits it. `~/.codex/config.toml` is mutable state — the Codex
-// TUI writes the user's interactive picks back to it — so an omitted flag does not mean "the
+// defaulted here when a caller omits it. `~/.codex/config.toml` is mutable state - the Codex
+// TUI writes the user's interactive picks back to it - so an omitted flag does not mean "the
 // documented default", it means "whatever that user last selected in an unrelated session".
 // Inheriting it makes a seat's strength drift silently and undetectably, and for the summary
 // setting it silences the heartbeat and hands every long run to the stall watchdog. Same rule
@@ -49,7 +49,7 @@ import { createInterface } from 'node:readline'
 
 const MODES = ['task', 'review', 'adversarial-review']
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-const MODEL_RE = /^[a-z0-9][a-z0-9.-]*$/ // shape check only — the catalog is server-driven
+const MODEL_RE = /^[a-z0-9][a-z0-9.-]*$/ // shape check only - the catalog is server-driven
 const DEFAULT_MODEL = 'gpt-5.6-sol' // the decorrelation seat; never inherited from config.toml
 const DEFAULT_EFFORT = 'high'
 const DEFAULT_TIMEOUT = { task: 900, review: 1200, 'adversarial-review': 1200 }
@@ -62,7 +62,7 @@ const RATE_LIMIT_BACKOFF_MS = Number(process.env.CODEX_EXEC_BACKOFF_MS || 30_000
 const BIN = process.env.CODEX_BIN || 'codex'
 
 // Findings shape for adversarial-review, enforced server-side via --output-schema.
-// Every property is required (structured-output strict mode) — codex sends "" when empty.
+// Every property is required (structured-output strict mode) - codex sends "" when empty.
 const ADVERSARIAL_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['findings'],
   properties: {
@@ -88,7 +88,7 @@ const adversarialPrompt = (base, extra) => `You are an adversarial code reviewer
   git diff ${base}...HEAD
 Review ONLY that diff (read surrounding code for context as needed). Hunt for real defects: correctness bugs, races/TOCTOU, injection (SQL/HTML/shell/template), secret handling, authz gaps, unsafe deserialization, error-handling holes, reachable panics in production paths, trust-boundary leaks. Do not report style or formatting.
 Severity: critical = ship-stopping if merged; high = a real defect a user can hit; medium = a defect on an edge path; low = minor. A reachable panic, crash, or DoS triggerable by request-controlled input is never below medium.
-Cite file paths relative to the repo root and the first affected line of the new code. Read-only — write NO files.
+Cite file paths relative to the repo root and the first affected line of the new code. Read-only - write NO files.
 ${extra ? `Additional reviewer focus from the caller:\n${extra}\n` : ''}Report every finding through the output schema. No findings → an empty findings array.`
 
 // ── arg parsing ──────────────────────────────────────────────────────────────
@@ -121,7 +121,7 @@ function parseArgs(argv) {
 async function readStdin() {
   if (process.stdin.isTTY) return ''
   // Buffer-by-Buffer += decodes each chunk independently, corrupting a multi-byte
-  // character that straddles a 64 KiB read boundary — decode as one utf8 stream.
+  // character that straddles a 64 KiB read boundary - decode as one utf8 stream.
   process.stdin.setEncoding('utf8')
   let buf = ''
   for await (const chunk of process.stdin) buf += chunk
@@ -152,7 +152,7 @@ function validateAgainst(schema, value, path = '$') {
   return errs
 }
 
-// ── review-comment parsing: "- [P1] title — file:line[-line]" + indented detail ──
+// ── review-comment parsing: "- [P1] title - file:line[-line]" + indented detail ──
 function parseReviewFindings(text) {
   const head = /^\s*[-*]?\s*\[P(\d)\]\s*(.*?)\s+(?:—|–|--)\s+(\S+?):(\d+)(?:-(\d+))?\s*$/
   const out = []
@@ -188,7 +188,7 @@ function classify({ spawnError, killedBy, exitCode, errorText }) {
 }
 
 // ── one codex run: spawn, stream JSONL, watchdogs, collect ───────────────────
-// The detached child outlives a killed wrapper unless someone reaps it — a workspace-write
+// The detached child outlives a killed wrapper unless someone reaps it - a workspace-write
 // codex still mutating a worktree after the workflow moved on is unacceptable. Catchable
 // terminations sweep the process group; only an uncatchable SIGKILL of the wrapper orphans it.
 let activeChild = null
@@ -217,7 +217,7 @@ function runOnce({ argvTail, promptText, spawnCwd, eventsFile, stallMs, timeoutM
     let done = false
     let lastEvent = Date.now()
     const kill = (why) => {
-      // exitCode guard: the timers phase can preempt a queued 'close' — never mark a child
+      // exitCode guard: the timers phase can preempt a queued 'close' - never mark a child
       // that already exited cleanly as watchdog-killed.
       if (done || child.exitCode !== null || child.signalCode !== null) return
       r.killedBy = why
@@ -249,7 +249,7 @@ function runOnce({ argvTail, promptText, spawnCwd, eventsFile, stallMs, timeoutM
       try { ev = JSON.parse(line) } catch { r.noise.push(line); return }
       if (ev.type === 'item.completed' && ev.item) {
         if (ev.item.type === 'agent_message' && typeof ev.item.text === 'string') r.finalMsg = ev.item.text
-        // Enabled under-development features inject warning items typed "error" — noise, not failure.
+        // Enabled under-development features inject warning items typed "error" - noise, not failure.
         if (ev.item.type === 'error' && !/^Under-development features enabled/.test(ev.item.message || '')) {
           r.errorLines.push(ev.item.message || JSON.stringify(ev.item))
         }
@@ -278,7 +278,7 @@ const tmpBase = mkdtempSync(join(tmpdir(), 'codex-exec-'))
 
 // This run's dir has to outlive the process: with no --events, the envelope's eventsPath
 // points inside it, and deleting it on exit would hand the caller a path that no longer
-// resolves. So sweep the PREVIOUS runs' dirs instead — otherwise every nightly lint and
+// resolves. So sweep the PREVIOUS runs' dirs instead - otherwise every nightly lint and
 // every delegate call leaves one behind until the machine reboots. A run can hold its dir
 // open for at most --timeout-secs, which the arg check caps at 7200s, so a 24h floor
 // cannot race a live sibling; nobody reads yesterday's event journal either.
@@ -304,7 +304,7 @@ const envelope = (fields) => ({
   ...fields,
 })
 // Emit exactly one envelope, then unwind. `process.exit()` right after a write truncates
-// stdout at the 64 KiB pipe buffer — and a pipe is how every caller reads this — so the
+// stdout at the 64 KiB pipe buffer - and a pipe is how every caller reads this - so the
 // exit rides the write callback (fires once the reader has drained us) and an Emitted
 // throw stops the remaining top-level flow. Anything else reaching the unwind handlers is
 // a genuine wrapper bug: stderr + exit 1, the one case callers may treat as "no envelope".
@@ -323,17 +323,17 @@ const emit = (fields) => {
 }
 const usage = (detail) => emit({ error: { kind: 'USAGE', detail, retried: false } })
 
-// input validation — fail fast, before any spawn
+// input validation - fail fast, before any spawn
 if (a.parseError) usage(a.parseError)
 if (!MODES.includes(a.mode)) usage(`mode must be one of ${MODES.join(' | ')} (got: ${a.mode || 'nothing'})`)
-if (!a.cwd) usage('--cwd is required (always explicit — never inherited from the caller\'s process)')
+if (!a.cwd) usage('--cwd is required (always explicit - never inherited from the caller\'s process)')
 if (!existsSync(a.cwd) || !statSync(a.cwd).isDirectory()) usage(`--cwd is not a directory: ${a.cwd}`)
 if (a.effort && !EFFORTS.includes(a.effort)) usage(`--effort must be one of ${EFFORTS.join('|')} (got: ${a.effort})`)
 if (a.model && !MODEL_RE.test(a.model)) usage(`--model has an implausible shape: ${a.model}`)
 for (const [name, v] of [['--timeout-secs (total across attempts)', a.timeoutSecs], ['--stall-secs', a.stallSecs]]) {
   if (v !== null && (!Number.isInteger(v) || v < 1 || v > 7200)) usage(`${name} must be an integer in [1, 7200]`)
 }
-if (a.write && a.mode !== 'task') usage('--write only applies to task mode — reviews are read-only by definition')
+if (a.write && a.mode !== 'task') usage('--write only applies to task mode - reviews are read-only by definition')
 if (a.schema && a.mode !== 'task') usage('--schema only applies to task mode (adversarial-review has a built-in schema)')
 
 let schemaObj = null
@@ -352,7 +352,7 @@ if (a.base) {
 
 const stdinText = await readStdin()
 if (a.mode === 'task' && !stdinText.trim()) usage('task mode needs a prompt on stdin')
-if (a.mode === 'review' && stdinText.trim()) usage('review mode takes no prompt — the CLI rejects a custom prompt alongside --base/--uncommitted (use adversarial-review for framed reviews)')
+if (a.mode === 'review' && stdinText.trim()) usage('review mode takes no prompt - the CLI rejects a custom prompt alongside --base/--uncommitted (use adversarial-review for framed reviews)')
 
 // Pin the tuning set AFTER validation, so an explicit bad value still errors rather than
 // being silently replaced. From here on a.model/a.effort are concrete and the envelope
@@ -360,7 +360,7 @@ if (a.mode === 'review' && stdinText.trim()) usage('review mode takes no prompt 
 a.model = a.model || DEFAULT_MODEL
 a.effort = a.effort || DEFAULT_EFFORT
 
-// argv assembly — all four always sent; nothing falls through to config.toml
+// argv assembly - all four always sent; nothing falls through to config.toml
 const tuning = [
   '-m', a.model,
   '-c', `model_reasoning_effort=${a.effort}`,
@@ -389,7 +389,7 @@ if (a.mode === 'review') {
 }
 
 // --timeout-secs is the TOTAL budget across attempts (callers size their Bash-tool timeout
-// against it — a per-attempt deadline would silently double under the retry policy).
+// against it - a per-attempt deadline would silently double under the retry policy).
 const totalBudgetMs = (a.timeoutSecs ?? DEFAULT_TIMEOUT[a.mode]) * 1000
 const stallMs = (a.stallSecs ?? DEFAULT_STALL) * 1000
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms))
@@ -415,7 +415,7 @@ for (;;) {
   if (kind === 'RATE_LIMIT') await sleep(RATE_LIMIT_BACKOFF_MS)
 }
 
-// The -o file is codex's own record of the final message — prefer it over event capture.
+// The -o file is codex's own record of the final message - prefer it over event capture.
 let finalMsg = run.finalMsg
 try {
   const fromFile = existsSync(lastMsgFile) ? readFileSync(lastMsgFile, 'utf8') : ''
@@ -444,7 +444,7 @@ if (kind) {
 }
 
 if (!finalMsg.trim()) {
-  emit({ ...base, error: { kind: 'EMPTY_OUTPUT', detail: 'codex exited 0 but produced no final message — an empty result is UNKNOWN, never a pass', retried } })
+  emit({ ...base, error: { kind: 'EMPTY_OUTPUT', detail: 'codex exited 0 but produced no final message - an empty result is UNKNOWN, never a pass', retried } })
 }
 
 // mode-specific output validation

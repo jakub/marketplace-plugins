@@ -6,7 +6,7 @@
 #   install-cron.sh install    write launcher + units, daemon-reload, enable --now
 #   install-cron.sh status     timers, last result per job, newest report per job
 #   install-cron.sh run <job> [flags…]  run one job now in the foreground (timer env).
-#                              Flags after <job> go to flow-cron.mjs — notably --dry-run,
+#                              Flags after <job> go to flow-cron.mjs - notably --dry-run,
 #                              which prints the command instead of spending a real session.
 #   install-cron.sh uninstall  disable timers and remove launcher + units
 set -eu
@@ -20,7 +20,7 @@ jobs="lint doc-sweep"
 
 case "${1:-status}" in
 install)
-  systemctl --user show-environment >/dev/null 2>&1 || { echo "no running systemd user manager; these timers need one — skipping install" >&2; exit 1; }
+  systemctl --user show-environment >/dev/null 2>&1 || { echo "no running systemd user manager; these timers need one - skipping install" >&2; exit 1; }
   command -v claude >/dev/null || { echo "claude is not on PATH; install Claude Code first" >&2; exit 1; }
   command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
   mkdir -p "$(dirname "$launcher")" "$units_dir" "$state/reports" "$HOME/.config/flow"

@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 // FLOW_CRON_JOB from its env (exported below, unforgeable from inside the session) and
 // denies every git subcommand outside the job's standing permissions, ignoring
 // FLOW_SANCTION. Keep the guard's write set, these lists, and the prompts' standing
-// permissions in step — they are three views of one contract.
+// permissions in step - they are three views of one contract.
 const jobs = (root) => ({
   lint: {
     allowedTools: [
@@ -140,7 +140,7 @@ if (!text.trim() && !failure) failure = "session returned no report text";
 else if (!failure && !/^\s*# flow /.test(text)) failure = `session ended before the report (got: ${text.trim().slice(0, 120)})`;
 
 const header = `<!-- ${JOBS[job].summary} · ${new Date().toISOString()} · ${model} · ${minutes} min${cost ? ` · ${cost}` : ""}${failure ? ` · FAILED: ${failure}` : ""} -->\n`;
-const body = failure && !text.trim() ? `# ${JOBS[job].summary} — ${date}\n\nFAILED: ${failure}\n\n\`\`\`\n${(run.stderr || "").slice(-4000)}\n\`\`\`\n` : text;
+const body = failure && !text.trim() ? `# ${JOBS[job].summary} - ${date}\n\nFAILED: ${failure}\n\n\`\`\`\n${(run.stderr || "").slice(-4000)}\n\`\`\`\n` : text;
 writeFileSync(reportPath, header + body);
 
 // Keep the last 30 reports per job.

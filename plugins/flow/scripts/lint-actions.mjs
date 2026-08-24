@@ -48,7 +48,7 @@ const prsFor = (branch) => {
 // Two independent questions, both of which must answer yes before a branch dies.
 //
 // SAFETY (tipJustification): are the commits recoverable after the delete? Yes when the
-// remote can reproduce the tip — same-tip remote branch, merged/closed PR head at this
+// remote can reproduce the tip - same-tip remote branch, merged/closed PR head at this
 // tip, or ancestry of origin/main (pre-squash merges). An OPEN PR refuses outright:
 // content aside, an active run owns that branch.
 //
@@ -56,7 +56,7 @@ const prsFor = (branch) => {
 // delete: a pushed spike with no PR is perfectly recoverable AND perfectly alive. Only a
 // merged/closed PR or a tip already in origin/main proves the work landed or was
 // abandoned on purpose. This gate used to live in the lint prompt, which meant it held
-// only as long as the model remembered it — it did not, twice.
+// only as long as the model remembered it - it did not, twice.
 // Branches that are infrastructure, not work: never deletable regardless of state.
 // `flow-evidence` carries PR evidence captures that outlive every PR pointing at them.
 const PROTECTED = new Set(["main", "master", "flow-evidence"]);
@@ -68,7 +68,7 @@ const deathWarrant = (branch, tip) => {
   if (tryGit("merge-base", "--is-ancestor", tip, "refs/remotes/origin/main") !== null) {
     return { why: "tip is already in origin/main" };
   }
-  return { deny: "no merged or closed PR and the tip is not in origin/main; the branch is recoverable but not demonstrably dead — a human decides" };
+  return { deny: "no merged or closed PR and the tip is not in origin/main; the branch is recoverable but not demonstrably dead - a human decides" };
 };
 
 const tipJustification = (branch, tip) => {

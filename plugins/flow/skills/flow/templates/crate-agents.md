@@ -1,7 +1,7 @@
-# <crate> — domain notes
+# <crate> - domain notes
 
 <!-- template: committed next to the code (gitignored guidance never reaches worktrees).
-     Pair with `ln -s AGENTS.md CLAUDE.md`. Loaded lazily on subtree contact — this can
+     Pair with `ln -s AGENTS.md CLAUDE.md`. Loaded lazily on subtree contact - this can
      afford more depth than the repo root file, but only crate-LOCAL knowledge. -->
 
 <one paragraph: this crate's single responsibility and where it sits in the data flow.>
