@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 // publish-guard: ask before a command that publishes to a public registry.
 //
-// Generalised from the `cargo publish` entry in trawl/.claude/hooks/block-dangerous.sh. The
-// rule is not about cargo - it is that these registries have no unpublish. crates.io refuses
+// The rule is not about cargo - it is that these registries have no unpublish. crates.io refuses
 // outright; npm allows it for 72 hours and only if nothing depends on you. A wrong version
 // number is permanent, and the fix is always a new release rather than a retraction.
 //
 // `ask`, not `deny`: publishing is a thing you legitimately do, so this is the gate the
 // charter asks for on anything that leaves the machine, not a ban.
 //
-// Deliberately NOT here: `docker push`. On this setup that usually means a homelab registry
-// where a retag costs nothing, and gating it would be friction with no irreversibility behind
-// it. `gh release create` is likewise absent - a release deletes cleanly.
+// Deliberately NOT here: `docker push`. That usually means a private registry where a retag
+// costs nothing, and gating it would be friction with no irreversibility behind it. `gh release create` is likewise absent - a release deletes cleanly.
 
 const PUBLISH = [
   [/\bcargo\s+publish\b/, 'crates.io', 'crates.io has no unpublish at all'],

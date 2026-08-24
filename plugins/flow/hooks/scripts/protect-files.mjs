@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // protect-files: refuse Edit/Write to three classes of file that are never hand-authored.
-// Portable version of trawl/.claude/hooks/protect-files.sh, which encoded the same three
-// rules in Rust spellings (*.lock, */target/*).
+// Portable version of an earlier repo-local hook that encoded the same three rules in
+// Rust spellings (*.lock, */target/*).
 //
 //   1. secrets      - .env and friends. The load-bearing one: the failure mode is a
 //                     credential in a diff. `.env.example` and its siblings are templates

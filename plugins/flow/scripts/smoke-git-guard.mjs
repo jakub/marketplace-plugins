@@ -27,7 +27,7 @@ expect(true, 'git commit -m "x\n\nGenerated with [Claude Code]"', 'Generated-wit
 expect(true, 'git commit --no-verify -m hi', 'commit --no-verify')
 expect(true, 'git push --no-verify', 'push --no-verify')
 expect(true, 'cd /tmp/wt && git commit -m "a\n\nSigned-off-by: X"', 'compound cmd + trailer')
-// Irreversible git, ported from trawl/.claude/hooks/block-dangerous.sh.
+// Irreversible git.
 expect(true, 'git push --force origin main', 'bare force-push')
 expect(true, 'git push -f origin main', 'force-push short flag')
 expect(true, 'git push origin main --force', 'force flag trailing')

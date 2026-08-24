@@ -49,8 +49,7 @@ const stripLiterals = (s) =>
 // Irreversible git: operations that destroy work no reflog returns. The bar is deliberately
 // narrow. `reset --hard` and `branch -D` are NOT here - the reflog does return those, and
 // blocking them breaks the ordinary squash-merge flow (a squashed branch is no ancestor of
-// main, so `-d` refuses it) for no safety earned. Ported from the user's trawl repo, where
-// this set had already been trimmed to what actually matters.
+// main, so `-d` refuses it) for no safety earned.
 //
 // Each pattern is bounded to a single shell command with `[^;&|]*`, so a later invocation
 // cannot hide behind an earlier read (`git log && git push --force`), and every one is

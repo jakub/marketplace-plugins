@@ -60,8 +60,8 @@ const EXTERNAL_BOTS = A.externalReviewers || ['coderabbitai']
 const sentinel = (s) => { const v = (s || '').trim(); return v && !/^(none|n\/a|null|nil|no)\.?$/i.test(v) ? v : '' }
 
 // envNote: repo-specific environment the push/gate agents cannot infer from a one-line
-// prompt - e.g. exports a pre-push hook's test suite needs (the wf_512af7b9 false-green:
-// hook needed DATABASE_URL, bare push agent didn't have it). Empty → adds nothing.
+// prompt - e.g. a DATABASE_URL export a pre-push hook's test suite needs; a bare push
+// agent doesn't have it and the hook reports a false green. Empty → adds nothing.
 const ENV_NOTE = sentinel(A.envNote)
   ? `\nEnvironment note (hooks/tests need this - e.g. exports required by pre-push hooks): ${sentinel(A.envNote)}`
   : ''
@@ -670,9 +670,9 @@ async function dispatchFixes(items, plan, roundLabel) {
 }
 
 // The host agent() resolves to null when a subagent dies on a terminal API error - but a
-// schema'd agent that exhausts its StructuredOutput retry cap THROWS instead (three runs
-// bitten; latest wf_c92d331a-f75, where a COMPLETED impl stage lost only its report and
-// the throw killed the run past its `|| fallback`). Route every call through this shim so
+// schema'd agent that exhausts its StructuredOutput retry cap THROWS instead, and the
+// throw kills the run past its `|| fallback` even when the stage COMPLETED its work and
+// lost only the report. Route every call through this shim so
 // a lost result degrades to null - the contract all the fallbacks here are written
 // against. parallel() thunks already null on throw; double-wrapping those is harmless.
 const safeAgent = (prompt, opts) => agent(prompt, opts).catch((e) => {
@@ -681,7 +681,7 @@ const safeAgent = (prompt, opts) => agent(prompt, opts).catch((e) => {
 })
 
 // Report salvage: a seat that finishes its work but dies on the StructuredOutput retry
-// cap loses only its report (5 deaths in wf_512af7b9 alone). Heavy seats mirror the report
+// cap loses only its report. Heavy seats mirror the report
 // to a file OUTSIDE the worktree (a fixer's `git add -A` can never sweep it); on a null
 // result a cheap reader re-emits it through the schema. Zero cost when healthy. The dir is
 // deterministic (no Date.now in workflow scripts) - the conductor rm -rf's it at launch.
