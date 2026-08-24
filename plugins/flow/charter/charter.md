@@ -113,7 +113,7 @@ Green verdicts on anything that ships need a confirming cross-model read.
 
 When structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it with the `/artifacts` skill (default TTL is fine for an explainer), and hand back the URL.
 
-When adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through `/artifacts` with `--keep` - a PR outlives any TTL - and `--public` only when the repo's evidence posture allows it; otherwise link the private URL and say it's tailnet-only.
+When adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through `/artifacts` with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.
 
 We are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix. 
 

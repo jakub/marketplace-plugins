@@ -27,6 +27,4 @@
 
 - Build/test: <the commands that matter, e.g. `cargo nextest run --workspace`>
 - Environments: test (agent-owned) / dev (user-local) / <prod tier + its rules>
-- Evidence posture: <`public-by-intent` if this repo is open source or headed there, so PR
-  evidence captures may publish to the public plans host on human ack | `private` otherwise>
 - <the 3-5 invariants that bite: DB conventions, feature-flag rules, codegen steps…>
