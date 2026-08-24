@@ -12,7 +12,7 @@ Upstream commit:
 
 Only these three are vendored: `grill-with-docs` is a thin wrapper that runs
 `/grilling` using the `/domain-modeling` skill, so the three form the minimal
-closure. Upstream ships 41 skills; the rest are deliberately not carried here.
+closure. Upstream ships 36 skills; the rest are deliberately not carried here.
 
 LOCAL MODIFICATIONS
 -------------------
@@ -43,7 +43,9 @@ context-format.md. We do not use a map file; the `## Contexts` section of a repo
 AGENTS.md is the map. Note what it deliberately does NOT do. It does not assert that a
 repo is single-context, because flow's prep.md forbids inferring that from a missing
 map file, and it keeps "when multiple contexts exist, infer which one the topic relates
-to", which still applies when the map lives elsewhere. 0001 still lowercases
+to", which still applies when the map lives elsewhere. It also rewords SKILL.md's
+"Most repos have a single context" lead-in - the surviving half of a deleted contrast -
+to stay neutral about context count. 0001 still lowercases
 CONTEXT-MAP.md; that hunk builds the intermediate state 0003 then deletes, so the order
 matters.
 

@@ -9,7 +9,7 @@ Actively build and sharpen the project's domain model as you design. This is the
 
 ## File structure
 
-Most repos have a single context:
+Each context keeps this layout at its root (for a single-context repo, that is the repo root):
 
 ```
 /

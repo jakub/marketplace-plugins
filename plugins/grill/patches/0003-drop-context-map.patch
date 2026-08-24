@@ -1,7 +1,16 @@
 diff --git a/plugins/grill/skills/domain-modeling/SKILL.md b/plugins/grill/skills/domain-modeling/SKILL.md
-index 6d621d6..7920920 100644
+index 6d621d6..4b7af7a 100644
 --- a/plugins/grill/skills/domain-modeling/SKILL.md
 +++ b/plugins/grill/skills/domain-modeling/SKILL.md
+@@ -9,7 +9,7 @@ Actively build and sharpen the project's domain model as you design. This is the
+ 
+ ## File structure
+ 
+-Most repos have a single context:
++Each context keeps this layout at its root (for a single-context repo, that is the repo root):
+ 
+ ```
+ /
 @@ -21,22 +21,6 @@ Most repos have a single context:
  └── src/
  ```
