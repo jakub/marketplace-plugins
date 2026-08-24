@@ -136,8 +136,8 @@ console.log('happy path + flag mapping')
 console.log('stale temp dirs from previous runs are swept')
 {
   // The run's own dir must survive - the envelope advertises eventsPath inside it - so the
-  // wrapper collects the previous runs' instead. Without that, every nightly lint and every
-  // delegate call left one in /tmp until reboot.
+  // wrapper collects the previous runs' instead, otherwise every nightly lint and delegate
+  // call leaves one in /tmp until reboot.
   const stale = join(tmpdir(), 'codex-exec-smoke-stale')
   const fresh = join(tmpdir(), 'codex-exec-smoke-fresh')
   mkdirSync(stale, { recursive: true })

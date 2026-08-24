@@ -35,8 +35,8 @@ const GIT_COMMIT = /\bgit\b(?:\s+\S+)*?\s+commit\b/
 // Prose about a rule is not a breach of it. `--no-verify` inside a quoted string or a heredoc
 // body is text being handed to some other command - a PR comment, a commit body, a gripe
 // describing this very guard - not a flag being handed to git. Matching the raw command
-// string blocked all three, which is how a guard turns into something people route around.
-// Strip shell literals first, then match.
+// string would block all three, which is how a guard turns into something people route
+// around. Strip shell literals first, then match.
 //
 // The trailer check below deliberately does NOT strip: a trailer lives inside the quoted
 // commit message, which is precisely where it has to be caught.
@@ -146,7 +146,7 @@ const cronVerdict = (cmd, job) => {
     }
     if (sub === 'branch') {
       // Any short bundle carrying a write letter (D/d delete, m/M move, c/C copy,
-      // f force) - catches -Df and other combined forms the old single-char test missed.
+      // f force) - catches -Df and other combined forms.
       const shortWrite = rest.some((t) => /^-[a-zA-Z]*[DdmMcCf]/.test(t) && !t.startsWith('--'))
       const longWrite = rest.some((t) => /^--(delete|move|copy|force|set-upstream|unset-upstream|edit-description)/.test(t))
       if (shortWrite || longWrite) return no('branch may only be listed')

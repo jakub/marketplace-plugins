@@ -58,8 +58,8 @@ status)
   ;;
 run)
   job="${2:?usage: install-cron.sh run <lint|doc-sweep> [--dry-run]}"
-  # Everything after the job name belongs to flow-cron.mjs. Dropping it silently swallowed
-  # --dry-run, so `run lint --dry-run` spent a real headless session instead of printing one.
+  # Everything after the job name belongs to flow-cron.mjs. Dropping it would silently
+  # swallow flags like --dry-run, turning a rehearsal into a real headless session.
   shift 2
   if [ -x "$launcher" ]; then exec "$launcher" "$job" "$@"; else CLAUDE_PLUGIN_ROOT="$root" exec node "$root/scripts/flow-cron.mjs" "$job" "$@"; fi
   ;;

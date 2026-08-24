@@ -59,8 +59,8 @@ expectEnv(true, 'git branch newbranch origin/main', lint, 'lint: branch create w
 expectEnv(true, 'git symbolic-ref HEAD refs/heads/evil', lint, 'lint: symbolic-ref repoint')
 expectEnv(true, 'git symbolic-ref -d HEAD', lint, 'lint: symbolic-ref delete')
 expectEnv(true, 'git fetch origin main:refs/heads/hijack', lint, 'lint: fetch writing refspec')
-// A shell operator glued to the previous word once hid the invocation behind it from a
-// whitespace-only split, and `Bash(git:*)` waved the same command through.
+// A shell operator glued to the previous word hides the invocation behind it from a
+// whitespace-only split, and `Bash(git:*)` waves it through.
 expectEnv(true, 'git log --oneline&&git push origin main', lint, 'lint: push glued to && after a read')
 expectEnv(true, 'git log --oneline&&git branch -D feat/x', lint, 'lint: branch delete glued to &&')
 expectEnv(true, 'git log -1|git push origin main', lint, 'lint: push behind an unspaced pipe')
@@ -94,8 +94,7 @@ expect(false, 'git commit -m "refactor: drop the Co-Authored-By trailers from do
 expect(false, 'git log --format=%B | grep -i co-authored-by', 'auditing history')
 expect(false, 'git log --grep=commit --oneline', 'git log --grep=commit')
 expect(false, 'grep -rn "Co-Authored-By" .', 'grepping repo')
-// Writing about the flag is not passing the flag. Each of these blocked a real tool call
-// before stripLiterals landed: a PR comment, a smoke fixture, and a gripe heredoc.
+// Writing about the flag is not passing the flag.
 expect(false, 'gh pr comment -b "this repo bans --no-verify"', '--no-verify named in a PR comment')
 expect(false, "echo 'git commit --no-verify is banned here'", '--no-verify inside single quotes')
 expect(false, 'git commit -m "docs: explain why --no-verify is banned"', '--no-verify named in a commit subject')

@@ -55,8 +55,8 @@ const prsFor = (branch) => {
 // WARRANT (deathWarrant): is the branch actually dead? Safety alone is not a reason to
 // delete: a pushed spike with no PR is perfectly recoverable AND perfectly alive. Only a
 // merged/closed PR or a tip already in origin/main proves the work landed or was
-// abandoned on purpose. This gate used to live in the lint prompt, which meant it held
-// only as long as the model remembered it - it did not, twice.
+// abandoned on purpose. A prompt-level gate holds only as long as the model remembers it,
+// so the gate lives here.
 // Branches that are infrastructure, not work: never deletable regardless of state.
 // `flow-evidence` carries PR evidence captures that outlive every PR pointing at them.
 const PROTECTED = new Set(["main", "master", "flow-evidence"]);

@@ -27,7 +27,7 @@ const EXTERNAL_WAIT_MINUTES = 15 // post-push cap on waiting for coderabbit et a
 // The codex leg is in EVERY row deliberately. It is a sonnet/low transport over a
 // flat-rate subscription, so it is the cheapest seat in the fabric - and it is the only
 // cross-model signal in the run, and the gate on the post-loop re-verification. Cutting it
-// from the smallest bucket saved almost nothing and meant a misclassified issue got no
+// from the smallest bucket saves almost nothing and leaves a misclassified issue with no
 // decorrelated review at all, which reads as a clean fabric because fewer things looked.
 // `medium` and `large` are intentionally identical - the panel is already at full width by
 // `medium`, so `large` buys nothing here and exists as a journal-level signal only. Do not
@@ -66,12 +66,12 @@ const ENV_NOTE = sentinel(A.envNote)
   ? `\nEnvironment note (hooks/tests need this - e.g. exports required by pre-push hooks): ${sentinel(A.envNote)}`
   : ''
 
-// Codex legs run on the codex-exec transport that ships in THIS plugin (the retired
-// companion plugin's cache path broke silently once - never again a dependency we don't
-// carry). Seat overrides are validated here so a typo degrades to the default, visibly,
-// instead of burning the leg on a USAGE envelope. pluginRoot arrives from the conductor's
-// ${CLAUDE_PLUGIN_ROOT}; an uninterpolated literal still contains '$' - treat as unset
-// and fall back to the same-plugin glob (if this workflow runs, flow is installed).
+// Codex legs run on the codex-exec transport that ships in THIS plugin, so no external
+// cache path can silently break it. Seat overrides are validated here so a typo degrades
+// to the default, visibly, instead of burning the leg on a USAGE envelope. pluginRoot
+// arrives from the conductor's ${CLAUDE_PLUGIN_ROOT}; an uninterpolated literal still
+// contains '$' - treat as unset and fall back to the same-plugin glob (if this workflow
+// runs, flow is installed).
 // Seat defaults are stated HERE, not inherited. `~/.codex/config.toml` is mutable state that
 // the Codex TUI rewrites with the user's interactive picks, so an omitted flag would silently
 // couple this run's review strength to an unrelated session. The transport pins the same
@@ -484,7 +484,7 @@ Report prNumber, prUrl, rebased, conflict, headPushed, closesLinked.`
 // comments is the most mechanical of the four, so it takes luna/max (the cheap-depth seat,
 // framework §2 - sanctioned here precisely because it is NOT the decorrelation seat).
 // Seats are pinned: --codex-model/--codex-effort tune the fabric seats only; --codex-fast
-// passes through. This also drops the pr-review-toolkit agentType dependency.
+// passes through.
 const LENS_SEATS = {
   tests: { model: 'gpt-5.6-sol', effort: 'high' },
   'silent-failures': { model: 'gpt-5.6-sol', effort: 'high' },
@@ -731,8 +731,7 @@ async function reason(prompt, opts) {
 const designThunks = {
   codex: () => salvageableAgent(codexDesignPrompt, { label: 'design:codex', phase: 'Design', model: 'sonnet', effort: 'low', schema: DESIGN }),
   // The modal winner: synthesis defaults to the minimal design, and this leg appears in
-  // every size bucket (on trivial/small it is one of only two). Staffing the design most
-  // likely to BECOME the plan cheaper than the panel around it was backwards.
+  // every size bucket (on trivial/small it is one of only two).
   minimal: () => salvageableAgent(architectPrompt('minimal'), { label: 'design:minimal', phase: 'Design', agentType: 'flow:code-architect', model: 'opus', effort: 'medium', schema: DESIGN }),
   // Taste seat - "the best long-term design" is the axis fable leads on, and it is the
   // agent's own declared default. A refusal here costs a thinned panel, which the
@@ -789,7 +788,7 @@ if (amb) return { escalation: 'needs-info', questions: amb, plan: { goal: plan.g
 // Lower effort makes these models read the plan more literally and scope to what was asked
 // - the anti-wandering lever - while higher effort buys the depth that subtle invariants
 // need. `standard` (the modal plan) takes medium; `hard` keeps the headroom; mechanical
-// transcription stays on sonnet. This is the second thing the difficulty call now routes.
+// transcription stays on sonnet.
 const implRouted = {
   mechanical: { model: 'sonnet', effort: 'medium' },
   standard:   { model: 'opus',   effort: 'medium' },
@@ -977,8 +976,8 @@ if (lensFindings.length > 0 || ext.items.length > 0) {
   if (triage.fixes.length > 0) {
     await dispatchFixes(triage.fixes, plan, 'postpush')
     // Same fallback as the Review gate: a dead gate agent is UNKNOWN, and unknown is not
-    // passed. Guarding on `ppGate &&` instead let a null skip the escalation entirely and
-    // hand the conductor a run that never had its post-push build verified.
+    // passed. A null gate must not skip the escalation, or the conductor gets a run whose
+    // post-push build was never verified.
     const ppGate = (await salvageableAgent(buildGatePrompt, { label: 'gate:postpush', phase: 'PostPush', model: 'sonnet', effort: 'low', schema: GATE }))
       || { status: 'unknown', output: 'post-push build-gate agent unavailable' }
     // Push before the gate verdict either way - preserve the work remotely even when escalating.

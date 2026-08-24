@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Smoke harness for workflows/issue-fixed.mjs - the only executable spec of the result
-// contract the /flow:issue-fixed conductor reads. Four passes, no network, no agents:
+// contract the /flow:issue-fixed conductor reads. Seven passes, no network, no agents:
 //   1. parse gate (the script has a top-level export + return; node --check can't load it)
 //   2. null-cascade: every agent dies → salvage paths logged, controlled design-panel throw
 //   3. happy path with one unverified push → headInSync downgrade, reply gating, result shape
@@ -257,8 +257,8 @@ console.log('evidence visibility gate')
 }
 
 // ── pass 7: dead post-push build gate ────────────────────────────────────────
-// UNKNOWN ≠ pass covers the post-push gate too. It once guarded on `ppGate &&`, so a null
-// skipped the escalation and returned a run whose post-push build was never verified.
+// UNKNOWN ≠ pass covers the post-push gate too. A null gate must not skip the escalation:
+// that returns a run whose post-push build was never verified.
 console.log('post-push build gate dies')
 {
   const stub = async (prompt, opts = {}) => {
