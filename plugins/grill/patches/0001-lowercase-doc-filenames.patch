@@ -1,13 +1,18 @@
 diff --git a/plugins/grill/skills/domain-modeling/SKILL.md b/plugins/grill/skills/domain-modeling/SKILL.md
-index d0f7e1a..2f0c7d7 100644
+index 9b97707..6d621d6 100644
 --- a/plugins/grill/skills/domain-modeling/SKILL.md
 +++ b/plugins/grill/skills/domain-modeling/SKILL.md
-@@ -5,7 +5,7 @@ description: Build and sharpen a project's domain model. Use when the user wants
+@@ -1,11 +1,11 @@
+ ---
+ name: domain-modeling
+-description: Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a CONTEXT.md, or recording or editing an ADR.
++description: Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a context.md, or recording or editing an ADR.
+ ---
  
  # Domain Modeling
  
--Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
-+Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `context.md` for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
+-Actively build and sharpen the project's domain model as you design. This is the *active* discipline: challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill: that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
++Actively build and sharpen the project's domain model as you design. This is the *active* discipline: challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `context.md` for vocabulary is not this skill: that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
  
  ## File structure
  
@@ -44,27 +49,27 @@ index d0f7e1a..2f0c7d7 100644
  │       └── docs/adr/
  ```
  
--Create files lazily — only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
-+Create files lazily — only when you have something to write. If no `context.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
+-Create files lazily: only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
++Create files lazily: only when you have something to write. If no `context.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
  
  ## During the session
  
  ### Challenge against the glossary
  
--When the user uses a term that conflicts with the existing language in `CONTEXT.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y — which is it?"
-+When the user uses a term that conflicts with the existing language in `context.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y — which is it?"
+-When the user uses a term that conflicts with the existing language in `CONTEXT.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y. Which is it?"
++When the user uses a term that conflicts with the existing language in `context.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y. Which is it?"
  
  ### Sharpen fuzzy language
  
 @@ -57,11 +57,11 @@ When domain relationships are being discussed, stress-test them with specific sc
  
- When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible — which is right?"
+ When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible. Which is right?"
  
 -### Update CONTEXT.md inline
 +### Update context.md inline
  
--When a term is resolved, update `CONTEXT.md` right there. Don't batch these up — capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
-+When a term is resolved, update `context.md` right there. Don't batch these up — capture them as they happen. Use the format in [context-format.md](./context-format.md).
+-When a term is resolved, update `CONTEXT.md` right there. Don't batch these up: capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
++When a term is resolved, update `context.md` right there. Don't batch these up: capture them as they happen. Use the format in [context-format.md](./context-format.md).
  
 -`CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
 +`context.md` should be totally devoid of implementation details. Do not treat `context.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
@@ -72,8 +77,8 @@ index d0f7e1a..2f0c7d7 100644
  ### Offer ADRs sparingly
  
 @@ -71,4 +71,4 @@ Only offer to create an ADR when all three are true:
- 2. **Surprising without context** — a future reader will wonder "why did they do it this way?"
- 3. **The result of a real trade-off** — there were genuine alternatives and you picked one for specific reasons
+ 2. **Surprising without context**: a future reader will wonder "why did they do it this way?"
+ 3. **The result of a real trade-off**: there were genuine alternatives and you picked one for specific reasons
  
 -If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).
 +If any of the three is missing, skip the ADR. Use the format in [adr-format.md](./adr-format.md).
@@ -85,7 +90,7 @@ diff --git a/plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md b/plugins/gr
 similarity index 77%
 rename from plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md
 rename to plugins/grill/skills/domain-modeling/context-format.md
-index eaf2a18..a60915a 100644
+index 79bbb32..bdd215f 100644
 --- a/plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md
 +++ b/plugins/grill/skills/domain-modeling/context-format.md
 @@ -1,4 +1,4 @@
@@ -109,12 +114,12 @@ index eaf2a18..a60915a 100644
  
  ## Contexts
  
--- [Ordering](./src/ordering/CONTEXT.md) — receives and tracks customer orders
--- [Billing](./src/billing/CONTEXT.md) — generates invoices and processes payments
--- [Fulfillment](./src/fulfillment/CONTEXT.md) — manages warehouse picking and shipping
-+- [Ordering](./src/ordering/context.md) — receives and tracks customer orders
-+- [Billing](./src/billing/context.md) — generates invoices and processes payments
-+- [Fulfillment](./src/fulfillment/context.md) — manages warehouse picking and shipping
+-- [Ordering](./src/ordering/CONTEXT.md): receives and tracks customer orders
+-- [Billing](./src/billing/CONTEXT.md): generates invoices and processes payments
+-- [Fulfillment](./src/fulfillment/CONTEXT.md): manages warehouse picking and shipping
++- [Ordering](./src/ordering/context.md): receives and tracks customer orders
++- [Billing](./src/billing/context.md): generates invoices and processes payments
++- [Fulfillment](./src/fulfillment/context.md): manages warehouse picking and shipping
  
  ## Relationships
  

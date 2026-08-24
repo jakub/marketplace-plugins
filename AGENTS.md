@@ -34,11 +34,13 @@ Facts that go stale (model pricing, the codex CLI surface encoded in `scripts/co
 
 ## grill
 
-`plugins/grill/skills/` is vendored from https://github.com/mattpocock/skills (MIT), upstream plus one patch. Don't hand-edit the vendored files. A local change is a patch in `plugins/grill/patches/`, so a re-sync stays mechanical: copy the three upstream dirs over, `git apply` each patch in order, bump the SHA in `plugins/grill/NOTICE`. If a patch stops applying, regenerate it.
+`plugins/grill/skills/` is vendored from https://github.com/mattpocock/skills (MIT), upstream plus two patches. Don't hand-edit the vendored files. A local change is a patch in `plugins/grill/patches/`, so a re-sync stays mechanical: copy the three upstream dirs over, `git apply` each patch in order, bump the SHA in `plugins/grill/NOTICE`. If a patch stops applying, regenerate it.
 
 Patch 0001 lowercases the doc-artifact filenames (`context.md`, `context-map.md`) to match the rest of the repo. `SKILL.md`, `AGENTS.md`, and `CLAUDE.md` keep their uppercase names because the loaders find them by exact filename.
 
-Three skills is the minimal closure - `grill-with-docs` wraps `/grilling` using `/domain-modeling`. Upstream ships 41; carrying another one is a decision, not a default.
+Patch 0002 routes a `grilling` round through the AskUserQuestion tool, up to 4 questions per call with selectable options, instead of upstream's numbered prose block with emoji headers. Upstream's design-tree and frontier model survives untouched; only the delivery changes. Verify a regenerated patch by applying both to a fresh upstream copy and diffing against `skills/` - identical or it is wrong.
+
+Three skills is the minimal closure - `grill-with-docs` wraps `/grilling` using `/domain-modeling`. Upstream ships 36 across five buckets; carrying another one is a decision, not a default.
 
 ## unslop
 

@@ -8,7 +8,7 @@ This plugin vendors three skills from Matt Pocock's "Skills for Real Engineers":
 
 Upstream commit:
 
-    ed37663cc5fbef691ddfecd080dff42f7e7e350d
+    5b15a47f2d7150f545fbcacbfe381787fc0230dc
 
 Only these three are vendored: `grill-with-docs` is a thin wrapper that runs
 `/grilling` using the `/domain-modeling` skill, so the three form the minimal
@@ -17,26 +17,39 @@ closure. Upstream ships 41 skills; the rest are deliberately not carried here.
 LOCAL MODIFICATIONS
 -------------------
 
-These files are NOT verbatim. One patch is applied on top of upstream:
+These files are NOT verbatim. Two patches apply on top of upstream, in order:
 
     patches/0001-lowercase-doc-filenames.patch
+    patches/0002-askuserquestion-rounds.patch
 
-It lowercases the doc-artifact names this repo standardises on - CONTEXT.md ->
+0001 lowercases the doc-artifact names this repo standardises on - CONTEXT.md ->
 context.md, CONTEXT-MAP.md -> context-map.md - and renames the skill's own
 reference docs to match (ADR-FORMAT.md -> adr-format.md, CONTEXT-FORMAT.md ->
 context-format.md). On a case-sensitive filesystem the uppercase names would be
 separate, competing files, so this is a correctness fix rather than a cosmetic one.
+It touches `domain-modeling` only.
 
-Only `domain-modeling` is touched; `grilling` and `grill-with-docs` are verbatim.
-SKILL.md keeps its uppercase name - the skill loader discovers skills by that exact
-filename.
+0002 changes how `grilling` delivers a round, not how it thinks. Upstream asks the
+whole frontier as a numbered prose block with emoji headers, which leaves the user
+writing an essay to answer it. This routes every round through the AskUserQuestion
+tool instead: up to 4 questions per call, 2-4 selectable options each, the
+recommendation first. Upstream's design-tree and frontier model is kept intact. It
+touches `grilling/SKILL.md` only.
+
+`grill-with-docs` is verbatim. SKILL.md keeps its uppercase name - the skill loader
+discovers skills by that exact filename.
 
 RE-SYNCING
 ----------
 
     1. Copy the three upstream directories over skills/
     2. git apply patches/0001-lowercase-doc-filenames.patch
-    3. Update the commit SHA above; regenerate the patch if it no longer applies
+    3. git apply patches/0002-askuserquestion-rounds.patch
+    4. Update the commit SHA above; regenerate any patch that stops applying
+
+To regenerate: commit the upstream-verbatim state, redo the change on top of it,
+and `git diff -M` the two commits. Verify by applying every patch to a fresh copy
+of upstream and diffing the result against skills/. They must be identical.
 
 ---------------------------------------------------------------------------
 
