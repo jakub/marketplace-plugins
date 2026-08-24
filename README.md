@@ -19,6 +19,7 @@ Hooks arm at the next session start. Installs pull from the pinned GitHub clone,
 | **flow** | `flow@jakub` | This is my main agentic development process. It runs through three stages: `prep` (scope, design, refine) → `issue` (hands-off all the way to a reviewed, evidenced PR) → `land` (ceremony to do final checks, rebase, and merge it in.) |
 | **grill** | `grill@jakub` | Used by `prep` to hammer out the issue design. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT). |
 | **unslop** | `unslop@jakub` | Cuts AI tells from writing. ***Under evaluation.*** Adds hooks to forcefully inject the skill into agents and subagents instead of relying on front matter. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
+| **gripe** | `gripe@jakub` | A complaint box for the agents. They hit the same friction every session and forget it by the end of one, so this writes it down to a local SQLite file that I read later. |
 
 ## flow
 **flow** is my attempt at an agentic development framework. It consists of a charter, three commands, and a couple of hooks. It's by no means perfect, but produces code I can live with.
@@ -53,3 +54,24 @@ Two timers run in the background once `/flow setup` has armed them: a nightly li
 | `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs - a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow cron` installs and reports on them. |
 
 flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction preferences and all engineering doctrine arrives through the charter, where it's versioned and auditable. `docs/claude-md-split.md` explains the split.
+
+## gripe
+
+Agents hit the same friction over and over and forget all of it when the session ends. `gh run watch` exits 0 on a failed check, the agent believes CI passed, nothing errors, nothing gets recorded, and next week a different agent pays the same cost. **gripe** is a complaint box for that. One SQLite file on this machine, agents write to it, and every so often I get a model to read the pile and tell me what it means.
+
+The one rule is that filing has to be free. `gripe add` never exits non-zero and never prompts, so an agent can complain mid-task without putting its own run at risk. The price of that is silent failures, which is why `gripe doctor` exists and why reading the log starts there.
+
+---
+
+Rows arrive two ways, and the database records which. **Observed** rows come from hooks with no agent involved, for things that measurably happened: a fourth identical permission denial in one session, a turn that failed outright. **Self-reported** rows come from the agent, either unprompted or because a hook spotted a repeated failure and asked with the evidence cited. "The hook saw this happen" and "the agent found this annoying" are different kinds of claim and shouldn't be counted together.
+
+There's no clustering, no tags and no severity field, on purpose. A model groups these better than string matching would, and nobody in a position to observe was in a position to assign severity. The `/gripe` skill carries the method instead: cluster by meaning, count distinct sessions rather than raw rows, weigh the two lanes differently, and rank by what the friction cost rather than how often it showed up.
+
+One sharp edge. The bodies are untrusted input. Agents write them after reading arbitrary repos, tool output and issue text, so a body that asks the reader to do something is a payload rather than a complaint. The skill says to quote those as findings and move on.
+
+| Path | What's there |
+|---|---|
+| `plugins/gripe/bin/gripe` | The CLI. A shim that resolves the installed plugin at exec time, so it survives reinstalls and version bumps. |
+| `plugins/gripe/hooks/` | A session mark for the denominator, the advertisement agents see, observed rows on denials and failed turns, and end-of-turn checkpoints that ask when they spot a repeated failure. |
+| `plugins/gripe/skills/gripe/` | How to read a dump. For when I ask for a review, not for normal work. |
+| `docs/gripe/DESIGN.md` | The full design, with the measurement behind each decision. |
