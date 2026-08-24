@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // gripe: PermissionDenied. Writes an observed row directly, through the storage module
-// and never a shell. The gate matters more here than anywhere: jakub's own hooks deny
+// and never a shell. The gate matters more here than anywhere: the user's own hooks deny
 // by design, so a first denial is a guard working correctly. The fourth identical one
 // means the agent kept trying and kept being stopped, which is real friction.
 //

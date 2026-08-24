@@ -22,7 +22,7 @@ async function main() {
   let input
   try { input = JSON.parse(raw) } catch { return }
 
-  // An interrupt is jakub pressing escape, not the tooling fighting the agent.
+  // An interrupt is the user pressing escape, not the tooling fighting the agent.
   if (input.is_interrupt) return
   if (!input.session_id || !input.tool_name) return
 
