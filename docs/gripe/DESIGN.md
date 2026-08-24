@@ -369,7 +369,7 @@ These are separate mechanisms and early drafts conflated them.
 
 The CLI is an ordinary Node script and runs from anywhere. Only *hook registration* needs the
 plugin system, and that is not the only route: `~/.claude/settings.json` registers hooks by
-absolute path, which this machine already does for `sudo-confirm.sh`.
+absolute path.
 
 So the development loop needs no install. Register the hooks in settings.json pointing at the
 working tree, export `GRIPE_HOME`, and iterate with instant feedback. Piping a JSON event into a
@@ -403,5 +403,5 @@ directory with its `.claude-plugin/plugin.json`, a manifest entry with
 - **Tune the gate thresholds.** Fifteen tool calls, two identical failures, three repetitions on
   one target. All guesses, all cheap to change.
 - **Behaviour when `$XDG_STATE_HOME` and `$HOME` are both unusable.** Covered by invariant 1, but
-  `$CLAUDE_CODE_ENVIRONMENT_KIND` reads `bridge` in some of jakub's day-to-day sessions, so this
+  `$CLAUDE_CODE_ENVIRONMENT_KIND` reads `bridge` in ordinary desktop-bridge sessions, so this
   is not exotic and the CLI should be exercised there deliberately.
