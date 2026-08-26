@@ -1,0 +1,129 @@
+# Cross-harness hooks
+
+This repository keeps hook behavior portable without pretending Claude Code and Codex
+have the same event protocol. The stable unit is the plugin's policy or domain state.
+Each harness gets a small adapter and its own registration file.
+
+This document describes the implemented contract as of 2026-08-25. Product behavior
+that can change is based on the current Codex hooks documentation and must be rechecked
+before changing an adapter.
+
+## Layout
+
+Each compatible plugin is still a self-contained deployment unit:
+
+```text
+plugins/<name>/
+  .claude-plugin/plugin.json     Claude manifest
+  .codex-plugin/plugin.json      Codex manifest, points at hooks/codex.json
+  hooks/hooks.json               Claude event registrations
+  hooks/codex.json               Codex event registrations
+  hooks/scripts/                 wire adapters and simple direct handlers
+  lib/                           harness-neutral policy, rendering, or state
+```
+
+There is no cross-plugin runtime package. Copying a small adapter boundary inside each
+plugin is cheaper and safer than making one installed plugin depend on another plugin's
+files. The shared code is shared between harnesses inside one plugin, where versioning and
+installation remain atomic.
+
+The dependency direction is one way:
+
+```text
+Claude adapter ─┐
+                ├─> policy, rendering, state ─> plugin-owned effects
+Codex adapter ──┘
+```
+
+Policy modules never emit a hook event name. Adapters never reimplement a policy rule.
+Registration files contain paths, matchers, timeouts, and context limits, not business
+logic.
+
+## Implemented mapping
+
+| Behavior | Claude Code | Codex | Shared core |
+| --- | --- | --- | --- |
+| Flow charter | Two `SessionStart` commands, split below Claude's output cap | One ordered `SessionStart` command with a 5,000-token inline limit | Hand-authored `charter/charter.md` |
+| Flow Bash guards | `PreToolUse` on `Bash` | `PreToolUse` on `Bash` | Existing no-backlog and Git guards; publication policy in `lib/hook-policy.mjs` |
+| Flow protected files | `file_path` from Edit/Write input | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
+| Flow publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
+| Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
+| Gripe repeated failures | `PostToolUseFailure` and top-level `error` | `PostToolUse` and classified `tool_response` | `recordRepeatedFailure()` |
+| Gripe checkpoint | Claude transcript folded incrementally at `Stop` and `SubagentStop` | `PostToolUse` folds counters, parent `Stop` evaluates them | `lib/checkpoint.mjs` |
+| Gripe denial and turn-failure observations | `PermissionDenied`, `StopFailure` | Not registered; Codex has no equivalent after-the-fact events | Existing Claude-only observed-row code |
+| Unslop rules | `SessionStart`, `SubagentStart` | Same events | `lib/rules.mjs` and `lib/agent-selection.mjs` |
+
+## Deliberate non-equivalences
+
+### Publication asks become denies
+
+Claude can return `permissionDecision: "ask"` from `PreToolUse`. Codex currently parses
+that value but treats it as an unsupported hook result, reports a hook failure, and lets the
+tool continue. Returning the Claude result from a shared handler would therefore fail open
+on the exact irreversible operation the guard exists to stop.
+
+The shared policy returns a reason. Claude's adapter turns it into an approval request.
+Codex's adapter denies the command and tells the agent that the human can run it after
+review. This is a capability difference, not a policy fork.
+
+### Codex protected-file checks parse the patch envelope
+
+Claude Edit and Write calls expose `tool_input.file_path`. Codex performs file edits through
+`apply_patch`, whose hook input puts the complete patch in `tool_input.command`. The Codex
+adapter enumerates Add, Update, Delete, and Move targets, then calls the same protected-file
+policy for every path.
+
+If the envelope is missing, malformed, empty, or contains an unknown target directive, the
+adapter denies it. An allow-on-parser-error path would make a new patch syntax a bypass.
+
+### Gripe does not parse Codex transcripts
+
+Codex exposes `transcript_path`, but explicitly does not promise a stable transcript format.
+The Codex Gripe adapter therefore folds bounded counters from structured `PostToolUse`
+events. `Stop` reads that state and uses the same evidence thresholds and note builder as
+Claude.
+
+Codex `PostToolUse` does not expose a stable subagent actor identifier. Codex checkpoint
+evidence is therefore aggregated for the parent session and evaluated only on the main
+`Stop`. A Codex `SubagentStop` checkpoint is intentionally absent. False attribution would
+be worse than reduced coverage.
+
+### Unsupported observed signals stay unsupported
+
+Claude's `PermissionDenied` event records a human denial after it happened. Codex's
+`PermissionRequest` runs before the approval UI and cannot report what the human chose.
+Likewise, Codex has no equivalent of Claude's `StopFailure` payload. Neither event is mapped
+to a nearby event with different meaning.
+
+## State and output boundaries
+
+- Claude and Codex checkpoint scan files use separate names. Gate fingerprints remain
+  shared because they prevent a repeated failure and a checkpoint from buying two nudges.
+- Gripe recognizes `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, and `CODEX_THREAD_ID` when
+  a self-reported filing captures its session.
+- Every state map is bounded. A corrupt or missing state file degrades to a missed advisory
+  nudge, never a blocked task.
+- Flow enforcement adapters deny when the target cannot be inspected. Gripe and Unslop are
+  advisory and exit quietly when their own input cannot be parsed.
+- Codex SessionStart context limits are sized above the current Flow and Unslop payloads so
+  both arrive inline. The smoke tests also retain Claude's 10,000-byte output check.
+
+## Testing without installation
+
+The adapters are ordinary stdin/stdout programs and can be tested from a working tree:
+
+```bash
+node scripts/smoke-plugin-manifests.mjs
+node plugins/flow/scripts/smoke-codex-hooks.mjs
+node plugins/gripe/scripts/smoke-hooks.mjs
+node plugins/unslop/scripts/smoke-hooks.mjs
+```
+
+The manifest test checks version parity, supported Codex event names, `${PLUGIN_ROOT}` use,
+and every registered command target. Plugin smoke tests cover both positive and negative
+wire cases with throwaway state.
+
+These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
+definitions until the user reviews them. Claude plugin installs still pull from the pinned
+repository clone, so testing a published Claude install remains a separate commit, push,
+reinstall, and new-session operation.

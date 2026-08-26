@@ -20,7 +20,7 @@ async function main() {
   // --via here: an unprompted filing is spontaneous whoever writes it.
   const flags = []
   const agent = safeId(input.agent_id)
-  const prompt = safeId(input.prompt_id)
+  const prompt = safeId(input.prompt_id) ?? safeId(input.turn_id)
   if (agent) flags.push(`--agent ${agent}`)
   if (prompt) flags.push(`--prompt ${prompt}`)
 

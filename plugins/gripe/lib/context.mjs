@@ -16,7 +16,11 @@ const git = (args) => {
 export function captureContext() {
   const toplevel = git(['rev-parse', '--show-toplevel'])
   return {
-    session_id: process.env.CLAUDE_CODE_SESSION_ID || 'unknown',
+    session_id:
+      process.env.CLAUDE_CODE_SESSION_ID ||
+      process.env.CODEX_SESSION_ID ||
+      process.env.CODEX_THREAD_ID ||
+      'unknown',
     cwd: process.cwd(),
     repo: toplevel ? basename(toplevel) : null,
     git_sha: git(['rev-parse', 'HEAD']),

@@ -4,5 +4,6 @@
   "description": "Cut AI tells from writing and put a voice back in. Vendored from Lauren Tan's pstack skill in cursor/plugins (MIT).",
   "author": {
     "name": "jakub"
-  }
+  },
+  "hooks": "./hooks/codex.json"
 }

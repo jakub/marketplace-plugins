@@ -4,5 +4,6 @@
   "description": "A local complaint log for coding agents: friction gets filed as it happens, observed or self-reported, into one SQLite file a model summarises for the user later.",
   "author": {
     "name": "jakub"
-  }
+  },
+  "hooks": "./hooks/codex.json"
 }

@@ -20,59 +20,15 @@
 // exit 0. Stop's additionalContext is non-error feedback and the conversation continues,
 // so the agent can act on it without the turn being marked as failed.
 
-import { mkdirSync, readFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
-import { join } from 'node:path'
 import {
-  MAX_COUNTER_KEYS, atomicWrite, capKeys, clean, fingerprint, heredocDelim, loadGate,
-  stateDir, target,
+  MAX_COUNTER_KEYS, capKeys, fingerprint, loadGate, target,
 } from '../../lib/gate.mjs'
+import {
+  MAX_SCAN_BYTES, MAX_TOOL_NAMES, buildCheckpointNote, freshCheckpointState,
+  loadCheckpointState, saveCheckpointState,
+} from '../../lib/checkpoint.mjs'
 import { safeId } from '../../lib/context.mjs'
-
-// A session with fewer tool calls than this had no room to develop friction worth filing.
-const MIN_TOOL_CALLS = 15
-// Same tool aimed at the same target this many times is someone fighting something.
-const CHURN_THRESHOLD = 3
-// Two identical failures is a pattern. One is ordinary work.
-const REPEAT_THRESHOLD = 2
-// Bound on the tool_use_id to tool-name map. A failing result nearly always follows its
-// call immediately, so this only has to survive a chunk boundary, not a whole session.
-const MAX_TOOL_NAMES = 4000
-// Bound on bytes consumed per invocation. An enormous unscanned tail gets its middle
-// skipped rather than buffered whole: losing counts is slow-path degradation, while an
-// OOM or a timeout on every subsequent turn end would break the never-fail contract.
-const MAX_SCAN_BYTES = 4 * 1024 * 1024
-
-// Keyed by session id plus actor: every subagent in a fan-out shares its parent's session
-// id, so a session-only key would apply one transcript's byte offset to another and let
-// the first actor's `asked` flag mute every sibling.
-const statePath = (sessionId, actor) => join(stateDir(), 'scan', `${sessionId}-${actor}.json`)
-
-const freshState = () => ({
-  offset: 0, // bytes of the transcript already consumed
-  asked: false,
-  toolCalls: 0,
-  toolNames: {}, // tool_use_id -> tool name, needed across chunk boundaries
-  failures: {}, // fingerprint -> { count, tool, sample }
-  churn: {}, // "tool target" -> { count, tool, target }
-})
-
-function loadState(sessionId, actor) {
-  try {
-    return { ...freshState(), ...JSON.parse(readFileSync(statePath(sessionId, actor), 'utf8')) }
-  } catch {
-    return freshState() // missing or corrupt state just means starting over
-  }
-}
-
-function saveState(sessionId, actor, state) {
-  try {
-    mkdirSync(join(stateDir(), 'scan'), { recursive: true })
-    atomicWrite(statePath(sessionId, actor), JSON.stringify(state))
-  } catch {
-    // Losing state costs a rescan next turn, which is slow rather than wrong.
-  }
-}
 
 /** Read only what was appended since the last run and fold it into the counters. */
 async function scanNew(path, state) {
@@ -86,7 +42,7 @@ async function scanNew(path, state) {
     const { size } = await fh.stat()
     // A file smaller than our offset was truncated or replaced. Start over.
     if (size < state.offset) {
-      const reset = freshState()
+      const reset = freshCheckpointState()
       reset.asked = state.asked
       state = reset
     }
@@ -153,47 +109,6 @@ async function scanNew(path, state) {
   }
 }
 
-/** Build the note, or return null when there is nothing concrete to point at. */
-function buildNote(state, nudged, flags) {
-  // Fingerprints the error nudge already interrupted for are its fights, not ours.
-  const repeats = Object.entries(state.failures)
-    .filter(([fp, f]) => f.count >= REPEAT_THRESHOLD && !nudged.has(fp))
-    .map(([, f]) => f)
-  const churned = Object.values(state.churn).filter((c) => c.count >= CHURN_THRESHOLD)
-
-  // No concrete evidence means no honest question to ask. Stay quiet. Two unrelated
-  // failures are not evidence: only repeats of one shape count, or this fires on every
-  // ordinary session that hit two different transient errors.
-  if (!repeats.length && !churned.length) return null
-  if (state.toolCalls < MIN_TOOL_CALLS) return null
-
-  // Cited text is echoed in the hook's trusted voice but comes out of the transcript,
-  // so control characters are stripped before it enters the note.
-  const cited = []
-  for (const f of repeats.slice(0, 2)) {
-    cited.push(`${f.tool} failed ${f.count} times the same way (${clean(f.sample)})`)
-  }
-  for (const c of churned.slice(0, 2)) {
-    cited.push(`${c.tool} was aimed at "${clean(c.target)}" ${c.count} times`)
-  }
-
-  // The body travels as a quoted heredoc, never a double-quoted argument: complaints quote
-  // tool output, and tool output contains $(, backticks and quotes. The delimiter is
-  // random per advertisement; see heredocDelim for why a fixed one is an injection path.
-  const d = heredocDelim()
-  return [
-    `gripe: this run, ${cited.join('; ')}.`,
-    `If any of that was avoidable friction in the tooling or the workflow rather than ordinary`,
-    `work, file the specific problem:`,
-    ``,
-    `gripe add ${flags.join(' ')} <<'${d}'`,
-    `<what you expected, what happened instead, what it cost>`,
-    d,
-    ``,
-    `If it was just the work, carry on. No reply is expected and saying nothing costs nothing.`,
-  ].join('\n')
-}
-
 async function main() {
   let raw = ''
   for await (const chunk of process.stdin) raw += chunk
@@ -224,7 +139,7 @@ async function main() {
   const actor = safeId(input.agent_id) ?? 'main'
   if (!sessionId || !transcript) return
 
-  const state = loadState(sessionId, actor)
+  const state = loadCheckpointState(sessionId, actor, 'claude')
   // One checkpoint per session per actor. Repeated asking is what teaches an agent to
   // answer "none", and once asked there is nothing left to scan for.
   if (state.asked) return
@@ -242,12 +157,12 @@ async function main() {
   if (actor !== 'main') flags.push(`--agent ${actor}`)
   const prompt = safeId(input.prompt_id)
   if (prompt) flags.push(`--prompt ${prompt}`)
-  const note = buildNote(scanned, nudged, flags)
+  const note = buildCheckpointNote(scanned, nudged, flags)
   if (note) scanned.asked = true
 
   // Always persist, note or not. Recording that we looked is the whole point of the
   // offset: a quiet session must not re-parse the transcript at every turn end.
-  saveState(sessionId, actor, scanned)
+  saveCheckpointState(sessionId, actor, 'claude', scanned)
 
   if (!note) return
   // Echo the incoming event name: additionalContext under a mismatched hookEventName is

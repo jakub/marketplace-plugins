@@ -1,0 +1,29 @@
+{
+  "description": "unslop: inject the anti-slop rules into Codex sessions and writing-capable subagents.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/scripts/inject-unslop.mjs\" session codex",
+            "timeout": 5,
+            "additionalContextLimit": 3000
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/scripts/inject-unslop.mjs\" subagent codex",
+            "timeout": 5,
+            "additionalContextLimit": 3000
+          }
+        ]
+      }
+    ]
+  }
+}

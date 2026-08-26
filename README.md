@@ -1,6 +1,7 @@
 # marketplace-plugins
 
-Jakub's personal Claude Code marketplace.
+Jakub's personal Claude Code marketplace. Flow, Gripe, and Unslop also carry native
+Codex manifests and hook adapters; the Claude marketplace remains the publishing catalog.
 
 ```bash
 claude plugin marketplace add jakub/marketplace-plugins
@@ -10,7 +11,7 @@ claude plugin install flow@jakub
 (`@jakub` is the marketplace name from `.claude-plugin/marketplace.json`, it's not a repo name.)
 
 
-Hooks arm at the next session start. Installs pull from the pinned GitHub clone, so after editing this repo: push, then reinstall the plugin.
+Hooks arm at the next session start. Installs pull from the pinned GitHub clone, so after editing this repo: push, then reinstall the plugin. Codex hook definitions also require an explicit trust review before they run.
 
 ## Plugins
 
@@ -18,8 +19,8 @@ Hooks arm at the next session start. Installs pull from the pinned GitHub clone,
 |---|---|---|
 | **flow** | `flow@jakub` | This is my main agentic development process. It runs through three stages: `prep` (scope, design, refine) → `issue` (hands-off all the way to a reviewed, evidenced PR) → `land` (ceremony to do final checks, rebase, and merge it in.) |
 | **grill** | `grill@jakub` | Used by `prep` to hammer out the issue design. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT). |
-| **unslop** | `unslop@jakub` | Cuts AI tells from writing. ***Under evaluation.*** Adds hooks to forcefully inject the skill into agents and subagents instead of relying on front matter. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
-| **gripe** | `gripe@jakub` | A circular filing cabinet for the agents. If they hit friction during a task, repeat errors, or are just unhappy about something they're either encouraged to file a gripe (or where possible, a hook does it for them.) |
+| **unslop** | `unslop@jakub` | Cuts AI tells from writing. ***Under evaluation.*** Adds Claude and Codex hooks to forcefully inject the skill into agents and subagents instead of relying on front matter. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
+| **gripe** | `gripe@jakub` | A circular filing cabinet for the agents. If they hit friction during a task, repeat errors, or are just unhappy about something they're either encouraged to file a gripe, or where possible, a Claude or Codex hook does it for them. |
 
 ## flow
 **flow** is my attempt at an agentic development framework. It consists of a charter, three commands, and a couple of hooks. It's by no means perfect, but produces code I can live with.
@@ -50,10 +51,13 @@ Two timers run in the background once `/flow setup` has armed them: a nightly li
 | `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`, `/flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/scripts/codex-exec.mjs` | The raw-CLI Codex transport with a JSON envelope. Requires `codex` in $PATH, already authenticated. |
 | `plugins/flow/workflows/issue-fixed.mjs` | The deprecated fixed pipeline, kept as a fallback and a parts library for ad-hoc Workflow scripts. |
-| `plugins/flow/hooks/` | Hooks to inject the charter, prevent unsanctioned issues from being created, and stops destructive Git actions that aren't easily recoverable from the reflog. |
+| `plugins/flow/hooks/` | Claude and Codex hook registrations and adapters: charter injection, unsanctioned-issue prevention, protected-file checks, publication gates, and destructive Git guards. |
 | `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs - a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow cron` installs and reports on them. |
 
 flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction preferences and all engineering doctrine arrives through the charter, where it's versioned and auditable. `docs/claude-md-split.md` explains the split.
+
+The cross-harness module boundary and the deliberate Claude/Codex non-equivalences are
+documented in `docs/cross-harness-hooks.md`.
 
 ## gripe
 
@@ -79,5 +83,5 @@ The `/gripe` skill is unneeded day-to-day, but tells the agent how to read the d
 | Path | What's there |
 |---|---|
 | `plugins/gripe/bin/gripe` | The CLI, also a shim that resolves the installed plugin at exec time so it survives reinstalls and version bumps. |
-| `plugins/gripe/hooks/` | Default hooks that fire on particular error conditions that could have been avoided. |
+| `plugins/gripe/hooks/` | Claude and Codex registrations plus thin wire adapters for advertisements, repeat-gated errors, observations, and checkpoints. |
 | `plugins/gripe/skills/gripe/` | How to read the gripe database. For doing analysis, not for normal work. |

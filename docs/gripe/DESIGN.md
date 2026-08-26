@@ -124,13 +124,16 @@ scraping, which this design rejects everywhere else.
 
 Measured, not assumed. A subagent's `$CLAUDE_CODE_SESSION_ID` is byte-identical to its parent's,
 and so is `$CLAUDE_PID`. `$CLAUDE_CODE_CHILD_SESSION` is not a subagent marker; it reads `1` in
-the main agent too, where it appears to describe a bridge or ssh session. **Nothing in the
-environment distinguishes a subagent from the agent that spawned it.**
+the main agent too, where it appears to describe a bridge or ssh session. Codex exports equal
+`$CODEX_SESSION_ID` and `$CODEX_THREAD_ID` values to tool processes on this host. Gripe accepts
+either after the Claude variable, so self-reported rows keep the same session key as hook rows.
+**Nothing in either environment distinguishes a subagent from the agent that spawned it.**
 
 That is the right default for distinct-session counting, because a twenty-agent fan-out should
-count as one session. Finer grain comes from hook payloads, which carry `agent_id` and `agent_type`, and from
-the common hook input base, which carries `prompt_id`. Take those where a hook hands them over
-free. Do not scrape the transcript to fill them in.
+count as one session. Finer grain comes from hook payloads where the harness provides it:
+Claude carries `agent_id`, `agent_type`, and `prompt_id`; Codex SubagentStart carries agent
+identity and turn-scoped events carry `turn_id`. Take those fields where a hook hands them over
+free. Do not scrape a transcript to fill them in.
 
 ## Commands
 
@@ -208,17 +211,20 @@ Redacting credentials is a separate boundary and does not help with this one.
 
 ## Hooks
 
-Seven events. Each has a job and a gate, because an ungated checkpoint taxes every session and
-an ungated error nudge interrupts every ninety seconds.
+Claude registers seven events. Codex registers the four events whose meaning can be preserved:
+SessionStart, SubagentStart, PostToolUse, and Stop. Each has a job and a gate, because an
+ungated checkpoint taxes every session and an ungated error nudge interrupts every ninety
+seconds. `docs/cross-harness-hooks.md` owns the repository-wide adapter design.
 
 Two pieces of shared plumbing. Hooks that write rows import the storage module directly and
 never shell out to the CLI, so the observed lane never transits a shell, never depends on
 PATH, and cannot be reached by an agent typing `--via observed`. Hooks that gate on
 repetition share one state contract: JSON files under the state directory keyed by session id
-plus actor, where actor is `main` or the subagent's `agent_id`, holding fingerprint counts
-with last-seen and last-nudged times. Keyed that way because session id alone collides across
-a fan-out, and shared because Stop must see what the error nudge already asked about, or one
-fingerprint buys two interruptions in one session.
+plus actor, where actor is `main` or a known subagent `agent_id`, holding fingerprint counts
+with last-seen and last-nudged times. Claude state is per actor. Codex PostToolUse supplies no
+stable subagent actor, so its checkpoint counters are explicitly parent-session state.
+Fingerprint gate state is shared because Stop must see what the error nudge already asked
+about, or one fingerprint buys two interruptions in one session.
 
 ### SessionStart
 
@@ -237,11 +243,18 @@ Payload is `{ agent_id, agent_type }` and it accepts `additionalContext`. Bake `
 prompt, so both stay valid for its whole life, and the agent copies a literal rather than
 deciding anything.
 
-### PostToolUseFailure
+### PostToolUseFailure and Codex PostToolUse
 
-**This is the correct event and it is not `PostToolUse`.** Failed calls dispatch through a
-separate executor, so a hook registered on `PostToolUse` never fires on the failures this exists
-to catch. Payload is `{ tool_name, tool_input, tool_use_id, error, is_interrupt, duration_ms }`.
+For Claude, **PostToolUseFailure is the correct event and it is not PostToolUse.** Failed calls
+dispatch through a separate executor, so a Claude hook registered on PostToolUse never fires on
+the failures this exists to catch. Payload is
+`{ tool_name, tool_input, tool_use_id, error, is_interrupt, duration_ms }`.
+
+Codex has no PostToolUseFailure event. Its PostToolUse also fires for non-zero Bash commands and
+provides `tool_response`. The Codex adapter classifies explicit error flags, failure statuses,
+and non-zero structured exit codes, then calls the same repeat policy. It also folds every tool
+call into bounded checkpoint state. Ambiguous responses are not called failures; the checkpoint
+still retains their tool and target evidence.
 
 Gates, in order. Skip when `is_interrupt` is set, because that is jakub pressing escape rather
 than the tooling fighting the agent. Then fire on repeats, not firsts: the first failure of a
@@ -262,11 +275,16 @@ trying and kept being stopped, which is real friction, and points at either a po
 does not understand or a policy that is wrong. The observed body is a template over
 `tool_name`, `reason` and a normalised target, never raw `tool_input`.
 
+Claude only. Codex PermissionRequest happens before the user decides and cannot report an
+after-the-fact denial, so mapping it here would change the provenance of the row.
+
 ### StopFailure
 
 Writes an observed row directly. Payload is `{ error, error_details, last_assistant_message }`.
 A turn that failed outright is unambiguous and needs no gate. The body is the error plus a
 capped slice of `error_details`; `last_assistant_message` is never stored.
+
+Claude only. Codex Stop is a normal completion event and has no equivalent failure payload.
 
 ### Stop
 
@@ -276,8 +294,10 @@ ten-call dead end where every call succeeded: none of it reaches the database an
 
 It never asks the agent whether it was annoyed. That framing tells the model a complaint is the
 expected answer, and models supply expected answers; ask every session and you get either
-invented grievances or a reflexive "none" because that ends the prompt fastest. Instead it reads
-the transcript, finds something concrete, and cites it. Two things count as concrete: repeated
+invented grievances or a reflexive "none" because that ends the prompt fastest. Claude reads
+the transcript incrementally. Codex evaluates counters already folded from PostToolUse, because
+its transcript format is not a stable hook interface. Both cite concrete evidence. Two things
+count as concrete: repeated
 identical failures, fingerprinted with paths, shas and digits normalised out; and repetition
 without failure, meaning the same tool aimed at the same target three or more times, which is
 what fighting something looks like when nothing is erroring. Neither present, or fewer than
@@ -293,22 +313,23 @@ the agent that "none" ends the conversation fastest. Cited text is stripped of c
 characters before it enters the note, because the note speaks in the hook's trusted voice and
 its raw material comes out of the transcript.
 
-`additionalContext` on Stop is non-error feedback and the conversation continues, so the agent
-can act on it without the turn being marked as failed. **That continuation is the real cost.**
+Claude sends `additionalContext`. Codex returns `decision: "block"` with the note as `reason`,
+which creates one continuation prompt rather than rejecting the turn. In either harness the
+agent can act on it without the turn being marked as failed. **That continuation is the real cost.**
 The hook itself is a few milliseconds of local string matching with no model call, but every
 fire buys at least one extra assistant turn.
 
-Scanning is incremental. Scan state carries a byte offset and the running counters, so a quiet
-session does not re-parse a growing transcript at every turn end. It is keyed by session id
-plus actor, like the gate state and for the same reason: a fan-out shares one session id, and
-one shared file would apply one transcript's byte offset to another and let the first
-subagent's checkpoint mute every sibling and the parent. State lives in files rather than the
-database, because it is written at every turn end and would otherwise contend for the write
-lock with actual gripe writes.
+Claude scanning is incremental. Scan state carries a byte offset and running counters, so a
+quiet session does not re-parse a growing transcript at every turn end. It is keyed by session
+id plus actor, like the gate state and for the same reason: a fan-out shares one session id,
+and one shared byte offset would apply one transcript's position to another. Codex counters
+use a separate `codex-` state filename and no byte offset. State lives in files rather than the
+database, because it is written on the hot path and would otherwise contend for the write lock
+with actual gripe writes.
 
 ### SubagentStop
 
-The same checkpoint for subagents, which Stop never fires for, served by the same script.
+Claude uses the same checkpoint for subagents, which Stop never fires for, served by the same script.
 Payload is `{ stop_hook_active, agent_id, agent_transcript_path }`, so the script reads
 either transcript field, keys its state by the agent id when one is present, and echoes the
 incoming `hook_event_name` back in its output.
@@ -318,6 +339,10 @@ reads: "delivered to the subagent; the subagent continues so it can act on it."
 
 The objection that a fan-out produces correlated reports is real but neutralised by decision 6,
 since subagents share their parent's session id and a whole fan-out therefore counts once.
+
+Codex deliberately has no SubagentStop checkpoint. PostToolUse does not identify which
+subagent produced an observation, so a per-subagent checkpoint could cite sibling evidence or
+find no evidence at all. Parent Stop evaluates the aggregate session counters instead.
 
 ### Considered and rejected
 
@@ -367,12 +392,12 @@ the stale installed copy.
 These are separate mechanisms.
 
 The CLI is an ordinary Node script and runs from anywhere. Only *hook registration* needs the
-plugin system, and that is not the only route: `~/.claude/settings.json` registers hooks by
-absolute path.
+plugin system, and that is not the only route: either harness can register working-tree hooks
+from its user or project settings.
 
-So the development loop needs no install. Register the hooks in settings.json pointing at the
-working tree, export `GRIPE_HOME`, and iterate with instant feedback. Piping a JSON event into a
-hook script with node tests the script; it does not test the wiring.
+So the development loop needs no install. Point a temporary registration at the working tree,
+export `GRIPE_HOME`, and iterate with instant feedback. Piping a JSON event into a hook script
+with node tests the script; it does not test product wiring or hook trust.
 
 Packaging is the last step, not the loop. An install is a byte-for-byte copy of the
 `plugins/gripe/` subdirectory: measured against flow, the cache matches the source tree file
@@ -385,6 +410,6 @@ registers only an enabled-plugin flag), so `Bash(gripe add:*)` goes into
 `~/.claude/settings.json` `permissions.allow` by hand, once per machine. That line is what
 makes invariant 2 ("never prompts after setup") hold.
 
-Publishing is the three-edit ritual documented in the marketplace repo's CLAUDE.md: the plugin
-directory with its `.claude-plugin/plugin.json`, a manifest entry with
-`"source": "./plugins/gripe"`, and a catalog version bump.
+Publishing is the four-edit ritual documented in the marketplace repo's AGENTS.md: matching
+versions in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`, the marketplace entry,
+and the catalog version bump.

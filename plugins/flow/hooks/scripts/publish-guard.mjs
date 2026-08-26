@@ -11,16 +11,7 @@
 // Deliberately NOT here: `docker push`. That usually means a private registry where a retag
 // costs nothing, and gating it would be friction with no irreversibility behind it. `gh release create` is likewise absent - a release deletes cleanly.
 
-const PUBLISH = [
-  [/\bcargo\s+publish\b/, 'crates.io', 'crates.io has no unpublish at all'],
-  [/\bnpm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\bpnpm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\byarn\s+npm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\bgem\s+push\b/, 'RubyGems', 'a yanked gem keeps its version number forever'],
-  [/\btwine\s+upload\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
-  [/\bpoetry\s+publish\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
-  [/\buv\s+publish\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
-]
+import { publishReason } from '../../lib/hook-policy.mjs'
 
 let raw = ''
 process.stdin.on('data', (c) => (raw += c))
@@ -33,25 +24,17 @@ process.stdin.on('end', () => {
   }
   if (!cmd) process.exit(0)
 
-  // Prose about publishing is not publishing - same reasoning as git-guard's stripLiterals.
-  const bare = cmd.replace(/'[^']*'/g, ' ').replace(/"[^"]*"/g, ' ')
-  if (/--dry-run\b/.test(bare)) process.exit(0)
-
-  for (const [re, registry, why] of PUBLISH) {
-    if (re.test(bare)) {
-      process.stdout.write(
-        JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'ask',
-            permissionDecisionReason:
-              `This publishes to ${registry}, which you cannot take back - ${why}. ` +
-              'Confirm the version number and the contents are what you mean to ship.',
-          },
-        }),
-      )
-      process.exit(0)
-    }
+  const reason = publishReason(cmd)
+  if (reason) {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'ask',
+          permissionDecisionReason: reason,
+        },
+      }),
+    )
   }
   process.exit(0)
 })
