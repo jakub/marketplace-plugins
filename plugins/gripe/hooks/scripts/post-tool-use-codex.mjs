@@ -2,7 +2,7 @@
 // gripe: Codex PostToolUse adapter. This folds every completed tool call into bounded
 // checkpoint state without parsing Codex's unstable transcript format.
 
-import { loadCheckpointState, observeToolResult, saveCheckpointState } from '../../lib/checkpoint.mjs'
+import { observeToolResult, updateCheckpointState } from '../../lib/checkpoint.mjs'
 import { safeId } from '../../lib/context.mjs'
 
 async function main() {
@@ -19,17 +19,17 @@ async function main() {
   const toolName = String(input.tool_name || '')
   if (!sessionId || !toolName) return
 
-  const state = loadCheckpointState(sessionId, actor, 'codex')
-  observeToolResult(state, {
-    toolName,
-    toolId: safeId(input.tool_use_id) ?? safeId(input.tool_call_id),
-    toolInput: input.tool_input,
-    // Codex CLI 0.149.1 (2026-08-26) supplied tool_response: "" for a Bash command
-    // that exited 7. The documented field is model-facing output, not stable result
-    // metadata, so do not infer failure from prose or guessed object keys.
-    failureText: null,
+  updateCheckpointState(sessionId, actor, 'codex', (state) => {
+    observeToolResult(state, {
+      toolName,
+      toolId: safeId(input.tool_use_id) ?? safeId(input.tool_call_id),
+      toolInput: input.tool_input,
+      // Codex CLI 0.149.1 (2026-08-26) supplied tool_response: "" for a Bash command
+      // that exited 7. The documented field is model-facing output, not stable result
+      // metadata, so do not infer failure from prose or guessed object keys.
+      failureText: null,
+    })
   })
-  saveCheckpointState(sessionId, actor, 'codex', state)
 }
 
 main().catch(() => {})

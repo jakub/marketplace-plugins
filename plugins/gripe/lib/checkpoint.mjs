@@ -1,7 +1,7 @@
 // Harness-neutral checkpoint counters and policy. Claude fills this state from its
 // transcript adapter; Codex fills it incrementally from PostToolUse events.
 
-import { mkdirSync, readFileSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   MAX_COUNTER_KEYS, atomicWrite, capKeys, clean, fingerprint, heredocDelim, stateDir, target,
@@ -12,6 +12,9 @@ export const CHURN_THRESHOLD = 3
 export const REPEAT_THRESHOLD = 2
 export const MAX_TOOL_NAMES = 4000
 export const MAX_SCAN_BYTES = 4 * 1024 * 1024
+const LOCK_ATTEMPTS = 200
+const LOCK_WAIT_MS = 5
+const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
 
 const statePath = (sessionId, actor, source) => {
   // Preserve the existing Claude filename. Codex is namespaced to avoid cross-harness
@@ -47,8 +50,43 @@ export function saveCheckpointState(sessionId, actor, source, state) {
     capKeys(state.churn, MAX_COUNTER_KEYS)
     mkdirSync(join(stateDir(), 'scan'), { recursive: true })
     atomicWrite(statePath(sessionId, actor, source), JSON.stringify(state))
+    return true
   } catch {
     // Gripe is advisory. Losing checkpoint state costs a nudge, never the agent's work.
+    return false
+  }
+}
+
+function acquireCheckpointLock(sessionId, actor, source) {
+  const dir = join(stateDir(), 'scan')
+  const path = `${statePath(sessionId, actor, source)}.lock`
+  try { mkdirSync(dir, { recursive: true }) } catch { return null }
+
+  for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt++) {
+    try {
+      return { fd: openSync(path, 'wx', 0o600), path }
+    } catch (error) {
+      if (error?.code !== 'EEXIST') return null
+      Atomics.wait(LOCK_SLEEP, 0, 0, LOCK_WAIT_MS)
+    }
+  }
+  return null
+}
+
+/** Serialize one checkpoint read-modify-write across hook processes. */
+export function updateCheckpointState(sessionId, actor, source, update) {
+  const lock = acquireCheckpointLock(sessionId, actor, source)
+  if (!lock) return null
+
+  try {
+    const state = loadCheckpointState(sessionId, actor, source)
+    const result = update(state)
+    return saveCheckpointState(sessionId, actor, source, state) ? result : null
+  } catch {
+    return null
+  } finally {
+    try { closeSync(lock.fd) } catch {}
+    try { unlinkSync(lock.path) } catch {}
   }
 }
 

@@ -3,7 +3,7 @@
 // GRIPE_HOME prevents SessionStart behavior from pointing the user's live shim here.
 
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -26,6 +26,27 @@ function run(name, input) {
   return output ? JSON.parse(output) : null
 }
 
+function runAsync(name, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [join(ROOT, 'hooks', 'scripts', name)], { env })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
+    child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (status) => {
+      try {
+        assert.equal(status, 0, stderr)
+        const output = stdout.trim()
+        resolve(output ? JSON.parse(output) : null)
+      } catch (error) {
+        reject(error)
+      }
+    })
+    child.stdin.end(JSON.stringify(input))
+  })
+}
+
 try {
   const previousClaudeId = process.env.CLAUDE_CODE_SESSION_ID
   const previousCodexId = process.env.CODEX_SESSION_ID
@@ -36,6 +57,22 @@ try {
   else process.env.CLAUDE_CODE_SESSION_ID = previousClaudeId
   if (previousCodexId === undefined) delete process.env.CODEX_SESSION_ID
   else process.env.CODEX_SESSION_ID = previousCodexId
+
+  const codexSubagent = run('subagent-start.mjs', {
+    agent_id: 'codex-agent', turn_id: 'codex-turn',
+  })
+  assert.match(
+    codexSubagent?.hookSpecificOutput?.additionalContext,
+    /gripe add --agent codex-agent --prompt codex-turn/,
+  )
+  const claudeSubagent = run('subagent-start.mjs', {
+    agent_id: 'claude-agent', prompt_id: 'claude-prompt', turn_id: 'ignored-turn',
+  })
+  assert.match(
+    claudeSubagent?.hookSpecificOutput?.additionalContext,
+    /gripe add --agent claude-agent --prompt claude-prompt/,
+  )
+  assert.doesNotMatch(claudeSubagent.hookSpecificOutput.additionalContext, /ignored-turn/)
 
   // Sanitized golden shape captured from Codex CLI 0.149.1 on 2026-08-26. The command
   // exited 7, but PostToolUse supplied no exit status, so this must not trigger a false
@@ -60,6 +97,20 @@ try {
   assert.equal(run('stop-checkpoint-codex.mjs', {
     session_id: 'codex-checkpoint', turn_id: 'turn-2', hook_event_name: 'Stop',
   }), null)
+
+  const concurrent = await Promise.all(Array.from({ length: 20 }, (_, i) => runAsync(
+    'post-tool-use-codex.mjs',
+    {
+      ...failed,
+      session_id: 'codex-concurrent',
+      tool_use_id: `concurrent-${i}`,
+    },
+  )))
+  assert.deepEqual(concurrent, Array(20).fill(null))
+  const concurrentCheckpoint = run('stop-checkpoint-codex.mjs', {
+    session_id: 'codex-concurrent', turn_id: 'turn-concurrent', hook_event_name: 'Stop',
+  })
+  assert.match(concurrentCheckpoint?.reason, /was aimed at .* 20 times/)
 
   const claudeFailure = {
     session_id: 'claude-repeat',

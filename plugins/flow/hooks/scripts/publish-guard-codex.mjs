@@ -9,7 +9,11 @@ for await (const chunk of process.stdin) raw += chunk
 let input
 try { input = JSON.parse(raw) } catch { input = null }
 const command = input?.tool_input?.command
-if (typeof command === 'string') {
+if (typeof command !== 'string') {
+  process.stdout.write(JSON.stringify(preToolDeny(
+    'flow: Codex sent a Bash call without an inspectable command; refusing an operation whose publication status cannot be verified.',
+  )))
+} else {
   const reason = publishReason(command)
   if (reason) {
     process.stdout.write(JSON.stringify(preToolDeny(

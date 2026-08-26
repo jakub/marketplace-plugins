@@ -1,5 +1,5 @@
 {
-  "description": "gripe: Codex adapters for friction advertisement, observation, repeat-gated error nudges, and end-of-turn checkpoints.",
+  "description": "gripe: Codex adapters for friction advertisement, tool-target observation, and end-of-turn checkpoints.",
   "hooks": {
     "SessionStart": [
       {

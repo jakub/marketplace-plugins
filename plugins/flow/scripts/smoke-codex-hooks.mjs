@@ -12,11 +12,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Codex enforces an approximate token limit. Keep this English-prose payload well below the
 // configured 5,000-token threshold; spilling remains the runtime fallback, not the target.
 const CODEX_CHARTER_BYTE_BUDGET = 15_000
-const hook = (name, input = {}) => execFileSync(
+const rawHook = (name, input) => execFileSync(
   process.execPath,
   [join(ROOT, 'hooks', 'scripts', name)],
-  { input: JSON.stringify(input), encoding: 'utf8' },
+  { input, encoding: 'utf8' },
 ).trim()
+const hook = (name, input = {}) => rawHook(name, JSON.stringify(input))
 const decision = (name, input) => {
   const output = hook(name, input)
   return output ? JSON.parse(output) : null
@@ -60,6 +61,13 @@ const mixedPublish = decision('publish-guard-codex.mjs', {
   tool_input: { command: 'cargo publish --dry-run && cargo publish' },
 })
 assert.equal(mixedPublish?.hookSpecificOutput?.permissionDecision, 'deny')
+for (const output of [
+  decision('publish-guard-codex.mjs', {}),
+  JSON.parse(rawHook('publish-guard-codex.mjs', '{')),
+]) {
+  assert.equal(output?.hookSpecificOutput?.permissionDecision, 'deny')
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /without an inspectable command/)
+}
 
 const charter = execFileSync(
   process.execPath,

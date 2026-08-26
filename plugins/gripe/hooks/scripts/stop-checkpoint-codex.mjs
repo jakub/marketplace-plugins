@@ -4,7 +4,7 @@
 // not registered on SubagentStop: pretending the evidence can be attributed per actor
 // would either lose it or cite one subagent's work to another.
 
-import { buildCheckpointNote, loadCheckpointState, saveCheckpointState } from '../../lib/checkpoint.mjs'
+import { buildCheckpointNote, updateCheckpointState } from '../../lib/checkpoint.mjs'
 import { safeId } from '../../lib/context.mjs'
 import { loadGate } from '../../lib/gate.mjs'
 
@@ -25,9 +25,6 @@ async function main() {
   const actor = 'main'
   if (!sessionId) return
 
-  const state = loadCheckpointState(sessionId, actor, 'codex')
-  if (state.asked) return
-
   const gate = loadGate(sessionId, actor)
   const nudged = new Set(
     Object.entries(gate.fingerprints).filter(([, record]) => record.nudgedAt).map(([fp]) => fp),
@@ -36,9 +33,12 @@ async function main() {
   const prompt = safeId(input.turn_id)
   if (prompt) flags.push(`--prompt ${prompt}`)
 
-  const note = buildCheckpointNote(state, nudged, flags)
-  if (note) state.asked = true
-  saveCheckpointState(sessionId, actor, 'codex', state)
+  const note = updateCheckpointState(sessionId, actor, 'codex', (state) => {
+    if (state.asked) return null
+    const result = buildCheckpointNote(state, nudged, flags)
+    if (result) state.asked = true
+    return result
+  })
   if (!note) return
 
   // Codex hook contract as of 2026-08-26: block on Stop creates a continuation prompt

@@ -325,9 +325,11 @@ Claude scanning is incremental. Scan state carries a byte offset and running cou
 quiet session does not re-parse a growing transcript at every turn end. It is keyed by session
 id plus actor, like the gate state and for the same reason: a fan-out shares one session id,
 and one shared byte offset would apply one transcript's position to another. Codex counters
-use a separate `codex-` state filename and no byte offset. State lives in files rather than the
-database, because it is written on the hot path and would otherwise contend for the write lock
-with actual gripe writes.
+use a separate `codex-` state filename and no byte offset. PostToolUse and Stop use a bounded
+per-session file lock around each Codex read-modify-write, so concurrent hook processes do not
+drop each other's counters. Failure to acquire the lock within one second loses advisory
+evidence and exits quietly. State lives in files rather than the database, because it is written
+on the hot path and would otherwise contend for the write lock with actual gripe writes.
 
 ### SubagentStop
 
