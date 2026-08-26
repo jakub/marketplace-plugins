@@ -1,0 +1,15 @@
+{
+  "session_id": "fixture-session",
+  "turn_id": "fixture-turn",
+  "transcript_path": null,
+  "cwd": "/tmp/codex-hook-fixture",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-5.6-luna",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "sh -c \"exit 7\""
+  },
+  "tool_response": "",
+  "tool_use_id": "fixture-tool"
+}

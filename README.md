@@ -72,7 +72,7 @@ Gripes are stored in `$XDG_STATE_HOME/gripe/gripe.db`, falling back to `~/.local
 ---
 
 Gripes arrive in two ways:
-1) Deterministic hooks fire on specific events: repeated permission denials, tool call errors, and any failures.
+1) Deterministic hooks fire on specific events. Claude can observe repeated permission denials and explicit tool failures; Claude and Codex both advertise gripe and run evidence-gated end-of-turn checkpoints.
 2) Self-reported gripes filed by the agent, because they wanted to. The agent is encouraged to file gripes for basically anything it finds irritating.
 
 There's no clustering, no tags and no severity field. A model understands and groups these better than any code would, and realistically I'm never reading these anyway. Just pipe that shit straight into an LLM and ask it what to do.
@@ -83,5 +83,5 @@ The `/gripe` skill is unneeded day-to-day, but tells the agent how to read the d
 | Path | What's there |
 |---|---|
 | `plugins/gripe/bin/gripe` | The CLI, also a shim that resolves the installed plugin at exec time so it survives reinstalls and version bumps. |
-| `plugins/gripe/hooks/` | Claude and Codex registrations plus thin wire adapters for advertisements, repeat-gated errors, observations, and checkpoints. |
+| `plugins/gripe/hooks/` | Claude and Codex registrations plus thin wire adapters for advertisements, harness-specific observations, and checkpoints. |
 | `plugins/gripe/skills/gripe/` | How to read the gripe database. For doing analysis, not for normal work. |

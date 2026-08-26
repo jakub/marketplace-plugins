@@ -48,7 +48,7 @@ logic.
 | Flow protected files | `file_path` from Edit/Write input | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
 | Flow publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
 | Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
-| Gripe repeated failures | `PostToolUseFailure` and top-level `error` | `PostToolUse` and classified `tool_response` | `recordRepeatedFailure()` |
+| Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |
 | Gripe checkpoint | Claude transcript folded incrementally at `Stop` and `SubagentStop` | `PostToolUse` folds counters, parent `Stop` evaluates them | `lib/checkpoint.mjs` |
 | Gripe denial and turn-failure observations | `PermissionDenied`, `StopFailure` | Not registered; Codex has no equivalent after-the-fact events | Existing Claude-only observed-row code |
 | Unslop rules | `SessionStart`, `SubagentStart` | Same events | `lib/rules.mjs` and `lib/agent-selection.mjs` |
@@ -88,6 +88,13 @@ evidence is therefore aggregated for the parent session and evaluated only on th
 `Stop`. A Codex `SubagentStop` checkpoint is intentionally absent. False attribution would
 be worse than reduced coverage.
 
+Codex `PostToolUse` runs after a non-zero Bash exit, but its `tool_response` is tool-specific
+model-facing output rather than stable result metadata. In a 2026-08-26 capture from Codex CLI
+0.149.1, `sh -c "exit 7"` produced `tool_response: ""`; no exit status reached the hook. Gripe
+does not infer failure from prose or guessed object fields. The Codex adapter folds only tool
+and target repetition into checkpoint state, while the repeated-failure nudge remains
+Claude-only. The captured shape is retained as a smoke-test fixture.
+
 ### Unsupported observed signals stay unsupported
 
 Claude's `PermissionDenied` event records a human denial after it happened. Codex's
@@ -98,7 +105,8 @@ to a nearby event with different meaning.
 ## State and output boundaries
 
 - Claude and Codex checkpoint scan files use separate names. Gate fingerprints remain
-  shared because they prevent a repeated failure and a checkpoint from buying two nudges.
+  shared because they prevent a Claude repeated-failure nudge and a later checkpoint from
+  buying two interruptions.
 - Gripe recognizes `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, and `CODEX_THREAD_ID` when
   a self-reported filing captures its session.
 - Every state map is bounded. A corrupt or missing state file degrades to a missed advisory
@@ -106,7 +114,10 @@ to a nearby event with different meaning.
 - Flow enforcement adapters deny when the target cannot be inspected. Gripe and Unslop are
   advisory and exit quietly when their own input cannot be parsed.
 - Codex SessionStart context limits are sized above the current Flow and Unslop payloads so
-  both arrive inline. The smoke tests also retain Claude's 10,000-byte output check.
+  both arrive inline. Flow's smoke test holds its English charter under a conservative
+  15,000-byte maintenance budget for the configured 5,000-token limit; Unslop retains
+  Claude's 10,000-byte output checks. Codex spills oversized output to a file and supplies a
+  preview, so spilling is a degraded fallback rather than silent loss.
 
 ## Testing without installation
 
@@ -119,9 +130,10 @@ node plugins/gripe/scripts/smoke-hooks.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs
 ```
 
-The manifest test checks version parity, supported Codex event names, `${PLUGIN_ROOT}` use,
-and every registered command target. Plugin smoke tests cover both positive and negative
-wire cases with throwaway state.
+The manifest test checks the pinned release versions, version parity, supported Codex event
+names, `${PLUGIN_ROOT}` use, and every registered command target. Plugin smoke tests cover
+both positive and negative wire cases with throwaway state, including the captured Codex
+failure payload that deliberately remains unclassified.
 
 These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
 definitions until the user reviews them. Claude plugin installs still pull from the pinned

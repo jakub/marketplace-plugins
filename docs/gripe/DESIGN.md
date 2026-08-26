@@ -212,8 +212,8 @@ Redacting credentials is a separate boundary and does not help with this one.
 ## Hooks
 
 Claude registers seven events. Codex registers the four events whose meaning can be preserved:
-SessionStart, SubagentStart, PostToolUse, and Stop. Each has a job and a gate, because an
-ungated checkpoint taxes every session and an ungated error nudge interrupts every ninety
+SessionStart, SubagentStart, PostToolUse, and Stop. Each has one bounded job. An ungated
+checkpoint taxes every session, and an ungated Claude error nudge interrupts every ninety
 seconds. `docs/cross-harness-hooks.md` owns the repository-wide adapter design.
 
 Two pieces of shared plumbing. Hooks that write rows import the storage module directly and
@@ -250,13 +250,15 @@ dispatch through a separate executor, so a Claude hook registered on PostToolUse
 the failures this exists to catch. Payload is
 `{ tool_name, tool_input, tool_use_id, error, is_interrupt, duration_ms }`.
 
-Codex has no PostToolUseFailure event. Its PostToolUse also fires for non-zero Bash commands and
-provides `tool_response`. The Codex adapter classifies explicit error flags, failure statuses,
-and non-zero structured exit codes, then calls the same repeat policy. It also folds every tool
-call into bounded checkpoint state. Ambiguous responses are not called failures; the checkpoint
-still retains their tool and target evidence.
+Codex has no PostToolUseFailure event. Its PostToolUse fires for non-zero Bash commands, but
+`tool_response` is tool-specific model-facing output, not a stable result envelope. A
+2026-08-26 capture from Codex CLI 0.149.1 recorded `tool_response: ""` for `sh -c "exit 7"`;
+the hook received no exit status. The Codex adapter therefore does not infer failures from
+prose or guessed object fields and does not call the repeated-failure policy. It folds only
+the tool and target into bounded checkpoint state. This is reduced coverage, but it is an
+honest non-equivalence rather than a silent classifier that never sees real failure metadata.
 
-Gates, in order. Skip when `is_interrupt` is set, because that is jakub pressing escape rather
+The Claude gates, in order. Skip when `is_interrupt` is set, because that is jakub pressing escape rather
 than the tooling fighting the agent. Then fire on repeats, not firsts: the first failure of a
 given tool with a given error shape is ordinary work, the second is a pattern. Hold a cooldown
 on the fingerprint so a retry loop asks once rather than forty times. A blocklist of noisy
@@ -296,14 +298,13 @@ It never asks the agent whether it was annoyed. That framing tells the model a c
 expected answer, and models supply expected answers; ask every session and you get either
 invented grievances or a reflexive "none" because that ends the prompt fastest. Claude reads
 the transcript incrementally. Codex evaluates counters already folded from PostToolUse, because
-its transcript format is not a stable hook interface. Both cite concrete evidence. Two things
-count as concrete: repeated
-identical failures, fingerprinted with paths, shas and digits normalised out; and repetition
-without failure, meaning the same tool aimed at the same target three or more times, which is
-what fighting something looks like when nothing is erroring. Neither present, or fewer than
-fifteen tool calls, and it stays silent. Two unrelated failures are not evidence; only repeats
-of one shape count, or the checkpoint fires on every ordinary session that hit two different
-transient errors. No evidence means no honest question.
+its transcript format is not a stable hook interface. Claude can cite repeated identical
+failures, fingerprinted with paths, shas and digits normalised out, or repetition without
+failure: the same tool aimed at the same target three or more times. Codex can cite only the
+second form because PostToolUse does not expose reliable failure status. With no qualifying
+evidence, or fewer than fifteen tool calls, the checkpoint stays silent. Two unrelated Claude
+failures are not evidence; only repeats of one shape count, or the checkpoint fires on every
+ordinary session that hit two different transient errors. No evidence means no honest question.
 
 Other gates: skip when `stop_hook_active` is set or it loops on its own continuation, and skip
 when `background_tasks` shows anything running, because a paused session is not a finished one.
@@ -313,9 +314,10 @@ the agent that "none" ends the conversation fastest. Cited text is stripped of c
 characters before it enters the note, because the note speaks in the hook's trusted voice and
 its raw material comes out of the transcript.
 
-Claude sends `additionalContext`. Codex returns `decision: "block"` with the note as `reason`,
-which creates one continuation prompt rather than rejecting the turn. In either harness the
-agent can act on it without the turn being marked as failed. **That continuation is the real cost.**
+Claude sends `additionalContext`. Under the Codex hook contract as of 2026-08-26, Codex returns
+`decision: "block"` with the note as `reason`, which creates one continuation prompt rather
+than rejecting the turn. In either harness the agent can act on it without the turn being
+marked as failed. **That continuation is the real cost.**
 The hook itself is a few milliseconds of local string matching with no model call, but every
 fire buys at least one extra assistant turn.
 

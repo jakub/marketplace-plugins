@@ -41,6 +41,8 @@ async function main() {
   saveCheckpointState(sessionId, actor, 'codex', state)
   if (!note) return
 
+  // Codex hook contract as of 2026-08-26: block on Stop creates a continuation prompt
+  // rather than rejecting the turn.
   process.stdout.write(JSON.stringify({ decision: 'block', reason: note }))
 }
 

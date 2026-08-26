@@ -1,32 +1,9 @@
 #!/usr/bin/env node
-// gripe: Codex PostToolUse adapter. Codex has no PostToolUseFailure event, so this
-// observes every completed tool call, updates the harness-neutral checkpoint state,
-// and applies the same repeat-gated failure policy used by Claude's failure hook.
+// gripe: Codex PostToolUse adapter. This folds every completed tool call into bounded
+// checkpoint state without parsing Codex's unstable transcript format.
 
 import { loadCheckpointState, observeToolResult, saveCheckpointState } from '../../lib/checkpoint.mjs'
 import { safeId } from '../../lib/context.mjs'
-import { recordRepeatedFailure } from '../../lib/failure.mjs'
-
-const boundedJson = (value) => {
-  try { return JSON.stringify(value ?? '').slice(0, 4000) } catch { return String(value).slice(0, 4000) }
-}
-
-function failureText(response) {
-  if (!response || typeof response !== 'object') return null
-
-  if (
-    response.isError === true || response.is_error === true || response.ok === false ||
-    response.success === false || response.status === 'error' || response.status === 'failed' ||
-    response.metadata?.status === 'error' || response.metadata?.status === 'failed'
-  ) return boundedJson(response)
-
-  const exitCodes = [
-    response.exit_code, response.exitCode, response.metadata?.exit_code,
-    response.metadata?.exitCode,
-  ]
-  if (exitCodes.some((code) => Number.isInteger(code) && code !== 0)) return boundedJson(response)
-  return null
-}
 
 async function main() {
   let raw = ''
@@ -42,29 +19,17 @@ async function main() {
   const toolName = String(input.tool_name || '')
   if (!sessionId || !toolName) return
 
-  const failed = failureText(input.tool_response)
   const state = loadCheckpointState(sessionId, actor, 'codex')
   observeToolResult(state, {
     toolName,
     toolId: safeId(input.tool_use_id) ?? safeId(input.tool_call_id),
     toolInput: input.tool_input,
-    failureText: failed,
+    // Codex CLI 0.149.1 (2026-08-26) supplied tool_response: "" for a Bash command
+    // that exited 7. The documented field is model-facing output, not stable result
+    // metadata, so do not infer failure from prose or guessed object keys.
+    failureText: null,
   })
   saveCheckpointState(sessionId, actor, 'codex', state)
-
-  if (failed === null || input.is_interrupt) return
-  const note = recordRepeatedFailure({
-    sessionId,
-    actor,
-    toolName,
-    error: failed,
-    promptId: input.turn_id,
-  })
-  if (!note) return
-
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note },
-  }))
 }
 
 main().catch(() => {})

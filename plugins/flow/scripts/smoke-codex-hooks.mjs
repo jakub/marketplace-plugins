@@ -9,6 +9,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+// Codex enforces an approximate token limit. Keep this English-prose payload well below the
+// configured 5,000-token threshold; spilling remains the runtime fallback, not the target.
+const CODEX_CHARTER_BYTE_BUDGET = 15_000
 const hook = (name, input = {}) => execFileSync(
   process.execPath,
   [join(ROOT, 'hooks', 'scripts', name)],
@@ -66,5 +69,9 @@ const charter = execFileSync(
 assert.equal(charter, readFileSync(join(ROOT, 'charter', 'charter.md'), 'utf8'))
 assert.match(charter, /<flow-charter>/)
 assert.match(charter, /<\/flow-charter>/)
+assert.ok(
+  Buffer.byteLength(charter) < CODEX_CHARTER_BYTE_BUDGET,
+  `Flow charter exceeds the ${CODEX_CHARTER_BYTE_BUDGET}-byte Codex inline maintenance budget`,
+)
 
 console.log('flow Codex hooks: ALL PASS')

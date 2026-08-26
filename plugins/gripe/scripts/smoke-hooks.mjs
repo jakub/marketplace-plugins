@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -37,35 +37,26 @@ try {
   if (previousCodexId === undefined) delete process.env.CODEX_SESSION_ID
   else process.env.CODEX_SESSION_ID = previousCodexId
 
-  const failed = {
-    session_id: 'codex-repeat',
-    turn_id: 'turn-1',
-    tool_name: 'Bash',
-    tool_use_id: 'call-1',
-    tool_input: { command: 'cargo test' },
-    tool_response: { output: 'failed', metadata: { exit_code: 1 } },
-  }
-  assert.equal(run('post-tool-use-codex.mjs', failed), null)
-  const repeat = run('post-tool-use-codex.mjs', { ...failed, tool_use_id: 'call-2' })
-  assert.equal(repeat?.hookSpecificOutput?.hookEventName, 'PostToolUse')
-  assert.match(repeat.hookSpecificOutput.additionalContext, /failed 2 times/)
-  assert.equal(run('post-tool-use-codex.mjs', { ...failed, tool_use_id: 'call-3' }), null)
-
-  const successful = {
-    session_id: 'codex-checkpoint',
-    turn_id: 'turn-2',
-    tool_name: 'Bash',
-    tool_input: { command: 'gh run watch 123' },
-    tool_response: { output: 'complete', metadata: { exit_code: 0 } },
-  }
+  // Sanitized golden shape captured from Codex CLI 0.149.1 on 2026-08-26. The command
+  // exited 7, but PostToolUse supplied no exit status, so this must not trigger a false
+  // repeat-failure nudge. It still contributes tool-target evidence to the checkpoint.
+  const failed = JSON.parse(readFileSync(
+    join(ROOT, 'scripts', 'fixtures', 'codex-cli-0.149.1-post-tool-use-failed.json'),
+    'utf8',
+  ))
   for (let i = 0; i < 15; i++) {
-    assert.equal(run('post-tool-use-codex.mjs', { ...successful, tool_use_id: `call-${i}` }), null)
+    assert.equal(run('post-tool-use-codex.mjs', {
+      ...failed,
+      session_id: 'codex-checkpoint',
+      tool_use_id: `call-${i}`,
+    }), null)
   }
   const checkpoint = run('stop-checkpoint-codex.mjs', {
     session_id: 'codex-checkpoint', turn_id: 'turn-2', hook_event_name: 'Stop',
   })
   assert.equal(checkpoint?.decision, 'block')
-  assert.match(checkpoint.reason, /was aimed at "gh run watch" 15 times/)
+  assert.match(checkpoint.reason, /was aimed at .* 15 times/)
+  assert.doesNotMatch(checkpoint.reason, /failed 15 times/)
   assert.equal(run('stop-checkpoint-codex.mjs', {
     session_id: 'codex-checkpoint', turn_id: 'turn-2', hook_event_name: 'Stop',
   }), null)
