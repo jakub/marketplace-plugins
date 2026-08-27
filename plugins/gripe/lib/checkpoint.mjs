@@ -1,7 +1,7 @@
 // Harness-neutral checkpoint counters and policy. Claude fills this state from its
 // transcript adapter; Codex fills it incrementally from PostToolUse events.
 
-import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import {
@@ -72,7 +72,14 @@ async function acquireCheckpointLock(sessionId, actor, source) {
     } catch (error) {
       if (error?.code !== 'EEXIST') return null
       try {
-        if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) unlinkSync(path)
+        if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) {
+          // Rename before unlink: rename is atomic, so exactly one contender wins the
+          // right to remove a stale lock, and a slow racer that statted the old file
+          // cannot delete the fresh lock that replaced it.
+          const tombstone = `${path}.stale.${process.pid}`
+          renameSync(path, tombstone)
+          unlinkSync(tombstone)
+        }
       } catch {
         // Raced another process breaking or releasing the same lock; retry decides.
       }
@@ -94,8 +101,12 @@ export async function updateCheckpointState(sessionId, actor, source, update) {
   } catch {
     return null
   } finally {
+    try {
+      // Release only a lock this process still owns. If a breaker reclaimed it and a
+      // successor holds the path, the inode differs and the unlink is skipped.
+      if (fstatSync(lock.fd).ino === statSync(lock.path).ino) unlinkSync(lock.path)
+    } catch {}
     try { closeSync(lock.fd) } catch {}
-    try { unlinkSync(lock.path) } catch {}
   }
 }
 
