@@ -17,7 +17,8 @@
 // Same posture as git-guard: a guardrail against the unattended mistake, not a security
 // boundary. It reads tool_input.file_path, so a heredoc through Bash is not caught.
 
-import { preToolDeny, protectedFileReason } from '../../lib/hook-policy.mjs'
+import { protectedFileReason } from '../../lib/hook-policy.mjs'
+import { preToolDeny } from './wire.mjs'
 
 const deny = (reason) => {
   process.stdout.write(JSON.stringify(preToolDeny(reason)))

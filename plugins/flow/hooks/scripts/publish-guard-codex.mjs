@@ -2,7 +2,8 @@
 // Codex cannot turn a PreToolUse hook result into an approval prompt. Direct publication
 // therefore fails closed instead of returning unsupported permissionDecision: "ask".
 
-import { preToolDeny, publishReason } from '../../lib/hook-policy.mjs'
+import { publishReason } from '../../lib/hook-policy.mjs'
+import { preToolDeny } from './wire.mjs'
 
 let raw = ''
 for await (const chunk of process.stdin) raw += chunk

@@ -3,7 +3,8 @@
 // apply_patch with the full patch under tool_input.command; the registration also
 // matches Edit/Write so an alias route, if one exists, cannot bypass the check.
 
-import { applyPatchPaths, preToolDeny, protectedFileReason } from '../../lib/hook-policy.mjs'
+import { protectedFileReason } from '../../lib/hook-policy.mjs'
+import { applyPatchPaths, preToolDeny } from './wire.mjs'
 
 let raw = ''
 for await (const chunk of process.stdin) raw += chunk
