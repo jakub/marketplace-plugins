@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,6 +112,22 @@ try {
   assert.equal(run('stop-checkpoint-codex.mjs', {
     session_id: 'codex-checkpoint', turn_id: 'turn-2', hook_event_name: 'Stop',
   }), null)
+
+  // A lock orphaned by a killed holder must be broken by age, not honored forever.
+  const scanDir = join(stateHome, 'gripe', 'scan')
+  mkdirSync(scanDir, { recursive: true })
+  const staleLock = join(scanDir, 'codex-codex-stale-main.json.lock')
+  writeFileSync(staleLock, '')
+  const past = (Date.now() - 60_000) / 1000
+  utimesSync(staleLock, past, past)
+  assert.equal(run('post-tool-use-codex.mjs', {
+    ...failed, session_id: 'codex-stale', tool_use_id: 'stale-0',
+  }), null)
+  assert.ok(!existsSync(staleLock), 'stale lock was not broken')
+  assert.ok(
+    existsSync(join(scanDir, 'codex-codex-stale-main.json')),
+    'checkpoint state was not written after breaking the stale lock',
+  )
 
   const concurrent = await Promise.all(Array.from({ length: 20 }, (_, i) => runAsync(
     'post-tool-use-codex.mjs',

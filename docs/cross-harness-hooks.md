@@ -112,8 +112,9 @@ to a nearby event with different meaning.
 - Every state map is bounded. A corrupt or missing state file degrades to a missed advisory
   nudge, never a blocked task.
 - Codex PostToolUse and Stop serialize their shared checkpoint state through a bounded
-  per-session lock. Contention or an abandoned lock loses advisory evidence after one second;
-  it never delays the hook past its five-second timeout or blocks the agent's work.
+  per-session lock. Contention loses advisory evidence after one second, and a lock left
+  behind by a killed holder is broken once it is ten seconds old; neither delays the hook
+  past its five-second timeout or blocks the agent's work.
 - Flow enforcement adapters deny when the target cannot be inspected. Gripe and Unslop are
   advisory and exit quietly when their own input cannot be parsed.
 - Codex SessionStart context limits are sized above the current Flow and Unslop payloads so

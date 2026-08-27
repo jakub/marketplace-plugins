@@ -33,7 +33,7 @@ async function main() {
   const prompt = safeId(input.turn_id)
   if (prompt) flags.push(`--prompt ${prompt}`)
 
-  const note = updateCheckpointState(sessionId, actor, 'codex', (state) => {
+  const note = await updateCheckpointState(sessionId, actor, 'codex', (state) => {
     if (state.asked) return null
     const result = buildCheckpointNote(state, nudged, flags)
     if (result) state.asked = true

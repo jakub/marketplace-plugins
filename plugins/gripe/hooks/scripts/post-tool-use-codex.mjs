@@ -19,7 +19,7 @@ async function main() {
   const toolName = String(input.tool_name || '')
   if (!sessionId || !toolName) return
 
-  updateCheckpointState(sessionId, actor, 'codex', (state) => {
+  await updateCheckpointState(sessionId, actor, 'codex', (state) => {
     observeToolResult(state, {
       toolName,
       toolId: safeId(input.tool_use_id) ?? safeId(input.tool_call_id),

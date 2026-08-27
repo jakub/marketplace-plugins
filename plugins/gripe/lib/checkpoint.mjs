@@ -1,8 +1,9 @@
 // Harness-neutral checkpoint counters and policy. Claude fills this state from its
 // transcript adapter; Codex fills it incrementally from PostToolUse events.
 
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import {
   MAX_COUNTER_KEYS, atomicWrite, capKeys, clean, fingerprint, heredocDelim, stateDir, target,
 } from './gate.mjs'
@@ -14,7 +15,10 @@ export const MAX_TOOL_NAMES = 4000
 export const MAX_SCAN_BYTES = 4 * 1024 * 1024
 const LOCK_ATTEMPTS = 200
 const LOCK_WAIT_MS = 5
-const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+// A holder killed between open and unlink (harness timeout, interrupt) must not disable
+// the checkpoint for the rest of the session. Any hold is milliseconds, so a lock this
+// old is orphaned, not contended.
+const LOCK_STALE_MS = 10_000
 
 const statePath = (sessionId, actor, source) => {
   // Preserve the existing Claude filename. Codex is namespaced to avoid cross-harness
@@ -57,7 +61,7 @@ export function saveCheckpointState(sessionId, actor, source, state) {
   }
 }
 
-function acquireCheckpointLock(sessionId, actor, source) {
+async function acquireCheckpointLock(sessionId, actor, source) {
   const dir = join(stateDir(), 'scan')
   const path = `${statePath(sessionId, actor, source)}.lock`
   try { mkdirSync(dir, { recursive: true }) } catch { return null }
@@ -67,15 +71,20 @@ function acquireCheckpointLock(sessionId, actor, source) {
       return { fd: openSync(path, 'wx', 0o600), path }
     } catch (error) {
       if (error?.code !== 'EEXIST') return null
-      Atomics.wait(LOCK_SLEEP, 0, 0, LOCK_WAIT_MS)
+      try {
+        if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) unlinkSync(path)
+      } catch {
+        // Raced another process breaking or releasing the same lock; retry decides.
+      }
+      await sleep(LOCK_WAIT_MS)
     }
   }
   return null
 }
 
 /** Serialize one checkpoint read-modify-write across hook processes. */
-export function updateCheckpointState(sessionId, actor, source, update) {
-  const lock = acquireCheckpointLock(sessionId, actor, source)
+export async function updateCheckpointState(sessionId, actor, source, update) {
+  const lock = await acquireCheckpointLock(sessionId, actor, source)
   if (!lock) return null
 
   try {
