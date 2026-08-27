@@ -134,8 +134,9 @@ node plugins/gripe/scripts/smoke-hooks.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs
 ```
 
-The manifest test checks the pinned release versions, version parity, supported Codex event
-names, `${PLUGIN_ROOT}` use, and every registered command target. Plugin smoke tests cover
+The manifest test derives each plugin's version from the marketplace manifest and checks
+Claude/Codex/marketplace parity, supported Codex event names, `${PLUGIN_ROOT}` use, and
+every registered command target. Plugin smoke tests cover
 both positive and negative wire cases with throwaway state, including the captured Codex
 failure payload that deliberately remains unclassified.
 
