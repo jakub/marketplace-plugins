@@ -47,7 +47,14 @@ export function protectedFileReason(file) {
 export function publishReason(command) {
   // Prose about publishing is not publishing. This deliberately matches the existing
   // Claude guard: simple quoted literals are removed before policy sees the command.
-  const bare = String(command).replace(/'[^']*'/g, ' ').replace(/"[^"]*"/g, ' ')
+  // A backslash continuation is the same command, and the `&` inside a fd redirect is
+  // not the background separator - `npm publish \<newline> --dry-run` and
+  // `npm publish 2>&1 --dry-run` must each keep their own exemption.
+  const bare = String(command)
+    .replace(/\\\r?\n/g, ' ')
+    .replace(/'[^']*'/g, ' ')
+    .replace(/"[^"]*"/g, ' ')
+    .replace(/\d*>&\d*|&>>?/g, ' ')
   // A dry-run exempts only its shell segment. A global check lets
   // `cargo publish --dry-run && cargo publish` bypass the second, real publication.
   for (const segment of bare.split(/&&|\|\||[;&|\n]/)) {

@@ -57,6 +57,12 @@ assert.match(publish.hookSpecificOutput.permissionDecisionReason, /cannot reques
 assert.equal(decision('publish-guard-codex.mjs', {
   tool_input: { command: 'cargo publish --dry-run' },
 }), null)
+assert.equal(decision('publish-guard-codex.mjs', {
+  tool_input: { command: 'npm publish \\\n  --dry-run' },
+}), null)
+assert.equal(decision('publish-guard-codex.mjs', {
+  tool_input: { command: 'npm publish 2>&1 --dry-run' },
+}), null)
 const mixedPublish = decision('publish-guard-codex.mjs', {
   tool_input: { command: 'cargo publish --dry-run && cargo publish' },
 })
