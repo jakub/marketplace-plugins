@@ -39,8 +39,26 @@ const ordinary = decision('protect-files-codex.mjs', {
 })
 assert.equal(ordinary, null)
 
+// CRLF is a line ending, not tampering: an ordinary CRLF envelope passes, a protected
+// target inside one is still caught.
+assert.equal(decision('protect-files-codex.mjs', {
+  tool_input: { command: patch('*** Add File: src/win.mjs', '+ok').replaceAll('\n', '\r\n') },
+}), null)
+assert.equal(decision('protect-files-codex.mjs', {
+  tool_input: { command: patch('*** Add File: .env', '+TOKEN=x').replaceAll('\n', '\r\n') },
+})?.hookSpecificOutput?.permissionDecision, 'deny')
+
+// An alias route with a plain file_path is checked directly, not treated as a patch.
+assert.equal(decision('protect-files-codex.mjs', {
+  tool_input: { file_path: '.env' },
+})?.hookSpecificOutput?.permissionDecision, 'deny')
+assert.equal(decision('protect-files-codex.mjs', {
+  tool_input: { file_path: 'src/ok.mjs' },
+}), null)
+
 for (const command of [
   '*** Begin Patch\n*** Copy File: .env\n*** End Patch',
+  '*** Begin Patch\n*** Remove: .env\n*** Add File: src/a.mjs\n+x\n*** End Patch',
   '*** Begin Patch\n*** End Patch',
   '*** Begin Patch\n*** Add File: src/a.mjs\n+x',
 ]) {

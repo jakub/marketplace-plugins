@@ -71,8 +71,9 @@ export function publishReason(command) {
 
 /** Extract every target path from Codex's apply_patch command envelope. */
 export function applyPatchPaths(command) {
-  const text = String(command)
-  const lines = text.split('\n')
+  // CRLF tolerated: stray \r must read as line endings, not as proof of tampering,
+  // or one Windows-shaped envelope denies every edit in the session.
+  const lines = String(command).split(/\r?\n/)
   const paths = []
   const begins = lines.filter((line) => line === '*** Begin Patch').length
   const ends = lines.filter((line) => line === '*** End Patch').length
@@ -86,8 +87,10 @@ export function applyPatchPaths(command) {
       const path = (file || move)[1].trim()
       if (!path || path.includes('\0')) malformed = true
       else paths.push(path)
-    } else if (/^\*\*\* .*(?:File|to):/.test(line)) {
-      // A future or malformed target directive must not turn into an uninspected path.
+    } else if (/^\*\*\* /.test(line) && !/^\*\*\* (?:Begin Patch|End Patch|End of File)$/.test(line)) {
+      // Every directive the grammar defines is handled above. Anything else styled as
+      // a directive is a future or malformed one, and it must not carry an uninspected
+      // path - so the whole envelope is refused, not just the line.
       malformed = true
     }
   }
