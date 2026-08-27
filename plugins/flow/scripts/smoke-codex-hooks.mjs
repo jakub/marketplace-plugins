@@ -56,6 +56,18 @@ assert.equal(decision('protect-files-codex.mjs', {
   tool_input: { file_path: 'src/ok.mjs' },
 }), null)
 
+// A benign file_path must not vouch for a patch riding in the same envelope, and two
+// deniable fields still produce exactly one valid decision.
+assert.equal(decision('protect-files-codex.mjs', {
+  tool_input: { file_path: 'src/ok.mjs', command: patch('*** Add File: .env', '+TOKEN=x') },
+})?.hookSpecificOutput?.permissionDecision, 'deny')
+assert.equal(decision('protect-files-codex.mjs', {
+  tool_input: { file_path: '.env', command: patch('*** Add File: .env.production', '+TOKEN=x') },
+})?.hookSpecificOutput?.permissionDecision, 'deny')
+assert.equal(decision('protect-files-codex.mjs', {
+  tool_input: {},
+})?.hookSpecificOutput?.permissionDecision, 'deny')
+
 for (const command of [
   '*** Begin Patch\n*** Copy File: .env\n*** End Patch',
   '*** Begin Patch\n*** Remove: .env\n*** Add File: src/a.mjs\n+x\n*** End Patch',
