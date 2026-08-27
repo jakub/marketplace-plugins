@@ -21,12 +21,10 @@
 // so the agent can act on it without the turn being marked as failed.
 
 import { open } from 'node:fs/promises'
+import { fingerprint, loadGate } from '../../lib/gate.mjs'
 import {
-  MAX_COUNTER_KEYS, capKeys, fingerprint, loadGate, target,
-} from '../../lib/gate.mjs'
-import {
-  MAX_SCAN_BYTES, MAX_TOOL_NAMES, buildCheckpointNote, freshCheckpointState,
-  loadCheckpointState, saveCheckpointState,
+  MAX_SCAN_BYTES, buildCheckpointNote, freshCheckpointState,
+  loadCheckpointState, observeToolResult, saveCheckpointState,
 } from '../../lib/checkpoint.mjs'
 import { safeId } from '../../lib/context.mjs'
 
@@ -75,15 +73,7 @@ async function scanNew(path, state) {
 
       for (const block of content) {
         if (block?.type === 'tool_use') {
-          state.toolCalls++
-          state.toolNames[block.id] = block.name
-          const t = target(block.name, block.input)
-          if (t) {
-            const key = `${block.name} ${t}`
-            const seen = state.churn[key] || { count: 0, tool: block.name, target: t }
-            seen.count++
-            state.churn[key] = seen
-          }
+          observeToolResult(state, { toolName: block.name, toolId: block.id, toolInput: block.input })
         } else if (block?.type === 'tool_result' && block.is_error) {
           const tool = state.toolNames[block.tool_use_id] || 'unknown'
           const raw = typeof block.content === 'string'
@@ -97,10 +87,7 @@ async function scanNew(path, state) {
       }
     }
 
-    // Keep every map bounded so the state file cannot grow without limit.
-    capKeys(state.toolNames, MAX_TOOL_NAMES)
-    capKeys(state.failures, MAX_COUNTER_KEYS)
-    capKeys(state.churn, MAX_COUNTER_KEYS)
+    // Every map is capped once, at save time, which bounds the state file.
     return state
   } catch {
     return state

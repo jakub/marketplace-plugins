@@ -119,9 +119,7 @@ export function observeToolResult(state, { toolName, toolId, toolInput, failureT
     state.failures[fp] = seen
   }
 
-  capKeys(state.toolNames, MAX_TOOL_NAMES)
-  capKeys(state.failures, MAX_COUNTER_KEYS)
-  capKeys(state.churn, MAX_COUNTER_KEYS)
+  // Not capped here: every write path ends in saveCheckpointState, which caps once.
   return state
 }
 

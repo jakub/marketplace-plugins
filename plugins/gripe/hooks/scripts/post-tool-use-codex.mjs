@@ -22,7 +22,8 @@ async function main() {
   await updateCheckpointState(sessionId, actor, 'codex', (state) => {
     observeToolResult(state, {
       toolName,
-      toolId: safeId(input.tool_use_id) ?? safeId(input.tool_call_id),
+      // No toolId: the tool_use_id map only serves Claude's transcript scanner, which
+      // pairs a later tool_result with its call. Nothing on the Codex path reads it.
       toolInput: input.tool_input,
       // Codex CLI 0.149.1 (2026-08-26) supplied tool_response: "" for a Bash command
       // that exited 7. The documented field is model-facing output, not stable result
