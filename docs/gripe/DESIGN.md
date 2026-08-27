@@ -127,6 +127,10 @@ and so is `$CLAUDE_PID`. `$CLAUDE_CODE_CHILD_SESSION` is not a subagent marker; 
 the main agent too, where it appears to describe a bridge or ssh session. Codex exports equal
 `$CODEX_SESSION_ID` and `$CODEX_THREAD_ID` values to tool processes on this host. Gripe accepts
 either after the Claude variable, so self-reported rows keep the same session key as hook rows.
+The Claude-first precedence is safe even when the harnesses nest: measured 2026-08-26 with
+`shell_environment_policy inherit = "core"`, a Codex run spawned from a Claude session does not
+pass the inherited `$CLAUDE_CODE_SESSION_ID` through to its tool shells, so a delegated run's
+self-reported rows key to the Codex session like its hook rows do.
 **Nothing in either environment distinguishes a subagent from the agent that spawned it.**
 
 That is the right default for distinct-session counting, because a twenty-agent fan-out should

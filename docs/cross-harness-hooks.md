@@ -88,6 +88,11 @@ evidence is therefore aggregated for the parent session and evaluated only on th
 `Stop`. A Codex `SubagentStop` checkpoint is intentionally absent. False attribution would
 be worse than reduced coverage.
 
+Known limit: the advertised `gripe` CLI resolves the installed plugin through Claude's
+`installed_plugins.json`, so on a Codex-only host every advertised filing quietly drops.
+The hooks still run; the shim needs a Codex resolution path before a Codex-only install
+can file anything.
+
 Codex `PostToolUse` runs after a non-zero Bash exit, but its `tool_response` is tool-specific
 model-facing output rather than stable result metadata. In a 2026-08-26 capture from Codex CLI
 0.149.1, `sh -c "exit 7"` produced `tool_response: ""`; no exit status reached the hook. Gripe
