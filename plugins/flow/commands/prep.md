@@ -1,7 +1,7 @@
 ---
 description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; use this command when either you or the user wants to create a new issue or revise an existing issue.
 argument-hint: <issue-number | free-text idea>
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Read, Edit, Write, Skill, AskUserQuestion, Agent
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Read, Edit, Write, Skill, AskUserQuestion, Agent, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_continue, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel
 ---
 
 # /flow:prep - the front door for the prep → issue → land workflow
@@ -34,7 +34,9 @@ No issue is created yet - that happens at finalize, after the design survives th
 
 ## 2. Scout
 
-Delegate codebase reviews to scoped agents - `Explore` for the repo sweep, spawned on Sonnet because searching needs eyes rather than judgment, plus a Codex delegation for an outside perspective.
+Delegate codebase reviews to scoped agents. Use `Explore` on Sonnet for the repository sweep,
+because searching needs eyes rather than judgment. Use `delegate_to_codex` for the outside
+perspective.
 
 Tell every subagent to keep what it sends back tight: paths, and the seams that matter. A whole grill runs in this session afterwards, so your remaining context is the budget - conclusions come home, file dumps don't.
 
@@ -59,8 +61,15 @@ Otherwise, continue to the dialectic.
 
 Issues that survive the triviality gate get a cross-model dialectic BEFORE the grill: if we're minting an ADR, it deserves a thorough discussion.
 
-1) **Blind proposals**, parallel, neither sees the other: Spawn both a Claude leg (architecture from the scout's seams) and a Sol leg on the codex transport - which ALSO hunts spec gaps (what has the human NOT said that an implementer would decide silently). Both work at the product/architecture level: shape, boundaries, protocol surfaces, trust models. Code-level joinery (placement, signatures) belongs to the run's design pass, not here - those things must be decided against the HEAD being implemented on, and prep-time design goes stale.
-2) **Mutual critique**: Each leg reads the rival and returns the strongest version of the disagreement. No averaging - the synthesizer is the human, in the grill.
+1) **Blind proposals**, parallel, neither sees the other: Spawn a Claude architecture leg from
+   the scout's code seams. In parallel, call `delegate_to_codex` with Sol at high effort,
+   attached delivery, read-only access, and the repository root as `cwd`. Sol proposes its own
+   design and hunts for decisions the issue left unstated. Both work at the product level:
+   shape, boundaries, protocols, and trust rules. Placement and signatures belong to the
+   implementation run, against the commit that will be changed.
+2) **Mutual critique**: Give each proposal to the rival. Use `delegation_continue` with the
+   Sol job ID so Codex keeps its original context. Each leg returns the strongest version of
+   the disagreement. No averaging. The human synthesizes the argument in the grill.
 3) **The argument becomes grill material**: Agreements arrive as recommended answers; disagreements become grill questions, adjudicated one at a time. Trust-model forks (who may reach what, what an unattended tool will read or publish, security concerns) are ALWAYS presented for human decision, never auto-resolved - runs are forbidden from guessing these, so prep is where they get settled cheaply.
 
 ## 5. Grill

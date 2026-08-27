@@ -88,11 +88,17 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
   the global CLAUDE.md still passes. The script resolves the charter through
   `CLAUDE_PLUGIN_ROOT`, so this measures the installed charter, not the working tree's; the
   version-skew bullet above is what tells you whether those are the same file.
-- Facts with `as-of` dates older than a quarter (model pricing, codex CLI surface):
-  flag for re-verification.
-- `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-codex-exec.mjs` passes (add `CODEX_LIVE=1` when codex
-  auth is available) - the transport's encoded CLI facts (model catalog, effort surface,
-  service-tier fail-open behavior, JSONL event shapes) drift with codex releases.
+- Facts with `as-of` dates older than a quarter (model pricing, the Codex App Server
+  protocol): flag for re-verification.
+- `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-delegation.mjs` passes. The smoke test uses a local
+  fake App Server. Run a separate live Claude-to-Codex call when authentication or protocol
+  compatibility may have changed.
+- `node plugins/flow/scripts/smoke-bundle-drift.mjs` passes: the committed
+  `dist/delegation.mjs` still rebuilds byte-identically from `src/delegation`, so the bundle
+  every install runs is the source anyone reads. This check is dev-tree-only. It rebuilds
+  with esbuild, so it needs a repo checkout with `npm ci` already run in `plugins/flow/deps`,
+  and it cannot run against `${CLAUDE_PLUGIN_ROOT}` or from the nightly lint. Where the tree
+  cannot support it, report it as not run rather than folding it into a clean line.
 
 ## Output format
 

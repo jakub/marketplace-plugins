@@ -1,0 +1,812 @@
+#!/usr/bin/env node
+import assert from 'node:assert/strict'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { pathToFileURL, fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
+import { JobStore, processStartToken } from '../src/delegation/store.mjs'
+
+// deps/node_modules is gitignored, so a clone and every installed copy of the plugin lack
+// the MCP SDK. This client speaks the stdio transport directly instead: newline-delimited
+// JSON-RPC 2.0 on the server's stdin and stdout. It covers only what the smoke drives -
+// initialize, tools/list, tools/call with progress, and a roots/list answer.
+const PROTOCOL_VERSION = '2025-06-18'
+
+class McpStdioClient {
+  constructor({ command, args, cwd, env, roots }) {
+    this.command = command
+    this.args = args
+    this.cwd = cwd
+    this.env = env
+    this.roots = roots
+    this.child = null
+    this.exited = null
+    this.pending = new Map()
+    this.progress = new Map()
+    this.buffer = ''
+    this.stderr = ''
+    this.nextId = 1
+    this.nextToken = 1
+  }
+
+  async start() {
+    this.child = spawn(this.command, this.args, { cwd: this.cwd, env: this.env, stdio: ['pipe', 'pipe', 'pipe'] })
+    this.child.stdout.setEncoding('utf8')
+    this.child.stdout.on('data', (chunk) => this.receive(chunk))
+    // Drain stderr so a chatty server cannot fill the pipe and stall, and keep the tail
+    // for the failure message when the server dies mid-request.
+    this.child.stderr.setEncoding('utf8')
+    this.child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + chunk).slice(-4000) })
+    this.exited = new Promise((resolve) => this.child.on('exit', (code, signal) => {
+      const reason = new Error(`MCP server exited early (code ${code}, signal ${signal})\n${this.stderr}`)
+      for (const entry of this.pending.values()) entry.fail(reason)
+      this.pending.clear()
+      resolve()
+    }))
+    this.child.on('error', (error) => {
+      for (const entry of this.pending.values()) entry.fail(error)
+      this.pending.clear()
+    })
+
+    await this.request('initialize', {
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: { roots: { listChanged: true } },
+      clientInfo: { name: 'flow-smoke', version: '1.0.0' },
+    })
+    this.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
+  }
+
+  send(message) {
+    this.child.stdin.write(JSON.stringify(message) + '\n')
+  }
+
+  receive(chunk) {
+    this.buffer += chunk
+    let newline = this.buffer.indexOf('\n')
+    while (newline >= 0) {
+      const line = this.buffer.slice(0, newline).trim()
+      this.buffer = this.buffer.slice(newline + 1)
+      if (line) this.dispatch(JSON.parse(line))
+      newline = this.buffer.indexOf('\n')
+    }
+  }
+
+  dispatch(message) {
+    if (message.method && message.id !== undefined) return this.answer(message)
+    if (message.method) return this.notified(message)
+    const entry = this.pending.get(message.id)
+    if (!entry) return
+    this.pending.delete(message.id)
+    if (message.error) entry.fail(new Error(`${entry.method} failed: ${message.error.code} ${message.error.message}`))
+    else entry.succeed(message.result)
+  }
+
+  answer(message) {
+    if (message.method === 'roots/list') {
+      this.send({ jsonrpc: '2.0', id: message.id, result: { roots: this.roots } })
+    } else if (message.method === 'ping') {
+      this.send({ jsonrpc: '2.0', id: message.id, result: {} })
+    } else {
+      this.send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `unhandled request ${message.method}` } })
+    }
+  }
+
+  notified(message) {
+    if (message.method !== 'notifications/progress') return
+    const entry = this.progress.get(message.params?.progressToken)
+    if (!entry) return
+    entry.onprogress(message.params)
+    entry.extend()
+  }
+
+  request(method, params, { timeout = 60_000, onprogress = null } = {}) {
+    const id = this.nextId++
+    const body = { ...params }
+    let token = null
+    if (onprogress) {
+      token = `progress-${this.nextToken++}`
+      body._meta = { ...body._meta, progressToken: token }
+    }
+    return new Promise((resolve, reject) => {
+      let timer = null
+      const clear = () => {
+        if (timer) clearTimeout(timer)
+        if (token !== null) this.progress.delete(token)
+      }
+      const arm = () => {
+        if (timer) clearTimeout(timer)
+        timer = setTimeout(() => {
+          this.pending.delete(id)
+          clear()
+          reject(new Error(`${method} timed out after ${timeout}ms\n${this.stderr}`))
+        }, timeout)
+      }
+      this.pending.set(id, {
+        method,
+        succeed: (result) => { clear(); resolve(result) },
+        fail: (error) => { clear(); reject(error) },
+      })
+      if (token !== null) this.progress.set(token, { onprogress, extend: arm })
+      arm()
+      this.send({ jsonrpc: '2.0', id, method, params: body })
+    })
+  }
+
+  listTools() {
+    return this.request('tools/list', {})
+  }
+
+  callTool(name, args, options = {}) {
+    return this.request('tools/call', { name, arguments: args }, options)
+  }
+
+  async close() {
+    if (!this.child) return
+    this.child.stdin.end()
+    const kill = setTimeout(() => this.child.kill('SIGKILL'), 5_000)
+    await this.exited
+    clearTimeout(kill)
+  }
+}
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const bundle = join(root, 'dist', 'delegation.mjs')
+const temp = mkdtempSync(join(tmpdir(), 'flow-delegation-smoke-'))
+const repo = join(temp, 'repo')
+const nestedDir = join(repo, 'nested')
+const fake = join(temp, 'fake-codex.mjs')
+const opener = join(temp, 'open-store.mjs')
+
+// The migration race is a cross-process one: several Node processes opening the same fresh
+// database, not several promises inside one. Node startup jitter alone spreads the children
+// far enough apart to miss the collision, so each one spins until a shared wall-clock start
+// before it opens the store. Then it exits, and a nonzero code is a failed migration.
+writeFileSync(opener, `import { JobStore } from ${JSON.stringify(pathToFileURL(join(root, 'src', 'delegation', 'store.mjs')).href)}
+const startAt = Number(process.argv[3])
+while (Date.now() < startAt) {}
+new JobStore(process.argv[2]).close()
+`)
+
+writeFileSync(fake, `#!/usr/bin/env node
+import { createInterface } from 'node:readline'
+if (process.argv[2] === '--version') { console.log('codex-cli 0.test'); process.exit(0) }
+const mode = process.env.FLOW_FAKE_MODE || 'happy'
+const say = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+let active = null
+let done = false
+let timer = null
+const finish = (status = 'completed', output = null) => {
+  if (done || !active) return
+  done = true
+  if (timer) clearTimeout(timer)
+  const text = output ?? (mode === 'bad-schema'
+    ? JSON.stringify({ wrong: 1 })
+    : mode === 'good-schema'
+      ? JSON.stringify({ answer: 'yes' })
+    : mode === 'review'
+      ? JSON.stringify({ findings: [{ severity: 'high', confidence: 95, title: 'Race', file: 'a.txt', line: 1, detail: 'The write is not synchronized.', systemic: false }] })
+      : 'OK from fake Codex')
+  if (status === 'completed') {
+    say({ method: 'item/agentMessage/delta', params: { threadId: active.threadId, turnId: active.turnId, itemId: 'item-1', delta: text } })
+    say({ method: 'item/completed', params: { threadId: active.threadId, turnId: active.turnId, completedAtMs: Date.now(), item: { type: 'agentMessage', id: 'item-1', text, phase: null, memoryCitation: null, delivery: null } } })
+  }
+  say({ method: 'thread/tokenUsage/updated', params: { threadId: active.threadId, turnId: active.turnId, tokenUsage: { total: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 1, totalTokens: 16 }, last: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 1, totalTokens: 16 }, modelContextWindow: 1000 } } })
+  say({ method: 'turn/completed', params: { threadId: active.threadId, turn: { id: active.turnId, items: status === 'completed' ? [{ type: 'agentMessage', id: 'item-1', text, phase: null, memoryCitation: null, delivery: null }] : [], itemsView: { type: 'full' }, status, error: null, startedAt: 1, completedAt: 2, durationMs: 10 } } })
+}
+// The turn thread/read reports for a stale job. Each recovery-* mode is one branch of the
+// fold: still running, interrupted, completed with nothing to show, and a status this Codex
+// version never had.
+const recoveredTurn = () => {
+  const status = mode === 'recovery-in-progress' ? 'inProgress'
+    : mode === 'recovery-interrupted' ? 'interrupted'
+    : mode === 'recovery-odd' ? 'somethingNew'
+    : 'completed'
+  const items = status === 'completed' && mode !== 'recovery-empty'
+    ? [{ type: 'agentMessage', id: 'i', text: 'RECOVERED', phase: null, memoryCitation: null, delivery: null }]
+    : []
+  const ended = status !== 'inProgress'
+  return { id: 'recovered', items, itemsView: { type: 'full' }, status, error: null, startedAt: 1, completedAt: ended ? 2 : null, durationMs: ended ? 1 : null }
+}
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const message = JSON.parse(line)
+  const answer = (result) => say({ id: message.id, result })
+  if (message.id === 900 && !message.method) finish('failed', '')
+  else if (message.id === 902 && !message.method) {
+    if (message.result?.permissions && Object.keys(message.result.permissions).length === 0) finish('failed', '')
+    else process.exit(18)
+  }
+  else if (message.method === 'initialize') answer({ userAgent: 'fake' })
+  else if (message.method === 'initialized') {}
+  else if (message.method === 'thread/start') {
+    if (mode === 'profile' && !message.params.developerInstructions.includes('authorized defensive research')) {
+      say({ id: message.id, error: { code: -32602, message: 'missing defensive profile' } })
+    } else answer({ thread: { id: 'thread-test' } })
+  }
+  else if (message.method === 'thread/resume') answer({ thread: { id: message.params.threadId } })
+  else if (message.method === 'turn/start') {
+    done = false
+    active = { threadId: message.params.threadId, turnId: 'turn-' + Date.now() }
+    if (mode === 'accepted-crash') {
+      say({ method: 'turn/started', params: { threadId: active.threadId, turn: { id: active.turnId, items: [], itemsView: { type: 'full' }, status: 'inProgress', error: null, startedAt: 1, completedAt: null, durationMs: null } } })
+      setTimeout(() => process.exit(17), 20)
+      return
+    }
+    answer({ turn: { id: active.turnId, items: [], itemsView: { type: 'full' }, status: 'inProgress', error: null, startedAt: 1, completedAt: null, durationMs: null } })
+    say({ method: 'turn/started', params: { threadId: active.threadId, turn: { id: active.turnId, items: [], itemsView: { type: 'full' }, status: 'inProgress', error: null, startedAt: 1, completedAt: null, durationMs: null } } })
+    if (mode === 'midturn-crash') {
+      setTimeout(() => process.exit(19), 20)
+      return
+    }
+    if (mode === 'approval') {
+      timer = setTimeout(() => say({ method: 'item/commandExecution/requestApproval', id: 900, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'command-1' } }), 20)
+    } else if (mode === 'permissions-approval') {
+      timer = setTimeout(() => say({ method: 'item/permissions/requestApproval', id: 902, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'permissions-1', cwd: process.cwd(), permissions: { network: { enabled: true } }, startedAtMs: Date.now() } }), 20)
+    } else timer = setTimeout(() => finish(), mode === 'slow' || mode === 'steer' ? 2500 : 20)
+  } else if (message.method === 'turn/interrupt') { answer({}); finish('interrupted', '') }
+  else if (message.method === 'turn/steer') { answer({}); finish('completed', 'STEERED: ' + message.params.input[0].text) }
+  else if (message.method === 'model/list') answer({ data: [{ id: 'gpt-5.6-luna', model: 'gpt-5.6-luna', displayName: 'Luna' }], nextCursor: null })
+  else if (message.method === 'account/read') answer({ account: { type: 'chatgpt', email: 'test@example.invalid', planType: 'test' }, requiresOpenaiAuth: true })
+  else if (message.method === 'thread/read') answer({ thread: { id: message.params.threadId, turns: [recoveredTurn()] } })
+  else answer({})
+})
+`)
+chmodSync(fake, 0o755)
+mkdirSync(repo)
+execFileSync('git', ['init', '-q'], { cwd: repo })
+execFileSync('git', ['config', 'user.name', 'Flow test'], { cwd: repo })
+execFileSync('git', ['config', 'user.email', 'flow@example.invalid'], { cwd: repo })
+writeFileSync(join(repo, 'a.txt'), 'one\n')
+execFileSync('git', ['add', 'a.txt'], { cwd: repo })
+execFileSync('git', ['commit', '-qm', 'first'], { cwd: repo })
+writeFileSync(join(repo, 'a.txt'), 'two\n')
+execFileSync('git', ['commit', '-qam', 'second'], { cwd: repo })
+mkdirSync(nestedDir)
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const state = (name) => join(temp, `state-${name}`)
+const cli = (args, { input = '', mode = 'happy', stateDir = state('default'), extraEnv = {}, host = 'claude' } = {}) => {
+  // Every CLI command requires --host: the caller's own family decides the route, so there is
+  // no default. Callers that need a different host pass it in args and keep it; host: null
+  // leaves the flag off so the missing-host rejection itself can be tested.
+  const hosted = host === null || args.includes('--host') ? args : [...args, '--host', host]
+  const output = execFileSync(process.execPath, [bundle, 'cli', ...hosted, '--state-dir', stateDir], {
+    cwd: repo,
+    input,
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: { ...process.env, FLOW_DELEGATION_CODEX_BIN: fake, FLOW_FAKE_MODE: mode, ...extraEnv },
+  })
+  return JSON.parse(output)
+}
+const runArgs = ['run', '--host', 'claude', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low', '--time-budget-seconds', '30']
+const waitFor = async (jobId, stateDir, wanted = null) => {
+  for (let i = 0; i < 80; i++) {
+    const result = cli(['result', jobId], { stateDir })
+    if (['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval'].includes(result.status)) {
+      if (wanted) assert.equal(result.status, wanted)
+      return result
+    }
+    await delay(100)
+  }
+  assert.fail(`job ${jobId} did not finish`)
+}
+const jobCount = (stateDir) => {
+  const store = new JobStore(stateDir)
+  try { return store.db.prepare('SELECT COUNT(*) AS jobs FROM jobs').get().jobs } finally { store.close() }
+}
+const openStoreInChild = (stateDir, startAt) => new Promise((resolve) => {
+  const child = spawn(process.execPath, [opener, stateDir, String(startAt)], { stdio: ['ignore', 'ignore', 'pipe'] })
+  let stderr = ''
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', (chunk) => { stderr += chunk })
+  child.on('exit', (code) => resolve({ code, stderr }))
+})
+
+try {
+  console.log('task and typed output')
+  const happy = cli(runArgs, { input: 'Reply with OK', stateDir: state('happy') })
+  assert.equal(happy.status, 'succeeded')
+  assert.equal(happy.output, 'OK from fake Codex')
+  assert.equal(happy.model, 'gpt-5.6-luna')
+  assert.equal(happy.serviceTier, 'default')
+  assert.ok(happy.threadId && happy.turnId)
+  const happyEvents = cli(['events', happy.jobId, '--after', '0', '--limit', '1000'], { stateDir: state('happy') })
+  assert.deepEqual(happyEvents.map((event) => event.seq), happyEvents.map((_, index) => index + 1))
+  const happyDb = new DatabaseSync(join(state('happy'), 'jobs.sqlite3'), { readOnly: true })
+  assert.equal(happyDb.prepare('SELECT prompt FROM jobs WHERE id=?').get(happy.jobId).prompt, null)
+  happyDb.close()
+
+  const schemaFile = join(temp, 'schema.json')
+  writeFileSync(schemaFile, JSON.stringify({ type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
+  const good = cli([...runArgs, '--schema-file', schemaFile], { input: 'Return JSON', mode: 'good-schema', stateDir: state('schema-good') })
+  assert.equal(good.status, 'succeeded')
+  assert.deepEqual(good.structured, { answer: 'yes' })
+  const bad = cli([...runArgs, '--schema-file', schemaFile], { input: 'Return JSON', mode: 'bad-schema', stateDir: state('schema-bad') })
+  assert.equal(bad.status, 'failed')
+  assert.equal(bad.error.kind, 'SCHEMA_OUTPUT')
+  const badWrite = cli([...runArgs, '--access', 'workspace-write', '--schema-file', schemaFile], { input: 'Return JSON', mode: 'bad-schema', stateDir: state('schema-bad-write') })
+  assert.equal(badWrite.status, 'failed')
+  assert.equal(badWrite.error.kind, 'SCHEMA_OUTPUT')
+  const falseSchemaFile = join(temp, 'false-schema.json')
+  writeFileSync(falseSchemaFile, 'false')
+  const rejectedByBooleanSchema = cli([...runArgs, '--schema-file', falseSchemaFile], { input: 'Return anything', stateDir: state('schema-false') })
+  assert.equal(rejectedByBooleanSchema.status, 'failed')
+  assert.equal(rejectedByBooleanSchema.error.kind, 'SCHEMA_OUTPUT')
+
+  const profile = cli([...runArgs, '--profile', 'defensive-security'], { input: 'Profile test', mode: 'profile', stateDir: state('profile') })
+  assert.equal(profile.status, 'succeeded')
+
+  console.log('immutable structured review')
+  const reviewState = state('review')
+  const review = cli([...runArgs, '--mode', 'adversarial-review', '--base', 'HEAD~1'], { mode: 'review', stateDir: reviewState })
+  assert.equal(review.status, 'succeeded')
+  assert.equal(review.findings[0].title, 'Race')
+  const db = new DatabaseSync(join(reviewState, 'jobs.sqlite3'), { readOnly: true })
+  const row = db.prepare('SELECT base_sha, head_sha, output_schema_json FROM jobs WHERE id=?').get(review.jobId)
+  db.close()
+  assert.match(row.base_sha, /^[0-9a-f]{40}$/)
+  assert.match(row.head_sha, /^[0-9a-f]{40}$/)
+  assert.ok(JSON.parse(row.output_schema_json).properties.findings)
+
+  console.log('route and nesting guards')
+  const same = cli(['run', '--host', 'codex', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low'], { input: 'x', stateDir: state('same') })
+  assert.equal(same.status, 'failed')
+  assert.equal(same.error.kind, 'SAME_FAMILY')
+  const nested = cli(runArgs, { input: 'x', stateDir: state('nested'), extraEnv: { FLOW_DELEGATION_DEPTH: '1' } })
+  assert.equal(nested.status, 'failed')
+  assert.equal(nested.error.kind, 'NESTED_DELEGATION')
+  const escape = join(repo, 'escape')
+  symlinkSync(temp, escape, 'dir')
+  const nestedRead = cli([...runArgs, '--cwd', nestedDir], { input: 'nested read', stateDir: state('nested-read') })
+  assert.equal(nestedRead.status, 'succeeded')
+  const widenedWrite = cli([...runArgs, '--cwd', nestedDir, '--access', 'workspace-write'], { input: 'nested write', stateDir: state('nested-write') })
+  assert.equal(widenedWrite.status, 'failed')
+  assert.equal(widenedWrite.error.kind, 'OUTSIDE_ROOTS')
+
+  console.log('redacted internal errors')
+  const redactStore = new JobStore(state('redact'))
+  const redactJob = redactStore.createJob({
+    traceId: 't', host: 'claude', target: 'codex', depth: 0, mode: 'task', access: 'read-only',
+    cwd: repo, workspaceKey: repo, model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default',
+    profile: 'default', timeBudgetSeconds: 30, prompt: 'x', outputSchema: null,
+  })
+  redactStore.recordInternalError(redactJob.id, new TypeError('stack detail stays in the journal'))
+  assert.deepEqual(redactStore.events(redactJob.id).find((event) => event.type === 'internal.error').payload, { redacted: true })
+  redactStore.close()
+
+  console.log('rejected requests never reach the job table')
+  const noModelState = state('no-model')
+  const noModel = cli(['run', '--cwd', repo, '--effort', 'low', '--time-budget-seconds', '30'], { input: 'x', stateDir: noModelState })
+  assert.equal(noModel.status, 'failed')
+  assert.equal(noModel.error.kind, 'BAD_REQUEST')
+  assert.match(noModel.error.message, /model/)
+  assert.equal(jobCount(noModelState), 0)
+  const noHostState = state('no-host')
+  const noHost = cli(['run', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low', '--time-budget-seconds', '30'], {
+    input: 'x', stateDir: noHostState, host: null,
+  })
+  assert.equal(noHost.status, 'failed')
+  assert.equal(noHost.error.kind, 'BAD_REQUEST')
+  assert.match(noHost.error.message, /--host/)
+  assert.equal(jobCount(noHostState), 0)
+  const unknownHostState = state('unknown-host')
+  const unknownHost = cli(['run', '--host', 'gemini', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low'], {
+    input: 'x', stateDir: unknownHostState,
+  })
+  assert.equal(unknownHost.status, 'failed')
+  assert.equal(unknownHost.error.kind, 'BAD_REQUEST')
+  assert.equal(jobCount(unknownHostState), 0)
+
+  console.log('writer lease, cancel, steer, and continuation')
+  const leaseState = state('lease')
+  const first = cli([...runArgs, '--access', 'workspace-write', '--detach'], { input: 'slow write', mode: 'slow', stateDir: leaseState })
+  await delay(300)
+  const activeContinuation = cli(['continue', first.jobId], { input: 'too early', stateDir: leaseState })
+  assert.equal(activeContinuation.status, 'failed')
+  assert.equal(activeContinuation.error.kind, 'JOB_STATE')
+  const second = cli([...runArgs, '--access', 'workspace-write', '--detach'], { input: 'second write', mode: 'slow', stateDir: leaseState })
+  const blocked = await waitFor(second.jobId, leaseState, 'failed')
+  assert.equal(blocked.error.kind, 'WORKSPACE_BUSY')
+  await waitFor(first.jobId, leaseState, 'succeeded')
+
+  const cancelState = state('cancel')
+  const cancellable = cli([...runArgs, '--detach'], { input: 'wait', mode: 'slow', stateDir: cancelState })
+  await delay(300)
+  cli(['cancel', cancellable.jobId], { stateDir: cancelState })
+  await waitFor(cancellable.jobId, cancelState, 'cancelled')
+
+  const queuedState = state('queued-cancel')
+  const queuedStore = new JobStore(queuedState)
+  const queued = queuedStore.createJob({
+    traceId: 'queued-cancel', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', delivery: 'detached', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'never start', outputSchema: null, baseSha: null, headSha: null,
+  })
+  const cancelledQueued = queuedStore.requestCancel(queued.id)
+  assert.equal(cancelledQueued.status, 'cancelled')
+  assert.equal(cancelledQueued.prompt, null)
+
+  const missingIdentity = queuedStore.createJob({
+    traceId: 'missing-identity', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', delivery: 'detached', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'never start', outputSchema: null, baseSha: null, headSha: null,
+  })
+  assert.throws(() => queuedStore.claim(missingIdentity.id, process.pid, null), (error) => error.kind === 'WORKER_IDENTITY')
+
+  const terminalRace = queuedStore.createJob({
+    traceId: 'terminal-race', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', delivery: 'detached', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'finish first', outputSchema: null, baseSha: null, headSha: null,
+  })
+  const claimedRace = queuedStore.claim(terminalRace.id, process.pid, processStartToken(process.pid))
+  queuedStore.finish(terminalRace.id, 'succeeded', { output: 'done' })
+  assert.equal(queuedStore.markReconciling(terminalRace.id, claimedRace.heartbeatAt), false)
+  assert.equal(queuedStore.getJob(terminalRace.id).status, 'succeeded')
+  queuedStore.close()
+
+  const steerState = state('steer')
+  const steerable = cli([...runArgs, '--detach'], { input: 'wait', mode: 'steer', stateDir: steerState })
+  await delay(300)
+  cli(['steer', steerable.jobId], { input: 'new direction', stateDir: steerState })
+  const steered = await waitFor(steerable.jobId, steerState, 'succeeded')
+  assert.equal(steered.output, 'STEERED: new direction')
+  const steerDb = new DatabaseSync(join(steerState, 'jobs.sqlite3'), { readOnly: true })
+  assert.equal(steerDb.prepare(`SELECT payload_json FROM controls WHERE job_id=? AND type='steer'`).get(steerable.jobId).payload_json, '{}')
+  steerDb.close()
+
+  const continued = cli(['continue', happy.jobId, '--host', 'claude'], { input: 'Continue', stateDir: state('happy') })
+  assert.equal(continued.status, 'succeeded')
+  assert.equal(continued.threadId, happy.threadId)
+
+  console.log('duplicate worker claim')
+  const duplicateState = state('duplicate-worker')
+  const owned = cli([...runArgs, '--access', 'workspace-write', '--detach'], { input: 'slow write', mode: 'slow', stateDir: duplicateState })
+  let beforeDuplicate = cli(['status', owned.jobId], { stateDir: duplicateState })
+  for (let i = 0; i < 40 && beforeDuplicate.status !== 'running'; i++) {
+    await delay(50)
+    beforeDuplicate = cli(['status', owned.jobId], { stateDir: duplicateState })
+  }
+  assert.equal(beforeDuplicate.status, 'running')
+  const duplicateWorker = spawnSync(process.execPath, [bundle, 'worker', '--job', owned.jobId, '--state-dir', duplicateState], {
+    cwd: repo,
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: { ...process.env, FLOW_DELEGATION_CODEX_BIN: fake, FLOW_FAKE_MODE: 'slow' },
+  })
+  assert.equal(duplicateWorker.status, 1)
+  const afterDuplicate = cli(['status', owned.jobId], { stateDir: duplicateState })
+  assert.equal(afterDuplicate.status, beforeDuplicate.status)
+  assert.equal(afterDuplicate.error, null)
+  const duplicateDb = new DatabaseSync(join(duplicateState, 'jobs.sqlite3'), { readOnly: true })
+  const heldLeases = duplicateDb.prepare('SELECT job_id FROM leases').all()
+  duplicateDb.close()
+  assert.deepEqual(heldLeases.map((lease) => lease.job_id), [owned.jobId])
+  await waitFor(owned.jobId, duplicateState, 'succeeded')
+
+  console.log('unexpected approval and stale-job recovery')
+  const approval = cli(runArgs, { input: 'Ask for approval', mode: 'approval', stateDir: state('approval') })
+  assert.equal(approval.status, 'awaiting_approval')
+  assert.equal(approval.error.kind, 'APPROVAL_REQUIRED')
+  const permissionsApproval = cli(runArgs, { input: 'Ask for permissions', mode: 'permissions-approval', stateDir: state('permissions-approval') })
+  assert.equal(permissionsApproval.status, 'awaiting_approval')
+  assert.equal(permissionsApproval.error.kind, 'APPROVAL_REQUIRED')
+  assert.ok(permissionsApproval.usage?.total)
+
+  const missingCodex = cli(runArgs, {
+    input: 'cannot start', stateDir: state('missing-codex'),
+    extraEnv: { FLOW_DELEGATION_CODEX_BIN: join(temp, 'codex-does-not-exist') },
+  })
+  assert.equal(missingCodex.status, 'failed')
+  assert.equal(missingCodex.error.kind, 'CODEX_NOT_INSTALLED')
+
+  const acceptedCrashState = state('accepted-crash')
+  const acceptedCrash = cli([...runArgs, '--access', 'workspace-write'], {
+    input: 'accepted before transport loss', mode: 'accepted-crash', stateDir: acceptedCrashState,
+  })
+  assert.equal(acceptedCrash.status, 'unknown')
+  const acceptedCrashDb = new DatabaseSync(join(acceptedCrashState, 'jobs.sqlite3'), { readOnly: true })
+  const acceptedCrashRow = acceptedCrashDb.prepare('SELECT native_turn_id, turn_accepted_at, prompt FROM jobs WHERE id=?').get(acceptedCrash.jobId)
+  acceptedCrashDb.close()
+  assert.ok(acceptedCrashRow.native_turn_id)
+  assert.ok(acceptedCrashRow.turn_accepted_at)
+  assert.equal(acceptedCrashRow.prompt, null)
+
+  const midturnRead = cli(runArgs, { input: 'crash after acceptance', mode: 'midturn-crash', stateDir: state('midturn-read') })
+  assert.equal(midturnRead.status, 'failed')
+  assert.equal(midturnRead.error.kind, 'APP_SERVER_EXIT')
+  const midturnWrite = cli([...runArgs, '--access', 'workspace-write'], { input: 'crash after write acceptance', mode: 'midturn-crash', stateDir: state('midturn-write') })
+  assert.equal(midturnWrite.status, 'unknown')
+  assert.equal(midturnWrite.error.kind, 'APP_SERVER_EXIT')
+
+  const recoveryState = state('recovery')
+  const recoverable = cli(runArgs, { input: 'complete', stateDir: recoveryState })
+  const recoveryDb = new DatabaseSync(join(recoveryState, 'jobs.sqlite3'))
+  recoveryDb.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
+    heartbeat_at=0, worker_pid=99999999, native_turn_id='recovered' WHERE id=?`).run(recoverable.jobId)
+  recoveryDb.close()
+  const recovered = cli(['status', recoverable.jobId], { stateDir: recoveryState })
+  assert.equal(recovered.status, 'succeeded')
+  assert.equal(recovered.output, 'RECOVERED')
+
+  const reusedPidState = state('recovery-pid-reuse')
+  const reusedPid = cli(runArgs, { input: 'complete', stateDir: reusedPidState })
+  const reusedPidDb = new DatabaseSync(join(reusedPidState, 'jobs.sqlite3'))
+  reusedPidDb.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
+    heartbeat_at=0, worker_pid=?, native_turn_id='recovered' WHERE id=?`).run(process.pid, reusedPid.jobId)
+  const nextSeq = reusedPidDb.prepare('SELECT MAX(seq) + 1 AS seq FROM events WHERE job_id=?').get(reusedPid.jobId).seq
+  reusedPidDb.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at) VALUES (?, ?, 'job.starting', ?, ?)`).run(
+    reusedPid.jobId, nextSeq, JSON.stringify({ pid: process.pid, startToken: 'reused-process-token' }), Date.now(),
+  )
+  reusedPidDb.close()
+  const recoveredFromReusedPid = cli(['status', reusedPid.jobId], { stateDir: reusedPidState })
+  assert.equal(recoveredFromReusedPid.status, 'succeeded')
+  assert.equal(recoveredFromReusedPid.output, 'RECOVERED')
+
+  const unknownState = state('recovery-unknown')
+  const unknownWrite = cli([...runArgs, '--access', 'workspace-write'], { input: 'complete', stateDir: unknownState })
+  const unknownDb = new DatabaseSync(join(unknownState, 'jobs.sqlite3'))
+  unknownDb.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
+    heartbeat_at=0, worker_pid=99999999, native_turn_id='recovered', turn_accepted_at=1 WHERE id=?`).run(unknownWrite.jobId)
+  unknownDb.close()
+  const unknown = cli(['status', unknownWrite.jobId], { stateDir: unknownState, mode: 'recovery-in-progress' })
+  assert.equal(unknown.status, 'unknown')
+  assert.equal(unknown.error.kind, 'RECOVERY_UNKNOWN')
+
+  const missingTurnState = state('recovery-missing-turn')
+  const missingTurn = cli(runArgs, { input: 'complete', stateDir: missingTurnState })
+  const missingTurnDb = new DatabaseSync(join(missingTurnState, 'jobs.sqlite3'))
+  missingTurnDb.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
+    heartbeat_at=0, worker_pid=99999999, native_turn_id=NULL, turn_accepted_at=NULL WHERE id=?`).run(missingTurn.jobId)
+  missingTurnDb.close()
+  const notMisattributed = cli(['status', missingTurn.jobId], { stateDir: missingTurnState })
+  assert.equal(notMisattributed.status, 'unknown')
+  assert.equal(notMisattributed.error.kind, 'RECOVERY_UNKNOWN')
+  const unknownContinuation = cli(['continue', missingTurn.jobId], { input: 'unsafe continuation', stateDir: missingTurnState })
+  assert.equal(unknownContinuation.status, 'failed')
+  assert.equal(unknownContinuation.error.kind, 'UNKNOWN_JOB')
+
+  console.log('recovered turn classification')
+  const recoveredOutcome = (name, mode, { cancelRequested = false } = {}) => {
+    const stateDir = state(name)
+    const job = cli(runArgs, { input: 'complete', stateDir })
+    const db = new DatabaseSync(join(stateDir, 'jobs.sqlite3'))
+    db.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
+      heartbeat_at=0, worker_pid=99999999, native_turn_id='recovered' WHERE id=?`).run(job.jobId)
+    if (cancelRequested) {
+      db.prepare(`INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, 'cancel', '{}', ?)`)
+        .run(job.jobId, Date.now())
+    }
+    db.close()
+    return cli(['status', job.jobId], { stateDir, mode })
+  }
+  const interruptedRecovery = recoveredOutcome('recovery-interrupted', 'recovery-interrupted')
+  assert.equal(interruptedRecovery.status, 'failed')
+  assert.equal(interruptedRecovery.error.kind, 'INTERRUPTED')
+  const cancelledRecovery = recoveredOutcome('recovery-cancelled', 'recovery-interrupted', { cancelRequested: true })
+  assert.equal(cancelledRecovery.status, 'cancelled')
+  assert.equal(cancelledRecovery.error, null)
+  const emptyRecovery = recoveredOutcome('recovery-empty', 'recovery-empty')
+  assert.equal(emptyRecovery.status, 'failed')
+  assert.equal(emptyRecovery.error.kind, 'EMPTY_OUTPUT')
+  const oddRecovery = recoveredOutcome('recovery-odd', 'recovery-odd')
+  assert.equal(oddRecovery.status, 'unknown')
+  assert.equal(oddRecovery.error.kind, 'UNKNOWN_TURN')
+
+  console.log('concurrent opens, retention, and the v1 upgrade')
+  const raceState = state('migration-race')
+  const raceStartAt = Date.now() + 1_500
+  const raced = await Promise.all(Array.from({ length: 8 }, () => openStoreInChild(raceState, raceStartAt)))
+  assert.deepEqual(raced.map((child) => child.code), raced.map(() => 0), raced.map((child) => child.stderr).join('\n'))
+
+  const retentionState = state('retention')
+  const retentionStore = new JobStore(retentionState)
+  const seedJob = (traceId, extra = {}) => retentionStore.createJob({
+    traceId, parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'retention', outputSchema: null, baseSha: null, headSha: null,
+    ...extra,
+  })
+  const expired = seedJob('retention-expired')
+  retentionStore.finish(expired.id, 'succeeded', { output: 'expired' })
+  const recent = seedJob('retention-recent')
+  retentionStore.finish(recent.id, 'succeeded', { output: 'recent' })
+  const expiredParent = seedJob('retention-parent')
+  retentionStore.finish(expiredParent.id, 'succeeded', { output: 'parent' })
+  const liveChild = seedJob('retention-child', { parentJobId: expiredParent.id })
+  const expiredActive = seedJob('retention-active')
+  const ancient = Date.now() - 15 * 24 * 60 * 60 * 1_000
+  retentionStore.db.prepare('UPDATE jobs SET updated_at=? WHERE id IN (?, ?)').run(ancient, expired.id, expiredParent.id)
+  retentionStore.db.prepare(`UPDATE jobs SET status='running', updated_at=? WHERE id=?`).run(ancient, expiredActive.id)
+  assert.ok(retentionStore.events(expired.id).length > 0)
+  retentionStore.close()
+  const pruned = new JobStore(retentionState)
+  assert.equal(pruned.getJob(expired.id), null)
+  assert.equal(pruned.db.prepare('SELECT COUNT(*) AS events FROM events WHERE job_id=?').get(expired.id).events, 0)
+  assert.equal(pruned.getJob(recent.id).status, 'succeeded')
+  assert.equal(pruned.getJob(expiredActive.id).status, 'running')
+  assert.equal(pruned.getJob(expiredParent.id).status, 'succeeded')
+  assert.equal(pruned.getJob(liveChild.id).parentJobId, expiredParent.id)
+  pruned.close()
+
+  // A v1 database from before the schema shed jobs.delivery and leases.heartbeat_at. The rows
+  // are what matters: an upgrade that loses a job or its journal is worse than one that fails.
+  const legacyState = state('legacy-v1')
+  mkdirSync(legacyState, { recursive: true })
+  const legacyDb = new DatabaseSync(join(legacyState, 'jobs.sqlite3'))
+  legacyDb.exec(`
+    CREATE TABLE jobs (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT NOT NULL,
+      parent_job_id TEXT REFERENCES jobs(id),
+      host TEXT NOT NULL,
+      target TEXT NOT NULL,
+      depth INTEGER NOT NULL,
+      mode TEXT NOT NULL,
+      access TEXT NOT NULL,
+      delivery TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      workspace_key TEXT NOT NULL,
+      model TEXT NOT NULL,
+      effort TEXT NOT NULL,
+      service_tier TEXT NOT NULL,
+      profile TEXT NOT NULL,
+      time_budget_seconds INTEGER NOT NULL,
+      prompt TEXT,
+      output_schema_json TEXT,
+      base_sha TEXT,
+      head_sha TEXT,
+      native_thread_id TEXT,
+      native_turn_id TEXT,
+      turn_accepted_at INTEGER,
+      status TEXT NOT NULL CHECK (status IN ('queued','starting','running','reconciling','succeeded','failed','cancelled','unknown','awaiting_approval')),
+      worker_pid INTEGER,
+      output TEXT,
+      structured_json TEXT,
+      usage_json TEXT,
+      error_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      heartbeat_at INTEGER NOT NULL
+    );
+    CREATE TABLE events (
+      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (job_id, seq)
+    );
+    CREATE TABLE controls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      handled_at INTEGER
+    );
+    CREATE TABLE leases (
+      workspace_key TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+      heartbeat_at INTEGER NOT NULL
+    );
+    CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
+    CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
+    PRAGMA user_version=1;
+  `)
+  const legacyAt = Date.now()
+  legacyDb.prepare(`INSERT INTO jobs (
+    id, trace_id, parent_job_id, host, target, depth, mode, access, delivery,
+    cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+    prompt, status, created_at, updated_at, heartbeat_at
+  ) VALUES ('legacy-job', 'legacy-trace', NULL, 'claude', 'codex', 0, 'task', 'workspace-write', 'detached',
+    ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, 'legacy prompt', 'running', ?, ?, ?)`)
+    .run(repo, repo, legacyAt, legacyAt, legacyAt)
+  legacyDb.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
+    VALUES ('legacy-job', 1, 'job.queued', '{"status":"queued"}', ?)`).run(legacyAt)
+  legacyDb.prepare(`INSERT INTO leases (workspace_key, job_id, heartbeat_at) VALUES (?, 'legacy-job', ?)`)
+    .run(repo, legacyAt)
+  legacyDb.close()
+  const upgraded = new JobStore(legacyState)
+  const columnsOf = (table) => upgraded.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
+  assert.equal(upgraded.userVersion(), 2)
+  assert.ok(!columnsOf('jobs').includes('delivery'))
+  assert.ok(!columnsOf('leases').includes('heartbeat_at'))
+  const legacyJob = upgraded.getJob('legacy-job')
+  assert.equal(legacyJob.status, 'running')
+  assert.equal(legacyJob.model, 'gpt-5.6-luna')
+  assert.equal(legacyJob.workspaceKey, repo)
+  assert.equal(upgraded.events('legacy-job').length, 1)
+  assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases, 1)
+  upgraded.close()
+
+  console.log('MCP registration, roots, progress, and attached result')
+  const mcpState = state('mcp')
+  const client = new McpStdioClient({
+    command: process.execPath,
+    args: [bundle, 'mcp', '--host', 'claude', '--state-dir', mcpState],
+    cwd: repo,
+    env: {
+      ...process.env,
+      CLAUDE_PROJECT_DIR: repo,
+      FLOW_DELEGATION_CODEX_BIN: fake,
+      FLOW_FAKE_MODE: 'happy',
+    },
+    roots: [{ uri: pathToFileURL(repo).href, name: 'repo' }],
+  })
+  await client.start()
+  const tools = await client.listTools()
+  const names = tools.tools.map((tool) => tool.name)
+  for (const name of ['delegate_to_codex', 'delegation_status', 'delegation_result', 'delegation_events', 'delegation_cancel', 'delegation_steer', 'delegation_continue', 'delegation_models', 'delegation_doctor']) assert.ok(names.includes(name), name)
+  const escaped = await client.callTool(
+    'delegate_to_codex',
+    { mode: 'task', prompt: 'escape', cwd: temp, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
+  )
+  assert.equal(escaped.isError, true)
+  assert.equal(escaped.structuredContent.error.kind, 'OUTSIDE_ROOTS')
+  const symlinkEscape = await client.callTool(
+    'delegate_to_codex',
+    { mode: 'task', prompt: 'symlink escape', cwd: escape, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
+  )
+  assert.equal(symlinkEscape.isError, true)
+  assert.equal(symlinkEscape.structuredContent.error.kind, 'OUTSIDE_ROOTS')
+  // The roots exception for linked worktrees: a worktree the approved repository registered
+  // is accepted even though it sits outside every client root, while a caller-writable .git
+  // file pointing at the approved repository is not, because the repository never listed it.
+  const linked = join(temp, 'linked-wt')
+  execFileSync('git', ['worktree', 'add', '-q', linked], { cwd: repo })
+  const linkedWrite = await client.callTool(
+    'delegate_to_codex',
+    { mode: 'task', prompt: 'linked worktree', cwd: linked, access: 'workspace-write', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
+    { timeout: 30_000 },
+  )
+  assert.equal(linkedWrite.isError, undefined)
+  assert.equal(linkedWrite.structuredContent.job.status, 'succeeded')
+  const forged = join(temp, 'forged')
+  mkdirSync(forged)
+  writeFileSync(join(forged, '.git'), `gitdir: ${join(repo, '.git')}\n`)
+  const forgedRun = await client.callTool(
+    'delegate_to_codex',
+    { mode: 'task', prompt: 'forged gitfile', cwd: forged, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
+  )
+  assert.equal(forgedRun.isError, true)
+  assert.equal(forgedRun.structuredContent.error.kind, 'OUTSIDE_ROOTS')
+  const progress = []
+  const mcpResult = await client.callTool(
+    'delegate_to_codex',
+    { mode: 'task', prompt: 'MCP test', cwd: repo, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
+    { timeout: 30_000, onprogress: (event) => progress.push(event) },
+  )
+  assert.equal(mcpResult.isError, undefined)
+  assert.equal(mcpResult.structuredContent.job.status, 'succeeded')
+  assert.ok(progress.length > 0)
+  const continuedProgress = []
+  const mcpContinued = await client.callTool(
+    'delegation_continue',
+    { jobId: mcpResult.structuredContent.job.jobId, prompt: 'Continue over MCP', delivery: 'attached', timeBudgetSeconds: 30 },
+    { timeout: 30_000, onprogress: (event) => continuedProgress.push(event) },
+  )
+  assert.equal(mcpContinued.isError, undefined)
+  assert.equal(mcpContinued.structuredContent.ok, true)
+  assert.equal(mcpContinued.structuredContent.job.status, 'succeeded')
+  assert.equal(mcpContinued.structuredContent.job.threadId, mcpResult.structuredContent.job.threadId)
+  assert.notEqual(mcpContinued.structuredContent.job.jobId, mcpResult.structuredContent.job.jobId)
+  assert.ok(continuedProgress.length > 0)
+  const modelResult = await client.callTool('delegation_models', { cwd: repo }, { timeout: 30_000 })
+  assert.equal(modelResult.structuredContent.models[0].id, 'gpt-5.6-luna')
+  const escapedModels = await client.callTool('delegation_models', { cwd: temp }, { timeout: 30_000 })
+  assert.equal(escapedModels.isError, true)
+  assert.equal(escapedModels.structuredContent.error.kind, 'OUTSIDE_ROOTS')
+  const doctorResult = await client.callTool('delegation_doctor', { cwd: repo }, { timeout: 30_000 })
+  assert.equal(doctorResult.structuredContent.ok, true)
+  await client.close()
+
+  console.log('smoke-delegation: ALL PASS')
+} finally {
+  rmSync(temp, { recursive: true, force: true })
+}

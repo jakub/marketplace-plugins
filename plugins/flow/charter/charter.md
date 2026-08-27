@@ -21,10 +21,15 @@ Never spawn more than ~20 parallel agents without the user's confirmation first.
 
 Permissions scale with how reversible the change is. Read-only agents: spawn freely. Agents that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
  
-## Codex Delegate
-Reach OpenAI Codex models ONLY via the `codex-delegate` agent or the `codex-exec.mjs` transport it wraps (under the plugin's `scripts/`).
+## Cross-family delegation
+On a Claude host, reach OpenAI Codex models only through Flow's `flow_delegate` MCP tools.
+Use `delegate_to_codex` for a new call and the `delegation_*` tools to inspect, steer,
+cancel, or continue its durable job. Do not wrap the call in an agent or invoke Codex through
+shell commands.
 
-Set the model and effort explicitly every time; don't let the transport fill blanks from `~/.codex/config.toml`, because Codex rewrites those defaults whenever the user changes a setting. Always run on the standard service tier - the delegate can request `fast`, but we don't.
+Set the model and effort explicitly every time. Always use the `default` service tier. The
+server rejects same-family calls and nested cross-family calls. Phase 1 has no Claude service,
+so a Codex host cannot call Claude yet.
 
 ## The `flow` pipeline
 This plugin provides several commands that run in order: `/flow:prep` → `/flow:issue` → `/flow:land`
@@ -65,7 +70,7 @@ The flip side is that lower efforts wander less and follow instructions more lit
 Luna is basically free, and at max effort competes with Opus and Sol at medium-high efforts. It can handle low-to-moderate complexity tasks, lightweight code exploration, and anything that just needs a cheap but decent model.
 
 ### Sonnet
-Sonnet is primarily for mechanical work: wrappers to execute Sol/Luna agents via the Codex delegate, codebase exploration, writing ledgers, running deep test suites and gates. Use low effort for wrappers, medium/high/xhigh for anything needing to return a verdict.
+Sonnet is primarily for mechanical work: invoking Sol or Luna through Flow's MCP tools, codebase exploration, writing ledgers, running deep test suites and gates. Use low effort for tool-driving work, medium/high/xhigh for anything needing to return a verdict.
 
 ### Opus
 The workhorse. Used for implementation, fixes, code review, and adjudication. High effort by default, xhigh for code and security reviews, max for adjudicating conflicting decisions. Opus xhigh is roughly similar to Fable for code writing tasks.

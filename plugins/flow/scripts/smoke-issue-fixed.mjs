@@ -148,13 +148,13 @@ let happyStub
     check(result.coverage && result.coverage.reviewsDelivered === 4, `all 4 lenses delivered (got ${result.coverage && result.coverage.reviewsDelivered})`)
     const lensComments = calls.find((c) => c.label === 'lens:comments')
     check(lensComments && /adversarial-review/.test(lensComments.prompt) && /--effort max/.test(lensComments.prompt) && /--model gpt-5\.6-luna/.test(lensComments.prompt),
-      'comments lens runs luna/max on the codex transport')
+      'comments lens runs luna/max through the Codex service')
     for (const k of ['tests', 'silent-failures', 'types']) {
       const c = calls.find((x) => x.label === `lens:${k}`)
-      check(c && /--effort high/.test(c.prompt) && /--model gpt-5\.6-sol/.test(c.prompt), `${k} lens runs sol/high on the codex transport`)
+      check(c && /--effort high/.test(c.prompt) && /--model gpt-5\.6-sol/.test(c.prompt), `${k} lens runs sol/high through the Codex service`)
     }
     const lensTests = calls.find((c) => c.label === 'lens:tests')
-    check(lensTests && /behavioral test coverage/.test(lensTests.prompt) && /<<'FOCUS'/.test(lensTests.prompt), 'lens focus rides the transport stdin')
+    check(lensTests && /behavioral test coverage/.test(lensTests.prompt) && /<<'FOCUS'/.test(lensTests.prompt), 'lens focus reaches the service through stdin')
   } else {
     failures++
     console.error('  FAIL: no result object returned')
@@ -183,38 +183,29 @@ console.log('security seat refused on both families')
   check(logs.some((l) => /review coverage: 3 of 4/.test(l)), 'the thinned fabric is logged as a coverage line')
 }
 
-// ── pass 5: codex seat overrides + marker hygiene ────────────────────────────
-// The codex legs run on the codex-exec transport that ships in this plugin. Overrides must
-// reach the shell command verbatim; marker findings (CODEX_UNAVAILABLE / CODEX_FAST_DEGRADED)
-// are observability and must be logged then dropped, never surfaced as review signal.
-console.log('codex seat overrides (luna/max/fast, explicit pluginRoot)')
+// ── pass 5: Codex seat overrides + service contract ─────────────────────────
+// The Codex legs use the durable delegation bundle's CLI mode. Overrides must reach the
+// command verbatim. CODEX_UNAVAILABLE findings remain visible as observability markers.
+console.log('codex seat overrides (luna/max, explicit pluginRoot)')
 {
-  const stub = async (prompt, opts = {}) => {
-    if ((opts.label || '') === 'review:codex') return { findings: [
-      { severity: 'low', title: 'CODEX_FAST_DEGRADED', file: '', line: 0, detail: 'tier omitted', systemic: false, confidence: 100 },
-    ] }
-    return happyStub(prompt, opts)
-  }
-  const args = { ...baseArgs, codexModel: 'gpt-5.6-luna', codexEffort: 'max', codexFast: true, pluginRoot: '/plugroot' }
-  const { result, error, logs, calls } = await run(stub, args)
+  const args = { ...baseArgs, codexModel: 'gpt-5.6-luna', codexEffort: 'max', pluginRoot: '/plugroot' }
+  const { error, logs, calls } = await run(happyStub, args)
   check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
   const design = calls.find((c) => c.label === 'design:codex')
-  check(design && design.prompt.includes('CODEX="/plugroot/scripts/codex-exec.mjs"'), 'explicit pluginRoot resolves the transport without a glob')
-  check(design && /--model gpt-5\.6-luna/.test(design.prompt) && /--effort max/.test(design.prompt) && /--fast/.test(design.prompt), 'design leg carries model/effort/fast overrides')
+  check(design && design.prompt.includes('DELEGATE="/plugroot/dist/delegation.mjs"'), 'explicit pluginRoot resolves the bundle without a glob')
+  check(design && /cli run --host claude --mode task/.test(design.prompt), 'design leg uses the shared service CLI')
+  check(design && /--model gpt-5\.6-luna/.test(design.prompt) && /--effort max/.test(design.prompt), 'design leg carries model and effort overrides')
   check(design && /CODEX_UNAVAILABLE: <error\.kind>/.test(design.prompt), 'design leg keeps the envelope-aware unavailable sentinel')
   const review = calls.find((c) => c.label === 'review:codex')
-  check(review && /adversarial-review --cwd/.test(review.prompt) && /--effort max/.test(review.prompt), 'adversarial leg runs the transport with the effort override')
-  check(review && /confidence = 55/.test(review.prompt), 'codex findings keep the inferred-not-executed confidence rule')
+  check(review && /--mode adversarial-review/.test(review.prompt) && /--effort max/.test(review.prompt), 'adversarial leg uses the service with the effort override')
+  check(review && /service already validates every finding/.test(review.prompt), 'review findings use the service schema without prose parsing')
   for (const [name, c] of [['design', design], ['review', review]]) {
-    check(c && /timeout parameter set to 600000/.test(c.prompt) && /--timeout-secs 540/.test(c.prompt),
-      `${name} leg sizes the Bash timeout against the transport's 540s total budget`)
+    check(c && /timeout parameter set to 600000/.test(c.prompt) && /--time-budget-seconds 480/.test(c.prompt),
+      `${name} leg sizes the Bash timeout against the worker's 480s model budget`)
   }
   const lensT = calls.find((c) => c.label === 'lens:tests')
   check(lensT && /--model gpt-5\.6-sol/.test(lensT.prompt) && /--effort high/.test(lensT.prompt), 'lens seats stay pinned under --codex-* overrides')
-  check(lensT && /--fast/.test(lensT.prompt), '--codex-fast passes through to the lens seats')
-  check(logs.some((l) => /codex seats: model=gpt-5\.6-luna \(override\) effort=max \(override\) fast=true/.test(l)), 'overrides are logged at launch, marked as overrides')
-  check(logs.some((l) => /fast tier silently dropped/.test(l)), 'CODEX_FAST_DEGRADED marker is logged')
-  check(result && !(result.droppedLow || []).some((f) => /CODEX_FAST_DEGRADED/.test(f.title)), 'marker finding dropped, not surfaced as review signal')
+  check(logs.some((l) => /codex seats: model=gpt-5\.6-luna \(override\) effort=max \(override\) tier=default/.test(l)), 'overrides and the default tier are logged at launch')
 }
 console.log('codex defaults (bad effort ignored, uninterpolated pluginRoot falls back to glob)')
 {
@@ -223,7 +214,7 @@ console.log('codex defaults (bad effort ignored, uninterpolated pluginRoot falls
   check(!error, `run completes without throwing (${error ? error.message : 'clean'})`)
   check(logs.some((l) => /codexEffort 'turbo'.*ignored/.test(l)), 'invalid codexEffort is ignored with a visible log')
   const design = calls.find((c) => c.label === 'design:codex')
-  check(design && design.prompt.includes('cache/*/flow/*/scripts/codex-exec.mjs'), 'uninterpolated ${CLAUDE_PLUGIN_ROOT} falls back to the same-plugin glob')
+  check(design && design.prompt.includes('cache/*/flow/*/dist/delegation.mjs'), 'uninterpolated ${CLAUDE_PLUGIN_ROOT} falls back to the same-plugin bundle glob')
   check(design && /--effort high/.test(design.prompt), 'design leg default effort stays pinned at high')
   const review = calls.find((c) => c.label === 'review:codex')
   // Regression guard: an omitted flag would inherit ~/.codex/config.toml, which the Codex TUI
@@ -232,7 +223,7 @@ console.log('codex defaults (bad effort ignored, uninterpolated pluginRoot falls
   check(review && /--effort high/.test(review.prompt) && /--model gpt-5\.6-sol/.test(review.prompt),
     'adversarial leg pins its own model+effort rather than inheriting config.toml')
   check(design && /--model gpt-5\.6-sol/.test(design.prompt), 'design leg pins its model too')
-  check(logs.some((l) => /codex seats: model=gpt-5\.6-sol effort=high fast=false/.test(l)),
+  check(logs.some((l) => /codex seats: model=gpt-5\.6-sol effort=high tier=default/.test(l)),
     'seat defaults are logged concretely, never as "default"')
 }
 

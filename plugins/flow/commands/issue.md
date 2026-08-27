@@ -1,7 +1,7 @@
 ---
 description: Hands-off implementation of a ready-for-agent issue, through a pushed, reviewed, evidenced PR.
 argument-hint: <issue-number>
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Write, Workflow, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Write, Workflow, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_continue, mcp__plugin_flow_flow_delegate__delegation_models, mcp__plugin_flow_flow_delegate__delegation_doctor
 ---
 
 # /flow:issue
@@ -46,7 +46,7 @@ These hold however you orchestrate.
    - circuit breaker: past ~5 fix rounds, stop fixing. Adjudicate the survivors at maximum effort and escalate the real ones. The breaker interrupts a human; it never ships silently.
 7. **Containment.** All writes in the worktree; leaf agents don't sub-delegate; two agents never edit one file concurrently. Staging is repo-global even when edits are disjoint, so parallel fixers stage only their own files by explicit path (never `git add -A` / `commit -a`) or their commits serialize. No `--no-verify`, no trailers - hooks enforce both.
    This is mechanism, not memory: every write-capable seat (implementation, fixes, doc-sync) spawns as `flow:implementer`. Its toolset has no Agent tool, so sub-delegation is impossible rather than discouraged, and its system prompt carries the sync-run, scope, and report discipline. A `general-purpose` seat holding Edit is a containment violation. Seats that edit nothing (scouts, reviewers, transports) keep their own defs. Your prompt still names the worktree and the milestones; the def carries the rules.
-8. **Refusal routing.** Any seat can come back null. Every judgment or security seat needs a cross-family fallback: `gpt-daybreak-blue-latest` through codex-delegate is the first retry for security-flavored work, not the other Claude, and a double-null is reported, never swallowed.
+8. **Refusal routing.** Any seat can come back null. Every judgment or security seat needs a cross-family fallback: `gpt-daybreak-blue-latest` through `delegate_to_codex` is the first retry for security-flavored work, not the other Claude, and a double-null is reported, never swallowed.
 9. **Seat reports are claims.** A seat's final message is prose from a model that may have hallucinated its own progress - "launched a background agent", "waiting on the monitor", a commit annexed from a sibling. Before acting on any completion or blocker report, run `git -C <wt> log` and `git -C <wt> status` and compare against what the seat says it did. A seat that stopped mid-task gets a `SendMessage` nudge carrying the conductor-verified state (which commits exist, what the tree holds), so it can't re-litigate what's done. A seat that fabricates twice is re-run on a stronger model, journaled as an event.
 
 ## 3. The design pass - always on
@@ -100,7 +100,12 @@ Sol is flat-rate on the subscription, which turns every pattern below from "can 
 - **Red team**: sol tries to break Claude's implementation and vice versa. Route demonstrable claims through the fast lane (§2, invariant 2): "prove it or drop it" beats prose severity debates.
 - **Bulk tier**: luna for mechanical sweeps (comment rot, evidence collection, transcript reads); luna at max effort is the cheap-depth combo. Never the decorrelation seat itself - that needs intelligence.
 
-Transport: `codex-exec.mjs` under the plugin's `scripts/` (`task` / `adversarial-review` subcommands, JSON envelope; `.ok` and `.fast.applied` are the truth - the envelope rules are in `workflows/issue-fixed.mjs`). Bash timeout 600000; the transport holds 540s inside it. If the envelope error says the subscription rejected the model tier you pinned, re-run on another codex model from the charter's table rather than losing the seat.
+Use attached delivery for normal seats so MCP progress keeps the call visible. Use detached
+delivery only when the run must outlive the current tool call, then retain the job ID and read
+it with `delegation_status`, `delegation_events`, and `delegation_result`. Reviews use `mode: "adversarial-review"`, an immutable `base`, and
+`access: "read-only"`. Treat `failed`, `unknown`, `cancelled`, and `awaiting_approval` as an
+unavailable seat, never as a clean review. The server validates review findings through a
+strict schema, so do not parse review prose.
 
 ## 6. Rules of engagement
 
@@ -113,5 +118,6 @@ Transport: `codex-exec.mjs` under the plugin's `scripts/` (`task` / `adversarial
 
 ## Known gaps
 
-- **No cross-session resume** - there is no runId to pick back up. The event journal is the mitigation: a fresh session reads the issue comments plus the worktree diff and reconstructs the run state.
+- **The composed Flow run has no runId.** Delegated Codex seats have durable job IDs, but the
+  surrounding dynamic run still recovers from issue comments and the worktree diff.
 - **No calibration ledger**: per-seat finding precision is not tracked across runs; compose from the charter's model table.

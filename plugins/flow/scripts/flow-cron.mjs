@@ -45,7 +45,7 @@ const jobs = (root) => ({
 
       // drift-audit §5 on the marketplace repo:
       `Bash(node ${root}/hooks/scripts/inject-charter.mjs:*)`,
-      `Bash(node ${root}/scripts/smoke-codex-exec.mjs:*)`,
+      `Bash(node ${root}/scripts/smoke-delegation.mjs:*)`,
       "Bash(claude plugin list:*)",
     ],
     summary: "flow nightly lint",
