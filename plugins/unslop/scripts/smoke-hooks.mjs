@@ -34,12 +34,12 @@ assert.ok(Buffer.byteLength(codexSubagent.stdout) < 10_000)
 
 assert.equal(run(['subagent', 'claude'], { agent_type: 'Explore' }).stdout, '')
 assert.equal(run(['subagent', 'claude'], { agent_type: 'fork' }).stdout, '')
-assert.equal(run(['subagent', 'claude'], { agent_type: 'codex-delegate' }).stdout, '')
+// Everything outside the skip set gets the rules, ad-hoc general-purpose spawns included.
+assert.notEqual(run(['subagent', 'claude'], { agent_type: 'general-purpose' }).stdout, '')
 // Every skip is justified by a Claude mechanism; a Codex seat with the same name gets
 // the rules until a Codex capture proves the skip safe there too.
 assert.notEqual(run(['subagent', 'codex'], { agent_type: 'Explore' }).stdout, '')
 assert.notEqual(run(['subagent', 'codex'], { agent_type: 'fork' }).stdout, '')
-assert.notEqual(run(['subagent', 'codex'], { agent_type: 'codex-delegate' }).stdout, '')
 
 const invalid = run(['session', 'other'])
 assert.equal(invalid.status, 2)
