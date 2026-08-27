@@ -1,8 +1,9 @@
 import Ajv2020 from 'ajv/dist/2020.js'
 import { spawn } from 'node:child_process'
-import { assertRoute, DelegationError, EFFORTS, MODES, ACCESS_MODES, DELIVERIES, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope } from './contracts.mjs'
+import { assertRoute, DelegationError, EFFORTS, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope } from './contracts.mjs'
 import { AppServerClient, codexVersion } from './app-server.mjs'
-import { JobStore, defaultStateDir, processStartToken } from './store.mjs'
+import { foldTurnOutcome, validateStructured } from './outcome.mjs'
+import { JobStore, defaultStateDir, processStartToken, serviceLog } from './store.mjs'
 import { canonicalRoots, canonicalWorkspace, immutableReview, worktreeKey, writableWorktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -18,13 +19,24 @@ function validateSchema(schema) {
   return schema
 }
 
+// Every field is type-checked before it is pattern-checked: a regex coerces its argument, so
+// an undefined model matched the shape test and only failed later, as an opaque NOT NULL
+// bind error from sqlite.
 function validateStart(input) {
   if (!MODES.includes(input.mode)) throw new DelegationError('BAD_REQUEST', 'mode is invalid.')
   if (!ACCESS_MODES.includes(input.access)) throw new DelegationError('BAD_REQUEST', 'access is invalid.')
   if (!DELIVERIES.includes(input.delivery)) throw new DelegationError('BAD_REQUEST', 'delivery is invalid.')
   if (!EFFORTS.includes(input.effort)) throw new DelegationError('BAD_REQUEST', 'effort is invalid.')
   if (!SERVICE_TIERS.includes(input.serviceTier)) throw new DelegationError('BAD_REQUEST', 'Only the default service tier is allowed.')
-  if (!/^[a-z0-9][a-z0-9.-]*$/.test(input.model)) throw new DelegationError('BAD_REQUEST', 'model has an invalid shape.')
+  if (typeof input.model !== 'string' || !MODEL_PATTERN.test(input.model)) {
+    throw new DelegationError('BAD_REQUEST', 'model is required and must match the model name shape.')
+  }
+  if (typeof input.cwd !== 'string' || !input.cwd.trim()) {
+    throw new DelegationError('BAD_REQUEST', 'cwd is required and must be an absolute directory path.')
+  }
+  if (typeof input.profile !== 'string' || !input.profile.trim()) {
+    throw new DelegationError('BAD_REQUEST', 'profile is invalid.')
+  }
   if (typeof input.prompt !== 'string' || (!input.prompt.trim() && input.mode === 'task')) {
     throw new DelegationError('BAD_REQUEST', 'Task mode requires a non-empty prompt.')
   }
@@ -46,7 +58,12 @@ export class DelegationService {
 
   store() { return new JobStore(this.stateDir) }
 
-  start(input, { rootUris = [], fallbackCwd = null } = {}) {
+  withStore(fn) {
+    const store = this.store()
+    try { return fn(store) } finally { store.close() }
+  }
+
+  async start(input, { rootUris = [], fallbackCwd = null } = {}) {
     const normalized = {
       mode: input.mode || 'task',
       access: input.access || 'read-only',
@@ -67,14 +84,13 @@ export class DelegationService {
     validateStart(normalized)
     assertRoute({ host: this.host, target: 'codex', depth: this.depth })
     const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
-    const cwd = canonicalWorkspace(normalized.cwd, roots)
+    const cwd = await canonicalWorkspace(normalized.cwd, roots)
     const workspaceKey = normalized.access === 'workspace-write'
-      ? writableWorktreeKey(cwd, roots)
-      : worktreeKey(cwd)
-    const review = immutableReview({ cwd, mode: normalized.mode, base: normalized.base, head: normalized.head, prompt: normalized.prompt })
+      ? await writableWorktreeKey(cwd, roots)
+      : await worktreeKey(cwd)
+    const review = await immutableReview({ cwd, mode: normalized.mode, base: normalized.base, head: normalized.head, prompt: normalized.prompt })
     const outputSchema = validateSchema(review.outputSchema || normalized.outputSchema)
-    const store = this.store()
-    try {
+    return this.withStore((store) => {
       const job = store.createJob({
         ...normalized,
         host: this.host,
@@ -89,7 +105,7 @@ export class DelegationService {
       })
       this.spawnWorker(job.id)
       return job
-    } finally { store.close() }
+    })
   }
 
   spawnWorker(jobId) {
@@ -107,15 +123,15 @@ export class DelegationService {
     child.unref()
   }
 
+  // One store for the whole poll loop: reopening the database every 250ms bought nothing.
   async wait(jobId, { onEvent = () => {}, signal = null } = {}) {
     let after = 0
     let cancelQueued = false
     let lastReconcile = 0
-    while (true) {
-      const store = this.store()
-      let job
-      try {
-        job = store.requireJob(jobId)
+    const store = this.store()
+    try {
+      while (true) {
+        let job = store.requireJob(jobId)
         for (const event of store.events(jobId, { after, limit: 200 })) {
           after = event.seq
           await onEvent(event)
@@ -125,40 +141,30 @@ export class DelegationService {
           store.requestCancel(jobId)
           cancelQueued = true
         }
-      } finally { store.close() }
-      if (Date.now() - lastReconcile > 5_000) {
-        lastReconcile = Date.now()
-        job = await this.reconcile(jobId)
-        if (terminal(job)) return job
+        if (Date.now() - lastReconcile > 5_000) {
+          lastReconcile = Date.now()
+          job = await this.reconcile(jobId)
+          if (terminal(job)) return job
+        }
+        await sleep(250)
       }
-      await sleep(250)
-    }
+    } finally { store.close() }
   }
 
-  get(jobId) {
-    const store = this.store()
-    try { return store.requireJob(jobId) } finally { store.close() }
-  }
+  get(jobId) { return this.withStore((store) => store.requireJob(jobId)) }
 
   result(jobId) { return resultEnvelope(this.get(jobId)) }
 
-  events(jobId, options = {}) {
-    const store = this.store()
-    try { return store.events(jobId, options) } finally { store.close() }
-  }
+  events(jobId, options = {}) { return this.withStore((store) => store.events(jobId, options)) }
 
-  cancel(jobId) {
-    const store = this.store()
-    try { return store.requestCancel(jobId) } finally { store.close() }
-  }
+  cancel(jobId) { return this.withStore((store) => store.requestCancel(jobId)) }
 
   steer(jobId, text) {
     if (!text?.trim()) throw new DelegationError('BAD_REQUEST', 'Steering text cannot be empty.')
-    const store = this.store()
-    try {
+    return this.withStore((store) => {
       store.queueControl(jobId, 'steer', { text })
       return store.requireJob(jobId)
-    } finally { store.close() }
+    })
   }
 
   continue(jobId, input, roots = {}) {
@@ -208,21 +214,27 @@ export class DelegationService {
       account: { ok: false },
     }
     try {
-      const store = this.store()
-      store.db.prepare('SELECT 1').get()
-      store.close()
+      this.withStore((store) => store.db.prepare('SELECT 1').get())
       checks.database = { ok: true, path: this.stateDir }
     } catch { checks.database = { ok: false, kind: 'DATABASE' } }
+    // Each probe reports itself. Sharing one catch made an account failure read as a dead App
+    // Server, which is the opposite of what doctor is for.
     if (checks.codex.ok) {
       let client
       try {
         client = await new AppServerClient({ cwd }).start()
         checks.appServer = { ok: true }
-        const account = await client.request('account/read', { refreshToken: false }, 20_000)
-        checks.account = { ok: Boolean(account.account) || !account.requiresOpenaiAuth, requiresOpenaiAuth: account.requiresOpenaiAuth }
       } catch (error) {
         checks.appServer = { ok: false, error: publicError(error) }
-      } finally { if (client) await client.stop() }
+      }
+      if (client) {
+        try {
+          const account = await client.request('account/read', { refreshToken: false }, 20_000)
+          checks.account = { ok: Boolean(account.account) || !account.requiresOpenaiAuth, requiresOpenaiAuth: account.requiresOpenaiAuth }
+        } catch (error) {
+          checks.account = { ok: false, error: publicError(error) }
+        } finally { await client.stop() }
+      }
     }
     return { ok: Object.values(checks).every((check) => check.ok), checks }
   }
@@ -230,47 +242,33 @@ export class DelegationService {
   async reconcile(jobId, { staleAfterMs = 15_000 } = {}) {
     let job = this.get(jobId)
     if (terminal(job) || Date.now() - job.heartbeatAt < staleAfterMs) return job
+    // Recovery defers rather than deciding whenever the worker's identity cannot be settled:
+    // a live process that might still own the job must not have its outcome overwritten.
+    const defer = (reason, error = null) => this.withStore((store) => {
+      store.appendEvent(jobId, 'recovery.deferred', error ? { reason, error: publicError(error) } : { reason })
+      return store.requireJob(jobId)
+    })
     let identityAmbiguous = false
     if (job.workerPid) {
       try {
         process.kill(job.workerPid, 0)
-        const local = this.store()
-        let claimedToken
-        try { claimedToken = local.workerStartToken(jobId) } finally { local.close() }
+        const claimedToken = this.withStore((store) => store.workerStartToken(jobId))
         const liveToken = processStartToken(job.workerPid)
         if (claimedToken && liveToken && claimedToken === liveToken) return job
         identityAmbiguous = !claimedToken || !liveToken
       } catch {}
     }
-    const store = this.store()
-    let claimedRecovery
-    try { claimedRecovery = store.markReconciling(jobId, job.heartbeatAt) } finally { store.close() }
+    const claimedRecovery = this.withStore((store) => store.markReconciling(jobId, job.heartbeatAt))
     job = this.get(jobId)
     if (terminal(job)) return job
     if (!claimedRecovery) return job
     if (!job.nativeThreadId) {
-      if (identityAmbiguous) {
-        const local = this.store()
-        try {
-          local.appendEvent(jobId, 'recovery.deferred', { reason: 'worker_identity' })
-          return local.requireJob(jobId)
-        } finally { local.close() }
-      }
-      const local = this.store()
-      try { return local.finish(jobId, 'failed', { error: { kind: 'WORKER_EXIT', message: 'The worker exited before Codex created a thread.', details: null } }) }
-      finally { local.close() }
+      if (identityAmbiguous) return defer('worker_identity')
+      return this.withStore((store) => store.finish(jobId, 'failed', { error: { kind: 'WORKER_EXIT', message: 'The worker exited before Codex created a thread.', details: null } }))
     }
     if (!job.nativeTurnId) {
-      if (identityAmbiguous) {
-        const local = this.store()
-        try {
-          local.appendEvent(jobId, 'recovery.deferred', { reason: 'worker_identity' })
-          return local.requireJob(jobId)
-        } finally { local.close() }
-      }
-      const local = this.store()
-      try { return local.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Flow cannot identify which Codex turn belongs to the stale job.', details: null } }) }
-      finally { local.close() }
+      if (identityAmbiguous) return defer('worker_identity')
+      return this.withStore((store) => store.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Flow cannot identify which Codex turn belongs to the stale job.', details: null } }))
     }
     let client
     try {
@@ -278,44 +276,28 @@ export class DelegationService {
       const response = await client.request('thread/read', { threadId: job.nativeThreadId, includeTurns: true }, 20_000)
       const turns = response.thread?.turns || []
       const turn = turns.find((item) => item.id === job.nativeTurnId)
-      const local = this.store()
-      try {
-        if (!turn || turn.status === 'inProgress') {
-          if (identityAmbiguous) {
-            local.appendEvent(jobId, 'recovery.deferred', { reason: 'turn_in_progress' })
-            return local.requireJob(jobId)
-          }
-          return local.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Codex could not prove the stale turn reached a terminal state.', details: null } })
-        }
-        if (turn.status === 'interrupted') return local.finish(jobId, 'cancelled')
-        if (turn.status === 'failed') return local.finish(jobId, 'failed', { error: { kind: 'CODEX_TURN', message: turn.error?.message || 'Codex reported a failed turn.', details: null } })
-        const output = (turn.items || []).filter((item) => item.type === 'agentMessage' && item.text).at(-1)?.text?.trim() || ''
-        if (!output) return local.finish(jobId, 'unknown', { error: { kind: 'EMPTY_OUTPUT', message: 'Recovery found a completed turn without a final message.', details: null } })
+      if (!turn || turn.status === 'inProgress') {
+        if (identityAmbiguous) return defer('turn_in_progress')
+        return this.withStore((store) => store.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Codex could not prove the stale turn reached a terminal state.', details: null } }))
+      }
+      // The same fold the live worker uses. Recovery can read the controls table for a cancel
+      // request, but it has no way to tell a deadline or a stall from any other interruption.
+      const cancelRequested = this.withStore((store) => store.cancelRequested(jobId))
+      const outcome = foldTurnOutcome(turn, { cancelRequested, acceptedWrite: job.access === 'workspace-write' })
+      return this.withStore((store) => {
+        if (outcome.status !== 'succeeded') return store.finish(jobId, outcome.status, { error: outcome.error })
         let structured = null
         if (job.outputSchema != null) {
-          try {
-            structured = JSON.parse(output)
-            const ajv = new Ajv2020({ allErrors: true, strict: false })
-            const validate = ajv.compile(job.outputSchema)
-            if (!validate(structured)) {
-              return local.finish(jobId, 'failed', { error: { kind: 'SCHEMA_OUTPUT', message: 'Recovered output does not match the requested schema.', details: { errors: validate.errors?.slice(0, 20) || [] } } })
-            }
-          } catch {
-            return local.finish(jobId, 'failed', { error: { kind: 'SCHEMA_OUTPUT', message: 'Recovered output is not valid JSON.', details: null } })
+          try { structured = validateStructured(job.outputSchema, outcome.output) } catch (error) {
+            return store.finish(jobId, 'failed', { error: publicError(error) })
           }
         }
-        return local.finish(jobId, 'succeeded', { output, structured })
-      } finally { local.close() }
+        return store.finish(jobId, 'succeeded', { output: outcome.output, structured })
+      })
     } catch (error) {
-      const local = this.store()
-      try {
-        if (identityAmbiguous) {
-          local.appendEvent(jobId, 'recovery.deferred', { reason: 'worker_identity', error: publicError(error) })
-          return local.requireJob(jobId)
-        }
-        return local.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Flow could not reconcile the stale Codex turn.', details: publicError(error) } })
-      }
-      finally { local.close() }
+      if (identityAmbiguous) return defer('worker_identity', error)
+      if (!(error instanceof DelegationError)) this.withStore((store) => store.recordInternalError(jobId, error))
+      return this.withStore((store) => store.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Flow could not reconcile the stale Codex turn.', details: publicError(error) } }))
     } finally { if (client) await client.stop() }
   }
 }

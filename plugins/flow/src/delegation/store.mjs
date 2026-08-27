@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { ACTIVE_STATES, ALL_STATES, DelegationError, TERMINAL_STATES } from './contracts.mjs'
+import { ACTIVE_STATES, DelegationError, TERMINAL_STATES } from './contracts.mjs'
+
+const SCHEMA_VERSION = 2
+// Terminal jobs are operational history, not an archive. Fourteen days outlives any
+// investigation of a run, including an `unknown` one.
+const RETENTION_DAYS = 14
 
 const now = () => Date.now()
 const json = (value) => value == null ? null : JSON.stringify(value)
@@ -33,6 +38,80 @@ export function defaultStateDir() {
   return join(base, 'flow', 'delegation')
 }
 
+const SCHEMA = `
+  CREATE TABLE jobs (
+    id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    parent_job_id TEXT REFERENCES jobs(id),
+    host TEXT NOT NULL,
+    target TEXT NOT NULL,
+    depth INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    access TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    workspace_key TEXT NOT NULL,
+    model TEXT NOT NULL,
+    effort TEXT NOT NULL,
+    service_tier TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    time_budget_seconds INTEGER NOT NULL,
+    prompt TEXT,
+    output_schema_json TEXT,
+    base_sha TEXT,
+    head_sha TEXT,
+    native_thread_id TEXT,
+    native_turn_id TEXT,
+    turn_accepted_at INTEGER,
+    status TEXT NOT NULL CHECK (status IN ('queued','starting','running','reconciling','succeeded','failed','cancelled','unknown','awaiting_approval')),
+    worker_pid INTEGER,
+    output TEXT,
+    structured_json TEXT,
+    usage_json TEXT,
+    error_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    heartbeat_at INTEGER NOT NULL
+  );
+  CREATE TABLE events (
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (job_id, seq)
+  );
+  CREATE TABLE controls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    handled_at INTEGER
+  );
+  CREATE TABLE leases (
+    workspace_key TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
+  );
+  CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
+  CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
+`
+
+// Failures that happen before a job row exists have nowhere else to land: publicError()
+// hides the cause from the caller by design, so the truth goes here. Best effort, because a
+// logging failure must never become the error the caller sees.
+export function serviceLog(stateDir, message) {
+  if (!stateDir) return
+  try {
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 })
+    appendFileSync(join(stateDir, 'service.log'), `${new Date(now()).toISOString()} ${message}\n`, { mode: 0o600 })
+  } catch {}
+}
+
+export function errorDetail(error) {
+  const message = error?.message ? String(error.message) : String(error)
+  return { message: message.slice(0, 2_000), stack: error?.stack ? String(error.stack).slice(0, 2_000) : null }
+}
+
 function decode(row) {
   if (!row) return null
   return {
@@ -44,7 +123,6 @@ function decode(row) {
     depth: row.depth,
     mode: row.mode,
     access: row.access,
-    delivery: row.delivery,
     cwd: row.cwd,
     workspaceKey: row.workspace_key,
     model: row.model,
@@ -77,78 +155,74 @@ export class JobStore {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 })
     try { chmodSync(stateDir, 0o700) } catch {}
     this.path = join(stateDir, 'jobs.sqlite3')
-    this.db = new DatabaseSync(this.path)
-    try { chmodSync(this.path, 0o600) } catch {}
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;')
-    this.migrate()
+    try {
+      this.db = new DatabaseSync(this.path, { timeout: 5_000 })
+      try { chmodSync(this.path, 0o600) } catch {}
+      this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;')
+      // A journal_mode switch answers SQLITE_BUSY at once and ignores busy_timeout while any
+      // other connection holds the fresh database open. The mode is a durable property of the
+      // file, so losing this race costs nothing: whoever wins sets WAL for everyone.
+      try { this.db.exec('PRAGMA journal_mode=WAL;') } catch {}
+      this.migrate()
+      this.prune()
+    } catch (error) {
+      try { this.db?.close() } catch {}
+      if (error instanceof DelegationError) throw error
+      // A lock that outlives busy_timeout, a corrupt file, a full disk: the sqlite message is
+      // the only diagnosis available, so it survives into the error and the service log.
+      serviceLog(stateDir, `store open failed: ${errorDetail(error).stack || error?.message || error}`)
+      throw new DelegationError('INTERNAL', `The delegation database could not be opened: ${error?.message || error}`)
+    }
   }
 
+  userVersion() { return Number(this.db.prepare('PRAGMA user_version').get().user_version) }
+
   migrate() {
-    const version = this.db.prepare('PRAGMA user_version').get().user_version
-    if (version > 1) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
-    if (version === 1) return
-    this.db.exec(`
-      BEGIN IMMEDIATE;
-      CREATE TABLE jobs (
-        id TEXT PRIMARY KEY,
-        trace_id TEXT NOT NULL,
-        parent_job_id TEXT REFERENCES jobs(id),
-        host TEXT NOT NULL,
-        target TEXT NOT NULL,
-        depth INTEGER NOT NULL,
-        mode TEXT NOT NULL,
-        access TEXT NOT NULL,
-        delivery TEXT NOT NULL,
-        cwd TEXT NOT NULL,
-        workspace_key TEXT NOT NULL,
-        model TEXT NOT NULL,
-        effort TEXT NOT NULL,
-        service_tier TEXT NOT NULL,
-        profile TEXT NOT NULL,
-        time_budget_seconds INTEGER NOT NULL,
-        prompt TEXT,
-        output_schema_json TEXT,
-        base_sha TEXT,
-        head_sha TEXT,
-        native_thread_id TEXT,
-        native_turn_id TEXT,
-        turn_accepted_at INTEGER,
-        status TEXT NOT NULL CHECK (status IN ('queued','starting','running','reconciling','succeeded','failed','cancelled','unknown','awaiting_approval')),
-        worker_pid INTEGER,
-        output TEXT,
-        structured_json TEXT,
-        usage_json TEXT,
-        error_json TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        heartbeat_at INTEGER NOT NULL
-      );
-      CREATE TABLE events (
-        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-        seq INTEGER NOT NULL,
-        type TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (job_id, seq)
-      );
-      CREATE TABLE controls (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-        type TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        handled_at INTEGER
-      );
-      CREATE TABLE leases (
-        workspace_key TEXT PRIMARY KEY,
-        job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
-        heartbeat_at INTEGER NOT NULL
-      );
-      CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
-      CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
-      PRAGMA user_version=1;
-      COMMIT;
-    `)
+    if (this.userVersion() === SCHEMA_VERSION) return
+    // Two processes can race a fresh state dir, so the version is re-read inside the write
+    // lock: the loser sees the winner's tables and returns instead of re-running the DDL.
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const version = this.userVersion()
+      if (version > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
+      if (version < 1) this.db.exec(SCHEMA)
+      if (version === 1) this.db.exec('ALTER TABLE jobs DROP COLUMN delivery; ALTER TABLE leases DROP COLUMN heartbeat_at;')
+      this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw error
+    }
+  }
+
+  // Terminal jobs are pruned on open. updated_at is the terminal timestamp: finish() and
+  // requestCancel() write it with the terminal status and nothing updates a job afterwards.
+  prune() {
+    const cutoff = now() - RETENTION_DAYS * 24 * 60 * 60 * 1_000
+    const states = TERMINAL_STATES.map(() => '?').join(',')
+    const candidate = this.db.prepare(`SELECT 1 FROM jobs WHERE status IN (${states}) AND updated_at < ? LIMIT 1`)
+      .get(...TERMINAL_STATES, cutoff)
+    if (!candidate) return 0
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      // events, controls and leases cascade. jobs.parent_job_id does not: a job survives
+      // while any row still references it, so chains delete leaf-first, one pass per
+      // generation, and no pass can leave a dangling parent reference.
+      const expired = this.db.prepare(`DELETE FROM jobs WHERE status IN (${states}) AND updated_at < ?
+        AND id NOT IN (SELECT parent_job_id FROM jobs WHERE parent_job_id IS NOT NULL)`)
+      let total = 0
+      for (;;) {
+        const changes = Number(expired.run(...TERMINAL_STATES, cutoff).changes)
+        total += changes
+        if (!changes) break
+      }
+      this.db.exec('COMMIT')
+      return total
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      serviceLog(this.stateDir, `prune failed: ${error?.message || error}`)
+      return 0
+    }
   }
 
   close() { this.db.close() }
@@ -157,14 +231,14 @@ export class JobStore {
     const id = randomUUID()
     const at = now()
     this.db.prepare(`INSERT INTO jobs (
-      id, trace_id, parent_job_id, host, target, depth, mode, access, delivery,
+      id, trace_id, parent_job_id, host, target, depth, mode, access,
       cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
       prompt, output_schema_json, base_sha, head_sha, native_thread_id,
       status, created_at, updated_at, heartbeat_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
       .run(id, request.traceId || randomUUID(), request.parentJobId || null,
         request.host, request.target, request.depth, request.mode, request.access,
-        request.delivery, request.cwd, request.workspaceKey, request.model, request.effort,
+        request.cwd, request.workspaceKey, request.model, request.effort,
         request.serviceTier, request.profile, request.timeBudgetSeconds, request.prompt,
         json(request.outputSchema), request.baseSha || null, request.headSha || null,
         request.nativeThreadId || null, at, at, at)
@@ -181,10 +255,16 @@ export class JobStore {
   }
 
   appendEvent(jobId, type, payload = {}) {
-    this.db.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
-      VALUES (?, COALESCE((SELECT MAX(seq) + 1 FROM events WHERE job_id = ?), 1), ?, ?, ?)`)
-      .run(jobId, jobId, type, json(payload), now())
-    return this.db.prepare('SELECT MAX(seq) AS seq FROM events WHERE job_id = ?').get(jobId).seq
+    return this.db.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
+      VALUES (?, COALESCE((SELECT MAX(seq) + 1 FROM events WHERE job_id = ?), 1), ?, ?, ?)
+      RETURNING seq`)
+      .get(jobId, jobId, type, json(payload), now()).seq
+  }
+
+  // publicError() deliberately hides an unexpected failure from the caller. The journal is
+  // 0600 and already carries bounded operational detail, so the real cause is kept here.
+  recordInternalError(jobId, error) {
+    try { this.appendEvent(jobId, 'internal.error', errorDetail(error)) } catch {}
   }
 
   events(jobId, { after = 0, limit = 200 } = {}) {
@@ -208,8 +288,8 @@ export class JobStore {
       if (job.access === 'workspace-write') {
         const held = this.db.prepare('SELECT job_id FROM leases WHERE workspace_key = ?').get(job.workspaceKey)
         if (held) throw new DelegationError('WORKSPACE_BUSY', `Another write job owns this worktree: ${held.job_id}.`)
-        this.db.prepare('INSERT INTO leases (workspace_key, job_id, heartbeat_at) VALUES (?, ?, ?)')
-          .run(job.workspaceKey, id, at)
+        this.db.prepare('INSERT INTO leases (workspace_key, job_id) VALUES (?, ?)')
+          .run(job.workspaceKey, id)
       }
       this.db.prepare(`UPDATE jobs SET status='starting', worker_pid=?, heartbeat_at=?, updated_at=? WHERE id=?`)
         .run(pid, at, at, id)
@@ -220,6 +300,18 @@ export class JobStore {
       this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  // A worker that lost the claim still has to explain why the job will never run, but only
+  // while nothing owns it. The queued guard makes the write a no-op when another worker won
+  // the race, so a report can never overwrite the winner's job.
+  failQueued(id, error) {
+    const at = now()
+    const result = this.db.prepare(`UPDATE jobs SET status='failed', error_json=?, prompt=NULL,
+      updated_at=?, heartbeat_at=? WHERE id=? AND status='queued'`)
+      .run(json(error), at, at, id)
+    if (result.changes) this.appendEvent(id, 'job.failed', { error })
+    return result.changes === 1
   }
 
   setRunning(id, { threadId, turnId = null, accepted = false } = {}) {
@@ -239,11 +331,12 @@ export class JobStore {
       .run(turnId, accepted ? 1 : 0, at, accepted ? 1 : 0, at, at, id)
   }
 
+  // jobs.heartbeat_at carries worker liveness on its own: a lease outlives nothing, because
+  // only finish() releases it.
   heartbeat(id) {
     const at = now()
     this.db.prepare('UPDATE jobs SET heartbeat_at=?, updated_at=? WHERE id=? AND status IN (\'starting\',\'running\',\'reconciling\',\'awaiting_approval\')')
       .run(at, at, id)
-    this.db.prepare('UPDATE leases SET heartbeat_at=? WHERE job_id=?').run(at, id)
   }
 
   finish(id, status, { output = null, structured = null, usage = null, error = null } = {}) {
@@ -346,9 +439,9 @@ export class JobStore {
     return row ? parse(row.payload_json)?.startToken || null : null
   }
 
-  staleActive(before) {
-    const placeholders = ACTIVE_STATES.map(() => '?').join(',')
-    return this.db.prepare(`SELECT * FROM jobs WHERE status IN (${placeholders}) AND heartbeat_at < ?`)
-      .all(...ACTIVE_STATES, before).map(decode)
+  // Handled or not, a queued cancel is what makes an interrupted turn a cancellation rather
+  // than a failure. finish() blanks control payloads but keeps the rows.
+  cancelRequested(jobId) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM controls WHERE job_id=? AND type='cancel' LIMIT 1`).get(jobId))
   }
 }

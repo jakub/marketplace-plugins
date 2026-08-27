@@ -7,7 +7,7 @@ export const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 export const SERVICE_TIERS = ['default']
 export const ACTIVE_STATES = ['queued', 'starting', 'running', 'reconciling']
 export const TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval']
-export const ALL_STATES = [...ACTIVE_STATES, ...TERMINAL_STATES]
+export const MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
 
 export const FINDINGS_SCHEMA = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -67,9 +67,8 @@ export function assertRoute({ host, target, depth }) {
   if (host === 'codex' && target === 'claude') {
     throw new DelegationError('BACKEND_UNAVAILABLE', 'The Claude delegation service is not implemented yet.')
   }
-  if (host !== 'claude' || target !== 'codex') {
-    throw new DelegationError('ROUTE_DENIED', 'This delegation route is not available.')
-  }
+  // Both names are known, they differ, and codex -> claude is already rejected, so the only
+  // route reaching here is claude -> codex.
 }
 
 export function resultEnvelope(job) {

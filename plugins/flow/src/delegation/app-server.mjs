@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { DelegationError } from './contracts.mjs'
+import { VERSION } from './version.mjs'
 
 const APPROVAL_METHODS = new Set([
   'item/commandExecution/requestApproval',
@@ -45,7 +46,7 @@ export class AppServerClient {
     this.child.on('error', (cause) => this.handleClose(null, cause))
     this.child.on('close', (code, signal) => this.handleClose({ code, signal }, null))
     await this.request('initialize', {
-      clientInfo: { name: 'flow-delegation', title: 'Flow delegation', version: '0.21.0' },
+      clientInfo: { name: 'flow-delegation', title: 'Flow delegation', version: VERSION },
       capabilities: {
         experimentalApi: false,
         requestAttestation: false,
@@ -145,20 +146,26 @@ export class AppServerClient {
   respond(id, result) { this.write({ id, result }) }
   respondError(id, code, message) { this.write({ id, error: { code, message } }) }
 
+  // The loser of the race must not hold the event loop open: without the clear, an exit that
+  // wins in 5ms still waits out the full guard timer.
+  waitClose(ms) {
+    let timer
+    return Promise.race([
+      this.closePromise.then(() => true),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), ms) }),
+    ]).finally(() => clearTimeout(timer))
+  }
+
   async stop(graceMs = 2_000) {
     if (!this.child || this.closeInfo) return this.closeInfo
     try { this.child.stdin.end() } catch {}
-    const closed = await Promise.race([
-      this.closePromise.then(() => true),
-      new Promise((resolve) => setTimeout(() => resolve(false), graceMs)),
-    ])
-    if (!closed) {
+    if (!await this.waitClose(graceMs)) {
       try { this.child.kill('SIGTERM') } catch {}
-      await Promise.race([this.closePromise, new Promise((resolve) => setTimeout(resolve, 1_000))])
+      await this.waitClose(1_000)
     }
     if (!this.closeInfo) {
       try { this.child.kill('SIGKILL') } catch {}
-      await Promise.race([this.closePromise, new Promise((resolve) => setTimeout(resolve, 1_000))])
+      await this.waitClose(1_000)
     }
     return this.closeInfo
   }

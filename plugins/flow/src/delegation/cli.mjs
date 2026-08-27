@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { DelegationService } from './service.mjs'
-import { publicError, resultEnvelope } from './contracts.mjs'
+import { DelegationError, HOSTS, publicError, resultEnvelope } from './contracts.mjs'
+import { defaultStateDir, serviceLog } from './store.mjs'
 
 async function stdin() {
   if (process.stdin.isTTY) return ''
@@ -10,7 +11,7 @@ async function stdin() {
   return value
 }
 
-function parse(argv) {
+export function parse(argv) {
   const out = { command: argv[0], flags: {}, positionals: [] }
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]
@@ -28,9 +29,14 @@ const number = (value, fallback) => value == null ? fallback : Number(value)
 
 export async function runCli({ argv, entryPath }) {
   const { command, flags, positionals } = parse(argv)
+  // The host is the caller's own family, and the route rules depend on it. A default would
+  // let a codex-hosted call claim to be claude, so the flag is required on every invocation.
+  if (!HOSTS.includes(flags.host)) {
+    throw new DelegationError('BAD_REQUEST', `--host is required and must be one of: ${HOSTS.join(', ')}.`)
+  }
   const depth = Number(process.env.FLOW_DELEGATION_DEPTH || 0)
   const service = new DelegationService({
-    host: flags.host || 'claude',
+    host: flags.host,
     depth,
     stateDir: flags['state-dir'],
     entryPath,
@@ -40,7 +46,7 @@ export async function runCli({ argv, entryPath }) {
   if (command === 'run') {
     const prompt = await stdin()
     const outputSchema = flags['schema-file'] ? JSON.parse(readFileSync(flags['schema-file'], 'utf8')) : null
-    const job = service.start({
+    const job = await service.start({
       mode: flags.mode || 'task',
       prompt,
       cwd: flags.cwd || process.cwd(),
@@ -68,7 +74,7 @@ export async function runCli({ argv, entryPath }) {
     value = resultEnvelope(service.steer(positionals[0], await stdin()))
   } else if (command === 'continue') {
     const prior = service.get(positionals[0])
-    const job = service.continue(positionals[0], {
+    const job = await service.continue(positionals[0], {
       prompt: await stdin(),
       access: flags.access,
       model: flags.model,
@@ -89,6 +95,13 @@ export async function runCli({ argv, entryPath }) {
 
 export async function safeRunCli(options) {
   try { await runCli(options) } catch (error) {
+    // A CLI failure can happen before any job exists, and publicError() drops the cause on
+    // the floor, so the real one goes to the service log.
+    if (!(error instanceof DelegationError)) {
+      let stateDir = defaultStateDir()
+      try { stateDir = parse(options.argv).flags['state-dir'] || stateDir } catch {}
+      serviceLog(stateDir, `cli failed: ${error?.stack || error?.message || error}`)
+    }
     process.stdout.write(`${JSON.stringify({ status: 'failed', error: publicError(error, 'Delegation CLI failed') })}\n`)
   }
 }

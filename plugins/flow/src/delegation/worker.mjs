@@ -1,7 +1,12 @@
-import Ajv2020 from 'ajv/dist/2020.js'
 import { AppServerClient, isApprovalRequest, sandboxFor } from './app-server.mjs'
-import { assertRoute, DelegationError, publicError } from './contracts.mjs'
-import { JobStore, processStartToken } from './store.mjs'
+import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
+import { foldTurnOutcome, validateStructured } from './outcome.mjs'
+import { JobStore, processStartToken, serviceLog } from './store.mjs'
+
+// The total budget alone cannot catch a wedged App Server: a half-dead socket sends no
+// notifications while the worker keeps heartbeating as healthy. This is the quiet-period
+// ceiling, inherited from the shell transport it replaced.
+const STALL_SECONDS = 420
 
 const textInput = (text) => [{ type: 'text', text, text_elements: [] }]
 
@@ -13,54 +18,55 @@ function developerInstructions(job) {
   return base
 }
 
-function finalMessage(turn, fallback) {
-  const messages = (turn?.items || []).filter((item) => item.type === 'agentMessage' && item.text)
-  return messages.at(-1)?.text || fallback || ''
-}
-
-function validateStructured(schema, text) {
-  let value
-  try { value = JSON.parse(text) } catch {
-    throw new DelegationError('SCHEMA_OUTPUT', 'Codex returned text that is not valid JSON.')
-  }
-  const ajv = new Ajv2020({ allErrors: true, strict: false })
-  let validate
-  try { validate = ajv.compile(schema) } catch {
-    throw new DelegationError('BAD_SCHEMA', 'The output schema is not a valid JSON Schema.')
-  }
-  if (!validate(value)) {
-    throw new DelegationError('SCHEMA_OUTPUT', 'Codex returned JSON that does not match the requested schema.', {
-      errors: validate.errors?.slice(0, 20) || [],
-    })
-  }
-  return value
-}
-
 export async function runWorker({ jobId, stateDir }) {
   const store = new JobStore(stateDir)
   let job
+  try {
+    job = store.claim(jobId, process.pid, processStartToken(process.pid))
+  } catch (error) {
+    // A failed claim means this process never owned the job. Another worker may hold the
+    // lease and the write boundary right now, so the only write allowed is the one that still
+    // finds the job queued: that proves no worker owns it and the caller would otherwise wait
+    // out the stale-heartbeat timeout for a job nobody will ever start.
+    serviceLog(stateDir, `worker could not claim job ${jobId}: ${error.message}`)
+    try { store.failQueued(jobId, publicError(error)) } catch {}
+    store.close()
+    process.exitCode = 1
+    return
+  }
+
   let client
   let heartbeat
   let controlTimer
   let deadlineTimer
   let forcedTimer
+  let stallTimer
   let turnId = null
   let latestMessage = ''
   let usage = null
   let approvalMethod = null
   let transportError = null
   let timedOut = false
+  let stalled = false
   let cancelled = false
   let nativeTurnTerminal = false
+  let onStallFire = null
   let terminalResolve
   const terminal = new Promise((resolve) => { terminalResolve = resolve })
-  const inFlightControls = new Set()
   let controlBusy = false
   let activeControlPoll = Promise.resolve()
   let previewAt = 0
+  const signalHandlers = []
+
+  // Every notification for this job is proof the App Server is still alive, so each one
+  // restarts the quiet-period clock. The timer only exists once the turn is accepted.
+  const resetStall = () => {
+    if (!onStallFire) return
+    if (stallTimer) clearTimeout(stallTimer)
+    stallTimer = setTimeout(onStallFire, STALL_SECONDS * 1_000)
+  }
 
   try {
-    job = store.claim(jobId, process.pid, processStartToken(process.pid))
     assertRoute({ host: job.host, target: job.target, depth: job.depth })
     const preflightCancel = store.pendingControls(jobId).find((control) => control.type === 'cancel')
     if (preflightCancel) {
@@ -70,7 +76,31 @@ export async function runWorker({ jobId, stateDir }) {
     }
     heartbeat = setInterval(() => store.heartbeat(jobId), 1_000)
 
+    // A kill mid-turn skips the cooperative interrupt, so the job is marked before this
+    // process dies: an accepted write with no native terminal proof is unknown, never failed.
+    const onSignal = (signal) => {
+      try {
+        const current = store.getJob(jobId)
+        if (current && !TERMINAL_STATES.includes(current.status)) {
+          const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
+          store.finish(jobId, acceptedWrite && !nativeTurnTerminal ? 'unknown' : 'failed', {
+            error: { kind: 'INTERRUPTED', message: `The delegation worker received ${signal}.`, details: null },
+            usage,
+          })
+        }
+      } catch {}
+      try { client?.child?.stdin?.destroy() } catch {}
+      try { client?.child?.kill('SIGKILL') } catch {}
+      process.exit(1)
+    }
+    for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+      const handler = () => onSignal(signal)
+      signalHandlers.push([signal, handler])
+      process.on(signal, handler)
+    }
+
     const onNotification = (method, params) => {
+      resetStall()
       if (method === 'turn/started') {
         turnId = params.turn?.id || turnId
         if (turnId) store.setNativeTurn(jobId, turnId, { accepted: true })
@@ -170,8 +200,6 @@ export async function runWorker({ jobId, stateDir }) {
     store.appendEvent(jobId, 'turn.accepted', { turnId })
 
     const runControl = async (control) => {
-      if (inFlightControls.has(control.id)) return
-      inFlightControls.add(control.id)
       try {
         if (control.type === 'cancel') {
           cancelled = true
@@ -187,8 +215,6 @@ export async function runWorker({ jobId, stateDir }) {
         }
       } catch (error) {
         store.handleControl(jobId, control.id, { result: 'failed', error: publicError(error) })
-      } finally {
-        inFlightControls.delete(control.id)
       }
     }
     const pollControls = () => {
@@ -200,12 +226,24 @@ export async function runWorker({ jobId, stateDir }) {
     }
     controlTimer = setInterval(pollControls, 250)
 
+    // Deadline and stall share one ending: ask Codex to interrupt, then give the turn a short
+    // grace period before resolving without native proof.
+    const interruptAndForce = async () => {
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+      try { await client.request('turn/interrupt', { threadId, turnId }, 10_000) } catch {}
+      if (!forcedTimer) forcedTimer = setTimeout(() => terminalResolve(null), 5_000)
+    }
     deadlineTimer = setTimeout(async () => {
       timedOut = true
       store.appendEvent(jobId, 'turn.timeout', { seconds: job.timeBudgetSeconds })
-      try { await client.request('turn/interrupt', { threadId, turnId }, 10_000) } catch {}
-      forcedTimer = setTimeout(() => terminalResolve(null), 5_000)
+      await interruptAndForce()
     }, job.timeBudgetSeconds * 1_000)
+    onStallFire = () => {
+      stalled = true
+      store.appendEvent(jobId, 'turn.stalled', { seconds: STALL_SECONDS })
+      void interruptAndForce()
+    }
+    resetStall()
 
     const turn = await terminal
     nativeTurnTerminal = Boolean(turn && turn.status !== 'inProgress')
@@ -216,41 +254,31 @@ export async function runWorker({ jobId, stateDir }) {
         error: { kind: 'APPROVAL_REQUIRED', message: 'Codex requested an approval that Flow denied.', details: { method: approvalMethod } },
         usage,
       })
-    } else if (!turn) {
-      await client.stop()
-      client = null
-      const status = job.access === 'workspace-write' ? 'unknown' : 'failed'
-      store.finish(jobId, status, {
-        error: transportError
-          ? publicError(transportError)
-          : { kind: 'TIMEOUT', message: 'The turn did not confirm a terminal state after interruption.', details: null },
-        usage,
-      })
-    } else if (turn.status === 'interrupted') {
-      store.finish(jobId, cancelled ? 'cancelled' : 'failed', {
-        error: cancelled ? null : { kind: timedOut ? 'TIMEOUT' : 'INTERRUPTED', message: 'Codex interrupted the turn.', details: null },
-        usage,
-      })
-    } else if (turn.status === 'failed') {
-      store.finish(jobId, 'failed', {
-        error: { kind: 'CODEX_TURN', message: turn.error?.message || 'Codex reported a failed turn.', details: null },
-        usage,
-      })
-    } else if (turn.status !== 'completed') {
-      store.finish(jobId, 'unknown', {
-        error: { kind: 'UNKNOWN_TURN', message: `Codex ended with turn status ${turn.status || 'missing'}.`, details: null },
-        usage,
-      })
     } else {
-      const output = finalMessage(turn, latestMessage).trim()
-      if (!output) throw new DelegationError('EMPTY_OUTPUT', 'Codex completed without a final agent message.')
-      const structured = job.outputSchema != null ? validateStructured(job.outputSchema, output) : null
-      store.finish(jobId, 'succeeded', { output, structured, usage, error: null })
+      const outcome = foldTurnOutcome(turn, {
+        cancelRequested: cancelled,
+        deadlineFired: timedOut,
+        stallFired: stalled,
+        acceptedWrite: job.access === 'workspace-write',
+        latestMessage,
+        transportError,
+      })
+      if (!turn) {
+        await client.stop()
+        client = null
+      }
+      if (outcome.status === 'succeeded') {
+        const structured = job.outputSchema != null ? validateStructured(job.outputSchema, outcome.output) : null
+        store.finish(jobId, 'succeeded', { output: outcome.output, structured, usage, error: null })
+      } else {
+        store.finish(jobId, outcome.status, { error: outcome.error, usage })
+      }
     }
   } catch (error) {
     try {
+      if (!(error instanceof DelegationError)) store.recordInternalError(jobId, error)
       const current = store.getJob(jobId)
-      if (current && !['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval'].includes(current.status)) {
+      if (current && !TERMINAL_STATES.includes(current.status)) {
         const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
         const status = approvalMethod ? 'awaiting_approval' : acceptedWrite && !nativeTurnTerminal ? 'unknown' : 'failed'
         if (status === 'unknown' || status === 'awaiting_approval') {
@@ -266,10 +294,12 @@ export async function runWorker({ jobId, stateDir }) {
       }
     } catch {}
   } finally {
+    for (const [signal, handler] of signalHandlers) process.off(signal, handler)
     if (heartbeat) clearInterval(heartbeat)
     if (controlTimer) clearInterval(controlTimer)
     if (deadlineTimer) clearTimeout(deadlineTimer)
     if (forcedTimer) clearTimeout(forcedTimer)
+    if (stallTimer) clearTimeout(stallTimer)
     await activeControlPoll.catch(() => {})
     if (client) await client.stop()
     store.close()
