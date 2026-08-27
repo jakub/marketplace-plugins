@@ -144,6 +144,6 @@ PR descriptions: summary narrative + one-line-per-commit changelog.
 Find the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
 
 ## Gripes
-If the `gripe` plugin is installed, you have a `gripe` tool available. It's just for you, the agent, to make a note of things that go wrong, that annoy you, that just seem weird. Its hooks fire throughout the session, making automatic notes where possible; you're free to invoke it yourself any time you want.
+If the `gripe` plugin is installed, the `gripe` CLI is available through the shell. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself.
 
 </flow-charter>
