@@ -23121,7 +23121,7 @@ function foldTurnOutcome(turn, {
 // src/delegation/store.mjs
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -23218,7 +23218,12 @@ function serviceLog(stateDir, message) {
   if (!stateDir) return;
   try {
     mkdirSync(stateDir, { recursive: true, mode: 448 });
-    appendFileSync(join(stateDir, "service.log"), `${new Date(now()).toISOString()} ${message}
+    const file = join(stateDir, "service.log");
+    try {
+      if (statSync(file).size > 512e3) renameSync(file, `${file}.1`);
+    } catch {
+    }
+    appendFileSync(file, `${new Date(now()).toISOString()} ${message}
 `, { mode: 384 });
   } catch {
   }
@@ -23292,7 +23297,7 @@ var JobStore = class {
       }
       if (error2 instanceof DelegationError) throw error2;
       serviceLog(stateDir, `store open failed: ${errorDetail(error2).stack || error2?.message || error2}`);
-      throw new DelegationError("INTERNAL", `The delegation database could not be opened: ${error2?.message || error2}`);
+      throw new DelegationError("INTERNAL", "The delegation database could not be opened.");
     }
   }
   userVersion() {
@@ -23407,7 +23412,12 @@ var JobStore = class {
   events(jobId2, { after = 0, limit = 200 } = {}) {
     this.requireJob(jobId2);
     return this.db.prepare(`SELECT seq, type, payload_json, created_at FROM events
-      WHERE job_id = ? AND seq > ? ORDER BY seq LIMIT ?`).all(jobId2, after, Math.max(1, Math.min(limit, 1e3))).map((row) => ({ seq: row.seq, type: row.type, payload: parse3(row.payload_json), createdAt: row.created_at }));
+      WHERE job_id = ? AND seq > ? ORDER BY seq LIMIT ?`).all(jobId2, after, Math.max(1, Math.min(limit, 1e3))).map((row) => ({
+      seq: row.seq,
+      type: row.type,
+      payload: row.type === "internal.error" ? { redacted: true } : parse3(row.payload_json),
+      createdAt: row.created_at
+    }));
   }
   claim(id, pid, startToken = null) {
     if (typeof startToken !== "string" || !startToken) {
@@ -23559,7 +23569,7 @@ var JobStore = class {
 
 // src/delegation/workspace.mjs
 import { execFile } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { realpathSync, statSync as statSync2 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -23583,21 +23593,29 @@ function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd = null }
   for (const candidate of candidates) {
     try {
       const path = realpathSync(candidate);
-      if (statSync(path).isDirectory() && !roots.includes(path)) roots.push(path);
+      if (statSync2(path).isDirectory() && !roots.includes(path)) roots.push(path);
     } catch {
     }
   }
   return roots;
 }
 async function sharedGitDirInsideRoots(path, roots) {
-  let commonDir;
   try {
-    commonDir = await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree.");
-    commonDir = realpathSync(commonDir);
+    const commonDir = realpathSync(await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree."));
+    if (!roots.some((root) => isInside(root, commonDir))) return false;
+    const top = realpathSync(await git(path, ["rev-parse", "--show-toplevel"], "not a git worktree."));
+    const listed = await git(path, ["--git-dir", commonDir, "worktree", "list", "--porcelain"], "the worktree list is unavailable.");
+    return listed.split("\n").some((line) => {
+      if (!line.startsWith("worktree ")) return false;
+      try {
+        return realpathSync(line.slice("worktree ".length)) === top;
+      } catch {
+        return false;
+      }
+    });
   } catch {
     return false;
   }
-  return roots.some((root) => isInside(root, commonDir));
 }
 async function canonicalWorkspace(cwd, roots) {
   if (typeof cwd !== "string" || !isAbsolute(cwd)) {
@@ -23606,7 +23624,7 @@ async function canonicalWorkspace(cwd, roots) {
   let canonical;
   try {
     canonical = realpathSync(cwd);
-    if (!statSync(canonical).isDirectory()) throw new Error("not a directory");
+    if (!statSync2(canonical).isDirectory()) throw new Error("not a directory");
   } catch {
     throw new DelegationError("BAD_WORKSPACE", "cwd does not name an existing directory.");
   }
@@ -24262,6 +24280,7 @@ async function runWorker({ jobId: jobId2, stateDir }) {
   let transportError = null;
   let timedOut = false;
   let stalled = false;
+  let interruptReason = null;
   let cancelled = false;
   let nativeTurnTerminal = false;
   let onStallFire = null;
@@ -24274,7 +24293,7 @@ async function runWorker({ jobId: jobId2, stateDir }) {
   let previewAt = 0;
   const signalHandlers = [];
   const resetStall = () => {
-    if (!onStallFire) return;
+    if (!onStallFire || interruptReason) return;
     if (stallTimer) clearTimeout(stallTimer);
     stallTimer = setTimeout(onStallFire, STALL_SECONDS * 1e3);
   };
@@ -24289,6 +24308,14 @@ async function runWorker({ jobId: jobId2, stateDir }) {
     heartbeat = setInterval(() => store.heartbeat(jobId2), 1e3);
     const onSignal = (signal) => {
       try {
+        client?.child?.stdin?.destroy();
+      } catch {
+      }
+      try {
+        client?.child?.kill("SIGKILL");
+      } catch {
+      }
+      try {
         const current = store.getJob(jobId2);
         if (current && !TERMINAL_STATES.includes(current.status)) {
           const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
@@ -24300,11 +24327,7 @@ async function runWorker({ jobId: jobId2, stateDir }) {
       } catch {
       }
       try {
-        client?.child?.stdin?.destroy();
-      } catch {
-      }
-      try {
-        client?.child?.kill("SIGKILL");
+        process.kill(-process.pid, "SIGKILL");
       } catch {
       }
       process.exit(1);
@@ -24436,10 +24459,23 @@ async function runWorker({ jobId: jobId2, stateDir }) {
       });
     };
     controlTimer = setInterval(pollControls, 250);
-    const interruptAndForce = async () => {
+    const interruptAndForce = async (reason) => {
+      if (interruptReason) return;
+      interruptReason = reason;
       if (stallTimer) {
         clearTimeout(stallTimer);
         stallTimer = null;
+      }
+      if (deadlineTimer) {
+        clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+      }
+      if (reason === "deadline") {
+        timedOut = true;
+        store.appendEvent(jobId2, "turn.timeout", { seconds: job.timeBudgetSeconds });
+      } else {
+        stalled = true;
+        store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS });
       }
       try {
         await client.request("turn/interrupt", { threadId, turnId }, 1e4);
@@ -24447,15 +24483,11 @@ async function runWorker({ jobId: jobId2, stateDir }) {
       }
       if (!forcedTimer) forcedTimer = setTimeout(() => terminalResolve(null), 5e3);
     };
-    deadlineTimer = setTimeout(async () => {
-      timedOut = true;
-      store.appendEvent(jobId2, "turn.timeout", { seconds: job.timeBudgetSeconds });
-      await interruptAndForce();
+    deadlineTimer = setTimeout(() => {
+      void interruptAndForce("deadline");
     }, job.timeBudgetSeconds * 1e3);
     onStallFire = () => {
-      stalled = true;
-      store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS });
-      void interruptAndForce();
+      void interruptAndForce("stall");
     };
     resetStall();
     const turn = await terminal2;

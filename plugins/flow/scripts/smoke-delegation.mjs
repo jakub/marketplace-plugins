@@ -365,6 +365,17 @@ try {
   assert.equal(widenedWrite.status, 'failed')
   assert.equal(widenedWrite.error.kind, 'OUTSIDE_ROOTS')
 
+  console.log('redacted internal errors')
+  const redactStore = new JobStore(state('redact'))
+  const redactJob = redactStore.createJob({
+    traceId: 't', host: 'claude', target: 'codex', depth: 0, mode: 'task', access: 'read-only',
+    cwd: repo, workspaceKey: repo, model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default',
+    profile: 'default', timeBudgetSeconds: 30, prompt: 'x', outputSchema: null,
+  })
+  redactStore.recordInternalError(redactJob.id, new TypeError('stack detail stays in the journal'))
+  assert.deepEqual(redactStore.events(redactJob.id).find((event) => event.type === 'internal.error').payload, { redacted: true })
+  redactStore.close()
+
   console.log('rejected requests never reach the job table')
   const noModelState = state('no-model')
   const noModel = cli(['run', '--cwd', repo, '--effort', 'low', '--time-budget-seconds', '30'], { input: 'x', stateDir: noModelState })
@@ -744,6 +755,27 @@ try {
   )
   assert.equal(symlinkEscape.isError, true)
   assert.equal(symlinkEscape.structuredContent.error.kind, 'OUTSIDE_ROOTS')
+  // The roots exception for linked worktrees: a worktree the approved repository registered
+  // is accepted even though it sits outside every client root, while a caller-writable .git
+  // file pointing at the approved repository is not, because the repository never listed it.
+  const linked = join(temp, 'linked-wt')
+  execFileSync('git', ['worktree', 'add', '-q', linked], { cwd: repo })
+  const linkedWrite = await client.callTool(
+    'delegate_to_codex',
+    { mode: 'task', prompt: 'linked worktree', cwd: linked, access: 'workspace-write', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
+    { timeout: 30_000 },
+  )
+  assert.equal(linkedWrite.isError, undefined)
+  assert.equal(linkedWrite.structuredContent.job.status, 'succeeded')
+  const forged = join(temp, 'forged')
+  mkdirSync(forged)
+  writeFileSync(join(forged, '.git'), `gitdir: ${join(repo, '.git')}\n`)
+  const forgedRun = await client.callTool(
+    'delegate_to_codex',
+    { mode: 'task', prompt: 'forged gitfile', cwd: forged, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
+  )
+  assert.equal(forgedRun.isError, true)
+  assert.equal(forgedRun.structuredContent.error.kind, 'OUTSIDE_ROOTS')
   const progress = []
   const mcpResult = await client.callTool(
     'delegate_to_codex',

@@ -34,16 +34,21 @@ export function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd =
 
 // flow's pipeline puts a run worktree beside its repository (git worktree add
 // ../<repo>-issue-N), so it resolves outside every client root even though it belongs to an
-// approved repository. The shared git directory is the proof of that membership: a linked
-// worktree's --git-common-dir points back into the repository it was created from, and an
-// unrelated checkout's points somewhere else.
+// approved repository. Membership takes two proofs: the linked worktree's --git-common-dir
+// must point into an approved root, and the approved repository must list the worktree as
+// one it registered. The pointer alone is not enough, because a .git file is caller-writable
+// and any directory could claim `gitdir: <approved>/.git`.
 async function sharedGitDirInsideRoots(path, roots) {
-  let commonDir
   try {
-    commonDir = await git(path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], 'not a git worktree.')
-    commonDir = realpathSync(commonDir)
+    const commonDir = realpathSync(await git(path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], 'not a git worktree.'))
+    if (!roots.some((root) => isInside(root, commonDir))) return false
+    const top = realpathSync(await git(path, ['rev-parse', '--show-toplevel'], 'not a git worktree.'))
+    const listed = await git(path, ['--git-dir', commonDir, 'worktree', 'list', '--porcelain'], 'the worktree list is unavailable.')
+    return listed.split('\n').some((line) => {
+      if (!line.startsWith('worktree ')) return false
+      try { return realpathSync(line.slice('worktree '.length)) === top } catch { return false }
+    })
   } catch { return false }
-  return roots.some((root) => isInside(root, commonDir))
 }
 
 export async function canonicalWorkspace(cwd, roots) {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, chmodSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -103,7 +103,11 @@ export function serviceLog(stateDir, message) {
   if (!stateDir) return
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 })
-    appendFileSync(join(stateDir, 'service.log'), `${new Date(now()).toISOString()} ${message}\n`, { mode: 0o600 })
+    const file = join(stateDir, 'service.log')
+    // One rotated generation bounds the log at about a megabyte no matter how often a
+    // caller manages to fail: nothing prunes this file otherwise.
+    try { if (statSync(file).size > 512_000) renameSync(file, `${file}.1`) } catch {}
+    appendFileSync(file, `${new Date(now()).toISOString()} ${message}\n`, { mode: 0o600 })
   } catch {}
 }
 
@@ -171,7 +175,9 @@ export class JobStore {
       // A lock that outlives busy_timeout, a corrupt file, a full disk: the sqlite message is
       // the only diagnosis available, so it survives into the error and the service log.
       serviceLog(stateDir, `store open failed: ${errorDetail(error).stack || error?.message || error}`)
-      throw new DelegationError('INTERNAL', `The delegation database could not be opened: ${error?.message || error}`)
+      // publicError() preserves DelegationError messages, so the sqlite detail stays in the
+      // service log only: lock state and filesystem paths are not for the caller.
+      throw new DelegationError('INTERNAL', 'The delegation database could not be opened.')
     }
   }
 
@@ -272,7 +278,15 @@ export class JobStore {
     return this.db.prepare(`SELECT seq, type, payload_json, created_at FROM events
       WHERE job_id = ? AND seq > ? ORDER BY seq LIMIT ?`)
       .all(jobId, after, Math.max(1, Math.min(limit, 1000)))
-      .map((row) => ({ seq: row.seq, type: row.type, payload: parse(row.payload_json), createdAt: row.created_at }))
+      // internal.error payloads carry stacks and paths for the owner reading the database
+      // directly; this method feeds the caller-facing events tool and attached progress,
+      // where they would cross the redaction boundary publicError() maintains.
+      .map((row) => ({
+        seq: row.seq,
+        type: row.type,
+        payload: row.type === 'internal.error' ? { redacted: true } : parse(row.payload_json),
+        createdAt: row.created_at,
+      }))
   }
 
   claim(id, pid, startToken = null) {

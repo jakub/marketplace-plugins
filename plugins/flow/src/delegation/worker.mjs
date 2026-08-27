@@ -48,6 +48,7 @@ export async function runWorker({ jobId, stateDir }) {
   let transportError = null
   let timedOut = false
   let stalled = false
+  let interruptReason = null
   let cancelled = false
   let nativeTurnTerminal = false
   let onStallFire = null
@@ -61,7 +62,7 @@ export async function runWorker({ jobId, stateDir }) {
   // Every notification for this job is proof the App Server is still alive, so each one
   // restarts the quiet-period clock. The timer only exists once the turn is accepted.
   const resetStall = () => {
-    if (!onStallFire) return
+    if (!onStallFire || interruptReason) return
     if (stallTimer) clearTimeout(stallTimer)
     stallTimer = setTimeout(onStallFire, STALL_SECONDS * 1_000)
   }
@@ -76,9 +77,12 @@ export async function runWorker({ jobId, stateDir }) {
     }
     heartbeat = setInterval(() => store.heartbeat(jobId), 1_000)
 
-    // A kill mid-turn skips the cooperative interrupt, so the job is marked before this
-    // process dies: an accepted write with no native terminal proof is unknown, never failed.
+    // A kill mid-turn skips the cooperative interrupt. The child dies BEFORE the job is
+    // marked, because finish() releases the write lease and a writer must never outlive it;
+    // an accepted write with no native terminal proof is unknown, never failed.
     const onSignal = (signal) => {
+      try { client?.child?.stdin?.destroy() } catch {}
+      try { client?.child?.kill('SIGKILL') } catch {}
       try {
         const current = store.getJob(jobId)
         if (current && !TERMINAL_STATES.includes(current.status)) {
@@ -89,8 +93,9 @@ export async function runWorker({ jobId, stateDir }) {
           })
         }
       } catch {}
-      try { client?.child?.stdin?.destroy() } catch {}
-      try { client?.child?.kill('SIGKILL') } catch {}
+      // The worker leads its own process group (spawned detached), so this sweeps any
+      // command subprocess Codex left behind along with this process itself.
+      try { process.kill(-process.pid, 'SIGKILL') } catch {}
       process.exit(1)
     }
     for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
@@ -226,23 +231,27 @@ export async function runWorker({ jobId, stateDir }) {
     }
     controlTimer = setInterval(pollControls, 250)
 
-    // Deadline and stall share one ending: ask Codex to interrupt, then give the turn a short
-    // grace period before resolving without native proof.
-    const interruptAndForce = async () => {
+    // Deadline and stall share one ending: whichever fires first owns the reason, clears
+    // both timers before any await, and only that one sends turn/interrupt. Without the
+    // latch, a stall followed by a slow interrupt let the deadline fire a second interrupt
+    // and the recorded reason depended on response timing.
+    const interruptAndForce = async (reason) => {
+      if (interruptReason) return
+      interruptReason = reason
       if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+      if (deadlineTimer) { clearTimeout(deadlineTimer); deadlineTimer = null }
+      if (reason === 'deadline') {
+        timedOut = true
+        store.appendEvent(jobId, 'turn.timeout', { seconds: job.timeBudgetSeconds })
+      } else {
+        stalled = true
+        store.appendEvent(jobId, 'turn.stalled', { seconds: STALL_SECONDS })
+      }
       try { await client.request('turn/interrupt', { threadId, turnId }, 10_000) } catch {}
       if (!forcedTimer) forcedTimer = setTimeout(() => terminalResolve(null), 5_000)
     }
-    deadlineTimer = setTimeout(async () => {
-      timedOut = true
-      store.appendEvent(jobId, 'turn.timeout', { seconds: job.timeBudgetSeconds })
-      await interruptAndForce()
-    }, job.timeBudgetSeconds * 1_000)
-    onStallFire = () => {
-      stalled = true
-      store.appendEvent(jobId, 'turn.stalled', { seconds: STALL_SECONDS })
-      void interruptAndForce()
-    }
+    deadlineTimer = setTimeout(() => { void interruptAndForce('deadline') }, job.timeBudgetSeconds * 1_000)
+    onStallFire = () => { void interruptAndForce('stall') }
     resetStall()
 
     const turn = await terminal
