@@ -87,24 +87,35 @@ export function fingerprint(toolName, text) {
 // work onto one churn key: every `sh -c "..."` became "sh", every `git -C <wt> ...`
 // became "git", and a Codex `apply_patch` envelope produced no target at all. Unwrap
 // the observed shapes; anything else keeps the plain leading-bare-words walk.
-const SHELL_WRAP = /^(?:sh|bash|zsh|dash)\s+-l?c\s+(['"]?)([\s\S]+?)\1\s*$/
-const GIT_GLOBALS = /^git((?:\s+(?:-C|-c)\s+\S+|\s+(?:--no-pager|-P|-p))+)\s+/
+// Quoted and bare -c scripts are separate alternatives so trailing argv words after a
+// quoted script do not defeat the match, and git's -C/-c values may be quoted paths
+// with spaces. Both the inspected length and the unwrap depth are bounded: this runs
+// on request-controlled input inside a hook timeout.
+const SHELL_WRAP_QUOTED = /^(?:sh|bash|zsh|dash)\s+-l?c\s+(['"])([\s\S]*?)\1(?:\s|$)/
+const SHELL_WRAP_BARE = /^(?:sh|bash|zsh|dash)\s+-l?c\s+([\s\S]+)$/
+const GIT_GLOBALS = /^git((?:\s+(?:-C|-c)\s+(?:"[^"]*"|'[^']*'|\S+)|\s+(?:--no-pager|-P|-p))+)\s+/
 const PATCH_TARGET = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/m
+const MAX_COMMAND_SCAN = 4096
+const MAX_UNWRAP_DEPTH = 3
 
 /** What a tool call was aimed at, for repetition detection and observed-row templates. */
 export function target(toolName, input) {
   if (!input || typeof input !== 'object') return null
   if (input.file_path) return String(input.file_path).slice(0, MAX_TARGET_LEN)
   if (input.command) {
-    let cmd = String(input.command).trim()
+    let cmd = String(input.command).slice(0, MAX_COMMAND_SCAN).trim()
     // Codex apply_patch sends the whole envelope as the command; the fight is with the
     // first file it touches, not with the patch syntax.
     if (cmd.startsWith('*** Begin Patch')) {
       const patch = cmd.match(PATCH_TARGET)
       return patch ? patch[1].trim().slice(0, MAX_TARGET_LEN) : null
     }
-    let wrapped
-    while ((wrapped = cmd.match(SHELL_WRAP))) cmd = wrapped[2].trim()
+    for (let depth = 0; depth < MAX_UNWRAP_DEPTH; depth++) {
+      const quoted = cmd.match(SHELL_WRAP_QUOTED)
+      const inner = quoted ? quoted[2] : cmd.match(SHELL_WRAP_BARE)?.[1]
+      if (inner === undefined) break
+      cmd = inner.trim()
+    }
     cmd = cmd.replace(GIT_GLOBALS, 'git ')
     // Leading bare words only, stopping at the first argument. `gh run watch 123` and
     // `gh run watch --exit-status` are the same fight; `gh run list` is a different one,

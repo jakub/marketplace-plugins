@@ -53,9 +53,16 @@ try {
   // unrelated work onto one churn key, and apply_patch must aim at its first file.
   assert.equal(target('Bash', { command: 'sh -c "exit 7"' }), 'exit')
   assert.equal(target('Bash', { command: "bash -lc 'gh run watch 123'" }), 'gh run watch')
+  assert.equal(target('Bash', { command: 'sh -c "gh pr view 9" argv0' }), 'gh pr view')
   assert.equal(target('Bash', { command: 'git -C /some/worktree diff --stat' }), 'git diff')
+  assert.equal(target('Bash', { command: 'git -C "/tmp/work tree" status' }), 'git status')
   assert.equal(target('Bash', { command: 'git status' }), 'git status')
   assert.equal(target('Bash', { command: 'gh run list' }), 'gh run list')
+  // Bounded work on hostile input: deep wrapper nesting must return fast, not spin.
+  const nested = `${'sh -c '.repeat(20000)}true`
+  const started = process.hrtime.bigint()
+  target('Bash', { command: nested })
+  assert.ok(process.hrtime.bigint() - started < 500_000_000n, 'target() spent >500ms on nested wrappers')
   assert.equal(
     target('apply_patch', { command: '*** Begin Patch\n*** Update File: src/x.mjs\n@@\n-a\n+b\n*** End Patch' }),
     'src/x.mjs',
