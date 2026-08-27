@@ -25,7 +25,7 @@ Per repo, run sections 3 and 4 of `${CLAUDE_PLUGIN_ROOT}/skills/flow/drift-audit
 - **Branches**: `git -C <repo> branch --format='%(refname:short) %(upstream:track)'` cross-checked with `gh pr list --state all --json number,state,headRefName`. Act under permission 2; report the rest.
 - **Known flakes**: each line of `.github/known-flakes.txt` (if present) must name a check that appears in the last 20 runs (`gh run list --limit 20 --json name,conclusion` plus `gh run view <id> --json jobs` where needed). Report dead entries.
 
-For the marketplace repo (the one whose `.claude-plugin/marketplace.json` names marketplace `jakub`), also run drift-audit section 5 (charter version skew, charter halves under 9,000 chars, stale as-of facts, the codex smoke script without `CODEX_LIVE`).
+For the marketplace repo (the one whose `.claude-plugin/marketplace.json` names marketplace `jakub`), also run drift-audit section 5 (charter version skew, charter halves under 9,000 chars, stale as-of facts, and `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-delegation.mjs`, which runs against a fake App Server and so needs no gate variable, no Codex, and no installed dependencies). Section 5 also lists `smoke-bundle-drift.mjs`, which only works in a dev checkout with dependencies installed; it is not on this job's allowlist and is not yours to run. Say so in the report rather than reporting section 5 clean on it.
 
 ## Report format
 

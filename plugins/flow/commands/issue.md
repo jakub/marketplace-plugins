@@ -100,10 +100,9 @@ Sol is flat-rate on the subscription, which turns every pattern below from "can 
 - **Red team**: sol tries to break Claude's implementation and vice versa. Route demonstrable claims through the fast lane (§2, invariant 2): "prove it or drop it" beats prose severity debates.
 - **Bulk tier**: luna for mechanical sweeps (comment rot, evidence collection, transcript reads); luna at max effort is the cheap-depth combo. Never the decorrelation seat itself - that needs intelligence.
 
-Call `delegate_to_codex` directly. Use attached delivery for normal seats so MCP progress keeps
-the call visible. Use detached delivery only when the run must outlive the current tool call,
-then retain the job ID and read it with `delegation_status`, `delegation_events`, and
-`delegation_result`. Reviews use `mode: "adversarial-review"`, an immutable `base`, and
+Use attached delivery for normal seats so MCP progress keeps the call visible. Use detached
+delivery only when the run must outlive the current tool call, then retain the job ID and read
+it with `delegation_status`, `delegation_events`, and `delegation_result`. Reviews use `mode: "adversarial-review"`, an immutable `base`, and
 `access: "read-only"`. Treat `failed`, `unknown`, `cancelled`, and `awaiting_approval` as an
 unavailable seat, never as a clean review. The server validates review findings through a
 strict schema, so do not parse review prose.

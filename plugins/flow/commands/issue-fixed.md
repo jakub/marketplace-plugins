@@ -15,7 +15,7 @@ You are the CONDUCTOR, not the implementer. You do five things: pre-flight, clai
 The argument must be an issue number, optionally followed by seat overrides. Abort with usage if the first token isn't a positive integer.
 
 - `--impl-model <m>` / `--impl-effort <e>` override the implementer seat. By default the workflow routes off the plan's difficulty: `mechanical` gets sonnet/medium, `standard` gets opus/medium, `hard` gets opus/xhigh. Note this ladder is the deprecated script's; `/flow:issue` routes `standard` to opus/high. A seat that refuses or dies re-runs one rung UP, or on the routed model if an override put a different one in.
-- `--codex-model <m>` / `--codex-effort <e>` override both Codex seats, the design leg and the adversarial review. Both seats default to `gpt-5.6-sol` at `high`, stated explicitly on every call. The service tier is always `default`.
+- `--codex-model <m>` / `--codex-effort <e>` override both Codex seats, the design leg and the adversarial review. Both seats default to `gpt-5.6-sol` at `high`, stated explicitly on every call.
 
 ## Core principles
 

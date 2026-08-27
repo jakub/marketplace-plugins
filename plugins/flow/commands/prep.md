@@ -35,8 +35,8 @@ No issue is created yet - that happens at finalize, after the design survives th
 ## 2. Scout
 
 Delegate codebase reviews to scoped agents. Use `Explore` on Sonnet for the repository sweep,
-because searching needs eyes rather than judgment. Call `delegate_to_codex` directly for the
-outside perspective. Do not wrap the MCP call in an agent.
+because searching needs eyes rather than judgment. Use `delegate_to_codex` for the outside
+perspective.
 
 Tell every subagent to keep what it sends back tight: paths, and the seams that matter. A whole grill runs in this session afterwards, so your remaining context is the budget - conclusions come home, file dumps don't.
 
