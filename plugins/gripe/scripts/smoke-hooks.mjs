@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { captureContext } from '../lib/context.mjs'
+import { target } from '../lib/gate.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const stateHome = mkdtempSync(join(tmpdir(), 'gripe-hooks-'))
@@ -48,6 +49,18 @@ function runAsync(name, input) {
 }
 
 try {
+  // Target extraction: wrapper shells and git's value-taking globals must not collapse
+  // unrelated work onto one churn key, and apply_patch must aim at its first file.
+  assert.equal(target('Bash', { command: 'sh -c "exit 7"' }), 'exit')
+  assert.equal(target('Bash', { command: "bash -lc 'gh run watch 123'" }), 'gh run watch')
+  assert.equal(target('Bash', { command: 'git -C /some/worktree diff --stat' }), 'git diff')
+  assert.equal(target('Bash', { command: 'git status' }), 'git status')
+  assert.equal(target('Bash', { command: 'gh run list' }), 'gh run list')
+  assert.equal(
+    target('apply_patch', { command: '*** Begin Patch\n*** Update File: src/x.mjs\n@@\n-a\n+b\n*** End Patch' }),
+    'src/x.mjs',
+  )
+
   const previousClaudeId = process.env.CLAUDE_CODE_SESSION_ID
   const previousCodexId = process.env.CODEX_SESSION_ID
   delete process.env.CLAUDE_CODE_SESSION_ID
@@ -92,7 +105,9 @@ try {
     session_id: 'codex-checkpoint', turn_id: 'turn-2', hook_event_name: 'Stop',
   })
   assert.equal(checkpoint?.decision, 'block')
-  assert.match(checkpoint.reason, /was aimed at .* 15 times/)
+  // The fixture command is `sh -c "exit 7"`; the citation must name the unwrapped
+  // inner command, not the wrapper shell.
+  assert.match(checkpoint.reason, /was aimed at "exit" 15 times/)
   assert.doesNotMatch(checkpoint.reason, /failed 15 times/)
   assert.equal(run('stop-checkpoint-codex.mjs', {
     session_id: 'codex-checkpoint', turn_id: 'turn-2', hook_event_name: 'Stop',
