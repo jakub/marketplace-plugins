@@ -49,9 +49,11 @@ export function publishReason(command) {
   // Claude guard: simple quoted literals are removed before policy sees the command.
   // A backslash continuation is the same command, and the `&` inside a fd redirect is
   // not the background separator - `npm publish \<newline> --dry-run` and
-  // `npm publish 2>&1 --dry-run` must each keep their own exemption.
+  // `npm publish 2>&1 --dry-run` must each keep their own exemption. Only an odd run
+  // of backslashes escapes the newline: after `\\` the newline still separates
+  // commands, so joining there would let a dry-run segment exempt a real publish.
   const bare = String(command)
-    .replace(/\\\r?\n/g, ' ')
+    .replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
     .replace(/'[^']*'/g, ' ')
     .replace(/"[^"]*"/g, ' ')
     .replace(/\d*>&\d*|&>>?/g, ' ')
