@@ -130,7 +130,8 @@ export function observeToolResult(state, { toolName, toolId, toolInput, failureT
     state.failures[fp] = seen
   }
 
-  // Not capped here: every write path ends in saveCheckpointState, which caps once.
+  // Not capped per call. Claude's scanner caps once per scan before the note is
+  // evaluated, and saveCheckpointState caps at persist, so every path stays bounded.
   return state
 }
 

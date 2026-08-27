@@ -21,9 +21,9 @@
 // so the agent can act on it without the turn being marked as failed.
 
 import { open } from 'node:fs/promises'
-import { fingerprint, loadGate } from '../../lib/gate.mjs'
+import { MAX_COUNTER_KEYS, capKeys, fingerprint, loadGate } from '../../lib/gate.mjs'
 import {
-  MAX_SCAN_BYTES, buildCheckpointNote, freshCheckpointState,
+  MAX_SCAN_BYTES, MAX_TOOL_NAMES, buildCheckpointNote, freshCheckpointState,
   loadCheckpointState, observeToolResult, saveCheckpointState,
 } from '../../lib/checkpoint.mjs'
 import { safeId } from '../../lib/context.mjs'
@@ -87,7 +87,11 @@ async function scanNew(path, state) {
       }
     }
 
-    // Every map is capped once, at save time, which bounds the state file.
+    // Cap before the caller builds the note, so evaluation and the persisted state see
+    // the same bounded evidence set; saveCheckpointState caps again defensively.
+    capKeys(state.toolNames, MAX_TOOL_NAMES)
+    capKeys(state.failures, MAX_COUNTER_KEYS)
+    capKeys(state.churn, MAX_COUNTER_KEYS)
     return state
   } catch {
     return state
