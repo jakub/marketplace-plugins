@@ -200,8 +200,8 @@ console.log('codex seat overrides (luna/max, explicit pluginRoot)')
   check(review && /--mode adversarial-review/.test(review.prompt) && /--effort max/.test(review.prompt), 'adversarial leg uses the service with the effort override')
   check(review && /service already validates every finding/.test(review.prompt), 'review findings use the service schema without prose parsing')
   for (const [name, c] of [['design', design], ['review', review]]) {
-    check(c && /timeout parameter set to 600000/.test(c.prompt) && /--time-budget-seconds 540/.test(c.prompt),
-      `${name} leg sizes the Bash timeout against the worker's 540s model budget`)
+    check(c && /timeout parameter set to 600000/.test(c.prompt) && /--time-budget-seconds 480/.test(c.prompt),
+      `${name} leg sizes the Bash timeout against the worker's 480s model budget`)
   }
   const lensT = calls.find((c) => c.label === 'lens:tests')
   check(lensT && /--model gpt-5\.6-sol/.test(lensT.prompt) && /--effort high/.test(lensT.prompt), 'lens seats stay pinned under --codex-* overrides')

@@ -324,8 +324,10 @@ ${A.contextPack}
 
 Propose ONE concrete approach. Flag deviations from existing patterns and any ambiguity the issue + code cannot resolve.`
 
-const codexDesignPrompt = `Run EXACTLY this through the Bash tool with its timeout parameter set to 600000. The durable delegation worker holds the 540-second model budget and prints one result envelope:
-${DELEGATION_LOCATE} && node "$DELEGATE" cli run --host claude --mode task --cwd "${WT}" --access read-only --time-budget-seconds 540${codexTuning} <<'PROMPT'
+// 480s of model budget plus the worst-case startup and teardown outside it (initialize 20s,
+// thread/start 30s, turn/start 30s, interrupt 10s, 5s grace) stays under the 600s Bash cap.
+const codexDesignPrompt = `Run EXACTLY this through the Bash tool with its timeout parameter set to 600000. The durable delegation worker holds the 480-second model budget and prints one result envelope:
+${DELEGATION_LOCATE} && node "$DELEGATE" cli run --host claude --mode task --cwd "${WT}" --access read-only --time-budget-seconds 480${codexTuning} <<'PROMPT'
 You are designing feature architecture for issue #${A.issueNumber} in ${WT}.
 ${A.contextPack}
 Explore the referenced paths and the code they lead to before designing. Propose ONE concrete approach:
@@ -379,9 +381,10 @@ On failure: fix in atomic commits and re-run (max a few rounds), then report.
 ${transientRule}`
 
 // Every Codex review seat shares one CLI command and one result contract.
-const codexBashNote = `Run EXACTLY this through the Bash tool with its timeout parameter set to 600000. The durable delegation worker holds the 540-second model budget and prints one result envelope:`
+// Same arithmetic as the design seat: 480 + ~95s of startup and teardown < the 600s Bash cap.
+const codexBashNote = `Run EXACTLY this through the Bash tool with its timeout parameter set to 600000. The durable delegation worker holds the 480-second model budget and prints one result envelope:`
 const codexReviewCmd = ({ model = CODEX_MODEL, effort = CODEX_EFFORT } = {}) =>
-  `${DELEGATION_LOCATE} && node "$DELEGATE" cli run --host claude --mode adversarial-review --cwd "${WT}" --access read-only --base ${BASE} --time-budget-seconds 540 --effort ${effort} --model ${model}`
+  `${DELEGATION_LOCATE} && node "$DELEGATE" cli run --host claude --mode adversarial-review --cwd "${WT}" --access read-only --base ${BASE} --time-budget-seconds 480 --effort ${effort} --model ${model}`
 const codexEnvelopeRules = `.status "succeeded" → return .findings without reinterpreting them. The service already validates every finding against the workflow-compatible schema. An empty array is a clean review.
 Any other status, or a command failure, returns exactly one finding: severity "low",
 title "CODEX_UNAVAILABLE: <error.kind> - <one-line reason>" (kind UNKNOWN when there is no
