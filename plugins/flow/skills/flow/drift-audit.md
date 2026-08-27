@@ -90,9 +90,9 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
   version-skew bullet above is what tells you whether those are the same file.
 - Facts with `as-of` dates older than a quarter (model pricing, codex CLI surface):
   flag for re-verification.
-- `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-codex-exec.mjs` passes (add `CODEX_LIVE=1` when codex
-  auth is available) - the transport's encoded CLI facts (model catalog, effort surface,
-  service-tier fail-open behavior, JSONL event shapes) drift with codex releases.
+- `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-delegation.mjs` passes. The smoke test uses a local
+  fake App Server. Run a separate live Claude-to-Codex call when authentication or protocol
+  compatibility may have changed.
 
 ## Output format
 

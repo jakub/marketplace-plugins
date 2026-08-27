@@ -39,6 +39,11 @@ Policy modules never emit a hook event name. Adapters never reimplement a policy
 Registration files contain paths, matchers, timeouts, and context limits, not business
 logic.
 
+Cross-family model calls use a related adapter shape, but they are not hooks. Flow's Claude
+manifest starts a local MCP server, while its shared job service owns route checks, state,
+events, and recovery. A Codex App Server worker is the Phase 1 backend. See
+[`plugins/flow/docs/DELEGATION.md`](../plugins/flow/docs/DELEGATION.md) for that contract.
+
 ## Implemented mapping
 
 | Behavior | Claude Code | Codex | Shared core |
@@ -134,6 +139,7 @@ The adapters are ordinary stdin/stdout programs and can be tested from a working
 
 ```bash
 node scripts/smoke-plugin-manifests.mjs
+node plugins/flow/scripts/smoke-delegation.mjs
 node plugins/flow/scripts/smoke-codex-hooks.mjs
 node plugins/gripe/scripts/smoke-hooks.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs

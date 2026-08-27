@@ -42,7 +42,7 @@ const FABRIC = {
 // args (passed by /flow:issue-fixed after pre-flight + claim + worktree creation):
 //   { issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, worktree,
 //     branch, base, externalReviewers?, implModel?, implEffort?, envNote?,
-//     codexModel?, codexEffort?, codexFast?, pluginRoot?, evidencePublic? }
+//     codexModel?, codexEffort?, pluginRoot?, evidencePublic? }
 // evidencePublic is the `evidence-public` label as a boolean, resolved by the conductor from
 // the labels it already read at pre-flight. It is a LOOKUP, never a judgment: the ledger is
 // forbidden from deciding visibility, and absent means private.
@@ -66,17 +66,9 @@ const ENV_NOTE = sentinel(A.envNote)
   ? `\nEnvironment note (hooks/tests need this - e.g. exports required by pre-push hooks): ${sentinel(A.envNote)}`
   : ''
 
-// Codex legs run on the codex-exec transport that ships in THIS plugin, so no external
-// cache path can silently break it. Seat overrides are validated here so a typo degrades
-// to the default, visibly, instead of burning the leg on a USAGE envelope. pluginRoot
-// arrives from the conductor's ${CLAUDE_PLUGIN_ROOT}; an uninterpolated literal still
-// contains '$' - treat as unset and fall back to the same-plugin glob (if this workflow
-// runs, flow is installed).
-// Seat defaults are stated HERE, not inherited. `~/.codex/config.toml` is mutable state that
-// the Codex TUI rewrites with the user's interactive picks, so an omitted flag would silently
-// couple this run's review strength to an unrelated session. The transport pins the same
-// triple as a backstop; this layer states the workflow's intent so the shell command is
-// auditable in the journal.
+// The deprecated workflow reaches the same durable service as the MCP tools through the
+// bundle's CLI mode. It does not keep a second Codex transport. Seat defaults are stated here,
+// not inherited from mutable Codex configuration.
 const CODEX_DEFAULT_MODEL = 'gpt-5.6-sol'
 const CODEX_DEFAULT_EFFORT = 'high'
 const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -90,14 +82,13 @@ const codexModelReq = sentinel(A.codexModel)
 const codexModelOk = /^[a-z0-9][a-z0-9.-]*$/.test(codexModelReq) ? codexModelReq : ''
 if (codexModelReq && !codexModelOk) log(`codexModel '${codexModelReq}' has an implausible shape - ignored, seat default applies`)
 const CODEX_MODEL = codexModelOk || CODEX_DEFAULT_MODEL
-const CODEX_FAST = A.codexFast === true || A.codexFast === 'true'
 const EVIDENCE_PUBLIC = A.evidencePublic === true || A.evidencePublic === 'true'
 const PLUGIN_ROOT = (A.pluginRoot || '').includes('$') ? '' : sentinel(A.pluginRoot)
-const CODEX_LOCATE = PLUGIN_ROOT
-  ? `CODEX="${PLUGIN_ROOT}/scripts/codex-exec.mjs"`
-  : `CODEX=$(ls ~/.claude/plugins/cache/*/flow/*/scripts/codex-exec.mjs 2>/dev/null | sort -V | tail -1)`
-const codexTuning = ` --model ${CODEX_MODEL}${CODEX_FAST ? ' --fast' : ''}`
-log(`codex seats: model=${CODEX_MODEL}${codexModelOk ? ' (override)' : ''} effort=${CODEX_EFFORT}${codexEffortOk ? ' (override)' : ''} fast=${CODEX_FAST}`)
+const DELEGATION_LOCATE = PLUGIN_ROOT
+  ? `DELEGATE="${PLUGIN_ROOT}/dist/delegation.mjs"`
+  : `DELEGATE=$(ls ~/.claude/plugins/cache/*/flow/*/dist/delegation.mjs 2>/dev/null | sort -V | tail -1)`
+const codexTuning = ` --model ${CODEX_MODEL} --effort ${CODEX_EFFORT}`
+log(`codex seats: model=${CODEX_MODEL}${codexModelOk ? ' (override)' : ''} effort=${CODEX_EFFORT}${codexEffortOk ? ' (override)' : ''} tier=default`)
 
 // ── schemas ─────────────────────────────────────────────────────────────────
 const SIZE = {
@@ -333,17 +324,17 @@ ${A.contextPack}
 
 Propose ONE concrete approach. Flag deviations from existing patterns and any ambiguity the issue + code cannot resolve.`
 
-const codexDesignPrompt = `Run EXACTLY this - through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this leg would falsely read as unavailable) - then handle the single JSON envelope it prints on stdout:
-${CODEX_LOCATE} && node "$CODEX" task --cwd "${WT}" --effort ${CODEX_EFFORT} --timeout-secs 540${codexTuning} <<'PROMPT'
+const codexDesignPrompt = `Run EXACTLY this through the Bash tool with its timeout parameter set to 600000. The durable delegation worker holds the 540-second model budget and prints one result envelope:
+${DELEGATION_LOCATE} && node "$DELEGATE" cli run --host claude --mode task --cwd "${WT}" --access read-only --time-budget-seconds 540${codexTuning} <<'PROMPT'
 You are designing feature architecture for issue #${A.issueNumber} in ${WT}.
 ${A.contextPack}
 Explore the referenced paths and the code they lead to before designing. Propose ONE concrete approach:
 files to create/modify, key type/module decisions, data flow, error handling, test strategy.
 Flag risks and pattern deviations. Long-term maintainability focus. Read-only - write NO files.
 PROMPT
-.ok true → return .output verbatim as your "approach" (fill the other fields from it).
-.ok false, or the command itself fails for ANY reason (transport not found, node error,
-unparseable stdout): set approach to exactly "CODEX_UNAVAILABLE: <error.kind> - <one-line reason>"
+.status "succeeded" → return .output verbatim as your "approach" (fill the other fields from it).
+Any other status, or a command failure: set approach to exactly
+"CODEX_UNAVAILABLE: <error.kind> - <one-line reason>"
 (kind UNKNOWN when there is no envelope) and leave every other field empty - never fill the
 schema with a design codex did not write.`
 
@@ -387,24 +378,14 @@ Detect and run the project's lint+test commands (Rust: \`cargo clippy --workspac
 On failure: fix in atomic commits and re-run (max a few rounds), then report.
 ${transientRule}`
 
-// Every codex review seat (the fabric's adversarial leg AND the post-push lenses) shares
-// one command builder and one envelope contract - if a mapping rule appears twice, one
-// copy is a bug.
-const codexBashNote = `Run EXACTLY this - through the Bash tool with its timeout parameter set to 600000 (the transport holds a 540s total deadline inside that; the Bash default of 120s would kill it mid-run and this seat would falsely read as unavailable) - then handle the single JSON envelope it prints on stdout:`
-const codexReviewCmd = ({ model = CODEX_MODEL, effort = CODEX_EFFORT, fast = CODEX_FAST } = {}) =>
-  `${CODEX_LOCATE} && node "$CODEX" adversarial-review --cwd "${WT}" --base ${BASE} --timeout-secs 540 --effort ${effort} --model ${model}${fast ? ' --fast' : ''}`
-const codexEnvelopeRules = `.ok true → map .findings[] into the findings schema MECHANICALLY - field transcription, not
-reinterpretation: severity→severity (same enum), title→title, file→file, line→line,
-detail = detail plus " Recommendation: <recommendation>" when non-empty, systemic=false
-unless the finding is genuinely cross-crate-refactor scale, confidence = 55 (codex findings
-arrive inferred from reading, unverified by execution). Empty .findings → empty findings.
-If .fast.requested is true and .fast.applied is false, ADD one finding: severity "low",
-title "CODEX_FAST_DEGRADED", file "", line 0, detail = the envelope's fast/error context,
-systemic false, confidence 100 - the workflow logs and drops it; it is observability, not review signal.
-.ok false, or the command itself fails for ANY reason (transport not found, node error,
-unparseable stdout): return exactly one finding: severity "low",
+// Every Codex review seat shares one CLI command and one result contract.
+const codexBashNote = `Run EXACTLY this through the Bash tool with its timeout parameter set to 600000. The durable delegation worker holds the 540-second model budget and prints one result envelope:`
+const codexReviewCmd = ({ model = CODEX_MODEL, effort = CODEX_EFFORT } = {}) =>
+  `${DELEGATION_LOCATE} && node "$DELEGATE" cli run --host claude --mode adversarial-review --cwd "${WT}" --access read-only --base ${BASE} --time-budget-seconds 540 --effort ${effort} --model ${model}`
+const codexEnvelopeRules = `.status "succeeded" → return .findings without reinterpreting them. The service already validates every finding against the workflow-compatible schema. An empty array is a clean review.
+Any other status, or a command failure, returns exactly one finding: severity "low",
 title "CODEX_UNAVAILABLE: <error.kind> - <one-line reason>" (kind UNKNOWN when there is no
-envelope), file "", line 0, detail = the envelope's error.detail or the raw failure,
+envelope), file "", line 0, detail = the envelope's error.message or the raw failure,
 systemic false, confidence 100 - an errored review must be visible as unavailable, never as
 a clean pass.`
 
@@ -479,12 +460,11 @@ ${here}${ENV_NOTE}
 ${transientRule}
 Report prNumber, prUrl, rebased, conflict, headPushed, closesLinked.`
 
-// Post-push lenses run on the codex transport - the complementary sweep is cross-model,
+// Post-push lenses run through the durable Codex service. The complementary sweep is cross-model,
 // not opus re-reading its own family's diff. sol/high holds the judgment-heavy lenses;
 // comments is the most mechanical of the four, so it takes luna/max (the cheap-depth seat,
 // framework §2 - sanctioned here precisely because it is NOT the decorrelation seat).
-// Seats are pinned: --codex-model/--codex-effort tune the fabric seats only; --codex-fast
-// passes through.
+// Seats are pinned: --codex-model/--codex-effort tune the fabric seats only.
 const LENS_SEATS = {
   tests: { model: 'gpt-5.6-sol', effort: 'high' },
   'silent-failures': { model: 'gpt-5.6-sol', effort: 'high' },
@@ -854,11 +834,10 @@ if (secIdx !== -1 && !rawReviews[secIdx]) {
 const reviews = keepNamed(fabric.reviews, rawReviews, 'review')
 const acCheck = (await salvageableAgent(acCheckPrompt(plan), { label: 'ac-check', phase: 'Review', model: 'opus', effort: 'xhigh', schema: AC_CHECK }))
   || { criteria: [], scopeCreep: [], unavailable: true }
-// CODEX_* marker findings are observability, not review signal - log and drop.
+// CODEX_UNAVAILABLE marker findings are observability, not review signal. Log and drop them.
 const dropCodexMarker = (fs) => fs.filter((f) => {
   const t = typeof f.title === 'string' ? f.title : ''
   if (t.startsWith('CODEX_UNAVAILABLE')) { log(`codex review unavailable (${clip(f.detail || t, 120)}) - no cross-model signal this pass`); return false }
-  if (t.startsWith('CODEX_FAST_DEGRADED')) { log('codex fast tier silently dropped by the server - the review ran, at standard tier'); return false }
   return true
 })
 // What actually looked at this diff. Configured vs delivered are different numbers - a seat

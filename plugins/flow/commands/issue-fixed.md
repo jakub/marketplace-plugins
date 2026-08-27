@@ -1,6 +1,6 @@
 ---
 description: DEPRECATED - the fixed-pipeline predecessor of /flow:issue, conductor for workflows/issue-fixed.mjs. Kept as a fallback and parts library; run only when explicitly invoked.
-argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh] [--codex-model <m>] [--codex-effort minimal|low|medium|high|xhigh|max] [--codex-fast]
+argument-hint: <issue-number> [--impl-model sonnet|opus|fable] [--impl-effort low|medium|high|xhigh] [--codex-model <m>] [--codex-effort minimal|low|medium|high|xhigh|max]
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Read, Write, Workflow, TaskOutput, PushNotification, Agent
 ---
 
@@ -15,7 +15,7 @@ You are the CONDUCTOR, not the implementer. You do five things: pre-flight, clai
 The argument must be an issue number, optionally followed by seat overrides. Abort with usage if the first token isn't a positive integer.
 
 - `--impl-model <m>` / `--impl-effort <e>` override the implementer seat. By default the workflow routes off the plan's difficulty: `mechanical` gets sonnet/medium, `standard` gets opus/medium, `hard` gets opus/xhigh. Note this ladder is the deprecated script's; `/flow:issue` routes `standard` to opus/high. A seat that refuses or dies re-runs one rung UP, or on the routed model if an override put a different one in.
-- `--codex-model <m>` / `--codex-effort <e>` / `--codex-fast` override both codex seats - the design leg and the adversarial review. Both seats have a sensible default to `gpt-5.6-sol` at `high`, stated explicitly on every call - nothing is ever inherited from `~/.codex/config.toml`.
+- `--codex-model <m>` / `--codex-effort <e>` override both Codex seats, the design leg and the adversarial review. Both seats default to `gpt-5.6-sol` at `high`, stated explicitly on every call. The service tier is always `default`.
 
 ## Core principles
 
@@ -60,7 +60,7 @@ If it is already `in-progress` with a live worktree or branch behind it (`git wo
 6) **Launch via the Workflow tool** with `scriptPath` and args:
    `{ issueNumber, issueTitle, issueBody, acceptanceCriteria, contextPack, envNote, worktree, branch, base: "origin/main", externalReviewers: ["coderabbitai"], pluginRoot: "${CLAUDE_PLUGIN_ROOT}", evidencePublic }`
    `evidencePublic` is simply whether the `evidence-public` label was on the issue in the labels you already read at pre-flight - a boolean, resolved here so the ledger never has to decide it. Absent label means `false`, and false means no capture on this run reaches the public host no matter what the acceptance criteria say.
-   Add `implModel` / `implEffort` / `codexModel` / `codexEffort` / `codexFast` only when the matching flag was given - an absent key is what tells the workflow to use its own defaults. `pluginRoot` is how the codex legs find the codex-exec transport without globbing for it; if the variable didn't interpolate, pass the directory you resolved the script from in step 4.
+   Add `implModel` / `implEffort` / `codexModel` / `codexEffort` only when the matching flag was given. An absent key tells the workflow to use its own defaults. `pluginRoot` lets the Codex legs find `dist/delegation.mjs` without globbing; if the variable did not interpolate, pass the directory you resolved the workflow from in step 4.
 
 7) **Stamp the runId** the tool result hands back, as a journal comment on the issue: `flow run started - runId <id>, worktree <path>, branch <branch>`. This is the recovery anchor for any future session.
 

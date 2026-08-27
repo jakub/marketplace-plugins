@@ -1,8 +1,19 @@
 {
   "name": "flow",
-  "version": "0.20.1",
+  "version": "0.21.0",
   "description": "The prep → issue → land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
   "author": {
     "name": "jakub"
+  },
+  "mcpServers": {
+    "flow_delegate": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/delegation.mjs",
+        "mcp",
+        "--host",
+        "claude"
+      ]
+    }
   }
 }
