@@ -5,6 +5,7 @@
 // marketplace entry agree, so a release stays the four documented edits.
 
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -52,5 +53,23 @@ for (const listed of marketplace.plugins) {
 // The dual-harness set shrinking to zero would mean the Codex manifests moved or were
 // renamed without this test noticing; that is a failure, not an empty success.
 assert.ok(codexPlugins >= 3, `expected at least 3 Codex-capable plugins, found ${codexPlugins}`)
+
+// The catalog version must move whenever the plugin set or a listed version moves.
+// Parity alone cannot prove that, so compare against main's committed manifest when
+// the ref is available; without one (shallow CI clone) the check is skipped.
+let baseline = null
+try {
+  baseline = JSON.parse(execFileSync(
+    'git', ['-C', ROOT, 'show', 'main:.claude-plugin/marketplace.json'], { encoding: 'utf8' },
+  ))
+} catch {}
+if (baseline && baseline.metadata.version !== marketplace.metadata.version) {
+  // Catalog already bumped relative to main; nothing further to prove.
+} else if (baseline) {
+  const drifted = marketplace.plugins.length !== baseline.plugins.length ||
+    marketplace.plugins.some((entry) =>
+      baseline.plugins.find((b) => b.name === entry.name)?.version !== entry.version)
+  assert.ok(!drifted, 'a listed plugin version changed against main but the catalog version did not move')
+}
 
 console.log('parallel plugin manifests: ALL PASS')
