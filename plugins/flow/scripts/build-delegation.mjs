@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { build } from '../deps/node_modules/esbuild/lib/main.js'
-import { chmod } from 'node:fs/promises'
+import { chmod, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,4 +20,6 @@ await build({
   sourcemap: false,
   legalComments: 'none',
 })
+const bundled = await readFile(outfile, 'utf8')
+await writeFile(outfile, bundled.replace(/[ \t]+$/gm, ''))
 await chmod(outfile, 0o755)

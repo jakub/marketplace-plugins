@@ -68,6 +68,14 @@ export function worktreeKey(cwd) {
   }
 }
 
+export function writableWorktreeKey(cwd, roots) {
+  const key = worktreeKey(cwd)
+  if (!roots.some((root) => isInside(root, key))) {
+    throw new DelegationError('OUTSIDE_ROOTS', 'The Git worktree root resolves outside the workspace roots supplied by the client.')
+  }
+  return key
+}
+
 export function immutableReview({ cwd, mode, base = null, head = 'HEAD', prompt = '' }) {
   if (mode === 'task') return { prompt, baseSha: null, headSha: null, outputSchema: null }
   if (!base) throw new DelegationError('GIT_REF', 'Review mode requires a base revision.')

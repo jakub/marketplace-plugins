@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { chmodSync, mkdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -8,6 +9,23 @@ import { ACTIVE_STATES, ALL_STATES, DelegationError, TERMINAL_STATES } from './c
 const now = () => Date.now()
 const json = (value) => value == null ? null : JSON.stringify(value)
 const parse = (value) => value == null ? null : JSON.parse(value)
+
+export function processStartToken(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+      const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)
+      return fields[19] ? `linux:${fields[19]}` : null
+    } catch { return null }
+  }
+  try {
+    const started = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000,
+    }).trim()
+    return started ? `${process.platform}:${started}` : null
+  } catch { return null }
+}
 
 export function defaultStateDir() {
   if (process.env.FLOW_DELEGATION_STATE_DIR) return process.env.FLOW_DELEGATION_STATE_DIR
@@ -177,7 +195,10 @@ export class JobStore {
       .map((row) => ({ seq: row.seq, type: row.type, payload: parse(row.payload_json), createdAt: row.created_at }))
   }
 
-  claim(id, pid) {
+  claim(id, pid, startToken = null) {
+    if (typeof startToken !== 'string' || !startToken) {
+      throw new DelegationError('WORKER_IDENTITY', 'Flow could not record a stable worker process identity.')
+    }
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id))
@@ -192,8 +213,8 @@ export class JobStore {
       }
       this.db.prepare(`UPDATE jobs SET status='starting', worker_pid=?, heartbeat_at=?, updated_at=? WHERE id=?`)
         .run(pid, at, at, id)
+      this.appendEvent(id, 'job.starting', { pid, startToken })
       this.db.exec('COMMIT')
-      this.appendEvent(id, 'job.starting', { pid })
       return this.getJob(id)
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -209,10 +230,13 @@ export class JobStore {
       .run(threadId || null, turnId || null, accepted ? 1 : 0, at, accepted ? 1 : 0, at, at, id)
   }
 
-  setNativeTurn(id, turnId) {
+  setNativeTurn(id, turnId, { accepted = false } = {}) {
     const at = now()
-    this.db.prepare('UPDATE jobs SET native_turn_id=?, updated_at=?, heartbeat_at=? WHERE id=?')
-      .run(turnId, at, at, id)
+    this.db.prepare(`UPDATE jobs SET native_turn_id=?,
+      turn_accepted_at=CASE WHEN ? THEN COALESCE(turn_accepted_at, ?) ELSE turn_accepted_at END,
+      prompt=CASE WHEN ? THEN NULL ELSE prompt END, updated_at=?, heartbeat_at=?
+      WHERE id=? AND status IN ('starting','running')`)
+      .run(turnId, accepted ? 1 : 0, at, accepted ? 1 : 0, at, at, id)
   }
 
   heartbeat(id) {
@@ -238,6 +262,7 @@ export class JobStore {
       this.db.prepare(`UPDATE jobs SET status=?, output=?, structured_json=?, usage_json=?, error_json=?,
         prompt=NULL, updated_at=?, heartbeat_at=? WHERE id=?`)
         .run(status, output, json(structured), json(usage), json(error), at, at, id)
+      this.db.prepare(`UPDATE controls SET payload_json='{}' WHERE job_id=?`).run(id)
       this.db.prepare('DELETE FROM leases WHERE job_id=?').run(id)
       this.db.exec('COMMIT')
     } catch (cause) {
@@ -248,19 +273,60 @@ export class JobStore {
     return this.getJob(id)
   }
 
-  markReconciling(id) {
+  markReconciling(id, expectedHeartbeat) {
     const at = now()
-    this.db.prepare(`UPDATE jobs SET status='reconciling', updated_at=?, heartbeat_at=? WHERE id=?`).run(at, at, id)
-    this.appendEvent(id, 'job.reconciling', {})
+    const result = this.db.prepare(`UPDATE jobs SET status='reconciling', updated_at=?, heartbeat_at=?
+      WHERE id=? AND heartbeat_at=? AND status IN ('queued','starting','running','reconciling')`)
+      .run(at, at, id, expectedHeartbeat)
+    if (result.changes) this.appendEvent(id, 'job.reconciling', {})
+    return result.changes === 1
   }
 
   queueControl(jobId, type, payload = {}) {
-    const job = this.requireJob(jobId)
-    if (!ACTIVE_STATES.includes(job.status)) throw new DelegationError('JOB_STATE', `Job ${jobId} is already ${job.status}.`)
-    const result = this.db.prepare('INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, ?, ?, ?)')
-      .run(jobId, type, json(payload), now())
+    this.db.exec('BEGIN IMMEDIATE')
+    let result
+    try {
+      const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(jobId))
+      if (!job) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
+      if (!ACTIVE_STATES.includes(job.status)) throw new DelegationError('JOB_STATE', `Job ${jobId} is already ${job.status}.`)
+      result = this.db.prepare('INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, ?, ?, ?)')
+        .run(jobId, type, json(payload), now())
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
     this.appendEvent(jobId, `control.${type}.queued`, {})
     return Number(result.lastInsertRowid)
+  }
+
+  requestCancel(jobId) {
+    this.db.exec('BEGIN IMMEDIATE')
+    let cancelled = false
+    try {
+      const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(jobId))
+      if (!job) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
+      if (TERMINAL_STATES.includes(job.status)) {
+        this.db.exec('COMMIT')
+        return job
+      }
+      if (job.status === 'queued') {
+        const at = now()
+        this.db.prepare(`UPDATE jobs SET status='cancelled', prompt=NULL, updated_at=?, heartbeat_at=? WHERE id=?`)
+          .run(at, at, jobId)
+        cancelled = true
+      } else {
+        this.db.prepare(`INSERT INTO controls (job_id, type, payload_json, created_at)
+          VALUES (?, 'cancel', '{}', ?)`).run(jobId, now())
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+    if (cancelled) this.appendEvent(jobId, 'job.cancelled', { status: 'cancelled' })
+    else this.appendEvent(jobId, 'control.cancel.queued', {})
+    return this.getJob(jobId)
   }
 
   pendingControls(jobId) {
@@ -270,8 +336,14 @@ export class JobStore {
   }
 
   handleControl(jobId, id, outcome = {}) {
-    this.db.prepare('UPDATE controls SET handled_at=? WHERE id=? AND job_id=?').run(now(), id, jobId)
+    this.db.prepare(`UPDATE controls SET handled_at=?, payload_json='{}' WHERE id=? AND job_id=?`).run(now(), id, jobId)
     this.appendEvent(jobId, 'control.handled', { controlId: id, ...outcome })
+  }
+
+  workerStartToken(jobId) {
+    const row = this.db.prepare(`SELECT payload_json FROM events
+      WHERE job_id=? AND type='job.starting' ORDER BY seq DESC LIMIT 1`).get(jobId)
+    return row ? parse(row.payload_json)?.startToken || null : null
   }
 
   staleActive(before) {

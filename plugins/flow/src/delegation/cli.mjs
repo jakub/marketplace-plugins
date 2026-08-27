@@ -89,6 +89,6 @@ export async function runCli({ argv, entryPath }) {
 
 export async function safeRunCli(options) {
   try { await runCli(options) } catch (error) {
-    process.stdout.write(`${JSON.stringify({ status: 'failed', error: publicError(error, error.message || 'Delegation CLI failed') })}\n`)
+    process.stdout.write(`${JSON.stringify({ status: 'failed', error: publicError(error, 'Delegation CLI failed') })}\n`)
   }
 }

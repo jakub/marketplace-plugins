@@ -73,7 +73,7 @@ the worker records the App Server response. Steering a terminal job fails.
 
 Creates a new job linked to the prior job and resumes its native thread. The new job gets its
 own status, events, result, and time budget. A write job in `unknown` cannot continue because
-Flow cannot prove what the earlier turn changed.
+Flow cannot prove that the earlier turn stopped. An active or `unknown` job cannot continue.
 
 `delegation_models` and `delegation_doctor`
 
@@ -91,7 +91,8 @@ can replace the location with `FLOW_DELEGATION_STATE_DIR`.
 table records the request, route, canonical working directory, immutable review SHAs, model
 settings, App Server thread and turn IDs, process heartbeat, result, error, usage, and parent
 job. The `events` table is an append-only ordered journal. The `controls` table carries cancel
-and steer requests to the worker. The `leases` table gives one write job exclusive ownership
+and steer requests to the worker. Flow clears control payloads after handling them and clears
+all remaining payloads when a job ends. The `leases` table gives one write job exclusive ownership
 of one canonical worktree.
 
 The database and state directory use owner-only permissions. Prompts live in the job record,
@@ -110,12 +111,16 @@ queued -> starting -> running -> succeeded
                      |       -> cancelled
                      |       -> awaiting_approval
                      |       -> unknown
-unknown -> reconciling -> succeeded | failed | cancelled | unknown
 ```
 
 `queued`, `starting`, `running`, and `reconciling` are active states. The others are terminal.
 `awaiting_approval` means Flow denied an unexpected request and the caller must start a new
 job with a different access policy. A worker updates its heartbeat while it owns an active job.
+The `job.starting` event records the worker PID and its operating-system process-start token.
+Recovery checks both values, so PID reuse cannot make an unrelated process look like the worker.
+Flow fails before starting App Server when the operating system cannot provide that token.
+If Flow cannot read the live token later, it may repair a proven terminal native turn, but it
+keeps an in-progress job and its write lease until a later check can prove the outcome.
 
 Status performs recovery when an active job has a stale heartbeat. It reads the saved native
 thread with `thread/read`. A terminal native turn repairs the local record. A process that
@@ -128,6 +133,8 @@ The worker starts `codex app-server` over JSON lines on standard input and outpu
 `initialize`, then `initialized`, then either `thread/start` or `thread/resume`. It starts a
 turn with these values set explicitly:
 
+This contract was validated against Codex CLI 0.150.1 on 2026-08-26.
+
 - `approvalPolicy: "never"`
 - the requested model and effort
 - `serviceTier: "default"` unless the caller states another allowed tier
@@ -137,10 +144,16 @@ turn with these values set explicitly:
 - the caller's output schema, when present
 
 The worker saves the thread ID before it starts the turn and saves the turn ID from
-`turn/started`. It builds the final answer from completed `agentMessage` items. A missing
+`turn/started`. That notification also marks the turn accepted and clears the stored prompt,
+so a worker crash between the notification and the `turn/start` response cannot lose the write
+boundary. It builds the final answer from completed `agentMessage` items. A missing
 message is an `EMPTY_OUTPUT` failure. For structured output, Ajv compiles the full caller
 schema and checks the parsed message. This catches a server or model returning invalid JSON
 even when the native turn says it completed.
+
+The worker also watches the App Server process. An unexpected exit ends the local wait at once.
+A read-only job fails with the named transport error. An accepted write job becomes `unknown`
+unless App Server already reported a terminal turn.
 
 An approval request is unexpected because the policy is `never`. The worker denies the
 request, records its type, and moves the job to `awaiting_approval`. It never grants approval
@@ -183,6 +196,10 @@ At startup, the MCP server asks the client for roots when the client supports `r
 It also accepts the canonical `CLAUDE_PROJECT_DIR` supplied by Claude Code. A requested
 working directory must resolve inside one of those roots. The server rejects missing paths,
 symlink escapes, and the repository root of an unrelated checkout.
+
+For workspace-write jobs, Flow also checks the Git worktree root against the supplied roots.
+It rejects a nested directory whose Git root sits above the approved client root instead of
+widening Codex write access to the outer checkout.
 
 Review modes resolve the base and head revisions to full commit IDs before the worker starts.
 The prompt names those immutable IDs. It never verifies a mutable branch name and then reuses

@@ -2,8 +2,8 @@ import Ajv2020 from 'ajv/dist/2020.js'
 import { spawn } from 'node:child_process'
 import { assertRoute, DelegationError, EFFORTS, MODES, ACCESS_MODES, DELIVERIES, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope } from './contracts.mjs'
 import { AppServerClient, codexVersion } from './app-server.mjs'
-import { JobStore, defaultStateDir } from './store.mjs'
-import { canonicalRoots, canonicalWorkspace, immutableReview, worktreeKey } from './workspace.mjs'
+import { JobStore, defaultStateDir, processStartToken } from './store.mjs'
+import { canonicalRoots, canonicalWorkspace, immutableReview, worktreeKey, writableWorktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -68,6 +68,9 @@ export class DelegationService {
     assertRoute({ host: this.host, target: 'codex', depth: this.depth })
     const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
     const cwd = canonicalWorkspace(normalized.cwd, roots)
+    const workspaceKey = normalized.access === 'workspace-write'
+      ? writableWorktreeKey(cwd, roots)
+      : worktreeKey(cwd)
     const review = immutableReview({ cwd, mode: normalized.mode, base: normalized.base, head: normalized.head, prompt: normalized.prompt })
     const outputSchema = validateSchema(review.outputSchema || normalized.outputSchema)
     const store = this.store()
@@ -78,7 +81,7 @@ export class DelegationService {
         target: 'codex',
         depth: this.depth,
         cwd,
-        workspaceKey: worktreeKey(cwd),
+        workspaceKey,
         prompt: review.prompt,
         outputSchema,
         baseSha: review.baseSha,
@@ -119,7 +122,7 @@ export class DelegationService {
         }
         if (terminal(job)) return job
         if (signal?.aborted && !cancelQueued) {
-          store.queueControl(jobId, 'cancel')
+          store.requestCancel(jobId)
           cancelQueued = true
         }
       } finally { store.close() }
@@ -146,12 +149,7 @@ export class DelegationService {
 
   cancel(jobId) {
     const store = this.store()
-    try {
-      const job = store.requireJob(jobId)
-      if (terminal(job)) return job
-      store.queueControl(jobId, 'cancel')
-      return store.requireJob(jobId)
-    } finally { store.close() }
+    try { return store.requestCancel(jobId) } finally { store.close() }
   }
 
   steer(jobId, text) {
@@ -165,10 +163,11 @@ export class DelegationService {
 
   continue(jobId, input, roots = {}) {
     const previous = this.get(jobId)
-    if (!previous.nativeThreadId) throw new DelegationError('NO_THREAD', 'The prior job has no Codex thread to continue.')
-    if (previous.status === 'unknown' && previous.access === 'workspace-write') {
-      throw new DelegationError('UNKNOWN_WRITE', 'Flow will not continue an unknown write job.')
+    if (!terminal(previous)) throw new DelegationError('JOB_STATE', 'A Codex thread can continue only after its current job reaches a terminal state.')
+    if (previous.status === 'unknown') {
+      throw new DelegationError('UNKNOWN_JOB', 'Flow will not continue a job whose native turn outcome is unknown.')
     }
+    if (!previous.nativeThreadId) throw new DelegationError('NO_THREAD', 'The prior job has no Codex thread to continue.')
     return this.start({
       mode: 'task',
       access: input.access || previous.access,
@@ -231,13 +230,46 @@ export class DelegationService {
   async reconcile(jobId, { staleAfterMs = 15_000 } = {}) {
     let job = this.get(jobId)
     if (terminal(job) || Date.now() - job.heartbeatAt < staleAfterMs) return job
-    try { if (job.workerPid) { process.kill(job.workerPid, 0); return job } } catch {}
+    let identityAmbiguous = false
+    if (job.workerPid) {
+      try {
+        process.kill(job.workerPid, 0)
+        const local = this.store()
+        let claimedToken
+        try { claimedToken = local.workerStartToken(jobId) } finally { local.close() }
+        const liveToken = processStartToken(job.workerPid)
+        if (claimedToken && liveToken && claimedToken === liveToken) return job
+        identityAmbiguous = !claimedToken || !liveToken
+      } catch {}
+    }
     const store = this.store()
-    try { store.markReconciling(jobId) } finally { store.close() }
+    let claimedRecovery
+    try { claimedRecovery = store.markReconciling(jobId, job.heartbeatAt) } finally { store.close() }
     job = this.get(jobId)
+    if (terminal(job)) return job
+    if (!claimedRecovery) return job
     if (!job.nativeThreadId) {
+      if (identityAmbiguous) {
+        const local = this.store()
+        try {
+          local.appendEvent(jobId, 'recovery.deferred', { reason: 'worker_identity' })
+          return local.requireJob(jobId)
+        } finally { local.close() }
+      }
       const local = this.store()
       try { return local.finish(jobId, 'failed', { error: { kind: 'WORKER_EXIT', message: 'The worker exited before Codex created a thread.', details: null } }) }
+      finally { local.close() }
+    }
+    if (!job.nativeTurnId) {
+      if (identityAmbiguous) {
+        const local = this.store()
+        try {
+          local.appendEvent(jobId, 'recovery.deferred', { reason: 'worker_identity' })
+          return local.requireJob(jobId)
+        } finally { local.close() }
+      }
+      const local = this.store()
+      try { return local.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Flow cannot identify which Codex turn belongs to the stale job.', details: null } }) }
       finally { local.close() }
     }
     let client
@@ -245,10 +277,14 @@ export class DelegationService {
       client = await new AppServerClient({ cwd: job.cwd }).start()
       const response = await client.request('thread/read', { threadId: job.nativeThreadId, includeTurns: true }, 20_000)
       const turns = response.thread?.turns || []
-      const turn = turns.find((item) => item.id === job.nativeTurnId) || turns.at(-1)
+      const turn = turns.find((item) => item.id === job.nativeTurnId)
       const local = this.store()
       try {
         if (!turn || turn.status === 'inProgress') {
+          if (identityAmbiguous) {
+            local.appendEvent(jobId, 'recovery.deferred', { reason: 'turn_in_progress' })
+            return local.requireJob(jobId)
+          }
           return local.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Codex could not prove the stale turn reached a terminal state.', details: null } })
         }
         if (turn.status === 'interrupted') return local.finish(jobId, 'cancelled')
@@ -272,7 +308,13 @@ export class DelegationService {
       } finally { local.close() }
     } catch (error) {
       const local = this.store()
-      try { return local.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Flow could not reconcile the stale Codex turn.', details: publicError(error) } }) }
+      try {
+        if (identityAmbiguous) {
+          local.appendEvent(jobId, 'recovery.deferred', { reason: 'worker_identity', error: publicError(error) })
+          return local.requireJob(jobId)
+        }
+        return local.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Flow could not reconcile the stale Codex turn.', details: publicError(error) } })
+      }
       finally { local.close() }
     } finally { if (client) await client.stop() }
   }

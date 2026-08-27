@@ -1,10 +1,17 @@
 import Ajv2020 from 'ajv/dist/2020.js'
-import { AppServerClient, sandboxFor } from './app-server.mjs'
+import { AppServerClient, isApprovalRequest, sandboxFor } from './app-server.mjs'
 import { assertRoute, DelegationError, publicError } from './contracts.mjs'
-import { JobStore } from './store.mjs'
+import { JobStore, processStartToken } from './store.mjs'
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const textInput = (text) => [{ type: 'text', text, text_elements: [] }]
+
+function developerInstructions(job) {
+  const base = 'You are a delegated Codex worker. Complete the caller task directly. Do not delegate to another model family or start subagents.'
+  if (job.profile === 'defensive-security') {
+    return `${base} The caller selected the defensive-security profile for authorized defensive research. Stay within the requested workspace and access mode.`
+  }
+  return base
+}
 
 function finalMessage(turn, fallback) {
   const messages = (turn?.items || []).filter((item) => item.type === 'agentMessage' && item.text)
@@ -41,22 +48,32 @@ export async function runWorker({ jobId, stateDir }) {
   let latestMessage = ''
   let usage = null
   let approvalMethod = null
+  let transportError = null
   let timedOut = false
   let cancelled = false
+  let nativeTurnTerminal = false
   let terminalResolve
   const terminal = new Promise((resolve) => { terminalResolve = resolve })
   const inFlightControls = new Set()
+  let controlBusy = false
+  let activeControlPoll = Promise.resolve()
   let previewAt = 0
 
   try {
-    job = store.claim(jobId, process.pid)
+    job = store.claim(jobId, process.pid, processStartToken(process.pid))
     assertRoute({ host: job.host, target: job.target, depth: job.depth })
+    const preflightCancel = store.pendingControls(jobId).find((control) => control.type === 'cancel')
+    if (preflightCancel) {
+      store.handleControl(jobId, preflightCancel.id, { result: 'cancelled_before_start' })
+      store.finish(jobId, 'cancelled')
+      return
+    }
     heartbeat = setInterval(() => store.heartbeat(jobId), 1_000)
 
     const onNotification = (method, params) => {
       if (method === 'turn/started') {
         turnId = params.turn?.id || turnId
-        if (turnId) store.setNativeTurn(jobId, turnId)
+        if (turnId) store.setNativeTurn(jobId, turnId, { accepted: true })
         store.appendEvent(jobId, 'turn.started', { turnId })
       } else if (method === 'turn/completed') {
         terminalResolve(params.turn)
@@ -94,8 +111,12 @@ export async function runWorker({ jobId, stateDir }) {
       }
     }
     const onServerRequest = (method) => {
-      approvalMethod = method
-      store.appendEvent(jobId, 'approval.denied', { method })
+      if (isApprovalRequest(method)) {
+        approvalMethod = method
+        store.appendEvent(jobId, 'approval.denied', { method })
+      } else {
+        store.appendEvent(jobId, 'app_server.request_denied', { method })
+      }
     }
 
     client = await new AppServerClient({
@@ -106,6 +127,10 @@ export async function runWorker({ jobId, stateDir }) {
       },
       onNotification,
       onServerRequest,
+      onClose: (error) => {
+        transportError = error
+        terminalResolve(null)
+      },
     }).start()
     store.appendEvent(jobId, 'app_server.ready', {})
 
@@ -116,7 +141,7 @@ export async function runWorker({ jobId, stateDir }) {
       approvalPolicy: 'never',
       approvalsReviewer: 'user',
       sandbox: job.access,
-      developerInstructions: 'You are a delegated Codex worker. Complete the caller task directly. Do not delegate to another model family or start subagents.',
+      developerInstructions: developerInstructions(job),
     }
     const threadResponse = job.nativeThreadId
       ? await client.request('thread/resume', { threadId: job.nativeThreadId, ...threadParams }, 30_000)
@@ -166,9 +191,14 @@ export async function runWorker({ jobId, stateDir }) {
         inFlightControls.delete(control.id)
       }
     }
-    controlTimer = setInterval(() => {
-      for (const control of store.pendingControls(jobId)) void runControl(control)
-    }, 250)
+    const pollControls = () => {
+      if (controlBusy) return
+      controlBusy = true
+      activeControlPoll = (async () => {
+        for (const control of store.pendingControls(jobId)) await runControl(control)
+      })().finally(() => { controlBusy = false })
+    }
+    controlTimer = setInterval(pollControls, 250)
 
     deadlineTimer = setTimeout(async () => {
       timedOut = true
@@ -178,15 +208,22 @@ export async function runWorker({ jobId, stateDir }) {
     }, job.timeBudgetSeconds * 1_000)
 
     const turn = await terminal
+    nativeTurnTerminal = Boolean(turn && turn.status !== 'inProgress')
     if (approvalMethod) {
+      if (client) await client.stop()
+      client = null
       store.finish(jobId, 'awaiting_approval', {
         error: { kind: 'APPROVAL_REQUIRED', message: 'Codex requested an approval that Flow denied.', details: { method: approvalMethod } },
         usage,
       })
     } else if (!turn) {
+      await client.stop()
+      client = null
       const status = job.access === 'workspace-write' ? 'unknown' : 'failed'
       store.finish(jobId, status, {
-        error: { kind: 'TIMEOUT', message: 'The turn did not confirm a terminal state after interruption.', details: null },
+        error: transportError
+          ? publicError(transportError)
+          : { kind: 'TIMEOUT', message: 'The turn did not confirm a terminal state after interruption.', details: null },
         usage,
       })
     } else if (turn.status === 'interrupted') {
@@ -215,7 +252,17 @@ export async function runWorker({ jobId, stateDir }) {
       const current = store.getJob(jobId)
       if (current && !['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval'].includes(current.status)) {
         const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
-        store.finish(jobId, acceptedWrite ? 'unknown' : 'failed', { error: publicError(error), usage })
+        const status = approvalMethod ? 'awaiting_approval' : acceptedWrite && !nativeTurnTerminal ? 'unknown' : 'failed'
+        if (status === 'unknown' || status === 'awaiting_approval') {
+          if (client) await client.stop()
+          client = null
+        }
+        store.finish(jobId, status, {
+          error: approvalMethod
+            ? { kind: 'APPROVAL_REQUIRED', message: 'Codex requested an approval that Flow denied.', details: { method: approvalMethod } }
+            : publicError(error),
+          usage,
+        })
       }
     } catch {}
   } finally {
@@ -223,6 +270,7 @@ export async function runWorker({ jobId, stateDir }) {
     if (controlTimer) clearInterval(controlTimer)
     if (deadlineTimer) clearTimeout(deadlineTimer)
     if (forcedTimer) clearTimeout(forcedTimer)
+    await activeControlPoll.catch(() => {})
     if (client) await client.stop()
     store.close()
   }

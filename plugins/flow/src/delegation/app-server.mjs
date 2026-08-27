@@ -10,17 +10,15 @@ const APPROVAL_METHODS = new Set([
   'execCommandApproval',
 ])
 
-const withTimeout = (promise, ms, message) => new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new DelegationError('APP_SERVER_TIMEOUT', message)), ms)
-  promise.then((value) => { clearTimeout(timer); resolve(value) }, (error) => { clearTimeout(timer); reject(error) })
-})
+export const isApprovalRequest = (method) => APPROVAL_METHODS.has(method)
 
 export class AppServerClient {
-  constructor({ cwd, env = {}, onNotification = () => {}, onServerRequest = () => {} } = {}) {
+  constructor({ cwd, env = {}, onNotification = () => {}, onServerRequest = () => {}, onClose = () => {} } = {}) {
     this.cwd = cwd
     this.env = env
     this.onNotification = onNotification
     this.onServerRequest = onServerRequest
+    this.onClose = onClose
     this.child = null
     this.nextId = 1
     this.pending = new Map()
@@ -63,11 +61,13 @@ export class AppServerClient {
   handleClose(info, cause) {
     if (this.closeInfo) return
     this.closeInfo = { ...info, cause }
-    const error = new DelegationError('APP_SERVER_EXIT', 'Codex App Server exited before the request completed.', {
-      exitCode: info?.code ?? null,
-      signal: info?.signal ?? null,
-      stderr: this.stderr.slice(-2000),
-    })
+    const error = cause?.code === 'ENOENT'
+      ? new DelegationError('CODEX_NOT_INSTALLED', 'Codex could not be started.')
+      : new DelegationError('APP_SERVER_EXIT', 'Codex App Server exited before the request completed.', {
+        exitCode: info?.code ?? null,
+        signal: info?.signal ?? null,
+      })
+    try { this.onClose(error) } catch {}
     for (const { reject } of this.pending.values()) reject(error)
     this.pending.clear()
     this.resolveClose(this.closeInfo)
@@ -98,6 +98,8 @@ export class AppServerClient {
     this.onServerRequest(message.method, message.params || {})
     if (message.method === 'item/commandExecution/requestApproval' || message.method === 'item/fileChange/requestApproval') {
       this.respond(message.id, { decision: 'decline' })
+    } else if (message.method === 'item/permissions/requestApproval') {
+      this.respond(message.id, { permissions: {} })
     } else if (message.method === 'applyPatchApproval' || message.method === 'execCommandApproval') {
       this.respond(message.id, { decision: { denied: { rejection: 'Flow does not grant delegated approvals.' } } })
     } else {
@@ -114,9 +116,24 @@ export class AppServerClient {
 
   request(method, params = {}, timeoutMs = 30_000) {
     const id = this.nextId++
-    const promise = new Promise((resolve, reject) => this.pending.set(id, { resolve, reject, method }))
-    this.write({ method, id, params })
-    return withTimeout(promise, timeoutMs, `Codex App Server did not answer ${method}.`)
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return
+        reject(new DelegationError('APP_SERVER_TIMEOUT', `Codex App Server did not answer ${method}.`))
+      }, timeoutMs)
+      this.pending.set(id, {
+        method,
+        resolve: (value) => { clearTimeout(timer); resolve(value) },
+        reject: (error) => { clearTimeout(timer); reject(error) },
+      })
+      try {
+        this.write({ method, id, params })
+      } catch (error) {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        reject(error)
+      }
+    })
   }
 
   notify(method, params) {
@@ -141,6 +158,7 @@ export class AppServerClient {
     }
     if (!this.closeInfo) {
       try { this.child.kill('SIGKILL') } catch {}
+      await Promise.race([this.closePromise, new Promise((resolve) => setTimeout(resolve, 1_000))])
     }
     return this.closeInfo
   }
