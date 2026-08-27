@@ -1,4 +1,5 @@
 import { AppServerClient, isApprovalRequest, sandboxFor } from './app-server.mjs'
+import { runClaudeWorker } from './claude-worker.mjs'
 import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
 import { JobStore, processStartToken, serviceLog } from './store.mjs'
@@ -18,7 +19,23 @@ function developerInstructions(job) {
   return base
 }
 
-export async function runWorker({ jobId, stateDir }) {
+export async function runWorker(options) {
+  const store = new JobStore(options.stateDir)
+  let target
+  try {
+    target = store.requireJob(options.jobId).target
+    if (!['claude', 'codex'].includes(target)) {
+      const error = new DelegationError('ROUTE_DENIED', 'The queued job names an unknown model family.')
+      store.failQueued(options.jobId, publicError(error))
+      process.exitCode = 1
+      return
+    }
+  } finally { store.close() }
+  if (target === 'claude') return runClaudeWorker(options)
+  return runCodexWorker(options)
+}
+
+async function runCodexWorker({ jobId, stateDir }) {
   const store = new JobStore(stateDir)
   let job
   try {

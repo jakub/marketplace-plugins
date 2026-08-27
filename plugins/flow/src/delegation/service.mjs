@@ -1,9 +1,10 @@
 import Ajv2020 from 'ajv/dist/2020.js'
 import { spawn } from 'node:child_process'
-import { assertRoute, DelegationError, EFFORTS, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope } from './contracts.mjs'
+import { assertRoute, capabilitiesForTarget, DelegationError, effortsForTarget, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { AppServerClient, codexVersion } from './app-server.mjs'
+import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
-import { JobStore, defaultStateDir, processStartToken, serviceLog } from './store.mjs'
+import { JobStore, defaultStateDir, processStartToken } from './store.mjs'
 import { canonicalRoots, canonicalWorkspace, immutableReview, worktreeKey, writableWorktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -22,11 +23,13 @@ function validateSchema(schema) {
 // Every field is type-checked before it is pattern-checked: a regex coerces its argument, so
 // an undefined model matched the shape test and only failed later, as an opaque NOT NULL
 // bind error from sqlite.
-function validateStart(input) {
+function validateStart(input, target) {
   if (!MODES.includes(input.mode)) throw new DelegationError('BAD_REQUEST', 'mode is invalid.')
   if (!ACCESS_MODES.includes(input.access)) throw new DelegationError('BAD_REQUEST', 'access is invalid.')
   if (!DELIVERIES.includes(input.delivery)) throw new DelegationError('BAD_REQUEST', 'delivery is invalid.')
-  if (!EFFORTS.includes(input.effort)) throw new DelegationError('BAD_REQUEST', 'effort is invalid.')
+  if (!effortsForTarget(target).includes(input.effort)) {
+    throw new DelegationError('BAD_REQUEST', `effort is invalid for ${target}.`)
+  }
   if (!SERVICE_TIERS.includes(input.serviceTier)) throw new DelegationError('BAD_REQUEST', 'Only the default service tier is allowed.')
   if (typeof input.model !== 'string' || !MODEL_PATTERN.test(input.model)) {
     throw new DelegationError('BAD_REQUEST', 'model is required and must match the model name shape.')
@@ -63,6 +66,17 @@ export class DelegationService {
     try { return fn(store) } finally { store.close() }
   }
 
+  target() { return targetForHost(this.host) }
+
+  capabilities() { return capabilitiesForTarget(this.target()) }
+
+  requireRoute(job) {
+    if (job.host !== this.host || job.target !== this.target()) {
+      throw new DelegationError('ROUTE_DENIED', 'This delegation host does not own that job route.')
+    }
+    return job
+  }
+
   async start(input, { rootUris = [], fallbackCwd = null } = {}) {
     const normalized = {
       mode: input.mode || 'task',
@@ -81,8 +95,9 @@ export class DelegationService {
       parentJobId: input.parentJobId || null,
       nativeThreadId: input.nativeThreadId || null,
     }
-    validateStart(normalized)
-    assertRoute({ host: this.host, target: 'codex', depth: this.depth })
+    const target = this.target()
+    validateStart(normalized, target)
+    assertRoute({ host: this.host, target, depth: this.depth })
     const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
     const cwd = await canonicalWorkspace(normalized.cwd, roots)
     const workspaceKey = normalized.access === 'workspace-write'
@@ -94,7 +109,7 @@ export class DelegationService {
       const job = store.createJob({
         ...normalized,
         host: this.host,
-        target: 'codex',
+        target,
         depth: this.depth,
         cwd,
         workspaceKey,
@@ -131,7 +146,7 @@ export class DelegationService {
     const store = this.store()
     try {
       while (true) {
-        let job = store.requireJob(jobId)
+        let job = this.requireRoute(store.requireJob(jobId))
         for (const event of store.events(jobId, { after, limit: 200 })) {
           after = event.seq
           await onEvent(event)
@@ -151,17 +166,27 @@ export class DelegationService {
     } finally { store.close() }
   }
 
-  get(jobId) { return this.withStore((store) => store.requireJob(jobId)) }
+  get(jobId) { return this.withStore((store) => this.requireRoute(store.requireJob(jobId))) }
 
   result(jobId) { return resultEnvelope(this.get(jobId)) }
 
-  events(jobId, options = {}) { return this.withStore((store) => store.events(jobId, options)) }
+  events(jobId, options = {}) {
+    this.get(jobId)
+    return this.withStore((store) => store.events(jobId, options))
+  }
 
-  cancel(jobId) { return this.withStore((store) => store.requestCancel(jobId)) }
+  cancel(jobId) {
+    this.get(jobId)
+    return this.withStore((store) => store.requestCancel(jobId))
+  }
 
   steer(jobId, text) {
     if (!text?.trim()) throw new DelegationError('BAD_REQUEST', 'Steering text cannot be empty.')
     return this.withStore((store) => {
+      const job = this.requireRoute(store.requireJob(jobId))
+      if (!capabilitiesForTarget(job.target).liveSteer) {
+        throw new DelegationError('CONTROL_UNSUPPORTED', `${job.target} does not support live turn steering. Cancel the job or continue its session after it ends.`)
+      }
       store.queueControl(jobId, 'steer', { text })
       return store.requireJob(jobId)
     })
@@ -169,11 +194,11 @@ export class DelegationService {
 
   continue(jobId, input, roots = {}) {
     const previous = this.get(jobId)
-    if (!terminal(previous)) throw new DelegationError('JOB_STATE', 'A Codex thread can continue only after its current job reaches a terminal state.')
+    if (!terminal(previous)) throw new DelegationError('JOB_STATE', `A ${previous.target} session can continue only after its current job reaches a terminal state.`)
     if (previous.status === 'unknown') {
       throw new DelegationError('UNKNOWN_JOB', 'Flow will not continue a job whose native turn outcome is unknown.')
     }
-    if (!previous.nativeThreadId) throw new DelegationError('NO_THREAD', 'The prior job has no Codex thread to continue.')
+    if (!previous.nativeThreadId) throw new DelegationError('NO_THREAD', `The prior job has no ${previous.target} session to continue.`)
     return this.start({
       mode: 'task',
       access: input.access || previous.access,
@@ -192,6 +217,7 @@ export class DelegationService {
   }
 
   async models(cwd) {
+    if (this.target() === 'claude') return claudeModels(cwd)
     const client = await new AppServerClient({ cwd }).start()
     try {
       const models = []
@@ -206,6 +232,8 @@ export class DelegationService {
   }
 
   async doctor(cwd) {
+    const target = this.target()
+    if (target === 'claude') return this.claudeDoctor(cwd)
     const checks = {
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
       codex: codexVersion(),
@@ -236,7 +264,36 @@ export class DelegationService {
         } finally { await client.stop() }
       }
     }
-    return { ok: Object.values(checks).every((check) => check.ok), checks }
+    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), checks }
+  }
+
+  async claudeDoctor(cwd) {
+    const checks = {
+      node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
+      claude: claudeVersion(),
+      agentSdk: claudeAgentSdkStatus(),
+      database: { ok: false },
+      account: claudeAuthStatus(),
+      models: { ok: false },
+    }
+    try {
+      this.withStore((store) => store.db.prepare('SELECT 1').get())
+      checks.database = { ok: true, path: this.stateDir }
+    } catch { checks.database = { ok: false, kind: 'DATABASE' } }
+    if (checks.claude.ok && checks.account.ok) {
+      try {
+        const models = await claudeModels(cwd)
+        checks.models = { ok: models.length > 0, count: models.length }
+      } catch (error) {
+        checks.models = { ok: false, error: publicError(error) }
+      }
+    }
+    return {
+      ok: Object.values(checks).every((check) => check.ok),
+      target: 'claude',
+      capabilities: this.capabilities(),
+      checks,
+    }
   }
 
   async reconcile(jobId, { staleAfterMs = 15_000 } = {}) {
@@ -262,6 +319,36 @@ export class DelegationService {
     job = this.get(jobId)
     if (terminal(job)) return job
     if (!claimedRecovery) return job
+    if (job.target === 'claude') {
+      if (!job.nativeThreadId) {
+        if (identityAmbiguous) return defer('worker_identity')
+        return this.withStore((store) => store.finish(jobId, 'failed', {
+          error: { kind: 'WORKER_EXIT', message: 'The worker exited before Claude created a session.', details: null },
+        }))
+      }
+      if (!job.nativeTurnId || !job.turnAcceptedAt) {
+        if (identityAmbiguous) return defer('worker_identity')
+        return this.withStore((store) => store.finish(jobId, 'failed', {
+          error: { kind: 'WORKER_EXIT', message: 'The worker exited before Flow released the prompt to Claude.', details: null },
+        }))
+      }
+      if (identityAmbiguous) return defer('worker_identity')
+      const acceptedWrite = job.access === 'workspace-write'
+      return this.withStore((store) => store.finish(jobId, acceptedWrite ? 'unknown' : 'failed', {
+        error: {
+          kind: 'RECOVERY_UNKNOWN',
+          message: acceptedWrite
+            ? 'Claude cannot prove whether the stale write turn reached a terminal state.'
+            : 'Claude cannot recover the result of the stale read-only turn.',
+          details: null,
+        },
+      }))
+    }
+    if (job.target !== 'codex') {
+      return this.withStore((store) => store.finish(jobId, 'unknown', {
+        error: { kind: 'ROUTE_DENIED', message: 'The stale job names an unknown model family.', details: null },
+      }))
+    }
     if (!job.nativeThreadId) {
       if (identityAmbiguous) return defer('worker_identity')
       return this.withStore((store) => store.finish(jobId, 'failed', { error: { kind: 'WORKER_EXIT', message: 'The worker exited before Codex created a thread.', details: null } }))

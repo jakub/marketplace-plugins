@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
+import { assertRoute } from '../src/delegation/contracts.mjs'
 
 // deps/node_modules is gitignored, so a clone and every installed copy of the plugin lack
 // the MCP SDK. This client speaks the stdio transport directly instead: newline-delimited
@@ -351,12 +352,29 @@ try {
   assert.ok(JSON.parse(row.output_schema_json).properties.findings)
 
   console.log('route and nesting guards')
-  const same = cli(['run', '--host', 'codex', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low'], { input: 'x', stateDir: state('same') })
-  assert.equal(same.status, 'failed')
-  assert.equal(same.error.kind, 'SAME_FAMILY')
+  assert.throws(
+    () => assertRoute({ host: 'codex', target: 'codex', depth: 0 }),
+    (error) => error.kind === 'SAME_FAMILY',
+  )
   const nested = cli(runArgs, { input: 'x', stateDir: state('nested'), extraEnv: { FLOW_DELEGATION_DEPTH: '1' } })
   assert.equal(nested.status, 'failed')
   assert.equal(nested.error.kind, 'NESTED_DELEGATION')
+  const invalidTargetState = state('invalid-target')
+  const invalidTargetStore = new JobStore(invalidTargetState)
+  const invalidTarget = invalidTargetStore.createJob({
+    traceId: 'invalid-target', host: 'claude', target: 'other', depth: 0, mode: 'task', access: 'read-only',
+    cwd: repo, workspaceKey: repo, model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default',
+    profile: 'standard', timeBudgetSeconds: 30, prompt: 'never start', outputSchema: null,
+  })
+  invalidTargetStore.close()
+  const invalidWorker = spawnSync(process.execPath, [bundle, 'worker', '--job', invalidTarget.id, '--state-dir', invalidTargetState], {
+    cwd: repo, encoding: 'utf8', timeout: 10_000,
+  })
+  assert.equal(invalidWorker.status, 1)
+  const failedTargetStore = new JobStore(invalidTargetState)
+  assert.equal(failedTargetStore.requireJob(invalidTarget.id).status, 'failed')
+  assert.equal(failedTargetStore.requireJob(invalidTarget.id).error.kind, 'ROUTE_DENIED')
+  failedTargetStore.close()
   const escape = join(repo, 'escape')
   symlinkSync(temp, escape, 'dir')
   const nestedRead = cli([...runArgs, '--cwd', nestedDir], { input: 'nested read', stateDir: state('nested-read') })

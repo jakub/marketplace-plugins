@@ -16,7 +16,7 @@ if (mode === 'mcp') {
     depth,
     stateDir: flags['state-dir'] || defaultStateDir(),
     entryPath,
-    projectDir: process.env.CLAUDE_PROJECT_DIR || null,
+    projectDir: process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || null,
   })
 } else if (mode === 'worker') {
   const { flags } = parse(argv)

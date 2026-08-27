@@ -1,0 +1,12 @@
+{
+  "flow_delegate": {
+    "command": "node",
+    "args": [
+      "./dist/delegation.mjs",
+      "mcp",
+      "--host",
+      "codex"
+    ],
+    "cwd": "."
+  }
+}
