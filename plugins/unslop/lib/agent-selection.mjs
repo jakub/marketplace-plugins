@@ -1,12 +1,13 @@
-// Harness-neutral selection with small, explicit source adapters. Unknown Codex seats
-// receive the rules by default; skipping is an optimization and must be proven safe.
+// Harness-neutral selection with small, explicit source adapters. Codex seats all
+// receive the rules: every skip below is justified by a Claude mechanism (Explore
+// returns file paths, fork copies the parent context that already carries the session
+// block, codex-delegate relays Codex output verbatim), and none of those justifications
+// has been observed on Codex. A Codex skip needs its own captured evidence.
 
-const COMMON_SKIP = new Set(['fork', 'codex-delegate', 'flow:codex-delegate'])
-const CLAUDE_SKIP = new Set(['Explore'])
+const CLAUDE_SKIP = new Set(['Explore', 'fork', 'codex-delegate', 'flow:codex-delegate'])
 
 export function shouldInjectSubagent({ source, agentType }) {
   if (typeof agentType !== 'string' || agentType === '') return true
-  if (COMMON_SKIP.has(agentType)) return false
   if (source === 'claude' && CLAUDE_SKIP.has(agentType)) return false
   return true
 }
