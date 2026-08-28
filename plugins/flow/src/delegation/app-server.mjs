@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, realpathSync } from 'node:fs'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { DelegationError } from './contracts.mjs'
 import { VERSION } from './version.mjs'
@@ -13,13 +15,16 @@ const APPROVAL_METHODS = new Set([
 
 const MCP_PAGE_LIMIT = 100
 const MCP_MAX_PAGES = 10
+export const CODEX_PERMISSION_PROFILE = 'flow_delegation'
+const MIN_CODEX_VERSION = [0, 150, 1]
 
 export const isApprovalRequest = (method) => APPROVAL_METHODS.has(method)
 
 export class AppServerClient {
-  constructor({ cwd, env = {}, onNotification = () => {}, onServerRequest = () => {}, onClose = () => {} } = {}) {
+  constructor({ cwd, env = {}, experimentalApi = false, onNotification = () => {}, onServerRequest = () => {}, onClose = () => {} } = {}) {
     this.cwd = cwd
     this.env = env
+    this.experimentalApi = experimentalApi
     this.onNotification = onNotification
     this.onServerRequest = onServerRequest
     this.onClose = onClose
@@ -53,7 +58,7 @@ export class AppServerClient {
     await this.request('initialize', {
       clientInfo: { name: 'flow-delegation', title: 'Flow delegation', version: VERSION },
       capabilities: {
-        experimentalApi: false,
+        experimentalApi: this.experimentalApi,
         requestAttestation: false,
         mcpServerOpenaiFormElicitation: false,
         optOutNotificationMethods: null,
@@ -269,18 +274,58 @@ export function codexVersion() {
   const result = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10_000 })
   if (result.error?.code === 'ENOENT') return { ok: false, kind: 'CODEX_NOT_INSTALLED', version: null }
   if (result.status !== 0) return { ok: false, kind: 'CODEX_VERSION', version: null }
-  return { ok: true, kind: null, version: result.stdout.trim() }
+  const version = result.stdout.trim()
+  const match = /\b(\d+)\.(\d+)\.(\d+)\b/.exec(version)
+  if (!match) return { ok: false, kind: 'CODEX_VERSION', version }
+  const actual = match.slice(1).map(Number)
+  let comparison = 0
+  for (let index = 0; index < MIN_CODEX_VERSION.length; index++) {
+    if (actual[index] === MIN_CODEX_VERSION[index]) continue
+    comparison = actual[index] > MIN_CODEX_VERSION[index] ? 1 : -1
+    break
+  }
+  const compatible = comparison >= 0
+  return compatible
+    ? { ok: true, kind: null, version }
+    : { ok: false, kind: 'CODEX_TOO_OLD', version, minimum: MIN_CODEX_VERSION.join('.') }
 }
 
-export function sandboxFor(job) {
+export function codexHostSupport() {
+  if (process.platform !== 'linux') {
+    return { ok: false, kind: 'UNSUPPORTED_HOST', platform: process.platform, required: 'linux' }
+  }
+  return { ok: true, kind: null, platform: process.platform, required: 'linux' }
+}
+
+export function restrictedPermissionConfig(job, { gitMetadataPaths = [], tempDir = null } = {}) {
+  const filesystem = {
+    ':minimal': 'read',
+    [job.workspaceKey]: job.access === 'workspace-write' ? 'write' : 'read',
+  }
   if (job.access === 'workspace-write') {
-    return {
-      type: 'workspaceWrite',
-      writableRoots: [job.workspaceKey],
-      networkAccess: false,
-      excludeTmpdirEnvVar: false,
-      excludeSlashTmp: false,
+    for (const name of ['.git', '.agents', '.codex']) {
+      const path = join(job.workspaceKey, name)
+      if (!existsSync(path)) continue
+      filesystem[path] = 'read'
+      try { filesystem[realpathSync(path)] = 'read' } catch {}
     }
   }
-  return { type: 'readOnly', networkAccess: false }
+  for (const path of gitMetadataPaths) filesystem[path] = 'read'
+  if (tempDir) filesystem[tempDir] = 'write'
+  return {
+    permissions: {
+      [CODEX_PERMISSION_PROFILE]: {
+        description: 'Flow delegated workspace access.',
+        filesystem,
+        network: { enabled: false },
+      },
+    },
+  }
+}
+
+export function assertRestrictedPermissionProfile(response) {
+  if (response?.activePermissionProfile?.id !== CODEX_PERMISSION_PROFILE) {
+    throw new DelegationError('PERMISSION_PROFILE', 'Codex did not activate Flow\'s restricted permission profile.')
+  }
+  return { profile: CODEX_PERMISSION_PROFILE }
 }

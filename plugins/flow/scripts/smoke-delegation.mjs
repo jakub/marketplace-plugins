@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -173,11 +173,12 @@ new JobStore(process.argv[2]).close()
 
 writeFileSync(fake, `#!/usr/bin/env node
 import { createInterface } from 'node:readline'
-if (process.argv[2] === '--version') { console.log('codex-cli 0.test'); process.exit(0) }
+if (process.argv[2] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0) }
 const mode = process.env.FLOW_FAKE_MODE || 'happy'
 const say = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let active = null
 let threadConfig = null
+let experimentalApi = false
 let done = false
 let timer = null
 const finish = (status = 'completed', output = null) => {
@@ -220,7 +221,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (message.result?.permissions && Object.keys(message.result.permissions).length === 0) finish('failed', '')
     else process.exit(18)
   }
-  else if (message.method === 'initialize') answer({ userAgent: 'fake' })
+  else if (message.method === 'initialize') {
+    experimentalApi = message.params.capabilities?.experimentalApi === true
+    answer({ userAgent: 'fake' })
+  }
   else if (message.method === 'initialized') {
     if (mode === 'malformed-protocol') process.stdout.write('not-json\\n')
     if (mode === 'stdin-closed') {
@@ -244,19 +248,46 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         ]
     answer({ data: inventory, nextCursor: null })
   }
+  else if (message.method === 'permissionProfile/list') {
+    if (!experimentalApi) say({ id: message.id, error: { code: -32602, message: 'experimental API disabled' } })
+    else answer({ data: [{ id: ':read-only', description: 'read', allowed: true }], nextCursor: null })
+  }
   else if (message.method === 'thread/start') {
     threadConfig = message.params.config
+    const doctorProbe = message.params.serviceName === 'flow-delegation-doctor'
+    const expectedAccess = doctorProbe ? 'read' : process.env.FLOW_DELEGATION_ACCESS === 'workspace-write' ? 'write' : 'read'
+    const workspaceKey = doctorProbe ? process.cwd() : process.env.FLOW_DELEGATION_WORKSPACE_KEY
+    const filesystem = threadConfig?.permissions?.flow_delegation?.filesystem
     if (mode === 'provider-error') {
       say({ id: message.id, error: { code: -32603, message: 'account test@example.invalid failed at /home/test/private/provider.json' } })
+    } else if (!experimentalApi
+      || message.params.permissions !== 'flow_delegation'
+      || message.params.sandbox !== undefined
+      || filesystem?.[':minimal'] !== 'read'
+      || filesystem?.['/'] !== undefined
+      || filesystem?.[':root'] !== undefined
+      || filesystem?.[workspaceKey] !== expectedAccess
+      || (!doctorProbe && filesystem?.[process.env.TMPDIR] !== 'write')
+      || (expectedAccess === 'write' && filesystem?.[workspaceKey + '/.git'] !== 'read')
+      || threadConfig?.permissions?.flow_delegation?.network?.enabled !== false
+      || (!doctorProbe && !message.params.developerInstructions?.includes('<flow-charter>'))
+      || (!doctorProbe && !message.params.developerInstructions?.includes('Do not start subagents'))) {
+      say({ id: message.id, error: { code: -32602, message: 'missing restricted Flow delegation profile' } })
     } else if (mode === 'profile' && !message.params.developerInstructions.includes('authorized defensive research')) {
       say({ id: message.id, error: { code: -32602, message: 'missing defensive profile' } })
-    } else answer({ thread: { id: 'thread-test' } })
+    } else answer({ thread: { id: 'thread-test' }, activePermissionProfile: { id: 'flow_delegation', extends: null } })
   }
   else if (message.method === 'thread/resume') {
     threadConfig = message.params.config
-    answer({ thread: { id: message.params.threadId } })
+    if (message.params.permissions !== 'flow_delegation' || message.params.sandbox !== undefined) {
+      say({ id: message.id, error: { code: -32602, message: 'resume lost restricted Flow delegation profile' } })
+    } else answer({ thread: { id: message.params.threadId }, activePermissionProfile: { id: 'flow_delegation', extends: null } })
   }
   else if (message.method === 'turn/start') {
+    if (message.params.permissions !== undefined || message.params.sandboxPolicy !== undefined) {
+      say({ id: message.id, error: { code: -32602, message: 'turn replaced sticky permissions' } })
+      return
+    }
     done = false
     active = { threadId: message.params.threadId, turnId: 'turn-' + Date.now() }
     if (mode === 'accepted-crash') {
@@ -274,6 +305,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       timer = setTimeout(() => say({ method: 'item/commandExecution/requestApproval', id: 900, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'command-1' } }), 20)
     } else if (mode === 'permissions-approval') {
       timer = setTimeout(() => say({ method: 'item/permissions/requestApproval', id: 902, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'permissions-1', cwd: process.cwd(), permissions: { network: { enabled: true } }, startedAtMs: Date.now() } }), 20)
+    } else if (mode === 'failed-turn') {
+      timer = setTimeout(() => {
+        const error = { message: 'model gpt-private invalid for account test@example.invalid at /home/test/private/config.json' }
+        say({ method: 'turn/completed', params: { threadId: active.threadId, turn: { id: active.turnId, items: [], itemsView: { type: 'full' }, status: 'failed', error, startedAt: 1, completedAt: 2, durationMs: 10 } } })
+      }, 20)
     } else timer = setTimeout(() => finish(), mode === 'slow' || mode === 'steer' ? 2500 : 20)
   } else if (message.method === 'turn/interrupt') { answer({}); finish('interrupted', '') }
   else if (message.method === 'turn/steer') { answer({}); finish('completed', 'STEERED: ' + message.params.input[0].text) }
@@ -364,7 +400,56 @@ try {
   writeFileSync(falseSchemaFile, 'false')
   const rejectedByBooleanSchema = cli([...runArgs, '--schema-file', falseSchemaFile], { input: 'Return anything', stateDir: state('schema-false') })
   assert.equal(rejectedByBooleanSchema.status, 'failed')
-  assert.equal(rejectedByBooleanSchema.error.kind, 'SCHEMA_OUTPUT')
+  assert.equal(rejectedByBooleanSchema.error.kind, 'BAD_SCHEMA')
+  assert.equal(jobCount(state('schema-false')), 0)
+  const incompleteSchemaFile = join(temp, 'incomplete-schema.json')
+  writeFileSync(incompleteSchemaFile, JSON.stringify({ type: 'object', properties: { answer: { const: 'yes' } } }))
+  const incompleteSchema = cli([...runArgs, '--schema-file', incompleteSchemaFile], { input: 'Return JSON', stateDir: state('schema-incomplete') })
+  assert.equal(incompleteSchema.status, 'failed')
+  assert.equal(incompleteSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(incompleteSchema.error.message, /additionalProperties/)
+  assert.equal(jobCount(state('schema-incomplete')), 0)
+  const untypedSchemaFile = join(temp, 'untyped-schema.json')
+  writeFileSync(untypedSchemaFile, JSON.stringify({
+    type: 'object', additionalProperties: false, required: ['answer'],
+    properties: { answer: { const: 'yes' } },
+  }))
+  const untypedSchema = cli([...runArgs, '--schema-file', untypedSchemaFile], { input: 'Return JSON', stateDir: state('schema-untyped') })
+  assert.equal(untypedSchema.status, 'failed')
+  assert.equal(untypedSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(untypedSchema.error.message, /explicit type/)
+  assert.equal(jobCount(state('schema-untyped')), 0)
+  const constrainedRefSchemaFile = join(temp, 'constrained-ref-schema.json')
+  writeFileSync(constrainedRefSchemaFile, JSON.stringify({
+    type: 'object', additionalProperties: false, required: ['answer'],
+    properties: { answer: { $ref: '#/$defs/answer', minLength: 1 } },
+    $defs: { answer: { type: 'string' } },
+  }))
+  const constrainedRefSchema = cli([...runArgs, '--schema-file', constrainedRefSchemaFile], { input: 'Return JSON', stateDir: state('schema-constrained-ref') })
+  assert.equal(constrainedRefSchema.status, 'failed')
+  assert.equal(constrainedRefSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(constrainedRefSchema.error.message, /explicit type/)
+  assert.equal(jobCount(state('schema-constrained-ref')), 0)
+  const constrainedAnyOfSchemaFile = join(temp, 'constrained-any-of-schema.json')
+  writeFileSync(constrainedAnyOfSchemaFile, JSON.stringify({
+    type: 'object', additionalProperties: false, required: ['answer'],
+    properties: { answer: { anyOf: [{ type: 'string' }, { type: 'null' }], minLength: 1 } },
+  }))
+  const constrainedAnyOfSchema = cli([...runArgs, '--schema-file', constrainedAnyOfSchemaFile], { input: 'Return JSON', stateDir: state('schema-constrained-any-of') })
+  assert.equal(constrainedAnyOfSchema.status, 'failed')
+  assert.equal(constrainedAnyOfSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(constrainedAnyOfSchema.error.message, /explicit type/)
+  assert.equal(jobCount(state('schema-constrained-any-of')), 0)
+  const unsupportedApplicatorSchemaFile = join(temp, 'unsupported-applicator-schema.json')
+  writeFileSync(unsupportedApplicatorSchemaFile, JSON.stringify({
+    type: 'object', additionalProperties: false, required: ['answer'],
+    properties: { answer: { oneOf: [{ type: 'string' }, { type: 'null' }] } },
+  }))
+  const unsupportedApplicatorSchema = cli([...runArgs, '--schema-file', unsupportedApplicatorSchemaFile], { input: 'Return JSON', stateDir: state('schema-unsupported-applicator') })
+  assert.equal(unsupportedApplicatorSchema.status, 'failed')
+  assert.equal(unsupportedApplicatorSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(unsupportedApplicatorSchema.error.message, /unsupported oneOf/)
+  assert.equal(jobCount(state('schema-unsupported-applicator')), 0)
 
   const profile = cli([...runArgs, '--profile', 'defensive-security'], { input: 'Profile test', mode: 'profile', stateDir: state('profile') })
   assert.equal(profile.status, 'succeeded')
@@ -408,7 +493,8 @@ try {
   const escape = join(repo, 'escape')
   symlinkSync(temp, escape, 'dir')
   const nestedRead = cli([...runArgs, '--cwd', nestedDir], { input: 'nested read', stateDir: state('nested-read') })
-  assert.equal(nestedRead.status, 'succeeded')
+  assert.equal(nestedRead.status, 'failed')
+  assert.equal(nestedRead.error.kind, 'OUTSIDE_ROOTS')
   const widenedWrite = cli([...runArgs, '--cwd', nestedDir, '--access', 'workspace-write'], { input: 'nested write', stateDir: state('nested-write') })
   assert.equal(widenedWrite.status, 'failed')
   assert.equal(widenedWrite.error.kind, 'OUTSIDE_ROOTS')
@@ -429,6 +515,11 @@ try {
   assert.equal(providerError.error.message, 'Codex App Server rejected a request.')
   assert.equal(providerError.error.details.code, -32603)
   assert.doesNotMatch(JSON.stringify(providerError), /test@example\.invalid|\/home\/test\/private/)
+  const failedTurn = cli(runArgs, { input: 'fail in turn', mode: 'failed-turn', stateDir: state('failed-turn') })
+  assert.equal(failedTurn.status, 'failed')
+  assert.equal(failedTurn.error.kind, 'BAD_MODEL')
+  assert.equal(failedTurn.error.message, 'Codex rejected the requested model.')
+  assert.doesNotMatch(JSON.stringify(failedTurn), /test@example\.invalid|\/home\/test\/private|gpt-private/)
 
   console.log('rejected requests never reach the job table')
   const noModelState = state('no-model')
@@ -933,6 +1024,8 @@ try {
   assert.equal(doctorResult.structuredContent.ok, true)
   assert.equal(doctorResult.structuredContent.checks.workspace.ok, true)
   assert.equal(doctorResult.structuredContent.checks.mcpIsolation.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.profile, 'flow_delegation')
   assert.equal(doctorResult.structuredContent.mcp.client.name, 'flow-smoke')
   assert.equal(doctorResult.structuredContent.mcp.capabilities.roots.listChanged, true)
   await client.close()
@@ -968,6 +1061,12 @@ try {
   })
   assert.equal(missingMcpHost.status, 2)
   assert.match(missingMcpHost.stderr, /--host is required/)
+
+  for (const entry of readdirSync(temp, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('state-')) continue
+    const jobTempRoot = join(temp, entry.name, 'tmp')
+    if (existsSync(jobTempRoot)) assert.deepEqual(readdirSync(jobTempRoot), [], `${entry.name} leaked a job temporary directory`)
+  }
 
   console.log('smoke-delegation: ALL PASS')
 } finally {

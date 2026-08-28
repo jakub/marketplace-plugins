@@ -14,7 +14,10 @@ const CREDENTIAL_PATH_ENV = [
   'GOOGLE_APPLICATION_CREDENTIALS',
 ]
 
-export const claudeTools = (access) => access === 'workspace-write' ? WRITE_TOOLS : READ_TOOLS
+export const claudeTools = (access, { structured = false } = {}) => [
+  ...(access === 'workspace-write' ? WRITE_TOOLS : READ_TOOLS),
+  ...(structured ? ['StructuredOutput'] : []),
+]
 
 export const pathInside = (root, path) => {
   const rel = relative(root, path)
@@ -270,7 +273,7 @@ function nestedProviderReason(command) {
 }
 
 export function claudePolicyHook(job, { onDenied = () => {} } = {}) {
-  const allowed = new Set(claudeTools(job.access))
+  const allowed = new Set(claudeTools(job.access, { structured: job.outputSchema != null }))
   return async (input) => {
     if (input?.hook_event_name !== 'PreToolUse') return { continue: true }
     const toolName = input.tool_name

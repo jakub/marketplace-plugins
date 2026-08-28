@@ -65,6 +65,40 @@ The App Server client handled child process errors and exits but did not attach 
 
 The client now listens for stdin errors, rejects all pending requests with `APP_SERVER_EXIT`, terminates the child, and lets the worker apply the existing conservative read or write outcome. It also treats malformed JSON lines as `APP_SERVER_PROTOCOL` instead of ignoring them.
 
+### 6. Codex read-only jobs could read outside the assigned workspace
+
+Status: fixed, unreleased.
+
+Codex's built-in `readOnly` sandbox and `:read-only` permission profile both grant host-root read access. `runtimeWorkspaceRoots` labels the project but does not narrow that read grant. A controlled live job read a marker file outside the assigned repository.
+
+Flow now requires Linux and Codex CLI 0.150.1 or newer. It starts App Server with the experimental API and defines a custom `flow_delegation` profile in the thread config. That profile grants only Codex's minimal runtime reads, the canonical worktree, exact Git metadata, and one private job temporary directory. Network access is off. A write job keeps `.git`, `.agents`, `.codex`, and linked-worktree Git metadata read-only. Flow proves the whole worktree against the client roots for read and write jobs, so a nested root cannot widen into its parent repository. It checks App Server's `activePermissionProfile` before it sends the prompt. A second controlled live probe could no longer read the outside marker.
+
+Doctor now tests the permission-profile API, starts an ephemeral thread with the same restricted profile, verifies the active profile ID, and checks that thread's MCP inventory. It reports the host and minimum-version requirements as separate checks.
+
+### 7. Claude schema jobs denied the provider's structured-output tool
+
+Status: fixed, unreleased.
+
+Claude Code emits a native `StructuredOutput` tool call when the Agent SDK requests JSON Schema output. Flow supplied the output format but omitted that tool from its allowlist, so Flow's own PreToolUse hook denied valid schema completion.
+
+Schema jobs now add `StructuredOutput` to both Claude tool lists and to the policy hook's allowed set. Plain jobs still deny it. The existing Ajv check remains the final result boundary.
+
+### 8. Delegated review workers did not receive the Flow charter
+
+Status: fixed, unreleased.
+
+Codex review workers read the repository instructions, saw the required `<flow-charter>` block was missing, and could spend the turn diagnosing the missing session contract. The old developer instruction was also too short to carry current seat rules.
+
+The build now reads `charter/charter.md` and injects that exact source into the committed bundle. Both Codex and Claude workers receive it. A final `<delegated-seat>` block then narrows the main-session charter: no subagents, no nested provider invocation, no publication, and no authority outside the assigned workspace and access mode. The charter remains hand-authored in one file.
+
+### 9. Provider schema failures and failed turns exposed avoidable raw errors
+
+Status: fixed, unreleased.
+
+Claude Code rejected a valid Draft 2020-12 schema when it contained the top-level `$schema` marker. Codex rejected schemas that passed generic Ajv validation but did not meet its strict structured-output rules, such as a `const` node without an explicit type. A failed Codex turn could also return the provider's raw error string, including account data, internal paths, and rejected model names.
+
+Flow now validates schemas for the selected provider before it creates a job. Codex schemas must use the object-root, explicit-type, closed-object, required-property, array-item, `anyOf`, and plain-reference rules that Flow supports. Unsupported schema applicators fail with `BAD_SCHEMA`. Flow removes only the top-level dialect marker from the provider copy and keeps the original schema for its local Ajv check. Failed Codex turns map to fixed public errors such as `BAD_MODEL`, `BAD_SCHEMA`, `CODEX_AUTH`, and `RATE_LIMIT`. Raw provider strings never enter the public result.
+
 ## Completed supporting work
 
 ### Job listing
@@ -73,7 +107,7 @@ The client now listens for stdin errors, rejects all pending requests with `APP_
 
 ### Doctor output
 
-Doctor now distinguishes workspace discovery from provider health. It can show a healthy database and provider account while also naming a missing-root failure. The Codex route checks that the App Server supports the MCP inventory operation needed by the isolation guard.
+Doctor now distinguishes workspace discovery from provider health. It can show a healthy database and provider account while also naming a missing-root failure. The Codex route checks the Linux host, minimum CLI version, experimental permission API, active restricted profile, and MCP inventory on an ephemeral thread.
 
 The current MCP SDK exposes the client name, version, and capabilities after initialization. It does not expose the negotiated protocol version. Doctor returns `null` for that value with an explanation rather than reading a private SDK field.
 
@@ -88,6 +122,8 @@ MCP mode now requires `--host claude` or `--host codex`. The manifests already p
 - SQLite transaction cleanup preserves the original error if `ROLLBACK` also fails.
 - The delegation build no longer rewrites trailing whitespace across the generated bundle after esbuild finishes. The repository exempts that generated file from the blank-at-end-of-line diff check because bundled dependency string literals contain whitespace-only lines.
 - Documentation now includes `reconciling`, root prerequisites, list behavior, timeout units, and Codex MCP isolation.
+- Codex and Claude provider instructions use the current charter source instead of a copied summary.
+- Provider schema validation happens before a rejected prompt can enter the durable job table.
 
 ## Deferred App Server features
 
@@ -131,6 +167,8 @@ Before publishing this work:
 - run both deterministic delegation smoke suites;
 - run manifest, bundle-drift, and repository smoke checks;
 - run one authenticated read-only task through each route when both accounts have allowance;
+- prove a delegated Codex job cannot read a controlled marker outside its workspace;
+- run one structured-output task through each route and one review through each route;
 - verify the delegated Codex thread reports no callable MCP tools;
 - bump the Flow version in both plugin manifests and the marketplace entry;
 - bump the marketplace catalog version;

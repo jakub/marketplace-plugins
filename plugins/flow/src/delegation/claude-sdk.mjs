@@ -6,6 +6,8 @@ import { claudeSpawnCommand } from './claude-launch.mjs'
 import { DelegationError } from './contracts.mjs'
 import { normalizeClaudeError } from './claude-errors.mjs'
 import { claudePolicyHook, claudeSandboxFor, claudeTools } from './claude-policy.mjs'
+import { delegatedInstructions } from './instructions.mjs'
+import { providerOutputSchema } from './schema.mjs'
 import { VERSION } from './version.mjs'
 
 export const CLAUDE_AGENT_SDK_VERSION = typeof __CLAUDE_AGENT_SDK_VERSION__ !== 'undefined'
@@ -176,16 +178,6 @@ export async function claudeModels(cwd) {
   }
 }
 
-function delegatedInstructions(job) {
-  const access = job.access === 'workspace-write'
-    ? 'You may edit only the assigned Git worktree. Do not publish, push, or modify another checkout.'
-    : 'This is a read-only job. Do not edit files or mutate the repository.'
-  const profile = job.profile === 'defensive-security'
-    ? ' The caller selected the defensive-security profile for authorized defensive research.'
-    : ''
-  return `You are a delegated Claude worker. Complete the caller task directly. Do not start subagents, invoke Claude or Codex through the shell, or start another cross-family delegation. ${access} Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.${profile}`
-}
-
 export function createClaudeQuery(job, prompt, {
   sessionId,
   onSpawn = () => {},
@@ -193,7 +185,7 @@ export function createClaudeQuery(job, prompt, {
   onPolicyDenied = () => {},
   canUseTool,
 } = {}) {
-  const tools = claudeTools(job.access)
+  const tools = claudeTools(job.access, { structured: job.outputSchema != null })
   return query({
     prompt,
     options: {
@@ -208,7 +200,7 @@ export function createClaudeQuery(job, prompt, {
       // {not:{}} is the equivalent always-invalid object schema and reaches the provider.
       outputFormat: job.outputSchema == null
         ? undefined
-        : { type: 'json_schema', schema: job.outputSchema === false ? { not: {} } : job.outputSchema },
+        : { type: 'json_schema', schema: job.outputSchema === false ? { not: {} } : providerOutputSchema(job.outputSchema) },
       settingSources: [],
       strictMcpConfig: true,
       mcpServers: {},
@@ -226,7 +218,7 @@ export function createClaudeQuery(job, prompt, {
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: delegatedInstructions(job),
+        append: delegatedInstructions(job, 'Claude'),
       },
       extraArgs: { 'disable-slash-commands': null, 'no-chrome': null },
       env: {

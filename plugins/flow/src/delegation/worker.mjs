@@ -1,8 +1,13 @@
-import { AppServerClient, assertThreadMcpIsolated, isolatedThreadConfig, isApprovalRequest, sandboxFor } from './app-server.mjs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, isApprovalRequest, restrictedPermissionConfig } from './app-server.mjs'
 import { runClaudeWorker } from './claude-worker.mjs'
 import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
+import { delegatedInstructions } from './instructions.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
+import { providerOutputSchema } from './schema.mjs'
 import { JobStore, processStartToken, serviceLog } from './store.mjs'
+import { gitMetadataPaths } from './workspace.mjs'
 
 // The total budget alone cannot catch a wedged App Server: a half-dead socket sends no
 // notifications while the worker keeps heartbeating as healthy. This is the quiet-period
@@ -10,14 +15,6 @@ import { JobStore, processStartToken, serviceLog } from './store.mjs'
 const STALL_SECONDS = 420
 
 const textInput = (text) => [{ type: 'text', text, text_elements: [] }]
-
-function developerInstructions(job) {
-  const base = 'You are a delegated Codex worker. Complete the caller task directly. Do not delegate to another model family or start subagents.'
-  if (job.profile === 'defensive-security') {
-    return `${base} The caller selected the defensive-security profile for authorized defensive research. Stay within the requested workspace and access mode.`
-  }
-  return base
-}
 
 export async function runWorker(options) {
   const store = new JobStore(options.stateDir)
@@ -74,6 +71,7 @@ async function runCodexWorker({ jobId, stateDir }) {
   let controlBusy = false
   let activeControlPoll = Promise.resolve()
   let previewAt = 0
+  let jobTempDir = null
   const signalHandlers = []
 
   // Every notification for this job is proof the App Server is still alive, so each one
@@ -86,12 +84,21 @@ async function runCodexWorker({ jobId, stateDir }) {
 
   try {
     assertRoute({ host: job.host, target: job.target, depth: job.depth })
+    const host = codexHostSupport()
+    if (!host.ok) throw new DelegationError(host.kind, 'Codex delegation requires a Linux host.')
+    const codex = codexVersion()
+    if (!codex.ok) throw new DelegationError(codex.kind, 'Codex no longer meets the delegation version requirement.')
     const preflightCancel = store.pendingControls(jobId).find((control) => control.type === 'cancel')
     if (preflightCancel) {
       store.handleControl(jobId, preflightCancel.id, { result: 'cancelled_before_start' })
       store.finish(jobId, 'cancelled')
       return
     }
+    const tempRoot = join(stateDir, 'tmp')
+    mkdirSync(tempRoot, { recursive: true, mode: 0o700 })
+    jobTempDir = mkdtempSync(join(tempRoot, `${job.id}-`))
+    chmodSync(jobTempDir, 0o700)
+    const metadataPaths = await gitMetadataPaths(job.cwd)
     heartbeat = setInterval(() => store.heartbeat(jobId), 1_000)
 
     // A kill mid-turn skips the cooperative interrupt. The child dies BEFORE the job is
@@ -100,6 +107,7 @@ async function runCodexWorker({ jobId, stateDir }) {
     const onSignal = (signal) => {
       try { client?.child?.stdin?.destroy() } catch {}
       try { client?.child?.kill('SIGKILL') } catch {}
+      try { if (jobTempDir) rmSync(jobTempDir, { recursive: true, force: true }) } catch {}
       try {
         const current = store.getJob(jobId)
         if (current && !TERMINAL_STATES.includes(current.status)) {
@@ -176,7 +184,11 @@ async function runCodexWorker({ jobId, stateDir }) {
       env: {
         FLOW_DELEGATION_DEPTH: String(job.depth + 1),
         FLOW_DELEGATION_PARENT_JOB_ID: job.id,
+        FLOW_DELEGATION_ACCESS: job.access,
+        FLOW_DELEGATION_WORKSPACE_KEY: job.workspaceKey,
+        TMPDIR: jobTempDir,
       },
+      experimentalApi: true,
       onNotification,
       onServerRequest,
       onClose: (error) => {
@@ -186,7 +198,10 @@ async function runCodexWorker({ jobId, stateDir }) {
     }).start()
     store.appendEvent(jobId, 'app_server.ready', {})
 
-    const config = await isolatedThreadConfig(client)
+    const config = {
+      ...await isolatedThreadConfig(client),
+      ...restrictedPermissionConfig(job, { gitMetadataPaths: metadataPaths, tempDir: jobTempDir }),
+    }
     store.appendEvent(jobId, 'mcp.isolation_configured', {
       standaloneServers: Object.keys(config.mcp_servers).length,
     })
@@ -195,10 +210,11 @@ async function runCodexWorker({ jobId, stateDir }) {
       model: job.model,
       serviceTier: job.serviceTier,
       cwd: job.cwd,
+      runtimeWorkspaceRoots: [job.workspaceKey],
       approvalPolicy: 'never',
       approvalsReviewer: 'user',
-      sandbox: job.access,
-      developerInstructions: developerInstructions(job),
+      permissions: CODEX_PERMISSION_PROFILE,
+      developerInstructions: delegatedInstructions(job, 'Codex'),
       config,
     }
     const threadResponse = job.nativeThreadId
@@ -206,6 +222,7 @@ async function runCodexWorker({ jobId, stateDir }) {
       : await client.request('thread/start', { ...threadParams, ephemeral: false, serviceName: 'flow-delegation' }, 30_000)
     const threadId = threadResponse.thread?.id
     if (!threadId) throw new DelegationError('APP_SERVER_PROTOCOL', 'Codex did not return a thread ID.')
+    assertRestrictedPermissionProfile(threadResponse)
     const isolation = await assertThreadMcpIsolated(client, threadId)
     store.appendEvent(jobId, 'mcp.isolation_verified', isolation)
     store.setRunning(jobId, { threadId })
@@ -217,12 +234,11 @@ async function runCodexWorker({ jobId, stateDir }) {
       cwd: job.cwd,
       approvalPolicy: 'never',
       approvalsReviewer: 'user',
-      sandboxPolicy: sandboxFor(job),
       model: job.model,
       serviceTier: job.serviceTier,
       effort: job.effort,
       summary: 'detailed',
-      outputSchema: job.outputSchema,
+      outputSchema: providerOutputSchema(job.outputSchema),
     }, 30_000)
     turnId = turnResponse.turn?.id || turnId
     if (!turnId) throw new DelegationError('APP_SERVER_PROTOCOL', 'Codex did not return a turn ID.')
@@ -336,6 +352,7 @@ async function runCodexWorker({ jobId, stateDir }) {
     if (stallTimer) clearTimeout(stallTimer)
     await activeControlPoll.catch(() => {})
     if (client) await client.stop()
+    if (jobTempDir) rmSync(jobTempDir, { recursive: true, force: true })
     store.close()
   }
 }

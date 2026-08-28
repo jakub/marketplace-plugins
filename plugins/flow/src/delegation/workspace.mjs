@@ -90,7 +90,18 @@ export async function worktreeKey(cwd) {
   }
 }
 
-export async function writableWorktreeKey(cwd, roots) {
+export async function gitMetadataPaths(cwd) {
+  const paths = new Set()
+  for (const args of [
+    ['rev-parse', '--path-format=absolute', '--absolute-git-dir'],
+    ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+  ]) {
+    try { paths.add(realpathSync(await git(cwd, args, 'Git metadata is unavailable.'))) } catch {}
+  }
+  return [...paths].sort()
+}
+
+export async function validatedWorktreeKey(cwd, roots) {
   const key = await worktreeKey(cwd)
   if (roots.some((root) => isInside(root, key))) return key
   if (await sharedGitDirInsideRoots(key, roots)) return key

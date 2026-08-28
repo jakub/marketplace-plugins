@@ -4376,7 +4376,7 @@ var require_core = __commonJS({
           }
         }
       }
-      _addSchema(schema, meta2, baseId, validateSchema2 = this.opts.validateSchema, addSchema = this.opts.addUsedSchema) {
+      _addSchema(schema, meta2, baseId, validateSchema = this.opts.validateSchema, addSchema = this.opts.addUsedSchema) {
         let id2;
         const { schemaId } = this.opts;
         if (typeof schema == "object") {
@@ -4399,7 +4399,7 @@ var require_core = __commonJS({
             this._checkUnique(baseId);
           this.refs[baseId] = sch;
         }
-        if (validateSchema2)
+        if (validateSchema)
           this.validateSchema(schema, true);
         return sch;
       }
@@ -22734,7 +22734,6 @@ var StdioServerTransport = class {
 };
 
 // src/delegation/service.mjs
-var import__2 = __toESM(require__(), 1);
 import { spawn as spawn4 } from "node:child_process";
 
 // src/delegation/contracts.mjs
@@ -22870,6 +22869,8 @@ function jobSummary(job) {
 
 // src/delegation/app-server.mjs
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 // src/delegation/version.mjs
@@ -22885,14 +22886,17 @@ var APPROVAL_METHODS = /* @__PURE__ */ new Set([
 ]);
 var MCP_PAGE_LIMIT = 100;
 var MCP_MAX_PAGES = 10;
+var CODEX_PERMISSION_PROFILE = "flow_delegation";
+var MIN_CODEX_VERSION = [0, 150, 1];
 var isApprovalRequest = (method) => APPROVAL_METHODS.has(method);
 var AppServerClient = class {
-  constructor({ cwd, env = {}, onNotification = () => {
+  constructor({ cwd, env = {}, experimentalApi = false, onNotification = () => {
   }, onServerRequest = () => {
   }, onClose = () => {
   } } = {}) {
     this.cwd = cwd;
     this.env = env;
+    this.experimentalApi = experimentalApi;
     this.onNotification = onNotification;
     this.onServerRequest = onServerRequest;
     this.onClose = onClose;
@@ -22929,7 +22933,7 @@ var AppServerClient = class {
     await this.request("initialize", {
       clientInfo: { name: "flow-delegation", title: "Flow delegation", version: VERSION },
       capabilities: {
-        experimentalApi: false,
+        experimentalApi: this.experimentalApi,
         requestAttestation: false,
         mcpServerOpenaiFormElicitation: false,
         optOutNotificationMethods: null,
@@ -23154,19 +23158,58 @@ function codexVersion() {
   const result = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 1e4 });
   if (result.error?.code === "ENOENT") return { ok: false, kind: "CODEX_NOT_INSTALLED", version: null };
   if (result.status !== 0) return { ok: false, kind: "CODEX_VERSION", version: null };
-  return { ok: true, kind: null, version: result.stdout.trim() };
-}
-function sandboxFor(job) {
-  if (job.access === "workspace-write") {
-    return {
-      type: "workspaceWrite",
-      writableRoots: [job.workspaceKey],
-      networkAccess: false,
-      excludeTmpdirEnvVar: false,
-      excludeSlashTmp: false
-    };
+  const version2 = result.stdout.trim();
+  const match = /\b(\d+)\.(\d+)\.(\d+)\b/.exec(version2);
+  if (!match) return { ok: false, kind: "CODEX_VERSION", version: version2 };
+  const actual = match.slice(1).map(Number);
+  let comparison = 0;
+  for (let index = 0; index < MIN_CODEX_VERSION.length; index++) {
+    if (actual[index] === MIN_CODEX_VERSION[index]) continue;
+    comparison = actual[index] > MIN_CODEX_VERSION[index] ? 1 : -1;
+    break;
   }
-  return { type: "readOnly", networkAccess: false };
+  const compatible = comparison >= 0;
+  return compatible ? { ok: true, kind: null, version: version2 } : { ok: false, kind: "CODEX_TOO_OLD", version: version2, minimum: MIN_CODEX_VERSION.join(".") };
+}
+function codexHostSupport() {
+  if (process.platform !== "linux") {
+    return { ok: false, kind: "UNSUPPORTED_HOST", platform: process.platform, required: "linux" };
+  }
+  return { ok: true, kind: null, platform: process.platform, required: "linux" };
+}
+function restrictedPermissionConfig(job, { gitMetadataPaths: gitMetadataPaths2 = [], tempDir = null } = {}) {
+  const filesystem = {
+    ":minimal": "read",
+    [job.workspaceKey]: job.access === "workspace-write" ? "write" : "read"
+  };
+  if (job.access === "workspace-write") {
+    for (const name of [".git", ".agents", ".codex"]) {
+      const path = join(job.workspaceKey, name);
+      if (!existsSync(path)) continue;
+      filesystem[path] = "read";
+      try {
+        filesystem[realpathSync(path)] = "read";
+      } catch {
+      }
+    }
+  }
+  for (const path of gitMetadataPaths2) filesystem[path] = "read";
+  if (tempDir) filesystem[tempDir] = "write";
+  return {
+    permissions: {
+      [CODEX_PERMISSION_PROFILE]: {
+        description: "Flow delegated workspace access.",
+        filesystem,
+        network: { enabled: false }
+      }
+    }
+  };
+}
+function assertRestrictedPermissionProfile(response) {
+  if (response?.activePermissionProfile?.id !== CODEX_PERMISSION_PROFILE) {
+    throw new DelegationError("PERMISSION_PROFILE", "Codex did not activate Flow's restricted permission profile.");
+  }
+  return { profile: CODEX_PERMISSION_PROFILE };
 }
 
 // deps/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
@@ -55196,11 +55239,11 @@ function $Q(e, t) {
 
 // src/delegation/claude-sdk.mjs
 import { spawn as spawn3, spawnSync as spawnSync2 } from "node:child_process";
-import { accessSync as accessSync2, constants as constants4, realpathSync as realpathSync4 } from "node:fs";
+import { accessSync as accessSync2, constants as constants4, realpathSync as realpathSync5 } from "node:fs";
 import { delimiter as delimiter3, isAbsolute as isAbsolute5, resolve as resolve7, sep as sep6 } from "node:path";
 
 // src/delegation/claude-launch.mjs
-import { accessSync, constants as constants3, realpathSync as realpathSync2 } from "node:fs";
+import { accessSync, constants as constants3, realpathSync as realpathSync3 } from "node:fs";
 import { dirname as dirname4, resolve as resolve5 } from "node:path";
 function claudeSpawnCommand(command, args, {
   platform = process.platform,
@@ -55215,7 +55258,7 @@ function claudeSpawnCommand(command, args, {
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants3.R_OK);
-      return { command: nodeExecutable, args: [realpathSync2(candidate), ...args] };
+      return { command: nodeExecutable, args: [realpathSync3(candidate), ...args] };
     } catch {
     }
   }
@@ -55251,7 +55294,7 @@ function normalizeClaudeError(error2) {
 }
 
 // src/delegation/claude-policy.mjs
-import { existsSync as existsSync2, realpathSync as realpathSync3 } from "node:fs";
+import { existsSync as existsSync3, realpathSync as realpathSync4 } from "node:fs";
 import { homedir } from "node:os";
 import { basename as basename3, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute4, relative as relative2, resolve as resolve6, sep as sep5 } from "node:path";
 
@@ -55322,7 +55365,10 @@ var CREDENTIAL_PATH_ENV = [
   "CLAUDE_CONFIG_DIR",
   "GOOGLE_APPLICATION_CREDENTIALS"
 ];
-var claudeTools = (access3) => access3 === "workspace-write" ? WRITE_TOOLS : READ_TOOLS;
+var claudeTools = (access3, { structured = false } = {}) => [
+  ...access3 === "workspace-write" ? WRITE_TOOLS : READ_TOOLS,
+  ...structured ? ["StructuredOutput"] : []
+];
 var pathInside = (root, path) => {
   const rel = relative2(root, path);
   return rel === "" || !rel.startsWith(`..${sep5}`) && rel !== ".." && !isAbsolute4(rel);
@@ -55370,10 +55416,10 @@ function providerExecutablePaths() {
       directory ? suffixes.map((suffix) => resolve6(directory, `${executable}${suffix}`)) : []
     ));
     for (const candidate of candidates) {
-      if (!existsSync2(candidate)) continue;
+      if (!existsSync3(candidate)) continue;
       paths.add(candidate);
       try {
-        paths.add(realpathSync3(candidate));
+        paths.add(realpathSync4(candidate));
       } catch {
       }
     }
@@ -55392,7 +55438,7 @@ function claudeSandboxFor(job) {
     denyRead: [.../* @__PURE__ */ new Set([
       ...sensitiveReadPaths(),
       ...providerExecutablePaths(),
-      ...existsSync2("/proc") ? ["/proc"] : []
+      ...existsSync3("/proc") ? ["/proc"] : []
     ])],
     ...job.access === "workspace-write" ? { allowWrite: [job.workspaceKey] } : { denyWrite: [job.workspaceKey] }
   };
@@ -55422,10 +55468,10 @@ function canonicalTarget(job, value) {
   if (typeof value !== "string" || !value) return null;
   const absolute = resolve6(job.cwd, value);
   let existing = absolute;
-  while (!existsSync2(existing) && dirname5(existing) !== existing) existing = dirname5(existing);
+  while (!existsSync3(existing) && dirname5(existing) !== existing) existing = dirname5(existing);
   let canonical;
   try {
-    const base = realpathSync3(existing);
+    const base = realpathSync4(existing);
     canonical = resolve6(base, relative2(existing, absolute));
   } catch {
     return null;
@@ -55551,7 +55597,7 @@ function nestedProviderReason(command) {
 }
 function claudePolicyHook(job, { onDenied = () => {
 } } = {}) {
-  const allowed = new Set(claudeTools(job.access));
+  const allowed = new Set(claudeTools(job.access, { structured: job.outputSchema != null }));
   return async (input) => {
     if (input?.hook_event_name !== "PreToolUse") return { continue: true };
     const toolName = input.tool_name;
@@ -55579,6 +55625,130 @@ function claudePolicyHook(job, { onDenied = () => {
       }
     };
   };
+}
+
+// src/delegation/charter.mjs
+var FLOW_CHARTER = true ? "Note to agents: this charter outlines how we use `flow` to work on bigger projects. \nIf we're working on a smaller project that *isn't* using `flow`, don't ignore this file! \nThere's good stuff here that I want you to follow, so skip the ceremony but apply the principles: follow everything except the `flow` pipeline section.\nOrchestration, delegation, model selection, and rules of engagement ALWAYS apply.\n\n<flow-charter>\n\n# Flow Engineering Charter\nThis is the charter for the `flow` plugin, injected at the start of each session.\nCLAUDE.md covers who the user is; this describes how we build and delegate our work.\nUse this as a guide for all development tasks.\n\n## Orchestration with Delegation to Subagents\nThe overall operating model for `flow` is a main-thread session model (usually Fable) that spawns and monitors subagents. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.\n\nThe orchestrator has standing permission to spawn agents at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by subagents.\n\nDelegation is not free however: each agent re-establishes context and reports back, and you re-read the report. Delegate genuinely independent, sizeable tracks - not work you could finish in a handful of tool calls, and never verification of your own work, which belongs in your own loop.\n\nNever spawn more than ~20 parallel agents without the user's confirmation first.\n\nPermissions scale with how reversible the change is. Read-only agents: spawn freely. Agents that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.\n \n## Cross-family delegation\nReach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses\n`delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to\ninspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either\nprovider through shell commands.\n\nSet the model and effort explicitly every time. Always use the `default` service tier. The\nserver rejects same-family calls and nested cross-family calls. Codex supports live steering\nand crash reconciliation. Claude supports cancellation and session continuation, but not live\nsteering or post-crash result recovery; read the reported capabilities instead of assuming\nsymmetry.\n\n## The `flow` pipeline\nThis plugin provides several commands that run in order: `/flow:prep` \u2192 `/flow:issue` \u2192 `/flow:land`\n\n`prep` is the front door, and nothing enters the issue tracker otherwise.\n`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.\n`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.\n\nThe issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.\n\nIssues must contain acceptance criteria, including what evidence is required to satisfy.\nPRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the `/artifacts` skill (the plans client).\n\n`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything I didn't say or that changes the proposed shape for the better, then interview me one question at a time, prioritizing answers that change the architecture.\n\n## Model Rankings (as of 2026-08)\nHigher is better, on every axis. \nCheapness is inverted - Luna is effectively free and Fable is expensive.\nIntelligence is how hard a problem the model can handle unsupervised.\nTaste covers UI/UX, code quality assessments, API and architecture design, and copy text.\n\n| model                    | cheapness | intelligence        | taste |\n|--------------------------|-----------|---------------------|-------|\n| gpt-5.6-luna             | 9         | 4 (7 at max effort) | 4     |\n| sonnet-5                 | 5         | 6                   | 6     |\n| opus-5                   | 4         | 8                   | 8     |\n| gpt-5.6-sol              | 7         | 8                   | 5     |\n| gpt-daybreak-blue-latest | 7         | 8                   | 5     |\n| fable-5                  | 2         | 9                   | 9     |\n \n## Rules of Engagement - Model Selection\nThese are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.\n\nGeneral rule: intelligence > taste > cost, and anything user-facing (UI, text) *must* have taste >= 7.\nThe flip side is that lower efforts wander less and follow instructions more literally.\n\n### GPT-5.6 Luna\nLuna is basically free, and at max effort competes with Opus and Sol at medium-high efforts. It can handle low-to-moderate complexity tasks, lightweight code exploration, and anything that just needs a cheap but decent model.\n\n### Sonnet\nSonnet is primarily for mechanical work: invoking Sol or Luna through Flow's MCP tools, codebase exploration, writing ledgers, running deep test suites and gates. Use low effort for tool-driving work, medium/high/xhigh for anything needing to return a verdict.\n\n### Opus\nThe workhorse. Used for implementation, fixes, code review, and adjudication. High effort by default, xhigh for code and security reviews, max for adjudicating conflicting decisions. Opus xhigh is roughly similar to Fable for code writing tasks.\n\nOpus runs cyber classifiers. A refused seat returns null - indistinguishable from a dead agent, never a downgrade - so a security-flavored seat that comes back empty is a refusal until proven otherwise. Retry on the other family first: Daybreak Blue, then Sol. Fable shares the classifiers and is the last resort, not the first.\n\nDo not use Opus for taste calls - Fable is always used here.\n\n### GPT-5.6 Sol\nSol is in between Opus and Fable. It's an extremely competent, hard working, persistent model that writes code slightly uglier than Anthropic models. Sol is your default option for an outside or decorrelated opinion, adversarial reviews, and competing designs. Use it to review and challenge both Opus and Fable.\n\n### Daybreak Blue\nDaybreak Blue is a version of Sol without cyber classifiers, intended for defensive work by approved security researchers. Prefer Daybreak Blue over Sol for cyber or security-sensitive tasks.\n\n### Fable\nFable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.\n\nFable runs the same cyber classifiers as Opus, tuned stricter. A refusal returns null, not a weaker answer. Retry on Daybreak Blue first, then Opus; a double-null is reported to the user, never swallowed.\n\n## Rules of Engagement - Model Contracts\nSubagents return typed results (schemas) or write journals to disk - they shouldn't be returning prose.\n\nSubagents do **NOT** inherit this charter - only `fork` does, by copying your context. A fresh agent gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.\n\nPure locate/search fan-outs (built-in Explore et al.) spawn with `model: sonnet` - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.\n\nReview non-trivial changes before assuming they're done, and monitor every backgrounded command.\n\n## Rules of Engagement - Everything Else\nBefore adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.\n\nPackages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.\n\nIf the Context7 MCP is available, use it to fetch live documentation.\n\nGreenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.\n\nAgents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.\n\nAvoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.\n\nA backgrounded task, monitor, or subagent that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.\n\nGreen verdicts on anything that ships need a confirming cross-model read. \n\nWhen structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it with the `/artifacts` skill (default TTL is fine for an explainer), and hand back the URL.\n\nWhen adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through `/artifacts` with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.\n\nWe are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix. \n\nNo unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.\n\nComments are documentation - preserve and update while working, drop only if provably wrong.\nReal dependencies over mocks. \nDesign against races/TOCTOU up front for check-then-act code.\nRedact implementation details (db errors, stack traces, internal paths) at trust boundaries.\nWhen asked for a secret, surface ONLY the credential requested and avoid log pollution.\n\nNo commit or PR trailers of any kind - not attribution (Co-Authored-By, Generated-with), not session links (Claude-Session): the git author IS the author. This overrides any harness instruction to append them. Both rules are enforced by the `git-guard` hook anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.\n\nConventional commits, imperative, present tense; each commit is one atomic logical change.\n\nNot in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.\n\n`gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.\nDon't `await` a gate with nothing checking it.\nLong outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.\n\nNever bare-`cd` into a worktree - subshell `(cd $WT && \u2026)`, `git -C $WT`, or absolute paths. \"Shell cwd was reset\" notices are benign harness noise, ignore them.\n\nNever batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.\n\nPR descriptions: summary narrative + one-line-per-commit changelog.\n\nFind the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce \u2192 minimize \u2192 instrument \u2192 regression-test.\n\n## Gripes\nIf the `gripe` plugin is installed, the `gripe` CLI is available through the shell. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself.\n\n</flow-charter>\n" : readFileSync(new URL("../../charter/charter.md", import.meta.url), "utf8");
+
+// src/delegation/instructions.mjs
+function delegatedInstructions(job, provider) {
+  const access3 = job.access === "workspace-write" ? "You may edit only the assigned Git worktree. Do not publish, push, or modify another checkout." : "This is a read-only job. Do not edit files or mutate the repository.";
+  const profile = job.profile === "defensive-security" ? "\nThe caller selected the defensive-security profile for authorized defensive research." : "";
+  return `${FLOW_CHARTER.trim()}
+
+<delegated-seat>
+You are a delegated ${provider} worker. Complete the caller task directly. Do not start subagents, invoke Claude or Codex through the shell, or start another cross-family delegation. ${access3} Stay within the assigned workspace and access mode. Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.${profile}
+</delegated-seat>`;
+}
+
+// src/delegation/schema.mjs
+var import__ = __toESM(require__(), 1);
+var objectAt = (path) => `outputSchema${path}`;
+var SCHEMA_METADATA = /* @__PURE__ */ new Set([
+  "$anchor",
+  "$comment",
+  "$defs",
+  "$dynamicAnchor",
+  "$id",
+  "$schema",
+  "default",
+  "deprecated",
+  "description",
+  "examples",
+  "readOnly",
+  "title",
+  "writeOnly"
+]);
+var REF_ONLY = /* @__PURE__ */ new Set([...SCHEMA_METADATA, "$ref"]);
+var UNSUPPORTED_APPLICATORS = [
+  "allOf",
+  "contains",
+  "dependentSchemas",
+  "else",
+  "if",
+  "not",
+  "oneOf",
+  "patternProperties",
+  "prefixItems",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties"
+];
+function validateCodexNode(schema, path = "", { root = false } = {}) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    throw new DelegationError("BAD_SCHEMA", `${objectAt(path)} must be an object for Codex structured output.`);
+  }
+  if (root && schema.anyOf) {
+    throw new DelegationError("BAD_SCHEMA", "outputSchema cannot use anyOf at the root for Codex structured output.");
+  }
+  if (root && schema.type !== "object") {
+    throw new DelegationError("BAD_SCHEMA", "outputSchema must declare an object root for Codex structured output.");
+  }
+  for (const [keyword, definitions] of [["$defs", schema.$defs], ["definitions", schema.definitions]]) {
+    if (!definitions) continue;
+    for (const [name, definition] of Object.entries(definitions)) {
+      validateCodexNode(definition, `${path}.${keyword}[${JSON.stringify(name)}]`);
+    }
+  }
+  for (const keyword of UNSUPPORTED_APPLICATORS) {
+    if (schema[keyword] !== void 0) {
+      throw new DelegationError("BAD_SCHEMA", `${objectAt(path)} uses unsupported ${keyword} for Codex structured output.`);
+    }
+  }
+  if (schema.$ref && Object.keys(schema).every((keyword) => REF_ONLY.has(keyword))) return;
+  if (Array.isArray(schema.anyOf)) {
+    if (!schema.anyOf.length) throw new DelegationError("BAD_SCHEMA", `${objectAt(path)}.anyOf cannot be empty.`);
+    schema.anyOf.forEach((branch, index) => validateCodexNode(branch, `${path}.anyOf[${index}]`));
+    if (Object.keys(schema).every((keyword) => keyword === "anyOf" || SCHEMA_METADATA.has(keyword))) return;
+  }
+  if (typeof schema.type !== "string") {
+    throw new DelegationError("BAD_SCHEMA", `${objectAt(path)} must declare an explicit type for Codex structured output.`);
+  }
+  if (schema.type === "object") {
+    if (schema.additionalProperties !== false) {
+      throw new DelegationError("BAD_SCHEMA", `${objectAt(path)} must set additionalProperties to false for Codex structured output.`);
+    }
+    const properties = schema.properties || {};
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+      throw new DelegationError("BAD_SCHEMA", `${objectAt(path)}.properties must be an object.`);
+    }
+    const names = Object.keys(properties);
+    if (!Array.isArray(schema.required) || schema.required.length !== names.length || names.some((name) => !schema.required.includes(name))) {
+      throw new DelegationError("BAD_SCHEMA", `${objectAt(path)}.required must list every property for Codex structured output.`);
+    }
+    for (const [name, child] of Object.entries(properties)) {
+      validateCodexNode(child, `${path}.properties[${JSON.stringify(name)}]`);
+    }
+  } else if (schema.type === "array") {
+    if (schema.items === void 0) {
+      throw new DelegationError("BAD_SCHEMA", `${objectAt(path)}.items is required for Codex structured output.`);
+    }
+    validateCodexNode(schema.items, `${path}.items`);
+  }
+}
+function validateOutputSchema(schema, target) {
+  if (schema == null) return null;
+  if (Buffer.byteLength(JSON.stringify(schema)) > 64 * 1024) {
+    throw new DelegationError("BAD_SCHEMA", "The output schema exceeds 64 KiB.");
+  }
+  const ajv = new import__.default({ allErrors: true, strict: false });
+  if (!ajv.validateSchema(schema)) throw new DelegationError("BAD_SCHEMA", "outputSchema is not a valid JSON Schema.");
+  try {
+    ajv.compile(schema);
+  } catch {
+    throw new DelegationError("BAD_SCHEMA", "outputSchema cannot be compiled.");
+  }
+  if (target === "codex") {
+    validateCodexNode(schema, "", { root: true });
+  }
+  return schema;
+}
+function providerOutputSchema(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema) || schema.$schema === void 0) return schema;
+  const providerSchema = structuredClone(schema);
+  delete providerSchema.$schema;
+  return providerSchema;
 }
 
 // src/delegation/claude-sdk.mjs
@@ -55687,7 +55857,7 @@ function executablePath(name) {
   if (isAbsolute5(candidate) || candidate.includes(sep6)) {
     try {
       accessSync2(candidate, constants4.X_OK);
-      return realpathSync4(candidate);
+      return realpathSync5(candidate);
     } catch {
       return null;
     }
@@ -55699,7 +55869,7 @@ function executablePath(name) {
       const path = resolve7(directory, `${candidate}${suffix}`);
       try {
         accessSync2(path, constants4.X_OK);
-        return realpathSync4(path);
+        return realpathSync5(path);
       } catch {
       }
     }
@@ -55793,11 +55963,6 @@ async function claudeModels(cwd) {
     active?.close();
   }
 }
-function delegatedInstructions(job) {
-  const access3 = job.access === "workspace-write" ? "You may edit only the assigned Git worktree. Do not publish, push, or modify another checkout." : "This is a read-only job. Do not edit files or mutate the repository.";
-  const profile = job.profile === "defensive-security" ? " The caller selected the defensive-security profile for authorized defensive research." : "";
-  return `You are a delegated Claude worker. Complete the caller task directly. Do not start subagents, invoke Claude or Codex through the shell, or start another cross-family delegation. ${access3} Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.${profile}`;
-}
 function createClaudeQuery(job, prompt, {
   sessionId,
   onSpawn = () => {
@@ -55808,7 +55973,7 @@ function createClaudeQuery(job, prompt, {
   },
   canUseTool
 } = {}) {
-  const tools = claudeTools(job.access);
+  const tools = claudeTools(job.access, { structured: job.outputSchema != null });
   return SVt({
     prompt,
     options: {
@@ -55821,7 +55986,7 @@ function createClaudeQuery(job, prompt, {
       includePartialMessages: true,
       // The SDK omits --json-schema for the boolean false schema because false is falsy.
       // {not:{}} is the equivalent always-invalid object schema and reaches the provider.
-      outputFormat: job.outputSchema == null ? void 0 : { type: "json_schema", schema: job.outputSchema === false ? { not: {} } : job.outputSchema },
+      outputFormat: job.outputSchema == null ? void 0 : { type: "json_schema", schema: job.outputSchema === false ? { not: {} } : providerOutputSchema(job.outputSchema) },
       settingSources: [],
       strictMcpConfig: true,
       mcpServers: {},
@@ -55839,7 +56004,7 @@ function createClaudeQuery(job, prompt, {
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
-        append: delegatedInstructions(job)
+        append: delegatedInstructions(job, "Claude")
       },
       extraArgs: { "disable-slash-commands": null, "no-chrome": null },
       env: {
@@ -55871,7 +56036,7 @@ function createClaudeQuery(job, prompt, {
 }
 
 // src/delegation/outcome.mjs
-var import__ = __toESM(require__(), 1);
+var import__2 = __toESM(require__(), 1);
 function finalMessage(turn, fallback) {
   const messages = (turn?.items || []).filter((item) => item.type === "agentMessage" && item.text);
   return messages.at(-1)?.text || fallback || "";
@@ -55886,7 +56051,7 @@ function validateStructured(schema, text) {
   return validateStructuredValue(schema, value, "Codex");
 }
 function validateStructuredValue(schema, value, provider = "The delegated model") {
-  const ajv = new import__.default({ allErrors: true, strict: false });
+  const ajv = new import__2.default({ allErrors: true, strict: false });
   let validate;
   try {
     validate = ajv.compile(schema);
@@ -55899,6 +56064,22 @@ function validateStructuredValue(schema, value, provider = "The delegated model"
     });
   }
   return value;
+}
+function codexTurnError(error2) {
+  const text = String(error2?.message || "");
+  if (/model/i.test(text) && /invalid|unknown|not found|does not exist|unsupported/i.test(text)) {
+    return { kind: "BAD_MODEL", message: "Codex rejected the requested model.", details: null };
+  }
+  if (/schema|structured output|response_format/i.test(text)) {
+    return { kind: "BAD_SCHEMA", message: "Codex rejected the output schema.", details: null };
+  }
+  if (/(?:^|[^a-z0-9])(?:auth|authentication|authorization|login|oauth|credentials?|unauthenticated|not[ _-]+authenticated)(?:[^a-z0-9]|$)/i.test(text)) {
+    return { kind: "CODEX_AUTH", message: "Codex is not authenticated.", details: null };
+  }
+  if (/rate.?limit|too many requests|quota/i.test(text)) {
+    return { kind: "RATE_LIMIT", message: "Codex rejected the turn because an account limit was reached.", details: null };
+  }
+  return { kind: "CODEX_TURN", message: "Codex reported a failed turn.", details: null };
 }
 function foldTurnOutcome(turn, {
   cancelRequested = false,
@@ -55932,7 +56113,7 @@ function foldTurnOutcome(turn, {
   if (turn.status === "failed") {
     return {
       status: "failed",
-      error: { kind: "CODEX_TURN", message: turn.error?.message || "Codex reported a failed turn.", details: null }
+      error: codexTurnError(turn.error)
     };
   }
   if (turn.status === "completed") {
@@ -55956,7 +56137,7 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { appendFileSync as appendFileSync2, chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, statSync as statSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname6, join as join5 } from "node:path";
+import { dirname as dirname6, join as join6 } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 var SCHEMA_VERSION = 2;
 var RETENTION_DAYS = 14;
@@ -55987,8 +56168,8 @@ function processStartToken(pid) {
 }
 function defaultStateDir() {
   if (process.env.FLOW_DELEGATION_STATE_DIR) return process.env.FLOW_DELEGATION_STATE_DIR;
-  const base = process.env.XDG_STATE_HOME || join5(homedir2(), ".local", "state");
-  return join5(base, "flow", "delegation");
+  const base = process.env.XDG_STATE_HOME || join6(homedir2(), ".local", "state");
+  return join6(base, "flow", "delegation");
 }
 var SCHEMA = `
   CREATE TABLE jobs (
@@ -56051,7 +56232,7 @@ function serviceLog(stateDir, message) {
   if (!stateDir) return;
   try {
     mkdirSync2(stateDir, { recursive: true, mode: 448 });
-    const file = join5(stateDir, "service.log");
+    const file = join6(stateDir, "service.log");
     try {
       if (statSync2(file).size > 512e3) renameSync2(file, `${file}.1`);
     } catch {
@@ -56109,7 +56290,7 @@ var JobStore = class {
       chmodSync(stateDir, 448);
     } catch {
     }
-    this.path = join5(stateDir, "jobs.sqlite3");
+    this.path = join6(stateDir, "jobs.sqlite3");
     try {
       this.db = new DatabaseSync(this.path, { timeout: 5e3 });
       try {
@@ -56429,7 +56610,7 @@ var JobStore = class {
 
 // src/delegation/workspace.mjs
 import { execFile } from "node:child_process";
-import { realpathSync as realpathSync5, statSync as statSync3 } from "node:fs";
+import { realpathSync as realpathSync6, statSync as statSync3 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isAbsolute as isAbsolute6, relative as relative3, resolve as resolve8, sep as sep7 } from "node:path";
 import { promisify } from "node:util";
@@ -56452,7 +56633,7 @@ function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd = null }
   const roots = [];
   for (const candidate of candidates) {
     try {
-      const path = realpathSync5(candidate);
+      const path = realpathSync6(candidate);
       if (statSync3(path).isDirectory() && !roots.includes(path)) roots.push(path);
     } catch {
     }
@@ -56461,14 +56642,14 @@ function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd = null }
 }
 async function sharedGitDirInsideRoots(path, roots) {
   try {
-    const commonDir = realpathSync5(await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree."));
+    const commonDir = realpathSync6(await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree."));
     if (!roots.some((root) => isInside(root, commonDir))) return false;
-    const top = realpathSync5(await git(path, ["rev-parse", "--show-toplevel"], "not a git worktree."));
+    const top = realpathSync6(await git(path, ["rev-parse", "--show-toplevel"], "not a git worktree."));
     const listed = await git(path, ["--git-dir", commonDir, "worktree", "list", "--porcelain"], "the worktree list is unavailable.");
     return listed.split("\n").some((line) => {
       if (!line.startsWith("worktree ")) return false;
       try {
-        return realpathSync5(line.slice("worktree ".length)) === top;
+        return realpathSync6(line.slice("worktree ".length)) === top;
       } catch {
         return false;
       }
@@ -56483,7 +56664,7 @@ async function canonicalWorkspace(cwd, roots) {
   }
   let canonical;
   try {
-    canonical = realpathSync5(cwd);
+    canonical = realpathSync6(cwd);
     if (!statSync3(canonical).isDirectory()) throw new Error("not a directory");
   } catch {
     throw new DelegationError("BAD_WORKSPACE", "cwd does not name an existing directory.");
@@ -56508,13 +56689,26 @@ async function git(cwd, args, message) {
 }
 async function worktreeKey(cwd) {
   try {
-    return realpathSync5(await git(cwd, ["rev-parse", "--show-toplevel"], "cwd is not a Git worktree."));
+    return realpathSync6(await git(cwd, ["rev-parse", "--show-toplevel"], "cwd is not a Git worktree."));
   } catch (error2) {
     if (error2 instanceof DelegationError) return cwd;
     throw error2;
   }
 }
-async function writableWorktreeKey(cwd, roots) {
+async function gitMetadataPaths(cwd) {
+  const paths = /* @__PURE__ */ new Set();
+  for (const args of [
+    ["rev-parse", "--path-format=absolute", "--absolute-git-dir"],
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"]
+  ]) {
+    try {
+      paths.add(realpathSync6(await git(cwd, args, "Git metadata is unavailable.")));
+    } catch {
+    }
+  }
+  return [...paths].sort();
+}
+async function validatedWorktreeKey(cwd, roots) {
   const key = await worktreeKey(cwd);
   if (roots.some((root) => isInside(root, key))) return key;
   if (await sharedGitDirInsideRoots(key, roots)) return key;
@@ -56539,20 +56733,6 @@ Review only the changes in git diff ${baseSha}...${headSha}. Read surrounding co
 // src/delegation/service.mjs
 var sleep = (ms2) => new Promise((resolve9) => setTimeout(resolve9, ms2));
 var LIST_SCAN_LIMIT = 1e3;
-function validateSchema(schema) {
-  if (schema == null) return null;
-  if (Buffer.byteLength(JSON.stringify(schema)) > 64 * 1024) {
-    throw new DelegationError("BAD_SCHEMA", "The output schema exceeds 64 KiB.");
-  }
-  const ajv = new import__2.default({ allErrors: true, strict: false });
-  if (!ajv.validateSchema(schema)) throw new DelegationError("BAD_SCHEMA", "outputSchema is not a valid JSON Schema.");
-  try {
-    ajv.compile(schema);
-  } catch {
-    throw new DelegationError("BAD_SCHEMA", "outputSchema cannot be compiled.");
-  }
-  return schema;
-}
 function validateStart(input, target) {
   if (!MODES.includes(input.mode)) throw new DelegationError("BAD_REQUEST", "mode is invalid.");
   if (!ACCESS_MODES.includes(input.access)) throw new DelegationError("BAD_REQUEST", "access is invalid.");
@@ -56658,11 +56838,20 @@ var DelegationService = class {
     const target = this.target();
     validateStart(normalized, target);
     assertRoute({ host: this.host, target, depth: this.depth });
+    if (target === "codex") {
+      const host = codexHostSupport();
+      if (!host.ok) throw new DelegationError(host.kind, "Codex delegation requires a Linux host.");
+      const codex = codexVersion();
+      if (!codex.ok) {
+        const message = codex.kind === "CODEX_TOO_OLD" ? `Codex delegation requires Codex CLI ${codex.minimum} or newer.` : "Codex could not be started or its version could not be read.";
+        throw new DelegationError(codex.kind, message);
+      }
+    }
     const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd });
     const cwd = await canonicalWorkspace(normalized.cwd, roots);
-    const workspaceKey = normalized.access === "workspace-write" ? await writableWorktreeKey(cwd, roots) : await worktreeKey(cwd);
+    const workspaceKey = await validatedWorktreeKey(cwd, roots);
     const review = await immutableReview({ cwd, mode: normalized.mode, base: normalized.base, head: normalized.head, prompt: normalized.prompt });
-    const outputSchema = validateSchema(review.outputSchema || normalized.outputSchema);
+    const outputSchema = validateOutputSchema(review.outputSchema || normalized.outputSchema, target);
     return this.withStore((store) => {
       const job = store.createJob({
         ...normalized,
@@ -56843,10 +57032,13 @@ var DelegationService = class {
     const checks = {
       workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
+      host: codexHostSupport(),
       codex: codexVersion(),
       database: { ok: false },
       appServer: { ok: false },
       account: { ok: false },
+      permissionApi: { ok: false },
+      restrictedPermissions: { ok: false },
       mcpIsolation: { ok: false }
     };
     try {
@@ -56855,24 +57047,55 @@ var DelegationService = class {
     } catch {
       checks.database = { ok: false, kind: "DATABASE" };
     }
-    if (checks.codex.ok) {
+    if (checks.host.ok && checks.codex.ok) {
       let client;
       try {
-        client = await new AppServerClient({ cwd: cwd || void 0 }).start();
+        client = await new AppServerClient({ cwd: cwd || void 0, experimentalApi: true }).start();
         checks.appServer = { ok: true };
       } catch (error2) {
         checks.appServer = { ok: false, error: publicError(error2) };
       }
       if (client) {
+        let config2 = null;
         try {
-          const config2 = await isolatedThreadConfig(client);
+          const profiles = await client.request("permissionProfile/list", { cursor: null, limit: 100, cwd: cwd || null }, 2e4);
+          if (!Array.isArray(profiles?.data)) throw new DelegationError("PERMISSION_PROFILE", "Codex returned an invalid permission profile inventory.");
+          checks.permissionApi = { ok: true, profiles: profiles.data.length };
+        } catch (error2) {
+          checks.permissionApi = { ok: false, error: publicError(error2) };
+        }
+        try {
+          config2 = await isolatedThreadConfig(client);
+          if (!workspace.ok || !cwd) throw new DelegationError("NO_WORKSPACE", "A workspace is required to verify restricted permissions.");
+          const workspaceKey = await worktreeKey(cwd);
+          const metadataPaths = await gitMetadataPaths(cwd);
+          config2 = {
+            ...config2,
+            ...restrictedPermissionConfig({ cwd, workspaceKey, access: "read-only" }, { gitMetadataPaths: metadataPaths })
+          };
+          const thread = await client.request("thread/start", {
+            cwd,
+            runtimeWorkspaceRoots: [workspaceKey],
+            approvalPolicy: "never",
+            approvalsReviewer: "user",
+            permissions: CODEX_PERMISSION_PROFILE,
+            config: config2,
+            ephemeral: true,
+            serviceName: "flow-delegation-doctor"
+          }, 3e4);
+          const active = assertRestrictedPermissionProfile(thread);
+          checks.restrictedPermissions = { ok: true, ...active };
+          const isolation = await assertThreadMcpIsolated(client, thread.thread?.id);
           checks.mcpIsolation = {
             ok: true,
-            phase: "preflight",
-            standaloneServers: Object.keys(config2.mcp_servers).length
+            phase: "thread",
+            standaloneServers: Object.keys(config2.mcp_servers).length,
+            servers: isolation.servers
           };
         } catch (error2) {
-          checks.mcpIsolation = { ok: false, error: publicError(error2) };
+          const value = { ok: false, error: publicError(error2) };
+          if (!checks.restrictedPermissions.ok) checks.restrictedPermissions = value;
+          if (!checks.mcpIsolation.ok) checks.mcpIsolation = value;
         }
         try {
           const account = await client.request("account/read", { refreshToken: false }, 2e4);
@@ -57343,6 +57566,10 @@ async function safeRunCli(options) {
 `);
   }
 }
+
+// src/delegation/worker.mjs
+import { chmodSync as chmodSync2, mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync2 } from "node:fs";
+import { join as join7 } from "node:path";
 
 // src/delegation/claude-worker.mjs
 import { randomUUID as randomUUID3 } from "node:crypto";
@@ -57892,13 +58119,6 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
 // src/delegation/worker.mjs
 var STALL_SECONDS2 = 420;
 var textInput = (text) => [{ type: "text", text, text_elements: [] }];
-function developerInstructions(job) {
-  const base = "You are a delegated Codex worker. Complete the caller task directly. Do not delegate to another model family or start subagents.";
-  if (job.profile === "defensive-security") {
-    return `${base} The caller selected the defensive-security profile for authorized defensive research. Stay within the requested workspace and access mode.`;
-  }
-  return base;
-}
 async function runWorker(options) {
   const store = new JobStore(options.stateDir);
   let target;
@@ -57955,6 +58175,7 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
   let controlBusy = false;
   let activeControlPoll = Promise.resolve();
   let previewAt = 0;
+  let jobTempDir = null;
   const signalHandlers = [];
   const resetStall = () => {
     if (!onStallFire || interruptReason) return;
@@ -57963,12 +58184,21 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
   };
   try {
     assertRoute({ host: job.host, target: job.target, depth: job.depth });
+    const host = codexHostSupport();
+    if (!host.ok) throw new DelegationError(host.kind, "Codex delegation requires a Linux host.");
+    const codex = codexVersion();
+    if (!codex.ok) throw new DelegationError(codex.kind, "Codex no longer meets the delegation version requirement.");
     const preflightCancel = store.pendingControls(jobId2).find((control) => control.type === "cancel");
     if (preflightCancel) {
       store.handleControl(jobId2, preflightCancel.id, { result: "cancelled_before_start" });
       store.finish(jobId2, "cancelled");
       return;
     }
+    const tempRoot = join7(stateDir, "tmp");
+    mkdirSync3(tempRoot, { recursive: true, mode: 448 });
+    jobTempDir = mkdtempSync(join7(tempRoot, `${job.id}-`));
+    chmodSync2(jobTempDir, 448);
+    const metadataPaths = await gitMetadataPaths(job.cwd);
     heartbeat = setInterval(() => store.heartbeat(jobId2), 1e3);
     const onSignal = (signal) => {
       try {
@@ -57977,6 +58207,10 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       }
       try {
         client?.child?.kill("SIGKILL");
+      } catch {
+      }
+      try {
+        if (jobTempDir) rmSync2(jobTempDir, { recursive: true, force: true });
       } catch {
       }
       try {
@@ -58054,8 +58288,12 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       cwd: job.cwd,
       env: {
         FLOW_DELEGATION_DEPTH: String(job.depth + 1),
-        FLOW_DELEGATION_PARENT_JOB_ID: job.id
+        FLOW_DELEGATION_PARENT_JOB_ID: job.id,
+        FLOW_DELEGATION_ACCESS: job.access,
+        FLOW_DELEGATION_WORKSPACE_KEY: job.workspaceKey,
+        TMPDIR: jobTempDir
       },
+      experimentalApi: true,
       onNotification,
       onServerRequest,
       onClose: (error2) => {
@@ -58064,7 +58302,10 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       }
     }).start();
     store.appendEvent(jobId2, "app_server.ready", {});
-    const config2 = await isolatedThreadConfig(client);
+    const config2 = {
+      ...await isolatedThreadConfig(client),
+      ...restrictedPermissionConfig(job, { gitMetadataPaths: metadataPaths, tempDir: jobTempDir })
+    };
     store.appendEvent(jobId2, "mcp.isolation_configured", {
       standaloneServers: Object.keys(config2.mcp_servers).length
     });
@@ -58072,15 +58313,17 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       model: job.model,
       serviceTier: job.serviceTier,
       cwd: job.cwd,
+      runtimeWorkspaceRoots: [job.workspaceKey],
       approvalPolicy: "never",
       approvalsReviewer: "user",
-      sandbox: job.access,
-      developerInstructions: developerInstructions(job),
+      permissions: CODEX_PERMISSION_PROFILE,
+      developerInstructions: delegatedInstructions(job, "Codex"),
       config: config2
     };
     const threadResponse = job.nativeThreadId ? await client.request("thread/resume", { threadId: job.nativeThreadId, ...threadParams }, 3e4) : await client.request("thread/start", { ...threadParams, ephemeral: false, serviceName: "flow-delegation" }, 3e4);
     const threadId = threadResponse.thread?.id;
     if (!threadId) throw new DelegationError("APP_SERVER_PROTOCOL", "Codex did not return a thread ID.");
+    assertRestrictedPermissionProfile(threadResponse);
     const isolation = await assertThreadMcpIsolated(client, threadId);
     store.appendEvent(jobId2, "mcp.isolation_verified", isolation);
     store.setRunning(jobId2, { threadId });
@@ -58091,12 +58334,11 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       cwd: job.cwd,
       approvalPolicy: "never",
       approvalsReviewer: "user",
-      sandboxPolicy: sandboxFor(job),
       model: job.model,
       serviceTier: job.serviceTier,
       effort: job.effort,
       summary: "detailed",
-      outputSchema: job.outputSchema
+      outputSchema: providerOutputSchema(job.outputSchema)
     }, 3e4);
     turnId = turnResponse.turn?.id || turnId;
     if (!turnId) throw new DelegationError("APP_SERVER_PROTOCOL", "Codex did not return a turn ID.");
@@ -58218,6 +58460,7 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
     await activeControlPoll.catch(() => {
     });
     if (client) await client.stop();
+    if (jobTempDir) rmSync2(jobTempDir, { recursive: true, force: true });
     store.close();
   }
 }

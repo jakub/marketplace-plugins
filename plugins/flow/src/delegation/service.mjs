@@ -1,25 +1,14 @@
-import Ajv2020 from 'ajv/dist/2020.js'
 import { spawn } from 'node:child_process'
 import { assertRoute, capabilitiesForTarget, DelegationError, effortsForTarget, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
-import { AppServerClient, codexVersion, isolatedThreadConfig } from './app-server.mjs'
+import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, restrictedPermissionConfig } from './app-server.mjs'
 import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
+import { validateOutputSchema } from './schema.mjs'
 import { JobStore, defaultStateDir, processStartToken } from './store.mjs'
-import { canonicalRoots, canonicalWorkspace, immutableReview, worktreeKey, writableWorktreeKey } from './workspace.mjs'
+import { canonicalRoots, canonicalWorkspace, gitMetadataPaths, immutableReview, validatedWorktreeKey, worktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const LIST_SCAN_LIMIT = 1_000
-
-function validateSchema(schema) {
-  if (schema == null) return null
-  if (Buffer.byteLength(JSON.stringify(schema)) > 64 * 1024) {
-    throw new DelegationError('BAD_SCHEMA', 'The output schema exceeds 64 KiB.')
-  }
-  const ajv = new Ajv2020({ allErrors: true, strict: false })
-  if (!ajv.validateSchema(schema)) throw new DelegationError('BAD_SCHEMA', 'outputSchema is not a valid JSON Schema.')
-  try { ajv.compile(schema) } catch { throw new DelegationError('BAD_SCHEMA', 'outputSchema cannot be compiled.') }
-  return schema
-}
 
 // Every field is type-checked before it is pattern-checked: a regex coerces its argument, so
 // an undefined model matched the shape test and only failed later, as an opaque NOT NULL
@@ -128,13 +117,22 @@ export class DelegationService {
     const target = this.target()
     validateStart(normalized, target)
     assertRoute({ host: this.host, target, depth: this.depth })
+    if (target === 'codex') {
+      const host = codexHostSupport()
+      if (!host.ok) throw new DelegationError(host.kind, 'Codex delegation requires a Linux host.')
+      const codex = codexVersion()
+      if (!codex.ok) {
+        const message = codex.kind === 'CODEX_TOO_OLD'
+          ? `Codex delegation requires Codex CLI ${codex.minimum} or newer.`
+          : 'Codex could not be started or its version could not be read.'
+        throw new DelegationError(codex.kind, message)
+      }
+    }
     const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
     const cwd = await canonicalWorkspace(normalized.cwd, roots)
-    const workspaceKey = normalized.access === 'workspace-write'
-      ? await writableWorktreeKey(cwd, roots)
-      : await worktreeKey(cwd)
+    const workspaceKey = await validatedWorktreeKey(cwd, roots)
     const review = await immutableReview({ cwd, mode: normalized.mode, base: normalized.base, head: normalized.head, prompt: normalized.prompt })
-    const outputSchema = validateSchema(review.outputSchema || normalized.outputSchema)
+    const outputSchema = validateOutputSchema(review.outputSchema || normalized.outputSchema, target)
     return this.withStore((store) => {
       const job = store.createJob({
         ...normalized,
@@ -315,10 +313,13 @@ export class DelegationService {
     const checks = {
       workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
+      host: codexHostSupport(),
       codex: codexVersion(),
       database: { ok: false },
       appServer: { ok: false },
       account: { ok: false },
+      permissionApi: { ok: false },
+      restrictedPermissions: { ok: false },
       mcpIsolation: { ok: false },
     }
     try {
@@ -327,24 +328,55 @@ export class DelegationService {
     } catch { checks.database = { ok: false, kind: 'DATABASE' } }
     // Each probe reports itself. Sharing one catch made an account failure read as a dead App
     // Server, which is the opposite of what doctor is for.
-    if (checks.codex.ok) {
+    if (checks.host.ok && checks.codex.ok) {
       let client
       try {
-        client = await new AppServerClient({ cwd: cwd || undefined }).start()
+        client = await new AppServerClient({ cwd: cwd || undefined, experimentalApi: true }).start()
         checks.appServer = { ok: true }
       } catch (error) {
         checks.appServer = { ok: false, error: publicError(error) }
       }
       if (client) {
+        let config = null
         try {
-          const config = await isolatedThreadConfig(client)
+          const profiles = await client.request('permissionProfile/list', { cursor: null, limit: 100, cwd: cwd || null }, 20_000)
+          if (!Array.isArray(profiles?.data)) throw new DelegationError('PERMISSION_PROFILE', 'Codex returned an invalid permission profile inventory.')
+          checks.permissionApi = { ok: true, profiles: profiles.data.length }
+        } catch (error) {
+          checks.permissionApi = { ok: false, error: publicError(error) }
+        }
+        try {
+          config = await isolatedThreadConfig(client)
+          if (!workspace.ok || !cwd) throw new DelegationError('NO_WORKSPACE', 'A workspace is required to verify restricted permissions.')
+          const workspaceKey = await worktreeKey(cwd)
+          const metadataPaths = await gitMetadataPaths(cwd)
+          config = {
+            ...config,
+            ...restrictedPermissionConfig({ cwd, workspaceKey, access: 'read-only' }, { gitMetadataPaths: metadataPaths }),
+          }
+          const thread = await client.request('thread/start', {
+            cwd,
+            runtimeWorkspaceRoots: [workspaceKey],
+            approvalPolicy: 'never',
+            approvalsReviewer: 'user',
+            permissions: CODEX_PERMISSION_PROFILE,
+            config,
+            ephemeral: true,
+            serviceName: 'flow-delegation-doctor',
+          }, 30_000)
+          const active = assertRestrictedPermissionProfile(thread)
+          checks.restrictedPermissions = { ok: true, ...active }
+          const isolation = await assertThreadMcpIsolated(client, thread.thread?.id)
           checks.mcpIsolation = {
             ok: true,
-            phase: 'preflight',
+            phase: 'thread',
             standaloneServers: Object.keys(config.mcp_servers).length,
+            servers: isolation.servers,
           }
         } catch (error) {
-          checks.mcpIsolation = { ok: false, error: publicError(error) }
+          const value = { ok: false, error: publicError(error) }
+          if (!checks.restrictedPermissions.ok) checks.restrictedPermissions = value
+          if (!checks.mcpIsolation.ok) checks.mcpIsolation = value
         }
         try {
           const account = await client.request('account/read', { refreshToken: false }, 20_000)

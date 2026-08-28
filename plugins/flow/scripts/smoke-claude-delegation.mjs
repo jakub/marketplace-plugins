@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { normalizeClaudeError } from '../src/delegation/claude-errors.mjs'
-import { claudePolicyHook, claudeSandboxFor, sensitiveReadPaths } from '../src/delegation/claude-policy.mjs'
+import { claudePolicyHook, claudeSandboxFor, claudeTools, sensitiveReadPaths } from '../src/delegation/claude-policy.mjs'
 import { claudeSpawnCommand } from '../src/delegation/claude-launch.mjs'
 
 const PROTOCOL_VERSION = '2025-06-18'
@@ -141,6 +141,12 @@ if (mode === 'schema-false') {
   const schema = schemaIndex < 0 ? null : JSON.parse(args[schemaIndex + 1])
   if (JSON.stringify(schema) !== JSON.stringify({ not: {} })) process.exit(18)
 }
+if (mode === 'schema-dialect') {
+  const schemaIndex = args.indexOf('--json-schema')
+  if (schemaIndex < 0) process.exit(20)
+  const schema = JSON.parse(args[schemaIndex + 1])
+  if (schema?.$schema !== undefined) process.exit(20)
+}
 const say = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let sessionId = args.find((arg) => arg.startsWith('--session-id='))?.slice(13)
   || args.find((arg) => arg.startsWith('--resume='))?.slice(9)
@@ -217,7 +223,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       say({ type: 'assistant', error: 'rate_limit', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'limit reached', error: true })
     }
-    const structured = mode === 'schema-good' ? { answer: 'yes' }
+    const structured = ['schema-good', 'schema-dialect'].includes(mode) ? { answer: 'yes' }
       : mode === 'schema-bad' ? { wrong: true }
       : undefined
     const text = structured === undefined ? 'OK from fake Claude' : JSON.stringify(structured)
@@ -317,6 +323,17 @@ try {
   writeFileSync(schemaFile, JSON.stringify({ type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
   const schemaGood = cli([...runArgs, '--schema-file', schemaFile], { input: 'JSON', mode: 'schema-good', stateDir: state('schema-good') })
   assert.deepEqual(schemaGood.structured, { answer: 'yes' })
+  assert.ok(claudeTools('read-only', { structured: true }).includes('StructuredOutput'))
+  assert.ok(!claudeTools('read-only').includes('StructuredOutput'))
+  const structuredPolicy = claudePolicyHook({ access: 'read-only', cwd: repo, workspaceKey: repo, outputSchema: JSON.parse(readFileSync(schemaFile, 'utf8')) })
+  assert.deepEqual(await structuredPolicy({ hook_event_name: 'PreToolUse', tool_name: 'StructuredOutput', tool_input: { answer: 'yes' } }), { continue: true })
+  const plainPolicy = claudePolicyHook({ access: 'read-only', cwd: repo, workspaceKey: repo, outputSchema: null })
+  const plainStructured = await plainPolicy({ hook_event_name: 'PreToolUse', tool_name: 'StructuredOutput', tool_input: { answer: 'yes' } })
+  assert.equal(plainStructured.hookSpecificOutput.permissionDecision, 'deny')
+  const dialectSchemaFile = join(temp, 'dialect-schema.json')
+  writeFileSync(dialectSchemaFile, JSON.stringify({ $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
+  const schemaDialect = cli([...runArgs, '--schema-file', dialectSchemaFile], { input: 'JSON', mode: 'schema-dialect', stateDir: state('schema-dialect') })
+  assert.deepEqual(schemaDialect.structured, { answer: 'yes' })
   const schemaBad = cli([...runArgs, '--schema-file', schemaFile], { input: 'JSON', mode: 'schema-bad', stateDir: state('schema-bad') })
   assert.equal(schemaBad.status, 'failed')
   assert.equal(schemaBad.error.kind, 'SCHEMA_OUTPUT')

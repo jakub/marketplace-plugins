@@ -28,6 +28,23 @@ export function validateStructuredValue(schema, value, provider = 'The delegated
   return value
 }
 
+function codexTurnError(error) {
+  const text = String(error?.message || '')
+  if (/model/i.test(text) && /invalid|unknown|not found|does not exist|unsupported/i.test(text)) {
+    return { kind: 'BAD_MODEL', message: 'Codex rejected the requested model.', details: null }
+  }
+  if (/schema|structured output|response_format/i.test(text)) {
+    return { kind: 'BAD_SCHEMA', message: 'Codex rejected the output schema.', details: null }
+  }
+  if (/(?:^|[^a-z0-9])(?:auth|authentication|authorization|login|oauth|credentials?|unauthenticated|not[ _-]+authenticated)(?:[^a-z0-9]|$)/i.test(text)) {
+    return { kind: 'CODEX_AUTH', message: 'Codex is not authenticated.', details: null }
+  }
+  if (/rate.?limit|too many requests|quota/i.test(text)) {
+    return { kind: 'RATE_LIMIT', message: 'Codex rejected the turn because an account limit was reached.', details: null }
+  }
+  return { kind: 'CODEX_TURN', message: 'Codex reported a failed turn.', details: null }
+}
+
 // The one fold from a native Codex turn to a job outcome. The live worker and recovery must
 // agree on what a turn means, so both call this. The worker fills every context flag;
 // reconcile() can read the controls table for a cancel request but cannot tell a deadline
@@ -66,7 +83,7 @@ export function foldTurnOutcome(turn, {
   if (turn.status === 'failed') {
     return {
       status: 'failed',
-      error: { kind: 'CODEX_TURN', message: turn.error?.message || 'Codex reported a failed turn.', details: null },
+      error: codexTurnError(turn.error),
     }
   }
   if (turn.status === 'completed') {
