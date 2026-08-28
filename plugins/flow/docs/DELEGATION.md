@@ -1,123 +1,80 @@
 # Cross-family delegation
 
-Flow can call Codex from Claude Code through a local MCP server. The MCP server owns the job
-record and starts one worker process per job, and each worker runs one Codex App Server. Codex
-App Server owns the native thread and turn. This split gives Claude a normal tool call while preserving enough
-state to inspect, cancel, or recover a call after either process exits.
+Flow provides one durable delegation service in both directions. A Claude Code host calls Codex through Codex App Server. A Codex host calls Claude through the Claude Agent SDK. Each host receives one native MCP server named `flow_delegate`. The server exposes only the new-call tool for the other model family.
 
-This document defines Phase 1. It covers Claude calling Codex. The shared route policy and
-job format reserve a Claude backend so a later release can call Claude from Codex without
-changing the lifecycle contract.
+The local job record belongs to Flow. The provider owns its native session and turn. This split keeps model work in the provider's supported protocol while Flow owns workspace checks, write leases, progress, cancellation, continuation, bounded recovery, and the public result type.
 
 ## Goals
 
-Phase 1 must provide these properties:
+The service must provide these properties:
 
-- Claude calls Codex through MCP tools, with no shell wrapper agent.
+- Both directions use MCP tools, not a shell wrapper agent.
 - Every call states the model, effort, service tier, working directory, and access mode.
-- Calls can run attached to one tool call or detached under a durable job ID.
-- Attached calls report bounded progress while Codex works.
-- A caller can read status, events, and results, then cancel or steer a running turn.
-- JSON Schema output is checked by Codex and checked again before Flow returns it.
-- A process crash cannot turn an unknown write into a successful result or a blind retry.
+- Calls can stay attached to one tool call or run detached under a durable job ID.
+- Attached calls report bounded progress from the same journal a detached caller can poll.
+- Both providers support status, events, typed results, cancellation, and continuation.
+- The service reports provider differences instead of claiming unsupported controls work.
+- JSON Schema output is checked by the provider and checked again before Flow returns it.
+- A process crash cannot turn an unknown write into success or trigger a blind retry.
 - Two write jobs cannot own the same canonical worktree at once.
 - A delegated model cannot call its own family or start another cross-family call.
-- Installed plugins run from a committed bundle. They do not install packages at runtime.
+- Installed plugins run a committed bundle and never install packages at runtime.
 
 ## Route policy
 
-The MCP server starts with a trusted `--host` argument from the plugin manifest. It does not
-accept the caller family in tool input. The worker adds `FLOW_DELEGATION_DEPTH=1` and the
-parent job ID to the Codex process environment.
+Each plugin manifest starts the MCP server with a trusted `--host` argument. Tool input cannot replace it. A worker adds `FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider process environment.
 
 | Host | Target | Depth | Result |
 |---|---|---:|---|
 | Claude | Codex | 0 | allowed |
+| Codex | Claude | 0 | allowed |
 | Claude | Claude | any | denied |
 | Codex | Codex | any | denied |
-| Codex | Claude | 0 | reserved until the Claude backend exists |
 | either | either | 1 or more | denied |
 
-The server checks the route when it creates a job. The worker checks it again before it
-starts a model process. A child MCP server also sees the depth variable and refuses new
-jobs. Tool input cannot lower the depth or replace the host.
+The server checks the route when it creates a job. The worker checks it again before it starts a provider process. A child MCP server sees the depth variable and refuses new work. Job read and control methods also verify that the requesting host owns the stored route. Both hosts use the same default database, so a UUID from the other route is not authority.
 
-The CLI mode carries a weaker guarantee. No manifest sits behind a shell invocation, so the
-CLI requires an explicit `--host` and trusts whoever passed it. A caller at depth 0 can name
-the wrong family there and get a route the MCP path would refuse. The depth check holds on
-both paths: a delegated process runs with `FLOW_DELEGATION_DEPTH=1` in its environment, and
-the CLI refuses it exactly as the server does. CLI `--host` is therefore a local operator's
-declaration about their own shell rather than proof of anything, while a delegated seat stays
-blocked whichever entry mode it uses.
+CLI mode has no manifest to prove who invoked it. It requires an explicit `--host` and treats that value as a local operator declaration. The depth check still applies. A delegated process cannot escape the nesting rule by switching from MCP to CLI.
 
-## Tools
+## MCP tools and capabilities
 
-The Claude manifest registers the server as `flow_delegate`. It exposes these tools:
+The Claude manifest registers `delegate_to_codex`. The Codex manifest registers `delegate_to_claude`. Both register the shared `delegation_*` controls.
 
-`delegate_to_codex`
+`delegate_to_codex` or `delegate_to_claude` starts a task, review, or adversarial review. Required fields are `prompt`, `cwd`, `model`, and `effort`. The only service tier is `default`. Access is `read-only` or `workspace-write`. Delivery is `attached` or `detached`.
 
-Starts a task, review, or adversarial review. Required fields are `prompt`, `cwd`, `model`,
-and `effort`. The default service tier is `default`. Access is `read-only` or
-`workspace-write`. Delivery is `attached` or `detached`. An attached call follows events
-until the job reaches a terminal state. A detached call returns the job ID after the worker
-starts.
+`delegation_status`, `delegation_result`, and `delegation_events` read durable state for the current route. Status reconciles a stale record when the provider has a supported recovery method.
 
-`delegation_status`, `delegation_result`, and `delegation_events`
+`delegation_cancel` records a cancel request. A queued job becomes cancelled without starting a provider. A live Codex turn receives `turn/interrupt`. A live Claude query receives the SDK `interrupt()` call. Both workers terminate their child process after a grace period when cooperative cancellation does not finish.
 
-Read durable state. Result returns a typed envelope. Events returns a bounded page ordered by
-sequence number. Status reconciles a stale active record before it answers.
+`delegation_steer` sends text to Codex through `turn/steer`. Claude Agent SDK 0.3.240 has no equivalent control for an active query. A Claude job returns `CONTROL_UNSUPPORTED` without queuing the text. The tool remains registered so the control API stays predictable, but the capability report says `liveSteer: false` for Claude.
 
-`delegation_cancel`
+`delegation_continue` creates a new local job linked to the prior one. Codex resumes the saved thread. Claude resumes the saved session ID. The new job gets its own status, events, result, and time budget. An active job cannot continue. An `unknown` job cannot continue because Flow cannot prove the earlier write turn stopped.
 
-Records a cancel request. The worker sends `turn/interrupt` when a native turn exists. A job
-that has not started becomes cancelled without starting Codex.
+`delegation_models` asks the target provider for its live catalog. `delegation_doctor` reports named checks for Node, the provider runtime, account state, the job database, and provider initialization. Both return the provider capability object.
 
-`delegation_steer`
-
-Adds text to a running turn through `turn/steer`. The command stays in the job database until
-the worker records the App Server response. Steering a terminal job fails.
-
-`delegation_continue`
-
-Creates a new job linked to the prior job and resumes its native thread. The new job gets its
-own status, events, result, and time budget. An active job cannot continue, and neither can an
-`unknown` one, because Flow cannot prove that the earlier turn stopped.
-
-`delegation_models` and `delegation_doctor`
-
-Models asks App Server for the live catalog. Doctor checks the Node version, Codex binary, job
-database, App Server initialization, and account state, and its `cwd` passes the same
-workspace-root check as any other call. The checks return named results instead of one
-unqualified green value.
+| Control | Codex | Claude |
+|---|---|---|
+| durable status, events, and result | yes | yes |
+| attached progress | yes | yes |
+| cancel | yes | yes |
+| continue native context | yes | yes |
+| structured output | yes | yes |
+| steer the active turn | yes | no, typed refusal |
+| recover a result after worker death | yes, through `thread/read` | no |
 
 ## Job record
 
-Flow stores data under `${XDG_STATE_HOME}/flow/delegation`, or
-`~/.local/state/flow/delegation` when `XDG_STATE_HOME` is unset. Tests and local development
-can replace the location with `FLOW_DELEGATION_STATE_DIR`.
+Flow stores data under `${XDG_STATE_HOME}/flow/delegation`, or `~/.local/state/flow/delegation` when `XDG_STATE_HOME` is unset. Tests and local development can replace the location with `FLOW_DELEGATION_STATE_DIR`.
 
-`jobs.sqlite3` uses WAL mode, foreign keys, a busy timeout, and a schema version. The `jobs`
-table records the request, route, canonical working directory, immutable review SHAs, model
-settings, App Server thread and turn IDs, process heartbeat, result, error, usage, and parent
-job. The `events` table is an append-only ordered journal. The `controls` table carries cancel
-and steer requests to the worker. Flow clears control payloads after handling them and clears
-all remaining payloads when a job ends. The `leases` table gives one write job exclusive ownership
-of one canonical worktree.
+`jobs.sqlite3` uses WAL mode, foreign keys, a busy timeout, and a schema version. The `jobs` table records the request, route, canonical working directory, immutable review SHAs, model settings, native session and turn IDs, heartbeat, result, error, usage, and parent job. The public envelope keeps the existing `threadId` field for both providers. For Claude that value is the native session ID.
 
-Terminal jobs do not accumulate forever. Flow prunes a job 14 days after it ended, and runs
-that sweep when it opens the store. Every terminal state is in scope, `unknown` included.
-Events, controls, and the write lease reference the job with `ON DELETE CASCADE`, so a pruned
-job takes its journal, any leftover control payload, and its lease row with it. A terminal job
-that is still the parent of a live or recent job is kept, so a continuation chain does not lose
-the record it resumed from.
+The `events` table is an append-only ordered journal. The `controls` table carries cancel and steer requests. Flow clears control payloads after handling them and clears every remaining payload when a job ends. The `leases` table gives one write job exclusive ownership of one canonical worktree.
 
-The database and state directory use owner-only permissions. Prompts live in the job record,
-not command-line arguments or process listings. The worker clears the stored prompt after App
-Server accepts the turn. Events omit reasoning text and raw command output. They retain phase
-changes, tool names, bounded agent-message previews, command exit state, changed paths, and
-usage.
+Flow prunes terminal jobs 14 days after they end. Events, controls, and leases use `ON DELETE CASCADE`. A terminal parent stays while a newer continuation refers to it, so pruning cannot break a live chain.
 
-## State machine
+The database and state directory use owner-only permissions. Prompts live in the job record, not command-line arguments or process listings. Each worker clears the prompt at its conservative acceptance boundary. Events omit hidden reasoning and raw command output. They retain phase changes, tool names, bounded answer previews, changed paths, and usage.
+
+## State and write safety
 
 The stored states are:
 
@@ -129,69 +86,66 @@ queued -> starting -> running -> succeeded
                      |       -> unknown
 ```
 
-`queued`, `starting`, `running`, and `reconciling` are active states. The others are terminal.
-`awaiting_approval` means Flow denied an unexpected request and the caller must start a new
-job with a different access policy. A worker updates its heartbeat while it owns an active job.
-The `job.starting` event records the worker PID and its operating-system process-start token.
-Recovery checks both values, so PID reuse cannot make an unrelated process look like the worker.
-Flow fails before starting App Server when the operating system cannot provide that token.
-If Flow cannot read the live token later, it may repair a proven terminal native turn, but it
-keeps an in-progress job and its write lease until a later check can prove the outcome.
+`queued`, `starting`, `running`, and `reconciling` are active. The other states are terminal. `awaiting_approval` means Flow denied an unexpected request. The caller must create a new job with a different contract.
 
-Status performs recovery when an active job has a stale heartbeat. It reads the saved native
-thread with `thread/read`. A terminal native turn repairs the local record. A process that
-cannot prove the native outcome moves the job to `unknown`. Flow never maps a missing process,
-an empty response, or a transport error to success.
+The `job.starting` event records the worker PID and an operating-system process-start token. Recovery checks both values so PID reuse cannot make an unrelated process look like the worker. Flow fails before starting a provider when the operating system cannot supply a stable token.
 
-## App Server contract
+A workspace-write job acquires a lease on the canonical Git worktree root in the same SQLite transaction that claims the job. Only a terminal result releases the lease. A second write job on that worktree fails with `WORKSPACE_BUSY` before it starts a provider.
 
-The worker starts `codex app-server` over JSON lines on standard input and output. It sends
-`initialize`, then `initialized`, then either `thread/start` or `thread/resume`. It starts a
-turn with these values set explicitly:
+For Codex, `turn/started` or the `turn/start` response supplies the native turn ID. Flow stores that ID, marks the turn accepted, and clears the prompt. If the worker later dies, status can read the exact turn through App Server and repair a proven terminal result.
+
+For Claude, a successful SDK initialize response proves the CLI control channel is ready. Flow chooses the session ID and user-message UUID, stores both, marks the conservative write boundary, and only then releases that exact user message to the SDK input stream. A worker death after this point makes a write job `unknown`. Claude Agent SDK does not provide an API that can prove the lost query's terminal result. A read-only job fails instead.
+
+Flow never maps a missing process, empty response, or transport error to success.
+
+## Codex App Server contract
 
 This contract was validated against Codex CLI 0.150.1 on 2026-08-26.
 
+The worker starts `codex app-server` over JSON lines. It initializes the service, starts or resumes a thread, then starts a turn with these values set explicitly:
+
 - `approvalPolicy: "never"`
 - the requested model and effort
-- `serviceTier: "default"` unless the caller states another allowed tier
+- `serviceTier: "default"`
 - `summary: "detailed"`
 - the canonical working directory
-- a concrete sandbox policy for read-only or workspace-write access
-- the caller's output schema, when present
+- a read-only or workspace-write sandbox with network disabled
+- the caller's output schema when present
 
-The worker saves the thread ID before it starts the turn and saves the turn ID from
-`turn/started`. That notification also marks the turn accepted and clears the stored prompt,
-so a worker crash between the notification and the `turn/start` response cannot lose the write
-boundary. It builds the final answer from completed `agentMessage` items. A missing
-message is an `EMPTY_OUTPUT` failure. For structured output, Ajv compiles the full caller
-schema and checks the parsed message. This catches a server or model returning invalid JSON
-even when the native turn says it completed.
+The worker builds the final answer from completed `agentMessage` items. Ajv parses and checks structured output again. App Server notifications reset a 420 second quiet-period timer. A timeout or stall first sends `turn/interrupt`, then terminates the process if the turn does not end.
 
-The worker also watches the App Server process. An unexpected exit ends the local wait at once.
-A read-only job fails with the named transport error. An accepted write job becomes `unknown`
-unless App Server already reported a terminal turn.
+An approval request is unexpected under `never`. The worker denies it, records the method, and ends as `awaiting_approval`.
 
-A live process that has stopped saying anything is the other failure to catch. Every App Server
-notification resets a 420 second stall timer. When it fires, the worker runs the same
-cooperative interrupt path as the time budget: `turn/interrupt` first, then process termination
-if the native turn does not end within the grace period. The job fails with kind `STALL`. The
-write boundary does not move for a stall. An accepted write turn with no native proof of a
-terminal outcome still ends `unknown`, never `failed`.
+## Claude Agent SDK contract
 
-An approval request is unexpected because the policy is `never`. The worker denies the
-request, records its type, and moves the job to `awaiting_approval`. It never grants approval
-on the caller's behalf. Any other server request Flow does not implement gets a JSON-RPC
-method error and an `app_server.request_denied` event. The turn decides the job's outcome from
-there; a denied request is not a failure on its own.
+This contract was validated against Claude Code 2.1.247 and `@anthropic-ai/claude-agent-sdk` 0.3.240 on 2026-08-27. The repository pins 0.3.240 because the machine's five-day package-age policy rejected newer releases at implementation time. The bundle contains the SDK library but not a Claude Code executable. It uses the installed `claude` binary and its current authentication.
 
-## Progress and output
+Claude's current plan policy permits Agent SDK and `claude -p` usage to draw from Claude plan limits. Anthropic's planned June 15, 2026 usage-policy change is paused. Flow verified the linked policy on 2026-08-27. This is a dated operational dependency and must be rechecked before changing authentication or publishing guidance:
 
-MCP progress notifications carry a monotonic event sequence and a short message. The server
-reports thread and turn startup, current item type, command completion, file changes, bounded
-agent-message previews, cancellation, and the terminal state. It does not forward hidden
-reasoning or unbounded shell output. Attached `delegate_to_codex` and attached
-`delegation_continue` calls stream the same journal through the same path, so a continuation is
-as visible as the call that started the thread.
+<https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan>
+
+The worker calls `query()` with these controls:
+
+- the requested model and a Claude-supported effort from `low` through `max`
+- the canonical working directory and exact native session ID
+- streaming input, partial messages, and persistent sessions
+- the caller's JSON Schema as the SDK output format when present
+- `permissionMode: "dontAsk"` with a host callback that never grants a new approval
+- no loaded setting sources, plugins, skills, MCP servers, browser, web tools, or subagents
+- the Claude Code system prompt plus a short delegated-worker contract
+- a sandbox that fails closed when unavailable
+
+The sandbox blocks network access for commands, local binding, Unix sockets, and unsandboxed commands. Read-only jobs deny worktree writes. Write jobs grant the canonical worktree; Claude's own runtime temporary locations may remain writable, but another checkout does not. A PreToolUse policy also checks direct edits, direct shell writers, wildcard write targets, mutation-capable inline evaluators, publication commands, hidden shell interpreters, and nested Claude or Codex calls. The sandbox denies the effective Claude and Codex executable paths, so a shell script, language script, or executable script cannot bypass the command-text check by starting a raw provider child. Direct reads and searches cannot enter common local credential stores. On Linux, the command sandbox and PreToolUse policy deny `/proc`, including process environments and descriptors. This still applies when the assigned worktree sits below a protected credential directory. The Claude process receives an explicit runtime, network, and provider-authentication environment allowlist instead of the host's complete environment. Auto-memory is disabled. Secret and proxy variables are removed from sandboxed commands. These checks do not depend on prompt compliance.
+
+Workspace-write authority still covers the whole disposable worktree. The protected-file checks prevent direct hand edits and common opaque shell forms; they are workflow policy, not syscall mediation for every repository executable. Review the resulting Git diff before publishing, just as for a native agent with worktree-write access.
+
+SDK initialization has a 30-second timeout. After prompt release, every SDK message resets the 420-second quiet-period timer. The job time budget and quiet-period limit both call `interrupt()` first, then close and terminate the process after a grace period. On POSIX systems, the Claude CLI starts in its own process group. On Linux, Flow also freezes and records descendants that created a separate session. It kills and waits for the provider group and those recorded descendants before it records a terminal write job and releases the worktree lease. On Windows, Flow resolves an npm batch shim to the installed Claude JavaScript entrypoint and launches it through Node. SDK arguments never pass through `cmd.exe`.
+
+The SDK `result` message is the native terminal proof. Flow records its text, provider usage, and typed provider failures such as `RATE_LIMIT`, `CLAUDE_AUTH`, or `BAD_MODEL`. For structured output, Ajv checks `structured_output` against the original schema before the job can succeed.
+
+## Progress and public output
+
+MCP progress notifications carry a monotonic event sequence and a bounded message. Codex events report native item types, command completion, changed paths, answer previews, usage, controls, and terminal state. Claude events report session setup, tool names, bounded answer previews, rate-limit state, controls, and terminal state. Neither route forwards hidden reasoning or unbounded shell output.
 
 Every result uses one envelope:
 
@@ -199,11 +153,13 @@ Every result uses one envelope:
 {
   "jobId": "UUID",
   "status": "succeeded",
-  "model": "gpt-5.6-sol",
+  "host": "codex",
+  "target": "claude",
+  "model": "sonnet",
   "effort": "high",
   "serviceTier": "default",
-  "threadId": "native thread ID",
-  "turnId": "native turn ID",
+  "threadId": "native thread or session ID",
+  "turnId": "native turn or user-message ID",
   "output": "final text or null",
   "structured": null,
   "findings": null,
@@ -212,113 +168,52 @@ Every result uses one envelope:
 }
 ```
 
-Review modes use a strict findings schema with severity, confidence, title, file, line,
-detail, and systemic fields. A clean review is an empty findings array, not an empty message
-or prose parser guess.
-
-The envelope's `error` carries the public shape only: a named kind and a short message, with no
-stack, no internal path, and no raw server payload. Flow keeps the detail instead of discarding
-it, in one of two places. An unexpected failure inside a job becomes an `internal.error` event
-in that job's journal, carrying the message and a bounded stack. A failure with no job to
-journal against, a rejected CLI invocation, a failed MCP tool call, or a database that will not
-open, goes to `service.log` in the state directory, which Flow creates 0600 like the database.
-Both records are for the machine's owner. Neither crosses back to the caller.
-
-`delegation_doctor` reports a failure against the check that produced it. An account or read
-failure is a failure of the account check, not of App Server, so a logged-out user reads as
-logged out rather than as a broken protocol.
+Review modes use one strict findings schema. A clean review returns an empty findings array. The public error contains a named kind, a short message, and bounded public details. It never contains a stack, raw provider payload, account identifier, or internal path. Owner-only `internal.error` events and `service.log` keep bounded diagnostic detail that the caller does not receive.
 
 ## Workspace trust
 
-At startup, the MCP server asks the client for roots when the client supports `roots/list`.
-It also accepts the canonical `CLAUDE_PROJECT_DIR` supplied by Claude Code. A requested
-working directory must resolve inside one of those roots. The server rejects missing paths,
-symlink escapes, and the repository root of an unrelated checkout.
+The MCP server asks the client for roots when the client supports `roots/list`. It also accepts the host's canonical project directory. A requested working directory must resolve inside one of those roots. Flow rejects missing paths, symlink escapes, and unrelated checkouts.
 
-For workspace-write jobs, Flow also checks the Git worktree root against the supplied roots.
-It rejects a nested directory whose Git root sits above the approved client root instead of
-widening Codex write access to the outer checkout.
+For workspace-write jobs, Flow checks the Git worktree root too. A linked worktree beside the approved repository passes only when its common Git directory belongs to the approved root and Git lists that worktree. A caller-writable `.git` pointer alone is not proof.
 
-A linked worktree is accepted when its common Git directory resolves inside an approved root.
-Flow's own pipeline runs seats in worktrees beside the project, so a requested cwd of
-`~/code/proj-fix-x` whose common Git dir is `~/code/proj/.git/worktrees/fix-x` passes on the
-approved `~/code/proj` root. An unrelated checkout still fails, because its common Git dir
-resolves nowhere near an approved root.
-
-Review modes resolve the base and head revisions to full commit IDs before the worker starts.
-The prompt names those immutable IDs. It never verifies a mutable branch name and then reuses
-that name later.
-
-A workspace-write job acquires a lease on the canonical Git worktree root in the same SQLite
-transaction that moves it out of `queued`. The lease row has no clock of its own: the job's
-heartbeat carries worker liveness, and only a terminal result releases the row. A second write
-job on the same worktree never starts, and fails with kind `WORKSPACE_BUSY`. Its own worker
-reports that, because a worker that loses the claim may write the job record only while the job
-is still `queued`, which proves no other worker owns it.
+Review modes resolve base and head revisions to full commit IDs before the worker starts. The prompt names those immutable IDs.
 
 ## Retry and recovery rules
 
-Flow may retry setup before App Server accepts a turn. After a write turn is accepted, Flow
-does not replay the prompt automatically. A rate limit, disconnect, worker crash, or timeout
-after that point yields `unknown` unless `thread/read` proves a terminal result.
+Flow does not replay accepted write prompts automatically. Codex may repair a stale job only when `thread/read` proves the exact native turn ended. Claude has no matching read API, so an accepted Claude write with a lost worker stays `unknown`.
 
-Read-only callers may start a new job after a named failure. The retry is a new job with a
-new ID and a parent link, so both attempts remain visible. Continuation uses the existing
-native thread but always starts a new local job.
+A read-only caller may create a new job after a named failure. Continuation resumes native context but always uses a new local job and parent link. Cancellation is cooperative first. Forced termination after an accepted write produces `unknown` unless the provider already reported a terminal result.
 
-Cancellation is cooperative first. Flow sends `turn/interrupt`, waits for the native terminal
-event, and then terminates the process if it does not respond before the grace period. A forced
-termination after a write turn produces `unknown`, not `cancelled`, unless App Server confirms
-the interruption.
+## Packaging
 
-## Packaging and migration
+Source lives under `src/delegation`. `deps/package.json` pins the MCP SDK, Ajv, esbuild, and the Claude Agent SDK. The build writes one committed ESM bundle at `dist/delegation.mjs`. That file supports MCP, worker, and CLI entry modes. Workers start the same bundle with a job ID, so the prompt does not cross a shell boundary.
 
-Source lives under `src/delegation`. `deps/package.json` pins the MCP SDK, Ajv, and esbuild.
-The build writes one committed ESM bundle at `dist/delegation.mjs`. That file supports MCP,
-worker, and CLI entry modes. The worker starts the same bundle with a job ID, so the prompt
-does not cross a shell boundary.
+The Claude manifest contains the direct `flow_delegate` server definition. The Codex manifest points to plugin-root `.mcp.json`, which starts the same bundle with `--host codex`. The build injects the Flow plugin version into the bundle. Both plugin manifests and Flow's marketplace entry carry that plugin version. The marketplace catalog's top-level metadata version moves independently.
 
-The build reads the version from the plugin manifest and injects it into the bundle. That
-injected value is what the MCP server reports and what App Server receives as `clientInfo`, so
-there is one version number and `.claude-plugin/plugin.json` is where it lives.
-`scripts/smoke-bundle-drift.mjs` keeps the committed bundle honest: it rebuilds from
-`src/delegation` and fails unless the result is byte-identical to the committed file, so a
-source edit that nobody rebuilt cannot ship. It rebuilds with esbuild from `deps`, so it needs
-a dev checkout with `npm ci` already run and does not work from an installed plugin.
+`scripts/smoke-bundle-drift.mjs` rebuilds from source and requires a byte-identical committed bundle. It needs a development checkout with `npm ci` already run in `plugins/flow/deps`.
 
-The store upgrades an older database in place when it opens one. Version 1 becomes version 2 by
-dropping the two columns the service stopped writing, `jobs.delivery` and `leases.heartbeat_at`.
-Rows survive the upgrade. A database written by a newer Flow is refused, not downgraded. The
-upgrade and the first create both run inside one write transaction that re-reads the version, so
-several processes opening a fresh state directory at once cannot collide.
+The deprecated fixed workflow uses CLI mode over the same database and workers. Flow does not ship the removed raw Codex CLI transport as a fallback.
 
-The Claude plugin manifest starts the MCP mode. Dynamic `/flow:issue` calls its tools directly.
-The deprecated fixed workflow uses the CLI mode over the same job database and worker. Flow
-does not ship `agents/codex-delegate.md` or `scripts/codex-exec.mjs`. No second transport
-remains as a fallback.
+## Acceptance checks
 
-## Phase 1 acceptance checks
+The deterministic test set covers:
 
-The test set must cover:
+- both allowed routes, same-family denial, nested denial, and route ownership
+- workspace roots, linked worktrees, symlink escapes, and write lease races
+- full JSON Schema validation and immutable review revisions
+- job transitions, event order, retention, migrations, and concurrent database opens
+- Codex App Server startup, deltas, controls, recovery, and unknown write outcomes
+- Claude SDK initialization, output, rate limits, approval denial, cancellation during startup, continuation, provider crashes, and unknown write outcomes
+- Claude direct-tool and Bash permission policy
+- provider-specific MCP registration, capabilities, progress, and CLI parity
+- plugin manifests, versions, hooks, charter injection, and byte-identical bundle generation
 
-- route and depth denial
-- workspace roots and symlink escapes
-- full JSON Schema validation
-- job transitions and append-only event order
-- write lease races across independent processes, including a second worker for a job that
-  already has one
-- concurrent first opens of one state directory, the v1 to v2 upgrade, and retention pruning
-- App Server startup, streaming deltas, structured results, and unexpected requests
-- cancel, steer, continuation, stale heartbeat recovery, and unknown write outcomes
-- immutable review revisions
-- MCP tool registration and progress
-- CLI parity for the deprecated fixed workflow
-- plugin manifest, version, hook, and workflow regressions
-- one live Claude Code call that invokes `delegate_to_codex` and receives a Codex result
+An operator should also run one authenticated task through each route when both accounts have allowance. The deterministic Claude smoke uses the real SDK library against a fake Claude Code protocol process, so it does not spend plan usage and can exercise success and failure cases in CI.
 
-## Deferred work
+## Deliberate limits
 
-Phase 1 does not implement Codex calling Claude. It does not share jobs across machines, grant
-model-requested approvals, expose raw chain-of-thought text, or turn the service into a general
-remote execution API. The route policy, backend interface, and job schema leave room for a
-Claude service without claiming that the service exists.
+Flow does not pretend the providers have identical controls. Claude live steering and post-crash result recovery remain unsupported until the Agent SDK has native operations that can prove those outcomes. Flow will not infer them from transcript files.
+
+The service does not grant model-requested approvals, expose raw chain-of-thought, share jobs across machines, bundle provider executables, or act as a general remote execution service. Those additions would increase authority or operational scope without making the current local cross-family calls more reliable.
+
+The rejected alternative was a thin `claude -p` text wrapper. It could produce an answer, but it would lose native session continuation, structured control messages, cooperative cancellation, live model discovery, and an honest acceptance boundary. The Agent SDK route is the closest practical match to the Codex App Server route without inventing provider features.

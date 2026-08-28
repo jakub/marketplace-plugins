@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = process.env.FLOW_BUILD_OUT || join(root, 'dist', 'delegation.mjs')
 const manifest = JSON.parse(await readFile(join(root, '.claude-plugin', 'plugin.json'), 'utf8'))
+const dependencies = JSON.parse(await readFile(join(root, 'deps', 'package.json'), 'utf8')).dependencies
 
 await build({
   // esbuild writes each module's path into the bundle relative to its working directory, so
@@ -20,7 +21,10 @@ await build({
   target: 'node22',
   packages: 'bundle',
   nodePaths: [join(root, 'deps', 'node_modules')],
-  define: { __FLOW_VERSION__: JSON.stringify(manifest.version) },
+  define: {
+    __FLOW_VERSION__: JSON.stringify(manifest.version),
+    __CLAUDE_AGENT_SDK_VERSION__: JSON.stringify(dependencies['@anthropic-ai/claude-agent-sdk']),
+  },
   banner: { js: '#!/usr/bin/env node' },
   sourcemap: false,
   legalComments: 'none',

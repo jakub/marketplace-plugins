@@ -3,7 +3,8 @@ export const TARGETS = ['claude', 'codex']
 export const MODES = ['task', 'review', 'adversarial-review']
 export const ACCESS_MODES = ['read-only', 'workspace-write']
 export const DELIVERIES = ['attached', 'detached']
-export const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+export const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const SERVICE_TIERS = ['default']
 export const ACTIVE_STATES = ['queued', 'starting', 'running', 'reconciling']
 export const TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval']
@@ -64,17 +65,40 @@ export function assertRoute({ host, target, depth }) {
   if (host === target) {
     throw new DelegationError('SAME_FAMILY', `A ${host} host cannot delegate to ${target}.`)
   }
-  if (host === 'codex' && target === 'claude') {
-    throw new DelegationError('BACKEND_UNAVAILABLE', 'The Claude delegation service is not implemented yet.')
+}
+
+export function targetForHost(host) {
+  if (!HOSTS.includes(host)) {
+    throw new DelegationError('ROUTE_DENIED', 'The delegation host names an unknown model family.')
   }
-  // Both names are known, they differ, and codex -> claude is already rejected, so the only
-  // route reaching here is claude -> codex.
+  return host === 'claude' ? 'codex' : 'claude'
+}
+
+export function effortsForTarget(target) {
+  if (target === 'codex') return CODEX_EFFORTS
+  if (target === 'claude') return CLAUDE_EFFORTS
+  throw new DelegationError('ROUTE_DENIED', 'The delegation target names an unknown model family.')
+}
+
+export function capabilitiesForTarget(target) {
+  if (!TARGETS.includes(target)) {
+    throw new DelegationError('ROUTE_DENIED', 'The delegation target names an unknown model family.')
+  }
+  return {
+    cancel: true,
+    continue: true,
+    liveSteer: target === 'codex',
+    crashReconcile: target === 'codex',
+    structuredOutput: true,
+  }
 }
 
 export function resultEnvelope(job) {
   return {
     jobId: job.id,
     status: job.status,
+    host: job.host,
+    target: job.target,
     mode: job.mode,
     access: job.access,
     model: job.model,

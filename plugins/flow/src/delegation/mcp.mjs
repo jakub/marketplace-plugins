@@ -2,14 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod/v4'
 import { DelegationService } from './service.mjs'
-import { ACCESS_MODES, DelegationError, DELIVERIES, EFFORTS, MODES, MODEL_PATTERN, publicError, resultEnvelope } from './contracts.mjs'
+import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, effortsForTarget, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { serviceLog } from './store.mjs'
 import { VERSION } from './version.mjs'
 import { canonicalRoots, canonicalWorkspace } from './workspace.mjs'
 
 const jobId = z.string().uuid().describe('Durable Flow delegation job ID')
 const model = z.string().regex(MODEL_PATTERN)
-const effort = z.enum([...EFFORTS])
 const access = z.enum([...ACCESS_MODES])
 const delivery = z.enum([...DELIVERIES])
 
@@ -22,6 +21,10 @@ function toolResult(value, isError = false) {
 }
 
 export async function startMcp({ host, depth, stateDir, entryPath, projectDir }) {
+  const target = targetForHost(host)
+  const targetTitle = target[0].toUpperCase() + target.slice(1)
+  const effort = z.enum([...effortsForTarget(target)])
+  const capabilities = capabilitiesForTarget(target)
   const service = new DelegationService({ host, depth, stateDir, entryPath, projectDir })
   const server = new McpServer({ name: 'flow-delegation', version: VERSION }, {
     capabilities: { logging: {} },
@@ -37,8 +40,8 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   }
 
   const clientRoots = async () => {
-    const capabilities = server.server.getClientCapabilities()
-    if (!capabilities?.roots) return []
+    const clientCapabilities = server.server.getClientCapabilities()
+    if (!clientCapabilities?.roots) return []
     try { return (await server.server.listRoots()).roots.map((root) => root.uri) } catch { return [] }
   }
   const rootOptions = async () => ({ rootUris: await clientRoots() })
@@ -59,9 +62,9 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     },
   })
 
-  server.registerTool('delegate_to_codex', {
-    title: 'Delegate to Codex',
-    description: 'Start a durable Codex task or review. Use attached delivery for a normal streamed call and detached delivery for a job you will poll.',
+  server.registerTool(`delegate_to_${target}`, {
+    title: `Delegate to ${targetTitle}`,
+    description: `Start a durable ${targetTitle} task or review. Use attached delivery for a normal streamed call and detached delivery for a job you will poll.`,
     inputSchema: {
       mode: z.enum([...MODES]).default('task'),
       prompt: z.string().describe('Task prompt, or optional focus for a review'),
@@ -115,19 +118,21 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   })))
 
   server.registerTool('delegation_cancel', {
-    description: 'Interrupt a running Codex turn. Cancellation is cooperative and durable.',
+    description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId: jobId },
     annotations: { destructiveHint: true, openWorldHint: false },
   }, asTool(async ({ jobId }) => toolResult({ ok: true, job: resultEnvelope(service.cancel(jobId)) })))
 
   server.registerTool('delegation_steer', {
-    description: 'Add instructions to the active Codex turn without starting a new job.',
+    description: capabilities.liveSteer
+      ? `Add instructions to the active ${targetTitle} turn without starting a new job.`
+      : `${targetTitle} does not support live turn steering. This tool returns CONTROL_UNSUPPORTED for ${targetTitle} jobs.`,
     inputSchema: { jobId: jobId, text: z.string().min(1) },
     annotations: { openWorldHint: false },
   }, asTool(async ({ jobId, text }) => toolResult({ ok: true, job: resultEnvelope(service.steer(jobId, text)) })))
 
   server.registerTool('delegation_continue', {
-    description: 'Start a new job that continues an existing Codex thread.',
+    description: `Start a new job that continues an existing ${targetTitle} session.`,
     inputSchema: {
       jobId: jobId,
       prompt: z.string().min(1),
@@ -148,18 +153,18 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   }))
 
   server.registerTool('delegation_models', {
-    description: 'Read the live Codex model catalog.',
+    description: `Read the live ${targetTitle} model catalog and Flow control capabilities.`,
     inputSchema: { cwd: z.string().optional() },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, asTool(async ({ cwd }) => {
     const roots = canonicalRoots({ rootUris: await clientRoots(), projectDir })
     const checked = await canonicalWorkspace(cwd || projectDir || roots[0], roots)
     const models = await service.models(checked)
-    return toolResult({ ok: true, models })
+    return toolResult({ ok: true, target, capabilities, models })
   }))
 
   server.registerTool('delegation_doctor', {
-    description: 'Check the local delegation database, Codex CLI, App Server, and account.',
+    description: `Check the local delegation database, ${targetTitle} runtime, and account.`,
     inputSchema: { cwd: z.string().optional() },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, asTool(async ({ cwd }) => {

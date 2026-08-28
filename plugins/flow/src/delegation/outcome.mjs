@@ -11,13 +11,17 @@ export function validateStructured(schema, text) {
   try { value = JSON.parse(text) } catch {
     throw new DelegationError('SCHEMA_OUTPUT', 'Codex returned text that is not valid JSON.')
   }
+  return validateStructuredValue(schema, value, 'Codex')
+}
+
+export function validateStructuredValue(schema, value, provider = 'The delegated model') {
   const ajv = new Ajv2020({ allErrors: true, strict: false })
   let validate
   try { validate = ajv.compile(schema) } catch {
     throw new DelegationError('BAD_SCHEMA', 'The output schema is not a valid JSON Schema.')
   }
   if (!validate(value)) {
-    throw new DelegationError('SCHEMA_OUTPUT', 'Codex returned JSON that does not match the requested schema.', {
+    throw new DelegationError('SCHEMA_OUTPUT', `${provider} returned JSON that does not match the requested schema.`, {
       errors: validate.errors?.slice(0, 20) || [],
     })
   }

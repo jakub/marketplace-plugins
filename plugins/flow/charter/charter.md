@@ -22,14 +22,16 @@ Never spawn more than ~20 parallel agents without the user's confirmation first.
 Permissions scale with how reversible the change is. Read-only agents: spawn freely. Agents that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
  
 ## Cross-family delegation
-On a Claude host, reach OpenAI Codex models only through Flow's `flow_delegate` MCP tools.
-Use `delegate_to_codex` for a new call and the `delegation_*` tools to inspect, steer,
-cancel, or continue its durable job. Do not wrap the call in an agent or invoke Codex through
-shell commands.
+Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses
+`delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to
+inspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either
+provider through shell commands.
 
 Set the model and effort explicitly every time. Always use the `default` service tier. The
-server rejects same-family calls and nested cross-family calls. Phase 1 has no Claude service,
-so a Codex host cannot call Claude yet.
+server rejects same-family calls and nested cross-family calls. Codex supports live steering
+and crash reconciliation. Claude supports cancellation and session continuation, but not live
+steering or post-crash result recovery; read the reported capabilities instead of assuming
+symmetry.
 
 ## The `flow` pipeline
 This plugin provides several commands that run in order: `/flow:prep` → `/flow:issue` → `/flow:land`

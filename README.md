@@ -29,7 +29,7 @@ The charter is injected into every agent (at `SessionStart`), and defines *how* 
 
 The orchestrator (Fable) is then allowed to flex what resources it allocates to what problem, and when, instead of running a hard-coded pipeline. The agent scoring table idea is stolen from @Theo.
 
-We also integrate Codex models as almost-first-class citizens, and use GPT-5.6 Sol and Daybreak Blue for adversarial reviews and challenges, second opinions, and alternative designs/architectures.
+We also integrate the other model family as an almost-first-class participant. Claude can delegate to Codex, Codex can delegate to Claude, and both routes keep durable jobs, typed results, cancellation, and native context continuation. We use GPT-5.6 Sol and Daybreak Blue for adversarial reviews, second opinions, and competing designs.
 
 ---
 
@@ -49,7 +49,7 @@ Two timers run in the background once `/flow setup` has armed them: a nightly li
 | `plugins/flow/commands/` | `prep.md`, `issue.md`, `land.md`, and the deprecated `issue-fixed.md`. |
 | `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool and a fixed schema output), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
 | `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`, `/flow cron` - not needed day-to-day, housekeeping tasks. |
-| `plugins/flow/src/delegation/`, `dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through MCP; the deprecated fixed workflow uses the same service through its CLI mode. |
+| `plugins/flow/src/delegation/`, `dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. The deprecated fixed workflow uses the same service through CLI mode. |
 | `plugins/flow/workflows/issue-fixed.mjs` | The deprecated fixed pipeline, kept as a fallback and a parts library for ad-hoc Workflow scripts. |
 | `plugins/flow/hooks/` | Claude and Codex hook registrations and adapters: charter injection, unsanctioned-issue prevention, protected-file checks, publication gates, and destructive Git guards. |
 | `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs - a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow cron` installs and reports on them. |
