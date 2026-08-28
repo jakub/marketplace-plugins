@@ -2,11 +2,12 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
-import { claudePolicyHook, claudeSandboxFor } from '../src/delegation/claude-policy.mjs'
+import { normalizeClaudeError } from '../src/delegation/claude-errors.mjs'
+import { claudePolicyHook, claudeSandboxFor, sensitiveReadPaths } from '../src/delegation/claude-policy.mjs'
 
 const PROTOCOL_VERSION = '2025-06-18'
 
@@ -20,20 +21,41 @@ class McpClient {
     this.pending = new Map()
     this.nextId = 1
     this.buffer = ''
+    this.stderr = ''
   }
 
   async start() {
     this.child = spawn(this.command, this.args, { cwd: this.cwd, env: this.env, stdio: ['pipe', 'pipe', 'pipe'] })
     this.child.stdout.setEncoding('utf8')
     this.child.stdout.on('data', (chunk) => this.receive(chunk))
-    this.child.stderr.resume()
-    this.exited = new Promise((resolve) => this.child.once('exit', resolve))
-    await this.request('initialize', {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: { roots: { listChanged: true } },
-      clientInfo: { name: 'flow-claude-smoke', version: '1.0.0' },
+    this.child.stdin.on('error', () => {})
+    this.child.stderr.setEncoding('utf8')
+    this.child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + chunk).slice(-4_000) })
+    this.exited = new Promise((resolve) => {
+      let resolved = false
+      const finish = (error, result) => {
+        const pending = [...this.pending.values()]
+        this.pending.clear()
+        for (const request of pending) request.reject(error)
+        if (!resolved) { resolved = true; resolve(result) }
+      }
+      this.child.once('error', (error) => finish(error, { error }))
+      this.child.once('exit', (code, signal) => {
+        const detail = this.stderr ? `: ${this.stderr}` : ''
+        finish(new Error(`MCP server exited before replying (code ${code}, signal ${signal || 'none'})${detail}`), { code, signal })
+      })
     })
-    this.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
+    try {
+      await this.request('initialize', {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: { roots: { listChanged: true } },
+        clientInfo: { name: 'flow-claude-smoke', version: '1.0.0' },
+      })
+      this.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
+    } catch (error) {
+      await this.close()
+      throw error
+    }
   }
 
   send(value) { this.child.stdin.write(`${JSON.stringify(value)}\n`) }
@@ -82,10 +104,14 @@ class McpClient {
   callTool(name, args) { return this.request('tools/call', { name, arguments: args }) }
 
   async close() {
-    this.child.stdin.end()
-    const timer = setTimeout(() => this.child.kill('SIGKILL'), 5_000)
+    if (this.closed || !this.child) return
+    this.closed = true
+    try { this.child.stdin.end() } catch {}
+    const timer = this.child.exitCode === null && !this.child.signalCode
+      ? setTimeout(() => this.child.kill('SIGKILL'), 5_000)
+      : null
     await this.exited
-    clearTimeout(timer)
+    if (timer) clearTimeout(timer)
   }
 }
 
@@ -105,6 +131,14 @@ if (args[0] === 'auth' && args[1] === 'status') {
   process.exit(0)
 }
 const mode = process.env.FLOW_FAKE_CLAUDE_MODE || 'happy'
+if (mode === 'assert-env') {
+  if (process.env.FLOW_SMOKE_API_KEY || process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1' || !process.env.FLOW_DELEGATION_DEPTH) process.exit(19)
+}
+if (mode === 'schema-false') {
+  const schemaIndex = args.indexOf('--json-schema')
+  const schema = schemaIndex < 0 ? null : JSON.parse(args[schemaIndex + 1])
+  if (JSON.stringify(schema) !== JSON.stringify({ not: {} })) process.exit(18)
+}
 const say = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let sessionId = args.find((arg) => arg.startsWith('--session-id='))?.slice(13)
   || args.find((arg) => arg.startsWith('--resume='))?.slice(9)
@@ -234,6 +268,8 @@ const waitForRunning = async (jobId, stateDir) => {
   assert.fail(`job ${jobId} did not reach running state`)
 }
 
+let mcpClient
+
 try {
   console.log('Claude routing, models, doctor, and typed output')
   const models = cli(['models', '--host', 'codex', '--cwd', repo], { stateDir: state('models') })
@@ -257,6 +293,11 @@ try {
   const happyDb = new DatabaseSync(join(state('happy'), 'jobs.sqlite3'), { readOnly: true })
   assert.equal(happyDb.prepare('SELECT prompt FROM jobs WHERE id=?').get(happy.jobId).prompt, null)
   happyDb.close()
+  const isolatedEnv = cli(runArgs, {
+    input: 'Environment isolation', mode: 'assert-env', stateDir: state('isolated-env'),
+    extraEnv: { FLOW_SMOKE_API_KEY: 'not-a-real-secret' },
+  })
+  assert.equal(isolatedEnv.status, 'succeeded')
 
   const schemaFile = join(temp, 'schema.json')
   writeFileSync(schemaFile, JSON.stringify({ type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
@@ -269,6 +310,11 @@ try {
   assert.equal(schemaMissing.status, 'failed')
   assert.equal(schemaMissing.error.kind, 'SCHEMA_OUTPUT')
   assert.equal(schemaMissing.error.message, 'Claude completed without the requested structured output.')
+  const falseSchemaFile = join(temp, 'false-schema.json')
+  writeFileSync(falseSchemaFile, 'false')
+  const schemaFalse = cli([...runArgs, '--schema-file', falseSchemaFile], { input: 'JSON', mode: 'schema-false', stateDir: state('schema-false') })
+  assert.equal(schemaFalse.status, 'failed')
+  assert.equal(schemaFalse.error.kind, 'SCHEMA_OUTPUT')
 
   console.log('Claude effort, nesting, control, and recovery semantics')
   const minimal = cli(['run', '--host', 'codex', '--cwd', repo, '--model', 'sonnet', '--effort', 'minimal'], { input: 'x', stateDir: state('minimal') })
@@ -321,11 +367,23 @@ try {
   assert.ok(writeCrash.threadId && writeCrash.turnId)
 
   console.log('Claude SDK hook policy')
+  assert.equal(normalizeClaudeError(new Error('Model not found')).kind, 'BAD_MODEL')
+  if (process.platform !== 'win32') {
+    const emptyPathDoctor = cli(['doctor', '--host', 'codex', '--cwd', repo], {
+      stateDir: state('empty-path'), extraEnv: { PATH: ':', FLOW_DELEGATION_CLAUDE_BIN: 'claude' },
+    })
+    assert.equal(emptyPathDoctor.checks.claude.kind, 'CLAUDE_NOT_INSTALLED')
+  }
+  const spawnErrorDoctor = cli(['doctor', '--host', 'codex', '--cwd', repo], {
+    stateDir: state('spawn-error'), extraEnv: { FLOW_DELEGATION_CLAUDE_BIN: repo },
+  })
+  assert.equal(spawnErrorDoctor.checks.account.kind, 'CLAUDE_STARTUP')
   const denied = []
   const readHook = claudePolicyHook({ access: 'read-only', cwd: repo, workspaceKey: repo }, { onDenied: (value) => denied.push(value) })
   const blockedEdit = await readHook({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: join(repo, 'a.txt') } })
   assert.equal(blockedEdit.hookSpecificOutput.permissionDecision, 'deny')
   const writeHook = claudePolicyHook({ access: 'workspace-write', cwd: repo, workspaceKey: repo }, { onDenied: (value) => denied.push(value) })
+  assert.ok(sensitiveReadPaths().includes(join(homedir(), '.claude')))
   const escapedEdit = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(temp, 'outside.txt') } })
   assert.equal(escapedEdit.hookSpecificOutput.permissionDecision, 'deny')
   const nestedCli = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'claude -p hello' } })
@@ -340,6 +398,10 @@ try {
   assert.equal(nestedDash.hookSpecificOutput.permissionDecision, 'deny')
   const nestedNode = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'node -e "require(\\\'node:child_process\\\').spawnSync(\\\'codex\\\')"' } })
   assert.equal(nestedNode.hookSpecificOutput.permissionDecision, 'deny')
+  const quotedNestedCli = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: "'claude' -p hello" } })
+  assert.equal(quotedNestedCli.hookSpecificOutput.permissionDecision, 'deny')
+  const concatenatedNestedCli = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: "cl''aude -p hello" } })
+  assert.equal(concatenatedNestedCli.hookSpecificOutput.permissionDecision, 'deny')
   const harmlessNode = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'node -e "console.log(1)"' } })
   assert.equal(harmlessNode.continue, true)
   const environmentRead = await readHook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/proc/self/environ' } })
@@ -354,6 +416,14 @@ try {
   assert.equal(lockfileWriter.hookSpecificOutput.permissionDecision, 'deny')
   const generatedWriter = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'printf %s generated | tee dist/delegation.mjs' } })
   assert.equal(generatedWriter.hookSpecificOutput.permissionDecision, 'deny')
+  const sudoSecretWriter = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sudo touch .env' } })
+  assert.equal(sudoSecretWriter.hookSpecificOutput.permissionDecision, 'deny')
+  const wildcardSecretWriter = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm .env*' } })
+  assert.equal(wildcardSecretWriter.hookSpecificOutput.permissionDecision, 'deny')
+  const inlineSecretWriter = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'node -e "require(\'node:fs\').writeFileSync(\'.env\', \'x\')"' } })
+  assert.equal(inlineSecretWriter.hookSpecificOutput.permissionDecision, 'deny')
+  const backgroundLockfileWriter = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sleep 0 & sed -i s/a/b/ package-lock.json' } })
+  assert.equal(backgroundLockfileWriter.hookSpecificOutput.permissionDecision, 'deny')
   const resolver = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm install' } })
   assert.equal(resolver.continue, true)
   const secretName = 'FLOW_SMOKE_API_KEY'
@@ -377,31 +447,34 @@ try {
     if (previousCodexBin === undefined) delete process.env.FLOW_DELEGATION_CODEX_BIN
     else process.env.FLOW_DELEGATION_CODEX_BIN = previousCodexBin
   }
-  assert.equal(denied.length, 13)
+  assert.equal(denied.length, 19)
 
   console.log('Codex-hosted MCP registration')
-  const client = new McpClient({
+  const deadClient = new McpClient({ command: process.execPath, args: ['-e', 'process.exit(17)'], cwd: repo, env: process.env, root: repo })
+  await assert.rejects(deadClient.start(), /MCP server exited before replying/)
+  mcpClient = new McpClient({
     command: process.execPath,
     args: [bundle, 'mcp', '--host', 'codex', '--state-dir', state('mcp')],
     cwd: repo,
     env: { ...process.env, FLOW_DELEGATION_CLAUDE_BIN: fake, FLOW_FAKE_CLAUDE_MODE: 'happy', CODEX_PROJECT_DIR: repo },
     root: repo,
   })
-  await client.start()
-  const tools = await client.listTools()
+  await mcpClient.start()
+  const tools = await mcpClient.listTools()
   const names = tools.tools.map((tool) => tool.name)
   assert.ok(names.includes('delegate_to_claude'))
   assert.ok(!names.includes('delegate_to_codex'))
-  const modelResult = await client.callTool('delegation_models', { cwd: repo })
+  const modelResult = await mcpClient.callTool('delegation_models', { cwd: repo })
   assert.equal(modelResult.structuredContent.target, 'claude')
   assert.equal(modelResult.structuredContent.capabilities.liveSteer, false)
-  const delegated = await client.callTool('delegate_to_claude', {
+  const delegated = await mcpClient.callTool('delegate_to_claude', {
     mode: 'task', prompt: 'MCP', cwd: repo, access: 'read-only', model: 'sonnet', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30,
   })
   assert.equal(delegated.structuredContent.job.status, 'succeeded')
-  await client.close()
+  await mcpClient.close()
 
   console.log('smoke-claude-delegation: ALL PASS')
 } finally {
+  await mcpClient?.close().catch(() => {})
   rmSync(temp, { recursive: true, force: true })
 }

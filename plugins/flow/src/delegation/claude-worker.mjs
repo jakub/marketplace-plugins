@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { createClaudeQuery, normalizeClaudeError } from './claude-sdk.mjs'
+import { normalizeClaudeError } from './claude-errors.mjs'
+import { createClaudeQuery } from './claude-sdk.mjs'
 import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
 import { validateStructuredValue } from './outcome.mjs'
 import { JobStore, processStartToken, serviceLog } from './store.mjs'
@@ -143,8 +144,8 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       stalled = true
       store.appendEvent(jobId, 'turn.stalled', { seconds: STALL_SECONDS })
     }
-    try { await active.interrupt() } catch {}
     forcedTimer = setTimeout(() => { try { active.close() } catch {} }, 5_000)
+    try { await active.interrupt() } catch {}
   }
 
   const resetStall = () => {

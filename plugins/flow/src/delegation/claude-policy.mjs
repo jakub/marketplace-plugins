@@ -5,6 +5,7 @@ import { protectedFileReason, publishReason } from '../../lib/hook-policy.mjs'
 
 const READ_TOOLS = ['Read', 'Grep', 'Glob', 'Bash']
 const WRITE_TOOLS = [...READ_TOOLS, 'Edit', 'Write', 'NotebookEdit']
+const PROXY_ENV = new Set(['ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'])
 
 export const claudeTools = (access) => access === 'workspace-write' ? WRITE_TOOLS : READ_TOOLS
 
@@ -13,7 +14,7 @@ export const pathInside = (root, path) => {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
 }
 
-export function sensitiveReadPaths(workspaceKey) {
+export function sensitiveReadPaths() {
   const base = homedir()
   return [
     resolve(base, '.ssh'),
@@ -30,7 +31,7 @@ export function sensitiveReadPaths(workspaceKey) {
     resolve(base, '.claude'),
     resolve(base, '.claude.json'),
     resolve(base, '.codex'),
-  ].filter((path) => !pathInside(path, workspaceKey))
+  ]
 }
 
 export function providerExecutablePaths() {
@@ -46,6 +47,8 @@ export function providerExecutablePaths() {
     const candidates = isAbsolute(executable) || executable.includes(sep)
       ? [resolve(executable)]
       : (process.env.PATH || '').split(delimiter).flatMap((directory) =>
+          // POSIX treats an empty PATH entry as the current directory. Flow deliberately
+          // skips it so an untrusted worktree cannot replace a provider executable.
           directory ? suffixes.map((suffix) => resolve(directory, `${executable}${suffix}`)) : [])
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue
@@ -59,7 +62,7 @@ export function providerExecutablePaths() {
 function sensitiveEnvironment() {
   const secretName = /(?:^|_)(?:API_?KEY|ACCESS_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE_?KEY|COOKIE)(?:_|$)/i
   return Object.keys(process.env)
-    .filter((name) => secretName.test(name))
+    .filter((name) => secretName.test(name) || PROXY_ENV.has(name.toUpperCase()))
     .sort()
     .map((name) => ({ name, mode: 'deny' }))
 }
@@ -69,7 +72,7 @@ export function claudeSandboxFor(job) {
     // The CLI itself starts outside the command sandbox. Blocking the effective provider
     // executables here stops shell, language, and executable scripts from launching a raw
     // Claude or Codex child after they pass the command-text guard.
-    denyRead: [...new Set([...sensitiveReadPaths(job.workspaceKey), ...providerExecutablePaths()])],
+    denyRead: [...new Set([...sensitiveReadPaths(), ...providerExecutablePaths()])],
     ...(job.access === 'workspace-write'
       ? { allowWrite: [job.workspaceKey] }
       : { denyWrite: [job.workspaceKey] }),
@@ -118,7 +121,7 @@ function readReason(job, value, { search = false } = {}) {
   if (/^\/proc\/(?:self|\d+)\/environ$/.test(target) || (search && pathInside('/proc', target))) {
     return 'Delegated workers cannot read another process environment.'
   }
-  if (sensitiveReadPaths(job.workspaceKey).some((path) => pathInside(path, target) || (search && pathInside(target, path)))) {
+  if (sensitiveReadPaths().some((path) => pathInside(path, target) || (search && pathInside(target, path)))) {
     return 'The read target contains local authentication or credential state.'
   }
   return null
@@ -160,12 +163,12 @@ function directShellWriteTargets(command) {
   // Builds and package resolvers must remain able to generate dist files and lockfiles.
   // This catches commands that name a protected path as their direct write target, which
   // is the Bash equivalent of hand-editing that path through Edit or Write.
-  for (const segment of String(command).split(/&&|\|\||[;|\n]/)) {
+  for (const segment of String(command).split(/&&|\|\||[;&|\n]/)) {
     const words = shellWords(segment)
     if (!words.length) continue
     let index = 0
     while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] || '')) index++
-    while (['command', 'exec', 'nohup'].includes(commandName(words[index]))) index++
+    while (['command', 'exec', 'nohup', 'sudo'].includes(commandName(words[index]))) index++
     if (commandName(words[index]) === 'env') {
       index++
       while ((words[index] || '').startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] || '')) index++
@@ -189,19 +192,36 @@ function directShellWriteTargets(command) {
 
 function protectedShellReason(job, command) {
   for (const value of directShellWriteTargets(command)) {
+    if (/[*?\[\]{}]/.test(value)) {
+      return 'Flow cannot prove that a wildcard write avoids protected files. Name each write target explicitly.'
+    }
     const target = canonicalTarget(job, value)
     if (!target || !pathInside(job.workspaceKey, target)) continue
     const reason = protectedFileReason(target)
     if (reason) return reason
+  }
+  // Inline evaluators can hide writes from the direct-target parser. Reject evaluators that
+  // contain common mutation APIs. Executing repository scripts remains available for normal
+  // builds and tests; workspace-write authority still covers the whole disposable worktree.
+  const inlineMutation = /(?:^|[\n;&|`]\s*|\$\(\s*)(?:[^\s;&|()/]+\/)*(?:python(?:\d+(?:\.\d+)*)?|node|ruby|perl|php|lua)\b[^;&|\n]*?(?:-c|-e|--eval)\s+(?:'([^']*)'|"((?:\\.|[^"])*)"|([^\s;&|]+))/gmi
+  for (const match of String(command).matchAll(inlineMutation)) {
+    const payload = match[1] ?? match[2] ?? match[3] ?? ''
+    if (/\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|truncate(?:Sync)?|unlink(?:Sync)?|rename(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|remove|rmtree)\b|\bopen\s*\([^)]*,\s*['"][wax+]/i.test(payload)) {
+      return 'Flow cannot inspect an inline program well enough to prove that its writes avoid protected files.'
+    }
   }
   return null
 }
 
 function nestedProviderReason(command) {
   const text = String(command || '')
-  const provider = /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+|-(?:exec|execdir)\s+)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:[^\s;&|()/]+\/)*(claude|codex)(?=[\s;&|)`]|$)/m.exec(text)
-    || /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:command|exec|env|nohup|sudo|xargs)\b[^;&|\n`$()]*?\b(claude|codex)(?=[\s;&|)`]|$)/m.exec(text)
-  if (provider) return `Flow delegated workers cannot invoke ${provider[1]} directly or start nested delegation.`
+  const dequoted = text.replace(/'([^']*)'|"((?:\\.|[^"])*)"/g, (_match, single, double) =>
+    single ?? double.replace(/\\(["\\$`])/g, '$1'))
+  for (const candidate of new Set([text, dequoted])) {
+    const provider = /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+|-(?:exec|execdir)\s+)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:[^\s;&|()/]+\/)*(claude|codex)(?=[\s;&|)`]|$)/m.exec(candidate)
+      || /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:command|exec|env|nohup|sudo|xargs)\b[^;&|\n`$()]*?\b(claude|codex)(?=[\s;&|)`]|$)/m.exec(candidate)
+    if (provider) return `Flow delegated workers cannot invoke ${provider[1]} directly or start nested delegation.`
+  }
   if (/(?:^|[\n;&|`(]\s*|\$\(\s*)(?:(?:command|exec|env|nohup|sudo)\b[^;&|\n`$()]*?\s+)?(?:(?:[^\s;&|()/]+\/)*busybox\s+)?(?:[^\s;&|()/]+\/)*(?:bash|dash|sh|ash|ksh|zsh|fish|csh|tcsh|pwsh|powershell)\s+(?:-[^\s]*c\b|-{1,2}command\b)/im.test(text)) {
     return 'Flow delegated workers cannot hide a second shell command behind a shell interpreter.'
   }

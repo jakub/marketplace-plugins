@@ -52525,6 +52525,31 @@ import { spawn as spawn3, spawnSync as spawnSync2 } from "node:child_process";
 import { accessSync, constants as constants2, realpathSync as realpathSync3 } from "node:fs";
 import { delimiter as delimiter3, isAbsolute as isAbsolute5, resolve as resolve6, sep as sep6 } from "node:path";
 
+// src/delegation/claude-errors.mjs
+function normalizeClaudeError(error2) {
+  if (error2 instanceof DelegationError) return error2;
+  const text = String(error2?.message || error2 || "");
+  if (error2?.code === "ENOENT") {
+    return new DelegationError("CLAUDE_NOT_INSTALLED", "Claude Code could not be started.");
+  }
+  if (/model/i.test(text) && /invalid|unknown|not found|does not exist|unsupported/i.test(text)) {
+    return new DelegationError("BAD_MODEL", "Claude rejected the requested model.");
+  }
+  if (/effort/i.test(text) && /invalid|unknown|unsupported/i.test(text)) {
+    return new DelegationError("BAD_EFFORT", "Claude rejected the requested effort level.");
+  }
+  if (/auth|login|oauth|credential/i.test(text)) {
+    return new DelegationError("CLAUDE_AUTH", "Claude Code is not authenticated for Agent SDK use.");
+  }
+  if (/not found|could not be started/i.test(text)) {
+    return new DelegationError("CLAUDE_NOT_INSTALLED", "Claude Code could not be started.");
+  }
+  if (/sandbox/i.test(text)) {
+    return new DelegationError("SANDBOX_UNAVAILABLE", "Claude could not start the required sandbox.");
+  }
+  return new DelegationError("CLAUDE_SDK", "The Claude Agent SDK ended before the job completed.");
+}
+
 // src/delegation/claude-policy.mjs
 import { existsSync as existsSync2, realpathSync as realpathSync2 } from "node:fs";
 import { homedir } from "node:os";
@@ -52589,12 +52614,13 @@ function publishReason(command) {
 // src/delegation/claude-policy.mjs
 var READ_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 var WRITE_TOOLS = [...READ_TOOLS, "Edit", "Write", "NotebookEdit"];
+var PROXY_ENV = /* @__PURE__ */ new Set(["ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]);
 var claudeTools = (access3) => access3 === "workspace-write" ? WRITE_TOOLS : READ_TOOLS;
 var pathInside = (root, path) => {
   const rel = relative2(root, path);
   return rel === "" || !rel.startsWith(`..${sep5}`) && rel !== ".." && !isAbsolute4(rel);
 };
-function sensitiveReadPaths(workspaceKey) {
+function sensitiveReadPaths() {
   const base = homedir();
   return [
     resolve5(base, ".ssh"),
@@ -52611,7 +52637,7 @@ function sensitiveReadPaths(workspaceKey) {
     resolve5(base, ".claude"),
     resolve5(base, ".claude.json"),
     resolve5(base, ".codex")
-  ].filter((path) => !pathInside(path, workspaceKey));
+  ];
 }
 function providerExecutablePaths() {
   const paths = /* @__PURE__ */ new Set();
@@ -52621,7 +52647,11 @@ function providerExecutablePaths() {
   ];
   const suffixes = process.platform === "win32" ? (process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
   for (const executable of configured) {
-    const candidates = isAbsolute4(executable) || executable.includes(sep5) ? [resolve5(executable)] : (process.env.PATH || "").split(delimiter2).flatMap((directory) => directory ? suffixes.map((suffix) => resolve5(directory, `${executable}${suffix}`)) : []);
+    const candidates = isAbsolute4(executable) || executable.includes(sep5) ? [resolve5(executable)] : (process.env.PATH || "").split(delimiter2).flatMap((directory) => (
+      // POSIX treats an empty PATH entry as the current directory. Flow deliberately
+      // skips it so an untrusted worktree cannot replace a provider executable.
+      directory ? suffixes.map((suffix) => resolve5(directory, `${executable}${suffix}`)) : []
+    ));
     for (const candidate of candidates) {
       if (!existsSync2(candidate)) continue;
       paths.add(candidate);
@@ -52635,14 +52665,14 @@ function providerExecutablePaths() {
 }
 function sensitiveEnvironment() {
   const secretName = /(?:^|_)(?:API_?KEY|ACCESS_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE_?KEY|COOKIE)(?:_|$)/i;
-  return Object.keys(process.env).filter((name) => secretName.test(name)).sort().map((name) => ({ name, mode: "deny" }));
+  return Object.keys(process.env).filter((name) => secretName.test(name) || PROXY_ENV.has(name.toUpperCase())).sort().map((name) => ({ name, mode: "deny" }));
 }
 function claudeSandboxFor(job) {
   const filesystem = {
     // The CLI itself starts outside the command sandbox. Blocking the effective provider
     // executables here stops shell, language, and executable scripts from launching a raw
     // Claude or Codex child after they pass the command-text guard.
-    denyRead: [.../* @__PURE__ */ new Set([...sensitiveReadPaths(job.workspaceKey), ...providerExecutablePaths()])],
+    denyRead: [.../* @__PURE__ */ new Set([...sensitiveReadPaths(), ...providerExecutablePaths()])],
     ...job.access === "workspace-write" ? { allowWrite: [job.workspaceKey] } : { denyWrite: [job.workspaceKey] }
   };
   return {
@@ -52688,7 +52718,7 @@ function readReason(job, value, { search = false } = {}) {
   if (/^\/proc\/(?:self|\d+)\/environ$/.test(target) || search && pathInside("/proc", target)) {
     return "Delegated workers cannot read another process environment.";
   }
-  if (sensitiveReadPaths(job.workspaceKey).some((path) => pathInside(path, target) || search && pathInside(target, path))) {
+  if (sensitiveReadPaths().some((path) => pathInside(path, target) || search && pathInside(target, path))) {
     return "The read target contains local authentication or credential state.";
   }
   return null;
@@ -52721,12 +52751,12 @@ function directShellWriteTargets(command) {
     const target = match[1] ?? match[2] ?? match[3];
     if (target && !/^&\d+$/.test(target)) targets.push(target);
   }
-  for (const segment of String(command).split(/&&|\|\||[;|\n]/)) {
+  for (const segment of String(command).split(/&&|\|\||[;&|\n]/)) {
     const words = shellWords(segment);
     if (!words.length) continue;
     let index = 0;
     while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] || "")) index++;
-    while (["command", "exec", "nohup"].includes(commandName(words[index]))) index++;
+    while (["command", "exec", "nohup", "sudo"].includes(commandName(words[index]))) index++;
     if (commandName(words[index]) === "env") {
       index++;
       while ((words[index] || "").startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] || "")) index++;
@@ -52749,17 +52779,30 @@ function directShellWriteTargets(command) {
 }
 function protectedShellReason(job, command) {
   for (const value of directShellWriteTargets(command)) {
+    if (/[*?\[\]{}]/.test(value)) {
+      return "Flow cannot prove that a wildcard write avoids protected files. Name each write target explicitly.";
+    }
     const target = canonicalTarget(job, value);
     if (!target || !pathInside(job.workspaceKey, target)) continue;
     const reason = protectedFileReason(target);
     if (reason) return reason;
   }
+  const inlineMutation = /(?:^|[\n;&|`]\s*|\$\(\s*)(?:[^\s;&|()/]+\/)*(?:python(?:\d+(?:\.\d+)*)?|node|ruby|perl|php|lua)\b[^;&|\n]*?(?:-c|-e|--eval)\s+(?:'([^']*)'|"((?:\\.|[^"])*)"|([^\s;&|]+))/gmi;
+  for (const match of String(command).matchAll(inlineMutation)) {
+    const payload = match[1] ?? match[2] ?? match[3] ?? "";
+    if (/\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|truncate(?:Sync)?|unlink(?:Sync)?|rename(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|remove|rmtree)\b|\bopen\s*\([^)]*,\s*['"][wax+]/i.test(payload)) {
+      return "Flow cannot inspect an inline program well enough to prove that its writes avoid protected files.";
+    }
+  }
   return null;
 }
 function nestedProviderReason(command) {
   const text = String(command || "");
-  const provider = /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+|-(?:exec|execdir)\s+)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:[^\s;&|()/]+\/)*(claude|codex)(?=[\s;&|)`]|$)/m.exec(text) || /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:command|exec|env|nohup|sudo|xargs)\b[^;&|\n`$()]*?\b(claude|codex)(?=[\s;&|)`]|$)/m.exec(text);
-  if (provider) return `Flow delegated workers cannot invoke ${provider[1]} directly or start nested delegation.`;
+  const dequoted = text.replace(/'([^']*)'|"((?:\\.|[^"])*)"/g, (_match, single, double) => single ?? double.replace(/\\(["\\$`])/g, "$1"));
+  for (const candidate of /* @__PURE__ */ new Set([text, dequoted])) {
+    const provider = /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+|-(?:exec|execdir)\s+)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:[^\s;&|()/]+\/)*(claude|codex)(?=[\s;&|)`]|$)/m.exec(candidate) || /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:command|exec|env|nohup|sudo|xargs)\b[^;&|\n`$()]*?\b(claude|codex)(?=[\s;&|)`]|$)/m.exec(candidate);
+    if (provider) return `Flow delegated workers cannot invoke ${provider[1]} directly or start nested delegation.`;
+  }
   if (/(?:^|[\n;&|`(]\s*|\$\(\s*)(?:(?:command|exec|env|nohup|sudo)\b[^;&|\n`$()]*?\s+)?(?:(?:[^\s;&|()/]+\/)*busybox\s+)?(?:[^\s;&|()/]+\/)*(?:bash|dash|sh|ash|ksh|zsh|fish|csh|tcsh|pwsh|powershell)\s+(?:-[^\s]*c\b|-{1,2}command\b)/im.test(text)) {
     return "Flow delegated workers cannot hide a second shell command behind a shell interpreter.";
   }
@@ -52804,8 +52847,81 @@ function claudePolicyHook(job, { onDenied = () => {
 }
 
 // src/delegation/claude-sdk.mjs
-var CLAUDE_AGENT_SDK_VERSION = "0.3.240";
+var CLAUDE_AGENT_SDK_VERSION = true ? "0.3.240" : "unbundled";
 var CLAUDE_PROBE_TIMEOUT_MS = 3e4;
+var CLAUDE_ENV_ALLOWLIST = /* @__PURE__ */ new Set([
+  // Process runtime and the authenticated user's Claude configuration.
+  "APPDATA",
+  "COLORTERM",
+  "COMSPEC",
+  "HOME",
+  "LANG",
+  "LANGUAGE",
+  "LOCALAPPDATA",
+  "LOGNAME",
+  "PATH",
+  "PATHEXT",
+  "SHELL",
+  "SYSTEMROOT",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "TZ",
+  "USER",
+  "USERPROFILE",
+  "WINDIR",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_RUNTIME_DIR",
+  "XDG_STATE_HOME",
+  // Network and certificate configuration needed to reach the selected provider.
+  "ALL_PROXY",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+  // First-party, gateway, Bedrock, Vertex, and Foundry authentication.
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_CONFIG_DIR",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_CONFIG_FILE",
+  "AWS_DEFAULT_REGION",
+  "AWS_PROFILE",
+  "AWS_REGION",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CONFIG_DIR",
+  "CLOUD_ML_REGION",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_CLOUD_PROJECT",
+  // The deterministic smoke's fake Claude process uses this selector.
+  "FLOW_FAKE_CLAUDE_MODE"
+]);
+function claudeProcessEnvironment() {
+  const env = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== void 0 && (CLAUDE_ENV_ALLOWLIST.has(name.toUpperCase()) || name.startsWith("LC_"))) {
+      env[name] = value;
+    }
+  }
+  return env;
+}
 function claudeAgentSdkStatus() {
   const ok2 = typeof NUt === "function";
   return {
@@ -52880,6 +52996,8 @@ function claudeAuthStatus() {
     return { ok: false, kind: "CLAUDE_NOT_INSTALLED" };
   }
   const result = spawnSync2(bin, ["auth", "status", "--json"], { encoding: "utf8", timeout: 1e4 });
+  if (result.error?.code === "ENOENT") return { ok: false, kind: "CLAUDE_NOT_INSTALLED" };
+  if (result.error) return { ok: false, kind: "CLAUDE_STARTUP" };
   if (result.status !== 0) return { ok: false, kind: "CLAUDE_AUTH" };
   try {
     const value = JSON.parse(result.stdout);
@@ -52954,7 +53072,9 @@ function createClaudeQuery(job, prompt, {
       ...job.nativeThreadId ? { resume: job.nativeThreadId, forkSession: false } : { sessionId },
       persistSession: true,
       includePartialMessages: true,
-      outputFormat: job.outputSchema == null ? void 0 : { type: "json_schema", schema: job.outputSchema },
+      // The SDK omits --json-schema for the boolean false schema because false is falsy.
+      // {not:{}} is the equivalent always-invalid object schema and reaches the provider.
+      outputFormat: job.outputSchema == null ? void 0 : { type: "json_schema", schema: job.outputSchema === false ? { not: {} } : job.outputSchema },
       settingSources: [],
       strictMcpConfig: true,
       mcpServers: {},
@@ -52976,10 +53096,11 @@ function createClaudeQuery(job, prompt, {
       },
       extraArgs: { "disable-slash-commands": null, "no-chrome": null },
       env: {
-        ...process.env,
+        ...claudeProcessEnvironment(),
         FLOW_DELEGATION_DEPTH: String(job.depth + 1),
         FLOW_DELEGATION_PARENT_JOB_ID: job.id,
-        CLAUDE_AGENT_SDK_CLIENT_APP: `flow-delegation/${VERSION}`
+        CLAUDE_AGENT_SDK_CLIENT_APP: `flow-delegation/${VERSION}`,
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1"
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
@@ -52996,26 +53117,6 @@ function createClaudeQuery(job, prompt, {
       }
     }
   });
-}
-function normalizeClaudeError(error2) {
-  if (error2 instanceof DelegationError) return error2;
-  const text = String(error2?.message || error2 || "");
-  if (error2?.code === "ENOENT" || /not found|could not be started/i.test(text)) {
-    return new DelegationError("CLAUDE_NOT_INSTALLED", "Claude Code could not be started.");
-  }
-  if (/auth|login|oauth|credential/i.test(text)) {
-    return new DelegationError("CLAUDE_AUTH", "Claude Code is not authenticated for Agent SDK use.");
-  }
-  if (/model/i.test(text) && /invalid|unknown|not found|does not exist|unsupported/i.test(text)) {
-    return new DelegationError("BAD_MODEL", "Claude rejected the requested model.");
-  }
-  if (/effort/i.test(text) && /invalid|unknown|unsupported/i.test(text)) {
-    return new DelegationError("BAD_EFFORT", "Claude rejected the requested effort level.");
-  }
-  if (/sandbox/i.test(text)) {
-    return new DelegationError("SANDBOX_UNAVAILABLE", "Claude could not start the required sandbox.");
-  }
-  return new DelegationError("CLAUDE_SDK", "The Claude Agent SDK ended before the job completed.");
 }
 
 // src/delegation/outcome.mjs
@@ -54447,16 +54548,16 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       stalled = true;
       store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS });
     }
-    try {
-      await active.interrupt();
-    } catch {
-    }
     forcedTimer = setTimeout(() => {
       try {
         active.close();
       } catch {
       }
     }, 5e3);
+    try {
+      await active.interrupt();
+    } catch {
+    }
   };
   const resetStall = () => {
     if (!accepted || interruptReason || terminalResult) return;

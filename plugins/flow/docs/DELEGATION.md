@@ -120,7 +120,7 @@ An approval request is unexpected under `never`. The worker denies it, records t
 
 This contract was validated against Claude Code 2.1.247 and `@anthropic-ai/claude-agent-sdk` 0.3.240 on 2026-08-27. The repository pins 0.3.240 because the machine's five-day package-age policy rejected newer releases at implementation time. The bundle contains the SDK library but not a Claude Code executable. It uses the installed `claude` binary and its current authentication.
 
-Claude's current plan policy permits Agent SDK and `claude -p` usage to draw from Claude plan limits. Anthropic says the planned June 15 authentication change is paused as of 2026-08-27. This is a dated operational dependency and must be rechecked before changing authentication or publishing guidance:
+Claude's current plan policy permits Agent SDK and `claude -p` usage to draw from Claude plan limits. Anthropic's planned June 15, 2026 usage-policy change is paused. Flow verified the linked policy on 2026-08-27. This is a dated operational dependency and must be rechecked before changing authentication or publishing guidance:
 
 <https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan>
 
@@ -135,7 +135,9 @@ The worker calls `query()` with these controls:
 - the Claude Code system prompt plus a short delegated-worker contract
 - a sandbox that fails closed when unavailable
 
-The sandbox blocks network access for commands, local binding, Unix sockets, and unsandboxed commands. Read-only jobs deny worktree writes. Write jobs grant the canonical worktree; Claude's own runtime temporary locations may remain writable, but another checkout does not. A PreToolUse policy also checks direct edits, protected files, publication commands, hidden shell interpreters, and nested Claude or Codex calls. The sandbox denies the effective Claude and Codex executable paths, so a shell script, language script, or executable script cannot bypass the command-text check by starting a raw provider child. Direct reads and searches cannot enter common local credential stores or process environments. Secret-shaped environment variables are removed from sandboxed commands. These checks do not depend on prompt compliance.
+The sandbox blocks network access for commands, local binding, Unix sockets, and unsandboxed commands. Read-only jobs deny worktree writes. Write jobs grant the canonical worktree; Claude's own runtime temporary locations may remain writable, but another checkout does not. A PreToolUse policy also checks direct edits, direct shell writers, wildcard write targets, mutation-capable inline evaluators, publication commands, hidden shell interpreters, and nested Claude or Codex calls. The sandbox denies the effective Claude and Codex executable paths, so a shell script, language script, or executable script cannot bypass the command-text check by starting a raw provider child. Direct reads and searches cannot enter common local credential stores or process environments, even when the assigned worktree is nested below one of those directories. The Claude process receives an explicit runtime, network, and provider-authentication environment allowlist instead of the host's complete environment. Auto-memory is disabled. Secret and proxy variables are removed from sandboxed commands. These checks do not depend on prompt compliance.
+
+Workspace-write authority still covers the whole disposable worktree. The protected-file checks prevent direct hand edits and common opaque shell forms; they are workflow policy, not syscall mediation for every repository executable. Review the resulting Git diff before publishing, just as for a native agent with worktree-write access.
 
 SDK initialization has a 30 second timeout. After prompt release, every SDK message resets the 420 second quiet-period timer. The job time budget and quiet-period limit both call `interrupt()` first, then close and terminate the process after a grace period.
 
@@ -186,7 +188,7 @@ A read-only caller may create a new job after a named failure. Continuation resu
 
 Source lives under `src/delegation`. `deps/package.json` pins the MCP SDK, Ajv, esbuild, and the Claude Agent SDK. The build writes one committed ESM bundle at `dist/delegation.mjs`. That file supports MCP, worker, and CLI entry modes. Workers start the same bundle with a job ID, so the prompt does not cross a shell boundary.
 
-The Claude manifest contains the direct `flow_delegate` server definition. The Codex manifest points to plugin-root `.mcp.json`, which starts the same bundle with `--host codex`. The build injects the Flow plugin version into the bundle. Both plugin manifests and the marketplace entry carry the same version.
+The Claude manifest contains the direct `flow_delegate` server definition. The Codex manifest points to plugin-root `.mcp.json`, which starts the same bundle with `--host codex`. The build injects the Flow plugin version into the bundle. Both plugin manifests and Flow's marketplace entry carry that plugin version. The marketplace catalog's top-level metadata version moves independently.
 
 `scripts/smoke-bundle-drift.mjs` rebuilds from source and requires a byte-identical committed bundle. It needs a development checkout with `npm ci` already run in `plugins/flow/deps`.
 

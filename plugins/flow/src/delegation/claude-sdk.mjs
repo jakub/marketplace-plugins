@@ -3,11 +3,48 @@ import { spawn, spawnSync } from 'node:child_process'
 import { accessSync, constants, realpathSync } from 'node:fs'
 import { delimiter, isAbsolute, resolve, sep } from 'node:path'
 import { DelegationError } from './contracts.mjs'
+import { normalizeClaudeError } from './claude-errors.mjs'
 import { claudePolicyHook, claudeSandboxFor, claudeTools } from './claude-policy.mjs'
 import { VERSION } from './version.mjs'
 
-export const CLAUDE_AGENT_SDK_VERSION = '0.3.240'
+export const CLAUDE_AGENT_SDK_VERSION = typeof __CLAUDE_AGENT_SDK_VERSION__ !== 'undefined'
+  ? __CLAUDE_AGENT_SDK_VERSION__
+  : 'unbundled'
 const CLAUDE_PROBE_TIMEOUT_MS = 30_000
+
+const CLAUDE_ENV_ALLOWLIST = new Set([
+  // Process runtime and the authenticated user's Claude configuration.
+  'APPDATA', 'COLORTERM', 'COMSPEC', 'HOME', 'LANG', 'LANGUAGE', 'LOCALAPPDATA',
+  'LOGNAME', 'PATH', 'PATHEXT', 'SHELL', 'SYSTEMROOT', 'TEMP', 'TERM', 'TMP',
+  'TMPDIR', 'TZ', 'USER', 'USERPROFILE', 'WINDIR', 'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'XDG_STATE_HOME',
+  // Network and certificate configuration needed to reach the selected provider.
+  'ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_DIR', 'SSL_CERT_FILE',
+  // First-party, gateway, Bedrock, Vertex, and Foundry authentication.
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_CONFIG_DIR',
+  'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_FOUNDRY_API_KEY',
+  'ANTHROPIC_FOUNDRY_RESOURCE', 'ANTHROPIC_VERTEX_PROJECT_ID',
+  'AWS_ACCESS_KEY_ID', 'AWS_BEARER_TOKEN_BEDROCK', 'AWS_CONFIG_FILE',
+  'AWS_DEFAULT_REGION', 'AWS_PROFILE', 'AWS_REGION', 'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN', 'AWS_SHARED_CREDENTIALS_FILE', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CONFIG_DIR', 'CLOUD_ML_REGION', 'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_CLOUD_PROJECT',
+  // The deterministic smoke's fake Claude process uses this selector.
+  'FLOW_FAKE_CLAUDE_MODE',
+])
+
+function claudeProcessEnvironment() {
+  const env = {}
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && (CLAUDE_ENV_ALLOWLIST.has(name.toUpperCase()) || name.startsWith('LC_'))) {
+      env[name] = value
+    }
+  }
+  return env
+}
 
 export function claudeAgentSdkStatus() {
   const ok = typeof query === 'function'
@@ -45,6 +82,8 @@ function executablePath(name) {
     ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
     : ['']
   for (const directory of (process.env.PATH || '').split(delimiter)) {
+    // Do not honor POSIX's implicit current-directory entry here. A provider executable
+    // must come from a named PATH directory or an explicit absolute override.
     if (!directory) continue
     for (const suffix of suffixes) {
       const path = resolve(directory, `${candidate}${suffix}`)
@@ -77,6 +116,8 @@ export function claudeAuthStatus() {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
   }
   const result = spawnSync(bin, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 10_000 })
+  if (result.error?.code === 'ENOENT') return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
+  if (result.error) return { ok: false, kind: 'CLAUDE_STARTUP' }
   if (result.status !== 0) return { ok: false, kind: 'CLAUDE_AUTH' }
   try {
     const value = JSON.parse(result.stdout)
@@ -154,7 +195,11 @@ export function createClaudeQuery(job, prompt, {
       ...(job.nativeThreadId ? { resume: job.nativeThreadId, forkSession: false } : { sessionId }),
       persistSession: true,
       includePartialMessages: true,
-      outputFormat: job.outputSchema == null ? undefined : { type: 'json_schema', schema: job.outputSchema },
+      // The SDK omits --json-schema for the boolean false schema because false is falsy.
+      // {not:{}} is the equivalent always-invalid object schema and reaches the provider.
+      outputFormat: job.outputSchema == null
+        ? undefined
+        : { type: 'json_schema', schema: job.outputSchema === false ? { not: {} } : job.outputSchema },
       settingSources: [],
       strictMcpConfig: true,
       mcpServers: {},
@@ -176,10 +221,11 @@ export function createClaudeQuery(job, prompt, {
       },
       extraArgs: { 'disable-slash-commands': null, 'no-chrome': null },
       env: {
-        ...process.env,
+        ...claudeProcessEnvironment(),
         FLOW_DELEGATION_DEPTH: String(job.depth + 1),
         FLOW_DELEGATION_PARENT_JOB_ID: job.id,
         CLAUDE_AGENT_SDK_CLIENT_APP: `flow-delegation/${VERSION}`,
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
@@ -196,25 +242,4 @@ export function createClaudeQuery(job, prompt, {
       },
     },
   })
-}
-
-export function normalizeClaudeError(error) {
-  if (error instanceof DelegationError) return error
-  const text = String(error?.message || error || '')
-  if (error?.code === 'ENOENT' || /not found|could not be started/i.test(text)) {
-    return new DelegationError('CLAUDE_NOT_INSTALLED', 'Claude Code could not be started.')
-  }
-  if (/auth|login|oauth|credential/i.test(text)) {
-    return new DelegationError('CLAUDE_AUTH', 'Claude Code is not authenticated for Agent SDK use.')
-  }
-  if (/model/i.test(text) && /invalid|unknown|not found|does not exist|unsupported/i.test(text)) {
-    return new DelegationError('BAD_MODEL', 'Claude rejected the requested model.')
-  }
-  if (/effort/i.test(text) && /invalid|unknown|unsupported/i.test(text)) {
-    return new DelegationError('BAD_EFFORT', 'Claude rejected the requested effort level.')
-  }
-  if (/sandbox/i.test(text)) {
-    return new DelegationError('SANDBOX_UNAVAILABLE', 'Claude could not start the required sandbox.')
-  }
-  return new DelegationError('CLAUDE_SDK', 'The Claude Agent SDK ended before the job completed.')
 }
