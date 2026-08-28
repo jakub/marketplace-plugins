@@ -48,7 +48,7 @@ The Claude manifest registers `delegate_to_codex`. The Codex manifest registers 
 
 `delegation_cancel` records a cancel request. A queued job becomes cancelled without starting a provider. A live Codex turn receives `turn/interrupt`. A live Claude query receives the SDK `interrupt()` call. Both workers terminate their child process after a grace period when cooperative cancellation does not finish.
 
-`delegation_steer` sends text to Codex through `turn/steer`. Claude Agent SDK 0.3.240 has no equivalent control for an active query. A Claude job returns `CONTROL_UNSUPPORTED` without queuing the text. The tool remains registered so the control API stays predictable, but the capability report says `liveSteer: false` for Claude.
+`delegation_steer` sends text to Codex through `turn/steer`. Claude Agent SDK 0.3.251 has no equivalent control for an active query. A Claude job returns `CONTROL_UNSUPPORTED` without queuing the text. The tool remains registered so the control API stays predictable, but the capability report says `liveSteer: false` for Claude.
 
 `delegation_continue` creates a new local job linked to the prior one. Codex resumes the saved thread. Claude resumes the saved session ID. The new job gets its own status, events, result, and time budget. An active job cannot continue. An `unknown` job cannot continue because Flow cannot prove the earlier write turn stopped.
 
@@ -122,7 +122,7 @@ The App Server client treats malformed JSON lines, a closed stdin pipe, and earl
 
 ## Claude Agent SDK contract
 
-This contract was validated against Claude Code 2.1.250 and `@anthropic-ai/claude-agent-sdk` 0.3.240 on 2026-08-28. The repository pins 0.3.240 because the machine's five-day package-age policy rejected newer releases at implementation time. The bundle contains the SDK library but not a Claude Code executable. It uses the installed `claude` binary and its current authentication.
+This contract was validated against Claude Code 2.1.250 and `@anthropic-ai/claude-agent-sdk` 0.3.251 on 2026-08-28. The repository pins the exact SDK version used to build the committed bundle. The bundle contains the SDK library but not a Claude Code executable. It uses the installed `claude` binary and its current authentication.
 
 Claude's current plan policy permits Agent SDK and `claude -p` usage to draw from Claude plan limits. Anthropic's planned June 15, 2026 usage-policy change is paused. Flow verified the linked policy on 2026-08-27. This is a dated operational dependency and must be rechecked before changing authentication or publishing guidance:
 

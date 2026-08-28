@@ -107,7 +107,7 @@ These features are useful, but they need product decisions or a larger protocol 
 
 ## Provider differences to preserve
 
-Claude Agent SDK 0.3.240 does not provide live steering or a read API that can recover the terminal result of a lost query. Flow must not synthesize those features from transcript files. An accepted Claude write with a lost worker remains `unknown`.
+Claude Agent SDK 0.3.251 does not provide live steering or a read API that can recover the terminal result of a lost query. Flow must not synthesize those features from transcript files. An accepted Claude write with a lost worker remains `unknown`.
 
 Codex recovery may change a stale job only when `thread/read` proves the exact native turn reached a terminal state. Flow must not replay an accepted write prompt automatically.
 
