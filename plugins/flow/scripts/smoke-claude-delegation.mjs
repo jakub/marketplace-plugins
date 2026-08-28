@@ -197,12 +197,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (mode === 'interrupt-hangs') return
     if (mode === 'signal-command') {
       const code = "setTimeout(() => require('node:fs').writeFileSync('signal-survivor', 'bad'), 1000)"
-      spawn(process.execPath, ['-e', code], { cwd: process.cwd(), stdio: 'ignore' }).unref()
+      spawn(process.execPath, ['-e', code], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()
       return
     }
     if (mode === 'detached-command') {
       const code = "setTimeout(() => require('node:fs').writeFileSync('detached-survivor', 'bad'), 1000)"
-      spawn(process.execPath, ['-e', code], { cwd: process.cwd(), stdio: 'ignore' }).unref()
+      spawn(process.execPath, ['-e', code], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()
       return result()
     }
     if (mode === 'approval') {

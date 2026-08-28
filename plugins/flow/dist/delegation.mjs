@@ -54474,6 +54474,7 @@ async function safeRunCli(options) {
 // src/delegation/claude-worker.mjs
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { spawnSync as spawnSync3 } from "node:child_process";
+import { readdirSync as readdirSync2, readFileSync as readFileSync4 } from "node:fs";
 var STALL_SECONDS = 420;
 var STARTUP_SECONDS = 30;
 var delay = (ms) => new Promise((resolve9) => setTimeout(resolve9, ms));
@@ -54558,6 +54559,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
   let controlBusy = false;
   let activeControlPoll = Promise.resolve();
   let signalStopping = false;
+  const knownDescendants = /* @__PURE__ */ new Map();
   let releasePrompt;
   const promptReady = new Promise((resolve9) => {
     releasePrompt = resolve9;
@@ -54569,6 +54571,13 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     await promptReady;
     yield sdkPrompt(job.prompt || "", sessionId, turnId);
   }
+  const descendantRunning = () => {
+    for (const [pid, token] of knownDescendants) {
+      if (processStartToken(pid) === token) return true;
+      knownDescendants.delete(pid);
+    }
+    return false;
+  };
   const childTreeRunning = () => {
     if (!child?.pid) return false;
     if (process.platform === "win32") return child.exitCode === null && !child.signalCode;
@@ -54576,20 +54585,91 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       process.kill(-child.pid, 0);
       return true;
     } catch (error2) {
-      return error2?.code === "EPERM";
+      return error2?.code === "EPERM" || descendantRunning();
+    }
+  };
+  const freezeLinuxDescendants = () => {
+    if (process.platform !== "linux" || !child?.pid) return;
+    try {
+      process.kill(-child.pid, "SIGSTOP");
+    } catch {
+    }
+    for (let pass = 0; pass < 4; pass++) {
+      let added = false;
+      const visited = /* @__PURE__ */ new Set();
+      const queue = [child.pid, ...knownDescendants.keys()];
+      while (queue.length) {
+        const parent = queue.shift();
+        if (visited.has(parent)) continue;
+        visited.add(parent);
+        let taskIds;
+        try {
+          taskIds = readdirSync2(`/proc/${parent}/task`);
+        } catch {
+          continue;
+        }
+        for (const taskId of taskIds) {
+          let children;
+          try {
+            children = readFileSync4(`/proc/${parent}/task/${taskId}/children`, "utf8");
+          } catch {
+            continue;
+          }
+          for (const value of children.trim().split(/\s+/)) {
+            const pid = Number(value);
+            if (!Number.isInteger(pid) || pid <= 0 || pid === child.pid) continue;
+            const token = processStartToken(pid);
+            if (!token) continue;
+            queue.push(pid);
+            if (knownDescendants.get(pid) === token) continue;
+            knownDescendants.set(pid, token);
+            try {
+              process.kill(pid, "SIGSTOP");
+            } catch {
+            }
+            added = true;
+          }
+        }
+      }
+      if (!added) return;
     }
   };
   const signalChildTree = (signal) => {
     if (!child?.pid) return;
-    try {
-      if (process.platform === "win32") {
+    if (process.platform === "win32") {
+      try {
         const args = ["/PID", String(child.pid), "/T"];
         if (signal === "SIGKILL") args.push("/F");
         spawnSync3("taskkill", args, { stdio: "ignore", windowsHide: true });
-      } else {
-        process.kill(-child.pid, signal);
+      } catch {
       }
+      return;
+    }
+    try {
+      process.kill(-child.pid, signal);
     } catch {
+    }
+    for (const [pid, token] of knownDescendants) {
+      if (processStartToken(pid) !== token) {
+        knownDescendants.delete(pid);
+        continue;
+      }
+      try {
+        process.kill(pid, signal);
+      } catch {
+      }
+    }
+    if (signal === "SIGTERM") {
+      try {
+        process.kill(-child.pid, "SIGCONT");
+      } catch {
+      }
+      for (const [pid, token] of knownDescendants) {
+        if (processStartToken(pid) === token) try {
+          process.kill(pid, "SIGCONT");
+        } catch {
+        }
+      }
     }
   };
   const waitForChildTree = async (milliseconds) => {
@@ -54598,6 +54678,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     return !childTreeRunning();
   };
   const stopChild = async () => {
+    freezeLinuxDescendants();
     try {
       active?.close();
     } catch {
@@ -54606,8 +54687,8 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       await Promise.race([childExited, delay(100)]);
       return;
     }
-    signalChildTree("SIGTERM");
-    if (await waitForChildTree(1e3)) return;
+    signalChildTree(terminalResult ? "SIGKILL" : "SIGTERM");
+    if (await waitForChildTree(terminalResult ? 100 : 1e3)) return;
     signalChildTree("SIGKILL");
     if (process.platform !== "win32") {
       while (childTreeRunning()) {
@@ -54851,6 +54932,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
           rateLimitStatus = message.rate_limit_info?.status || null;
           store.appendEvent(jobId2, "rate_limit.updated", { status: rateLimitStatus });
         } else if (message.type === "result") {
+          freezeLinuxDescendants();
           terminalResult = message;
           break;
         }

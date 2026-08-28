@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { readdirSync, readFileSync } from 'node:fs'
 import { normalizeClaudeError } from './claude-errors.mjs'
 import { createClaudeQuery } from './claude-sdk.mjs'
 import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
@@ -108,6 +109,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
   let controlBusy = false
   let activeControlPoll = Promise.resolve()
   let signalStopping = false
+  const knownDescendants = new Map()
   let releasePrompt
   const promptReady = new Promise((resolve) => { releasePrompt = resolve })
   const sessionId = job.nativeThreadId || randomUUID()
@@ -119,6 +121,14 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     yield sdkPrompt(job.prompt || '', sessionId, turnId)
   }
 
+  const descendantRunning = () => {
+    for (const [pid, token] of knownDescendants) {
+      if (processStartToken(pid) === token) return true
+      knownDescendants.delete(pid)
+    }
+    return false
+  }
+
   const childTreeRunning = () => {
     if (!child?.pid) return false
     if (process.platform === 'win32') return child.exitCode === null && !child.signalCode
@@ -126,21 +136,67 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       process.kill(-child.pid, 0)
       return true
     } catch (error) {
-      return error?.code === 'EPERM'
+      return error?.code === 'EPERM' || descendantRunning()
+    }
+  }
+
+  const freezeLinuxDescendants = () => {
+    if (process.platform !== 'linux' || !child?.pid) return
+    try { process.kill(-child.pid, 'SIGSTOP') } catch {}
+    for (let pass = 0; pass < 4; pass++) {
+      let added = false
+      const visited = new Set()
+      const queue = [child.pid, ...knownDescendants.keys()]
+      while (queue.length) {
+        const parent = queue.shift()
+        if (visited.has(parent)) continue
+        visited.add(parent)
+        let taskIds
+        try { taskIds = readdirSync(`/proc/${parent}/task`) } catch { continue }
+        for (const taskId of taskIds) {
+          let children
+          try { children = readFileSync(`/proc/${parent}/task/${taskId}/children`, 'utf8') } catch { continue }
+          for (const value of children.trim().split(/\s+/)) {
+            const pid = Number(value)
+            if (!Number.isInteger(pid) || pid <= 0 || pid === child.pid) continue
+            const token = processStartToken(pid)
+            if (!token) continue
+            queue.push(pid)
+            if (knownDescendants.get(pid) === token) continue
+            knownDescendants.set(pid, token)
+            try { process.kill(pid, 'SIGSTOP') } catch {}
+            added = true
+          }
+        }
+      }
+      if (!added) return
     }
   }
 
   const signalChildTree = (signal) => {
     if (!child?.pid) return
-    try {
-      if (process.platform === 'win32') {
+    if (process.platform === 'win32') {
+      try {
         const args = ['/PID', String(child.pid), '/T']
         if (signal === 'SIGKILL') args.push('/F')
         spawnSync('taskkill', args, { stdio: 'ignore', windowsHide: true })
-      } else {
-        process.kill(-child.pid, signal)
+      } catch {}
+      return
+    }
+    try { process.kill(-child.pid, signal) } catch {}
+    for (const [pid, token] of knownDescendants) {
+      if (processStartToken(pid) !== token) {
+        knownDescendants.delete(pid)
+        continue
       }
-    } catch {}
+      try { process.kill(pid, signal) } catch {}
+    }
+    if (signal === 'SIGTERM') {
+      try { process.kill(-child.pid, 'SIGCONT') } catch {}
+      for (const [pid, token] of knownDescendants) {
+        if (processStartToken(pid) === token) try { process.kill(pid, 'SIGCONT') } catch {}
+      }
+    }
   }
 
   const waitForChildTree = async (milliseconds) => {
@@ -150,16 +206,18 @@ export async function runClaudeWorker({ jobId, stateDir }) {
   }
 
   const stopChild = async () => {
+    freezeLinuxDescendants()
     try { active?.close() } catch {}
     if (!child?.pid || !childTreeRunning()) {
       await Promise.race([childExited, delay(100)])
       return
     }
-    signalChildTree('SIGTERM')
-    if (await waitForChildTree(1_000)) return
+    signalChildTree(terminalResult ? 'SIGKILL' : 'SIGTERM')
+    if (await waitForChildTree(terminalResult ? 100 : 1_000)) return
     signalChildTree('SIGKILL')
     // Never release a workspace-write lease while a descendant can still mutate the tree.
-    // POSIX process groups let us prove that the full provider tree has exited.
+    // POSIX process groups cover ordinary children; Linux PID tokens cover recorded children
+    // that created another process group or session.
     if (process.platform !== 'win32') {
       while (childTreeRunning()) {
         signalChildTree('SIGKILL')
@@ -380,6 +438,9 @@ export async function runClaudeWorker({ jobId, stateDir }) {
           rateLimitStatus = message.rate_limit_info?.status || null
           store.appendEvent(jobId, 'rate_limit.updated', { status: rateLimitStatus })
         } else if (message.type === 'result') {
+          // Freeze the provider tree while the native result still proves parentage. A command
+          // may have created another session and become invisible after the CLI exits.
+          freezeLinuxDescendants()
           terminalResult = message
           break
         }
