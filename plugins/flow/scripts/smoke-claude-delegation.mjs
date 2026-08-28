@@ -194,6 +194,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (mode === 'crash') return setTimeout(() => process.exit(17), 10)
     if (mode === 'slow' || mode === 'cancel-no-result') return
     if (mode === 'interrupt-hangs') return
+    if (mode === 'signal-command') {
+      const code = "setTimeout(() => require('node:fs').writeFileSync('signal-survivor', 'bad'), 1000)"
+      spawn(process.execPath, ['-e', code], { cwd: process.cwd(), stdio: 'ignore' }).unref()
+      return
+    }
     if (mode === 'detached-command') {
       const code = "setTimeout(() => require('node:fs').writeFileSync('detached-survivor', 'bad'), 1000)"
       spawn(process.execPath, ['-e', code], { cwd: process.cwd(), stdio: 'ignore' }).unref()
@@ -367,6 +372,19 @@ try {
     assert.equal(detachedCommand.status, 'succeeded')
     await new Promise((resolve) => setTimeout(resolve, 1_200))
     assert.equal(existsSync(join(repo, 'detached-survivor')), false)
+
+    const signalState = state('signal-command')
+    const signalled = cli([...runArgs, '--access', 'workspace-write', '--detach'], {
+      input: 'start command before signal', mode: 'signal-command', stateDir: signalState,
+    })
+    await waitForRunning(signalled.jobId, signalState)
+    const signalDb = new DatabaseSync(join(signalState, 'jobs.sqlite3'), { readOnly: true })
+    const workerPid = signalDb.prepare('SELECT worker_pid FROM jobs WHERE id=?').get(signalled.jobId).worker_pid
+    signalDb.close()
+    process.kill(workerPid, 'SIGTERM')
+    await waitFor(signalled.jobId, signalState, 'unknown')
+    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    assert.equal(existsSync(join(repo, 'signal-survivor')), false)
   }
 
   const continued = cli(['continue', happy.jobId, '--host', 'codex'], { input: 'Continue', stateDir: state('happy') })

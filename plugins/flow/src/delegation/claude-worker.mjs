@@ -107,6 +107,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
   let stderrTail = ''
   let controlBusy = false
   let activeControlPoll = Promise.resolve()
+  let signalStopping = false
   let releasePrompt
   const promptReady = new Promise((resolve) => { releasePrompt = resolve })
   const sessionId = job.nativeThreadId || randomUUID()
@@ -174,16 +175,26 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     if (forcedTimer) { clearTimeout(forcedTimer); forcedTimer = null }
   }
 
+  const recordBackgroundFailure = (error) => {
+    try { store.recordInternalError(jobId, error) } catch {
+      serviceLog(stateDir, `Claude worker background operation failed for ${jobId}.`)
+    }
+  }
+
   const interruptAndForce = async (reason) => {
     if (interruptReason || terminalResult) return
     interruptReason = reason
     clearTurnTimers()
     if (reason === 'deadline') {
       timedOut = true
-      store.appendEvent(jobId, 'turn.timeout', { seconds: job.timeBudgetSeconds })
+      try { store.appendEvent(jobId, 'turn.timeout', { seconds: job.timeBudgetSeconds }) } catch (error) {
+        recordBackgroundFailure(error)
+      }
     } else if (reason === 'stall') {
       stalled = true
-      store.appendEvent(jobId, 'turn.stalled', { seconds: STALL_SECONDS })
+      try { store.appendEvent(jobId, 'turn.stalled', { seconds: STALL_SECONDS }) } catch (error) {
+        recordBackgroundFailure(error)
+      }
     }
     forcedTimer = setTimeout(() => { try { active.close() } catch {} }, 5_000)
     const interrupt = Promise.resolve().then(() => active.interrupt()).catch(() => {})
@@ -193,7 +204,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
   const resetStall = () => {
     if (!accepted || interruptReason || terminalResult) return
     if (stallTimer) clearTimeout(stallTimer)
-    stallTimer = setTimeout(() => { void interruptAndForce('stall') }, STALL_SECONDS * 1_000)
+    stallTimer = setTimeout(() => { void interruptAndForce('stall').catch(recordBackgroundFailure) }, STALL_SECONDS * 1_000)
   }
 
   try {
@@ -204,11 +215,14 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       store.finish(jobId, 'cancelled')
       return
     }
-    heartbeat = setInterval(() => store.heartbeat(jobId), 1_000)
+    heartbeat = setInterval(() => {
+      try { store.heartbeat(jobId) } catch (error) { recordBackgroundFailure(error) }
+    }, 1_000)
 
-    const onSignal = (signal) => {
-      try { active?.close() } catch {}
-      signalChildTree('SIGKILL')
+    const onSignal = async (signal) => {
+      if (signalStopping) return
+      signalStopping = true
+      await stopChild()
       try {
         const current = store.getJob(jobId)
         if (current && !TERMINAL_STATES.includes(current.status)) {
@@ -223,7 +237,14 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       process.exit(1)
     }
     for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-      const handler = () => onSignal(signal)
+      const handler = () => {
+        void onSignal(signal).catch((error) => {
+          recordBackgroundFailure(error)
+          signalChildTree('SIGKILL')
+          try { process.kill(-process.pid, 'SIGKILL') } catch {}
+          process.exit(1)
+        })
+      }
       signalHandlers.push([signal, handler])
       process.on(signal, handler)
     }
@@ -265,7 +286,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       controlBusy = true
       activeControlPoll = (async () => {
         for (const control of store.pendingControls(jobId)) await runControl(control)
-      })().finally(() => { controlBusy = false })
+      })().catch(recordBackgroundFailure).finally(() => { controlBusy = false })
     }
 
     active = createClaudeQuery(job, input(), {
@@ -311,7 +332,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     store.appendEvent(jobId, 'turn.accepted', { turnId })
     accepted = true
     releasePrompt()
-    deadlineTimer = setTimeout(() => { void interruptAndForce('deadline') }, job.timeBudgetSeconds * 1_000)
+    deadlineTimer = setTimeout(() => { void interruptAndForce('deadline').catch(recordBackgroundFailure) }, job.timeBudgetSeconds * 1_000)
     resetStall()
 
     try {

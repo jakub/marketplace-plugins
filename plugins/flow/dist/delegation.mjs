@@ -54520,6 +54520,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
   let stderrTail = "";
   let controlBusy = false;
   let activeControlPoll = Promise.resolve();
+  let signalStopping = false;
   let releasePrompt;
   const promptReady = new Promise((resolve8) => {
     releasePrompt = resolve8;
@@ -54593,16 +54594,31 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       forcedTimer = null;
     }
   };
+  const recordBackgroundFailure = (error2) => {
+    try {
+      store.recordInternalError(jobId2, error2);
+    } catch {
+      serviceLog(stateDir, `Claude worker background operation failed for ${jobId2}.`);
+    }
+  };
   const interruptAndForce = async (reason) => {
     if (interruptReason || terminalResult) return;
     interruptReason = reason;
     clearTurnTimers();
     if (reason === "deadline") {
       timedOut = true;
-      store.appendEvent(jobId2, "turn.timeout", { seconds: job.timeBudgetSeconds });
+      try {
+        store.appendEvent(jobId2, "turn.timeout", { seconds: job.timeBudgetSeconds });
+      } catch (error2) {
+        recordBackgroundFailure(error2);
+      }
     } else if (reason === "stall") {
       stalled = true;
-      store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS });
+      try {
+        store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS });
+      } catch (error2) {
+        recordBackgroundFailure(error2);
+      }
     }
     forcedTimer = setTimeout(() => {
       try {
@@ -54618,7 +54634,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     if (!accepted || interruptReason || terminalResult) return;
     if (stallTimer) clearTimeout(stallTimer);
     stallTimer = setTimeout(() => {
-      void interruptAndForce("stall");
+      void interruptAndForce("stall").catch(recordBackgroundFailure);
     }, STALL_SECONDS * 1e3);
   };
   try {
@@ -54629,13 +54645,17 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       store.finish(jobId2, "cancelled");
       return;
     }
-    heartbeat = setInterval(() => store.heartbeat(jobId2), 1e3);
-    const onSignal = (signal) => {
+    heartbeat = setInterval(() => {
       try {
-        active?.close();
-      } catch {
+        store.heartbeat(jobId2);
+      } catch (error2) {
+        recordBackgroundFailure(error2);
       }
-      signalChildTree("SIGKILL");
+    }, 1e3);
+    const onSignal = async (signal) => {
+      if (signalStopping) return;
+      signalStopping = true;
+      await stopChild();
       try {
         const current = store.getJob(jobId2);
         if (current && !TERMINAL_STATES.includes(current.status)) {
@@ -54654,7 +54674,17 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       process.exit(1);
     };
     for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-      const handler = () => onSignal(signal);
+      const handler = () => {
+        void onSignal(signal).catch((error2) => {
+          recordBackgroundFailure(error2);
+          signalChildTree("SIGKILL");
+          try {
+            process.kill(-process.pid, "SIGKILL");
+          } catch {
+          }
+          process.exit(1);
+        });
+      };
       signalHandlers.push([signal, handler]);
       process.on(signal, handler);
     }
@@ -54694,7 +54724,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       controlBusy = true;
       activeControlPoll = (async () => {
         for (const control of store.pendingControls(jobId2)) await runControl(control);
-      })().finally(() => {
+      })().catch(recordBackgroundFailure).finally(() => {
         controlBusy = false;
       });
     };
@@ -54736,7 +54766,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     accepted = true;
     releasePrompt();
     deadlineTimer = setTimeout(() => {
-      void interruptAndForce("deadline");
+      void interruptAndForce("deadline").catch(recordBackgroundFailure);
     }, job.timeBudgetSeconds * 1e3);
     resetStall();
     try {
