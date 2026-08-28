@@ -7,6 +7,7 @@
       "--host",
       "codex"
     ],
-    "cwd": "."
+    "cwd": ".",
+    "tool_timeout_sec": 7500
   }
 }

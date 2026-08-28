@@ -8,6 +8,7 @@ export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const SERVICE_TIERS = ['default']
 export const ACTIVE_STATES = ['queued', 'starting', 'running', 'reconciling']
 export const TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval']
+export const JOB_STATES = [...ACTIVE_STATES, ...TERMINAL_STATES]
 export const MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
 
 export const FINDINGS_SCHEMA = {
@@ -110,6 +111,26 @@ export function resultEnvelope(job) {
     structured: job.structured,
     findings: job.mode === 'task' ? null : (job.structured?.findings ?? null),
     usage: job.usage,
+    error: job.error,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  }
+}
+
+export function jobSummary(job) {
+  return {
+    jobId: job.id,
+    parentJobId: job.parentJobId,
+    status: job.status,
+    host: job.host,
+    target: job.target,
+    mode: job.mode,
+    access: job.access,
+    cwd: job.cwd,
+    model: job.model,
+    effort: job.effort,
+    threadId: job.nativeThreadId,
+    turnId: job.nativeTurnId,
     error: job.error,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,

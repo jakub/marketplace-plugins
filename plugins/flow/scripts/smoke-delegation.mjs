@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { AppServerClient } from '../src/delegation/app-server.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
 import { assertRoute } from '../src/delegation/contracts.mjs'
 
@@ -176,6 +177,7 @@ if (process.argv[2] === '--version') { console.log('codex-cli 0.test'); process.
 const mode = process.env.FLOW_FAKE_MODE || 'happy'
 const say = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let active = null
+let threadConfig = null
 let done = false
 let timer = null
 const finish = (status = 'completed', output = null) => {
@@ -219,15 +221,41 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     else process.exit(18)
   }
   else if (message.method === 'initialize') answer({ userAgent: 'fake' })
-  else if (message.method === 'initialized') {}
+  else if (message.method === 'initialized') {
+    if (mode === 'malformed-protocol') process.stdout.write('not-json\\n')
+    if (mode === 'stdin-closed') {
+      process.stdin.destroy()
+      say({ method: 'fake/stdinClosed', params: {} })
+      setTimeout(() => process.exit(0), 1000)
+    }
+  }
+  else if (message.method === 'mcpServerStatus/list') {
+    const inventory = message.params.threadId
+      ? (mode !== 'mcp-leak'
+          && threadConfig?.['features.plugins'] === false
+          && threadConfig?.['features.apps'] === false
+          && threadConfig?.mcp_servers?.standalone?.enabled === false
+        ? [{ name: 'standalone', pluginId: null, tools: {}, runtimeStatus: 'disabled', authStatus: 'unsupported', resources: [], resourceTemplates: [] }]
+        : [{ name: 'leaked', pluginId: null, tools: { mutate: {} }, runtimeStatus: 'connected', authStatus: 'unsupported', resources: [], resourceTemplates: [] }])
+      : [
+          { name: 'flow_delegate', pluginId: 'flow@jakub', tools: { delegation_status: {} }, runtimeStatus: null, authStatus: 'unsupported', resources: [], resourceTemplates: [] },
+          { name: 'codex_apps', pluginId: null, tools: { 'sites.delete_site': {} }, runtimeStatus: null, authStatus: 'unsupported', resources: [], resourceTemplates: [] },
+          { name: 'standalone', pluginId: null, tools: { mutate: {} }, runtimeStatus: null, authStatus: 'unsupported', resources: [], resourceTemplates: [] },
+        ]
+    answer({ data: inventory, nextCursor: null })
+  }
   else if (message.method === 'thread/start') {
+    threadConfig = message.params.config
     if (mode === 'provider-error') {
       say({ id: message.id, error: { code: -32603, message: 'account test@example.invalid failed at /home/test/private/provider.json' } })
     } else if (mode === 'profile' && !message.params.developerInstructions.includes('authorized defensive research')) {
       say({ id: message.id, error: { code: -32602, message: 'missing defensive profile' } })
     } else answer({ thread: { id: 'thread-test' } })
   }
-  else if (message.method === 'thread/resume') answer({ thread: { id: message.params.threadId } })
+  else if (message.method === 'thread/resume') {
+    threadConfig = message.params.config
+    answer({ thread: { id: message.params.threadId } })
+  }
   else if (message.method === 'turn/start') {
     done = false
     active = { threadId: message.params.threadId, turnId: 'turn-' + Date.now() }
@@ -310,7 +338,7 @@ const openStoreInChild = (stateDir, startAt) => new Promise((resolve) => {
 try {
   console.log('task and typed output')
   const happy = cli(runArgs, { input: 'Reply with OK', stateDir: state('happy') })
-  assert.equal(happy.status, 'succeeded')
+  assert.equal(happy.status, 'succeeded', JSON.stringify(happy))
   assert.equal(happy.output, 'OK from fake Codex')
   assert.equal(happy.model, 'gpt-5.6-luna')
   assert.equal(happy.serviceTier, 'default')
@@ -529,6 +557,39 @@ try {
   })
   assert.equal(missingCodex.status, 'failed')
   assert.equal(missingCodex.error.kind, 'CODEX_NOT_INSTALLED')
+
+  const leakedMcp = cli(runArgs, { input: 'must not run', mode: 'mcp-leak', stateDir: state('mcp-leak') })
+  assert.equal(leakedMcp.status, 'failed')
+  assert.equal(leakedMcp.error.kind, 'MCP_ISOLATION')
+  assert.equal(leakedMcp.threadId, null)
+
+  const malformedProtocol = cli(runArgs, {
+    input: 'must not run', mode: 'malformed-protocol', stateDir: state('malformed-protocol'),
+  })
+  assert.equal(malformedProtocol.status, 'failed')
+  assert.equal(malformedProtocol.error.kind, 'APP_SERVER_PROTOCOL')
+
+  const previousCodexBin = process.env.FLOW_DELEGATION_CODEX_BIN
+  process.env.FLOW_DELEGATION_CODEX_BIN = fake
+  let stdinClosed
+  const stdinClosedNotice = new Promise((resolve) => { stdinClosed = resolve })
+  const brokenStdinClient = new AppServerClient({
+    cwd: repo,
+    env: { FLOW_FAKE_MODE: 'stdin-closed' },
+    onNotification: (method) => { if (method === 'fake/stdinClosed') stdinClosed() },
+  })
+  try {
+    await brokenStdinClient.start()
+    await stdinClosedNotice
+    await assert.rejects(
+      brokenStdinClient.request('account/read', {}, 2_000),
+      (error) => error.kind === 'APP_SERVER_EXIT',
+    )
+  } finally {
+    await brokenStdinClient.stop()
+    if (previousCodexBin === undefined) delete process.env.FLOW_DELEGATION_CODEX_BIN
+    else process.env.FLOW_DELEGATION_CODEX_BIN = previousCodexBin
+  }
 
   const acceptedCrashState = state('accepted-crash')
   const acceptedCrash = cli([...runArgs, '--access', 'workspace-write'], {
@@ -768,7 +829,7 @@ try {
   await client.start()
   const tools = await client.listTools()
   const names = tools.tools.map((tool) => tool.name)
-  for (const name of ['delegate_to_codex', 'delegation_status', 'delegation_result', 'delegation_events', 'delegation_cancel', 'delegation_steer', 'delegation_continue', 'delegation_models', 'delegation_doctor']) assert.ok(names.includes(name), name)
+  for (const name of ['delegate_to_codex', 'delegation_status', 'delegation_result', 'delegation_events', 'delegation_list', 'delegation_cancel', 'delegation_steer', 'delegation_continue', 'delegation_models', 'delegation_doctor']) assert.ok(names.includes(name), name)
   const escaped = await client.callTool(
     'delegate_to_codex',
     { mode: 'task', prompt: 'escape', cwd: temp, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
@@ -823,6 +884,46 @@ try {
   assert.equal(mcpContinued.structuredContent.job.threadId, mcpResult.structuredContent.job.threadId)
   assert.notEqual(mcpContinued.structuredContent.job.jobId, mcpResult.structuredContent.job.jobId)
   assert.ok(continuedProgress.length > 0)
+  const firstPage = await client.callTool('delegation_list', { limit: 1 }, { timeout: 30_000 })
+  assert.equal(firstPage.structuredContent.jobs.length, 1)
+  assert.equal(firstPage.structuredContent.jobs[0].host, 'claude')
+  assert.equal(firstPage.structuredContent.jobs[0].target, 'codex')
+  assert.equal(Object.hasOwn(firstPage.structuredContent.jobs[0], 'prompt'), false)
+  assert.equal(Object.hasOwn(firstPage.structuredContent.jobs[0], 'output'), false)
+  assert.ok(firstPage.structuredContent.nextCursor)
+  const secondPage = await client.callTool('delegation_list', {
+    limit: 1,
+    cursor: firstPage.structuredContent.nextCursor,
+  }, { timeout: 30_000 })
+  assert.equal(secondPage.structuredContent.jobs.length, 1)
+  assert.notEqual(secondPage.structuredContent.jobs[0].jobId, firstPage.structuredContent.jobs[0].jobId)
+  const mismatchedCursor = await client.callTool('delegation_list', {
+    status: 'succeeded',
+    limit: 1,
+    cursor: firstPage.structuredContent.nextCursor,
+  }, { timeout: 30_000 })
+  assert.equal(mismatchedCursor.isError, true)
+  assert.equal(mismatchedCursor.structuredContent.error.kind, 'BAD_REQUEST')
+  const succeededPage = await client.callTool('delegation_list', { status: 'succeeded', limit: 100 }, { timeout: 30_000 })
+  assert.ok(succeededPage.structuredContent.jobs.length >= 2)
+  assert.ok(succeededPage.structuredContent.jobs.every((job) => job.status === 'succeeded'))
+
+  const hiddenStore = new JobStore(mcpState)
+  hiddenStore.createJob({
+    traceId: 'hidden-list-job', host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', cwd: temp, workspaceKey: temp,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'hidden', outputSchema: null,
+  })
+  hiddenStore.createJob({
+    traceId: 'other-route-list-job', host: 'codex', target: 'claude', depth: 0,
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'sonnet', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'other route', outputSchema: null,
+  })
+  hiddenStore.close()
+  const hiddenPage = await client.callTool('delegation_list', { status: 'queued', limit: 100 }, { timeout: 30_000 })
+  assert.deepEqual(hiddenPage.structuredContent.jobs, [])
   const modelResult = await client.callTool('delegation_models', { cwd: repo }, { timeout: 30_000 })
   assert.equal(modelResult.structuredContent.models[0].id, 'gpt-5.6-luna')
   const escapedModels = await client.callTool('delegation_models', { cwd: temp }, { timeout: 30_000 })
@@ -830,7 +931,43 @@ try {
   assert.equal(escapedModels.structuredContent.error.kind, 'OUTSIDE_ROOTS')
   const doctorResult = await client.callTool('delegation_doctor', { cwd: repo }, { timeout: 30_000 })
   assert.equal(doctorResult.structuredContent.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.workspace.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.mcpIsolation.ok, true)
+  assert.equal(doctorResult.structuredContent.mcp.client.name, 'flow-smoke')
+  assert.equal(doctorResult.structuredContent.mcp.capabilities.roots.listChanged, true)
   await client.close()
+
+  const noRootsClient = new McpStdioClient({
+    command: process.execPath,
+    args: [bundle, 'mcp', '--host', 'claude', '--state-dir', state('mcp-no-roots')],
+    cwd: repo,
+    env: {
+      ...process.env,
+      CODEX_PROJECT_DIR: '',
+      CLAUDE_PROJECT_DIR: '',
+      FLOW_DELEGATION_CODEX_BIN: fake,
+      FLOW_FAKE_MODE: 'happy',
+    },
+    roots: [],
+  })
+  await noRootsClient.start()
+  const noRootsDoctor = await noRootsClient.callTool('delegation_doctor', {}, { timeout: 30_000 })
+  assert.equal(noRootsDoctor.isError, undefined)
+  assert.equal(noRootsDoctor.structuredContent.ok, false)
+  assert.equal(noRootsDoctor.structuredContent.checks.workspace.error.kind, 'NO_ROOTS')
+  assert.equal(noRootsDoctor.structuredContent.checks.appServer.ok, true)
+  const noRootsList = await noRootsClient.callTool('delegation_list', {}, { timeout: 30_000 })
+  assert.equal(noRootsList.isError, true)
+  assert.equal(noRootsList.structuredContent.error.kind, 'NO_ROOTS')
+  await noRootsClient.close()
+
+  const missingMcpHost = spawnSync(process.execPath, [bundle, 'mcp'], {
+    cwd: repo,
+    encoding: 'utf8',
+    timeout: 10_000,
+  })
+  assert.equal(missingMcpHost.status, 2)
+  assert.match(missingMcpHost.stderr, /--host is required/)
 
   console.log('smoke-delegation: ALL PASS')
 } finally {

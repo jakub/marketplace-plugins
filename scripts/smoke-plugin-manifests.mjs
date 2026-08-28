@@ -27,6 +27,14 @@ for (const listed of marketplace.plugins) {
   const pluginRoot = join(ROOT, 'plugins', name)
   const claude = readJson(join(pluginRoot, '.claude-plugin', 'plugin.json'))
   assert.equal(claude.version, listed.version, `${name} Claude version matches marketplace`)
+  if (name === 'flow') {
+    const claudeDelegation = claude.mcpServers?.flow_delegate
+    assert.deepEqual(claudeDelegation?.args?.slice(-2), ['--host', 'claude'], 'flow Claude MCP pins its host')
+    assert.equal(claudeDelegation?.timeout, 7_500_000, 'flow Claude MCP timeout outlives the maximum job budget')
+    const codexDelegation = readJson(join(pluginRoot, '.mcp.json')).flow_delegate
+    assert.deepEqual(codexDelegation?.args?.slice(-2), ['--host', 'codex'], 'flow Codex MCP pins its host')
+    assert.equal(codexDelegation?.tool_timeout_sec, 7_500, 'flow Codex MCP timeout outlives the maximum job budget')
+  }
 
   const codexManifest = join(pluginRoot, '.codex-plugin', 'plugin.json')
   if (!existsSync(codexManifest)) continue

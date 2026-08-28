@@ -22,7 +22,7 @@ The service must provide these properties:
 
 ## Route policy
 
-Each plugin manifest starts the MCP server with a trusted `--host` argument. Tool input cannot replace it. A worker adds `FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider process environment.
+Each plugin manifest starts the MCP server with a trusted `--host` argument. Tool input cannot replace it. MCP mode refuses to start when the argument is missing or invalid. A worker adds `FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider process environment.
 
 | Host | Target | Depth | Result |
 |---|---|---:|---|
@@ -44,13 +44,15 @@ The Claude manifest registers `delegate_to_codex`. The Codex manifest registers 
 
 `delegation_status`, `delegation_result`, and `delegation_events` read durable state for the current route. Status reconciles a stale record when the provider has a supported recovery method.
 
+`delegation_list` returns a cursor-paginated list of recent jobs for the current host and target. It rechecks every job against the current MCP workspace roots. It omits jobs outside those roots, and it never includes prompts or outputs.
+
 `delegation_cancel` records a cancel request. A queued job becomes cancelled without starting a provider. A live Codex turn receives `turn/interrupt`. A live Claude query receives the SDK `interrupt()` call. Both workers terminate their child process after a grace period when cooperative cancellation does not finish.
 
 `delegation_steer` sends text to Codex through `turn/steer`. Claude Agent SDK 0.3.240 has no equivalent control for an active query. A Claude job returns `CONTROL_UNSUPPORTED` without queuing the text. The tool remains registered so the control API stays predictable, but the capability report says `liveSteer: false` for Claude.
 
 `delegation_continue` creates a new local job linked to the prior one. Codex resumes the saved thread. Claude resumes the saved session ID. The new job gets its own status, events, result, and time budget. An active job cannot continue. An `unknown` job cannot continue because Flow cannot prove the earlier write turn stopped.
 
-`delegation_models` asks the target provider for its live catalog. `delegation_doctor` reports named checks for Node, the provider runtime, account state, the job database, and provider initialization. Both return the provider capability object.
+`delegation_models` asks the target provider for its live catalog. `delegation_doctor` reports named checks for Node, the provider runtime, account state, the job database, provider initialization, and the Codex MCP-isolation API when that route applies. Doctor also reports the MCP client identity, capabilities, advertised roots, usable roots, and project-directory input. Missing roots produce a normal diagnostic result with `ok: false`; they do not prevent the other checks from running. The MCP SDK does not expose the negotiated protocol version after initialization, so doctor marks that field unavailable instead of guessing. Both tools return the provider capability object.
 
 | Control | Codex | Claude |
 |---|---|---|
@@ -79,11 +81,9 @@ The database and state directory use owner-only permissions. Prompts live in the
 The stored states are:
 
 ```text
-queued -> starting -> running -> succeeded
-                     |       -> failed
-                     |       -> cancelled
-                     |       -> awaiting_approval
-                     |       -> unknown
+queued -> starting -> running -> terminal state
+  |          |          |
+  +----------+----------+-- stale worker -> reconciling -> terminal state or deferred recovery
 ```
 
 `queued`, `starting`, `running`, and `reconciling` are active. The other states are terminal. `awaiting_approval` means Flow denied an unexpected request. The caller must create a new job with a different contract.
@@ -100,9 +100,11 @@ Flow never maps a missing process, empty response, or transport error to success
 
 ## Codex App Server contract
 
-This contract was validated against Codex CLI 0.150.1 on 2026-08-26.
+This contract was validated against Codex CLI 0.150.1 on 2026-08-28.
 
-The worker starts `codex app-server` over JSON lines. It initializes the service, starts or resumes a thread, then starts a turn with these values set explicitly:
+The worker starts `codex app-server` over JSON lines. Before it creates a thread, it reads the effective MCP inventory. The thread config disables plugin loading, app loading, and every discovered standalone MCP server. After the thread starts or resumes, Flow reads that thread's MCP inventory. It refuses to send the prompt unless every remaining server is disabled and exposes zero tools. This check prevents the delegated Codex process from inheriting the host's Flow server, browser tools, apps, or other local MCP authority.
+
+After that check, the worker starts a turn with these values set explicitly:
 
 - `approvalPolicy: "never"`
 - the requested model and effort
@@ -116,9 +118,11 @@ The worker builds the final answer from completed `agentMessage` items. Ajv pars
 
 An approval request is unexpected under `never`. The worker denies it, records the method, and ends as `awaiting_approval`.
 
+The App Server client treats malformed JSON lines, a closed stdin pipe, and early process exit as transport failures. It rejects every pending request and terminates the child. A broken pipe cannot become an uncaught Node process error.
+
 ## Claude Agent SDK contract
 
-This contract was validated against Claude Code 2.1.247 and `@anthropic-ai/claude-agent-sdk` 0.3.240 on 2026-08-27. The repository pins 0.3.240 because the machine's five-day package-age policy rejected newer releases at implementation time. The bundle contains the SDK library but not a Claude Code executable. It uses the installed `claude` binary and its current authentication.
+This contract was validated against Claude Code 2.1.250 and `@anthropic-ai/claude-agent-sdk` 0.3.240 on 2026-08-28. The repository pins 0.3.240 because the machine's five-day package-age policy rejected newer releases at implementation time. The bundle contains the SDK library but not a Claude Code executable. It uses the installed `claude` binary and its current authentication.
 
 Claude's current plan policy permits Agent SDK and `claude -p` usage to draw from Claude plan limits. Anthropic's planned June 15, 2026 usage-policy change is paused. Flow verified the linked policy on 2026-08-27. This is a dated operational dependency and must be rechecked before changing authentication or publishing guidance:
 
@@ -135,7 +139,7 @@ The worker calls `query()` with these controls:
 - the Claude Code system prompt plus a short delegated-worker contract
 - a sandbox that fails closed when unavailable
 
-The sandbox blocks network access for commands, local binding, Unix sockets, and unsandboxed commands. Read-only jobs deny worktree writes. Write jobs grant the canonical worktree; Claude's own runtime temporary locations may remain writable, but another checkout does not. A PreToolUse policy also checks direct edits, direct shell writers, wildcard write targets, mutation-capable inline evaluators, publication commands, hidden shell interpreters, and nested Claude or Codex calls. The sandbox denies the effective Claude and Codex executable paths, so a shell script, language script, or executable script cannot bypass the command-text check by starting a raw provider child. Direct reads and searches cannot enter common local credential stores. On Linux, the command sandbox and PreToolUse policy deny `/proc`, including process environments and descriptors. This still applies when the assigned worktree sits below a protected credential directory. The Claude process receives an explicit runtime, network, and provider-authentication environment allowlist instead of the host's complete environment. Auto-memory is disabled. Secret and proxy variables are removed from sandboxed commands. These checks do not depend on prompt compliance.
+The sandbox blocks network access for commands, local binding, Unix sockets, and unsandboxed commands. Read-only jobs deny worktree writes. Write jobs grant the canonical worktree; Claude's own runtime temporary locations may remain writable, but another checkout does not. A PreToolUse policy also checks direct edits, direct shell writers, wildcard write targets, mutation-capable inline evaluators, publication commands, hidden shell interpreters, and nested Claude or Codex calls. The sandbox denies the effective Claude and Codex executable paths, so a shell script, language script, or executable script cannot bypass the command-text check by starting a raw provider child. Direct reads and searches cannot enter common local credential stores or custom credential paths named by the provider environment. On Linux, the command sandbox and PreToolUse policy deny `/proc`, including process environments and descriptors. This still applies when the assigned worktree sits below a protected credential directory. The Claude process receives an explicit runtime, network, and provider-authentication environment allowlist instead of the host's complete environment. Auto-memory is disabled. Secret and proxy variables are removed from sandboxed commands. These checks do not depend on prompt compliance.
 
 Workspace-write authority still covers the whole disposable worktree. The protected-file checks prevent direct hand edits and common opaque shell forms; they are workflow policy, not syscall mediation for every repository executable. Review the resulting Git diff before publishing, just as for a native agent with worktree-write access.
 
@@ -172,7 +176,7 @@ Review modes use one strict findings schema. A clean review returns an empty fin
 
 ## Workspace trust
 
-The MCP server asks the client for roots when the client supports `roots/list`. It also accepts the host's canonical project directory. A requested working directory must resolve inside one of those roots. Flow rejects missing paths, symlink escapes, and unrelated checkouts.
+The MCP server asks the client for roots when the client supports `roots/list`. It also accepts the host's canonical project directory. At least one of those sources must name a usable directory before Flow can start, continue, list, or query models for a workspace. Doctor is the exception because it must explain a missing-root failure. A requested working directory must resolve inside one of those roots. Flow rejects missing paths, symlink escapes, and unrelated checkouts.
 
 For workspace-write jobs, Flow checks the Git worktree root too. A linked worktree beside the approved repository passes only when its common Git directory belongs to the approved root and Git lists that worktree. A caller-writable `.git` pointer alone is not proof.
 
@@ -188,7 +192,7 @@ A read-only caller may create a new job after a named failure. Continuation resu
 
 Source lives under `src/delegation`. `deps/package.json` pins the MCP SDK, Ajv, esbuild, and the Claude Agent SDK. The build writes one committed ESM bundle at `dist/delegation.mjs`. That file supports MCP, worker, and CLI entry modes. Workers start the same bundle with a job ID, so the prompt does not cross a shell boundary.
 
-The Claude manifest contains the direct `flow_delegate` server definition. The Codex manifest points to plugin-root `.mcp.json`, which starts the same bundle with `--host codex`. The build injects the Flow plugin version into the bundle. Both plugin manifests and Flow's marketplace entry carry that plugin version. The marketplace catalog's top-level metadata version moves independently.
+The Claude manifest contains the direct `flow_delegate` server definition. It sets a 7,500,000 millisecond MCP call timeout. The Codex manifest points to plugin-root `.mcp.json`, which starts the same bundle with `--host codex` and a 7,500 second tool timeout. Both values exceed the maximum 7,200 second job budget so the MCP client does not cut off a valid attached call first. The build injects the Flow plugin version into the bundle. Both plugin manifests and Flow's marketplace entry carry that plugin version. The marketplace catalog's top-level metadata version moves independently.
 
 `scripts/smoke-bundle-drift.mjs` rebuilds from source and requires a byte-identical committed bundle. It needs a development checkout with `npm ci` already run in `plugins/flow/deps`.
 
@@ -203,9 +207,10 @@ The deterministic test set covers:
 - full JSON Schema validation and immutable review revisions
 - job transitions, event order, retention, migrations, and concurrent database opens
 - Codex App Server startup, deltas, controls, recovery, and unknown write outcomes
+- delegated Codex MCP isolation, malformed protocol input, and broken App Server stdin
 - Claude SDK initialization, output, rate limits, approval denial, cancellation during startup, continuation, provider crashes, and unknown write outcomes
 - Claude direct-tool and Bash permission policy
-- provider-specific MCP registration, capabilities, progress, and CLI parity
+- provider-specific MCP registration, host requirements, list pagination, root diagnostics, capabilities, progress, and CLI parity
 - plugin manifests, versions, hooks, charter injection, and byte-identical bundle generation
 
 An operator should also run one authenticated task through each route when both accounts have allowance. The deterministic Claude smoke uses the real SDK library against a fake Claude Code protocol process, so it does not spend plan usage and can exercise success and failure cases in CI.

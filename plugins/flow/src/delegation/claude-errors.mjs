@@ -12,7 +12,7 @@ export function normalizeClaudeError(error) {
   if (/effort/i.test(text) && /invalid|unknown|unsupported/i.test(text)) {
     return new DelegationError('BAD_EFFORT', 'Claude rejected the requested effort level.')
   }
-  if (/auth|login|oauth|credential/i.test(text)) {
+  if (/(?:^|[^a-z0-9])(?:auth|authentication|authorization|login|oauth|credentials?|unauthenticated|not[ _-]+authenticated)(?:[^a-z0-9]|$)/i.test(text)) {
     return new DelegationError('CLAUDE_AUTH', 'Claude Code is not authenticated for Agent SDK use.')
   }
   if (/could not be started|failed to (?:launch|spawn)|executable(?: was)? not found/i.test(text)) {

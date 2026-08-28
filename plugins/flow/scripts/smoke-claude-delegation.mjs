@@ -408,6 +408,8 @@ try {
   console.log('Claude SDK hook policy')
   assert.equal(normalizeClaudeError(new Error('Model not found')).kind, 'BAD_MODEL')
   assert.equal(normalizeClaudeError(new Error('Session not found')).kind, 'CLAUDE_SDK')
+  assert.equal(normalizeClaudeError(new Error('authentication_failed')).kind, 'CLAUDE_AUTH')
+  assert.equal(normalizeClaudeError(new Error('Authoring output failed')).kind, 'CLAUDE_SDK')
   const windowsBin = join(temp, 'windows-bin')
   const windowsEntrypoint = join(windowsBin, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
   const windowsShim = join(windowsBin, 'claude.cmd')
@@ -449,6 +451,12 @@ try {
   assert.ok(sensitiveReadPaths().includes(join(temp, 'AppData', 'gcloud')))
   if (previousAppData === undefined) delete process.env.APPDATA
   else process.env.APPDATA = previousAppData
+  const customCredentials = join(temp, 'provider-credentials.json')
+  const previousCredentials = process.env.GOOGLE_APPLICATION_CREDENTIALS
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = customCredentials
+  assert.ok(sensitiveReadPaths().includes(customCredentials))
+  if (previousCredentials === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+  else process.env.GOOGLE_APPLICATION_CREDENTIALS = previousCredentials
   const escapedEdit = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(temp, 'outside.txt') } })
   assert.equal(escapedEdit.hookSpecificOutput.permissionDecision, 'deny')
   const nestedCli = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'claude -p hello' } })
@@ -535,6 +543,7 @@ try {
   const tools = await mcpClient.listTools()
   const names = tools.tools.map((tool) => tool.name)
   assert.ok(names.includes('delegate_to_claude'))
+  assert.ok(names.includes('delegation_list'))
   assert.ok(!names.includes('delegate_to_codex'))
   const modelResult = await mcpClient.callTool('delegation_models', { cwd: repo })
   assert.equal(modelResult.structuredContent.target, 'claude')
@@ -543,6 +552,8 @@ try {
     mode: 'task', prompt: 'MCP', cwd: repo, access: 'read-only', model: 'sonnet', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30,
   })
   assert.equal(delegated.structuredContent.job.status, 'succeeded')
+  const listed = await mcpClient.callTool('delegation_list', { limit: 20 })
+  assert.ok(listed.structuredContent.jobs.some((job) => job.jobId === delegated.structuredContent.job.jobId))
   await mcpClient.close()
 
   console.log('smoke-claude-delegation: ALL PASS')

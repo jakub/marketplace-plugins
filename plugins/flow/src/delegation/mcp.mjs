@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod/v4'
 import { DelegationService } from './service.mjs'
-import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, effortsForTarget, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, effortsForTarget, JOB_STATES, jobSummary, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { serviceLog } from './store.mjs'
 import { VERSION } from './version.mjs'
 import { canonicalRoots, canonicalWorkspace } from './workspace.mjs'
@@ -45,6 +45,46 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     try { return (await server.server.listRoots()).roots.map((root) => root.uri) } catch { return [] }
   }
   const rootOptions = async () => ({ rootUris: await clientRoots() })
+  const doctorContext = async (requestedCwd) => {
+    const clientCapabilities = server.server.getClientCapabilities() || {}
+    const client = server.server.getClientVersion() || null
+    const supportsRoots = Boolean(clientCapabilities.roots)
+    let rootUris = []
+    let rootsError = null
+    if (supportsRoots) {
+      try { rootUris = (await server.server.listRoots()).roots.map((root) => root.uri) } catch (error) {
+        rootsError = publicError(error, 'The MCP client did not return workspace roots.')
+      }
+    }
+    const roots = canonicalRoots({ rootUris, projectDir })
+    const candidate = requestedCwd || projectDir || roots[0] || null
+    let cwd = null
+    let workspaceError = rootsError
+    if (!workspaceError && candidate) {
+      try { cwd = await canonicalWorkspace(candidate, roots) } catch (error) { workspaceError = publicError(error) }
+    } else if (!workspaceError) {
+      workspaceError = publicError(new DelegationError('NO_ROOTS', 'The client did not provide a usable workspace root.'))
+    }
+    return {
+      cwd,
+      workspace: {
+        ok: Boolean(cwd),
+        requestedCwd: requestedCwd || null,
+        selectedCwd: cwd,
+        projectDir: projectDir || null,
+        clientRootCapability: supportsRoots,
+        advertisedRootUris: rootUris,
+        usableRoots: roots,
+        error: workspaceError,
+      },
+      mcp: {
+        client,
+        capabilities: clientCapabilities,
+        negotiatedProtocolVersion: null,
+        protocolVersionNote: 'The MCP SDK does not expose the negotiated protocol version after initialization.',
+      },
+    }
+  }
 
   // Attached delivery streams the durable event journal back as progress notifications.
   const attachedOptions = (extra) => ({
@@ -117,6 +157,27 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     events: service.events(jobId, { after, limit }),
   })))
 
+  server.registerTool('delegation_list', {
+    description: 'List recent delegation jobs owned by this host route and visible from the current workspace roots. Prompts and outputs are omitted.',
+    inputSchema: {
+      status: z.enum([...JOB_STATES]).optional(),
+      limit: z.number().int().min(1).max(100).default(20),
+      cursor: z.string().optional(),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, asTool(async (input) => {
+    const page = await service.list({
+      status: input.status || null,
+      limit: input.limit,
+      cursor: input.cursor || null,
+    }, await rootOptions())
+    return toolResult({
+      ok: true,
+      jobs: page.jobs.map(jobSummary),
+      nextCursor: page.nextCursor,
+    })
+  }))
+
   server.registerTool('delegation_cancel', {
     description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId: jobId },
@@ -168,9 +229,9 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     inputSchema: { cwd: z.string().optional() },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, asTool(async ({ cwd }) => {
-    const roots = canonicalRoots({ rootUris: await clientRoots(), projectDir })
-    const checked = await canonicalWorkspace(cwd || projectDir || roots[0], roots)
-    return toolResult(await service.doctor(checked))
+    const context = await doctorContext(cwd)
+    const result = await service.doctor(context.cwd, { workspace: context.workspace })
+    return toolResult({ ...result, mcp: context.mcp })
   }))
 
   const transport = new StdioServerTransport()

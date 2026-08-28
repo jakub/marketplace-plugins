@@ -1,4 +1,4 @@
-import { AppServerClient, isApprovalRequest, sandboxFor } from './app-server.mjs'
+import { AppServerClient, assertThreadMcpIsolated, isolatedThreadConfig, isApprovalRequest, sandboxFor } from './app-server.mjs'
 import { runClaudeWorker } from './claude-worker.mjs'
 import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
@@ -186,6 +186,11 @@ async function runCodexWorker({ jobId, stateDir }) {
     }).start()
     store.appendEvent(jobId, 'app_server.ready', {})
 
+    const config = await isolatedThreadConfig(client)
+    store.appendEvent(jobId, 'mcp.isolation_configured', {
+      standaloneServers: Object.keys(config.mcp_servers).length,
+    })
+
     const threadParams = {
       model: job.model,
       serviceTier: job.serviceTier,
@@ -194,12 +199,15 @@ async function runCodexWorker({ jobId, stateDir }) {
       approvalsReviewer: 'user',
       sandbox: job.access,
       developerInstructions: developerInstructions(job),
+      config,
     }
     const threadResponse = job.nativeThreadId
       ? await client.request('thread/resume', { threadId: job.nativeThreadId, ...threadParams }, 30_000)
       : await client.request('thread/start', { ...threadParams, ephemeral: false, serviceName: 'flow-delegation' }, 30_000)
     const threadId = threadResponse.thread?.id
     if (!threadId) throw new DelegationError('APP_SERVER_PROTOCOL', 'Codex did not return a thread ID.')
+    const isolation = await assertThreadMcpIsolated(client, threadId)
+    store.appendEvent(jobId, 'mcp.isolation_verified', isolation)
     store.setRunning(jobId, { threadId })
     store.appendEvent(jobId, job.nativeThreadId ? 'thread.resumed' : 'thread.started', { threadId })
 

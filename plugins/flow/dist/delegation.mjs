@@ -13745,7 +13745,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
             })));
           }
         }
-
+        
         if (${id2}.value === undefined) {
           if (${k3} in input) {
             newResult[${k3}] = undefined;
@@ -13753,7 +13753,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         } else {
           newResult[${k3}] = ${id2}.value;
         }
-
+        
       `);
       } else if (!isOptionalIn) {
         doc.write(`
@@ -13790,7 +13790,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
             path: iss.path ? [${k3}, ...iss.path] : [${k3}]
           })));
         }
-
+        
         if (${id2}.value === undefined) {
           if (${k3} in input) {
             newResult[${k3}] = undefined;
@@ -13798,7 +13798,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         } else {
           newResult[${k3}] = ${id2}.value;
         }
-
+        
       `);
       }
     }
@@ -22748,6 +22748,7 @@ var CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 var SERVICE_TIERS = ["default"];
 var ACTIVE_STATES = ["queued", "starting", "running", "reconciling"];
 var TERMINAL_STATES = ["succeeded", "failed", "cancelled", "unknown", "awaiting_approval"];
+var JOB_STATES = [...ACTIVE_STATES, ...TERMINAL_STATES];
 var MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
 var FINDINGS_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -22847,6 +22848,25 @@ function resultEnvelope(job) {
     updatedAt: job.updatedAt
   };
 }
+function jobSummary(job) {
+  return {
+    jobId: job.id,
+    parentJobId: job.parentJobId,
+    status: job.status,
+    host: job.host,
+    target: job.target,
+    mode: job.mode,
+    access: job.access,
+    cwd: job.cwd,
+    model: job.model,
+    effort: job.effort,
+    threadId: job.nativeThreadId,
+    turnId: job.nativeTurnId,
+    error: job.error,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt
+  };
+}
 
 // src/delegation/app-server.mjs
 import { spawn, spawnSync } from "node:child_process";
@@ -22863,6 +22883,8 @@ var APPROVAL_METHODS = /* @__PURE__ */ new Set([
   "applyPatchApproval",
   "execCommandApproval"
 ]);
+var MCP_PAGE_LIMIT = 100;
+var MCP_MAX_PAGES = 10;
 var isApprovalRequest = (method) => APPROVAL_METHODS.has(method);
 var AppServerClient = class {
   constructor({ cwd, env = {}, onNotification = () => {
@@ -22878,6 +22900,7 @@ var AppServerClient = class {
     this.nextId = 1;
     this.pending = /* @__PURE__ */ new Map();
     this.stderr = "";
+    this.transportError = null;
     this.closeInfo = null;
     this.closePromise = new Promise((resolve9) => {
       this.resolveClose = resolve9;
@@ -22900,6 +22923,7 @@ var AppServerClient = class {
     this.child.stderr.on("data", (chunk) => {
       this.stderr = (this.stderr + chunk).slice(-16384);
     });
+    this.child.stdin.on("error", (cause) => this.handleTransportFailure(cause));
     this.child.on("error", (cause) => this.handleClose(null, cause));
     this.child.on("close", (code, signal) => this.handleClose({ code, signal }, null));
     await this.request("initialize", {
@@ -22918,23 +22942,44 @@ var AppServerClient = class {
   handleClose(info, cause) {
     if (this.closeInfo) return;
     this.closeInfo = { ...info, cause };
-    const error2 = cause?.code === "ENOENT" ? new DelegationError("CODEX_NOT_INSTALLED", "Codex could not be started.") : new DelegationError("APP_SERVER_EXIT", "Codex App Server exited before the request completed.", {
+    const error2 = this.transportError || (cause instanceof DelegationError ? cause : cause?.code === "ENOENT" ? new DelegationError("CODEX_NOT_INSTALLED", "Codex could not be started.") : new DelegationError("APP_SERVER_EXIT", "Codex App Server exited before the request completed.", {
       exitCode: info?.code ?? null,
       signal: info?.signal ?? null
+    }));
+    if (!this.transportError) {
+      try {
+        this.onClose(error2);
+      } catch {
+      }
+      for (const { reject } of this.pending.values()) reject(error2);
+      this.pending.clear();
+    }
+    this.resolveClose(this.closeInfo);
+  }
+  handleTransportFailure(cause) {
+    if (this.transportError || this.closeInfo) return;
+    this.transportError = cause instanceof DelegationError ? cause : new DelegationError("APP_SERVER_EXIT", "Codex App Server exited before the request completed.", {
+      exitCode: null,
+      signal: null
     });
     try {
-      this.onClose(error2);
+      this.onClose(this.transportError);
     } catch {
     }
-    for (const { reject } of this.pending.values()) reject(error2);
+    for (const { reject } of this.pending.values()) reject(this.transportError);
     this.pending.clear();
-    this.resolveClose(this.closeInfo);
+    try {
+      this.child?.kill("SIGTERM");
+    } catch {
+    }
   }
   handleLine(line) {
     let message;
     try {
       message = JSON.parse(line);
     } catch {
+      const error2 = new DelegationError("APP_SERVER_PROTOCOL", "Codex App Server wrote an invalid protocol message.");
+      this.handleTransportFailure(error2);
       return;
     }
     if (Object.hasOwn(message, "id") && !message.method) {
@@ -22967,9 +23012,15 @@ var AppServerClient = class {
     }
   }
   write(message) {
+    if (this.transportError) throw this.transportError;
     if (!this.child || this.closeInfo) throw new DelegationError("APP_SERVER_EXIT", "Codex App Server is not running.");
-    this.child.stdin.write(`${JSON.stringify(message)}
+    try {
+      this.child.stdin.write(`${JSON.stringify(message)}
 `);
+    } catch (cause) {
+      this.handleTransportFailure(cause);
+      throw this.transportError;
+    }
   }
   request(method, params = {}, timeoutMs = 3e4) {
     const id2 = this.nextId++;
@@ -23022,9 +23073,11 @@ var AppServerClient = class {
   }
   async stop(graceMs = 2e3) {
     if (!this.child || this.closeInfo) return this.closeInfo;
-    try {
-      this.child.stdin.end();
-    } catch {
+    if (!this.transportError) {
+      try {
+        this.child.stdin.end();
+      } catch {
+      }
     }
     if (!await this.waitClose(graceMs)) {
       try {
@@ -23043,6 +23096,59 @@ var AppServerClient = class {
     return this.closeInfo;
   }
 };
+async function mcpStatusPages(client, threadId = null) {
+  const statuses = [];
+  const cursors = /* @__PURE__ */ new Set();
+  let cursor = null;
+  for (let page = 0; page < MCP_MAX_PAGES; page++) {
+    const response = await client.request("mcpServerStatus/list", {
+      threadId,
+      detail: "toolsAndAuthOnly",
+      limit: MCP_PAGE_LIMIT,
+      cursor
+    }, 3e4);
+    if (!Array.isArray(response?.data)) {
+      throw new DelegationError("MCP_ISOLATION", "Codex returned an invalid MCP inventory.");
+    }
+    statuses.push(...response.data);
+    const next = response.nextCursor || null;
+    if (!next) return statuses;
+    if (cursors.has(next)) {
+      throw new DelegationError("MCP_ISOLATION", "Codex repeated an MCP inventory cursor.");
+    }
+    cursors.add(next);
+    cursor = next;
+  }
+  throw new DelegationError("MCP_ISOLATION", "The Codex MCP inventory is too large to verify safely.");
+}
+async function isolatedThreadConfig(client) {
+  const statuses = await mcpStatusPages(client);
+  const mcpServers = {};
+  for (const status of statuses) {
+    if (typeof status?.name !== "string" || !status.name) {
+      throw new DelegationError("MCP_ISOLATION", "Codex returned an unnamed MCP server.");
+    }
+    if (!status.pluginId && status.name !== "codex_apps") {
+      mcpServers[status.name] = { enabled: false };
+    }
+  }
+  return {
+    "features.plugins": false,
+    "features.apps": false,
+    mcp_servers: mcpServers,
+    apps: { _default: { enabled: false } }
+  };
+}
+async function assertThreadMcpIsolated(client, threadId) {
+  const statuses = await mcpStatusPages(client, threadId);
+  const exposed = statuses.filter((status) => Object.keys(status?.tools || {}).length > 0 || status?.runtimeStatus !== "disabled");
+  if (exposed.length) {
+    throw new DelegationError("MCP_ISOLATION", "Flow refused to send the prompt because Codex exposed delegated MCP tools.", {
+      servers: exposed.slice(0, 20).map((status) => status?.name || "unknown")
+    });
+  }
+  return { servers: statuses.length };
+}
 function codexVersion() {
   const bin = process.env.FLOW_DELEGATION_CODEX_BIN || "codex";
   const result = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 1e4 });
@@ -52564,7 +52670,7 @@ function normalizeClaudeError(error2) {
   if (/effort/i.test(text) && /invalid|unknown|unsupported/i.test(text)) {
     return new DelegationError("BAD_EFFORT", "Claude rejected the requested effort level.");
   }
-  if (/auth|login|oauth|credential/i.test(text)) {
+  if (/(?:^|[^a-z0-9])(?:auth|authentication|authorization|login|oauth|credentials?|unauthenticated|not[ _-]+authenticated)(?:[^a-z0-9]|$)/i.test(text)) {
     return new DelegationError("CLAUDE_AUTH", "Claude Code is not authenticated for Agent SDK use.");
   }
   if (/could not be started|failed to (?:launch|spawn)|executable(?: was)? not found/i.test(text)) {
@@ -52641,6 +52747,13 @@ function publishReason(command) {
 var READ_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 var WRITE_TOOLS = [...READ_TOOLS, "Edit", "Write", "NotebookEdit"];
 var PROXY_ENV = /* @__PURE__ */ new Set(["ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]);
+var CREDENTIAL_PATH_ENV = [
+  "ANTHROPIC_CONFIG_DIR",
+  "AWS_CONFIG_FILE",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "CLAUDE_CONFIG_DIR",
+  "GOOGLE_APPLICATION_CREDENTIALS"
+];
 var claudeTools = (access3) => access3 === "workspace-write" ? WRITE_TOOLS : READ_TOOLS;
 var pathInside = (root, path) => {
   const rel = relative2(root, path);
@@ -52648,6 +52761,13 @@ var pathInside = (root, path) => {
 };
 function sensitiveReadPaths() {
   const base = homedir();
+  const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
+    const value = process.env[name]?.trim();
+    if (!value) return [];
+    if (value === "~") return [base];
+    if (value.startsWith("~/") || value.startsWith("~\\")) return [resolve6(base, value.slice(2))];
+    return [resolve6(value)];
+  });
   return [
     resolve6(base, ".ssh"),
     resolve6(base, ".gnupg"),
@@ -52664,7 +52784,8 @@ function sensitiveReadPaths() {
     ...process.env.APPDATA ? [resolve6(process.env.APPDATA, "gcloud")] : [],
     resolve6(base, ".claude"),
     resolve6(base, ".claude.json"),
-    resolve6(base, ".codex")
+    resolve6(base, ".codex"),
+    ...configured
   ];
 }
 function providerExecutablePaths() {
@@ -53535,6 +53656,21 @@ var JobStore = class {
   getJob(id2) {
     return decode3(this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id2));
   }
+  listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
+    const clauses = ["host = ?", "target = ?"];
+    const values = [host, target];
+    if (status) {
+      clauses.push("status = ?");
+      values.push(status);
+    }
+    if (before) {
+      clauses.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      values.push(before.createdAt, before.createdAt, before.id);
+    }
+    values.push(Math.max(1, Math.min(limit, 100)));
+    return this.db.prepare(`SELECT * FROM jobs WHERE ${clauses.join(" AND ")}
+      ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values).map(decode3);
+  }
   requireJob(id2) {
     const job = this.getJob(id2);
     if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
@@ -53583,7 +53719,10 @@ var JobStore = class {
       this.db.exec("COMMIT");
       return this.getJob(id2);
     } catch (error2) {
-      this.db.exec("ROLLBACK");
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
       throw error2;
     }
   }
@@ -53635,7 +53774,10 @@ var JobStore = class {
       this.db.prepare("DELETE FROM leases WHERE job_id=?").run(id2);
       this.db.exec("COMMIT");
     } catch (cause) {
-      this.db.exec("ROLLBACK");
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
       throw cause;
     }
     this.appendEvent(id2, `job.${status}`, error2 ? { error: error2 } : { status });
@@ -53658,7 +53800,10 @@ var JobStore = class {
       result = this.db.prepare("INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, ?, ?, ?)").run(jobId2, type, json(payload), now());
       this.db.exec("COMMIT");
     } catch (error2) {
-      this.db.exec("ROLLBACK");
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
       throw error2;
     }
     this.appendEvent(jobId2, `control.${type}.queued`, {});
@@ -53684,7 +53829,10 @@ var JobStore = class {
       }
       this.db.exec("COMMIT");
     } catch (error2) {
-      this.db.exec("ROLLBACK");
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
       throw error2;
     }
     if (cancelled) this.appendEvent(jobId2, "job.cancelled", { status: "cancelled" });
@@ -53822,6 +53970,7 @@ Review only the changes in git diff ${baseSha}...${headSha}. Read surrounding co
 
 // src/delegation/service.mjs
 var sleep = (ms) => new Promise((resolve9) => setTimeout(resolve9, ms));
+var LIST_SCAN_LIMIT = 1e3;
 function validateSchema(schema) {
   if (schema == null) return null;
   if (Buffer.byteLength(JSON.stringify(schema)) > 64 * 1024) {
@@ -53863,8 +54012,34 @@ function validateStart(input, target) {
 function terminal(job) {
   return TERMINAL_STATES.includes(job.status);
 }
+function decodeListCursor(cursor, { host, target, status }) {
+  if (!cursor) return null;
+  if (typeof cursor !== "string" || cursor.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(cursor)) {
+    throw new DelegationError("BAD_REQUEST", "The delegation list cursor is invalid.");
+  }
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (value?.v !== 1 || value.host !== host || value.target !== target || value.status !== status || !Number.isSafeInteger(value.createdAt) || typeof value.id !== "string") {
+      throw new Error("cursor mismatch");
+    }
+    return { createdAt: value.createdAt, id: value.id };
+  } catch {
+    throw new DelegationError("BAD_REQUEST", "The delegation list cursor is invalid.");
+  }
+}
+function encodeListCursor(job, { host, target, status }) {
+  return Buffer.from(JSON.stringify({
+    v: 1,
+    host,
+    target,
+    status,
+    createdAt: job.createdAt,
+    id: job.id
+  })).toString("base64url");
+}
 var DelegationService = class {
-  constructor({ host = "claude", depth = 0, stateDir = defaultStateDir(), entryPath: entryPath2, projectDir = null } = {}) {
+  constructor({ host, depth = 0, stateDir = defaultStateDir(), entryPath: entryPath2, projectDir = null } = {}) {
+    targetForHost(host);
     this.host = host;
     this.depth = depth;
     this.stateDir = stateDir;
@@ -53991,6 +54166,55 @@ var DelegationService = class {
     this.get(jobId2);
     return this.withStore((store) => store.events(jobId2, options));
   }
+  async list({ status = null, limit = 20, cursor = null } = {}, { rootUris = [], fallbackCwd = null } = {}) {
+    if (status !== null && !JOB_STATES.includes(status)) {
+      throw new DelegationError("BAD_REQUEST", "status is invalid.");
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new DelegationError("BAD_REQUEST", "limit must be between 1 and 100.");
+    }
+    const target = this.target();
+    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd });
+    if (!roots.length) throw new DelegationError("NO_ROOTS", "The client did not provide a usable workspace root.");
+    const context = { host: this.host, target, status };
+    let before = decodeListCursor(cursor, context);
+    const visible = [];
+    let scanned = 0;
+    let lastScanned = null;
+    let scanTruncated = false;
+    const store = this.store();
+    try {
+      while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
+        const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned);
+        const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit });
+        if (!candidates.length) break;
+        scanned += candidates.length;
+        lastScanned = candidates.at(-1);
+        before = { createdAt: lastScanned.createdAt, id: lastScanned.id };
+        for (const job of candidates) {
+          try {
+            await canonicalWorkspace(job.cwd, roots);
+            visible.push(this.requireRoute(job));
+            if (visible.length > limit) break;
+          } catch (error2) {
+            if (!(error2 instanceof DelegationError)) throw error2;
+          }
+        }
+        if (visible.length > limit || candidates.length < chunkLimit) break;
+      }
+      if (visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
+        scanTruncated = store.listJobs({ host: this.host, target, status, before, limit: 1 }).length > 0;
+      }
+    } finally {
+      store.close();
+    }
+    const jobs = visible.slice(0, limit);
+    const cursorJob = visible.length > limit ? jobs.at(-1) : scanTruncated ? lastScanned : null;
+    return {
+      jobs,
+      nextCursor: cursorJob ? encodeListCursor(cursorJob, context) : null
+    };
+  }
   cancel(jobId2) {
     this.get(jobId2);
     return this.withStore((store) => store.requestCancel(jobId2));
@@ -54045,15 +54269,17 @@ var DelegationService = class {
       await client.stop();
     }
   }
-  async doctor(cwd) {
+  async doctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
     const target = this.target();
-    if (target === "claude") return this.claudeDoctor(cwd);
+    if (target === "claude") return this.claudeDoctor(cwd, { workspace });
     const checks = {
+      workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
       codex: codexVersion(),
       database: { ok: false },
       appServer: { ok: false },
-      account: { ok: false }
+      account: { ok: false },
+      mcpIsolation: { ok: false }
     };
     try {
       this.withStore((store) => store.db.prepare("SELECT 1").get());
@@ -54064,12 +54290,22 @@ var DelegationService = class {
     if (checks.codex.ok) {
       let client;
       try {
-        client = await new AppServerClient({ cwd }).start();
+        client = await new AppServerClient({ cwd: cwd || void 0 }).start();
         checks.appServer = { ok: true };
       } catch (error2) {
         checks.appServer = { ok: false, error: publicError(error2) };
       }
       if (client) {
+        try {
+          const config2 = await isolatedThreadConfig(client);
+          checks.mcpIsolation = {
+            ok: true,
+            phase: "preflight",
+            standaloneServers: Object.keys(config2.mcp_servers).length
+          };
+        } catch (error2) {
+          checks.mcpIsolation = { ok: false, error: publicError(error2) };
+        }
         try {
           const account = await client.request("account/read", { refreshToken: false }, 2e4);
           checks.account = { ok: Boolean(account.account) || !account.requiresOpenaiAuth, requiresOpenaiAuth: account.requiresOpenaiAuth };
@@ -54082,8 +54318,9 @@ var DelegationService = class {
     }
     return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), checks };
   }
-  async claudeDoctor(cwd) {
+  async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
     const checks = {
+      workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
       claude: claudeVersion(),
       agentSdk: claudeAgentSdkStatus(),
@@ -54097,7 +54334,9 @@ var DelegationService = class {
     } catch {
       checks.database = { ok: false, kind: "DATABASE" };
     }
-    if (checks.claude.ok && checks.account.ok) {
+    if (!cwd) {
+      checks.models = { ok: false, kind: "NO_WORKSPACE" };
+    } else if (checks.claude.ok && checks.account.ok) {
       try {
         const models = await claudeModels(cwd);
         checks.models = { ok: models.length > 0, count: models.length };
@@ -54243,6 +54482,52 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     }
   };
   const rootOptions = async () => ({ rootUris: await clientRoots() });
+  const doctorContext = async (requestedCwd) => {
+    const clientCapabilities = server.server.getClientCapabilities() || {};
+    const client = server.server.getClientVersion() || null;
+    const supportsRoots = Boolean(clientCapabilities.roots);
+    let rootUris = [];
+    let rootsError = null;
+    if (supportsRoots) {
+      try {
+        rootUris = (await server.server.listRoots()).roots.map((root) => root.uri);
+      } catch (error2) {
+        rootsError = publicError(error2, "The MCP client did not return workspace roots.");
+      }
+    }
+    const roots = canonicalRoots({ rootUris, projectDir });
+    const candidate = requestedCwd || projectDir || roots[0] || null;
+    let cwd = null;
+    let workspaceError = rootsError;
+    if (!workspaceError && candidate) {
+      try {
+        cwd = await canonicalWorkspace(candidate, roots);
+      } catch (error2) {
+        workspaceError = publicError(error2);
+      }
+    } else if (!workspaceError) {
+      workspaceError = publicError(new DelegationError("NO_ROOTS", "The client did not provide a usable workspace root."));
+    }
+    return {
+      cwd,
+      workspace: {
+        ok: Boolean(cwd),
+        requestedCwd: requestedCwd || null,
+        selectedCwd: cwd,
+        projectDir: projectDir || null,
+        clientRootCapability: supportsRoots,
+        advertisedRootUris: rootUris,
+        usableRoots: roots,
+        error: workspaceError
+      },
+      mcp: {
+        client,
+        capabilities: clientCapabilities,
+        negotiatedProtocolVersion: null,
+        protocolVersionNote: "The MCP SDK does not expose the negotiated protocol version after initialization."
+      }
+    };
+  };
   const attachedOptions = (extra) => ({
     signal: extra.signal,
     onEvent: async (event) => {
@@ -54308,6 +54593,26 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     ok: true,
     events: service.events(jobId2, { after, limit })
   })));
+  server.registerTool("delegation_list", {
+    description: "List recent delegation jobs owned by this host route and visible from the current workspace roots. Prompts and outputs are omitted.",
+    inputSchema: {
+      status: _enum([...JOB_STATES]).optional(),
+      limit: number2().int().min(1).max(100).default(20),
+      cursor: string2().optional()
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false }
+  }, asTool(async (input) => {
+    const page = await service.list({
+      status: input.status || null,
+      limit: input.limit,
+      cursor: input.cursor || null
+    }, await rootOptions());
+    return toolResult({
+      ok: true,
+      jobs: page.jobs.map(jobSummary),
+      nextCursor: page.nextCursor
+    });
+  }));
   server.registerTool("delegation_cancel", {
     description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId },
@@ -54353,9 +54658,9 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     inputSchema: { cwd: string2().optional() },
     annotations: { readOnlyHint: true, openWorldHint: true }
   }, asTool(async ({ cwd }) => {
-    const roots = canonicalRoots({ rootUris: await clientRoots(), projectDir });
-    const checked = await canonicalWorkspace(cwd || projectDir || roots[0], roots);
-    return toolResult(await service.doctor(checked));
+    const context = await doctorContext(cwd);
+    const result = await service.doctor(context.cwd, { workspace: context.workspace });
+    return toolResult({ ...result, mcp: context.mcp });
   }));
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -55191,6 +55496,10 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       }
     }).start();
     store.appendEvent(jobId2, "app_server.ready", {});
+    const config2 = await isolatedThreadConfig(client);
+    store.appendEvent(jobId2, "mcp.isolation_configured", {
+      standaloneServers: Object.keys(config2.mcp_servers).length
+    });
     const threadParams = {
       model: job.model,
       serviceTier: job.serviceTier,
@@ -55198,11 +55507,14 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       approvalPolicy: "never",
       approvalsReviewer: "user",
       sandbox: job.access,
-      developerInstructions: developerInstructions(job)
+      developerInstructions: developerInstructions(job),
+      config: config2
     };
     const threadResponse = job.nativeThreadId ? await client.request("thread/resume", { threadId: job.nativeThreadId, ...threadParams }, 3e4) : await client.request("thread/start", { ...threadParams, ephemeral: false, serviceName: "flow-delegation" }, 3e4);
     const threadId = threadResponse.thread?.id;
     if (!threadId) throw new DelegationError("APP_SERVER_PROTOCOL", "Codex did not return a thread ID.");
+    const isolation = await assertThreadMcpIsolated(client, threadId);
+    store.appendEvent(jobId2, "mcp.isolation_verified", isolation);
     store.setRunning(jobId2, { threadId });
     store.appendEvent(jobId2, job.nativeThreadId ? "thread.resumed" : "thread.started", { threadId });
     const turnResponse = await client.request("turn/start", {
@@ -55348,14 +55660,20 @@ var mode = argv[0];
 var entryPath = fileURLToPath2(import.meta.url);
 if (mode === "mcp") {
   const { flags } = parse6(argv);
-  const depth = Number(process.env.FLOW_DELEGATION_DEPTH || 0);
-  await startMcp({
-    host: flags.host || "claude",
-    depth,
-    stateDir: flags["state-dir"] || defaultStateDir(),
-    entryPath,
-    projectDir: process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || null
-  });
+  if (!HOSTS.includes(flags.host)) {
+    process.stderr.write(`--host is required for MCP mode and must be one of: ${HOSTS.join(", ")}.
+`);
+    process.exitCode = 2;
+  } else {
+    const depth = Number(process.env.FLOW_DELEGATION_DEPTH || 0);
+    await startMcp({
+      host: flags.host,
+      depth,
+      stateDir: flags["state-dir"] || defaultStateDir(),
+      entryPath,
+      projectDir: process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || null
+    });
+  }
 } else if (mode === "worker") {
   const { flags } = parse6(argv);
   await runWorker({

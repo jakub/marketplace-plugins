@@ -11,6 +11,9 @@ const APPROVAL_METHODS = new Set([
   'execCommandApproval',
 ])
 
+const MCP_PAGE_LIMIT = 100
+const MCP_MAX_PAGES = 10
+
 export const isApprovalRequest = (method) => APPROVAL_METHODS.has(method)
 
 export class AppServerClient {
@@ -24,6 +27,7 @@ export class AppServerClient {
     this.nextId = 1
     this.pending = new Map()
     this.stderr = ''
+    this.transportError = null
     this.closeInfo = null
     this.closePromise = new Promise((resolve) => { this.resolveClose = resolve })
   }
@@ -43,6 +47,7 @@ export class AppServerClient {
     this.child.stderr.setEncoding('utf8')
     createInterface({ input: this.child.stdout }).on('line', (line) => this.handleLine(line))
     this.child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + chunk).slice(-16_384) })
+    this.child.stdin.on('error', (cause) => this.handleTransportFailure(cause))
     this.child.on('error', (cause) => this.handleClose(null, cause))
     this.child.on('close', (code, signal) => this.handleClose({ code, signal }, null))
     await this.request('initialize', {
@@ -62,21 +67,43 @@ export class AppServerClient {
   handleClose(info, cause) {
     if (this.closeInfo) return
     this.closeInfo = { ...info, cause }
-    const error = cause?.code === 'ENOENT'
+    const error = this.transportError || (cause instanceof DelegationError
+      ? cause
+      : cause?.code === 'ENOENT'
       ? new DelegationError('CODEX_NOT_INSTALLED', 'Codex could not be started.')
       : new DelegationError('APP_SERVER_EXIT', 'Codex App Server exited before the request completed.', {
         exitCode: info?.code ?? null,
         signal: info?.signal ?? null,
-      })
-    try { this.onClose(error) } catch {}
-    for (const { reject } of this.pending.values()) reject(error)
-    this.pending.clear()
+      }))
+    if (!this.transportError) {
+      try { this.onClose(error) } catch {}
+      for (const { reject } of this.pending.values()) reject(error)
+      this.pending.clear()
+    }
     this.resolveClose(this.closeInfo)
+  }
+
+  handleTransportFailure(cause) {
+    if (this.transportError || this.closeInfo) return
+    this.transportError = cause instanceof DelegationError
+      ? cause
+      : new DelegationError('APP_SERVER_EXIT', 'Codex App Server exited before the request completed.', {
+        exitCode: null,
+        signal: null,
+      })
+    try { this.onClose(this.transportError) } catch {}
+    for (const { reject } of this.pending.values()) reject(this.transportError)
+    this.pending.clear()
+    try { this.child?.kill('SIGTERM') } catch {}
   }
 
   handleLine(line) {
     let message
-    try { message = JSON.parse(line) } catch { return }
+    try { message = JSON.parse(line) } catch {
+      const error = new DelegationError('APP_SERVER_PROTOCOL', 'Codex App Server wrote an invalid protocol message.')
+      this.handleTransportFailure(error)
+      return
+    }
     if (Object.hasOwn(message, 'id') && !message.method) {
       const pending = this.pending.get(message.id)
       if (!pending) return
@@ -111,8 +138,12 @@ export class AppServerClient {
   }
 
   write(message) {
+    if (this.transportError) throw this.transportError
     if (!this.child || this.closeInfo) throw new DelegationError('APP_SERVER_EXIT', 'Codex App Server is not running.')
-    this.child.stdin.write(`${JSON.stringify(message)}\n`)
+    try { this.child.stdin.write(`${JSON.stringify(message)}\n`) } catch (cause) {
+      this.handleTransportFailure(cause)
+      throw this.transportError
+    }
   }
 
   request(method, params = {}, timeoutMs = 30_000) {
@@ -158,7 +189,9 @@ export class AppServerClient {
 
   async stop(graceMs = 2_000) {
     if (!this.child || this.closeInfo) return this.closeInfo
-    try { this.child.stdin.end() } catch {}
+    if (!this.transportError) {
+      try { this.child.stdin.end() } catch {}
+    }
     if (!await this.waitClose(graceMs)) {
       try { this.child.kill('SIGTERM') } catch {}
       await this.waitClose(1_000)
@@ -169,6 +202,66 @@ export class AppServerClient {
     }
     return this.closeInfo
   }
+}
+
+async function mcpStatusPages(client, threadId = null) {
+  const statuses = []
+  const cursors = new Set()
+  let cursor = null
+  for (let page = 0; page < MCP_MAX_PAGES; page++) {
+    const response = await client.request('mcpServerStatus/list', {
+      threadId,
+      detail: 'toolsAndAuthOnly',
+      limit: MCP_PAGE_LIMIT,
+      cursor,
+    }, 30_000)
+    if (!Array.isArray(response?.data)) {
+      throw new DelegationError('MCP_ISOLATION', 'Codex returned an invalid MCP inventory.')
+    }
+    statuses.push(...response.data)
+    const next = response.nextCursor || null
+    if (!next) return statuses
+    if (cursors.has(next)) {
+      throw new DelegationError('MCP_ISOLATION', 'Codex repeated an MCP inventory cursor.')
+    }
+    cursors.add(next)
+    cursor = next
+  }
+  throw new DelegationError('MCP_ISOLATION', 'The Codex MCP inventory is too large to verify safely.')
+}
+
+// thread/start config is a session-flags layer. Plugin selection ignores per-thread
+// plugins.* entries, so Flow disables the plugin and app feature gates, then explicitly
+// disables every standalone MCP discovered from the effective global configuration.
+export async function isolatedThreadConfig(client) {
+  const statuses = await mcpStatusPages(client)
+  const mcpServers = {}
+  for (const status of statuses) {
+    if (typeof status?.name !== 'string' || !status.name) {
+      throw new DelegationError('MCP_ISOLATION', 'Codex returned an unnamed MCP server.')
+    }
+    if (!status.pluginId && status.name !== 'codex_apps') {
+      mcpServers[status.name] = { enabled: false }
+    }
+  }
+  return {
+    'features.plugins': false,
+    'features.apps': false,
+    mcp_servers: mcpServers,
+    apps: { _default: { enabled: false } },
+  }
+}
+
+export async function assertThreadMcpIsolated(client, threadId) {
+  const statuses = await mcpStatusPages(client, threadId)
+  const exposed = statuses.filter((status) =>
+    Object.keys(status?.tools || {}).length > 0 || status?.runtimeStatus !== 'disabled')
+  if (exposed.length) {
+    throw new DelegationError('MCP_ISOLATION', 'Flow refused to send the prompt because Codex exposed delegated MCP tools.', {
+      servers: exposed.slice(0, 20).map((status) => status?.name || 'unknown'),
+    })
+  }
+  return { servers: statuses.length }
 }
 
 export function codexVersion() {

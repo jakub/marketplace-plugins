@@ -1,13 +1,14 @@
 import Ajv2020 from 'ajv/dist/2020.js'
 import { spawn } from 'node:child_process'
-import { assertRoute, capabilitiesForTarget, DelegationError, effortsForTarget, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
-import { AppServerClient, codexVersion } from './app-server.mjs'
+import { assertRoute, capabilitiesForTarget, DelegationError, effortsForTarget, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { AppServerClient, codexVersion, isolatedThreadConfig } from './app-server.mjs'
 import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
 import { JobStore, defaultStateDir, processStartToken } from './store.mjs'
 import { canonicalRoots, canonicalWorkspace, immutableReview, worktreeKey, writableWorktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const LIST_SCAN_LIMIT = 1_000
 
 function validateSchema(schema) {
   if (schema == null) return null
@@ -50,8 +51,37 @@ function validateStart(input, target) {
 
 function terminal(job) { return TERMINAL_STATES.includes(job.status) }
 
+function decodeListCursor(cursor, { host, target, status }) {
+  if (!cursor) return null
+  if (typeof cursor !== 'string' || cursor.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(cursor)) {
+    throw new DelegationError('BAD_REQUEST', 'The delegation list cursor is invalid.')
+  }
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+    if (value?.v !== 1 || value.host !== host || value.target !== target || value.status !== status
+      || !Number.isSafeInteger(value.createdAt) || typeof value.id !== 'string') {
+      throw new Error('cursor mismatch')
+    }
+    return { createdAt: value.createdAt, id: value.id }
+  } catch {
+    throw new DelegationError('BAD_REQUEST', 'The delegation list cursor is invalid.')
+  }
+}
+
+function encodeListCursor(job, { host, target, status }) {
+  return Buffer.from(JSON.stringify({
+    v: 1,
+    host,
+    target,
+    status,
+    createdAt: job.createdAt,
+    id: job.id,
+  })).toString('base64url')
+}
+
 export class DelegationService {
-  constructor({ host = 'claude', depth = 0, stateDir = defaultStateDir(), entryPath, projectDir = null } = {}) {
+  constructor({ host, depth = 0, stateDir = defaultStateDir(), entryPath, projectDir = null } = {}) {
+    targetForHost(host)
     this.host = host
     this.depth = depth
     this.stateDir = stateDir
@@ -175,6 +205,54 @@ export class DelegationService {
     return this.withStore((store) => store.events(jobId, options))
   }
 
+  async list({ status = null, limit = 20, cursor = null } = {}, { rootUris = [], fallbackCwd = null } = {}) {
+    if (status !== null && !JOB_STATES.includes(status)) {
+      throw new DelegationError('BAD_REQUEST', 'status is invalid.')
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new DelegationError('BAD_REQUEST', 'limit must be between 1 and 100.')
+    }
+    const target = this.target()
+    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
+    if (!roots.length) throw new DelegationError('NO_ROOTS', 'The client did not provide a usable workspace root.')
+    const context = { host: this.host, target, status }
+    let before = decodeListCursor(cursor, context)
+    const visible = []
+    let scanned = 0
+    let lastScanned = null
+    let scanTruncated = false
+    const store = this.store()
+    try {
+      while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
+        const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned)
+        const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit })
+        if (!candidates.length) break
+        scanned += candidates.length
+        lastScanned = candidates.at(-1)
+        before = { createdAt: lastScanned.createdAt, id: lastScanned.id }
+        for (const job of candidates) {
+          try {
+            await canonicalWorkspace(job.cwd, roots)
+            visible.push(this.requireRoute(job))
+            if (visible.length > limit) break
+          } catch (error) {
+            if (!(error instanceof DelegationError)) throw error
+          }
+        }
+        if (visible.length > limit || candidates.length < chunkLimit) break
+      }
+      if (visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
+        scanTruncated = store.listJobs({ host: this.host, target, status, before, limit: 1 }).length > 0
+      }
+    } finally { store.close() }
+    const jobs = visible.slice(0, limit)
+    const cursorJob = visible.length > limit ? jobs.at(-1) : (scanTruncated ? lastScanned : null)
+    return {
+      jobs,
+      nextCursor: cursorJob ? encodeListCursor(cursorJob, context) : null,
+    }
+  }
+
   cancel(jobId) {
     this.get(jobId)
     return this.withStore((store) => store.requestCancel(jobId))
@@ -231,15 +309,17 @@ export class DelegationService {
     } finally { await client.stop() }
   }
 
-  async doctor(cwd) {
+  async doctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
     const target = this.target()
-    if (target === 'claude') return this.claudeDoctor(cwd)
+    if (target === 'claude') return this.claudeDoctor(cwd, { workspace })
     const checks = {
+      workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
       codex: codexVersion(),
       database: { ok: false },
       appServer: { ok: false },
       account: { ok: false },
+      mcpIsolation: { ok: false },
     }
     try {
       this.withStore((store) => store.db.prepare('SELECT 1').get())
@@ -250,12 +330,22 @@ export class DelegationService {
     if (checks.codex.ok) {
       let client
       try {
-        client = await new AppServerClient({ cwd }).start()
+        client = await new AppServerClient({ cwd: cwd || undefined }).start()
         checks.appServer = { ok: true }
       } catch (error) {
         checks.appServer = { ok: false, error: publicError(error) }
       }
       if (client) {
+        try {
+          const config = await isolatedThreadConfig(client)
+          checks.mcpIsolation = {
+            ok: true,
+            phase: 'preflight',
+            standaloneServers: Object.keys(config.mcp_servers).length,
+          }
+        } catch (error) {
+          checks.mcpIsolation = { ok: false, error: publicError(error) }
+        }
         try {
           const account = await client.request('account/read', { refreshToken: false }, 20_000)
           checks.account = { ok: Boolean(account.account) || !account.requiresOpenaiAuth, requiresOpenaiAuth: account.requiresOpenaiAuth }
@@ -267,8 +357,9 @@ export class DelegationService {
     return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), checks }
   }
 
-  async claudeDoctor(cwd) {
+  async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
     const checks = {
+      workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
       claude: claudeVersion(),
       agentSdk: claudeAgentSdkStatus(),
@@ -280,7 +371,9 @@ export class DelegationService {
       this.withStore((store) => store.db.prepare('SELECT 1').get())
       checks.database = { ok: true, path: this.stateDir }
     } catch { checks.database = { ok: false, kind: 'DATABASE' } }
-    if (checks.claude.ok && checks.account.ok) {
+    if (!cwd) {
+      checks.models = { ok: false, kind: 'NO_WORKSPACE' }
+    } else if (checks.claude.ok && checks.account.ok) {
       try {
         const models = await claudeModels(cwd)
         checks.models = { ok: models.length > 0, count: models.length }

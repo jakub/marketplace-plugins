@@ -6,6 +6,13 @@ import { protectedFileReason, publishReason } from '../../lib/hook-policy.mjs'
 const READ_TOOLS = ['Read', 'Grep', 'Glob', 'Bash']
 const WRITE_TOOLS = [...READ_TOOLS, 'Edit', 'Write', 'NotebookEdit']
 const PROXY_ENV = new Set(['ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'])
+const CREDENTIAL_PATH_ENV = [
+  'ANTHROPIC_CONFIG_DIR',
+  'AWS_CONFIG_FILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'CLAUDE_CONFIG_DIR',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+]
 
 export const claudeTools = (access) => access === 'workspace-write' ? WRITE_TOOLS : READ_TOOLS
 
@@ -16,6 +23,13 @@ export const pathInside = (root, path) => {
 
 export function sensitiveReadPaths() {
   const base = homedir()
+  const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
+    const value = process.env[name]?.trim()
+    if (!value) return []
+    if (value === '~') return [base]
+    if (value.startsWith('~/') || value.startsWith('~\\')) return [resolve(base, value.slice(2))]
+    return [resolve(value)]
+  })
   return [
     resolve(base, '.ssh'),
     resolve(base, '.gnupg'),
@@ -33,6 +47,7 @@ export function sensitiveReadPaths() {
     resolve(base, '.claude'),
     resolve(base, '.claude.json'),
     resolve(base, '.codex'),
+    ...configured,
   ]
 }
 

@@ -254,6 +254,22 @@ export class JobStore {
 
   getJob(id) { return decode(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)) }
 
+  listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
+    const clauses = ['host = ?', 'target = ?']
+    const values = [host, target]
+    if (status) {
+      clauses.push('status = ?')
+      values.push(status)
+    }
+    if (before) {
+      clauses.push('(created_at < ? OR (created_at = ? AND id < ?))')
+      values.push(before.createdAt, before.createdAt, before.id)
+    }
+    values.push(Math.max(1, Math.min(limit, 100)))
+    return this.db.prepare(`SELECT * FROM jobs WHERE ${clauses.join(' AND ')}
+      ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values).map(decode)
+  }
+
   requireJob(id) {
     const job = this.getJob(id)
     if (!job) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
@@ -311,7 +327,7 @@ export class JobStore {
       this.db.exec('COMMIT')
       return this.getJob(id)
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      try { this.db.exec('ROLLBACK') } catch {}
       throw error
     }
   }
@@ -373,7 +389,7 @@ export class JobStore {
       this.db.prepare('DELETE FROM leases WHERE job_id=?').run(id)
       this.db.exec('COMMIT')
     } catch (cause) {
-      this.db.exec('ROLLBACK')
+      try { this.db.exec('ROLLBACK') } catch {}
       throw cause
     }
     this.appendEvent(id, `job.${status}`, error ? { error } : { status })
@@ -400,7 +416,7 @@ export class JobStore {
         .run(jobId, type, json(payload), now())
       this.db.exec('COMMIT')
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      try { this.db.exec('ROLLBACK') } catch {}
       throw error
     }
     this.appendEvent(jobId, `control.${type}.queued`, {})
@@ -428,7 +444,7 @@ export class JobStore {
       }
       this.db.exec('COMMIT')
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      try { this.db.exec('ROLLBACK') } catch {}
       throw error
     }
     if (cancelled) this.appendEvent(jobId, 'job.cancelled', { status: 'cancelled' })

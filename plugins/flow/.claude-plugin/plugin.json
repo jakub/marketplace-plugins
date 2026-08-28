@@ -13,7 +13,8 @@
         "mcp",
         "--host",
         "claude"
-      ]
+      ],
+      "timeout": 7500000
     }
   }
 }
