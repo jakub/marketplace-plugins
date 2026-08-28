@@ -229,11 +229,18 @@ export function createClaudeQuery(job, prompt, {
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
+        // Node requires a shell for Windows batch shims. The resolved provider path and SDK
+        // arguments are trusted here; the delegated prompt travels over stdin, not argv.
+        const windowsBatch = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(command)
         const child = spawn(command, args, {
           cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true,
+          shell: windowsBatch,
+          // A separate POSIX process group lets the worker stop the CLI and every command it
+          // started before releasing a workspace-write lease.
+          detached: process.platform !== 'win32',
         })
         child.stderr?.setEncoding('utf8')
         child.stderr?.on('data', onStderr)

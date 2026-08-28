@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { normalizeClaudeError } from './claude-errors.mjs'
 import { createClaudeQuery } from './claude-sdk.mjs'
 import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
@@ -117,13 +118,53 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     yield sdkPrompt(job.prompt || '', sessionId, turnId)
   }
 
+  const childTreeRunning = () => {
+    if (!child?.pid) return false
+    if (process.platform === 'win32') return child.exitCode === null && !child.signalCode
+    try {
+      process.kill(-child.pid, 0)
+      return true
+    } catch (error) {
+      return error?.code === 'EPERM'
+    }
+  }
+
+  const signalChildTree = (signal) => {
+    if (!child?.pid) return
+    try {
+      if (process.platform === 'win32') {
+        const args = ['/PID', String(child.pid), '/T']
+        if (signal === 'SIGKILL') args.push('/F')
+        spawnSync('taskkill', args, { stdio: 'ignore', windowsHide: true })
+      } else {
+        process.kill(-child.pid, signal)
+      }
+    } catch {}
+  }
+
+  const waitForChildTree = async (milliseconds) => {
+    const deadline = Date.now() + milliseconds
+    while (childTreeRunning() && Date.now() < deadline) await delay(50)
+    return !childTreeRunning()
+  }
+
   const stopChild = async () => {
     try { active?.close() } catch {}
-    if (!child || child.exitCode !== null || child.signalCode) return
-    if (await Promise.race([childExited.then(() => true), delay(2_500).then(() => false)])) return
-    try { child.kill('SIGTERM') } catch {}
-    if (await Promise.race([childExited.then(() => true), delay(1_000).then(() => false)])) return
-    try { child.kill('SIGKILL') } catch {}
+    if (!child?.pid || !childTreeRunning()) {
+      await Promise.race([childExited, delay(100)])
+      return
+    }
+    signalChildTree('SIGTERM')
+    if (await waitForChildTree(1_000)) return
+    signalChildTree('SIGKILL')
+    // Never release a workspace-write lease while a descendant can still mutate the tree.
+    // POSIX process groups let us prove that the full provider tree has exited.
+    if (process.platform !== 'win32') {
+      while (childTreeRunning()) {
+        signalChildTree('SIGKILL')
+        await delay(50)
+      }
+    }
     await Promise.race([childExited, delay(1_000)])
   }
 
@@ -140,12 +181,13 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     if (reason === 'deadline') {
       timedOut = true
       store.appendEvent(jobId, 'turn.timeout', { seconds: job.timeBudgetSeconds })
-    } else {
+    } else if (reason === 'stall') {
       stalled = true
       store.appendEvent(jobId, 'turn.stalled', { seconds: STALL_SECONDS })
     }
     forcedTimer = setTimeout(() => { try { active.close() } catch {} }, 5_000)
-    try { await active.interrupt() } catch {}
+    const interrupt = Promise.resolve().then(() => active.interrupt()).catch(() => {})
+    await Promise.race([interrupt, delay(5_500)])
   }
 
   const resetStall = () => {
@@ -166,7 +208,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
 
     const onSignal = (signal) => {
       try { active?.close() } catch {}
-      try { child?.kill('SIGKILL') } catch {}
+      signalChildTree('SIGKILL')
       try {
         const current = store.getJob(jobId)
         if (current && !TERMINAL_STATES.includes(current.status)) {
@@ -202,7 +244,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
         if (control.type === 'cancel') {
           cancelled = true
           if (accepted) {
-            await active.interrupt()
+            await interruptAndForce('cancel')
             store.handleControl(jobId, control.id, { result: 'interrupt_sent' })
           } else {
             active.close()

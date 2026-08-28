@@ -15,7 +15,7 @@ export function normalizeClaudeError(error) {
   if (/auth|login|oauth|credential/i.test(text)) {
     return new DelegationError('CLAUDE_AUTH', 'Claude Code is not authenticated for Agent SDK use.')
   }
-  if (/not found|could not be started/i.test(text)) {
+  if (/could not be started|failed to (?:launch|spawn)|executable(?: was)? not found/i.test(text)) {
     return new DelegationError('CLAUDE_NOT_INSTALLED', 'Claude Code could not be started.')
   }
   if (/sandbox/i.test(text)) {

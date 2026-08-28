@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -124,6 +124,7 @@ const fake = join(temp, 'fake-claude.mjs')
 writeFileSync(fake, `#!/usr/bin/env node
 import { createInterface } from 'node:readline'
 import { randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
 const args = process.argv.slice(2)
 if (args[0] === '--version') { console.log('2.1.test (Claude Code)'); process.exit(0) }
 if (args[0] === 'auth' && args[1] === 'status') {
@@ -181,6 +182,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   if (message.type === 'control_request' && message.request?.subtype === 'initialize') {
     if (mode !== 'startup-slow') initialize(message)
   } else if (message.type === 'control_request' && message.request?.subtype === 'interrupt') {
+    if (mode === 'interrupt-hangs') return
     say({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { still_queued: [] } } })
     if (mode === 'cancel-no-result') return setTimeout(() => process.exit(0), 10)
     result({ text: 'Interrupted', error: true })
@@ -191,6 +193,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     initFrame()
     if (mode === 'crash') return setTimeout(() => process.exit(17), 10)
     if (mode === 'slow' || mode === 'cancel-no-result') return
+    if (mode === 'interrupt-hangs') return
+    if (mode === 'detached-command') {
+      const code = "setTimeout(() => require('node:fs').writeFileSync('detached-survivor', 'bad'), 1000)"
+      spawn(process.execPath, ['-e', code], { cwd: process.cwd(), stdio: 'ignore' }).unref()
+      return result()
+    }
     if (mode === 'approval') {
       pendingApproval = true
       return say({
@@ -348,6 +356,18 @@ try {
   await waitForRunning(noResultWrite.jobId, noResultWriteState)
   cli(['cancel', noResultWrite.jobId, '--host', 'codex'], { stateDir: noResultWriteState })
   await waitFor(noResultWrite.jobId, noResultWriteState, 'unknown')
+  const hangingInterruptState = state('interrupt-hangs')
+  const hangingInterrupt = cli([...runArgs, '--detach'], { input: 'cancel while interrupt hangs', mode: 'interrupt-hangs', stateDir: hangingInterruptState })
+  await waitForRunning(hangingInterrupt.jobId, hangingInterruptState)
+  cli(['cancel', hangingInterrupt.jobId, '--host', 'codex'], { stateDir: hangingInterruptState })
+  await waitFor(hangingInterrupt.jobId, hangingInterruptState, 'cancelled')
+
+  if (process.platform !== 'win32') {
+    const detachedCommand = cli(runArgs, { input: 'start detached command', mode: 'detached-command', stateDir: state('detached-command') })
+    assert.equal(detachedCommand.status, 'succeeded')
+    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    assert.equal(existsSync(join(repo, 'detached-survivor')), false)
+  }
 
   const continued = cli(['continue', happy.jobId, '--host', 'codex'], { input: 'Continue', stateDir: state('happy') })
   assert.equal(continued.status, 'succeeded')
@@ -368,6 +388,7 @@ try {
 
   console.log('Claude SDK hook policy')
   assert.equal(normalizeClaudeError(new Error('Model not found')).kind, 'BAD_MODEL')
+  assert.equal(normalizeClaudeError(new Error('Session not found')).kind, 'CLAUDE_SDK')
   if (process.platform !== 'win32') {
     const emptyPathDoctor = cli(['doctor', '--host', 'codex', '--cwd', repo], {
       stateDir: state('empty-path'), extraEnv: { PATH: ':', FLOW_DELEGATION_CLAUDE_BIN: 'claude' },
@@ -384,6 +405,12 @@ try {
   assert.equal(blockedEdit.hookSpecificOutput.permissionDecision, 'deny')
   const writeHook = claudePolicyHook({ access: 'workspace-write', cwd: repo, workspaceKey: repo }, { onDenied: (value) => denied.push(value) })
   assert.ok(sensitiveReadPaths().includes(join(homedir(), '.claude')))
+  assert.ok(sensitiveReadPaths().includes(join(homedir(), '.config', 'gcloud')))
+  const previousAppData = process.env.APPDATA
+  process.env.APPDATA = join(temp, 'AppData')
+  assert.ok(sensitiveReadPaths().includes(join(temp, 'AppData', 'gcloud')))
+  if (previousAppData === undefined) delete process.env.APPDATA
+  else process.env.APPDATA = previousAppData
   const escapedEdit = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(temp, 'outside.txt') } })
   assert.equal(escapedEdit.hookSpecificOutput.permissionDecision, 'deny')
   const nestedCli = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'claude -p hello' } })
@@ -406,6 +433,8 @@ try {
   assert.equal(harmlessNode.continue, true)
   const environmentRead = await readHook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/proc/self/environ' } })
   assert.equal(environmentRead.hookSpecificOutput.permissionDecision, 'deny')
+  const threadEnvironmentRead = await readHook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/proc/thread-self/environ' } })
+  assert.equal(threadEnvironmentRead.hookSpecificOutput.permissionDecision, 'deny')
   const environmentSearch = await readHook({ hook_event_name: 'PreToolUse', tool_name: 'Grep', tool_input: { pattern: 'TOKEN', path: '/proc' } })
   assert.equal(environmentSearch.hookSpecificOutput.permissionDecision, 'deny')
   const harmlessSearch = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rg codex src' } })
@@ -424,6 +453,10 @@ try {
   assert.equal(inlineSecretWriter.hookSpecificOutput.permissionDecision, 'deny')
   const backgroundLockfileWriter = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sleep 0 & sed -i s/a/b/ package-lock.json' } })
   assert.equal(backgroundLockfileWriter.hookSpecificOutput.permissionDecision, 'deny')
+  const perlLockfileWriter = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: "perl -pi -e 's/a/b/' package-lock.json" } })
+  assert.equal(perlLockfileWriter.hookSpecificOutput.permissionDecision, 'deny')
+  const dynamicLockfileWriter = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'target=package-lock.json; touch "$target"' } })
+  assert.equal(dynamicLockfileWriter.hookSpecificOutput.permissionDecision, 'deny')
   const resolver = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm install' } })
   assert.equal(resolver.continue, true)
   const secretName = 'FLOW_SMOKE_API_KEY'
@@ -440,6 +473,7 @@ try {
     assert.deepEqual(sandbox.credentials.envVars.find((entry) => entry.name === secretName), { name: secretName, mode: 'deny' })
     assert.ok(sandbox.filesystem.denyRead.includes(realpathSync(fake)))
     assert.ok(sandbox.filesystem.denyRead.includes(realpathSync(fakeCodex)))
+    if (process.platform !== 'win32') assert.ok(sandbox.filesystem.denyRead.includes('/proc'))
   } finally {
     delete process.env[secretName]
     if (previousClaudeBin === undefined) delete process.env.FLOW_DELEGATION_CLAUDE_BIN
@@ -447,7 +481,7 @@ try {
     if (previousCodexBin === undefined) delete process.env.FLOW_DELEGATION_CODEX_BIN
     else process.env.FLOW_DELEGATION_CODEX_BIN = previousCodexBin
   }
-  assert.equal(denied.length, 19)
+  assert.equal(denied.length, 22)
 
   console.log('Codex-hosted MCP registration')
   const deadClient = new McpClient({ command: process.execPath, args: ['-e', 'process.exit(17)'], cwd: repo, env: process.env, root: repo })

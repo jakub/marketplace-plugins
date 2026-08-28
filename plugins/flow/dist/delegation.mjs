@@ -22942,7 +22942,7 @@ var AppServerClient = class {
       if (!pending) return;
       this.pending.delete(message.id);
       if (message.error) {
-        pending.reject(new DelegationError("APP_SERVER_ERROR", message.error.message || "Codex App Server rejected a request.", {
+        pending.reject(new DelegationError("APP_SERVER_ERROR", "Codex App Server rejected a request.", {
           code: message.error.code ?? null
         }));
       } else pending.resolve(message.result);
@@ -52541,7 +52541,7 @@ function normalizeClaudeError(error2) {
   if (/auth|login|oauth|credential/i.test(text)) {
     return new DelegationError("CLAUDE_AUTH", "Claude Code is not authenticated for Agent SDK use.");
   }
-  if (/not found|could not be started/i.test(text)) {
+  if (/could not be started|failed to (?:launch|spawn)|executable(?: was)? not found/i.test(text)) {
     return new DelegationError("CLAUDE_NOT_INSTALLED", "Claude Code could not be started.");
   }
   if (/sandbox/i.test(text)) {
@@ -52634,6 +52634,8 @@ function sensitiveReadPaths() {
     resolve5(base, ".azure"),
     resolve5(base, ".kube"),
     resolve5(base, ".config", "gh"),
+    resolve5(base, ".config", "gcloud"),
+    ...process.env.APPDATA ? [resolve5(process.env.APPDATA, "gcloud")] : [],
     resolve5(base, ".claude"),
     resolve5(base, ".claude.json"),
     resolve5(base, ".codex")
@@ -52672,7 +52674,11 @@ function claudeSandboxFor(job) {
     // The CLI itself starts outside the command sandbox. Blocking the effective provider
     // executables here stops shell, language, and executable scripts from launching a raw
     // Claude or Codex child after they pass the command-text guard.
-    denyRead: [.../* @__PURE__ */ new Set([...sensitiveReadPaths(), ...providerExecutablePaths()])],
+    denyRead: [.../* @__PURE__ */ new Set([
+      ...sensitiveReadPaths(),
+      ...providerExecutablePaths(),
+      ...existsSync2("/proc") ? ["/proc"] : []
+    ])],
     ...job.access === "workspace-write" ? { allowWrite: [job.workspaceKey] } : { denyWrite: [job.workspaceKey] }
   };
   return {
@@ -52715,8 +52721,8 @@ function readReason(job, value, { search = false } = {}) {
   if (search && !value) return null;
   const target = canonicalTarget(job, value);
   if (!target) return "The read target could not be resolved safely.";
-  if (/^\/proc\/(?:self|\d+)\/environ$/.test(target) || search && pathInside("/proc", target)) {
-    return "Delegated workers cannot read another process environment.";
+  if (pathInside("/proc", target)) {
+    return "Delegated workers cannot read process state.";
   }
   if (sensitiveReadPaths().some((path) => pathInside(path, target) || search && pathInside(target, path))) {
     return "The read target contains local authentication or credential state.";
@@ -52773,12 +52779,26 @@ function directShellWriteTargets(command) {
     } else if (name === "sed" && rest.some((word) => word === "-i" || word.startsWith("--in-place") || /^-i.+/.test(word))) {
       const operands = rest.filter((word) => word && !word.startsWith("-"));
       if (operands.length > 1) targets.push(...operands.slice(1));
+    } else if (name === "perl" && rest.some((word) => /^-[^-]*i/.test(word) || word.startsWith("--in-place"))) {
+      const operands = [];
+      for (let restIndex = 0; restIndex < rest.length; restIndex++) {
+        const word = rest[restIndex];
+        if (word === "-e" || word === "-E") {
+          restIndex++;
+        } else if (word && !word.startsWith("-")) {
+          operands.push(word);
+        }
+      }
+      targets.push(...operands);
     }
   }
   return targets;
 }
 function protectedShellReason(job, command) {
   for (const value of directShellWriteTargets(command)) {
+    if (/[$`]/.test(value) || value.includes("<(") || value.includes(">(")) {
+      return "Flow cannot prove that a dynamic write target avoids protected files. Name each write target explicitly.";
+    }
     if (/[*?\[\]{}]/.test(value)) {
       return "Flow cannot prove that a wildcard write avoids protected files. Name each write target explicitly.";
     }
@@ -53104,11 +53124,16 @@ function createClaudeQuery(job, prompt, {
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
+        const windowsBatch = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
         const child = spawn3(command, args, {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
-          windowsHide: true
+          windowsHide: true,
+          shell: windowsBatch,
+          // A separate POSIX process group lets the worker stop the CLI and every command it
+          // started before releasing a workspace-write lease.
+          detached: process.platform !== "win32"
         });
         child.stderr?.setEncoding("utf8");
         child.stderr?.on("data", onStderr);
@@ -54411,6 +54436,7 @@ async function safeRunCli(options) {
 
 // src/delegation/claude-worker.mjs
 import { randomUUID as randomUUID3 } from "node:crypto";
+import { spawnSync as spawnSync3 } from "node:child_process";
 var STALL_SECONDS = 420;
 var STARTUP_SECONDS = 30;
 var delay = (ms) => new Promise((resolve8) => setTimeout(resolve8, ms));
@@ -54505,21 +54531,51 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     await promptReady;
     yield sdkPrompt(job.prompt || "", sessionId, turnId);
   }
+  const childTreeRunning = () => {
+    if (!child?.pid) return false;
+    if (process.platform === "win32") return child.exitCode === null && !child.signalCode;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error2) {
+      return error2?.code === "EPERM";
+    }
+  };
+  const signalChildTree = (signal) => {
+    if (!child?.pid) return;
+    try {
+      if (process.platform === "win32") {
+        const args = ["/PID", String(child.pid), "/T"];
+        if (signal === "SIGKILL") args.push("/F");
+        spawnSync3("taskkill", args, { stdio: "ignore", windowsHide: true });
+      } else {
+        process.kill(-child.pid, signal);
+      }
+    } catch {
+    }
+  };
+  const waitForChildTree = async (milliseconds) => {
+    const deadline = Date.now() + milliseconds;
+    while (childTreeRunning() && Date.now() < deadline) await delay(50);
+    return !childTreeRunning();
+  };
   const stopChild = async () => {
     try {
       active?.close();
     } catch {
     }
-    if (!child || child.exitCode !== null || child.signalCode) return;
-    if (await Promise.race([childExited.then(() => true), delay(2500).then(() => false)])) return;
-    try {
-      child.kill("SIGTERM");
-    } catch {
+    if (!child?.pid || !childTreeRunning()) {
+      await Promise.race([childExited, delay(100)]);
+      return;
     }
-    if (await Promise.race([childExited.then(() => true), delay(1e3).then(() => false)])) return;
-    try {
-      child.kill("SIGKILL");
-    } catch {
+    signalChildTree("SIGTERM");
+    if (await waitForChildTree(1e3)) return;
+    signalChildTree("SIGKILL");
+    if (process.platform !== "win32") {
+      while (childTreeRunning()) {
+        signalChildTree("SIGKILL");
+        await delay(50);
+      }
     }
     await Promise.race([childExited, delay(1e3)]);
   };
@@ -54544,7 +54600,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     if (reason === "deadline") {
       timedOut = true;
       store.appendEvent(jobId2, "turn.timeout", { seconds: job.timeBudgetSeconds });
-    } else {
+    } else if (reason === "stall") {
       stalled = true;
       store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS });
     }
@@ -54554,10 +54610,9 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       } catch {
       }
     }, 5e3);
-    try {
-      await active.interrupt();
-    } catch {
-    }
+    const interrupt = Promise.resolve().then(() => active.interrupt()).catch(() => {
+    });
+    await Promise.race([interrupt, delay(5500)]);
   };
   const resetStall = () => {
     if (!accepted || interruptReason || terminalResult) return;
@@ -54580,10 +54635,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
         active?.close();
       } catch {
       }
-      try {
-        child?.kill("SIGKILL");
-      } catch {
-      }
+      signalChildTree("SIGKILL");
       try {
         const current = store.getJob(jobId2);
         if (current && !TERMINAL_STATES.includes(current.status)) {
@@ -54621,7 +54673,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
         if (control.type === "cancel") {
           cancelled = true;
           if (accepted) {
-            await active.interrupt();
+            await interruptAndForce("cancel");
             store.handleControl(jobId2, control.id, { result: "interrupt_sent" });
           } else {
             active.close();

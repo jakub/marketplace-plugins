@@ -221,7 +221,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (message.method === 'initialize') answer({ userAgent: 'fake' })
   else if (message.method === 'initialized') {}
   else if (message.method === 'thread/start') {
-    if (mode === 'profile' && !message.params.developerInstructions.includes('authorized defensive research')) {
+    if (mode === 'provider-error') {
+      say({ id: message.id, error: { code: -32603, message: 'account test@example.invalid failed at /home/test/private/provider.json' } })
+    } else if (mode === 'profile' && !message.params.developerInstructions.includes('authorized defensive research')) {
       say({ id: message.id, error: { code: -32602, message: 'missing defensive profile' } })
     } else answer({ thread: { id: 'thread-test' } })
   }
@@ -393,6 +395,12 @@ try {
   redactStore.recordInternalError(redactJob.id, new TypeError('stack detail stays in the journal'))
   assert.deepEqual(redactStore.events(redactJob.id).find((event) => event.type === 'internal.error').payload, { redacted: true })
   redactStore.close()
+  const providerError = cli(runArgs, { input: 'fail before start', mode: 'provider-error', stateDir: state('provider-error') })
+  assert.equal(providerError.status, 'failed')
+  assert.equal(providerError.error.kind, 'APP_SERVER_ERROR')
+  assert.equal(providerError.error.message, 'Codex App Server rejected a request.')
+  assert.equal(providerError.error.details.code, -32603)
+  assert.doesNotMatch(JSON.stringify(providerError), /test@example\.invalid|\/home\/test\/private/)
 
   console.log('rejected requests never reach the job table')
   const noModelState = state('no-model')

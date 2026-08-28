@@ -28,6 +28,8 @@ export function sensitiveReadPaths() {
     resolve(base, '.azure'),
     resolve(base, '.kube'),
     resolve(base, '.config', 'gh'),
+    resolve(base, '.config', 'gcloud'),
+    ...(process.env.APPDATA ? [resolve(process.env.APPDATA, 'gcloud')] : []),
     resolve(base, '.claude'),
     resolve(base, '.claude.json'),
     resolve(base, '.codex'),
@@ -72,7 +74,11 @@ export function claudeSandboxFor(job) {
     // The CLI itself starts outside the command sandbox. Blocking the effective provider
     // executables here stops shell, language, and executable scripts from launching a raw
     // Claude or Codex child after they pass the command-text guard.
-    denyRead: [...new Set([...sensitiveReadPaths(), ...providerExecutablePaths()])],
+    denyRead: [...new Set([
+      ...sensitiveReadPaths(),
+      ...providerExecutablePaths(),
+      ...(existsSync('/proc') ? ['/proc'] : []),
+    ])],
     ...(job.access === 'workspace-write'
       ? { allowWrite: [job.workspaceKey] }
       : { denyWrite: [job.workspaceKey] }),
@@ -118,8 +124,8 @@ function readReason(job, value, { search = false } = {}) {
   if (search && !value) return null
   const target = canonicalTarget(job, value)
   if (!target) return 'The read target could not be resolved safely.'
-  if (/^\/proc\/(?:self|\d+)\/environ$/.test(target) || (search && pathInside('/proc', target))) {
-    return 'Delegated workers cannot read another process environment.'
+  if (pathInside('/proc', target)) {
+    return 'Delegated workers cannot read process state.'
   }
   if (sensitiveReadPaths().some((path) => pathInside(path, target) || (search && pathInside(target, path)))) {
     return 'The read target contains local authentication or credential state.'
@@ -185,6 +191,17 @@ function directShellWriteTargets(command) {
     } else if (name === 'sed' && rest.some((word) => word === '-i' || word.startsWith('--in-place') || /^-i.+/.test(word))) {
       const operands = rest.filter((word) => word && !word.startsWith('-'))
       if (operands.length > 1) targets.push(...operands.slice(1))
+    } else if (name === 'perl' && rest.some((word) => /^-[^-]*i/.test(word) || word.startsWith('--in-place'))) {
+      const operands = []
+      for (let restIndex = 0; restIndex < rest.length; restIndex++) {
+        const word = rest[restIndex]
+        if (word === '-e' || word === '-E') {
+          restIndex++
+        } else if (word && !word.startsWith('-')) {
+          operands.push(word)
+        }
+      }
+      targets.push(...operands)
     }
   }
   return targets
@@ -192,6 +209,9 @@ function directShellWriteTargets(command) {
 
 function protectedShellReason(job, command) {
   for (const value of directShellWriteTargets(command)) {
+    if (/[$`]/.test(value) || value.includes('<(') || value.includes('>(')) {
+      return 'Flow cannot prove that a dynamic write target avoids protected files. Name each write target explicitly.'
+    }
     if (/[*?\[\]{}]/.test(value)) {
       return 'Flow cannot prove that a wildcard write avoids protected files. Name each write target explicitly.'
     }

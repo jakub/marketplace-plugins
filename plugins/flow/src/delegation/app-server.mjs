@@ -82,7 +82,7 @@ export class AppServerClient {
       if (!pending) return
       this.pending.delete(message.id)
       if (message.error) {
-        pending.reject(new DelegationError('APP_SERVER_ERROR', message.error.message || 'Codex App Server rejected a request.', {
+        pending.reject(new DelegationError('APP_SERVER_ERROR', 'Codex App Server rejected a request.', {
           code: message.error.code ?? null,
         }))
       } else pending.resolve(message.result)
