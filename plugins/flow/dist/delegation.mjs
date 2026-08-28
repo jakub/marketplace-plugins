@@ -410,11 +410,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n2;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants3);
+          this.rhs = optimizeExpr(this.rhs, names, constants4);
         return this;
       }
       get names() {
@@ -431,10 +431,10 @@ var require_codegen = __commonJS({
       render({ _n: _n2 }) {
         return `${this.lhs} = ${this.rhs};` + _n2;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants3);
+        this.rhs = optimizeExpr(this.rhs, names, constants4);
         return this;
       }
       get names() {
@@ -495,8 +495,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants3) {
-        this.code = optimizeExpr(this.code, names, constants3);
+      optimizeNames(names, constants4) {
+        this.code = optimizeExpr(this.code, names, constants4);
         return this;
       }
       get names() {
@@ -525,12 +525,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants3))
+          if (n.optimizeNames(names, constants4))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -583,12 +583,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         var _a4;
-        this.else = (_a4 = this.else) === null || _a4 === void 0 ? void 0 : _a4.optimizeNames(names, constants3);
-        if (!(super.optimizeNames(names, constants3) || this.else))
+        this.else = (_a4 = this.else) === null || _a4 === void 0 ? void 0 : _a4.optimizeNames(names, constants4);
+        if (!(super.optimizeNames(names, constants4) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants3);
+        this.condition = optimizeExpr(this.condition, names, constants4);
         return this;
       }
       get names() {
@@ -611,10 +611,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants3) {
-        if (!super.optimizeNames(names, constants3))
+      optimizeNames(names, constants4) {
+        if (!super.optimizeNames(names, constants4))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants3);
+        this.iteration = optimizeExpr(this.iteration, names, constants4);
         return this;
       }
       get names() {
@@ -650,10 +650,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants3) {
-        if (!super.optimizeNames(names, constants3))
+      optimizeNames(names, constants4) {
+        if (!super.optimizeNames(names, constants4))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants3);
+        this.iterable = optimizeExpr(this.iterable, names, constants4);
         return this;
       }
       get names() {
@@ -695,11 +695,11 @@ var require_codegen = __commonJS({
         (_b2 = this.finally) === null || _b2 === void 0 ? void 0 : _b2.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         var _a4, _b2;
-        super.optimizeNames(names, constants3);
-        (_a4 = this.catch) === null || _a4 === void 0 ? void 0 : _a4.optimizeNames(names, constants3);
-        (_b2 = this.finally) === null || _b2 === void 0 ? void 0 : _b2.optimizeNames(names, constants3);
+        super.optimizeNames(names, constants4);
+        (_a4 = this.catch) === null || _a4 === void 0 ? void 0 : _a4.optimizeNames(names, constants4);
+        (_b2 = this.finally) === null || _b2 === void 0 ? void 0 : _b2.optimizeNames(names, constants4);
         return this;
       }
       get names() {
@@ -1000,7 +1000,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants3) {
+    function optimizeExpr(expr, names, constants4) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1015,14 +1015,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants3[n.str];
+        const c = constants4[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants3[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants4[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -2984,7 +2984,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve8.call(this, root, ref);
+      let _sch = resolve9.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a4 = root.localRefs) === null || _a4 === void 0 ? void 0 : _a4[ref];
         const { schemaId } = this.opts;
@@ -3011,7 +3011,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s12, s2) {
       return s12.schema === s2.schema && s12.root === s2.root && s12.baseId === s2.baseId;
     }
-    function resolve8(root, ref) {
+    function resolve9(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3642,7 +3642,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve8(baseURI, relativeURI, options) {
+    function resolve9(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
       const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
@@ -3926,7 +3926,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve8,
+      resolve: resolve9,
       resolveComponent,
       equal,
       serialize,
@@ -20606,7 +20606,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve8) => setTimeout(resolve8, pollInterval));
+        await new Promise((resolve9) => setTimeout(resolve9, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -20623,7 +20623,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve8, reject) => {
+    return new Promise((resolve9, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -20701,7 +20701,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve8(parseResult.data);
+            resolve9(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -20962,12 +20962,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve8, reject) => {
+    return new Promise((resolve9, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve8, interval);
+      const timeoutId = setTimeout(resolve9, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -22058,7 +22058,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve8) => setTimeout(resolve8, pollInterval));
+      await new Promise((resolve9) => setTimeout(resolve9, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -22722,12 +22722,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve8) => {
+    return new Promise((resolve9) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve8();
+        resolve9();
       } else {
-        this._stdout.once("drain", resolve8);
+        this._stdout.once("drain", resolve9);
       }
     });
   }
@@ -22879,8 +22879,8 @@ var AppServerClient = class {
     this.pending = /* @__PURE__ */ new Map();
     this.stderr = "";
     this.closeInfo = null;
-    this.closePromise = new Promise((resolve8) => {
-      this.resolveClose = resolve8;
+    this.closePromise = new Promise((resolve9) => {
+      this.resolveClose = resolve9;
     });
   }
   async start() {
@@ -22973,7 +22973,7 @@ var AppServerClient = class {
   }
   request(method, params = {}, timeoutMs = 3e4) {
     const id2 = this.nextId++;
-    return new Promise((resolve8, reject) => {
+    return new Promise((resolve9, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(id2)) return;
         reject(new DelegationError("APP_SERVER_TIMEOUT", `Codex App Server did not answer ${method}.`));
@@ -22982,7 +22982,7 @@ var AppServerClient = class {
         method,
         resolve: (value) => {
           clearTimeout(timer);
-          resolve8(value);
+          resolve9(value);
         },
         reject: (error2) => {
           clearTimeout(timer);
@@ -23015,8 +23015,8 @@ var AppServerClient = class {
     let timer;
     return Promise.race([
       this.closePromise.then(() => true),
-      new Promise((resolve8) => {
-        timer = setTimeout(() => resolve8(false), ms);
+      new Promise((resolve9) => {
+        timer = setTimeout(() => resolve9(false), ms);
       })
     ]).finally(() => clearTimeout(timer));
   }
@@ -52522,8 +52522,34 @@ function VJ(e, t) {
 
 // src/delegation/claude-sdk.mjs
 import { spawn as spawn3, spawnSync as spawnSync2 } from "node:child_process";
-import { accessSync, constants as constants2, realpathSync as realpathSync3 } from "node:fs";
-import { delimiter as delimiter3, isAbsolute as isAbsolute5, resolve as resolve6, sep as sep6 } from "node:path";
+import { accessSync as accessSync2, constants as constants3, realpathSync as realpathSync4 } from "node:fs";
+import { delimiter as delimiter3, isAbsolute as isAbsolute5, resolve as resolve7, sep as sep6 } from "node:path";
+
+// src/delegation/claude-launch.mjs
+import { accessSync, constants as constants2, realpathSync as realpathSync2 } from "node:fs";
+import { dirname as dirname4, resolve as resolve5 } from "node:path";
+function claudeSpawnCommand(command, args, {
+  platform = process.platform,
+  nodeExecutable = process.execPath
+} = {}) {
+  if (platform !== "win32" || !/\.(?:cmd|bat)$/i.test(command)) return { command, args };
+  const directory = dirname4(command);
+  const candidates = [
+    resolve5(directory, "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
+    resolve5(directory, "..", "@anthropic-ai", "claude-code", "cli.js")
+  ];
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants2.R_OK);
+      return { command: nodeExecutable, args: [realpathSync2(candidate), ...args] };
+    } catch {
+    }
+  }
+  throw new DelegationError(
+    "CLAUDE_STARTUP",
+    "Claude Code's Windows batch launcher could not be resolved without a shell. Install the native Claude Code executable."
+  );
+}
 
 // src/delegation/claude-errors.mjs
 function normalizeClaudeError(error2) {
@@ -52551,9 +52577,9 @@ function normalizeClaudeError(error2) {
 }
 
 // src/delegation/claude-policy.mjs
-import { existsSync as existsSync2, realpathSync as realpathSync2 } from "node:fs";
+import { existsSync as existsSync2, realpathSync as realpathSync3 } from "node:fs";
 import { homedir } from "node:os";
-import { basename as basename3, delimiter as delimiter2, dirname as dirname4, isAbsolute as isAbsolute4, relative as relative2, resolve as resolve5, sep as sep5 } from "node:path";
+import { basename as basename3, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute4, relative as relative2, resolve as resolve6, sep as sep5 } from "node:path";
 
 // lib/hook-policy.mjs
 var SECRET = /(^|\/)\.env(\.[A-Za-z0-9_-]+)*$/;
@@ -52623,22 +52649,22 @@ var pathInside = (root, path) => {
 function sensitiveReadPaths() {
   const base = homedir();
   return [
-    resolve5(base, ".ssh"),
-    resolve5(base, ".gnupg"),
-    resolve5(base, ".git-credentials"),
-    resolve5(base, ".netrc"),
-    resolve5(base, ".npmrc"),
-    resolve5(base, ".pypirc"),
-    resolve5(base, ".docker"),
-    resolve5(base, ".aws"),
-    resolve5(base, ".azure"),
-    resolve5(base, ".kube"),
-    resolve5(base, ".config", "gh"),
-    resolve5(base, ".config", "gcloud"),
-    ...process.env.APPDATA ? [resolve5(process.env.APPDATA, "gcloud")] : [],
-    resolve5(base, ".claude"),
-    resolve5(base, ".claude.json"),
-    resolve5(base, ".codex")
+    resolve6(base, ".ssh"),
+    resolve6(base, ".gnupg"),
+    resolve6(base, ".git-credentials"),
+    resolve6(base, ".netrc"),
+    resolve6(base, ".npmrc"),
+    resolve6(base, ".pypirc"),
+    resolve6(base, ".docker"),
+    resolve6(base, ".aws"),
+    resolve6(base, ".azure"),
+    resolve6(base, ".kube"),
+    resolve6(base, ".config", "gh"),
+    resolve6(base, ".config", "gcloud"),
+    ...process.env.APPDATA ? [resolve6(process.env.APPDATA, "gcloud")] : [],
+    resolve6(base, ".claude"),
+    resolve6(base, ".claude.json"),
+    resolve6(base, ".codex")
   ];
 }
 function providerExecutablePaths() {
@@ -52649,16 +52675,16 @@ function providerExecutablePaths() {
   ];
   const suffixes = process.platform === "win32" ? (process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
   for (const executable of configured) {
-    const candidates = isAbsolute4(executable) || executable.includes(sep5) ? [resolve5(executable)] : (process.env.PATH || "").split(delimiter2).flatMap((directory) => (
+    const candidates = isAbsolute4(executable) || executable.includes(sep5) ? [resolve6(executable)] : (process.env.PATH || "").split(delimiter2).flatMap((directory) => (
       // POSIX treats an empty PATH entry as the current directory. Flow deliberately
       // skips it so an untrusted worktree cannot replace a provider executable.
-      directory ? suffixes.map((suffix) => resolve5(directory, `${executable}${suffix}`)) : []
+      directory ? suffixes.map((suffix) => resolve6(directory, `${executable}${suffix}`)) : []
     ));
     for (const candidate of candidates) {
       if (!existsSync2(candidate)) continue;
       paths.add(candidate);
       try {
-        paths.add(realpathSync2(candidate));
+        paths.add(realpathSync3(candidate));
       } catch {
       }
     }
@@ -52705,13 +52731,13 @@ function pathFromTool(toolName, input) {
 }
 function canonicalTarget(job, value) {
   if (typeof value !== "string" || !value) return null;
-  const absolute = resolve5(job.cwd, value);
+  const absolute = resolve6(job.cwd, value);
   let existing = absolute;
-  while (!existsSync2(existing) && dirname4(existing) !== existing) existing = dirname4(existing);
+  while (!existsSync2(existing) && dirname5(existing) !== existing) existing = dirname5(existing);
   let canonical;
   try {
-    const base = realpathSync2(existing);
-    canonical = resolve5(base, relative2(existing, absolute));
+    const base = realpathSync3(existing);
+    canonical = resolve6(base, relative2(existing, absolute));
   } catch {
     return null;
   }
@@ -52971,8 +52997,8 @@ function executablePath(name) {
   const candidate = name || "claude";
   if (isAbsolute5(candidate) || candidate.includes(sep6)) {
     try {
-      accessSync(candidate, constants2.X_OK);
-      return realpathSync3(candidate);
+      accessSync2(candidate, constants3.X_OK);
+      return realpathSync4(candidate);
     } catch {
       return null;
     }
@@ -52981,10 +53007,10 @@ function executablePath(name) {
   for (const directory of (process.env.PATH || "").split(delimiter3)) {
     if (!directory) continue;
     for (const suffix of suffixes) {
-      const path = resolve6(directory, `${candidate}${suffix}`);
+      const path = resolve7(directory, `${candidate}${suffix}`);
       try {
-        accessSync(path, constants2.X_OK);
-        return realpathSync3(path);
+        accessSync2(path, constants3.X_OK);
+        return realpathSync4(path);
       } catch {
       }
     }
@@ -53003,7 +53029,13 @@ function claudeVersion() {
   } catch {
     return { ok: false, kind: "CLAUDE_NOT_INSTALLED", version: null };
   }
-  const result = spawnSync2(bin, ["--version"], { encoding: "utf8", timeout: 1e4 });
+  let launch;
+  try {
+    launch = claudeSpawnCommand(bin, ["--version"]);
+  } catch (error2) {
+    return { ok: false, kind: error2.kind || "CLAUDE_STARTUP", version: null };
+  }
+  const result = spawnSync2(launch.command, launch.args, { encoding: "utf8", timeout: 1e4 });
   if (result.error?.code === "ENOENT") return { ok: false, kind: "CLAUDE_NOT_INSTALLED", version: null };
   if (result.status !== 0) return { ok: false, kind: "CLAUDE_VERSION", version: null };
   return { ok: true, kind: null, version: result.stdout.trim() };
@@ -53015,7 +53047,13 @@ function claudeAuthStatus() {
   } catch {
     return { ok: false, kind: "CLAUDE_NOT_INSTALLED" };
   }
-  const result = spawnSync2(bin, ["auth", "status", "--json"], { encoding: "utf8", timeout: 1e4 });
+  let launch;
+  try {
+    launch = claudeSpawnCommand(bin, ["auth", "status", "--json"]);
+  } catch (error2) {
+    return { ok: false, kind: error2.kind || "CLAUDE_STARTUP" };
+  }
+  const result = spawnSync2(launch.command, launch.args, { encoding: "utf8", timeout: 1e4 });
   if (result.error?.code === "ENOENT") return { ok: false, kind: "CLAUDE_NOT_INSTALLED" };
   if (result.error) return { ok: false, kind: "CLAUDE_STARTUP" };
   if (result.status !== 0) return { ok: false, kind: "CLAUDE_AUTH" };
@@ -53124,13 +53162,12 @@ function createClaudeQuery(job, prompt, {
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
-        const windowsBatch = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
-        const child = spawn3(command, args, {
+        const launch = claudeSpawnCommand(command, args);
+        const child = spawn3(launch.command, launch.args, {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
-          shell: windowsBatch,
           // A separate POSIX process group lets the worker stop the CLI and every command it
           // started before releasing a workspace-write lease.
           detached: process.platform !== "win32"
@@ -53230,7 +53267,7 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { appendFileSync as appendFileSync2, chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, statSync as statSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname5, join as join5 } from "node:path";
+import { dirname as dirname6, join as join5 } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 var SCHEMA_VERSION = 2;
 var RETENTION_DAYS = 14;
@@ -53676,9 +53713,9 @@ var JobStore = class {
 
 // src/delegation/workspace.mjs
 import { execFile } from "node:child_process";
-import { realpathSync as realpathSync4, statSync as statSync3 } from "node:fs";
+import { realpathSync as realpathSync5, statSync as statSync3 } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { isAbsolute as isAbsolute6, relative as relative3, resolve as resolve7, sep as sep7 } from "node:path";
+import { isAbsolute as isAbsolute6, relative as relative3, resolve as resolve8, sep as sep7 } from "node:path";
 import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
 var isInside = (root, path) => {
@@ -53699,7 +53736,7 @@ function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd = null }
   const roots = [];
   for (const candidate of candidates) {
     try {
-      const path = realpathSync4(candidate);
+      const path = realpathSync5(candidate);
       if (statSync3(path).isDirectory() && !roots.includes(path)) roots.push(path);
     } catch {
     }
@@ -53708,14 +53745,14 @@ function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd = null }
 }
 async function sharedGitDirInsideRoots(path, roots) {
   try {
-    const commonDir = realpathSync4(await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree."));
+    const commonDir = realpathSync5(await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree."));
     if (!roots.some((root) => isInside(root, commonDir))) return false;
-    const top = realpathSync4(await git(path, ["rev-parse", "--show-toplevel"], "not a git worktree."));
+    const top = realpathSync5(await git(path, ["rev-parse", "--show-toplevel"], "not a git worktree."));
     const listed = await git(path, ["--git-dir", commonDir, "worktree", "list", "--porcelain"], "the worktree list is unavailable.");
     return listed.split("\n").some((line) => {
       if (!line.startsWith("worktree ")) return false;
       try {
-        return realpathSync4(line.slice("worktree ".length)) === top;
+        return realpathSync5(line.slice("worktree ".length)) === top;
       } catch {
         return false;
       }
@@ -53730,7 +53767,7 @@ async function canonicalWorkspace(cwd, roots) {
   }
   let canonical;
   try {
-    canonical = realpathSync4(cwd);
+    canonical = realpathSync5(cwd);
     if (!statSync3(canonical).isDirectory()) throw new Error("not a directory");
   } catch {
     throw new DelegationError("BAD_WORKSPACE", "cwd does not name an existing directory.");
@@ -53755,7 +53792,7 @@ async function git(cwd, args, message) {
 }
 async function worktreeKey(cwd) {
   try {
-    return realpathSync4(await git(cwd, ["rev-parse", "--show-toplevel"], "cwd is not a Git worktree."));
+    return realpathSync5(await git(cwd, ["rev-parse", "--show-toplevel"], "cwd is not a Git worktree."));
   } catch (error2) {
     if (error2 instanceof DelegationError) return cwd;
     throw error2;
@@ -53784,7 +53821,7 @@ Review only the changes in git diff ${baseSha}...${headSha}. Read surrounding co
 }
 
 // src/delegation/service.mjs
-var sleep = (ms) => new Promise((resolve8) => setTimeout(resolve8, ms));
+var sleep = (ms) => new Promise((resolve9) => setTimeout(resolve9, ms));
 function validateSchema(schema) {
   if (schema == null) return null;
   if (Buffer.byteLength(JSON.stringify(schema)) > 64 * 1024) {
@@ -54439,7 +54476,7 @@ import { randomUUID as randomUUID3 } from "node:crypto";
 import { spawnSync as spawnSync3 } from "node:child_process";
 var STALL_SECONDS = 420;
 var STARTUP_SECONDS = 30;
-var delay = (ms) => new Promise((resolve8) => setTimeout(resolve8, ms));
+var delay = (ms) => new Promise((resolve9) => setTimeout(resolve9, ms));
 async function withStartupTimeout(promise, onTimeout, seconds = STARTUP_SECONDS) {
   let timer;
   try {
@@ -54522,8 +54559,8 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
   let activeControlPoll = Promise.resolve();
   let signalStopping = false;
   let releasePrompt;
-  const promptReady = new Promise((resolve8) => {
-    releasePrompt = resolve8;
+  const promptReady = new Promise((resolve9) => {
+    releasePrompt = resolve9;
   });
   const sessionId = job.nativeThreadId || randomUUID3();
   const turnId = randomUUID3();
@@ -54733,7 +54770,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       canUseTool,
       onSpawn: (spawned) => {
         child = spawned;
-        childExited = new Promise((resolve8) => child.once("exit", resolve8));
+        childExited = new Promise((resolve9) => child.once("exit", resolve9));
       },
       onStderr: (chunk) => {
         stderrTail = (stderrTail + String(chunk)).slice(-16384);
@@ -54957,8 +54994,8 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
   let nativeTurnTerminal = false;
   let onStallFire = null;
   let terminalResolve;
-  const terminal2 = new Promise((resolve8) => {
-    terminalResolve = resolve8;
+  const terminal2 = new Promise((resolve9) => {
+    terminalResolve = resolve9;
   });
   let controlBusy = false;
   let activeControlPoll = Promise.resolve();

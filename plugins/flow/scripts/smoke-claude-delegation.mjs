@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { normalizeClaudeError } from '../src/delegation/claude-errors.mjs'
 import { claudePolicyHook, claudeSandboxFor, sensitiveReadPaths } from '../src/delegation/claude-policy.mjs'
+import { claudeSpawnCommand } from '../src/delegation/claude-launch.mjs'
 
 const PROTOCOL_VERSION = '2025-06-18'
 
@@ -407,6 +408,25 @@ try {
   console.log('Claude SDK hook policy')
   assert.equal(normalizeClaudeError(new Error('Model not found')).kind, 'BAD_MODEL')
   assert.equal(normalizeClaudeError(new Error('Session not found')).kind, 'CLAUDE_SDK')
+  const windowsBin = join(temp, 'windows-bin')
+  const windowsEntrypoint = join(windowsBin, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
+  const windowsShim = join(windowsBin, 'claude.cmd')
+  mkdirSync(dirname(windowsEntrypoint), { recursive: true })
+  writeFileSync(windowsShim, '@echo off\n')
+  writeFileSync(windowsEntrypoint, "console.log(JSON.stringify(process.argv.slice(2)))\n")
+  const dangerousSchema = '{"description":"& echo shell-injection"}'
+  const windowsLaunch = claudeSpawnCommand(windowsShim, ['--json-schema', dangerousSchema], {
+    platform: 'win32', nodeExecutable: process.execPath,
+  })
+  assert.equal(windowsLaunch.command, process.execPath)
+  assert.deepEqual(
+    JSON.parse(spawnSync(windowsLaunch.command, windowsLaunch.args, { encoding: 'utf8' }).stdout),
+    ['--json-schema', dangerousSchema],
+  )
+  assert.throws(
+    () => claudeSpawnCommand(join(temp, 'missing.cmd'), [], { platform: 'win32' }),
+    (error) => error.kind === 'CLAUDE_STARTUP',
+  )
   if (process.platform !== 'win32') {
     const emptyPathDoctor = cli(['doctor', '--host', 'codex', '--cwd', repo], {
       stateDir: state('empty-path'), extraEnv: { PATH: ':', FLOW_DELEGATION_CLAUDE_BIN: 'claude' },

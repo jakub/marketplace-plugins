@@ -139,7 +139,7 @@ The sandbox blocks network access for commands, local binding, Unix sockets, and
 
 Workspace-write authority still covers the whole disposable worktree. The protected-file checks prevent direct hand edits and common opaque shell forms; they are workflow policy, not syscall mediation for every repository executable. Review the resulting Git diff before publishing, just as for a native agent with worktree-write access.
 
-SDK initialization has a 30 second timeout. After prompt release, every SDK message resets the 420 second quiet-period timer. The job time budget and quiet-period limit both call `interrupt()` first, then close and terminate the process after a grace period. On POSIX systems, the Claude CLI starts in its own process group. Flow kills and waits for that entire group before it records a terminal write job and releases the worktree lease.
+SDK initialization has a 30-second timeout. After prompt release, every SDK message resets the 420-second quiet-period timer. The job time budget and quiet-period limit both call `interrupt()` first, then close and terminate the process after a grace period. On POSIX systems, the Claude CLI starts in its own process group. Flow kills and waits for that entire group before it records a terminal write job and releases the worktree lease. On Windows, Flow resolves an npm batch shim to the installed Claude JavaScript entrypoint and launches it through Node. SDK arguments never pass through `cmd.exe`.
 
 The SDK `result` message is the native terminal proof. Flow records its text, provider usage, and typed provider failures such as `RATE_LIMIT`, `CLAUDE_AUTH`, or `BAD_MODEL`. For structured output, Ajv checks `structured_output` against the original schema before the job can succeed.
 

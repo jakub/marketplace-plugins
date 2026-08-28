@@ -2,6 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import { spawn, spawnSync } from 'node:child_process'
 import { accessSync, constants, realpathSync } from 'node:fs'
 import { delimiter, isAbsolute, resolve, sep } from 'node:path'
+import { claudeSpawnCommand } from './claude-launch.mjs'
 import { DelegationError } from './contracts.mjs'
 import { normalizeClaudeError } from './claude-errors.mjs'
 import { claudePolicyHook, claudeSandboxFor, claudeTools } from './claude-policy.mjs'
@@ -104,7 +105,11 @@ export function claudeVersion() {
   try { bin = claudeExecutable() } catch {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED', version: null }
   }
-  const result = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10_000 })
+  let launch
+  try { launch = claudeSpawnCommand(bin, ['--version']) } catch (error) {
+    return { ok: false, kind: error.kind || 'CLAUDE_STARTUP', version: null }
+  }
+  const result = spawnSync(launch.command, launch.args, { encoding: 'utf8', timeout: 10_000 })
   if (result.error?.code === 'ENOENT') return { ok: false, kind: 'CLAUDE_NOT_INSTALLED', version: null }
   if (result.status !== 0) return { ok: false, kind: 'CLAUDE_VERSION', version: null }
   return { ok: true, kind: null, version: result.stdout.trim() }
@@ -115,7 +120,11 @@ export function claudeAuthStatus() {
   try { bin = claudeExecutable() } catch {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
   }
-  const result = spawnSync(bin, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 10_000 })
+  let launch
+  try { launch = claudeSpawnCommand(bin, ['auth', 'status', '--json']) } catch (error) {
+    return { ok: false, kind: error.kind || 'CLAUDE_STARTUP' }
+  }
+  const result = spawnSync(launch.command, launch.args, { encoding: 'utf8', timeout: 10_000 })
   if (result.error?.code === 'ENOENT') return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
   if (result.error) return { ok: false, kind: 'CLAUDE_STARTUP' }
   if (result.status !== 0) return { ok: false, kind: 'CLAUDE_AUTH' }
@@ -229,15 +238,14 @@ export function createClaudeQuery(job, prompt, {
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
-        // Node requires a shell for Windows batch shims. The resolved provider path and SDK
-        // arguments are trusted here; the delegated prompt travels over stdin, not argv.
-        const windowsBatch = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(command)
-        const child = spawn(command, args, {
+        // npm's Windows shim cannot run without cmd.exe. Resolve its installed JavaScript
+        // entrypoint instead, so schemas and every other SDK argument bypass shell parsing.
+        const launch = claudeSpawnCommand(command, args)
+        const child = spawn(launch.command, launch.args, {
           cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true,
-          shell: windowsBatch,
           // A separate POSIX process group lets the worker stop the CLI and every command it
           // started before releasing a workspace-write lease.
           detached: process.platform !== 'win32',
