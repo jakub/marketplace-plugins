@@ -15,6 +15,9 @@ const RESULT_FAILURE_MESSAGES = {
   BAD_MODEL: 'Claude rejected the requested model.',
   MAX_TURNS: 'Claude reached the delegated turn limit.',
   MAX_BUDGET: 'Claude reached the delegated cost limit.',
+  BILLING: 'Claude rejected the turn because the account has a billing problem or is on hold.',
+  OVERLOADED: 'Claude is overloaded and rejected the turn.',
+  SCHEMA_OUTPUT: 'Claude could not produce output that matches the requested schema.',
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

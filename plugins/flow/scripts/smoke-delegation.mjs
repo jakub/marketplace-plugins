@@ -641,6 +641,9 @@ try {
     }
     assert.match(trackedState, /^State:\s+T/m)
   } finally {
+    if (!trackedPid) {
+      try { trackedPid = Number(readFileSync(trackedPidFile, 'utf8')) || null } catch {}
+    }
     if (trackedPid) try { process.kill(trackedPid, 'SIGKILL') } catch {}
     try { process.kill(-trackedRoot.pid, 'SIGKILL') } catch {}
   }
@@ -1083,7 +1086,7 @@ try {
   legacyDb.close()
   const upgraded = new JobStore(legacyState)
   const columnsOf = (table) => upgraded.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
-  assert.equal(upgraded.userVersion(), 4)
+  assert.equal(upgraded.userVersion(), 5)
   assert.ok(!columnsOf('jobs').includes('delivery'))
   assert.ok(columnsOf('jobs').includes('max_turns'))
   assert.ok(columnsOf('jobs').includes('provider_processes_json'))
@@ -1097,6 +1100,8 @@ try {
   assert.equal(upgraded.events('legacy-job').length, 1)
   assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases, 1)
   assert.deepEqual(upgraded.db.prepare('PRAGMA foreign_key_check').all(), [])
+  assert.ok(upgraded.db.prepare('PRAGMA index_list(jobs)').all()
+    .some((index) => index.name === 'jobs_route_created_idx'))
   upgraded.close()
 
   const v3State = state('legacy-v3')
@@ -1109,11 +1114,13 @@ try {
   })
   v3Seed.close()
   const v3Db = new DatabaseSync(join(v3State, 'jobs.sqlite3'))
-  v3Db.exec('ALTER TABLE jobs DROP COLUMN provider_scope; PRAGMA user_version=3;')
+  v3Db.exec('DROP INDEX jobs_route_created_idx; ALTER TABLE jobs DROP COLUMN provider_scope; PRAGMA user_version=3;')
   v3Db.close()
   const v3Upgraded = new JobStore(v3State)
-  assert.equal(v3Upgraded.userVersion(), 4)
+  assert.equal(v3Upgraded.userVersion(), 5)
   assert.ok(v3Upgraded.db.prepare('PRAGMA table_info(jobs)').all().some((column) => column.name === 'provider_scope'))
+  assert.ok(v3Upgraded.db.prepare('PRAGMA index_list(jobs)').all()
+    .some((index) => index.name === 'jobs_route_created_idx'))
   assert.equal(v3Upgraded.getJob(v3Job.id).traceId, 'v3-job')
   v3Upgraded.close()
 

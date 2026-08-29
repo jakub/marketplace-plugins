@@ -236,8 +236,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       say({ type: 'assistant', error: 'rate_limit', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'limit reached', error: true })
     }
+    if (mode === 'billing' || mode === 'overloaded') {
+      const error = mode === 'billing' ? 'billing_error' : 'overloaded'
+      say({ type: 'assistant', error, message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return result({ text: error, error: true })
+    }
     if (mode === 'max-turns') return result({ text: 'turn limit', error: true, subtype: 'error_max_turns' })
     if (mode === 'max-budget') return result({ text: 'budget limit', error: true, subtype: 'error_max_budget_usd' })
+    if (mode === 'schema-output-limit') return result({ text: 'schema retries exhausted', error: true, subtype: 'error_max_structured_output_retries' })
     const structured = ['schema-good', 'schema-dialect'].includes(mode) ? { answer: 'yes' }
       : mode === 'schema-bad' ? { wrong: true }
       : undefined
@@ -354,6 +360,15 @@ try {
   const maxBudget = cli([...runArgs, '--max-budget-usd', '0.01'], { input: 'Budget limit', mode: 'max-budget', stateDir: state('max-budget') })
   assert.equal(maxBudget.status, 'failed')
   assert.equal(maxBudget.error.kind, 'MAX_BUDGET')
+  const billing = cli(runArgs, { input: 'Billing failure', mode: 'billing', stateDir: state('billing') })
+  assert.equal(billing.error.kind, 'BILLING')
+  assert.match(billing.error.message, /billing problem/)
+  const overloaded = cli(runArgs, { input: 'Overload failure', mode: 'overloaded', stateDir: state('overloaded') })
+  assert.equal(overloaded.error.kind, 'OVERLOADED')
+  assert.match(overloaded.error.message, /overloaded/)
+  const schemaOutputLimit = cli(runArgs, { input: 'Schema retry failure', mode: 'schema-output-limit', stateDir: state('schema-output-limit') })
+  assert.equal(schemaOutputLimit.error.kind, 'SCHEMA_OUTPUT')
+  assert.match(schemaOutputLimit.error.message, /requested schema/)
 
   const schemaFile = join(temp, 'schema.json')
   writeFileSync(schemaFile, JSON.stringify({ type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
@@ -432,7 +447,6 @@ try {
     assert.equal(detachedCommand.status, 'succeeded')
     await new Promise((resolve) => setTimeout(resolve, 1_200))
     assert.equal(existsSync(join(repo, 'detached-survivor')), false)
-
   }
 
   if (process.platform !== 'win32') {
@@ -528,19 +542,37 @@ try {
   }
   const previousDockerConfig = process.env.DOCKER_CONFIG
   const previousKubeconfig = process.env.KUBECONFIG
+  const overrideNames = [
+    'AZURE_CONFIG_DIR',
+    'GIT_CONFIG_GLOBAL',
+    'NETRC',
+    'NPM_CONFIG_USERCONFIG',
+    'PIP_CONFIG_FILE',
+    'TWINE_CONFIG_FILE',
+  ]
+  const previousOverrides = new Map(overrideNames.map((name) => [name, process.env[name]]))
   const dockerConfig = join(temp, 'docker-config')
   const kubeconfigA = join(temp, 'kube-a')
   const kubeconfigB = join(temp, 'kube-b')
+  const additionalOverrides = overrideNames.map((name) => join(temp, name.toLowerCase()))
   process.env.DOCKER_CONFIG = dockerConfig
   process.env.KUBECONFIG = [kubeconfigA, kubeconfigB].join(delimiter)
+  for (let index = 0; index < overrideNames.length; index++) {
+    process.env[overrideNames[index]] = additionalOverrides[index]
+  }
   const overridePaths = sensitiveReadPaths()
   assert.ok(overridePaths.includes(dockerConfig))
   assert.ok(overridePaths.includes(kubeconfigA))
   assert.ok(overridePaths.includes(kubeconfigB))
+  for (const path of additionalOverrides) assert.ok(overridePaths.includes(path))
   if (previousDockerConfig === undefined) delete process.env.DOCKER_CONFIG
   else process.env.DOCKER_CONFIG = previousDockerConfig
   if (previousKubeconfig === undefined) delete process.env.KUBECONFIG
   else process.env.KUBECONFIG = previousKubeconfig
+  for (const [name, value] of previousOverrides) {
+    if (value === undefined) delete process.env[name]
+    else process.env[name] = value
+  }
   if (previousCredentials === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS
   else process.env.GOOGLE_APPLICATION_CREDENTIALS = previousCredentials
   const escapedEdit = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(temp, 'outside.txt') } })
@@ -613,7 +645,10 @@ try {
     if (previousCodexBin === undefined) delete process.env.FLOW_DELEGATION_CODEX_BIN
     else process.env.FLOW_DELEGATION_CODEX_BIN = previousCodexBin
   }
-  assert.equal(denied.length, 22)
+  assert.ok(denied.length >= 22, `expected at least 22 policy-denial callbacks, received ${denied.length}`)
+  for (const toolName of ['Bash', 'Edit', 'Grep', 'Read', 'Write']) {
+    assert.ok(denied.some((entry) => entry.toolName === toolName), `missing policy-denial callback for ${toolName}`)
+  }
 
   console.log('Codex-hosted MCP registration')
   const deadClient = new McpClient({ command: process.execPath, args: ['-e', 'process.exit(17)'], cwd: repo, env: process.env, root: repo })

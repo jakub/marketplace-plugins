@@ -22913,7 +22913,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, rename
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-var SCHEMA_VERSION = 4;
+var SCHEMA_VERSION = 5;
 var RETENTION_DAYS = 14;
 var now = () => Date.now();
 var json = (value) => value == null ? null : JSON.stringify(value);
@@ -23010,6 +23010,7 @@ var SCHEMA = `
     job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
   );
   CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
+  CREATE INDEX jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
   CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
 `;
 function serviceLog(stateDir, message) {
@@ -23122,6 +23123,10 @@ var JobStore = class {
         this.migrateFromV3();
         continue;
       }
+      if (version2 === 4) {
+        this.migrateFromV4();
+        continue;
+      }
       this.db.exec("BEGIN IMMEDIATE");
       try {
         const lockedVersion = this.userVersion();
@@ -23194,6 +23199,25 @@ var JobStore = class {
       const version2 = this.userVersion();
       if (version2 === 3) {
         this.db.exec("ALTER TABLE jobs ADD COLUMN provider_scope TEXT; PRAGMA user_version=4;");
+      }
+      this.db.exec("COMMIT");
+    } catch (error2) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error2;
+    }
+  }
+  migrateFromV4() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const version2 = this.userVersion();
+      if (version2 === 4) {
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
+          PRAGMA user_version=5;
+        `);
       }
       this.db.exec("COMMIT");
     } catch (error2) {
@@ -23598,6 +23622,7 @@ var JobStore = class {
 // src/delegation/containment.mjs
 var probeWait = new Int32Array(new SharedArrayBuffer(4));
 var cachedContainmentSupport = null;
+var controlGroupCache = /* @__PURE__ */ new Map();
 var scopeOptions = (scopeName) => [
   "--user",
   "--scope",
@@ -23649,6 +23674,8 @@ function scopedProviderCommand(command, args, scopeName) {
 }
 function scopeControlGroup(scopeName) {
   if (process.platform !== "linux" || !scopeName) return null;
+  const cached2 = controlGroupCache.get(scopeName);
+  if (cached2) return cached2;
   try {
     const value = execFileSync2("systemctl", [
       "--user",
@@ -23657,7 +23684,9 @@ function scopeControlGroup(scopeName) {
       "--property=ControlGroup",
       "--value"
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 }).trim();
-    return value.startsWith("/") ? value : null;
+    if (!value.startsWith("/")) return null;
+    controlGroupCache.set(scopeName, value);
+    return value;
   } catch {
     return null;
   }
@@ -56311,14 +56340,20 @@ var CREDENTIAL_PATH_ENV = [
   "AWS_CONFIG_FILE",
   "AWS_SHARED_CREDENTIALS_FILE",
   "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AZURE_CONFIG_DIR",
   "CLAUDE_CONFIG_DIR",
   "CLOUDSDK_CONFIG",
   "CODEX_HOME",
   "DOCKER_CONFIG",
   "GH_CONFIG_DIR",
+  "GIT_CONFIG_GLOBAL",
   "GNUPGHOME",
   "GOOGLE_APPLICATION_CREDENTIALS",
-  "KUBECONFIG"
+  "KUBECONFIG",
+  "NETRC",
+  "NPM_CONFIG_USERCONFIG",
+  "PIP_CONFIG_FILE",
+  "TWINE_CONFIG_FILE"
 ];
 var CREDENTIAL_PATH_LIST_ENV = /* @__PURE__ */ new Set(["KUBECONFIG"]);
 var claudeTools = (access3, { structured = false } = {}) => [
@@ -58175,7 +58210,10 @@ var RESULT_FAILURE_MESSAGES = {
   CLAUDE_AUTH: "Claude Code is not authenticated for Agent SDK use.",
   BAD_MODEL: "Claude rejected the requested model.",
   MAX_TURNS: "Claude reached the delegated turn limit.",
-  MAX_BUDGET: "Claude reached the delegated cost limit."
+  MAX_BUDGET: "Claude reached the delegated cost limit.",
+  BILLING: "Claude rejected the turn because the account has a billing problem or is on hold.",
+  OVERLOADED: "Claude is overloaded and rejected the turn.",
+  SCHEMA_OUTPUT: "Claude could not produce output that matches the requested schema."
 };
 var delay = (ms2) => new Promise((resolve9) => setTimeout(resolve9, ms2));
 async function withStartupTimeout(promise, onTimeout, seconds = STARTUP_SECONDS) {

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { ACTIVE_STATES, DelegationError, TERMINAL_STATES } from './contracts.mjs'
 
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 5
 // Terminal jobs are operational history, not an archive. Fourteen days outlives any
 // investigation of a run, including an `unknown` one.
 const RETENTION_DAYS = 14
@@ -104,6 +104,7 @@ const SCHEMA = `
     job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
   );
   CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
+  CREATE INDEX jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
   CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
 `
 
@@ -215,6 +216,10 @@ export class JobStore {
         this.migrateFromV3()
         continue
       }
+      if (version === 4) {
+        this.migrateFromV4()
+        continue
+      }
       // Two processes can race a fresh state dir, so the version is re-read inside the write
       // lock: the loser sees the winner's tables and returns instead of re-running the DDL.
       this.db.exec('BEGIN IMMEDIATE')
@@ -289,6 +294,23 @@ export class JobStore {
       const version = this.userVersion()
       if (version === 3) {
         this.db.exec('ALTER TABLE jobs ADD COLUMN provider_scope TEXT; PRAGMA user_version=4;')
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw error
+    }
+  }
+
+  migrateFromV4() {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const version = this.userVersion()
+      if (version === 4) {
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
+          PRAGMA user_version=5;
+        `)
       }
       this.db.exec('COMMIT')
     } catch (error) {

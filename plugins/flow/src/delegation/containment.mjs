@@ -5,6 +5,7 @@ import { processStartToken } from './store.mjs'
 
 const probeWait = new Int32Array(new SharedArrayBuffer(4))
 let cachedContainmentSupport = null
+const controlGroupCache = new Map()
 
 const scopeOptions = (scopeName) => [
   '--user',
@@ -65,11 +66,15 @@ export function scopedProviderCommand(command, args, scopeName) {
 
 function scopeControlGroup(scopeName) {
   if (process.platform !== 'linux' || !scopeName) return null
+  const cached = controlGroupCache.get(scopeName)
+  if (cached) return cached
   try {
     const value = execFileSync('systemctl', [
       '--user', 'show', scopeName, '--property=ControlGroup', '--value',
     ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 }).trim()
-    return value.startsWith('/') ? value : null
+    if (!value.startsWith('/')) return null
+    controlGroupCache.set(scopeName, value)
+    return value
   } catch { return null }
 }
 
