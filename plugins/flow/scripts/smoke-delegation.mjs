@@ -1224,12 +1224,16 @@ try {
   assert.ok(succeededPage.structuredContent.jobs.every((job) => job.status === 'succeeded'))
 
   const hiddenStore = new JobStore(mcpState)
-  hiddenStore.createJob({
-    traceId: 'hidden-list-job', host: 'claude', target: 'codex', depth: 0,
-    mode: 'task', access: 'read-only', cwd: temp, workspaceKey: temp,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
-    timeBudgetSeconds: 30, prompt: 'hidden', outputSchema: null,
-  })
+  for (let index = 0; index < 33; index++) {
+    const hiddenCwd = join(temp, `hidden-list-${index}`)
+    mkdirSync(hiddenCwd)
+    hiddenStore.createJob({
+      traceId: `hidden-list-job-${index}`, host: 'claude', target: 'codex', depth: 0,
+      mode: 'task', access: 'read-only', cwd: hiddenCwd, workspaceKey: hiddenCwd,
+      model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+      timeBudgetSeconds: 30, prompt: 'hidden', outputSchema: null,
+    })
+  }
   hiddenStore.createJob({
     traceId: 'other-route-list-job', host: 'codex', target: 'claude', depth: 0,
     mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
@@ -1237,8 +1241,17 @@ try {
     timeBudgetSeconds: 30, prompt: 'other route', outputSchema: null,
   })
   hiddenStore.close()
-  const hiddenPage = await client.callTool('delegation_list', { status: 'queued', limit: 100 }, { timeout: 30_000 })
-  assert.deepEqual(hiddenPage.structuredContent.jobs, [])
+  let hiddenCursor = null
+  let hiddenPages = 0
+  do {
+    const hiddenPage = await client.callTool('delegation_list', {
+      status: 'queued', limit: 100, ...(hiddenCursor ? { cursor: hiddenCursor } : {}),
+    }, { timeout: 30_000 })
+    assert.deepEqual(hiddenPage.structuredContent.jobs, [])
+    hiddenCursor = hiddenPage.structuredContent.nextCursor
+    hiddenPages++
+  } while (hiddenCursor)
+  assert.ok(hiddenPages >= 2)
   const modelResult = await client.callTool('delegation_models', { cwd: repo }, { timeout: 30_000 })
   assert.equal(modelResult.structuredContent.models[0].id, 'gpt-5.6-luna')
   const escapedModels = await client.callTool('delegation_models', { cwd: temp }, { timeout: 30_000 })

@@ -10,6 +10,7 @@ import { canonicalRoots, canonicalWorkspace, gitMetadataPaths, immutableReview, 
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const LIST_SCAN_LIMIT = 1_000
+const LIST_VISIBILITY_PROBE_LIMIT = 32
 
 // Every field is type-checked before it is pattern-checked: a regex coerces its argument, so
 // an undefined model matched the shape test and only failed later, as an opaque NOT NULL
@@ -266,8 +267,11 @@ export class DelegationService {
     let scanTruncated = false
     const store = this.store()
     const visibility = new Map()
+    let visibilityProbes = 0
     const visibleFromRoots = async (cwd) => {
       if (visibility.has(cwd)) return visibility.get(cwd)
+      if (visibilityProbes >= LIST_VISIBILITY_PROBE_LIMIT) return null
+      visibilityProbes++
       try {
         await canonicalWorkspace(cwd, roots)
         visibility.set(cwd, true)
@@ -279,21 +283,27 @@ export class DelegationService {
       }
     }
     try {
+      scan:
       while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
         const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned)
         const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit })
         if (!candidates.length) break
-        scanned += candidates.length
-        lastScanned = candidates.at(-1)
-        before = { createdAt: lastScanned.createdAt, id: lastScanned.id }
         for (const job of candidates) {
-          if (!await visibleFromRoots(job.cwd)) continue
+          const isVisible = await visibleFromRoots(job.cwd)
+          if (isVisible === null) {
+            scanTruncated = true
+            break scan
+          }
+          scanned++
+          lastScanned = job
+          before = { createdAt: job.createdAt, id: job.id }
+          if (!isVisible) continue
           visible.push(this.requireRoute(job))
-          if (visible.length > limit) break
+          if (visible.length > limit) break scan
         }
-        if (visible.length > limit || candidates.length < chunkLimit) break
+        if (candidates.length < chunkLimit) break
       }
-      if (visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
+      if (!scanTruncated && visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
         scanTruncated = store.listJobs({ host: this.host, target, status, before, limit: 1 }).length > 0
       }
     } finally { store.close() }

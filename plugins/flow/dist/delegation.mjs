@@ -57288,6 +57288,7 @@ Review only the changes in git diff ${baseSha}...${headSha}. Read surrounding co
 // src/delegation/service.mjs
 var sleep = (ms2) => new Promise((resolve9) => setTimeout(resolve9, ms2));
 var LIST_SCAN_LIMIT = 1e3;
+var LIST_VISIBILITY_PROBE_LIMIT = 32;
 function validateStart(input, target) {
   if (!MODES.includes(input.mode)) throw new DelegationError("BAD_REQUEST", "mode is invalid.");
   if (!ACCESS_MODES.includes(input.access)) throw new DelegationError("BAD_REQUEST", "access is invalid.");
@@ -57536,8 +57537,11 @@ var DelegationService = class {
     let scanTruncated = false;
     const store = this.store();
     const visibility = /* @__PURE__ */ new Map();
+    let visibilityProbes = 0;
     const visibleFromRoots = async (cwd) => {
       if (visibility.has(cwd)) return visibility.get(cwd);
+      if (visibilityProbes >= LIST_VISIBILITY_PROBE_LIMIT) return null;
+      visibilityProbes++;
       try {
         await canonicalWorkspace(cwd, roots);
         visibility.set(cwd, true);
@@ -57549,21 +57553,27 @@ var DelegationService = class {
       }
     };
     try {
-      while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
-        const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned);
-        const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit });
-        if (!candidates.length) break;
-        scanned += candidates.length;
-        lastScanned = candidates.at(-1);
-        before = { createdAt: lastScanned.createdAt, id: lastScanned.id };
-        for (const job of candidates) {
-          if (!await visibleFromRoots(job.cwd)) continue;
-          visible.push(this.requireRoute(job));
-          if (visible.length > limit) break;
+      scan:
+        while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
+          const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned);
+          const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit });
+          if (!candidates.length) break;
+          for (const job of candidates) {
+            const isVisible = await visibleFromRoots(job.cwd);
+            if (isVisible === null) {
+              scanTruncated = true;
+              break scan;
+            }
+            scanned++;
+            lastScanned = job;
+            before = { createdAt: job.createdAt, id: job.id };
+            if (!isVisible) continue;
+            visible.push(this.requireRoute(job));
+            if (visible.length > limit) break scan;
+          }
+          if (candidates.length < chunkLimit) break;
         }
-        if (visible.length > limit || candidates.length < chunkLimit) break;
-      }
-      if (visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
+      if (!scanTruncated && visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
         scanTruncated = store.listJobs({ host: this.host, target, status, before, limit: 1 }).length > 0;
       }
     } finally {

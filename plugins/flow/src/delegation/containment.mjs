@@ -40,6 +40,8 @@ function probeProviderContainment() {
     }
     return { ok: false, kind: 'CONTAINMENT_UNAVAILABLE', mode: null }
   } finally {
+    // Cleanup is unconditional because systemd-run can time out or lose its reply after
+    // systemd creates the scope. Treating that as "not launched" would leak the probe child.
     signalProviderScope(scopeName, 'SIGKILL')
     for (let attempt = 0; attempt < 20 && providerScopeRunning(scopeName); attempt++) {
       Atomics.wait(probeWait, 0, 0, 25)
