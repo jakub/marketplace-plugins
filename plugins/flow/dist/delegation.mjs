@@ -56342,6 +56342,8 @@ var CREDENTIAL_PATH_ENV = [
   "AWS_WEB_IDENTITY_TOKEN_FILE",
   "AZURE_CONFIG_DIR",
   "CLAUDE_CONFIG_DIR",
+  "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE",
+  "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
   "CLOUDSDK_CONFIG",
   "CODEX_HOME",
   "DOCKER_CONFIG",
@@ -56678,6 +56680,7 @@ var SCHEMA_ARRAYS = /* @__PURE__ */ new Set(["allOf", "anyOf", "oneOf", "prefixI
 var SCHEMA_CHILDREN = /* @__PURE__ */ new Set([
   "additionalProperties",
   "contains",
+  "contentSchema",
   "else",
   "if",
   "items",
@@ -57628,8 +57631,9 @@ var DelegationService = class {
   }
   async models(cwd) {
     if (this.target() === "claude") return claudeModels(cwd);
-    const client = await new AppServerClient({ cwd }).start();
+    const client = new AppServerClient({ cwd });
     try {
+      await client.start();
       const models = [];
       let cursor = null;
       do {
@@ -57667,12 +57671,14 @@ var DelegationService = class {
     if (checks.host.ok && checks.codex.ok && checks.containment.ok) {
       let client;
       try {
-        client = await new AppServerClient({ cwd: cwd || void 0, experimentalApi: true }).start();
+        client = new AppServerClient({ cwd: cwd || void 0, experimentalApi: true });
+        await client.start();
         checks.appServer = { ok: true };
       } catch (error2) {
         checks.appServer = { ok: false, error: publicError(error2) };
+        if (client) await client.stop();
       }
-      if (client) {
+      if (checks.appServer.ok) {
         let config2 = null;
         try {
           const profiles = await client.request("permissionProfile/list", { cursor: null, limit: 100, cwd: cwd || null }, 2e4);
@@ -57831,7 +57837,8 @@ var DelegationService = class {
     }
     let client;
     try {
-      client = await new AppServerClient({ cwd: job.cwd }).start();
+      client = new AppServerClient({ cwd: job.cwd });
+      await client.start();
       const response = await client.request("thread/read", { threadId: job.nativeThreadId, includeTurns: true }, 2e4);
       const turns = response.thread?.turns || [];
       const turn = turns.find((item) => item.id === job.nativeTurnId);
@@ -58936,7 +58943,7 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
         store.appendEvent(jobId2, "app_server.request_denied", { method });
       }
     };
-    client = await new AppServerClient({
+    client = new AppServerClient({
       cwd: job.cwd,
       env: {
         FLOW_DELEGATION_DEPTH: String(job.depth + 1),
@@ -58953,7 +58960,8 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
         transportError = error2;
         terminalResolve(null);
       }
-    }).start();
+    });
+    await client.start();
     rememberProvider();
     store.appendEvent(jobId2, "app_server.ready", {});
     const config2 = {

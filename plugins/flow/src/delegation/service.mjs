@@ -360,8 +360,9 @@ export class DelegationService {
 
   async models(cwd) {
     if (this.target() === 'claude') return claudeModels(cwd)
-    const client = await new AppServerClient({ cwd }).start()
+    const client = new AppServerClient({ cwd })
     try {
+      await client.start()
       const models = []
       let cursor = null
       do {
@@ -398,12 +399,14 @@ export class DelegationService {
     if (checks.host.ok && checks.codex.ok && checks.containment.ok) {
       let client
       try {
-        client = await new AppServerClient({ cwd: cwd || undefined, experimentalApi: true }).start()
+        client = new AppServerClient({ cwd: cwd || undefined, experimentalApi: true })
+        await client.start()
         checks.appServer = { ok: true }
       } catch (error) {
         checks.appServer = { ok: false, error: publicError(error) }
+        if (client) await client.stop()
       }
-      if (client) {
+      if (checks.appServer.ok) {
         let config = null
         try {
           const profiles = await client.request('permissionProfile/list', { cursor: null, limit: 100, cwd: cwd || null }, 20_000)
@@ -563,7 +566,8 @@ export class DelegationService {
     }
     let client
     try {
-      client = await new AppServerClient({ cwd: job.cwd }).start()
+      client = new AppServerClient({ cwd: job.cwd })
+      await client.start()
       const response = await client.request('thread/read', { threadId: job.nativeThreadId, includeTurns: true }, 20_000)
       const turns = response.thread?.turns || []
       const turn = turns.find((item) => item.id === job.nativeTurnId)

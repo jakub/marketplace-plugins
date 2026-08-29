@@ -227,7 +227,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   }
   else if (message.method === 'initialize') {
     experimentalApi = message.params.capabilities?.experimentalApi === true
-    answer({ userAgent: 'fake' })
+    if (mode === 'initialize-error') say({ id: message.id, error: { code: -32603, message: 'initialization failed' } })
+    else answer({ userAgent: 'fake' })
   }
   else if (message.method === 'initialized') {
     if (mode === 'malformed-protocol') process.stdout.write('not-json\\n')
@@ -394,6 +395,12 @@ try {
   const happyDb = new DatabaseSync(join(state('happy'), 'jobs.sqlite3'), { readOnly: true })
   assert.equal(happyDb.prepare('SELECT prompt FROM jobs WHERE id=?').get(happy.jobId).prompt, null)
   happyDb.close()
+  const initializeError = cli(runArgs, {
+    input: 'Initialization failure', mode: 'initialize-error', stateDir: state('initialize-error'),
+  })
+  assert.equal(initializeError.status, 'failed')
+  assert.equal(initializeError.error.kind, 'APP_SERVER_ERROR')
+  assert.equal(providerScopeRunning(providerScopeName(initializeError.jobId)), false)
 
   const schemaFile = join(temp, 'schema.json')
   writeFileSync(schemaFile, JSON.stringify({ type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))

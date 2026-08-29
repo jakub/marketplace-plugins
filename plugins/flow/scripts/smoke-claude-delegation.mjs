@@ -544,6 +544,8 @@ try {
   const previousKubeconfig = process.env.KUBECONFIG
   const overrideNames = [
     'AZURE_CONFIG_DIR',
+    'CLOUDSDK_AUTH_ACCESS_TOKEN_FILE',
+    'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',
     'GIT_CONFIG_GLOBAL',
     'NETRC',
     'NPM_CONFIG_USERCONFIG',

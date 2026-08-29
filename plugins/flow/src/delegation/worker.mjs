@@ -226,7 +226,7 @@ async function runCodexWorker({ jobId, stateDir }) {
       }
     }
 
-    client = await new AppServerClient({
+    client = new AppServerClient({
       cwd: job.cwd,
       env: {
         FLOW_DELEGATION_DEPTH: String(job.depth + 1),
@@ -243,7 +243,8 @@ async function runCodexWorker({ jobId, stateDir }) {
         transportError = error
         terminalResolve(null)
       },
-    }).start()
+    })
+    await client.start()
     rememberProvider()
     store.appendEvent(jobId, 'app_server.ready', {})
 

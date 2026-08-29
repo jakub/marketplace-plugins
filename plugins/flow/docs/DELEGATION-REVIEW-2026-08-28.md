@@ -153,17 +153,18 @@ The review also produced claims that did not match the installed versions or the
 - Git versions older than 2.31 are outside this repository's supported machine baseline.
 - A fixed retry count for process termination is unsafe if it releases the write lease while a child may still run.
 
-## Release gate
+## Release verification
 
-Before publishing this work:
+The source-side gate for Flow 0.23.0 did the following:
 
-- rebuild `dist/delegation.mjs` from the pinned dependencies;
-- run both deterministic delegation smoke suites;
-- run manifest, bundle-drift, and repository smoke checks;
-- run one authenticated read-only task through each route when both accounts have allowance;
-- prove a delegated Codex job cannot read a controlled marker outside its workspace;
-- run one structured-output task through each route and one review through each route;
-- verify the delegated Codex thread reports no callable MCP tools;
-- bump the Flow version in both plugin manifests and the marketplace entry;
-- bump the marketplace catalog version;
-- reinstall both host copies and start fresh client processes before the final live check.
+- rebuilt `dist/delegation.mjs` from the pinned dependencies;
+- ran both deterministic delegation smoke suites;
+- ran manifest, bundle-drift, and repository smoke checks;
+- ran one authenticated read-only task through each route while both accounts had allowance;
+- proved a delegated Codex job could not read a controlled marker outside its workspace;
+- ran one structured-output task through each route and one review through each route;
+- verified that the delegated Codex thread reported no callable MCP tools;
+- verified Flow 0.23.0 in both plugin manifests and the marketplace entry;
+- verified marketplace catalog 0.33.0.
+
+Marketplace activation still requires reinstalling both host copies and starting fresh client processes after the merge.

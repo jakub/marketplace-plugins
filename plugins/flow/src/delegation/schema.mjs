@@ -15,7 +15,7 @@ const UNSUPPORTED_APPLICATORS = [
 const SCHEMA_MAPS = new Set(['$defs', 'definitions', 'dependentSchemas', 'patternProperties', 'properties'])
 const SCHEMA_ARRAYS = new Set(['allOf', 'anyOf', 'oneOf', 'prefixItems'])
 const SCHEMA_CHILDREN = new Set([
-  'additionalProperties', 'contains', 'else', 'if', 'items', 'not', 'propertyNames', 'then',
+  'additionalProperties', 'contains', 'contentSchema', 'else', 'if', 'items', 'not', 'propertyNames', 'then',
   'unevaluatedItems', 'unevaluatedProperties',
 ])
 
