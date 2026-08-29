@@ -133,6 +133,7 @@ export function resultEnvelope(job) {
     structured: job.structured,
     findings: job.mode === 'task' ? null : (job.structured?.findings ?? null),
     usage: job.usage,
+    commandFailures: job.commandFailures ?? 0,
     error: job.error,
     quarantine: publicQuarantine(job),
     createdAt: job.createdAt,

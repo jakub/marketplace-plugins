@@ -109,11 +109,11 @@ Flow never maps a missing process, empty response, or transport error to success
 
 ## Codex App Server contract
 
-This contract was validated against Codex CLI 0.150.1 on Linux on 2026-08-28. Flow requires Node 22 or newer, Linux with cgroup v2 and a working systemd user manager, and Codex CLI 0.150.1 or newer for Codex delegation. Other hosts fail with `UNSUPPORTED_HOST`. A missing provider-containment boundary fails with `CONTAINMENT_UNAVAILABLE`. Older or unreadable Codex versions fail before Flow creates a job.
+This contract was validated against Codex CLI 0.151.0 on Linux on 2026-08-29. That validation exercised live delegated turns; the 2026-08-28 validation against 0.150.1 covered the protocol only, and no sandboxed command had ever exited 0 before the runtime grant described above. Flow requires Node 22 or newer, Linux with cgroup v2 and a working systemd user manager, and Codex CLI 0.150.1 or newer for Codex delegation. Other hosts fail with `UNSUPPORTED_HOST`. A missing provider-containment boundary fails with `CONTAINMENT_UNAVAILABLE`. Older or unreadable Codex versions fail before Flow creates a job.
 
 The worker starts `codex app-server` over JSON lines with the experimental API enabled. Before it creates a thread, it reads the effective MCP inventory. The thread config disables plugin loading, app loading, and every discovered standalone MCP server. After the thread starts or resumes, Flow reads that thread's MCP inventory. It refuses to send the prompt unless every remaining server is disabled and exposes zero tools. This check prevents the delegated Codex process from inheriting the host's Flow server, browser tools, apps, or other local MCP authority.
 
-Codex's built-in read-only sandbox can read the host filesystem. Flow does not use it. Each thread receives a custom `flow_delegation` permission profile. The profile grants read access to Codex's minimal runtime paths, grants the requested read or write access to the canonical worktree, and grants write access to one owner-only temporary directory for that job. Network access is disabled. Exact Git metadata paths remain read-only, including linked-worktree metadata outside the checkout. For write jobs, `.git`, `.agents`, and `.codex` also remain read-only when present. Flow sets the profile on `thread/start` or `thread/resume`, verifies that App Server reports it as active, and does not replace it at `turn/start`. The worker removes the private temporary directory after the provider stops.
+Codex's built-in read-only sandbox can read the host filesystem. Flow does not use it. Each thread receives a custom `flow_delegation` permission profile. The profile grants read access to Codex's minimal runtime paths, grants the requested read or write access to the canonical worktree, and grants write access to one owner-only temporary directory for that job. It also grants read access to the resolved Codex executable and, for an npm install, its `@openai/codex` package root: Codex re-execs its own binary inside the bubblewrap namespace for every shell command, and a profile without that grant breaks all delegated commands with execvp ENOENT while the turn still completes (openai/codex#29049; validated against Codex CLI 0.151.0 on 2026-08-29). The grant can retire when upstream binds its own runtime unconditionally. Network access is disabled. Exact Git metadata paths remain read-only, including linked-worktree metadata outside the checkout. For write jobs, `.git`, `.agents`, and `.codex` also remain read-only when present. Flow sets the profile on `thread/start` or `thread/resume`, verifies that App Server reports it as active, and does not replace it at `turn/start`. The worker removes the private temporary directory after the provider stops.
 
 After that check, the worker starts a turn with these values set explicitly:
 
@@ -185,10 +185,13 @@ Every result uses one envelope:
   "structured": null,
   "findings": null,
   "usage": {},
+  "commandFailures": 0,
   "error": null,
   "quarantine": null
 }
 ```
+
+`commandFailures` counts the job's recorded command completions whose status was `failed` or whose exit code was nonzero, computed from the event journal on every read. A succeeded job with a nonzero count answered without working shell evidence; treat its output the way you would treat an unverified claim. Claude jobs currently record no command completion events, so the field stays 0 on that route.
 
 Review modes use one strict findings schema. A clean review returns an empty findings array. Both provider workers receive the charter from `charter/charter.md` at build time, followed by the narrower delegated-seat rule that forbids subagents and nested provider calls. The public error contains a named kind, a short message, and bounded public details. It never contains a stack, raw provider payload, account identifier, model identifier from an error payload, or internal path. Owner-only `internal.error` events and `service.log` keep bounded diagnostic detail that the caller does not receive.
 

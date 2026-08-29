@@ -22863,6 +22863,7 @@ function resultEnvelope(job) {
     structured: job.structured,
     findings: job.mode === "task" ? null : job.structured?.findings ?? null,
     usage: job.usage,
+    commandFailures: job.commandFailures ?? 0,
     error: job.error,
     quarantine: publicQuarantine(job),
     createdAt: job.createdAt,
@@ -23680,7 +23681,13 @@ var JobStore = class {
     return this.getJob(id2);
   }
   getJob(id2) {
-    return decode3(this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id2));
+    const job = decode3(this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id2));
+    if (!job) return null;
+    job.commandFailures = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
+      WHERE job_id = ? AND type = 'command.completed'
+        AND (json_extract(payload_json, '$.status') = 'failed'
+          OR COALESCE(json_extract(payload_json, '$.exitCode'), 0) != 0)`).get(id2).count);
+    return job;
   }
   listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
     const clauses = ["host = ?", "target = ?"];

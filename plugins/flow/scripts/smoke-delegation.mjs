@@ -327,6 +327,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         const error = { message: 'model gpt-private invalid for account test@example.invalid at /home/test/private/config.json' }
         say({ method: 'turn/completed', params: { threadId: active.threadId, turn: { id: active.turnId, items: [], itemsView: { type: 'full' }, status: 'failed', error, startedAt: 1, completedAt: 2, durationMs: 10 } } })
       }, 20)
+    } else if (mode === 'command-failure') {
+      timer = setTimeout(() => {
+        say({ method: 'item/completed', params: { threadId: active.threadId, turnId: active.turnId, completedAtMs: Date.now(), item: { type: 'commandExecution', id: 'cmd-1', command: 'true', exitCode: 0, status: 'completed' } } })
+        say({ method: 'item/completed', params: { threadId: active.threadId, turnId: active.turnId, completedAtMs: Date.now(), item: { type: 'commandExecution', id: 'cmd-2', command: 'git diff', exitCode: 1, status: 'failed' } } })
+        say({ method: 'item/completed', params: { threadId: active.threadId, turnId: active.turnId, completedAtMs: Date.now(), item: { type: 'commandExecution', id: 'cmd-3', command: 'bwrapped', exitCode: 127, status: 'completed' } } })
+        finish()
+      }, 20)
     } else timer = setTimeout(() => finish(), mode === 'slow' || mode === 'steer' ? 2500 : 20)
   } else if (message.method === 'turn/interrupt') { answer({}); finish('interrupted', '') }
   else if (message.method === 'turn/steer') { answer({}); finish('completed', 'STEERED: ' + message.params.input[0].text) }
@@ -396,11 +403,17 @@ try {
   assert.equal(happy.model, 'gpt-5.6-luna')
   assert.equal(happy.serviceTier, 'default')
   assert.ok(happy.threadId && happy.turnId)
+  assert.equal(happy.commandFailures, 0)
   const happyEvents = cli(['events', happy.jobId, '--after', '0', '--limit', '1000'], { stateDir: state('happy') })
   assert.deepEqual(happyEvents.map((event) => event.seq), happyEvents.map((_, index) => index + 1))
   const happyDb = new DatabaseSync(join(state('happy'), 'jobs.sqlite3'), { readOnly: true })
   assert.equal(happyDb.prepare('SELECT prompt FROM jobs WHERE id=?').get(happy.jobId).prompt, null)
   happyDb.close()
+  // A succeeded turn whose commands failed must say so in the envelope: this is the only
+  // signal separating a real green from a provider answering with a broken shell.
+  const brokenShell = cli(runArgs, { input: 'Run commands', mode: 'command-failure', stateDir: state('command-failure') })
+  assert.equal(brokenShell.status, 'succeeded')
+  assert.equal(brokenShell.commandFailures, 2, JSON.stringify(brokenShell))
   const initializeError = cli(runArgs, {
     input: 'Initialization failure', mode: 'initialize-error', stateDir: state('initialize-error'),
   })

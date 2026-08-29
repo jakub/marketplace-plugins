@@ -388,7 +388,17 @@ export class JobStore {
     return this.getJob(id)
   }
 
-  getJob(id) { return decode(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)) }
+  getJob(id) {
+    const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id))
+    if (!job) return null
+    // Computed from the journal on every read so a "succeeded" job whose shell was broken
+    // (every command failed, provider answered from thin air) stays detectable by the host.
+    job.commandFailures = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
+      WHERE job_id = ? AND type = 'command.completed'
+        AND (json_extract(payload_json, '$.status') = 'failed'
+          OR COALESCE(json_extract(payload_json, '$.exitCode'), 0) != 0)`).get(id).count)
+    return job
+  }
 
   listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
     const clauses = ['host = ?', 'target = ?']
