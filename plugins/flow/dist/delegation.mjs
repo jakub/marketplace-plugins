@@ -22747,7 +22747,8 @@ var CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 var SERVICE_TIERS = ["default"];
 var ACTIVE_STATES = ["queued", "starting", "running", "reconciling"];
 var TERMINAL_STATES = ["succeeded", "failed", "cancelled", "unknown", "awaiting_approval"];
-var JOB_STATES = [...ACTIVE_STATES, ...TERMINAL_STATES];
+var QUARANTINE_STATES = ["quarantined"];
+var JOB_STATES = [...ACTIVE_STATES, ...QUARANTINE_STATES, ...TERMINAL_STATES];
 var MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
 var FINDINGS_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -22822,7 +22823,22 @@ function capabilitiesForTarget(target) {
     continue: true,
     liveSteer: target === "codex",
     crashReconcile: target === "codex",
-    structuredOutput: true
+    structuredOutput: true,
+    limits: {
+      timeBudgetSeconds: true,
+      maxTurns: target === "claude",
+      maxBudgetUsd: target === "claude"
+    }
+  };
+}
+function publicQuarantine(job) {
+  if (job.status !== "quarantined") return null;
+  return {
+    resumeStatus: job.quarantineResumeStatus,
+    providerPid: job.providerPid,
+    providerProcessGroupId: job.providerProcessGroupId,
+    providerScope: job.providerScope,
+    trackedProcesses: job.providerProcesses.length
   };
 }
 function resultEnvelope(job) {
@@ -22836,6 +22852,11 @@ function resultEnvelope(job) {
     model: job.model,
     effort: job.effort,
     serviceTier: job.serviceTier,
+    limits: {
+      timeBudgetSeconds: job.timeBudgetSeconds,
+      maxTurns: job.maxTurns,
+      maxBudgetUsd: job.maxBudgetUsd
+    },
     threadId: job.nativeThreadId,
     turnId: job.nativeTurnId,
     output: job.output,
@@ -22843,6 +22864,7 @@ function resultEnvelope(job) {
     findings: job.mode === "task" ? null : job.structured?.findings ?? null,
     usage: job.usage,
     error: job.error,
+    quarantine: publicQuarantine(job),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt
   };
@@ -22859,19 +22881,872 @@ function jobSummary(job) {
     cwd: job.cwd,
     model: job.model,
     effort: job.effort,
+    limits: {
+      timeBudgetSeconds: job.timeBudgetSeconds,
+      maxTurns: job.maxTurns,
+      maxBudgetUsd: job.maxBudgetUsd
+    },
     threadId: job.nativeThreadId,
     turnId: job.nativeTurnId,
     error: job.error,
+    quarantine: publicQuarantine(job),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt
   };
 }
 
 // src/delegation/app-server.mjs
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync as spawnSync2 } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join as join2 } from "node:path";
 import { createInterface } from "node:readline";
+
+// src/delegation/containment.mjs
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
+import { readdirSync as readdirSync2, readFileSync as readFileSync2 } from "node:fs";
+
+// src/delegation/store.mjs
+import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+var SCHEMA_VERSION = 4;
+var RETENTION_DAYS = 14;
+var now = () => Date.now();
+var json = (value) => value == null ? null : JSON.stringify(value);
+var parse3 = (value) => value == null ? null : JSON.parse(value);
+function processStartToken(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === "linux") {
+    try {
+      const stat2 = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const fields = stat2.slice(stat2.lastIndexOf(")") + 1).trim().split(/\s+/);
+      return fields[19] ? `linux:${fields[19]}` : null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const started = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5e3
+    }).trim();
+    return started ? `${process.platform}:${started}` : null;
+  } catch {
+    return null;
+  }
+}
+function defaultStateDir() {
+  if (process.env.FLOW_DELEGATION_STATE_DIR) return process.env.FLOW_DELEGATION_STATE_DIR;
+  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+  return join(base, "flow", "delegation");
+}
+var jobsSchema = (name = "jobs") => `
+  CREATE TABLE ${name} (
+    id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    parent_job_id TEXT REFERENCES jobs(id),
+    host TEXT NOT NULL,
+    target TEXT NOT NULL,
+    depth INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    access TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    workspace_key TEXT NOT NULL,
+    model TEXT NOT NULL,
+    effort TEXT NOT NULL,
+    service_tier TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    time_budget_seconds INTEGER NOT NULL,
+    max_turns INTEGER,
+    max_budget_usd REAL,
+    prompt TEXT,
+    output_schema_json TEXT,
+    base_sha TEXT,
+    head_sha TEXT,
+    native_thread_id TEXT,
+    native_turn_id TEXT,
+    turn_accepted_at INTEGER,
+    status TEXT NOT NULL CHECK (status IN ('queued','starting','running','reconciling','quarantined','succeeded','failed','cancelled','unknown','awaiting_approval')),
+    worker_pid INTEGER,
+    provider_pid INTEGER,
+    provider_start_token TEXT,
+    provider_process_group_id INTEGER,
+    provider_scope TEXT,
+    provider_processes_json TEXT,
+    quarantine_resume_status TEXT,
+    output TEXT,
+    structured_json TEXT,
+    usage_json TEXT,
+    error_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    heartbeat_at INTEGER NOT NULL
+  );`;
+var SCHEMA = `
+  ${jobsSchema()}
+  CREATE TABLE events (
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (job_id, seq)
+  );
+  CREATE TABLE controls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    handled_at INTEGER
+  );
+  CREATE TABLE leases (
+    workspace_key TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
+  );
+  CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
+  CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
+`;
+function serviceLog(stateDir, message) {
+  if (!stateDir) return;
+  try {
+    mkdirSync(stateDir, { recursive: true, mode: 448 });
+    const file = join(stateDir, "service.log");
+    try {
+      if (statSync(file).size > 512e3) renameSync(file, `${file}.1`);
+    } catch {
+    }
+    appendFileSync(file, `${new Date(now()).toISOString()} ${message}
+`, { mode: 384 });
+  } catch {
+  }
+}
+function errorDetail(error2) {
+  const message = error2?.message ? String(error2.message) : String(error2);
+  return { message: message.slice(0, 2e3), stack: error2?.stack ? String(error2.stack).slice(0, 2e3) : null };
+}
+function decode3(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    traceId: row.trace_id,
+    parentJobId: row.parent_job_id,
+    host: row.host,
+    target: row.target,
+    depth: row.depth,
+    mode: row.mode,
+    access: row.access,
+    cwd: row.cwd,
+    workspaceKey: row.workspace_key,
+    model: row.model,
+    effort: row.effort,
+    serviceTier: row.service_tier,
+    profile: row.profile,
+    timeBudgetSeconds: row.time_budget_seconds,
+    maxTurns: row.max_turns,
+    maxBudgetUsd: row.max_budget_usd,
+    prompt: row.prompt,
+    outputSchema: parse3(row.output_schema_json),
+    baseSha: row.base_sha,
+    headSha: row.head_sha,
+    nativeThreadId: row.native_thread_id,
+    nativeTurnId: row.native_turn_id,
+    turnAcceptedAt: row.turn_accepted_at,
+    status: row.status,
+    workerPid: row.worker_pid,
+    providerPid: row.provider_pid,
+    providerStartToken: row.provider_start_token,
+    providerProcessGroupId: row.provider_process_group_id,
+    providerScope: row.provider_scope,
+    providerProcesses: parse3(row.provider_processes_json) || [],
+    quarantineResumeStatus: row.quarantine_resume_status,
+    output: row.output,
+    structured: parse3(row.structured_json),
+    usage: parse3(row.usage_json),
+    error: parse3(row.error_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    heartbeatAt: row.heartbeat_at
+  };
+}
+var JobStore = class {
+  constructor(stateDir = defaultStateDir()) {
+    this.stateDir = stateDir;
+    mkdirSync(stateDir, { recursive: true, mode: 448 });
+    try {
+      chmodSync(stateDir, 448);
+    } catch {
+    }
+    this.path = join(stateDir, "jobs.sqlite3");
+    try {
+      this.db = new DatabaseSync(this.path, { timeout: 5e3 });
+      try {
+        chmodSync(this.path, 384);
+      } catch {
+      }
+      this.db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+      try {
+        this.db.exec("PRAGMA journal_mode=WAL;");
+      } catch {
+      }
+      this.migrate();
+      this.prune();
+    } catch (error2) {
+      try {
+        this.db?.close();
+      } catch {
+      }
+      if (error2 instanceof DelegationError) throw error2;
+      serviceLog(stateDir, `store open failed: ${errorDetail(error2).stack || error2?.message || error2}`);
+      throw new DelegationError("INTERNAL", "The delegation database could not be opened.");
+    }
+  }
+  userVersion() {
+    return Number(this.db.prepare("PRAGMA user_version").get().user_version);
+  }
+  migrate() {
+    for (; ; ) {
+      const version2 = this.userVersion();
+      if (version2 === SCHEMA_VERSION) return;
+      if (version2 > SCHEMA_VERSION) throw new DelegationError("DATABASE_NEWER", "The delegation database was created by a newer Flow version.");
+      if (version2 === 2) {
+        this.migrateFromV2();
+        continue;
+      }
+      if (version2 === 3) {
+        this.migrateFromV3();
+        continue;
+      }
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const lockedVersion = this.userVersion();
+        if (lockedVersion > SCHEMA_VERSION) throw new DelegationError("DATABASE_NEWER", "The delegation database was created by a newer Flow version.");
+        if (lockedVersion < 1) {
+          this.db.exec(SCHEMA);
+          this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
+        } else if (lockedVersion === 1) {
+          this.db.exec("ALTER TABLE jobs DROP COLUMN delivery; ALTER TABLE leases DROP COLUMN heartbeat_at;");
+          this.db.exec("PRAGMA user_version=2");
+        }
+        this.db.exec("COMMIT");
+      } catch (error2) {
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {
+        }
+        throw error2;
+      }
+    }
+  }
+  migrateFromV2() {
+    this.db.exec("PRAGMA foreign_keys=OFF");
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const version2 = this.userVersion();
+      if (version2 !== 2) {
+        this.db.exec("COMMIT");
+        return;
+      }
+      this.db.exec(`
+        ${jobsSchema("jobs_v3")}
+        INSERT INTO jobs_v3 (
+          id, trace_id, parent_job_id, host, target, depth, mode, access, cwd, workspace_key,
+          model, effort, service_tier, profile, time_budget_seconds, prompt,
+          output_schema_json, base_sha, head_sha, native_thread_id, native_turn_id,
+          turn_accepted_at, status, worker_pid, output, structured_json, usage_json,
+          error_json, created_at, updated_at, heartbeat_at
+        ) SELECT
+          id, trace_id, parent_job_id, host, target, depth, mode, access, cwd, workspace_key,
+          model, effort, service_tier, profile, time_budget_seconds, prompt,
+          output_schema_json, base_sha, head_sha, native_thread_id, native_turn_id,
+          turn_accepted_at, status, worker_pid, output, structured_json, usage_json,
+          error_json, created_at, updated_at, heartbeat_at
+        FROM jobs;
+        DROP INDEX jobs_status_idx;
+        DROP TABLE jobs;
+        ALTER TABLE jobs_v3 RENAME TO jobs;
+        CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
+        PRAGMA user_version=4;
+      `);
+      const violation = this.db.prepare("PRAGMA foreign_key_check").get();
+      if (violation) {
+        throw new DelegationError("DATABASE_MIGRATION", "The delegation database migration failed its foreign-key check.");
+      }
+      this.db.exec("COMMIT");
+    } catch (error2) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error2;
+    } finally {
+      this.db.exec("PRAGMA foreign_keys=ON");
+    }
+  }
+  migrateFromV3() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const version2 = this.userVersion();
+      if (version2 === 3) {
+        this.db.exec("ALTER TABLE jobs ADD COLUMN provider_scope TEXT; PRAGMA user_version=4;");
+      }
+      this.db.exec("COMMIT");
+    } catch (error2) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error2;
+    }
+  }
+  // Terminal jobs are pruned on open. updated_at is the terminal timestamp: finish() and
+  // requestCancel() write it with the terminal status and nothing updates a job afterwards.
+  prune() {
+    const cutoff = now() - RETENTION_DAYS * 24 * 60 * 60 * 1e3;
+    const states = TERMINAL_STATES.map(() => "?").join(",");
+    const candidate = this.db.prepare(`SELECT 1 FROM jobs WHERE status IN (${states}) AND updated_at < ? LIMIT 1`).get(...TERMINAL_STATES, cutoff);
+    let total = 0;
+    if (candidate) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const expired = this.db.prepare(`DELETE FROM jobs WHERE status IN (${states}) AND updated_at < ?
+          AND id NOT IN (SELECT parent_job_id FROM jobs WHERE parent_job_id IS NOT NULL)`);
+        for (; ; ) {
+          const changes = Number(expired.run(...TERMINAL_STATES, cutoff).changes);
+          total += changes;
+          if (!changes) break;
+        }
+        this.db.exec("COMMIT");
+      } catch (error2) {
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {
+        }
+        serviceLog(this.stateDir, `prune failed: ${error2?.message || error2}`);
+      }
+    }
+    this.pruneTempDirs();
+    return total;
+  }
+  pruneTempDirs() {
+    const tempRoot = join(this.stateDir, "tmp");
+    let entries;
+    try {
+      entries = readdirSync(tempRoot, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const state = this.db.prepare("SELECT status FROM jobs WHERE id=?");
+    const jobDir = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/;
+    for (const entry of entries) {
+      const id2 = entry.name.match(jobDir)?.[1];
+      if (!id2) continue;
+      const row = state.get(id2);
+      if (row && (ACTIVE_STATES.includes(row.status) || row.status === "quarantined")) continue;
+      try {
+        rmSync(join(tempRoot, entry.name), { recursive: true, force: true });
+      } catch {
+      }
+    }
+  }
+  close() {
+    this.db.close();
+  }
+  createJob(request) {
+    const id2 = randomUUID();
+    const at2 = now();
+    this.db.prepare(`INSERT INTO jobs (
+      id, trace_id, parent_job_id, host, target, depth, mode, access,
+      cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+      max_turns, max_budget_usd,
+      prompt, output_schema_json, base_sha, head_sha, native_thread_id,
+      status, created_at, updated_at, heartbeat_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
+      id2,
+      request.traceId || randomUUID(),
+      request.parentJobId || null,
+      request.host,
+      request.target,
+      request.depth,
+      request.mode,
+      request.access,
+      request.cwd,
+      request.workspaceKey,
+      request.model,
+      request.effort,
+      request.serviceTier,
+      request.profile,
+      request.timeBudgetSeconds,
+      request.maxTurns ?? null,
+      request.maxBudgetUsd ?? null,
+      request.prompt,
+      json(request.outputSchema),
+      request.baseSha || null,
+      request.headSha || null,
+      request.nativeThreadId || null,
+      at2,
+      at2,
+      at2
+    );
+    this.appendEvent(id2, "job.queued", { status: "queued" });
+    return this.getJob(id2);
+  }
+  getJob(id2) {
+    return decode3(this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id2));
+  }
+  listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
+    const clauses = ["host = ?", "target = ?"];
+    const values = [host, target];
+    if (status) {
+      clauses.push("status = ?");
+      values.push(status);
+    }
+    if (before) {
+      clauses.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      values.push(before.createdAt, before.createdAt, before.id);
+    }
+    values.push(Math.max(1, Math.min(limit, 100)));
+    return this.db.prepare(`SELECT * FROM jobs WHERE ${clauses.join(" AND ")}
+      ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values).map(decode3);
+  }
+  quarantinedCount() {
+    return Number(this.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE status='quarantined'").get().count);
+  }
+  requireJob(id2) {
+    const job = this.getJob(id2);
+    if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
+    return job;
+  }
+  appendEvent(jobId2, type, payload = {}) {
+    return this.db.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
+      VALUES (?, COALESCE((SELECT MAX(seq) + 1 FROM events WHERE job_id = ?), 1), ?, ?, ?)
+      RETURNING seq`).get(jobId2, jobId2, type, json(payload), now()).seq;
+  }
+  // publicError() deliberately hides an unexpected failure from the caller. The journal is
+  // 0600 and already carries bounded operational detail, so the real cause is kept here.
+  recordInternalError(jobId2, error2) {
+    try {
+      this.appendEvent(jobId2, "internal.error", errorDetail(error2));
+    } catch {
+    }
+  }
+  events(jobId2, { after = 0, limit = 200 } = {}) {
+    this.requireJob(jobId2);
+    return this.db.prepare(`SELECT seq, type, payload_json, created_at FROM events
+      WHERE job_id = ? AND seq > ? ORDER BY seq LIMIT ?`).all(jobId2, after, Math.max(1, Math.min(limit, 1e3))).map((row) => ({
+      seq: row.seq,
+      type: row.type,
+      payload: row.type === "internal.error" ? { redacted: true } : parse3(row.payload_json),
+      createdAt: row.created_at
+    }));
+  }
+  claim(id2, pid, startToken = null) {
+    if (typeof startToken !== "string" || !startToken) {
+      throw new DelegationError("WORKER_IDENTITY", "Flow could not record a stable worker process identity.");
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const job = decode3(this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id2));
+      if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
+      if (job.status !== "queued") throw new DelegationError("JOB_STATE", `Job ${id2} is ${job.status}, not queued.`);
+      const at2 = now();
+      if (job.access === "workspace-write") {
+        const held = this.db.prepare("SELECT job_id FROM leases WHERE workspace_key = ?").get(job.workspaceKey);
+        if (held) throw new DelegationError("WORKSPACE_BUSY", `Another write job owns this worktree: ${held.job_id}.`);
+        this.db.prepare("INSERT INTO leases (workspace_key, job_id) VALUES (?, ?)").run(job.workspaceKey, id2);
+      }
+      this.db.prepare(`UPDATE jobs SET status='starting', worker_pid=?, heartbeat_at=?, updated_at=? WHERE id=?`).run(pid, at2, at2, id2);
+      this.appendEvent(id2, "job.starting", { pid, startToken });
+      this.db.exec("COMMIT");
+      return this.getJob(id2);
+    } catch (error2) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error2;
+    }
+  }
+  // A worker that lost the claim still has to explain why the job will never run, but only
+  // while nothing owns it. The queued guard makes the write a no-op when another worker won
+  // the race, so a report can never overwrite the winner's job.
+  failQueued(id2, error2) {
+    const at2 = now();
+    const result = this.db.prepare(`UPDATE jobs SET status='failed', error_json=?, prompt=NULL,
+      updated_at=?, heartbeat_at=? WHERE id=? AND status='queued'`).run(json(error2), at2, at2, id2);
+    if (result.changes) this.appendEvent(id2, "job.failed", { error: error2 });
+    return result.changes === 1;
+  }
+  setRunning(id2, { threadId, turnId = null, accepted = false } = {}) {
+    const at2 = now();
+    this.db.prepare(`UPDATE jobs SET status='running', native_thread_id=COALESCE(?, native_thread_id),
+      native_turn_id=COALESCE(?, native_turn_id), turn_accepted_at=CASE WHEN ? THEN COALESCE(turn_accepted_at, ?) ELSE turn_accepted_at END,
+      prompt=CASE WHEN ? THEN NULL ELSE prompt END, updated_at=?, heartbeat_at=? WHERE id=?`).run(threadId || null, turnId || null, accepted ? 1 : 0, at2, accepted ? 1 : 0, at2, at2, id2);
+  }
+  setNativeTurn(id2, turnId, { accepted = false } = {}) {
+    const at2 = now();
+    this.db.prepare(`UPDATE jobs SET native_turn_id=?,
+      turn_accepted_at=CASE WHEN ? THEN COALESCE(turn_accepted_at, ?) ELSE turn_accepted_at END,
+      prompt=CASE WHEN ? THEN NULL ELSE prompt END, updated_at=?, heartbeat_at=?
+      WHERE id=? AND status IN ('starting','running')`).run(turnId, accepted ? 1 : 0, at2, accepted ? 1 : 0, at2, at2, id2);
+  }
+  setProviderProcess(id2, { pid, startToken = null, processGroupId = null, scope = null, processes = [] } = {}) {
+    const safeProcesses = processes.filter((entry) => Number.isInteger(entry?.pid) && entry.pid > 0 && typeof entry.startToken === "string" && entry.startToken);
+    this.db.prepare(`UPDATE jobs SET provider_pid=?, provider_start_token=?,
+      provider_process_group_id=?, provider_scope=?, provider_processes_json=?, updated_at=?
+      WHERE id=? AND status IN ('starting','running','reconciling')`).run(
+      Number.isInteger(pid) && pid > 0 ? pid : null,
+      typeof startToken === "string" && startToken ? startToken : null,
+      Number.isInteger(processGroupId) && processGroupId > 0 ? processGroupId : null,
+      typeof scope === "string" && scope ? scope : null,
+      json(safeProcesses),
+      now(),
+      id2
+    );
+  }
+  // jobs.heartbeat_at carries worker liveness. finish() releases an ordinary lease;
+  // resolveQuarantine() releases one held past worker shutdown.
+  heartbeat(id2) {
+    const at2 = now();
+    this.db.prepare("UPDATE jobs SET heartbeat_at=?, updated_at=? WHERE id=? AND status IN ('starting','running','reconciling','awaiting_approval')").run(at2, at2, id2);
+  }
+  finish(id2, status, { output = null, structured = null, usage = null, error: error2 = null } = {}) {
+    if (!TERMINAL_STATES.includes(status)) {
+      throw new DelegationError("JOB_STATE", `Cannot finish a job as ${status}.`);
+    }
+    const at2 = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = decode3(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id2));
+      if (!current) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
+      if (TERMINAL_STATES.includes(current.status)) {
+        this.db.exec("COMMIT");
+        return current;
+      }
+      if (current.status === "quarantined") {
+        throw new DelegationError("JOB_QUARANTINED", "A quarantined job can finish only after Flow proves its provider processes stopped.");
+      }
+      this.db.prepare(`UPDATE jobs SET status=?, output=?, structured_json=?, usage_json=?, error_json=?,
+        prompt=NULL, provider_pid=NULL, provider_start_token=NULL,
+        provider_process_group_id=NULL, provider_scope=NULL, provider_processes_json=NULL,
+        quarantine_resume_status=NULL, updated_at=?, heartbeat_at=? WHERE id=?`).run(status, output, json(structured), json(usage), json(error2), at2, at2, id2);
+      this.db.prepare(`UPDATE controls SET payload_json='{}' WHERE job_id=?`).run(id2);
+      this.db.prepare("DELETE FROM leases WHERE job_id=?").run(id2);
+      this.db.exec("COMMIT");
+    } catch (cause) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw cause;
+    }
+    this.appendEvent(id2, `job.${status}`, error2 ? { error: error2 } : { status });
+    this.pruneTempDirs();
+    return this.getJob(id2);
+  }
+  quarantine(id2, resumeStatus, { output = null, structured = null, usage = null, error: error2 = null } = {}) {
+    if (!TERMINAL_STATES.includes(resumeStatus) && resumeStatus !== "reconciling") {
+      throw new DelegationError("JOB_STATE", `Cannot resume a quarantined job as ${resumeStatus}.`);
+    }
+    const at2 = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = decode3(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id2));
+      if (!current) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
+      if (TERMINAL_STATES.includes(current.status) || current.status === "quarantined") {
+        this.db.exec("COMMIT");
+        return current;
+      }
+      this.db.prepare(`UPDATE jobs SET status='quarantined', quarantine_resume_status=?,
+        output=?, structured_json=?, usage_json=?, error_json=?, prompt=NULL,
+        updated_at=?, heartbeat_at=? WHERE id=?`).run(resumeStatus, output, json(structured), json(usage), json(error2), at2, at2, id2);
+      this.db.prepare(`UPDATE controls SET payload_json='{}' WHERE job_id=?`).run(id2);
+      this.db.exec("COMMIT");
+    } catch (cause) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw cause;
+    }
+    this.appendEvent(id2, "job.quarantined", { resumeStatus });
+    return this.getJob(id2);
+  }
+  resolveQuarantine(id2) {
+    const at2 = now();
+    let resumeStatus;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = decode3(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id2));
+      if (!current) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
+      if (current.status !== "quarantined") {
+        this.db.exec("COMMIT");
+        return current;
+      }
+      resumeStatus = current.quarantineResumeStatus;
+      if (!TERMINAL_STATES.includes(resumeStatus) && resumeStatus !== "reconciling") {
+        throw new DelegationError("JOB_STATE", "The quarantined job has no valid resume state.");
+      }
+      this.db.prepare(`UPDATE jobs SET status=?, provider_pid=NULL, provider_start_token=NULL,
+        provider_process_group_id=NULL, provider_scope=NULL, provider_processes_json=NULL,
+        quarantine_resume_status=NULL, updated_at=?, heartbeat_at=? WHERE id=?`).run(resumeStatus, at2, resumeStatus === "reconciling" ? 0 : at2, id2);
+      if (TERMINAL_STATES.includes(resumeStatus)) {
+        this.db.prepare("DELETE FROM leases WHERE job_id=?").run(id2);
+      }
+      this.db.exec("COMMIT");
+    } catch (cause) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw cause;
+    }
+    this.appendEvent(id2, "quarantine.cleared", { status: resumeStatus });
+    if (TERMINAL_STATES.includes(resumeStatus)) {
+      this.appendEvent(id2, `job.${resumeStatus}`, { status: resumeStatus });
+    }
+    this.pruneTempDirs();
+    return this.getJob(id2);
+  }
+  markReconciling(id2, expectedHeartbeat) {
+    const at2 = now();
+    const result = this.db.prepare(`UPDATE jobs SET status='reconciling', updated_at=?, heartbeat_at=?
+      WHERE id=? AND heartbeat_at=? AND status IN ('queued','starting','running','reconciling')`).run(at2, at2, id2, expectedHeartbeat);
+    if (result.changes) this.appendEvent(id2, "job.reconciling", {});
+    return result.changes === 1;
+  }
+  queueControl(jobId2, type, payload = {}) {
+    this.db.exec("BEGIN IMMEDIATE");
+    let result;
+    try {
+      const job = decode3(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId2));
+      if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
+      if (job.status === "quarantined") {
+        throw new DelegationError("JOB_QUARANTINED", "The provider process is quarantined and cannot accept controls.");
+      }
+      if (!ACTIVE_STATES.includes(job.status)) throw new DelegationError("JOB_STATE", `Job ${jobId2} is already ${job.status}.`);
+      result = this.db.prepare("INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, ?, ?, ?)").run(jobId2, type, json(payload), now());
+      this.db.exec("COMMIT");
+    } catch (error2) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error2;
+    }
+    this.appendEvent(jobId2, `control.${type}.queued`, {});
+    return Number(result.lastInsertRowid);
+  }
+  requestCancel(jobId2) {
+    this.db.exec("BEGIN IMMEDIATE");
+    let cancelled = false;
+    try {
+      const job = decode3(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId2));
+      if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
+      if (job.status === "quarantined") {
+        throw new DelegationError("JOB_QUARANTINED", "The provider process is quarantined and cannot accept cancellation.");
+      }
+      if (TERMINAL_STATES.includes(job.status)) {
+        this.db.exec("COMMIT");
+        return job;
+      }
+      if (job.status === "queued") {
+        const at2 = now();
+        this.db.prepare(`UPDATE jobs SET status='cancelled', prompt=NULL, updated_at=?, heartbeat_at=? WHERE id=?`).run(at2, at2, jobId2);
+        cancelled = true;
+      } else {
+        this.db.prepare(`INSERT INTO controls (job_id, type, payload_json, created_at)
+          VALUES (?, 'cancel', '{}', ?)`).run(jobId2, now());
+      }
+      this.db.exec("COMMIT");
+    } catch (error2) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+      }
+      throw error2;
+    }
+    if (cancelled) this.appendEvent(jobId2, "job.cancelled", { status: "cancelled" });
+    else this.appendEvent(jobId2, "control.cancel.queued", {});
+    return this.getJob(jobId2);
+  }
+  pendingControls(jobId2) {
+    return this.db.prepare(`SELECT id, type, payload_json, created_at FROM controls
+      WHERE job_id=? AND handled_at IS NULL ORDER BY id`).all(jobId2).map((row) => ({ id: row.id, type: row.type, payload: parse3(row.payload_json), createdAt: row.created_at }));
+  }
+  handleControl(jobId2, id2, outcome = {}) {
+    this.db.prepare(`UPDATE controls SET handled_at=?, payload_json='{}' WHERE id=? AND job_id=?`).run(now(), id2, jobId2);
+    this.appendEvent(jobId2, "control.handled", { controlId: id2, ...outcome });
+  }
+  workerStartToken(jobId2) {
+    const row = this.db.prepare(`SELECT payload_json FROM events
+      WHERE job_id=? AND type='job.starting' ORDER BY seq DESC LIMIT 1`).get(jobId2);
+    return row ? parse3(row.payload_json)?.startToken || null : null;
+  }
+  // Handled or not, a queued cancel is what makes an interrupted turn a cancellation rather
+  // than a failure. finish() blanks control payloads but keeps the rows.
+  cancelRequested(jobId2) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM controls WHERE job_id=? AND type='cancel' LIMIT 1`).get(jobId2));
+  }
+};
+
+// src/delegation/containment.mjs
+var scopeOptions = (scopeName) => [
+  "--user",
+  "--scope",
+  "--quiet",
+  "--collect",
+  "--property=Delegate=no",
+  `--unit=${scopeName}`
+];
+function providerScopeName(id2 = randomUUID2()) {
+  const safe = String(id2).toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 80);
+  return `flow-delegation-${safe}.scope`;
+}
+function providerContainmentSupport() {
+  if (process.platform !== "linux") {
+    return { ok: true, kind: null, mode: "process-tree" };
+  }
+  const scopeName = providerScopeName(`probe-${process.pid}-${randomUUID2()}`);
+  const result = spawnSync("systemd-run", [...scopeOptions(scopeName), "--", process.execPath, "-e", ""], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 1e4
+  });
+  return result.status === 0 ? { ok: true, kind: null, mode: "systemd-scope" } : { ok: false, kind: "CONTAINMENT_UNAVAILABLE", mode: null };
+}
+function scopedProviderCommand(command, args, scopeName) {
+  if (process.platform !== "linux") return { command, args };
+  return {
+    command: "systemd-run",
+    args: [...scopeOptions(scopeName), "--", command, ...args]
+  };
+}
+function scopeControlGroup(scopeName) {
+  if (process.platform !== "linux" || !scopeName) return null;
+  try {
+    const value = execFileSync2("systemctl", [
+      "--user",
+      "show",
+      scopeName,
+      "--property=ControlGroup",
+      "--value"
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 }).trim();
+    return value.startsWith("/") ? value : null;
+  } catch {
+    return null;
+  }
+}
+function providerScopeRunning(scopeName) {
+  const controlGroup = scopeControlGroup(scopeName);
+  if (!controlGroup) return false;
+  try {
+    const events = readFileSync2(`/sys/fs/cgroup${controlGroup}/cgroup.events`, "utf8");
+    return /^populated 1$/m.test(events);
+  } catch {
+    return false;
+  }
+}
+function signalProviderScope(scopeName, signal) {
+  if (process.platform !== "linux" || !scopeName) return;
+  try {
+    execFileSync2("systemctl", [
+      "--user",
+      "kill",
+      `--signal=${signal}`,
+      "--kill-whom=all",
+      scopeName
+    ], { stdio: "ignore", timeout: 5e3 });
+  } catch {
+  }
+}
+function trackedDescendantRunning(knownDescendants) {
+  for (const [pid, token] of knownDescendants) {
+    if (processStartToken(pid) === token) return true;
+    knownDescendants.delete(pid);
+  }
+  return false;
+}
+function captureProcessDescendants(rootPid, knownDescendants, { freeze = false } = {}) {
+  if (process.platform !== "linux" || !Number.isInteger(rootPid) || rootPid <= 0) return;
+  if (freeze) try {
+    process.kill(-rootPid, "SIGSTOP");
+  } catch {
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    let added = false;
+    const visited = /* @__PURE__ */ new Set();
+    const queue = [rootPid, ...knownDescendants.keys()];
+    while (queue.length) {
+      const parent = queue.shift();
+      if (visited.has(parent)) continue;
+      visited.add(parent);
+      let taskIds;
+      try {
+        taskIds = readdirSync2(`/proc/${parent}/task`);
+      } catch {
+        continue;
+      }
+      for (const taskId of taskIds) {
+        let children;
+        try {
+          children = readFileSync2(`/proc/${parent}/task/${taskId}/children`, "utf8");
+        } catch {
+          continue;
+        }
+        for (const value of children.trim().split(/\s+/)) {
+          const pid = Number(value);
+          if (!Number.isInteger(pid) || pid <= 0 || pid === rootPid) continue;
+          const token = processStartToken(pid);
+          if (!token) continue;
+          queue.push(pid);
+          if (knownDescendants.get(pid) === token) continue;
+          knownDescendants.set(pid, token);
+          if (freeze) try {
+            process.kill(pid, "SIGSTOP");
+          } catch {
+          }
+          added = true;
+        }
+      }
+    }
+    if (!added) return;
+  }
+}
+function signalTrackedProcessTree(rootPid, knownDescendants, signal) {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return;
+  try {
+    process.kill(-rootPid, signal);
+  } catch {
+  }
+  for (const [pid, token] of knownDescendants) {
+    if (processStartToken(pid) !== token) {
+      knownDescendants.delete(pid);
+      continue;
+    }
+    try {
+      process.kill(pid, signal);
+    } catch {
+    }
+  }
+  if (signal === "SIGTERM") {
+    try {
+      process.kill(-rootPid, "SIGCONT");
+    } catch {
+    }
+    for (const [pid, token] of knownDescendants) {
+      if (processStartToken(pid) === token) try {
+        process.kill(pid, "SIGCONT");
+      } catch {
+      }
+    }
+  }
+}
 
 // src/delegation/version.mjs
 var VERSION = true ? "0.22.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
@@ -22890,7 +23765,7 @@ var CODEX_PERMISSION_PROFILE = "flow_delegation";
 var MIN_CODEX_VERSION = [0, 150, 1];
 var isApprovalRequest = (method) => APPROVAL_METHODS.has(method);
 var AppServerClient = class {
-  constructor({ cwd, env = {}, experimentalApi = false, onNotification = () => {
+  constructor({ cwd, env = {}, experimentalApi = false, scopeName = null, onNotification = () => {
   }, onServerRequest = () => {
   }, onClose = () => {
   } } = {}) {
@@ -22900,23 +23775,29 @@ var AppServerClient = class {
     this.onNotification = onNotification;
     this.onServerRequest = onServerRequest;
     this.onClose = onClose;
+    this.scopeName = process.platform === "linux" ? scopeName || providerScopeName() : null;
     this.child = null;
     this.nextId = 1;
     this.pending = /* @__PURE__ */ new Map();
     this.stderr = "";
     this.transportError = null;
     this.closeInfo = null;
+    this.knownDescendants = /* @__PURE__ */ new Map();
     this.closePromise = new Promise((resolve9) => {
       this.resolveClose = resolve9;
     });
   }
   async start() {
     const bin = process.env.FLOW_DELEGATION_CODEX_BIN || "codex";
+    const launch = scopedProviderCommand(bin, ["app-server", "--stdio"], this.scopeName);
     try {
-      this.child = spawn(bin, ["app-server", "--stdio"], {
+      this.child = spawn(launch.command, launch.args, {
         cwd: this.cwd,
         env: { ...process.env, ...this.env },
-        stdio: ["pipe", "pipe", "pipe"]
+        stdio: ["pipe", "pipe", "pipe"],
+        // A separate POSIX process group lets Flow prove that App Server and every ordinary
+        // descendant stopped before it releases a workspace-write lease.
+        detached: process.platform !== "win32"
       });
     } catch (cause) {
       throw new DelegationError("CODEX_NOT_INSTALLED", "Codex could not be started.");
@@ -23075,29 +23956,75 @@ var AppServerClient = class {
       })
     ]).finally(() => clearTimeout(timer));
   }
+  treeRunning() {
+    if (!this.child?.pid) return false;
+    if (process.platform === "win32") return this.child.exitCode === null && !this.child.signalCode;
+    if (providerScopeRunning(this.scopeName)) return true;
+    let groupRunning = false;
+    try {
+      process.kill(-this.child.pid, 0);
+      groupRunning = true;
+    } catch (error2) {
+      groupRunning = error2?.code === "EPERM";
+    }
+    return groupRunning || this.descendantRunning();
+  }
+  descendantRunning() {
+    return trackedDescendantRunning(this.knownDescendants);
+  }
+  captureDescendants({ freeze = false } = {}) {
+    captureProcessDescendants(this.child?.pid, this.knownDescendants, { freeze });
+  }
+  trackedProcesses() {
+    const tracked = [];
+    if (this.child?.pid) {
+      const token = processStartToken(this.child.pid);
+      if (token) tracked.push({ pid: this.child.pid, startToken: token });
+    }
+    for (const [pid, token] of this.knownDescendants) {
+      if (processStartToken(pid) === token) tracked.push({ pid, startToken: token });
+      else this.knownDescendants.delete(pid);
+    }
+    return tracked;
+  }
+  signalTree(signal) {
+    if (!this.child?.pid) return;
+    signalProviderScope(this.scopeName, signal);
+    if (process.platform === "win32") {
+      try {
+        this.child.kill(signal);
+      } catch {
+      }
+    } else signalTrackedProcessTree(this.child.pid, this.knownDescendants, signal);
+  }
+  async waitTree(ms2) {
+    const deadline = Date.now() + ms2;
+    while (this.treeRunning() && Date.now() < deadline) {
+      await new Promise((resolve9) => setTimeout(resolve9, 50));
+    }
+    return !this.treeRunning();
+  }
   async stop(graceMs = 2e3) {
-    if (!this.child || this.closeInfo) return this.closeInfo;
-    if (!this.transportError) {
+    if (!this.child) return this.closeInfo;
+    this.captureDescendants();
+    if (!this.closeInfo && !this.transportError) {
       try {
         this.child.stdin.end();
       } catch {
       }
     }
-    if (!await this.waitClose(graceMs)) {
-      try {
-        this.child.kill("SIGTERM");
-      } catch {
-      }
-      await this.waitClose(1e3);
+    if (this.treeRunning() && !this.closeInfo) await this.waitClose(graceMs);
+    if (this.treeRunning()) {
+      this.captureDescendants({ freeze: true });
+      this.signalTree("SIGTERM");
+      await this.waitTree(1e3);
     }
-    if (!this.closeInfo) {
-      try {
-        this.child.kill("SIGKILL");
-      } catch {
-      }
-      await this.waitClose(1e3);
+    if (this.treeRunning()) {
+      this.signalTree("SIGKILL");
+      await this.waitTree(1e3);
     }
-    return this.closeInfo;
+    if (!this.treeRunning() && !this.closeInfo) await this.waitClose(100);
+    return this.treeRunning() ? null : this.closeInfo || { code: null, signal: null, cause: null };
   }
 };
 async function mcpStatusPages(client, threadId = null) {
@@ -23155,7 +24082,7 @@ async function assertThreadMcpIsolated(client, threadId) {
 }
 function codexVersion() {
   const bin = process.env.FLOW_DELEGATION_CODEX_BIN || "codex";
-  const result = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 1e4 });
+  const result = spawnSync2(bin, ["--version"], { encoding: "utf8", timeout: 1e4 });
   if (result.error?.code === "ENOENT") return { ok: false, kind: "CODEX_NOT_INSTALLED", version: null };
   if (result.status !== 0) return { ok: false, kind: "CODEX_VERSION", version: null };
   const version2 = result.stdout.trim();
@@ -23184,7 +24111,7 @@ function restrictedPermissionConfig(job, { gitMetadataPaths: gitMetadataPaths2 =
   };
   if (job.access === "workspace-write") {
     for (const name of [".git", ".agents", ".codex"]) {
-      const path = join(job.workspaceKey, name);
+      const path = join2(job.workspaceKey, name);
       if (!existsSync(path)) continue;
       filesystem[path] = "read";
       try {
@@ -55238,19 +56165,19 @@ function $Q(e, t) {
 }
 
 // src/delegation/claude-sdk.mjs
-import { spawn as spawn3, spawnSync as spawnSync2 } from "node:child_process";
+import { spawn as spawn3, spawnSync as spawnSync3 } from "node:child_process";
 import { accessSync as accessSync2, constants as constants4, realpathSync as realpathSync5 } from "node:fs";
 import { delimiter as delimiter3, isAbsolute as isAbsolute5, resolve as resolve7, sep as sep6 } from "node:path";
 
 // src/delegation/claude-launch.mjs
 import { accessSync, constants as constants3, realpathSync as realpathSync3 } from "node:fs";
-import { dirname as dirname4, resolve as resolve5 } from "node:path";
+import { dirname as dirname5, resolve as resolve5 } from "node:path";
 function claudeSpawnCommand(command, args, {
   platform = process.platform,
   nodeExecutable = process.execPath
 } = {}) {
   if (platform !== "win32" || !/\.(?:cmd|bat)$/i.test(command)) return { command, args };
-  const directory = dirname4(command);
+  const directory = dirname5(command);
   const candidates = [
     resolve5(directory, "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
     resolve5(directory, "..", "@anthropic-ai", "claude-code", "cli.js")
@@ -55295,8 +56222,8 @@ function normalizeClaudeError(error2) {
 
 // src/delegation/claude-policy.mjs
 import { existsSync as existsSync3, realpathSync as realpathSync4 } from "node:fs";
-import { homedir } from "node:os";
-import { basename as basename3, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute4, relative as relative2, resolve as resolve6, sep as sep5 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { basename as basename3, delimiter as delimiter2, dirname as dirname6, isAbsolute as isAbsolute4, relative as relative2, resolve as resolve6, sep as sep5 } from "node:path";
 
 // lib/hook-policy.mjs
 var SECRET = /(^|\/)\.env(\.[A-Za-z0-9_-]+)*$/;
@@ -55374,7 +56301,7 @@ var pathInside = (root, path) => {
   return rel === "" || !rel.startsWith(`..${sep5}`) && rel !== ".." && !isAbsolute4(rel);
 };
 function sensitiveReadPaths() {
-  const base = homedir();
+  const base = homedir2();
   const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
     const value = process.env[name]?.trim();
     if (!value) return [];
@@ -55468,7 +56395,7 @@ function canonicalTarget(job, value) {
   if (typeof value !== "string" || !value) return null;
   const absolute = resolve6(job.cwd, value);
   let existing = absolute;
-  while (!existsSync3(existing) && dirname5(existing) !== existing) existing = dirname5(existing);
+  while (!existsSync3(existing) && dirname6(existing) !== existing) existing = dirname6(existing);
   let canonical;
   try {
     const base = realpathSync4(existing);
@@ -55894,7 +56821,7 @@ function claudeVersion() {
   } catch (error2) {
     return { ok: false, kind: error2.kind || "CLAUDE_STARTUP", version: null };
   }
-  const result = spawnSync2(launch.command, launch.args, { encoding: "utf8", timeout: 1e4 });
+  const result = spawnSync3(launch.command, launch.args, { encoding: "utf8", timeout: 1e4 });
   if (result.error?.code === "ENOENT") return { ok: false, kind: "CLAUDE_NOT_INSTALLED", version: null };
   if (result.status !== 0) return { ok: false, kind: "CLAUDE_VERSION", version: null };
   return { ok: true, kind: null, version: result.stdout.trim() };
@@ -55912,7 +56839,7 @@ function claudeAuthStatus() {
   } catch (error2) {
     return { ok: false, kind: error2.kind || "CLAUDE_STARTUP" };
   }
-  const result = spawnSync2(launch.command, launch.args, { encoding: "utf8", timeout: 1e4 });
+  const result = spawnSync3(launch.command, launch.args, { encoding: "utf8", timeout: 1e4 });
   if (result.error?.code === "ENOENT") return { ok: false, kind: "CLAUDE_NOT_INSTALLED" };
   if (result.error) return { ok: false, kind: "CLAUDE_STARTUP" };
   if (result.status !== 0) return { ok: false, kind: "CLAUDE_AUTH" };
@@ -55974,6 +56901,7 @@ function createClaudeQuery(job, prompt, {
   canUseTool
 } = {}) {
   const tools = claudeTools(job.access, { structured: job.outputSchema != null });
+  const scopeName = process.platform === "linux" ? providerScopeName(job.id) : null;
   return SVt({
     prompt,
     options: {
@@ -55981,6 +56909,8 @@ function createClaudeQuery(job, prompt, {
       cwd: job.cwd,
       model: job.model,
       effort: job.effort,
+      maxTurns: job.maxTurns ?? void 0,
+      maxBudgetUsd: job.maxBudgetUsd ?? void 0,
       ...job.nativeThreadId ? { resume: job.nativeThreadId, forkSession: false } : { sessionId },
       persistSession: true,
       includePartialMessages: true,
@@ -56016,7 +56946,8 @@ function createClaudeQuery(job, prompt, {
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
-        const launch = claudeSpawnCommand(command, args);
+        const direct = claudeSpawnCommand(command, args);
+        const launch = scopedProviderCommand(direct.command, direct.args, scopeName);
         const child = spawn3(launch.command, launch.args, {
           cwd,
           env,
@@ -56026,6 +56957,7 @@ function createClaudeQuery(job, prompt, {
           // started before releasing a workspace-write lease.
           detached: process.platform !== "win32"
         });
+        child.flowProviderScope = scopeName;
         child.stderr?.setEncoding("utf8");
         child.stderr?.on("data", onStderr);
         onSpawn(child);
@@ -56131,482 +57063,6 @@ function foldTurnOutcome(turn, {
     error: { kind: "UNKNOWN_TURN", message: `Codex ended with turn status ${turn.status || "missing"}.`, details: null }
   };
 }
-
-// src/delegation/store.mjs
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { appendFileSync as appendFileSync2, chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, statSync as statSync2 } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { dirname as dirname6, join as join6 } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-var SCHEMA_VERSION = 2;
-var RETENTION_DAYS = 14;
-var now = () => Date.now();
-var json = (value) => value == null ? null : JSON.stringify(value);
-var parse5 = (value) => value == null ? null : JSON.parse(value);
-function processStartToken(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  if (process.platform === "linux") {
-    try {
-      const stat2 = readFileSync2(`/proc/${pid}/stat`, "utf8");
-      const fields = stat2.slice(stat2.lastIndexOf(")") + 1).trim().split(/\s+/);
-      return fields[19] ? `linux:${fields[19]}` : null;
-    } catch {
-      return null;
-    }
-  }
-  try {
-    const started = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5e3
-    }).trim();
-    return started ? `${process.platform}:${started}` : null;
-  } catch {
-    return null;
-  }
-}
-function defaultStateDir() {
-  if (process.env.FLOW_DELEGATION_STATE_DIR) return process.env.FLOW_DELEGATION_STATE_DIR;
-  const base = process.env.XDG_STATE_HOME || join6(homedir2(), ".local", "state");
-  return join6(base, "flow", "delegation");
-}
-var SCHEMA = `
-  CREATE TABLE jobs (
-    id TEXT PRIMARY KEY,
-    trace_id TEXT NOT NULL,
-    parent_job_id TEXT REFERENCES jobs(id),
-    host TEXT NOT NULL,
-    target TEXT NOT NULL,
-    depth INTEGER NOT NULL,
-    mode TEXT NOT NULL,
-    access TEXT NOT NULL,
-    cwd TEXT NOT NULL,
-    workspace_key TEXT NOT NULL,
-    model TEXT NOT NULL,
-    effort TEXT NOT NULL,
-    service_tier TEXT NOT NULL,
-    profile TEXT NOT NULL,
-    time_budget_seconds INTEGER NOT NULL,
-    prompt TEXT,
-    output_schema_json TEXT,
-    base_sha TEXT,
-    head_sha TEXT,
-    native_thread_id TEXT,
-    native_turn_id TEXT,
-    turn_accepted_at INTEGER,
-    status TEXT NOT NULL CHECK (status IN ('queued','starting','running','reconciling','succeeded','failed','cancelled','unknown','awaiting_approval')),
-    worker_pid INTEGER,
-    output TEXT,
-    structured_json TEXT,
-    usage_json TEXT,
-    error_json TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    heartbeat_at INTEGER NOT NULL
-  );
-  CREATE TABLE events (
-    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-    seq INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY (job_id, seq)
-  );
-  CREATE TABLE controls (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-    type TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    handled_at INTEGER
-  );
-  CREATE TABLE leases (
-    workspace_key TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
-  );
-  CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
-  CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
-`;
-function serviceLog(stateDir, message) {
-  if (!stateDir) return;
-  try {
-    mkdirSync2(stateDir, { recursive: true, mode: 448 });
-    const file = join6(stateDir, "service.log");
-    try {
-      if (statSync2(file).size > 512e3) renameSync2(file, `${file}.1`);
-    } catch {
-    }
-    appendFileSync2(file, `${new Date(now()).toISOString()} ${message}
-`, { mode: 384 });
-  } catch {
-  }
-}
-function errorDetail(error2) {
-  const message = error2?.message ? String(error2.message) : String(error2);
-  return { message: message.slice(0, 2e3), stack: error2?.stack ? String(error2.stack).slice(0, 2e3) : null };
-}
-function decode3(row) {
-  if (!row) return null;
-  return {
-    id: row.id,
-    traceId: row.trace_id,
-    parentJobId: row.parent_job_id,
-    host: row.host,
-    target: row.target,
-    depth: row.depth,
-    mode: row.mode,
-    access: row.access,
-    cwd: row.cwd,
-    workspaceKey: row.workspace_key,
-    model: row.model,
-    effort: row.effort,
-    serviceTier: row.service_tier,
-    profile: row.profile,
-    timeBudgetSeconds: row.time_budget_seconds,
-    prompt: row.prompt,
-    outputSchema: parse5(row.output_schema_json),
-    baseSha: row.base_sha,
-    headSha: row.head_sha,
-    nativeThreadId: row.native_thread_id,
-    nativeTurnId: row.native_turn_id,
-    turnAcceptedAt: row.turn_accepted_at,
-    status: row.status,
-    workerPid: row.worker_pid,
-    output: row.output,
-    structured: parse5(row.structured_json),
-    usage: parse5(row.usage_json),
-    error: parse5(row.error_json),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    heartbeatAt: row.heartbeat_at
-  };
-}
-var JobStore = class {
-  constructor(stateDir = defaultStateDir()) {
-    this.stateDir = stateDir;
-    mkdirSync2(stateDir, { recursive: true, mode: 448 });
-    try {
-      chmodSync(stateDir, 448);
-    } catch {
-    }
-    this.path = join6(stateDir, "jobs.sqlite3");
-    try {
-      this.db = new DatabaseSync(this.path, { timeout: 5e3 });
-      try {
-        chmodSync(this.path, 384);
-      } catch {
-      }
-      this.db.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
-      try {
-        this.db.exec("PRAGMA journal_mode=WAL;");
-      } catch {
-      }
-      this.migrate();
-      this.prune();
-    } catch (error2) {
-      try {
-        this.db?.close();
-      } catch {
-      }
-      if (error2 instanceof DelegationError) throw error2;
-      serviceLog(stateDir, `store open failed: ${errorDetail(error2).stack || error2?.message || error2}`);
-      throw new DelegationError("INTERNAL", "The delegation database could not be opened.");
-    }
-  }
-  userVersion() {
-    return Number(this.db.prepare("PRAGMA user_version").get().user_version);
-  }
-  migrate() {
-    if (this.userVersion() === SCHEMA_VERSION) return;
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const version2 = this.userVersion();
-      if (version2 > SCHEMA_VERSION) throw new DelegationError("DATABASE_NEWER", "The delegation database was created by a newer Flow version.");
-      if (version2 < 1) this.db.exec(SCHEMA);
-      if (version2 === 1) this.db.exec("ALTER TABLE jobs DROP COLUMN delivery; ALTER TABLE leases DROP COLUMN heartbeat_at;");
-      this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
-      this.db.exec("COMMIT");
-    } catch (error2) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      throw error2;
-    }
-  }
-  // Terminal jobs are pruned on open. updated_at is the terminal timestamp: finish() and
-  // requestCancel() write it with the terminal status and nothing updates a job afterwards.
-  prune() {
-    const cutoff = now() - RETENTION_DAYS * 24 * 60 * 60 * 1e3;
-    const states = TERMINAL_STATES.map(() => "?").join(",");
-    const candidate = this.db.prepare(`SELECT 1 FROM jobs WHERE status IN (${states}) AND updated_at < ? LIMIT 1`).get(...TERMINAL_STATES, cutoff);
-    if (!candidate) return 0;
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const expired = this.db.prepare(`DELETE FROM jobs WHERE status IN (${states}) AND updated_at < ?
-        AND id NOT IN (SELECT parent_job_id FROM jobs WHERE parent_job_id IS NOT NULL)`);
-      let total = 0;
-      for (; ; ) {
-        const changes = Number(expired.run(...TERMINAL_STATES, cutoff).changes);
-        total += changes;
-        if (!changes) break;
-      }
-      this.db.exec("COMMIT");
-      return total;
-    } catch (error2) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      serviceLog(this.stateDir, `prune failed: ${error2?.message || error2}`);
-      return 0;
-    }
-  }
-  close() {
-    this.db.close();
-  }
-  createJob(request) {
-    const id2 = randomUUID2();
-    const at2 = now();
-    this.db.prepare(`INSERT INTO jobs (
-      id, trace_id, parent_job_id, host, target, depth, mode, access,
-      cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
-      prompt, output_schema_json, base_sha, head_sha, native_thread_id,
-      status, created_at, updated_at, heartbeat_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
-      id2,
-      request.traceId || randomUUID2(),
-      request.parentJobId || null,
-      request.host,
-      request.target,
-      request.depth,
-      request.mode,
-      request.access,
-      request.cwd,
-      request.workspaceKey,
-      request.model,
-      request.effort,
-      request.serviceTier,
-      request.profile,
-      request.timeBudgetSeconds,
-      request.prompt,
-      json(request.outputSchema),
-      request.baseSha || null,
-      request.headSha || null,
-      request.nativeThreadId || null,
-      at2,
-      at2,
-      at2
-    );
-    this.appendEvent(id2, "job.queued", { status: "queued" });
-    return this.getJob(id2);
-  }
-  getJob(id2) {
-    return decode3(this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id2));
-  }
-  listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
-    const clauses = ["host = ?", "target = ?"];
-    const values = [host, target];
-    if (status) {
-      clauses.push("status = ?");
-      values.push(status);
-    }
-    if (before) {
-      clauses.push("(created_at < ? OR (created_at = ? AND id < ?))");
-      values.push(before.createdAt, before.createdAt, before.id);
-    }
-    values.push(Math.max(1, Math.min(limit, 100)));
-    return this.db.prepare(`SELECT * FROM jobs WHERE ${clauses.join(" AND ")}
-      ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values).map(decode3);
-  }
-  requireJob(id2) {
-    const job = this.getJob(id2);
-    if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
-    return job;
-  }
-  appendEvent(jobId2, type, payload = {}) {
-    return this.db.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
-      VALUES (?, COALESCE((SELECT MAX(seq) + 1 FROM events WHERE job_id = ?), 1), ?, ?, ?)
-      RETURNING seq`).get(jobId2, jobId2, type, json(payload), now()).seq;
-  }
-  // publicError() deliberately hides an unexpected failure from the caller. The journal is
-  // 0600 and already carries bounded operational detail, so the real cause is kept here.
-  recordInternalError(jobId2, error2) {
-    try {
-      this.appendEvent(jobId2, "internal.error", errorDetail(error2));
-    } catch {
-    }
-  }
-  events(jobId2, { after = 0, limit = 200 } = {}) {
-    this.requireJob(jobId2);
-    return this.db.prepare(`SELECT seq, type, payload_json, created_at FROM events
-      WHERE job_id = ? AND seq > ? ORDER BY seq LIMIT ?`).all(jobId2, after, Math.max(1, Math.min(limit, 1e3))).map((row) => ({
-      seq: row.seq,
-      type: row.type,
-      payload: row.type === "internal.error" ? { redacted: true } : parse5(row.payload_json),
-      createdAt: row.created_at
-    }));
-  }
-  claim(id2, pid, startToken = null) {
-    if (typeof startToken !== "string" || !startToken) {
-      throw new DelegationError("WORKER_IDENTITY", "Flow could not record a stable worker process identity.");
-    }
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const job = decode3(this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id2));
-      if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
-      if (job.status !== "queued") throw new DelegationError("JOB_STATE", `Job ${id2} is ${job.status}, not queued.`);
-      const at2 = now();
-      if (job.access === "workspace-write") {
-        const held = this.db.prepare("SELECT job_id FROM leases WHERE workspace_key = ?").get(job.workspaceKey);
-        if (held) throw new DelegationError("WORKSPACE_BUSY", `Another write job owns this worktree: ${held.job_id}.`);
-        this.db.prepare("INSERT INTO leases (workspace_key, job_id) VALUES (?, ?)").run(job.workspaceKey, id2);
-      }
-      this.db.prepare(`UPDATE jobs SET status='starting', worker_pid=?, heartbeat_at=?, updated_at=? WHERE id=?`).run(pid, at2, at2, id2);
-      this.appendEvent(id2, "job.starting", { pid, startToken });
-      this.db.exec("COMMIT");
-      return this.getJob(id2);
-    } catch (error2) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      throw error2;
-    }
-  }
-  // A worker that lost the claim still has to explain why the job will never run, but only
-  // while nothing owns it. The queued guard makes the write a no-op when another worker won
-  // the race, so a report can never overwrite the winner's job.
-  failQueued(id2, error2) {
-    const at2 = now();
-    const result = this.db.prepare(`UPDATE jobs SET status='failed', error_json=?, prompt=NULL,
-      updated_at=?, heartbeat_at=? WHERE id=? AND status='queued'`).run(json(error2), at2, at2, id2);
-    if (result.changes) this.appendEvent(id2, "job.failed", { error: error2 });
-    return result.changes === 1;
-  }
-  setRunning(id2, { threadId, turnId = null, accepted = false } = {}) {
-    const at2 = now();
-    this.db.prepare(`UPDATE jobs SET status='running', native_thread_id=COALESCE(?, native_thread_id),
-      native_turn_id=COALESCE(?, native_turn_id), turn_accepted_at=CASE WHEN ? THEN COALESCE(turn_accepted_at, ?) ELSE turn_accepted_at END,
-      prompt=CASE WHEN ? THEN NULL ELSE prompt END, updated_at=?, heartbeat_at=? WHERE id=?`).run(threadId || null, turnId || null, accepted ? 1 : 0, at2, accepted ? 1 : 0, at2, at2, id2);
-  }
-  setNativeTurn(id2, turnId, { accepted = false } = {}) {
-    const at2 = now();
-    this.db.prepare(`UPDATE jobs SET native_turn_id=?,
-      turn_accepted_at=CASE WHEN ? THEN COALESCE(turn_accepted_at, ?) ELSE turn_accepted_at END,
-      prompt=CASE WHEN ? THEN NULL ELSE prompt END, updated_at=?, heartbeat_at=?
-      WHERE id=? AND status IN ('starting','running')`).run(turnId, accepted ? 1 : 0, at2, accepted ? 1 : 0, at2, at2, id2);
-  }
-  // jobs.heartbeat_at carries worker liveness on its own: a lease outlives nothing, because
-  // only finish() releases it.
-  heartbeat(id2) {
-    const at2 = now();
-    this.db.prepare("UPDATE jobs SET heartbeat_at=?, updated_at=? WHERE id=? AND status IN ('starting','running','reconciling','awaiting_approval')").run(at2, at2, id2);
-  }
-  finish(id2, status, { output = null, structured = null, usage = null, error: error2 = null } = {}) {
-    if (!TERMINAL_STATES.includes(status)) {
-      throw new DelegationError("JOB_STATE", `Cannot finish a job as ${status}.`);
-    }
-    const at2 = now();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const current = decode3(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id2));
-      if (!current) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
-      if (TERMINAL_STATES.includes(current.status)) {
-        this.db.exec("COMMIT");
-        return current;
-      }
-      this.db.prepare(`UPDATE jobs SET status=?, output=?, structured_json=?, usage_json=?, error_json=?,
-        prompt=NULL, updated_at=?, heartbeat_at=? WHERE id=?`).run(status, output, json(structured), json(usage), json(error2), at2, at2, id2);
-      this.db.prepare(`UPDATE controls SET payload_json='{}' WHERE job_id=?`).run(id2);
-      this.db.prepare("DELETE FROM leases WHERE job_id=?").run(id2);
-      this.db.exec("COMMIT");
-    } catch (cause) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      throw cause;
-    }
-    this.appendEvent(id2, `job.${status}`, error2 ? { error: error2 } : { status });
-    return this.getJob(id2);
-  }
-  markReconciling(id2, expectedHeartbeat) {
-    const at2 = now();
-    const result = this.db.prepare(`UPDATE jobs SET status='reconciling', updated_at=?, heartbeat_at=?
-      WHERE id=? AND heartbeat_at=? AND status IN ('queued','starting','running','reconciling')`).run(at2, at2, id2, expectedHeartbeat);
-    if (result.changes) this.appendEvent(id2, "job.reconciling", {});
-    return result.changes === 1;
-  }
-  queueControl(jobId2, type, payload = {}) {
-    this.db.exec("BEGIN IMMEDIATE");
-    let result;
-    try {
-      const job = decode3(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId2));
-      if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
-      if (!ACTIVE_STATES.includes(job.status)) throw new DelegationError("JOB_STATE", `Job ${jobId2} is already ${job.status}.`);
-      result = this.db.prepare("INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, ?, ?, ?)").run(jobId2, type, json(payload), now());
-      this.db.exec("COMMIT");
-    } catch (error2) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      throw error2;
-    }
-    this.appendEvent(jobId2, `control.${type}.queued`, {});
-    return Number(result.lastInsertRowid);
-  }
-  requestCancel(jobId2) {
-    this.db.exec("BEGIN IMMEDIATE");
-    let cancelled = false;
-    try {
-      const job = decode3(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId2));
-      if (!job) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
-      if (TERMINAL_STATES.includes(job.status)) {
-        this.db.exec("COMMIT");
-        return job;
-      }
-      if (job.status === "queued") {
-        const at2 = now();
-        this.db.prepare(`UPDATE jobs SET status='cancelled', prompt=NULL, updated_at=?, heartbeat_at=? WHERE id=?`).run(at2, at2, jobId2);
-        cancelled = true;
-      } else {
-        this.db.prepare(`INSERT INTO controls (job_id, type, payload_json, created_at)
-          VALUES (?, 'cancel', '{}', ?)`).run(jobId2, now());
-      }
-      this.db.exec("COMMIT");
-    } catch (error2) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      throw error2;
-    }
-    if (cancelled) this.appendEvent(jobId2, "job.cancelled", { status: "cancelled" });
-    else this.appendEvent(jobId2, "control.cancel.queued", {});
-    return this.getJob(jobId2);
-  }
-  pendingControls(jobId2) {
-    return this.db.prepare(`SELECT id, type, payload_json, created_at FROM controls
-      WHERE job_id=? AND handled_at IS NULL ORDER BY id`).all(jobId2).map((row) => ({ id: row.id, type: row.type, payload: parse5(row.payload_json), createdAt: row.created_at }));
-  }
-  handleControl(jobId2, id2, outcome = {}) {
-    this.db.prepare(`UPDATE controls SET handled_at=?, payload_json='{}' WHERE id=? AND job_id=?`).run(now(), id2, jobId2);
-    this.appendEvent(jobId2, "control.handled", { controlId: id2, ...outcome });
-  }
-  workerStartToken(jobId2) {
-    const row = this.db.prepare(`SELECT payload_json FROM events
-      WHERE job_id=? AND type='job.starting' ORDER BY seq DESC LIMIT 1`).get(jobId2);
-    return row ? parse5(row.payload_json)?.startToken || null : null;
-  }
-  // Handled or not, a queued cancel is what makes an interrupted turn a cancellation rather
-  // than a failure. finish() blanks control payloads but keeps the rows.
-  cancelRequested(jobId2) {
-    return Boolean(this.db.prepare(`SELECT 1 FROM controls WHERE job_id=? AND type='cancel' LIMIT 1`).get(jobId2));
-  }
-};
 
 // src/delegation/workspace.mjs
 import { execFile } from "node:child_process";
@@ -56756,9 +57212,43 @@ function validateStart(input, target) {
   if (!Number.isInteger(input.timeBudgetSeconds) || input.timeBudgetSeconds < 30 || input.timeBudgetSeconds > 7200) {
     throw new DelegationError("BAD_REQUEST", "timeBudgetSeconds must be between 30 and 7200.");
   }
+  if (input.maxTurns !== null && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 1e3)) {
+    throw new DelegationError("BAD_REQUEST", "maxTurns must be between 1 and 1000.");
+  }
+  if (input.maxBudgetUsd !== null && (typeof input.maxBudgetUsd !== "number" || !Number.isFinite(input.maxBudgetUsd) || input.maxBudgetUsd < 0.01 || input.maxBudgetUsd > 1e3)) {
+    throw new DelegationError("BAD_REQUEST", "maxBudgetUsd must be between 0.01 and 1000.");
+  }
+  if (target !== "claude" && (input.maxTurns !== null || input.maxBudgetUsd !== null)) {
+    throw new DelegationError("LIMIT_UNSUPPORTED", "Codex App Server does not provide hard turn or cost limits for a delegated turn.");
+  }
 }
 function terminal(job) {
   return TERMINAL_STATES.includes(job.status);
+}
+function settled(job) {
+  return terminal(job) || job.status === "quarantined";
+}
+function processGroupRunning(processGroupId) {
+  if (process.platform === "win32" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error2) {
+    return error2?.code === "EPERM";
+  }
+}
+function quarantineRunning(job) {
+  if (providerScopeRunning(job.providerScope)) return true;
+  if (processGroupRunning(job.providerProcessGroupId)) return true;
+  const identities = [
+    ...job.providerPid && job.providerStartToken ? [{ pid: job.providerPid, startToken: job.providerStartToken }] : [],
+    ...job.providerProcesses || []
+  ];
+  if (!identities.length) return true;
+  return identities.some(({ pid, startToken }) => processStartToken(pid) === startToken);
+}
+function providerRecorded(job) {
+  return Boolean(job.providerPid || job.providerProcessGroupId || job.providerScope || job.providerProcesses?.length);
 }
 function decodeListCursor(cursor, { host, target, status }) {
   if (!cursor) return null;
@@ -56829,6 +57319,8 @@ var DelegationService = class {
       prompt: input.prompt || "",
       cwd: input.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || 900,
+      maxTurns: input.maxTurns ?? null,
+      maxBudgetUsd: input.maxBudgetUsd ?? null,
       outputSchema: input.outputSchema ?? null,
       base: input.base || null,
       head: input.head || "HEAD",
@@ -56838,6 +57330,10 @@ var DelegationService = class {
     const target = this.target();
     validateStart(normalized, target);
     assertRoute({ host: this.host, target, depth: this.depth });
+    const containment = providerContainmentSupport();
+    if (!containment.ok) {
+      throw new DelegationError(containment.kind, "Linux delegation requires a working systemd user scope for provider containment.");
+    }
     if (target === "codex") {
       const host = codexHostSupport();
       if (!host.ok) throw new DelegationError(host.kind, "Codex delegation requires a Linux host.");
@@ -56897,7 +57393,7 @@ var DelegationService = class {
           after = event.seq;
           await onEvent(event);
         }
-        if (terminal(job)) return job;
+        if (settled(job)) return job;
         if (signal?.aborted && !cancelQueued) {
           store.requestCancel(jobId2);
           cancelQueued = true;
@@ -56905,7 +57401,7 @@ var DelegationService = class {
         if (Date.now() - lastReconcile > 5e3) {
           lastReconcile = Date.now();
           job = await this.reconcile(jobId2);
-          if (terminal(job)) return job;
+          if (settled(job)) return job;
         }
         await sleep(250);
       }
@@ -57005,6 +57501,8 @@ var DelegationService = class {
       prompt: input.prompt,
       cwd: previous.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || previous.timeBudgetSeconds,
+      maxTurns: input.maxTurns ?? previous.maxTurns,
+      maxBudgetUsd: input.maxBudgetUsd ?? previous.maxBudgetUsd,
       outputSchema: input.outputSchema ?? null,
       parentJobId: previous.id,
       nativeThreadId: previous.nativeThreadId
@@ -57033,6 +57531,7 @@ var DelegationService = class {
       workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
       host: codexHostSupport(),
+      containment: providerContainmentSupport(),
       codex: codexVersion(),
       database: { ok: false },
       appServer: { ok: false },
@@ -57042,12 +57541,12 @@ var DelegationService = class {
       mcpIsolation: { ok: false }
     };
     try {
-      this.withStore((store) => store.db.prepare("SELECT 1").get());
-      checks.database = { ok: true, path: this.stateDir };
+      const quarantined = this.withStore((store) => store.quarantinedCount());
+      checks.database = { ok: true, path: this.stateDir, quarantined };
     } catch {
       checks.database = { ok: false, kind: "DATABASE" };
     }
-    if (checks.host.ok && checks.codex.ok) {
+    if (checks.host.ok && checks.codex.ok && checks.containment.ok) {
       let client;
       try {
         client = await new AppServerClient({ cwd: cwd || void 0, experimentalApi: true }).start();
@@ -57114,20 +57613,21 @@ var DelegationService = class {
       workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
       claude: claudeVersion(),
+      containment: providerContainmentSupport(),
       agentSdk: claudeAgentSdkStatus(),
       database: { ok: false },
       account: claudeAuthStatus(),
       models: { ok: false }
     };
     try {
-      this.withStore((store) => store.db.prepare("SELECT 1").get());
-      checks.database = { ok: true, path: this.stateDir };
+      const quarantined = this.withStore((store) => store.quarantinedCount());
+      checks.database = { ok: true, path: this.stateDir, quarantined };
     } catch {
       checks.database = { ok: false, kind: "DATABASE" };
     }
     if (!cwd) {
       checks.models = { ok: false, kind: "NO_WORKSPACE" };
-    } else if (checks.claude.ok && checks.account.ok) {
+    } else if (checks.claude.ok && checks.account.ok && checks.containment.ok) {
       try {
         const models = await claudeModels(cwd);
         checks.models = { ok: models.length > 0, count: models.length };
@@ -57144,7 +57644,13 @@ var DelegationService = class {
   }
   async reconcile(jobId2, { staleAfterMs = 15e3 } = {}) {
     let job = this.get(jobId2);
-    if (terminal(job) || Date.now() - job.heartbeatAt < staleAfterMs) return job;
+    if (terminal(job)) return job;
+    if (job.status === "quarantined") {
+      if (quarantineRunning(job)) return job;
+      job = this.withStore((store) => store.resolveQuarantine(jobId2));
+      if (terminal(job)) return job;
+    }
+    if (Date.now() - job.heartbeatAt < staleAfterMs) return job;
     const defer = (reason, error2 = null) => this.withStore((store) => {
       store.appendEvent(jobId2, "recovery.deferred", error2 ? { reason, error: publicError(error2) } : { reason });
       return store.requireJob(jobId2);
@@ -57160,24 +57666,31 @@ var DelegationService = class {
       } catch {
       }
     }
+    if (identityAmbiguous) return defer("worker_identity");
+    if (providerRecorded(job) && quarantineRunning(job)) {
+      return this.withStore((store) => store.quarantine(jobId2, "reconciling", {
+        error: {
+          kind: "PROVIDER_QUARANTINED",
+          message: "The provider process outlived its delegation worker.",
+          details: null
+        }
+      }));
+    }
     const claimedRecovery = this.withStore((store) => store.markReconciling(jobId2, job.heartbeatAt));
     job = this.get(jobId2);
     if (terminal(job)) return job;
     if (!claimedRecovery) return job;
     if (job.target === "claude") {
       if (!job.nativeThreadId) {
-        if (identityAmbiguous) return defer("worker_identity");
         return this.withStore((store) => store.finish(jobId2, "failed", {
           error: { kind: "WORKER_EXIT", message: "The worker exited before Claude created a session.", details: null }
         }));
       }
       if (!job.nativeTurnId || !job.turnAcceptedAt) {
-        if (identityAmbiguous) return defer("worker_identity");
         return this.withStore((store) => store.finish(jobId2, "failed", {
           error: { kind: "WORKER_EXIT", message: "The worker exited before Flow released the prompt to Claude.", details: null }
         }));
       }
-      if (identityAmbiguous) return defer("worker_identity");
       const acceptedWrite = job.access === "workspace-write";
       return this.withStore((store) => store.finish(jobId2, acceptedWrite ? "unknown" : "failed", {
         error: {
@@ -57193,11 +57706,9 @@ var DelegationService = class {
       }));
     }
     if (!job.nativeThreadId) {
-      if (identityAmbiguous) return defer("worker_identity");
       return this.withStore((store) => store.finish(jobId2, "failed", { error: { kind: "WORKER_EXIT", message: "The worker exited before Codex created a thread.", details: null } }));
     }
     if (!job.nativeTurnId) {
-      if (identityAmbiguous) return defer("worker_identity");
       return this.withStore((store) => store.finish(jobId2, "unknown", { error: { kind: "RECOVERY_UNKNOWN", message: "Flow cannot identify which Codex turn belongs to the stale job.", details: null } }));
     }
     let client;
@@ -57207,7 +57718,6 @@ var DelegationService = class {
       const turns = response.thread?.turns || [];
       const turn = turns.find((item) => item.id === job.nativeTurnId);
       if (!turn || turn.status === "inProgress") {
-        if (identityAmbiguous) return defer("turn_in_progress");
         return this.withStore((store) => store.finish(jobId2, "unknown", { error: { kind: "RECOVERY_UNKNOWN", message: "Codex could not prove the stale turn reached a terminal state.", details: null } }));
       }
       const cancelRequested = this.withStore((store) => store.cancelRequested(jobId2));
@@ -57251,6 +57761,10 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
   const targetTitle = target[0].toUpperCase() + target.slice(1);
   const effort = _enum([...effortsForTarget(target)]);
   const capabilities = capabilitiesForTarget(target);
+  const providerLimits = target === "claude" ? {
+    maxTurns: number2().int().min(1).max(1e3).optional().describe("Hard Claude conversation-turn limit for this job"),
+    maxBudgetUsd: number2().min(0.01).max(1e3).optional().describe("Hard Claude SDK cost limit in US dollars for this job")
+  } : {};
   const service = new DelegationService({ host, depth, stateDir, entryPath: entryPath2, projectDir });
   const server = new McpServer({ name: "flow-delegation", version: VERSION }, {
     capabilities: { logging: {} }
@@ -57347,6 +57861,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       profile: _enum(["standard", "defensive-security"]).default("standard"),
       delivery: delivery.default("attached"),
       timeBudgetSeconds: number2().int().min(30).max(7200).default(900),
+      ...providerLimits,
       outputSchema: union([boolean2(), record(string2(), unknown())]).optional(),
       base: string2().optional().describe("Required Git revision for review modes"),
       head: string2().default("HEAD").describe("Git revision for review modes")
@@ -57425,6 +57940,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       profile: _enum(["standard", "defensive-security"]).optional(),
       delivery: delivery.default("attached"),
       timeBudgetSeconds: number2().int().min(30).max(7200).optional(),
+      ...providerLimits,
       outputSchema: union([boolean2(), record(string2(), unknown())]).optional()
     },
     annotations: { openWorldHint: false }
@@ -57458,7 +57974,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
 }
 
 // src/delegation/cli.mjs
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync4 } from "node:fs";
 async function stdin() {
   if (process.stdin.isTTY) return "";
   process.stdin.setEncoding("utf8");
@@ -57502,7 +58018,7 @@ async function runCli({ argv: argv2, entryPath: entryPath2 }) {
   let value;
   if (command === "run") {
     const prompt = await stdin();
-    const outputSchema = flags["schema-file"] ? JSON.parse(readFileSync3(flags["schema-file"], "utf8")) : null;
+    const outputSchema = flags["schema-file"] ? JSON.parse(readFileSync4(flags["schema-file"], "utf8")) : null;
     const job = await service.start({
       mode: flags.mode || "task",
       prompt,
@@ -57514,6 +58030,8 @@ async function runCli({ argv: argv2, entryPath: entryPath2 }) {
       profile: flags.profile || "standard",
       delivery: flags.detach ? "detached" : "attached",
       timeBudgetSeconds: number3(flags["time-budget-seconds"], 900),
+      maxTurns: number3(flags["max-turns"], null),
+      maxBudgetUsd: number3(flags["max-budget-usd"], null),
       outputSchema,
       base: flags.base || null,
       head: flags.head || "HEAD"
@@ -57537,7 +58055,9 @@ async function runCli({ argv: argv2, entryPath: entryPath2 }) {
       model: flags.model,
       effort: flags.effort,
       delivery: flags.detach ? "detached" : "attached",
-      timeBudgetSeconds: number3(flags["time-budget-seconds"], void 0)
+      timeBudgetSeconds: number3(flags["time-budget-seconds"], void 0),
+      maxTurns: number3(flags["max-turns"], void 0),
+      maxBudgetUsd: number3(flags["max-budget-usd"], void 0)
     }, { fallbackCwd: prior.cwd });
     value = flags.detach ? resultEnvelope(job) : resultEnvelope(await service.wait(job.id));
   } else if (command === "models") {
@@ -57568,13 +58088,12 @@ async function safeRunCli(options) {
 }
 
 // src/delegation/worker.mjs
-import { chmodSync as chmodSync2, mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync2 } from "node:fs";
+import { chmodSync as chmodSync2, mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync3 } from "node:fs";
 import { join as join7 } from "node:path";
 
 // src/delegation/claude-worker.mjs
-import { randomUUID as randomUUID3 } from "node:crypto";
-import { spawnSync as spawnSync3 } from "node:child_process";
-import { readdirSync as readdirSync2, readFileSync as readFileSync4 } from "node:fs";
+import { randomUUID as randomUUID4 } from "node:crypto";
+import { spawnSync as spawnSync4 } from "node:child_process";
 var STALL_SECONDS = 420;
 var STARTUP_SECONDS = 30;
 var delay = (ms2) => new Promise((resolve9) => setTimeout(resolve9, ms2));
@@ -57617,7 +58136,7 @@ function resultUsage(result) {
 }
 function resultFailure(result, { assistantError = null, rateLimitStatus = null } = {}) {
   const kind = assistantError === "authentication_failed" || assistantError === "oauth_org_not_allowed" ? "CLAUDE_AUTH" : assistantError === "rate_limit" || rateLimitStatus === "rejected" ? "RATE_LIMIT" : assistantError === "billing_error" || assistantError === "account_on_hold" ? "BILLING" : assistantError === "model_not_found" ? "BAD_MODEL" : assistantError === "overloaded" ? "OVERLOADED" : result?.subtype === "error_max_turns" ? "MAX_TURNS" : result?.subtype === "error_max_budget_usd" ? "MAX_BUDGET" : result?.subtype === "error_max_structured_output_retries" ? "SCHEMA_OUTPUT" : "CLAUDE_TURN";
-  const message = kind === "RATE_LIMIT" ? "Claude rejected the turn because the current plan or API rate limit is exhausted." : kind === "CLAUDE_AUTH" ? "Claude Code is not authenticated for Agent SDK use." : kind === "BAD_MODEL" ? "Claude rejected the requested model." : "Claude did not complete the delegated turn.";
+  const message = kind === "RATE_LIMIT" ? "Claude rejected the turn because the current plan or API rate limit is exhausted." : kind === "CLAUDE_AUTH" ? "Claude Code is not authenticated for Agent SDK use." : kind === "BAD_MODEL" ? "Claude rejected the requested model." : kind === "MAX_TURNS" ? "Claude reached the delegated turn limit." : kind === "MAX_BUDGET" ? "Claude reached the delegated cost limit." : "Claude did not complete the delegated turn.";
   return { kind, message, details: null };
 }
 async function runClaudeWorker({ jobId: jobId2, stateDir }) {
@@ -57664,23 +58183,20 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
   const promptReady = new Promise((resolve9) => {
     releasePrompt = resolve9;
   });
-  const sessionId = job.nativeThreadId || randomUUID3();
-  const turnId = randomUUID3();
+  const sessionId = job.nativeThreadId || randomUUID4();
+  const turnId = randomUUID4();
   const signalHandlers = [];
   async function* input() {
     await promptReady;
     yield sdkPrompt(job.prompt || "", sessionId, turnId);
   }
   const descendantRunning = () => {
-    for (const [pid, token] of knownDescendants) {
-      if (processStartToken(pid) === token) return true;
-      knownDescendants.delete(pid);
-    }
-    return false;
+    return trackedDescendantRunning(knownDescendants);
   };
   const childTreeRunning = () => {
     if (!child?.pid) return false;
     if (process.platform === "win32") return child.exitCode === null && !child.signalCode;
+    if (providerScopeRunning(child.flowProviderScope)) return true;
     try {
       process.kill(-child.pid, 0);
       return true;
@@ -57688,89 +58204,36 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       return error2?.code === "EPERM" || descendantRunning();
     }
   };
+  const rememberProvider = () => {
+    if (!child?.pid) return;
+    const startToken = processStartToken(child.pid);
+    const processes = [];
+    if (startToken) processes.push({ pid: child.pid, startToken });
+    for (const [pid, token] of knownDescendants) processes.push({ pid, startToken: token });
+    store.setProviderProcess(jobId2, {
+      pid: child.pid,
+      startToken,
+      processGroupId: process.platform === "win32" ? null : child.pid,
+      scope: child.flowProviderScope,
+      processes
+    });
+  };
   const freezeLinuxDescendants = () => {
-    if (process.platform !== "linux" || !child?.pid) return;
-    try {
-      process.kill(-child.pid, "SIGSTOP");
-    } catch {
-    }
-    for (let pass = 0; pass < 4; pass++) {
-      let added = false;
-      const visited = /* @__PURE__ */ new Set();
-      const queue = [child.pid, ...knownDescendants.keys()];
-      while (queue.length) {
-        const parent = queue.shift();
-        if (visited.has(parent)) continue;
-        visited.add(parent);
-        let taskIds;
-        try {
-          taskIds = readdirSync2(`/proc/${parent}/task`);
-        } catch {
-          continue;
-        }
-        for (const taskId of taskIds) {
-          let children;
-          try {
-            children = readFileSync4(`/proc/${parent}/task/${taskId}/children`, "utf8");
-          } catch {
-            continue;
-          }
-          for (const value of children.trim().split(/\s+/)) {
-            const pid = Number(value);
-            if (!Number.isInteger(pid) || pid <= 0 || pid === child.pid) continue;
-            const token = processStartToken(pid);
-            if (!token) continue;
-            queue.push(pid);
-            if (knownDescendants.get(pid) === token) continue;
-            knownDescendants.set(pid, token);
-            try {
-              process.kill(pid, "SIGSTOP");
-            } catch {
-            }
-            added = true;
-          }
-        }
-      }
-      if (!added) return;
-    }
+    captureProcessDescendants(child?.pid, knownDescendants, { freeze: true });
   };
   const signalChildTree = (signal) => {
     if (!child?.pid) return;
+    signalProviderScope(child.flowProviderScope, signal);
     if (process.platform === "win32") {
       try {
         const args = ["/PID", String(child.pid), "/T"];
         if (signal === "SIGKILL") args.push("/F");
-        spawnSync3("taskkill", args, { stdio: "ignore", windowsHide: true });
+        spawnSync4("taskkill", args, { stdio: "ignore", windowsHide: true });
       } catch {
       }
       return;
     }
-    try {
-      process.kill(-child.pid, signal);
-    } catch {
-    }
-    for (const [pid, token] of knownDescendants) {
-      if (processStartToken(pid) !== token) {
-        knownDescendants.delete(pid);
-        continue;
-      }
-      try {
-        process.kill(pid, signal);
-      } catch {
-      }
-    }
-    if (signal === "SIGTERM") {
-      try {
-        process.kill(-child.pid, "SIGCONT");
-      } catch {
-      }
-      for (const [pid, token] of knownDescendants) {
-        if (processStartToken(pid) === token) try {
-          process.kill(pid, "SIGCONT");
-        } catch {
-        }
-      }
-    }
+    signalTrackedProcessTree(child.pid, knownDescendants, signal);
   };
   const waitForChildTree = async (milliseconds) => {
     const deadline = Date.now() + milliseconds;
@@ -57779,24 +58242,31 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
   };
   const stopChild = async () => {
     freezeLinuxDescendants();
+    rememberProvider();
     try {
       active?.close();
     } catch {
     }
     if (!child?.pid || !childTreeRunning()) {
       await Promise.race([childExited, delay(100)]);
-      return;
+      return true;
     }
     signalChildTree(terminalResult ? "SIGKILL" : "SIGTERM");
-    if (await waitForChildTree(terminalResult ? 100 : 1e3)) return;
+    if (await waitForChildTree(terminalResult ? 100 : 1e3)) return true;
     signalChildTree("SIGKILL");
-    if (process.platform !== "win32") {
-      while (childTreeRunning()) {
-        signalChildTree("SIGKILL");
-        await delay(50);
-      }
+    if (!await waitForChildTree(2e3)) {
+      freezeLinuxDescendants();
+      rememberProvider();
+      return false;
     }
     await Promise.race([childExited, delay(1e3)]);
+    return true;
+  };
+  const settle = async (status, result = {}) => {
+    if (!await stopChild()) {
+      return store.quarantine(jobId2, status, result);
+    }
+    return store.finish(jobId2, status, result);
   };
   const clearTurnTimers = () => {
     if (stallTimer) {
@@ -57873,12 +58343,11 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     const onSignal = async (signal) => {
       if (signalStopping) return;
       signalStopping = true;
-      await stopChild();
       try {
         const current = store.getJob(jobId2);
-        if (current && !TERMINAL_STATES.includes(current.status)) {
+        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
           const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
-          store.finish(jobId2, acceptedWrite && !terminalResult ? "unknown" : "failed", {
+          await settle(acceptedWrite && !terminalResult ? "unknown" : "failed", {
             error: { kind: "INTERRUPTED", message: `The Claude delegation worker received ${signal}.`, details: null },
             usage: resultUsage(terminalResult)
           });
@@ -57952,6 +58421,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       onSpawn: (spawned) => {
         child = spawned;
         childExited = new Promise((resolve9) => child.once("exit", resolve9));
+        rememberProvider();
       },
       onStderr: (chunk) => {
         stderrTail = (stderrTail + String(chunk)).slice(-16384);
@@ -57968,7 +58438,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       throw new DelegationError("CLAUDE_PROTOCOL", "Claude returned no SDK initialization result.");
     }
     if (cancelled) {
-      store.finish(jobId2, "cancelled");
+      await settle("cancelled");
       return;
     }
     const selectedModel = Array.isArray(initialized.models) ? initialized.models.find((entry) => entry.value === job.model) : null;
@@ -58042,10 +58512,9 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       store.appendEvent(jobId2, "transport.error_after_result", {});
     }
     clearTurnTimers();
-    await stopChild();
     const usage = resultUsage(terminalResult);
     if (approvalRequired) {
-      store.finish(jobId2, "awaiting_approval", {
+      await settle("awaiting_approval", {
         error: {
           kind: "APPROVAL_REQUIRED",
           message: "Claude requested an approval that Flow denied.",
@@ -58056,7 +58525,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     } else if (!terminalResult) {
       const acceptedWrite = job.access === "workspace-write" && accepted;
       const status = cancelled && !acceptedWrite ? "cancelled" : acceptedWrite ? "unknown" : "failed";
-      store.finish(jobId2, status, {
+      await settle(status, {
         error: status === "cancelled" ? null : {
           kind: stalled ? "STALL" : timedOut ? "TIMEOUT" : "CLAUDE_SDK",
           message: acceptedWrite ? "Claude did not prove the accepted write turn reached a terminal state." : "Claude ended before the delegated turn reached a terminal state.",
@@ -58065,9 +58534,9 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
         usage
       });
     } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== "success")) {
-      store.finish(jobId2, "cancelled", { usage });
+      await settle("cancelled", { usage });
     } else if (timedOut || stalled) {
-      store.finish(jobId2, "failed", {
+      await settle("failed", {
         error: {
           kind: timedOut ? "TIMEOUT" : "STALL",
           message: `Claude exceeded the ${timedOut ? "total time budget" : "quiet-period limit"}.`,
@@ -58076,7 +58545,7 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
         usage
       });
     } else if (terminalResult.subtype !== "success" || terminalResult.is_error) {
-      store.finish(jobId2, "failed", { error: resultFailure(terminalResult, { assistantError, rateLimitStatus }), usage });
+      await settle("failed", { error: resultFailure(terminalResult, { assistantError, rateLimitStatus }), usage });
     } else {
       const output = String(terminalResult.result || "").trim();
       if (!output) throw new DelegationError("EMPTY_OUTPUT", "Claude completed without a final result.");
@@ -58084,18 +58553,17 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
         throw new DelegationError("SCHEMA_OUTPUT", "Claude completed without the requested structured output.");
       }
       const structured = job.outputSchema == null ? null : validateStructuredValue(job.outputSchema, terminalResult.structured_output, "Claude");
-      store.finish(jobId2, "succeeded", { output, structured, usage, error: null });
+      await settle("succeeded", { output, structured, usage, error: null });
     }
   } catch (error2) {
     try {
       if (!(error2 instanceof DelegationError)) store.recordInternalError(jobId2, error2);
       const normalized = normalizeClaudeError(error2);
-      await stopChild();
       const current = store.getJob(jobId2);
-      if (current && !TERMINAL_STATES.includes(current.status)) {
+      if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
         const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
         const status = approvalRequired ? "awaiting_approval" : cancelled && !acceptedWrite ? "cancelled" : acceptedWrite && !terminalResult ? "unknown" : "failed";
-        store.finish(jobId2, status, {
+        await settle(status, {
           error: status === "cancelled" ? null : approvalRequired ? { kind: "APPROVAL_REQUIRED", message: "Claude requested an approval that Flow denied.", details: { toolName: approvalRequired } } : publicError(normalized),
           usage: resultUsage(terminalResult)
         });
@@ -58104,14 +58572,28 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       serviceLog(stateDir, `Claude worker could not finish job ${jobId2}: ${finishError?.stack || finishError}`);
     }
   } finally {
-    for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+    signalStopping = true;
     if (heartbeat) clearInterval(heartbeat);
     if (controlTimer) clearInterval(controlTimer);
     clearTurnTimers();
     await activeControlPoll.catch(() => {
     });
-    await stopChild();
+    try {
+      if (!await stopChild()) {
+        const current = store.getJob(jobId2);
+        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
+          const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
+          store.quarantine(jobId2, acceptedWrite && !terminalResult ? "unknown" : "failed", {
+            error: { kind: "PROVIDER_QUARANTINED", message: "Claude survived repeated termination attempts.", details: null },
+            usage: resultUsage(terminalResult)
+          });
+        }
+      }
+    } catch (error2) {
+      serviceLog(stateDir, `Claude worker could not quarantine provider processes for ${jobId2}: ${error2?.stack || error2}`);
+    }
     if (stderrTail && !terminalResult) serviceLog(stateDir, `Claude stderr for ${jobId2}: ${stderrTail}`);
+    for (const [signal, handler] of signalHandlers) process.off(signal, handler);
     store.close();
   }
 }
@@ -58176,7 +58658,42 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
   let activeControlPoll = Promise.resolve();
   let previewAt = 0;
   let jobTempDir = null;
+  let quarantined = false;
+  let signalStopping = false;
+  const providerScope = process.platform === "linux" ? providerScopeName(job.id) : null;
   const signalHandlers = [];
+  const rememberProvider = ({ discover = false } = {}) => {
+    const pid = client?.child?.pid;
+    if (!Number.isInteger(pid) || pid <= 0) return;
+    if (discover) client.captureDescendants();
+    const startToken = processStartToken(pid);
+    store.setProviderProcess(jobId2, {
+      pid,
+      startToken,
+      processGroupId: process.platform === "win32" ? null : pid,
+      scope: client.scopeName,
+      processes: client.trackedProcesses()
+    });
+  };
+  const stopProvider = async () => {
+    if (!client) return true;
+    const active = client;
+    rememberProvider();
+    await active.stop();
+    if (active.treeRunning()) {
+      rememberProvider();
+      return false;
+    }
+    client = null;
+    return true;
+  };
+  const settle = async (status, result = {}) => {
+    if (!await stopProvider()) {
+      quarantined = true;
+      return store.quarantine(jobId2, status, result);
+    }
+    return store.finish(jobId2, status, result);
+  };
   const resetStall = () => {
     if (!onStallFire || interruptReason) return;
     if (stallTimer) clearTimeout(stallTimer);
@@ -58199,29 +58716,26 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
     jobTempDir = mkdtempSync(join7(tempRoot, `${job.id}-`));
     chmodSync2(jobTempDir, 448);
     const metadataPaths = await gitMetadataPaths(job.cwd);
-    heartbeat = setInterval(() => store.heartbeat(jobId2), 1e3);
-    const onSignal = (signal) => {
-      try {
-        client?.child?.stdin?.destroy();
-      } catch {
-      }
-      try {
-        client?.child?.kill("SIGKILL");
-      } catch {
-      }
-      try {
-        if (jobTempDir) rmSync2(jobTempDir, { recursive: true, force: true });
-      } catch {
-      }
+    heartbeat = setInterval(() => {
+      store.heartbeat(jobId2);
+      rememberProvider({ discover: true });
+    }, 1e3);
+    const onSignal = async (signal) => {
+      if (signalStopping) return;
+      signalStopping = true;
       try {
         const current = store.getJob(jobId2);
-        if (current && !TERMINAL_STATES.includes(current.status)) {
+        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
           const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
-          store.finish(jobId2, acceptedWrite && !nativeTurnTerminal ? "unknown" : "failed", {
+          await settle(acceptedWrite && !nativeTurnTerminal ? "unknown" : "failed", {
             error: { kind: "INTERRUPTED", message: `The delegation worker received ${signal}.`, details: null },
             usage
           });
         }
+      } catch {
+      }
+      if (!quarantined) try {
+        if (jobTempDir) rmSync3(jobTempDir, { recursive: true, force: true });
       } catch {
       }
       try {
@@ -58231,7 +58745,9 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       process.exit(1);
     };
     for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-      const handler = () => onSignal(signal);
+      const handler = () => {
+        void onSignal(signal);
+      };
       signalHandlers.push([signal, handler]);
       process.on(signal, handler);
     }
@@ -58294,6 +58810,7 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
         TMPDIR: jobTempDir
       },
       experimentalApi: true,
+      scopeName: providerScope,
       onNotification,
       onServerRequest,
       onClose: (error2) => {
@@ -58301,6 +58818,7 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
         terminalResolve(null);
       }
     }).start();
+    rememberProvider();
     store.appendEvent(jobId2, "app_server.ready", {});
     const config2 = {
       ...await isolatedThreadConfig(client),
@@ -58406,9 +58924,7 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
     const turn = await terminal2;
     nativeTurnTerminal = Boolean(turn && turn.status !== "inProgress");
     if (approvalMethod) {
-      if (client) await client.stop();
-      client = null;
-      store.finish(jobId2, "awaiting_approval", {
+      await settle("awaiting_approval", {
         error: { kind: "APPROVAL_REQUIRED", message: "Codex requested an approval that Flow denied.", details: { method: approvalMethod } },
         usage
       });
@@ -58421,29 +58937,21 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
         latestMessage,
         transportError
       });
-      if (!turn) {
-        await client.stop();
-        client = null;
-      }
       if (outcome.status === "succeeded") {
         const structured = job.outputSchema != null ? validateStructured(job.outputSchema, outcome.output) : null;
-        store.finish(jobId2, "succeeded", { output: outcome.output, structured, usage, error: null });
+        await settle("succeeded", { output: outcome.output, structured, usage, error: null });
       } else {
-        store.finish(jobId2, outcome.status, { error: outcome.error, usage });
+        await settle(outcome.status, { error: outcome.error, usage });
       }
     }
   } catch (error2) {
     try {
       if (!(error2 instanceof DelegationError)) store.recordInternalError(jobId2, error2);
       const current = store.getJob(jobId2);
-      if (current && !TERMINAL_STATES.includes(current.status)) {
+      if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
         const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
         const status = approvalMethod ? "awaiting_approval" : acceptedWrite && !nativeTurnTerminal ? "unknown" : "failed";
-        if (status === "unknown" || status === "awaiting_approval") {
-          if (client) await client.stop();
-          client = null;
-        }
-        store.finish(jobId2, status, {
+        await settle(status, {
           error: approvalMethod ? { kind: "APPROVAL_REQUIRED", message: "Codex requested an approval that Flow denied.", details: { method: approvalMethod } } : publicError(error2),
           usage
         });
@@ -58451,7 +58959,7 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
     } catch {
     }
   } finally {
-    for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+    signalStopping = true;
     if (heartbeat) clearInterval(heartbeat);
     if (controlTimer) clearInterval(controlTimer);
     if (deadlineTimer) clearTimeout(deadlineTimer);
@@ -58459,8 +58967,26 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
     if (stallTimer) clearTimeout(stallTimer);
     await activeControlPoll.catch(() => {
     });
-    if (client) await client.stop();
-    if (jobTempDir) rmSync2(jobTempDir, { recursive: true, force: true });
+    try {
+      if (client && !await stopProvider()) {
+        const current = store.getJob(jobId2);
+        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
+          quarantined = true;
+          const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
+          store.quarantine(jobId2, acceptedWrite && !nativeTurnTerminal ? "unknown" : "failed", {
+            error: { kind: "PROVIDER_QUARANTINED", message: "Codex App Server survived repeated termination attempts.", details: null },
+            usage
+          });
+        }
+      }
+    } catch (error2) {
+      serviceLog(stateDir, `Codex worker could not quarantine provider processes for ${jobId2}: ${error2?.stack || error2}`);
+    }
+    if (jobTempDir && !quarantined) try {
+      rmSync3(jobTempDir, { recursive: true, force: true });
+    } catch {
+    }
+    for (const [signal, handler] of signalHandlers) process.off(signal, handler);
     store.close();
   }
 }

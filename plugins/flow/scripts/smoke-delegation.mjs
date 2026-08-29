@@ -7,8 +7,11 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { AppServerClient } from '../src/delegation/app-server.mjs'
+import { providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
 import { assertRoute } from '../src/delegation/contracts.mjs'
+
+assert.equal(process.platform, 'linux', 'smoke-delegation requires the Linux Codex host and systemd-scope contract')
 
 // deps/node_modules is gitignored, so a clone and every installed copy of the plugin lack
 // the MCP SDK. This client speaks the stdio transport directly instead: newline-delimited
@@ -172,6 +175,7 @@ new JobStore(process.argv[2]).close()
 `)
 
 writeFileSync(fake, `#!/usr/bin/env node
+import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 if (process.argv[2] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0) }
 const mode = process.env.FLOW_FAKE_MODE || 'happy'
@@ -301,6 +305,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       setTimeout(() => process.exit(19), 20)
       return
     }
+    if (mode === 'detached-command') {
+      const writer = "setTimeout(() => require('node:fs').writeFileSync('codex-detached-survivor', 'bad'), 1000)"
+      const daemon = "require('node:child_process').spawn(process.execPath, ['-e', " + JSON.stringify(writer)
+        + "], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()"
+      spawn(process.execPath, ['-e', daemon], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()
+    }
     if (mode === 'approval') {
       timer = setTimeout(() => say({ method: 'item/commandExecution/requestApproval', id: 900, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'command-1' } }), 20)
     } else if (mode === 'permissions-approval') {
@@ -351,7 +361,7 @@ const runArgs = ['run', '--host', 'claude', '--cwd', repo, '--model', 'gpt-5.6-l
 const waitFor = async (jobId, stateDir, wanted = null) => {
   for (let i = 0; i < 80; i++) {
     const result = cli(['result', jobId], { stateDir })
-    if (['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval'].includes(result.status)) {
+    if (['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval', 'quarantined'].includes(result.status)) {
       if (wanted) assert.equal(result.status, wanted)
       return result
     }
@@ -536,6 +546,13 @@ try {
   assert.equal(noHost.error.kind, 'BAD_REQUEST')
   assert.match(noHost.error.message, /--host/)
   assert.equal(jobCount(noHostState), 0)
+  const unsupportedLimitState = state('unsupported-limit')
+  const unsupportedLimit = cli([...runArgs, '--max-turns', '2'], {
+    input: 'x', stateDir: unsupportedLimitState,
+  })
+  assert.equal(unsupportedLimit.status, 'failed')
+  assert.equal(unsupportedLimit.error.kind, 'LIMIT_UNSUPPORTED')
+  assert.equal(jobCount(unsupportedLimitState), 0)
   const unknownHostState = state('unknown-host')
   const unknownHost = cli(['run', '--host', 'gemini', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low'], {
     input: 'x', stateDir: unknownHostState,
@@ -633,6 +650,112 @@ try {
   assert.deepEqual(heldLeases.map((lease) => lease.job_id), [owned.jobId])
   await waitFor(owned.jobId, duplicateState, 'succeeded')
 
+  console.log('provider quarantine retains and safely releases a write lease')
+  const quarantineState = state('quarantine')
+  const quarantineStore = new JobStore(quarantineState)
+  const quarantinedJob = quarantineStore.createJob({
+    traceId: 'quarantined', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'quarantine', outputSchema: null,
+  })
+  quarantineStore.claim(quarantinedJob.id, process.pid, processStartToken(process.pid))
+  const provider = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  let providerToken = null
+  for (let i = 0; i < 40 && !providerToken; i++) {
+    providerToken = processStartToken(provider.pid)
+    if (!providerToken) await delay(25)
+  }
+  assert.ok(providerToken)
+  quarantineStore.setProviderProcess(quarantinedJob.id, {
+    pid: provider.pid,
+    startToken: providerToken,
+    processes: [{ pid: provider.pid, startToken: providerToken }],
+  })
+  quarantineStore.quarantine(quarantinedJob.id, 'unknown', {
+    error: { kind: 'PROVIDER_QUARANTINED', message: 'test quarantine', details: null },
+  })
+  const blockedJob = quarantineStore.createJob({
+    traceId: 'quarantine-blocked', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'blocked', outputSchema: null,
+  })
+  assert.throws(
+    () => quarantineStore.claim(blockedJob.id, process.pid, processStartToken(process.pid)),
+    (error) => error.kind === 'WORKSPACE_BUSY',
+  )
+  quarantineStore.close()
+  const quarantined = cli(['status', quarantinedJob.id], { stateDir: quarantineState })
+  assert.equal(quarantined.status, 'quarantined')
+  assert.equal(quarantined.quarantine.resumeStatus, 'unknown')
+  assert.equal(quarantined.quarantine.trackedProcesses, 1)
+  const quarantineCancel = cli(['cancel', quarantinedJob.id], { stateDir: quarantineState })
+  assert.equal(quarantineCancel.status, 'failed')
+  assert.equal(quarantineCancel.error.kind, 'JOB_QUARANTINED')
+  provider.kill('SIGKILL')
+  await new Promise((resolve) => provider.once('exit', resolve))
+  const released = cli(['status', quarantinedJob.id], { stateDir: quarantineState })
+  assert.equal(released.status, 'unknown')
+  assert.equal(released.quarantine, null)
+  const releasedStore = new JobStore(quarantineState)
+  assert.equal(releasedStore.db.prepare('SELECT COUNT(*) AS count FROM leases').get().count, 0)
+  releasedStore.claim(blockedJob.id, process.pid, processStartToken(process.pid))
+  releasedStore.finish(blockedJob.id, 'cancelled')
+  releasedStore.close()
+
+  console.log('stale workers quarantine live providers before recovery')
+  const crashQuarantineState = state('crash-quarantine')
+  const crashQuarantineStore = new JobStore(crashQuarantineState)
+  const crashedJob = crashQuarantineStore.createJob({
+    traceId: 'crash-quarantine', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'recover after provider exit', outputSchema: null,
+  })
+  crashQuarantineStore.claim(crashedJob.id, process.pid, processStartToken(process.pid))
+  crashQuarantineStore.setRunning(crashedJob.id, { threadId: 'thread-test', turnId: 'recovered', accepted: true })
+  const orphanedScope = process.platform === 'linux' ? providerScopeName(crashedJob.id) : null
+  const orphanedLaunch = scopedProviderCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], orphanedScope)
+  const orphanedProvider = spawn(orphanedLaunch.command, orphanedLaunch.args, { stdio: 'ignore' })
+  let orphanedToken = null
+  for (let i = 0; i < 40 && !orphanedToken; i++) {
+    orphanedToken = processStartToken(orphanedProvider.pid)
+    if (!orphanedToken) await delay(25)
+  }
+  assert.ok(orphanedToken)
+  if (orphanedScope) {
+    for (let i = 0; i < 40 && !providerScopeRunning(orphanedScope); i++) await delay(25)
+    assert.equal(providerScopeRunning(orphanedScope), true)
+  }
+  crashQuarantineStore.setProviderProcess(crashedJob.id, {
+    pid: orphanedProvider.pid,
+    startToken: orphanedToken,
+    scope: orphanedScope,
+    processes: [{ pid: orphanedProvider.pid, startToken: orphanedToken }],
+  })
+  crashQuarantineStore.db.prepare('UPDATE jobs SET worker_pid=99999999, heartbeat_at=0 WHERE id=?').run(crashedJob.id)
+  crashQuarantineStore.close()
+  const crashQuarantined = cli(['status', crashedJob.id], { stateDir: crashQuarantineState })
+  assert.equal(crashQuarantined.status, 'quarantined')
+  assert.equal(crashQuarantined.quarantine.resumeStatus, 'reconciling')
+  if (orphanedScope) {
+    assert.equal(crashQuarantined.quarantine.providerScope, orphanedScope)
+    assert.equal(providerScopeRunning(orphanedScope), true)
+  }
+  const crashLeaseDb = new DatabaseSync(join(crashQuarantineState, 'jobs.sqlite3'), { readOnly: true })
+  assert.equal(crashLeaseDb.prepare('SELECT COUNT(*) AS count FROM leases').get().count, 1)
+  crashLeaseDb.close()
+  if (orphanedScope) signalProviderScope(orphanedScope, 'SIGKILL')
+  else orphanedProvider.kill('SIGKILL')
+  await new Promise((resolve) => orphanedProvider.once('exit', resolve))
+  const crashRecovered = cli(['status', crashedJob.id], { stateDir: crashQuarantineState })
+  assert.equal(crashRecovered.status, 'succeeded')
+  assert.equal(crashRecovered.output, 'RECOVERED')
+  const crashReleasedDb = new DatabaseSync(join(crashQuarantineState, 'jobs.sqlite3'), { readOnly: true })
+  assert.equal(crashReleasedDb.prepare('SELECT COUNT(*) AS count FROM leases').get().count, 0)
+  crashReleasedDb.close()
+
   console.log('unexpected approval and stale-job recovery')
   const approval = cli(runArgs, { input: 'Ask for approval', mode: 'approval', stateDir: state('approval') })
   assert.equal(approval.status, 'awaiting_approval')
@@ -700,6 +823,15 @@ try {
   const midturnWrite = cli([...runArgs, '--access', 'workspace-write'], { input: 'crash after write acceptance', mode: 'midturn-crash', stateDir: state('midturn-write') })
   assert.equal(midturnWrite.status, 'unknown')
   assert.equal(midturnWrite.error.kind, 'APP_SERVER_EXIT')
+
+  if (process.platform === 'linux') {
+    const detachedCommand = cli(runArgs, {
+      input: 'start a detached command', mode: 'detached-command', stateDir: state('detached-command'),
+    })
+    assert.equal(detachedCommand.status, 'succeeded')
+    await delay(1_200)
+    assert.equal(existsSync(join(repo, 'codex-detached-survivor')), false)
+  }
 
   const recoveryState = state('recovery')
   const recoverable = cli(runArgs, { input: 'complete', stateDir: recoveryState })
@@ -801,6 +933,13 @@ try {
   const ancient = Date.now() - 15 * 24 * 60 * 60 * 1_000
   retentionStore.db.prepare('UPDATE jobs SET updated_at=? WHERE id IN (?, ?)').run(ancient, expired.id, expiredParent.id)
   retentionStore.db.prepare(`UPDATE jobs SET status='running', updated_at=? WHERE id=?`).run(ancient, expiredActive.id)
+  const tempRoot = join(retentionState, 'tmp')
+  const expiredTemp = join(tempRoot, `${expired.id}-expired`)
+  const recentTemp = join(tempRoot, `${recent.id}-terminal`)
+  const activeTemp = join(tempRoot, `${expiredActive.id}-active`)
+  mkdirSync(expiredTemp, { recursive: true })
+  mkdirSync(recentTemp, { recursive: true })
+  mkdirSync(activeTemp, { recursive: true })
   assert.ok(retentionStore.events(expired.id).length > 0)
   retentionStore.close()
   const pruned = new JobStore(retentionState)
@@ -810,6 +949,10 @@ try {
   assert.equal(pruned.getJob(expiredActive.id).status, 'running')
   assert.equal(pruned.getJob(expiredParent.id).status, 'succeeded')
   assert.equal(pruned.getJob(liveChild.id).parentJobId, expiredParent.id)
+  assert.equal(existsSync(expiredTemp), false)
+  assert.equal(existsSync(recentTemp), false)
+  assert.equal(existsSync(activeTemp), true)
+  rmSync(activeTemp, { recursive: true, force: true })
   pruned.close()
 
   // A v1 database from before the schema shed jobs.delivery and leases.heartbeat_at. The rows
@@ -885,6 +1028,13 @@ try {
   ) VALUES ('legacy-job', 'legacy-trace', NULL, 'claude', 'codex', 0, 'task', 'workspace-write', 'detached',
     ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, 'legacy prompt', 'running', ?, ?, ?)`)
     .run(repo, repo, legacyAt, legacyAt, legacyAt)
+  legacyDb.prepare(`INSERT INTO jobs (
+    id, trace_id, parent_job_id, host, target, depth, mode, access, delivery,
+    cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+    prompt, status, created_at, updated_at, heartbeat_at
+  ) VALUES ('legacy-child', 'legacy-trace', 'legacy-job', 'claude', 'codex', 0, 'task', 'read-only', 'attached',
+    ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, NULL, 'succeeded', ?, ?, ?)`)
+    .run(repo, repo, legacyAt, legacyAt, legacyAt)
   legacyDb.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
     VALUES ('legacy-job', 1, 'job.queued', '{"status":"queued"}', ?)`).run(legacyAt)
   legacyDb.prepare(`INSERT INTO leases (workspace_key, job_id, heartbeat_at) VALUES (?, 'legacy-job', ?)`)
@@ -892,16 +1042,39 @@ try {
   legacyDb.close()
   const upgraded = new JobStore(legacyState)
   const columnsOf = (table) => upgraded.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
-  assert.equal(upgraded.userVersion(), 2)
+  assert.equal(upgraded.userVersion(), 4)
   assert.ok(!columnsOf('jobs').includes('delivery'))
+  assert.ok(columnsOf('jobs').includes('max_turns'))
+  assert.ok(columnsOf('jobs').includes('provider_processes_json'))
+  assert.ok(columnsOf('jobs').includes('provider_scope'))
   assert.ok(!columnsOf('leases').includes('heartbeat_at'))
   const legacyJob = upgraded.getJob('legacy-job')
   assert.equal(legacyJob.status, 'running')
   assert.equal(legacyJob.model, 'gpt-5.6-luna')
   assert.equal(legacyJob.workspaceKey, repo)
+  assert.equal(upgraded.getJob('legacy-child').parentJobId, 'legacy-job')
   assert.equal(upgraded.events('legacy-job').length, 1)
   assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases, 1)
+  assert.deepEqual(upgraded.db.prepare('PRAGMA foreign_key_check').all(), [])
   upgraded.close()
+
+  const v3State = state('legacy-v3')
+  const v3Seed = new JobStore(v3State)
+  const v3Job = v3Seed.createJob({
+    traceId: 'v3-job', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'v3', outputSchema: null,
+  })
+  v3Seed.close()
+  const v3Db = new DatabaseSync(join(v3State, 'jobs.sqlite3'))
+  v3Db.exec('ALTER TABLE jobs DROP COLUMN provider_scope; PRAGMA user_version=3;')
+  v3Db.close()
+  const v3Upgraded = new JobStore(v3State)
+  assert.equal(v3Upgraded.userVersion(), 4)
+  assert.ok(v3Upgraded.db.prepare('PRAGMA table_info(jobs)').all().some((column) => column.name === 'provider_scope'))
+  assert.equal(v3Upgraded.getJob(v3Job.id).traceId, 'v3-job')
+  v3Upgraded.close()
 
   console.log('MCP registration, roots, progress, and attached result')
   const mcpState = state('mcp')
@@ -921,6 +1094,9 @@ try {
   const tools = await client.listTools()
   const names = tools.tools.map((tool) => tool.name)
   for (const name of ['delegate_to_codex', 'delegation_status', 'delegation_result', 'delegation_events', 'delegation_list', 'delegation_cancel', 'delegation_steer', 'delegation_continue', 'delegation_models', 'delegation_doctor']) assert.ok(names.includes(name), name)
+  const delegateTool = tools.tools.find((tool) => tool.name === 'delegate_to_codex')
+  assert.equal(delegateTool.inputSchema.properties.maxTurns, undefined)
+  assert.equal(delegateTool.inputSchema.properties.maxBudgetUsd, undefined)
   const escaped = await client.callTool(
     'delegate_to_codex',
     { mode: 'task', prompt: 'escape', cwd: temp, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
@@ -1023,6 +1199,7 @@ try {
   const doctorResult = await client.callTool('delegation_doctor', { cwd: repo }, { timeout: 30_000 })
   assert.equal(doctorResult.structuredContent.ok, true)
   assert.equal(doctorResult.structuredContent.checks.workspace.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.containment.mode, 'systemd-scope')
   assert.equal(doctorResult.structuredContent.checks.mcpIsolation.ok, true)
   assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.ok, true)
   assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.profile, 'flow_delegation')

@@ -3,6 +3,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { accessSync, constants, realpathSync } from 'node:fs'
 import { delimiter, isAbsolute, resolve, sep } from 'node:path'
 import { claudeSpawnCommand } from './claude-launch.mjs'
+import { providerScopeName, scopedProviderCommand } from './containment.mjs'
 import { DelegationError } from './contracts.mjs'
 import { normalizeClaudeError } from './claude-errors.mjs'
 import { claudePolicyHook, claudeSandboxFor, claudeTools } from './claude-policy.mjs'
@@ -186,6 +187,7 @@ export function createClaudeQuery(job, prompt, {
   canUseTool,
 } = {}) {
   const tools = claudeTools(job.access, { structured: job.outputSchema != null })
+  const scopeName = process.platform === 'linux' ? providerScopeName(job.id) : null
   return query({
     prompt,
     options: {
@@ -193,6 +195,8 @@ export function createClaudeQuery(job, prompt, {
       cwd: job.cwd,
       model: job.model,
       effort: job.effort,
+      maxTurns: job.maxTurns ?? undefined,
+      maxBudgetUsd: job.maxBudgetUsd ?? undefined,
       ...(job.nativeThreadId ? { resume: job.nativeThreadId, forkSession: false } : { sessionId }),
       persistSession: true,
       includePartialMessages: true,
@@ -232,7 +236,8 @@ export function createClaudeQuery(job, prompt, {
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
         // npm's Windows shim cannot run without cmd.exe. Resolve its installed JavaScript
         // entrypoint instead, so schemas and every other SDK argument bypass shell parsing.
-        const launch = claudeSpawnCommand(command, args)
+        const direct = claudeSpawnCommand(command, args)
+        const launch = scopedProviderCommand(direct.command, direct.args, scopeName)
         const child = spawn(launch.command, launch.args, {
           cwd,
           env,
@@ -242,6 +247,7 @@ export function createClaudeQuery(job, prompt, {
           // started before releasing a workspace-write lease.
           detached: process.platform !== 'win32',
         })
+        child.flowProviderScope = scopeName
         child.stderr?.setEncoding('utf8')
         child.stderr?.on('data', onStderr)
         onSpawn(child)

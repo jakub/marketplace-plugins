@@ -25,6 +25,10 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   const targetTitle = target[0].toUpperCase() + target.slice(1)
   const effort = z.enum([...effortsForTarget(target)])
   const capabilities = capabilitiesForTarget(target)
+  const providerLimits = target === 'claude' ? {
+    maxTurns: z.number().int().min(1).max(1000).optional().describe('Hard Claude conversation-turn limit for this job'),
+    maxBudgetUsd: z.number().min(0.01).max(1000).optional().describe('Hard Claude SDK cost limit in US dollars for this job'),
+  } : {}
   const service = new DelegationService({ host, depth, stateDir, entryPath, projectDir })
   const server = new McpServer({ name: 'flow-delegation', version: VERSION }, {
     capabilities: { logging: {} },
@@ -116,6 +120,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       profile: z.enum(['standard', 'defensive-security']).default('standard'),
       delivery: delivery.default('attached'),
       timeBudgetSeconds: z.number().int().min(30).max(7200).default(900),
+      ...providerLimits,
       outputSchema: z.union([z.boolean(), z.record(z.string(), z.unknown())]).optional(),
       base: z.string().optional().describe('Required Git revision for review modes'),
       head: z.string().default('HEAD').describe('Git revision for review modes'),
@@ -203,6 +208,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       profile: z.enum(['standard', 'defensive-security']).optional(),
       delivery: delivery.default('attached'),
       timeBudgetSeconds: z.number().int().min(30).max(7200).optional(),
+      ...providerLimits,
       outputSchema: z.union([z.boolean(), z.record(z.string(), z.unknown())]).optional(),
     },
     annotations: { openWorldHint: false },

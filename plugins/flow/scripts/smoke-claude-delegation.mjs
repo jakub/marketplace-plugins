@@ -147,6 +147,11 @@ if (mode === 'schema-dialect') {
   const schema = JSON.parse(args[schemaIndex + 1])
   if (schema?.$schema !== undefined) process.exit(20)
 }
+if (mode === 'assert-limits') {
+  const turns = args.indexOf('--max-turns')
+  const budget = args.indexOf('--max-budget-usd')
+  if (turns < 0 || args[turns + 1] !== '7' || budget < 0 || args[budget + 1] !== '0.25') process.exit(21)
+}
 const say = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let sessionId = args.find((arg) => arg.startsWith('--session-id='))?.slice(13)
   || args.find((arg) => arg.startsWith('--resume='))?.slice(9)
@@ -157,14 +162,18 @@ const usage = {
   output_tokens_details: { thinking_tokens: 0 }, server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
   service_tier: 'standard', cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
 }
-const result = ({ text = 'OK from fake Claude', error = false, structured = undefined } = {}) => {
-  say({
-    type: 'result', subtype: 'success', duration_ms: 20, duration_api_ms: 10, is_error: error,
+const result = ({ text = 'OK from fake Claude', error = false, structured = undefined, subtype = 'success' } = {}) => {
+  const common = {
+    type: 'result', subtype, duration_ms: 20, duration_api_ms: 10, is_error: error,
     num_turns: 1, stop_reason: error ? 'error' : 'end_turn', total_cost_usd: 0.001, usage,
     modelUsage: {}, permission_denials: pendingApproval ? [{ tool_name: 'Bash', tool_use_id: 'tool-1', tool_input: {} }] : [],
-    result: text, ...(structured === undefined ? {} : { structured_output: structured }),
     uuid: randomUUID(), session_id: sessionId,
-  })
+  }
+  if (subtype === 'success') {
+    say({ ...common, result: text, ...(structured === undefined ? {} : { structured_output: structured }) })
+  } else {
+    say({ ...common, errors: [text] })
+  }
 }
 const initialize = (message) => say({
   type: 'control_response',
@@ -207,8 +216,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return
     }
     if (mode === 'detached-command') {
-      const code = "setTimeout(() => require('node:fs').writeFileSync('detached-survivor', 'bad'), 1000)"
-      spawn(process.execPath, ['-e', code], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()
+      const writer = "setTimeout(() => require('node:fs').writeFileSync('detached-survivor', 'bad'), 1000)"
+      const daemon = "require('node:child_process').spawn(process.execPath, ['-e', " + JSON.stringify(writer)
+        + "], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()"
+      spawn(process.execPath, ['-e', daemon], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()
       return result()
     }
     if (mode === 'approval') {
@@ -223,6 +234,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       say({ type: 'assistant', error: 'rate_limit', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'limit reached', error: true })
     }
+    if (mode === 'max-turns') return result({ text: 'turn limit', error: true, subtype: 'error_max_turns' })
+    if (mode === 'max-budget') return result({ text: 'budget limit', error: true, subtype: 'error_max_budget_usd' })
     const structured = ['schema-good', 'schema-dialect'].includes(mode) ? { answer: 'yes' }
       : mode === 'schema-bad' ? { wrong: true }
       : undefined
@@ -257,7 +270,7 @@ const runArgs = ['run', '--host', 'codex', '--cwd', repo, '--model', 'sonnet', '
 const waitFor = async (jobId, stateDir, status) => {
   for (let attempt = 0; attempt < 80; attempt++) {
     const job = cli(['result', jobId, '--host', 'codex'], { stateDir })
-    if (['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval'].includes(job.status)) {
+    if (['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval', 'quarantined'].includes(job.status)) {
       assert.equal(job.status, status)
       return job
     }
@@ -269,7 +282,7 @@ const waitForActive = async (jobId, stateDir) => {
   for (let attempt = 0; attempt < 80; attempt++) {
     const job = cli(['result', jobId, '--host', 'codex'], { stateDir })
     if (['starting', 'running'].includes(job.status)) return job
-    if (['failed', 'cancelled', 'unknown', 'awaiting_approval'].includes(job.status)) {
+    if (['failed', 'cancelled', 'unknown', 'awaiting_approval', 'quarantined'].includes(job.status)) {
       assert.fail(`job ${jobId} became ${job.status} before reaching active state`)
     }
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -280,7 +293,7 @@ const waitForRunning = async (jobId, stateDir) => {
   for (let attempt = 0; attempt < 80; attempt++) {
     const job = cli(['result', jobId, '--host', 'codex'], { stateDir })
     if (job.status === 'running' && job.turnId) return job
-    if (['failed', 'cancelled', 'unknown', 'awaiting_approval'].includes(job.status)) {
+    if (['failed', 'cancelled', 'unknown', 'awaiting_approval', 'quarantined'].includes(job.status)) {
       assert.fail(`job ${jobId} became ${job.status} before Claude accepted its turn`)
     }
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -298,6 +311,9 @@ try {
   assert.equal(doctor.ok, true)
   assert.equal(doctor.target, 'claude')
   assert.equal(doctor.capabilities.liveSteer, false)
+  assert.equal(doctor.capabilities.limits.maxTurns, true)
+  assert.equal(doctor.capabilities.limits.maxBudgetUsd, true)
+  assert.equal(doctor.checks.containment.mode, process.platform === 'linux' ? 'systemd-scope' : 'process-tree')
   assert.equal(doctor.checks.account.authMethod, 'claude.ai')
   assert.equal(doctor.checks.agentSdk.bundled, true)
 
@@ -318,6 +334,24 @@ try {
     extraEnv: { FLOW_SMOKE_API_KEY: 'not-a-real-secret' },
   })
   assert.equal(isolatedEnv.status, 'succeeded')
+  const bounded = cli([...runArgs, '--max-turns', '7', '--max-budget-usd', '0.25'], {
+    input: 'Bounded task', mode: 'assert-limits', stateDir: state('limits'),
+  })
+  assert.equal(bounded.status, 'succeeded')
+  assert.equal(bounded.limits.maxTurns, 7)
+  assert.equal(bounded.limits.maxBudgetUsd, 0.25)
+  const boundedContinued = cli(['continue', bounded.jobId, '--host', 'codex'], {
+    input: 'Continue within the same limits', mode: 'assert-limits', stateDir: state('limits'),
+  })
+  assert.equal(boundedContinued.status, 'succeeded')
+  assert.equal(boundedContinued.limits.maxTurns, 7)
+  assert.equal(boundedContinued.limits.maxBudgetUsd, 0.25)
+  const maxTurns = cli([...runArgs, '--max-turns', '1'], { input: 'Turn limit', mode: 'max-turns', stateDir: state('max-turns') })
+  assert.equal(maxTurns.status, 'failed')
+  assert.equal(maxTurns.error.kind, 'MAX_TURNS')
+  const maxBudget = cli([...runArgs, '--max-budget-usd', '0.01'], { input: 'Budget limit', mode: 'max-budget', stateDir: state('max-budget') })
+  assert.equal(maxBudget.status, 'failed')
+  assert.equal(maxBudget.error.kind, 'MAX_BUDGET')
 
   const schemaFile = join(temp, 'schema.json')
   writeFileSync(schemaFile, JSON.stringify({ type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
@@ -385,12 +419,15 @@ try {
   cli(['cancel', hangingInterrupt.jobId, '--host', 'codex'], { stateDir: hangingInterruptState })
   await waitFor(hangingInterrupt.jobId, hangingInterruptState, 'cancelled')
 
-  if (process.platform !== 'win32') {
+  if (process.platform === 'linux') {
     const detachedCommand = cli(runArgs, { input: 'start detached command', mode: 'detached-command', stateDir: state('detached-command') })
     assert.equal(detachedCommand.status, 'succeeded')
     await new Promise((resolve) => setTimeout(resolve, 1_200))
     assert.equal(existsSync(join(repo, 'detached-survivor')), false)
 
+  }
+
+  if (process.platform !== 'win32') {
     const signalState = state('signal-command')
     const signalled = cli([...runArgs, '--access', 'workspace-write', '--detach'], {
       input: 'start command before signal', mode: 'signal-command', stateDir: signalState,
@@ -562,6 +599,9 @@ try {
   assert.ok(names.includes('delegate_to_claude'))
   assert.ok(names.includes('delegation_list'))
   assert.ok(!names.includes('delegate_to_codex'))
+  const delegateTool = tools.tools.find((tool) => tool.name === 'delegate_to_claude')
+  assert.ok(delegateTool.inputSchema.properties.maxTurns)
+  assert.ok(delegateTool.inputSchema.properties.maxBudgetUsd)
   const modelResult = await mcpClient.callTool('delegation_models', { cwd: repo })
   assert.equal(modelResult.structuredContent.target, 'claude')
   assert.equal(modelResult.structuredContent.capabilities.liveSteer, false)

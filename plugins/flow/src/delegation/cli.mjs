@@ -57,6 +57,8 @@ export async function runCli({ argv, entryPath }) {
       profile: flags.profile || 'standard',
       delivery: flags.detach ? 'detached' : 'attached',
       timeBudgetSeconds: number(flags['time-budget-seconds'], 900),
+      maxTurns: number(flags['max-turns'], null),
+      maxBudgetUsd: number(flags['max-budget-usd'], null),
       outputSchema,
       base: flags.base || null,
       head: flags.head || 'HEAD',
@@ -81,6 +83,8 @@ export async function runCli({ argv, entryPath }) {
       effort: flags.effort,
       delivery: flags.detach ? 'detached' : 'attached',
       timeBudgetSeconds: number(flags['time-budget-seconds'], undefined),
+      maxTurns: number(flags['max-turns'], undefined),
+      maxBudgetUsd: number(flags['max-budget-usd'], undefined),
     }, { fallbackCwd: prior.cwd })
     value = flags.detach ? resultEnvelope(job) : resultEnvelope(await service.wait(job.id))
   } else if (command === 'models') {

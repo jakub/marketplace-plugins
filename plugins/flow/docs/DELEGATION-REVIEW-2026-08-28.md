@@ -45,19 +45,7 @@ The Codex MCP definition now sets `tool_timeout_sec` to 7,500 seconds. The Claud
 
 Reference: <https://learn.chatgpt.com/docs/extend/mcp?surface=cli>.
 
-### 4. The deprecated fixed workflow builds shell text from unchecked values
-
-Status: deferred.
-
-`workflows/issue-fixed.mjs` still has three shell-construction risks:
-
-- `pluginRoot` receives weak validation before it enters generated shell commands.
-- `contextPack` uses a fixed heredoc delimiter.
-- `base` enters a shell command without shell-safe argument handling.
-
-The fixed workflow is deprecated and receives no new features, but it remains a supported fallback. A future hardening change should replace shell interpolation with argument arrays or a structured command boundary. It should include malicious-path, delimiter-collision, and revision-input tests. This work was not mixed into the delegation service change.
-
-### 5. App Server stdin errors could crash the Node process
+### 4. App Server stdin errors could crash the Node process
 
 Status: fixed, unreleased.
 
@@ -65,7 +53,7 @@ The App Server client handled child process errors and exits but did not attach 
 
 The client now listens for stdin errors, rejects all pending requests with `APP_SERVER_EXIT`, terminates the child, and lets the worker apply the existing conservative read or write outcome. It also treats malformed JSON lines as `APP_SERVER_PROTOCOL` instead of ignoring them.
 
-### 6. Codex read-only jobs could read outside the assigned workspace
+### 5. Codex read-only jobs could read outside the assigned workspace
 
 Status: fixed, unreleased.
 
@@ -75,7 +63,7 @@ Flow now requires Linux and Codex CLI 0.150.1 or newer. It starts App Server wit
 
 Doctor now tests the permission-profile API, starts an ephemeral thread with the same restricted profile, verifies the active profile ID, and checks that thread's MCP inventory. It reports the host and minimum-version requirements as separate checks.
 
-### 7. Claude schema jobs denied the provider's structured-output tool
+### 6. Claude schema jobs denied the provider's structured-output tool
 
 Status: fixed, unreleased.
 
@@ -83,7 +71,7 @@ Claude Code emits a native `StructuredOutput` tool call when the Agent SDK reque
 
 Schema jobs now add `StructuredOutput` to both Claude tool lists and to the policy hook's allowed set. Plain jobs still deny it. The existing Ajv check remains the final result boundary.
 
-### 8. Delegated review workers did not receive the Flow charter
+### 7. Delegated review workers did not receive the Flow charter
 
 Status: fixed, unreleased.
 
@@ -91,7 +79,7 @@ Codex review workers read the repository instructions, saw the required `<flow-c
 
 The build now reads `charter/charter.md` and injects that exact source into the committed bundle. Both Codex and Claude workers receive it. A final `<delegated-seat>` block then narrows the main-session charter: no subagents, no nested provider invocation, no publication, and no authority outside the assigned workspace and access mode. The charter remains hand-authored in one file.
 
-### 9. Provider schema failures and failed turns exposed avoidable raw errors
+### 8. Provider schema failures and failed turns exposed avoidable raw errors
 
 Status: fixed, unreleased.
 
@@ -125,6 +113,14 @@ MCP mode now requires `--host claude` or `--host codex`. The manifests already p
 - Codex and Claude provider instructions use the current charter source instead of a copied summary.
 - Provider schema validation happens before a rejected prompt can enter the durable job table.
 
+### Provider limits
+
+Claude calls may set `maxTurns` and `maxBudgetUsd`. Flow validates and stores both values, passes them to the Agent SDK, and returns typed `MAX_TURNS` and `MAX_BUDGET` failures. Continuations inherit the prior limits unless the caller replaces them. Codex App Server exposes no matching hard limit on `turn/start`, so the Codex route omits the fields and reports them as unsupported instead of interrupting after an observed usage update.
+
+### Provider quarantine
+
+Both workers stop the provider process tree before they record a terminal job. Linux providers run in a dedicated transient systemd scope, so `setsid`, double-forking, and parent exit do not escape the cgroup. Stable PID identities remain fallback evidence. If repeated termination attempts leave App Server, Claude Code, or a recorded descendant alive, Flow records `quarantined` and retains the write lease. Stale-job recovery applies the same barrier when an uncatchable worker exit leaves its recorded provider alive. After the provider stops, Flow resumes recovery or applies the stored terminal state. It releases the lease only after terminal proof. A quarantined job cannot accept controls, continue, or age out through terminal retention.
+
 ## Deferred App Server features
 
 These features are useful, but they need product decisions or a larger protocol change.
@@ -133,13 +129,11 @@ These features are useful, but they need product decisions or a larger protocol 
 - Handle experimental dynamic `item/tool/call` requests only after Flow has an explicit tool allowlist and result schema.
 - Add request attestation only after the trust and verification rules are defined.
 - Expose provider quota, rate-limit reset time, and usage summaries through doctor or a separate read-only tool.
-- Add first-class maximum turn count and provider cost limits where the provider supports them.
 - Add context attachments and file checkpoints without widening workspace authority.
 - Evaluate App Server tasks after the MCP client and server task semantics are stable enough for durable job mapping.
 - Evaluate server instructions and native thread forks. Continuation currently resumes the same provider session through a new Flow job.
 - Coordinate Flow's 14-day job retention with the longer lifetime of native provider sessions.
 - Improve MCP tool annotations when the protocol can express that write behavior depends on the `access` input.
-- Add a safe quarantine state for a provider process that survives repeated termination attempts. Do not release a write lease while that process may still write.
 
 ## Provider differences to preserve
 

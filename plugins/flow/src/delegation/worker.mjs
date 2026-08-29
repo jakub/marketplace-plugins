@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, isApprovalRequest, restrictedPermissionConfig } from './app-server.mjs'
 import { runClaudeWorker } from './claude-worker.mjs'
+import { providerScopeName } from './containment.mjs'
 import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
 import { delegatedInstructions } from './instructions.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
@@ -72,7 +73,45 @@ async function runCodexWorker({ jobId, stateDir }) {
   let activeControlPoll = Promise.resolve()
   let previewAt = 0
   let jobTempDir = null
+  let quarantined = false
+  let signalStopping = false
+  const providerScope = process.platform === 'linux' ? providerScopeName(job.id) : null
   const signalHandlers = []
+
+  const rememberProvider = ({ discover = false } = {}) => {
+    const pid = client?.child?.pid
+    if (!Number.isInteger(pid) || pid <= 0) return
+    if (discover) client.captureDescendants()
+    const startToken = processStartToken(pid)
+    store.setProviderProcess(jobId, {
+      pid,
+      startToken,
+      processGroupId: process.platform === 'win32' ? null : pid,
+      scope: client.scopeName,
+      processes: client.trackedProcesses(),
+    })
+  }
+
+  const stopProvider = async () => {
+    if (!client) return true
+    const active = client
+    rememberProvider()
+    await active.stop()
+    if (active.treeRunning()) {
+      rememberProvider()
+      return false
+    }
+    client = null
+    return true
+  }
+
+  const settle = async (status, result = {}) => {
+    if (!await stopProvider()) {
+      quarantined = true
+      return store.quarantine(jobId, status, result)
+    }
+    return store.finish(jobId, status, result)
+  }
 
   // Every notification for this job is proof the App Server is still alive, so each one
   // restarts the quiet-period clock. The timer only exists once the turn is accepted.
@@ -99,32 +138,36 @@ async function runCodexWorker({ jobId, stateDir }) {
     jobTempDir = mkdtempSync(join(tempRoot, `${job.id}-`))
     chmodSync(jobTempDir, 0o700)
     const metadataPaths = await gitMetadataPaths(job.cwd)
-    heartbeat = setInterval(() => store.heartbeat(jobId), 1_000)
+    heartbeat = setInterval(() => {
+      store.heartbeat(jobId)
+      rememberProvider({ discover: true })
+    }, 1_000)
 
     // A kill mid-turn skips the cooperative interrupt. The child dies BEFORE the job is
     // marked, because finish() releases the write lease and a writer must never outlive it;
     // an accepted write with no native terminal proof is unknown, never failed.
-    const onSignal = (signal) => {
-      try { client?.child?.stdin?.destroy() } catch {}
-      try { client?.child?.kill('SIGKILL') } catch {}
-      try { if (jobTempDir) rmSync(jobTempDir, { recursive: true, force: true }) } catch {}
+    const onSignal = async (signal) => {
+      if (signalStopping) return
+      signalStopping = true
       try {
         const current = store.getJob(jobId)
-        if (current && !TERMINAL_STATES.includes(current.status)) {
+        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== 'quarantined') {
           const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
-          store.finish(jobId, acceptedWrite && !nativeTurnTerminal ? 'unknown' : 'failed', {
+          await settle(acceptedWrite && !nativeTurnTerminal ? 'unknown' : 'failed', {
             error: { kind: 'INTERRUPTED', message: `The delegation worker received ${signal}.`, details: null },
             usage,
           })
         }
       } catch {}
+      if (!quarantined) try { if (jobTempDir) rmSync(jobTempDir, { recursive: true, force: true }) } catch {}
       // The worker leads its own process group (spawned detached), so this sweeps any
-      // command subprocess Codex left behind along with this process itself.
+      // remaining worker subprocesses along with this process itself. App Server has its own
+      // tracked process group and is either dead or held in quarantine before this point.
       try { process.kill(-process.pid, 'SIGKILL') } catch {}
       process.exit(1)
     }
     for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-      const handler = () => onSignal(signal)
+      const handler = () => { void onSignal(signal) }
       signalHandlers.push([signal, handler])
       process.on(signal, handler)
     }
@@ -189,6 +232,7 @@ async function runCodexWorker({ jobId, stateDir }) {
         TMPDIR: jobTempDir,
       },
       experimentalApi: true,
+      scopeName: providerScope,
       onNotification,
       onServerRequest,
       onClose: (error) => {
@@ -196,6 +240,7 @@ async function runCodexWorker({ jobId, stateDir }) {
         terminalResolve(null)
       },
     }).start()
+    rememberProvider()
     store.appendEvent(jobId, 'app_server.ready', {})
 
     const config = {
@@ -298,9 +343,7 @@ async function runCodexWorker({ jobId, stateDir }) {
     const turn = await terminal
     nativeTurnTerminal = Boolean(turn && turn.status !== 'inProgress')
     if (approvalMethod) {
-      if (client) await client.stop()
-      client = null
-      store.finish(jobId, 'awaiting_approval', {
+      await settle('awaiting_approval', {
         error: { kind: 'APPROVAL_REQUIRED', message: 'Codex requested an approval that Flow denied.', details: { method: approvalMethod } },
         usage,
       })
@@ -313,29 +356,21 @@ async function runCodexWorker({ jobId, stateDir }) {
         latestMessage,
         transportError,
       })
-      if (!turn) {
-        await client.stop()
-        client = null
-      }
       if (outcome.status === 'succeeded') {
         const structured = job.outputSchema != null ? validateStructured(job.outputSchema, outcome.output) : null
-        store.finish(jobId, 'succeeded', { output: outcome.output, structured, usage, error: null })
+        await settle('succeeded', { output: outcome.output, structured, usage, error: null })
       } else {
-        store.finish(jobId, outcome.status, { error: outcome.error, usage })
+        await settle(outcome.status, { error: outcome.error, usage })
       }
     }
   } catch (error) {
     try {
       if (!(error instanceof DelegationError)) store.recordInternalError(jobId, error)
       const current = store.getJob(jobId)
-      if (current && !TERMINAL_STATES.includes(current.status)) {
+      if (current && !TERMINAL_STATES.includes(current.status) && current.status !== 'quarantined') {
         const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
         const status = approvalMethod ? 'awaiting_approval' : acceptedWrite && !nativeTurnTerminal ? 'unknown' : 'failed'
-        if (status === 'unknown' || status === 'awaiting_approval') {
-          if (client) await client.stop()
-          client = null
-        }
-        store.finish(jobId, status, {
+        await settle(status, {
           error: approvalMethod
             ? { kind: 'APPROVAL_REQUIRED', message: 'Codex requested an approval that Flow denied.', details: { method: approvalMethod } }
             : publicError(error),
@@ -344,15 +379,32 @@ async function runCodexWorker({ jobId, stateDir }) {
       }
     } catch {}
   } finally {
-    for (const [signal, handler] of signalHandlers) process.off(signal, handler)
+    // Keep the signal handlers installed until provider cleanup finishes. A signal in this
+    // window must not restore Node's default immediate exit and strand a live provider.
+    signalStopping = true
     if (heartbeat) clearInterval(heartbeat)
     if (controlTimer) clearInterval(controlTimer)
     if (deadlineTimer) clearTimeout(deadlineTimer)
     if (forcedTimer) clearTimeout(forcedTimer)
     if (stallTimer) clearTimeout(stallTimer)
     await activeControlPoll.catch(() => {})
-    if (client) await client.stop()
-    if (jobTempDir) rmSync(jobTempDir, { recursive: true, force: true })
+    try {
+      if (client && !await stopProvider()) {
+        const current = store.getJob(jobId)
+        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== 'quarantined') {
+          quarantined = true
+          const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
+          store.quarantine(jobId, acceptedWrite && !nativeTurnTerminal ? 'unknown' : 'failed', {
+            error: { kind: 'PROVIDER_QUARANTINED', message: 'Codex App Server survived repeated termination attempts.', details: null },
+            usage,
+          })
+        }
+      }
+    } catch (error) {
+      serviceLog(stateDir, `Codex worker could not quarantine provider processes for ${jobId}: ${error?.stack || error}`)
+    }
+    if (jobTempDir && !quarantined) try { rmSync(jobTempDir, { recursive: true, force: true }) } catch {}
+    for (const [signal, handler] of signalHandlers) process.off(signal, handler)
     store.close()
   }
 }

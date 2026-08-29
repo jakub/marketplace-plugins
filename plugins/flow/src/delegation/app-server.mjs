@@ -2,7 +2,9 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
+import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope, signalTrackedProcessTree, trackedDescendantRunning } from './containment.mjs'
 import { DelegationError } from './contracts.mjs'
+import { processStartToken } from './store.mjs'
 import { VERSION } from './version.mjs'
 
 const APPROVAL_METHODS = new Set([
@@ -21,29 +23,35 @@ const MIN_CODEX_VERSION = [0, 150, 1]
 export const isApprovalRequest = (method) => APPROVAL_METHODS.has(method)
 
 export class AppServerClient {
-  constructor({ cwd, env = {}, experimentalApi = false, onNotification = () => {}, onServerRequest = () => {}, onClose = () => {} } = {}) {
+  constructor({ cwd, env = {}, experimentalApi = false, scopeName = null, onNotification = () => {}, onServerRequest = () => {}, onClose = () => {} } = {}) {
     this.cwd = cwd
     this.env = env
     this.experimentalApi = experimentalApi
     this.onNotification = onNotification
     this.onServerRequest = onServerRequest
     this.onClose = onClose
+    this.scopeName = process.platform === 'linux' ? scopeName || providerScopeName() : null
     this.child = null
     this.nextId = 1
     this.pending = new Map()
     this.stderr = ''
     this.transportError = null
     this.closeInfo = null
+    this.knownDescendants = new Map()
     this.closePromise = new Promise((resolve) => { this.resolveClose = resolve })
   }
 
   async start() {
     const bin = process.env.FLOW_DELEGATION_CODEX_BIN || 'codex'
+    const launch = scopedProviderCommand(bin, ['app-server', '--stdio'], this.scopeName)
     try {
-      this.child = spawn(bin, ['app-server', '--stdio'], {
+      this.child = spawn(launch.command, launch.args, {
         cwd: this.cwd,
         env: { ...process.env, ...this.env },
         stdio: ['pipe', 'pipe', 'pipe'],
+        // A separate POSIX process group lets Flow prove that App Server and every ordinary
+        // descendant stopped before it releases a workspace-write lease.
+        detached: process.platform !== 'win32',
       })
     } catch (cause) {
       throw new DelegationError('CODEX_NOT_INSTALLED', 'Codex could not be started.')
@@ -192,20 +200,77 @@ export class AppServerClient {
     ]).finally(() => clearTimeout(timer))
   }
 
+  treeRunning() {
+    if (!this.child?.pid) return false
+    if (process.platform === 'win32') return this.child.exitCode === null && !this.child.signalCode
+    if (providerScopeRunning(this.scopeName)) return true
+    let groupRunning = false
+    try {
+      process.kill(-this.child.pid, 0)
+      groupRunning = true
+    } catch (error) {
+      groupRunning = error?.code === 'EPERM'
+    }
+    return groupRunning || this.descendantRunning()
+  }
+
+  descendantRunning() {
+    return trackedDescendantRunning(this.knownDescendants)
+  }
+
+  captureDescendants({ freeze = false } = {}) {
+    captureProcessDescendants(this.child?.pid, this.knownDescendants, { freeze })
+  }
+
+  trackedProcesses() {
+    const tracked = []
+    if (this.child?.pid) {
+      const token = processStartToken(this.child.pid)
+      if (token) tracked.push({ pid: this.child.pid, startToken: token })
+    }
+    for (const [pid, token] of this.knownDescendants) {
+      if (processStartToken(pid) === token) tracked.push({ pid, startToken: token })
+      else this.knownDescendants.delete(pid)
+    }
+    return tracked
+  }
+
+  signalTree(signal) {
+    if (!this.child?.pid) return
+    signalProviderScope(this.scopeName, signal)
+    if (process.platform === 'win32') {
+      try { this.child.kill(signal) } catch {}
+    } else signalTrackedProcessTree(this.child.pid, this.knownDescendants, signal)
+  }
+
+  async waitTree(ms) {
+    const deadline = Date.now() + ms
+    while (this.treeRunning() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    return !this.treeRunning()
+  }
+
   async stop(graceMs = 2_000) {
-    if (!this.child || this.closeInfo) return this.closeInfo
-    if (!this.transportError) {
+    if (!this.child) return this.closeInfo
+    // Capture children before asking the server to exit. A command may have moved into a new
+    // process group, so the server group alone is not a complete process inventory.
+    this.captureDescendants()
+    if (!this.closeInfo && !this.transportError) {
       try { this.child.stdin.end() } catch {}
     }
-    if (!await this.waitClose(graceMs)) {
-      try { this.child.kill('SIGTERM') } catch {}
-      await this.waitClose(1_000)
+    if (this.treeRunning() && !this.closeInfo) await this.waitClose(graceMs)
+    if (this.treeRunning()) {
+      this.captureDescendants({ freeze: true })
+      this.signalTree('SIGTERM')
+      await this.waitTree(1_000)
     }
-    if (!this.closeInfo) {
-      try { this.child.kill('SIGKILL') } catch {}
-      await this.waitClose(1_000)
+    if (this.treeRunning()) {
+      this.signalTree('SIGKILL')
+      await this.waitTree(1_000)
     }
-    return this.closeInfo
+    if (!this.treeRunning() && !this.closeInfo) await this.waitClose(100)
+    return this.treeRunning() ? null : (this.closeInfo || { code: null, signal: null, cause: null })
   }
 }
 
