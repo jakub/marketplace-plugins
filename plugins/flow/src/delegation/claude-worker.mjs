@@ -1,14 +1,24 @@
 import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
 import { normalizeClaudeError } from './claude-errors.mjs'
 import { createClaudeQuery } from './claude-sdk.mjs'
+import { captureProcessDescendants, providerScopeRunning, signalProviderScope, signalTrackedProcessTree, trackedDescendantRunning } from './containment.mjs'
 import { assertRoute, DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
 import { validateStructuredValue } from './outcome.mjs'
 import { JobStore, processStartToken, serviceLog } from './store.mjs'
 
 const STALL_SECONDS = 420
 const STARTUP_SECONDS = 30
+const RESULT_FAILURE_MESSAGES = {
+  RATE_LIMIT: 'Claude rejected the turn because the current plan or API rate limit is exhausted.',
+  CLAUDE_AUTH: 'Claude Code is not authenticated for Agent SDK use.',
+  BAD_MODEL: 'Claude rejected the requested model.',
+  MAX_TURNS: 'Claude reached the delegated turn limit.',
+  MAX_BUDGET: 'Claude reached the delegated cost limit.',
+  BILLING: 'Claude rejected the turn because the account has a billing problem or is on hold.',
+  OVERLOADED: 'Claude is overloaded and rejected the turn.',
+  SCHEMA_OUTPUT: 'Claude could not produce output that matches the requested schema.',
+}
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -62,13 +72,7 @@ function resultFailure(result, { assistantError = null, rateLimitStatus = null }
     : result?.subtype === 'error_max_budget_usd' ? 'MAX_BUDGET'
     : result?.subtype === 'error_max_structured_output_retries' ? 'SCHEMA_OUTPUT'
     : 'CLAUDE_TURN'
-  const message = kind === 'RATE_LIMIT'
-    ? 'Claude rejected the turn because the current plan or API rate limit is exhausted.'
-    : kind === 'CLAUDE_AUTH'
-      ? 'Claude Code is not authenticated for Agent SDK use.'
-      : kind === 'BAD_MODEL'
-        ? 'Claude rejected the requested model.'
-        : 'Claude did not complete the delegated turn.'
+  const message = RESULT_FAILURE_MESSAGES[kind] || 'Claude did not complete the delegated turn.'
   return { kind, message, details: null }
 }
 
@@ -122,16 +126,13 @@ export async function runClaudeWorker({ jobId, stateDir }) {
   }
 
   const descendantRunning = () => {
-    for (const [pid, token] of knownDescendants) {
-      if (processStartToken(pid) === token) return true
-      knownDescendants.delete(pid)
-    }
-    return false
+    return trackedDescendantRunning(knownDescendants)
   }
 
   const childTreeRunning = () => {
     if (!child?.pid) return false
     if (process.platform === 'win32') return child.exitCode === null && !child.signalCode
+    if (providerScopeRunning(child.flowProviderScope)) return true
     try {
       process.kill(-child.pid, 0)
       return true
@@ -140,41 +141,28 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     }
   }
 
+  const rememberProvider = () => {
+    if (!child?.pid) return
+    const startToken = processStartToken(child.pid)
+    const processes = []
+    if (startToken) processes.push({ pid: child.pid, startToken })
+    for (const [pid, token] of knownDescendants) processes.push({ pid, startToken: token })
+    store.setProviderProcess(jobId, {
+      pid: child.pid,
+      startToken,
+      processGroupId: process.platform === 'win32' ? null : child.pid,
+      scope: child.flowProviderScope,
+      processes,
+    })
+  }
+
   const freezeLinuxDescendants = () => {
-    if (process.platform !== 'linux' || !child?.pid) return
-    try { process.kill(-child.pid, 'SIGSTOP') } catch {}
-    for (let pass = 0; pass < 4; pass++) {
-      let added = false
-      const visited = new Set()
-      const queue = [child.pid, ...knownDescendants.keys()]
-      while (queue.length) {
-        const parent = queue.shift()
-        if (visited.has(parent)) continue
-        visited.add(parent)
-        let taskIds
-        try { taskIds = readdirSync(`/proc/${parent}/task`) } catch { continue }
-        for (const taskId of taskIds) {
-          let children
-          try { children = readFileSync(`/proc/${parent}/task/${taskId}/children`, 'utf8') } catch { continue }
-          for (const value of children.trim().split(/\s+/)) {
-            const pid = Number(value)
-            if (!Number.isInteger(pid) || pid <= 0 || pid === child.pid) continue
-            const token = processStartToken(pid)
-            if (!token) continue
-            queue.push(pid)
-            if (knownDescendants.get(pid) === token) continue
-            knownDescendants.set(pid, token)
-            try { process.kill(pid, 'SIGSTOP') } catch {}
-            added = true
-          }
-        }
-      }
-      if (!added) return
-    }
+    captureProcessDescendants(child?.pid, knownDescendants, { freeze: true })
   }
 
   const signalChildTree = (signal) => {
     if (!child?.pid) return
+    signalProviderScope(child.flowProviderScope, signal)
     if (process.platform === 'win32') {
       try {
         const args = ['/PID', String(child.pid), '/T']
@@ -183,20 +171,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       } catch {}
       return
     }
-    try { process.kill(-child.pid, signal) } catch {}
-    for (const [pid, token] of knownDescendants) {
-      if (processStartToken(pid) !== token) {
-        knownDescendants.delete(pid)
-        continue
-      }
-      try { process.kill(pid, signal) } catch {}
-    }
-    if (signal === 'SIGTERM') {
-      try { process.kill(-child.pid, 'SIGCONT') } catch {}
-      for (const [pid, token] of knownDescendants) {
-        if (processStartToken(pid) === token) try { process.kill(pid, 'SIGCONT') } catch {}
-      }
-    }
+    signalTrackedProcessTree(child.pid, knownDescendants, signal)
   }
 
   const waitForChildTree = async (milliseconds) => {
@@ -207,24 +182,29 @@ export async function runClaudeWorker({ jobId, stateDir }) {
 
   const stopChild = async () => {
     freezeLinuxDescendants()
+    rememberProvider()
     try { active?.close() } catch {}
     if (!child?.pid || !childTreeRunning()) {
       await Promise.race([childExited, delay(100)])
-      return
+      return true
     }
     signalChildTree(terminalResult ? 'SIGKILL' : 'SIGTERM')
-    if (await waitForChildTree(terminalResult ? 100 : 1_000)) return
+    if (await waitForChildTree(terminalResult ? 100 : 1_000)) return true
     signalChildTree('SIGKILL')
-    // Never release a workspace-write lease while a descendant can still mutate the tree.
-    // POSIX process groups cover ordinary children; Linux PID tokens cover recorded children
-    // that created another process group or session.
-    if (process.platform !== 'win32') {
-      while (childTreeRunning()) {
-        signalChildTree('SIGKILL')
-        await delay(50)
-      }
+    if (!await waitForChildTree(2_000)) {
+      freezeLinuxDescendants()
+      rememberProvider()
+      return false
     }
     await Promise.race([childExited, delay(1_000)])
+    return true
+  }
+
+  const settle = async (status, result = {}) => {
+    if (!await stopChild()) {
+      return store.quarantine(jobId, status, result)
+    }
+    return store.finish(jobId, status, result)
   }
 
   const clearTurnTimers = () => {
@@ -280,12 +260,11 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     const onSignal = async (signal) => {
       if (signalStopping) return
       signalStopping = true
-      await stopChild()
       try {
         const current = store.getJob(jobId)
-        if (current && !TERMINAL_STATES.includes(current.status)) {
+        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== 'quarantined') {
           const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
-          store.finish(jobId, acceptedWrite && !terminalResult ? 'unknown' : 'failed', {
+          await settle(acceptedWrite && !terminalResult ? 'unknown' : 'failed', {
             error: { kind: 'INTERRUPTED', message: `The Claude delegation worker received ${signal}.`, details: null },
             usage: resultUsage(terminalResult),
           })
@@ -353,6 +332,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       onSpawn: (spawned) => {
         child = spawned
         childExited = new Promise((resolve) => child.once('exit', resolve))
+        rememberProvider()
       },
       onStderr: (chunk) => { stderrTail = (stderrTail + String(chunk)).slice(-16_384) },
       onPolicyDenied: ({ toolName, reason }) => {
@@ -373,7 +353,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       throw new DelegationError('CLAUDE_PROTOCOL', 'Claude returned no SDK initialization result.')
     }
     if (cancelled) {
-      store.finish(jobId, 'cancelled')
+      await settle('cancelled')
       return
     }
     const selectedModel = Array.isArray(initialized.models)
@@ -451,10 +431,9 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     }
 
     clearTurnTimers()
-    await stopChild()
     const usage = resultUsage(terminalResult)
     if (approvalRequired) {
-      store.finish(jobId, 'awaiting_approval', {
+      await settle('awaiting_approval', {
         error: {
           kind: 'APPROVAL_REQUIRED',
           message: 'Claude requested an approval that Flow denied.',
@@ -465,7 +444,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     } else if (!terminalResult) {
       const acceptedWrite = job.access === 'workspace-write' && accepted
       const status = cancelled && !acceptedWrite ? 'cancelled' : acceptedWrite ? 'unknown' : 'failed'
-      store.finish(jobId, status, {
+      await settle(status, {
         error: status === 'cancelled' ? null : {
           kind: stalled ? 'STALL' : timedOut ? 'TIMEOUT' : 'CLAUDE_SDK',
           message: acceptedWrite
@@ -476,9 +455,9 @@ export async function runClaudeWorker({ jobId, stateDir }) {
         usage,
       })
     } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== 'success')) {
-      store.finish(jobId, 'cancelled', { usage })
+      await settle('cancelled', { usage })
     } else if (timedOut || stalled) {
-      store.finish(jobId, 'failed', {
+      await settle('failed', {
         error: {
           kind: timedOut ? 'TIMEOUT' : 'STALL',
           message: `Claude exceeded the ${timedOut ? 'total time budget' : 'quiet-period limit'}.`,
@@ -487,7 +466,7 @@ export async function runClaudeWorker({ jobId, stateDir }) {
         usage,
       })
     } else if (terminalResult.subtype !== 'success' || terminalResult.is_error) {
-      store.finish(jobId, 'failed', { error: resultFailure(terminalResult, { assistantError, rateLimitStatus }), usage })
+      await settle('failed', { error: resultFailure(terminalResult, { assistantError, rateLimitStatus }), usage })
     } else {
       const output = String(terminalResult.result || '').trim()
       if (!output) throw new DelegationError('EMPTY_OUTPUT', 'Claude completed without a final result.')
@@ -497,21 +476,20 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       const structured = job.outputSchema == null
         ? null
         : validateStructuredValue(job.outputSchema, terminalResult.structured_output, 'Claude')
-      store.finish(jobId, 'succeeded', { output, structured, usage, error: null })
+      await settle('succeeded', { output, structured, usage, error: null })
     }
   } catch (error) {
     try {
       if (!(error instanceof DelegationError)) store.recordInternalError(jobId, error)
       const normalized = normalizeClaudeError(error)
-      await stopChild()
       const current = store.getJob(jobId)
-      if (current && !TERMINAL_STATES.includes(current.status)) {
+      if (current && !TERMINAL_STATES.includes(current.status) && current.status !== 'quarantined') {
         const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
         const status = approvalRequired ? 'awaiting_approval'
           : cancelled && !acceptedWrite ? 'cancelled'
             : acceptedWrite && !terminalResult ? 'unknown'
               : 'failed'
-        store.finish(jobId, status, {
+        await settle(status, {
           error: status === 'cancelled' ? null : approvalRequired
             ? { kind: 'APPROVAL_REQUIRED', message: 'Claude requested an approval that Flow denied.', details: { toolName: approvalRequired } }
             : publicError(normalized),
@@ -522,13 +500,32 @@ export async function runClaudeWorker({ jobId, stateDir }) {
       serviceLog(stateDir, `Claude worker could not finish job ${jobId}: ${finishError?.stack || finishError}`)
     }
   } finally {
-    for (const [signal, handler] of signalHandlers) process.off(signal, handler)
+    // Keep the signal handlers installed until provider cleanup finishes. A signal in this
+    // window must not restore Node's default immediate exit and strand a live provider.
+    signalStopping = true
     if (heartbeat) clearInterval(heartbeat)
     if (controlTimer) clearInterval(controlTimer)
     clearTurnTimers()
     await activeControlPoll.catch(() => {})
-    await stopChild()
+    try {
+      const stopped = await stopChild()
+      if (!stopped) {
+        const current = store.getJob(jobId)
+        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== 'quarantined') {
+          const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
+          store.quarantine(jobId, acceptedWrite && !terminalResult ? 'unknown' : 'failed', {
+            error: { kind: 'PROVIDER_QUARANTINED', message: 'Claude survived repeated termination attempts.', details: null },
+            usage: resultUsage(terminalResult),
+          })
+        }
+      } else if (store.getJob(jobId)?.status === 'quarantined') {
+        store.resolveQuarantine(jobId)
+      }
+    } catch (error) {
+      serviceLog(stateDir, `Claude worker could not quarantine provider processes for ${jobId}: ${error?.stack || error}`)
+    }
     if (stderrTail && !terminalResult) serviceLog(stateDir, `Claude stderr for ${jobId}: ${stderrTail}`)
+    for (const [signal, handler] of signalHandlers) process.off(signal, handler)
     store.close()
   }
 }

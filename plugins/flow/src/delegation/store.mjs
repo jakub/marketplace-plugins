@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { ACTIVE_STATES, DelegationError, TERMINAL_STATES } from './contracts.mjs'
 
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 5
 // Terminal jobs are operational history, not an archive. Fourteen days outlives any
 // investigation of a run, including an `unknown` one.
 const RETENTION_DAYS = 14
@@ -38,8 +38,8 @@ export function defaultStateDir() {
   return join(base, 'flow', 'delegation')
 }
 
-const SCHEMA = `
-  CREATE TABLE jobs (
+const jobsSchema = (name = 'jobs') => `
+  CREATE TABLE ${name} (
     id TEXT PRIMARY KEY,
     trace_id TEXT NOT NULL,
     parent_job_id TEXT REFERENCES jobs(id),
@@ -55,6 +55,8 @@ const SCHEMA = `
     service_tier TEXT NOT NULL,
     profile TEXT NOT NULL,
     time_budget_seconds INTEGER NOT NULL,
+    max_turns INTEGER,
+    max_budget_usd REAL,
     prompt TEXT,
     output_schema_json TEXT,
     base_sha TEXT,
@@ -62,8 +64,14 @@ const SCHEMA = `
     native_thread_id TEXT,
     native_turn_id TEXT,
     turn_accepted_at INTEGER,
-    status TEXT NOT NULL CHECK (status IN ('queued','starting','running','reconciling','succeeded','failed','cancelled','unknown','awaiting_approval')),
+    status TEXT NOT NULL CHECK (status IN ('queued','starting','running','reconciling','quarantined','succeeded','failed','cancelled','unknown','awaiting_approval')),
     worker_pid INTEGER,
+    provider_pid INTEGER,
+    provider_start_token TEXT,
+    provider_process_group_id INTEGER,
+    provider_scope TEXT,
+    provider_processes_json TEXT,
+    quarantine_resume_status TEXT,
     output TEXT,
     structured_json TEXT,
     usage_json TEXT,
@@ -71,7 +79,10 @@ const SCHEMA = `
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     heartbeat_at INTEGER NOT NULL
-  );
+  );`
+
+const SCHEMA = `
+  ${jobsSchema()}
   CREATE TABLE events (
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
@@ -93,6 +104,7 @@ const SCHEMA = `
     job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
   );
   CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
+  CREATE INDEX jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
   CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
 `
 
@@ -134,6 +146,8 @@ function decode(row) {
     serviceTier: row.service_tier,
     profile: row.profile,
     timeBudgetSeconds: row.time_budget_seconds,
+    maxTurns: row.max_turns,
+    maxBudgetUsd: row.max_budget_usd,
     prompt: row.prompt,
     outputSchema: parse(row.output_schema_json),
     baseSha: row.base_sha,
@@ -143,6 +157,12 @@ function decode(row) {
     turnAcceptedAt: row.turn_accepted_at,
     status: row.status,
     workerPid: row.worker_pid,
+    providerPid: row.provider_pid,
+    providerStartToken: row.provider_start_token,
+    providerProcessGroupId: row.provider_process_group_id,
+    providerScope: row.provider_scope,
+    providerProcesses: parse(row.provider_processes_json) || [],
+    quarantineResumeStatus: row.quarantine_resume_status,
     output: row.output,
     structured: parse(row.structured_json),
     usage: parse(row.usage_json),
@@ -184,16 +204,114 @@ export class JobStore {
   userVersion() { return Number(this.db.prepare('PRAGMA user_version').get().user_version) }
 
   migrate() {
-    if (this.userVersion() === SCHEMA_VERSION) return
-    // Two processes can race a fresh state dir, so the version is re-read inside the write
-    // lock: the loser sees the winner's tables and returns instead of re-running the DDL.
+    for (;;) {
+      const version = this.userVersion()
+      if (version === SCHEMA_VERSION) return
+      if (version > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
+      if (version === 2) {
+        this.migrateFromV2()
+        continue
+      }
+      if (version === 3) {
+        this.migrateFromV3()
+        continue
+      }
+      if (version === 4) {
+        this.migrateFromV4()
+        continue
+      }
+      // Two processes can race a fresh state dir, so the version is re-read inside the write
+      // lock: the loser sees the winner's tables and returns instead of re-running the DDL.
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        const lockedVersion = this.userVersion()
+        if (lockedVersion > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
+        if (lockedVersion < 1) {
+          this.db.exec(SCHEMA)
+          this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
+        } else if (lockedVersion === 1) {
+          this.db.exec('ALTER TABLE jobs DROP COLUMN delivery; ALTER TABLE leases DROP COLUMN heartbeat_at;')
+          this.db.exec('PRAGMA user_version=2')
+        }
+        this.db.exec('COMMIT')
+      } catch (error) {
+        try { this.db.exec('ROLLBACK') } catch {}
+        throw error
+      }
+    }
+  }
+
+  migrateFromV2() {
+    // Changing the status CHECK requires rebuilding jobs. Foreign keys must be disabled before
+    // the transaction so dropping the old parent table cannot cascade-delete journals or leases.
+    this.db.exec('PRAGMA foreign_keys=OFF')
+    try {
+      this.db.exec('BEGIN IMMEDIATE')
+      const version = this.userVersion()
+      if (version !== 2) {
+        this.db.exec('COMMIT')
+        return
+      }
+      // jobsSchema() is the current schema, so this rebuild reaches v4 directly and already
+      // includes provider_scope. Existing v3 databases add only that column below.
+      this.db.exec(`
+        ${jobsSchema('jobs_v3')}
+        INSERT INTO jobs_v3 (
+          id, trace_id, parent_job_id, host, target, depth, mode, access, cwd, workspace_key,
+          model, effort, service_tier, profile, time_budget_seconds, prompt,
+          output_schema_json, base_sha, head_sha, native_thread_id, native_turn_id,
+          turn_accepted_at, status, worker_pid, output, structured_json, usage_json,
+          error_json, created_at, updated_at, heartbeat_at
+        ) SELECT
+          id, trace_id, parent_job_id, host, target, depth, mode, access, cwd, workspace_key,
+          model, effort, service_tier, profile, time_budget_seconds, prompt,
+          output_schema_json, base_sha, head_sha, native_thread_id, native_turn_id,
+          turn_accepted_at, status, worker_pid, output, structured_json, usage_json,
+          error_json, created_at, updated_at, heartbeat_at
+        FROM jobs;
+        DROP INDEX jobs_status_idx;
+        DROP TABLE jobs;
+        ALTER TABLE jobs_v3 RENAME TO jobs;
+        CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
+        PRAGMA user_version=4;
+      `)
+      const violation = this.db.prepare('PRAGMA foreign_key_check').get()
+      if (violation) {
+        throw new DelegationError('DATABASE_MIGRATION', 'The delegation database migration failed its foreign-key check.')
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      this.db.exec('PRAGMA foreign_keys=ON')
+    }
+  }
+
+  migrateFromV3() {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const version = this.userVersion()
-      if (version > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
-      if (version < 1) this.db.exec(SCHEMA)
-      if (version === 1) this.db.exec('ALTER TABLE jobs DROP COLUMN delivery; ALTER TABLE leases DROP COLUMN heartbeat_at;')
-      this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
+      if (version === 3) {
+        this.db.exec('ALTER TABLE jobs ADD COLUMN provider_scope TEXT; PRAGMA user_version=4;')
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw error
+    }
+  }
+
+  migrateFromV4() {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const version = this.userVersion()
+      if (version === 4) {
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
+          PRAGMA user_version=5;
+        `)
+      }
       this.db.exec('COMMIT')
     } catch (error) {
       try { this.db.exec('ROLLBACK') } catch {}
@@ -208,26 +326,42 @@ export class JobStore {
     const states = TERMINAL_STATES.map(() => '?').join(',')
     const candidate = this.db.prepare(`SELECT 1 FROM jobs WHERE status IN (${states}) AND updated_at < ? LIMIT 1`)
       .get(...TERMINAL_STATES, cutoff)
-    if (!candidate) return 0
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      // events, controls and leases cascade. jobs.parent_job_id does not: a job survives
-      // while any row still references it, so chains delete leaf-first, one pass per
-      // generation, and no pass can leave a dangling parent reference.
-      const expired = this.db.prepare(`DELETE FROM jobs WHERE status IN (${states}) AND updated_at < ?
-        AND id NOT IN (SELECT parent_job_id FROM jobs WHERE parent_job_id IS NOT NULL)`)
-      let total = 0
-      for (;;) {
-        const changes = Number(expired.run(...TERMINAL_STATES, cutoff).changes)
-        total += changes
-        if (!changes) break
+    let total = 0
+    if (candidate) {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        // events, controls and leases cascade. jobs.parent_job_id does not: a job survives
+        // while any row still references it, so chains delete leaf-first, one pass per
+        // generation, and no pass can leave a dangling parent reference.
+        const expired = this.db.prepare(`DELETE FROM jobs WHERE status IN (${states}) AND updated_at < ?
+          AND id NOT IN (SELECT parent_job_id FROM jobs WHERE parent_job_id IS NOT NULL)`)
+        for (;;) {
+          const changes = Number(expired.run(...TERMINAL_STATES, cutoff).changes)
+          total += changes
+          if (!changes) break
+        }
+        this.db.exec('COMMIT')
+      } catch (error) {
+        try { this.db.exec('ROLLBACK') } catch {}
+        serviceLog(this.stateDir, `prune failed: ${error?.message || error}`)
       }
-      this.db.exec('COMMIT')
-      return total
-    } catch (error) {
-      try { this.db.exec('ROLLBACK') } catch {}
-      serviceLog(this.stateDir, `prune failed: ${error?.message || error}`)
-      return 0
+    }
+    this.pruneTempDirs()
+    return total
+  }
+
+  pruneTempDirs() {
+    const tempRoot = join(this.stateDir, 'tmp')
+    let entries
+    try { entries = readdirSync(tempRoot, { withFileTypes: true }) } catch { return }
+    const state = this.db.prepare('SELECT status FROM jobs WHERE id=?')
+    const jobDir = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/
+    for (const entry of entries) {
+      const id = entry.name.match(jobDir)?.[1]
+      if (!id) continue
+      const row = state.get(id)
+      if (row && (ACTIVE_STATES.includes(row.status) || row.status === 'quarantined')) continue
+      try { rmSync(join(tempRoot, entry.name), { recursive: true, force: true }) } catch {}
     }
   }
 
@@ -239,13 +373,15 @@ export class JobStore {
     this.db.prepare(`INSERT INTO jobs (
       id, trace_id, parent_job_id, host, target, depth, mode, access,
       cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+      max_turns, max_budget_usd,
       prompt, output_schema_json, base_sha, head_sha, native_thread_id,
       status, created_at, updated_at, heartbeat_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
       .run(id, request.traceId || randomUUID(), request.parentJobId || null,
         request.host, request.target, request.depth, request.mode, request.access,
         request.cwd, request.workspaceKey, request.model, request.effort,
-        request.serviceTier, request.profile, request.timeBudgetSeconds, request.prompt,
+        request.serviceTier, request.profile, request.timeBudgetSeconds,
+        request.maxTurns ?? null, request.maxBudgetUsd ?? null, request.prompt,
         json(request.outputSchema), request.baseSha || null, request.headSha || null,
         request.nativeThreadId || null, at, at, at)
     this.appendEvent(id, 'job.queued', { status: 'queued' })
@@ -253,6 +389,26 @@ export class JobStore {
   }
 
   getJob(id) { return decode(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)) }
+
+  listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
+    const clauses = ['host = ?', 'target = ?']
+    const values = [host, target]
+    if (status) {
+      clauses.push('status = ?')
+      values.push(status)
+    }
+    if (before) {
+      clauses.push('(created_at < ? OR (created_at = ? AND id < ?))')
+      values.push(before.createdAt, before.createdAt, before.id)
+    }
+    values.push(Math.max(1, Math.min(limit, 100)))
+    return this.db.prepare(`SELECT * FROM jobs WHERE ${clauses.join(' AND ')}
+      ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values).map(decode)
+  }
+
+  quarantinedCount() {
+    return Number(this.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE status='quarantined'").get().count)
+  }
 
   requireJob(id) {
     const job = this.getJob(id)
@@ -311,7 +467,7 @@ export class JobStore {
       this.db.exec('COMMIT')
       return this.getJob(id)
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      try { this.db.exec('ROLLBACK') } catch {}
       throw error
     }
   }
@@ -345,8 +501,21 @@ export class JobStore {
       .run(turnId, accepted ? 1 : 0, at, accepted ? 1 : 0, at, at, id)
   }
 
-  // jobs.heartbeat_at carries worker liveness on its own: a lease outlives nothing, because
-  // only finish() releases it.
+  setProviderProcess(id, { pid, startToken = null, processGroupId = null, scope = null, processes = [] } = {}) {
+    const safeProcesses = processes.filter((entry) => Number.isInteger(entry?.pid) && entry.pid > 0
+      && typeof entry.startToken === 'string' && entry.startToken)
+    this.db.prepare(`UPDATE jobs SET provider_pid=?, provider_start_token=?,
+      provider_process_group_id=?, provider_scope=?, provider_processes_json=?, updated_at=?
+      WHERE id=? AND status IN ('starting','running','reconciling','quarantined')`)
+      .run(Number.isInteger(pid) && pid > 0 ? pid : null,
+        typeof startToken === 'string' && startToken ? startToken : null,
+        Number.isInteger(processGroupId) && processGroupId > 0 ? processGroupId : null,
+        typeof scope === 'string' && scope ? scope : null,
+        json(safeProcesses), now(), id)
+  }
+
+  // jobs.heartbeat_at carries worker liveness. finish() releases an ordinary lease;
+  // resolveQuarantine() releases one held past worker shutdown.
   heartbeat(id) {
     const at = now()
     this.db.prepare('UPDATE jobs SET heartbeat_at=?, updated_at=? WHERE id=? AND status IN (\'starting\',\'running\',\'reconciling\',\'awaiting_approval\')')
@@ -366,17 +535,85 @@ export class JobStore {
         this.db.exec('COMMIT')
         return current
       }
+      if (current.status === 'quarantined') {
+        throw new DelegationError('JOB_QUARANTINED', 'A quarantined job can finish only after Flow proves its provider processes stopped.')
+      }
       this.db.prepare(`UPDATE jobs SET status=?, output=?, structured_json=?, usage_json=?, error_json=?,
-        prompt=NULL, updated_at=?, heartbeat_at=? WHERE id=?`)
+        prompt=NULL, provider_pid=NULL, provider_start_token=NULL,
+        provider_process_group_id=NULL, provider_scope=NULL, provider_processes_json=NULL,
+        quarantine_resume_status=NULL, updated_at=?, heartbeat_at=? WHERE id=?`)
         .run(status, output, json(structured), json(usage), json(error), at, at, id)
       this.db.prepare(`UPDATE controls SET payload_json='{}' WHERE job_id=?`).run(id)
       this.db.prepare('DELETE FROM leases WHERE job_id=?').run(id)
       this.db.exec('COMMIT')
     } catch (cause) {
-      this.db.exec('ROLLBACK')
+      try { this.db.exec('ROLLBACK') } catch {}
       throw cause
     }
     this.appendEvent(id, `job.${status}`, error ? { error } : { status })
+    this.pruneTempDirs()
+    return this.getJob(id)
+  }
+
+  quarantine(id, resumeStatus, { output = null, structured = null, usage = null, error = null } = {}) {
+    if (!TERMINAL_STATES.includes(resumeStatus) && resumeStatus !== 'reconciling') {
+      throw new DelegationError('JOB_STATE', `Cannot resume a quarantined job as ${resumeStatus}.`)
+    }
+    const at = now()
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const current = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id))
+      if (!current) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
+      if (TERMINAL_STATES.includes(current.status) || current.status === 'quarantined') {
+        this.db.exec('COMMIT')
+        return current
+      }
+      this.db.prepare(`UPDATE jobs SET status='quarantined', quarantine_resume_status=?,
+        output=?, structured_json=?, usage_json=?, error_json=?, prompt=NULL,
+        updated_at=?, heartbeat_at=? WHERE id=?`)
+        .run(resumeStatus, output, json(structured), json(usage), json(error), at, at, id)
+      this.db.prepare(`UPDATE controls SET payload_json='{}' WHERE job_id=?`).run(id)
+      this.db.exec('COMMIT')
+    } catch (cause) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw cause
+    }
+    this.appendEvent(id, 'job.quarantined', { resumeStatus })
+    return this.getJob(id)
+  }
+
+  resolveQuarantine(id) {
+    const at = now()
+    let resumeStatus
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const current = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id))
+      if (!current) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
+      if (current.status !== 'quarantined') {
+        this.db.exec('COMMIT')
+        return current
+      }
+      resumeStatus = current.quarantineResumeStatus
+      if (!TERMINAL_STATES.includes(resumeStatus) && resumeStatus !== 'reconciling') {
+        throw new DelegationError('JOB_STATE', 'The quarantined job has no valid resume state.')
+      }
+      this.db.prepare(`UPDATE jobs SET status=?, provider_pid=NULL, provider_start_token=NULL,
+        provider_process_group_id=NULL, provider_scope=NULL, provider_processes_json=NULL,
+        quarantine_resume_status=NULL, updated_at=?, heartbeat_at=? WHERE id=?`)
+        .run(resumeStatus, at, resumeStatus === 'reconciling' ? 0 : at, id)
+      if (TERMINAL_STATES.includes(resumeStatus)) {
+        this.db.prepare('DELETE FROM leases WHERE job_id=?').run(id)
+      }
+      this.db.exec('COMMIT')
+    } catch (cause) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw cause
+    }
+    this.appendEvent(id, 'quarantine.cleared', { status: resumeStatus })
+    if (TERMINAL_STATES.includes(resumeStatus)) {
+      this.appendEvent(id, `job.${resumeStatus}`, { status: resumeStatus })
+    }
+    this.pruneTempDirs()
     return this.getJob(id)
   }
 
@@ -395,12 +632,15 @@ export class JobStore {
     try {
       const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(jobId))
       if (!job) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
+      if (job.status === 'quarantined') {
+        throw new DelegationError('JOB_QUARANTINED', 'The provider process is quarantined and cannot accept controls.')
+      }
       if (!ACTIVE_STATES.includes(job.status)) throw new DelegationError('JOB_STATE', `Job ${jobId} is already ${job.status}.`)
       result = this.db.prepare('INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, ?, ?, ?)')
         .run(jobId, type, json(payload), now())
       this.db.exec('COMMIT')
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      try { this.db.exec('ROLLBACK') } catch {}
       throw error
     }
     this.appendEvent(jobId, `control.${type}.queued`, {})
@@ -413,6 +653,9 @@ export class JobStore {
     try {
       const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(jobId))
       if (!job) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
+      if (job.status === 'quarantined') {
+        throw new DelegationError('JOB_QUARANTINED', 'The provider process is quarantined and cannot accept cancellation.')
+      }
       if (TERMINAL_STATES.includes(job.status)) {
         this.db.exec('COMMIT')
         return job
@@ -428,7 +671,7 @@ export class JobStore {
       }
       this.db.exec('COMMIT')
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      try { this.db.exec('ROLLBACK') } catch {}
       throw error
     }
     if (cancelled) this.appendEvent(jobId, 'job.cancelled', { status: 'cancelled' })

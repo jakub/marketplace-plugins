@@ -6,16 +6,57 @@ import { protectedFileReason, publishReason } from '../../lib/hook-policy.mjs'
 const READ_TOOLS = ['Read', 'Grep', 'Glob', 'Bash']
 const WRITE_TOOLS = [...READ_TOOLS, 'Edit', 'Write', 'NotebookEdit']
 const PROXY_ENV = new Set(['ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'])
+const CREDENTIAL_PATH_ENV = [
+  'ANTHROPIC_CONFIG_DIR',
+  'AWS_CONFIG_FILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AZURE_CONFIG_DIR',
+  'CLAUDE_CONFIG_DIR',
+  'CLOUDSDK_AUTH_ACCESS_TOKEN_FILE',
+  'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',
+  'CLOUDSDK_CONFIG',
+  'CODEX_HOME',
+  'DOCKER_CONFIG',
+  'GH_CONFIG_DIR',
+  'GIT_CONFIG_GLOBAL',
+  'GNUPGHOME',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'KUBECONFIG',
+  'NETRC',
+  'NPM_CONFIG_USERCONFIG',
+  'PIP_CONFIG_FILE',
+  'TWINE_CONFIG_FILE',
+]
+const CREDENTIAL_PATH_LIST_ENV = new Set(['KUBECONFIG'])
 
-export const claudeTools = (access) => access === 'workspace-write' ? WRITE_TOOLS : READ_TOOLS
+export const claudeTools = (access, { structured = false } = {}) => [
+  ...(access === 'workspace-write' ? WRITE_TOOLS : READ_TOOLS),
+  ...(structured ? ['StructuredOutput'] : []),
+]
 
 export const pathInside = (root, path) => {
   const rel = relative(root, path)
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
 }
 
-export function sensitiveReadPaths() {
+export function sensitiveReadPaths(cwd = process.cwd()) {
   const base = homedir()
+  const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
+    const value = process.env[name]?.trim()
+    if (!value) return []
+    const values = CREDENTIAL_PATH_LIST_ENV.has(name) ? value.split(delimiter) : [value]
+    return values.map((entry) => entry.trim()).filter(Boolean).flatMap((entry) => {
+      const path = entry === '~'
+        ? base
+        : entry.startsWith('~/') || entry.startsWith('~\\')
+          ? resolve(base, entry.slice(2))
+          : resolve(cwd, entry)
+      const paths = [path]
+      try { paths.push(realpathSync(path)) } catch {}
+      return paths
+    })
+  })
   return [
     resolve(base, '.ssh'),
     resolve(base, '.gnupg'),
@@ -33,6 +74,7 @@ export function sensitiveReadPaths() {
     resolve(base, '.claude'),
     resolve(base, '.claude.json'),
     resolve(base, '.codex'),
+    ...configured,
   ]
 }
 
@@ -75,7 +117,7 @@ export function claudeSandboxFor(job) {
     // executables here stops shell, language, and executable scripts from launching a raw
     // Claude or Codex child after they pass the command-text guard.
     denyRead: [...new Set([
-      ...sensitiveReadPaths(),
+      ...sensitiveReadPaths(job.cwd),
       ...providerExecutablePaths(),
       ...(existsSync('/proc') ? ['/proc'] : []),
     ])],
@@ -127,7 +169,7 @@ function readReason(job, value, { search = false } = {}) {
   if (pathInside('/proc', target)) {
     return 'Delegated workers cannot read process state.'
   }
-  if (sensitiveReadPaths().some((path) => pathInside(path, target) || (search && pathInside(target, path)))) {
+  if (sensitiveReadPaths(job.cwd).some((path) => pathInside(path, target) || (search && pathInside(target, path)))) {
     return 'The read target contains local authentication or credential state.'
   }
   return null
@@ -255,7 +297,7 @@ function nestedProviderReason(command) {
 }
 
 export function claudePolicyHook(job, { onDenied = () => {} } = {}) {
-  const allowed = new Set(claudeTools(job.access))
+  const allowed = new Set(claudeTools(job.access, { structured: job.outputSchema != null }))
   return async (input) => {
     if (input?.hook_event_name !== 'PreToolUse') return { continue: true }
     const toolName = input.tool_name

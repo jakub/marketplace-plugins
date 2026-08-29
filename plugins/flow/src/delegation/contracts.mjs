@@ -8,6 +8,8 @@ export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const SERVICE_TIERS = ['default']
 export const ACTIVE_STATES = ['queued', 'starting', 'running', 'reconciling']
 export const TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval']
+export const QUARANTINE_STATES = ['quarantined']
+export const JOB_STATES = [...ACTIVE_STATES, ...QUARANTINE_STATES, ...TERMINAL_STATES]
 export const MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
 
 export const FINDINGS_SCHEMA = {
@@ -90,6 +92,22 @@ export function capabilitiesForTarget(target) {
     liveSteer: target === 'codex',
     crashReconcile: target === 'codex',
     structuredOutput: true,
+    limits: {
+      timeBudgetSeconds: true,
+      maxTurns: target === 'claude',
+      maxBudgetUsd: target === 'claude',
+    },
+  }
+}
+
+function publicQuarantine(job) {
+  if (job.status !== 'quarantined') return null
+  return {
+    resumeStatus: job.quarantineResumeStatus,
+    providerPid: job.providerPid,
+    providerProcessGroupId: job.providerProcessGroupId,
+    providerScope: job.providerScope,
+    trackedProcesses: job.providerProcesses.length,
   }
 }
 
@@ -104,6 +122,11 @@ export function resultEnvelope(job) {
     model: job.model,
     effort: job.effort,
     serviceTier: job.serviceTier,
+    limits: {
+      timeBudgetSeconds: job.timeBudgetSeconds,
+      maxTurns: job.maxTurns,
+      maxBudgetUsd: job.maxBudgetUsd,
+    },
     threadId: job.nativeThreadId,
     turnId: job.nativeTurnId,
     output: job.output,
@@ -111,6 +134,33 @@ export function resultEnvelope(job) {
     findings: job.mode === 'task' ? null : (job.structured?.findings ?? null),
     usage: job.usage,
     error: job.error,
+    quarantine: publicQuarantine(job),
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  }
+}
+
+export function jobSummary(job) {
+  return {
+    jobId: job.id,
+    parentJobId: job.parentJobId,
+    status: job.status,
+    host: job.host,
+    target: job.target,
+    mode: job.mode,
+    access: job.access,
+    cwd: job.cwd,
+    model: job.model,
+    effort: job.effort,
+    limits: {
+      timeBudgetSeconds: job.timeBudgetSeconds,
+      maxTurns: job.maxTurns,
+      maxBudgetUsd: job.maxBudgetUsd,
+    },
+    threadId: job.nativeThreadId,
+    turnId: job.nativeTurnId,
+    error: job.error,
+    quarantine: publicQuarantine(job),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
   }

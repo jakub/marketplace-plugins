@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { AppServerClient } from '../src/delegation/app-server.mjs'
+import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
 import { assertRoute } from '../src/delegation/contracts.mjs'
+
+assert.equal(process.platform, 'linux', 'smoke-delegation requires the Linux Codex host and systemd-scope contract')
 
 // deps/node_modules is gitignored, so a clone and every installed copy of the plugin lack
 // the MCP SDK. This client speaks the stdio transport directly instead: newline-delimited
@@ -171,11 +175,14 @@ new JobStore(process.argv[2]).close()
 `)
 
 writeFileSync(fake, `#!/usr/bin/env node
+import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-if (process.argv[2] === '--version') { console.log('codex-cli 0.test'); process.exit(0) }
+if (process.argv[2] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0) }
 const mode = process.env.FLOW_FAKE_MODE || 'happy'
 const say = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let active = null
+let threadConfig = null
+let experimentalApi = false
 let done = false
 let timer = null
 const finish = (status = 'completed', output = null) => {
@@ -218,17 +225,74 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (message.result?.permissions && Object.keys(message.result.permissions).length === 0) finish('failed', '')
     else process.exit(18)
   }
-  else if (message.method === 'initialize') answer({ userAgent: 'fake' })
-  else if (message.method === 'initialized') {}
+  else if (message.method === 'initialize') {
+    experimentalApi = message.params.capabilities?.experimentalApi === true
+    if (mode === 'initialize-error') say({ id: message.id, error: { code: -32603, message: 'initialization failed' } })
+    else answer({ userAgent: 'fake' })
+  }
+  else if (message.method === 'initialized') {
+    if (mode === 'malformed-protocol') process.stdout.write('not-json\\n')
+    if (mode === 'stdin-closed') {
+      process.stdin.destroy()
+      say({ method: 'fake/stdinClosed', params: {} })
+      setTimeout(() => process.exit(0), 1000)
+    }
+  }
+  else if (message.method === 'mcpServerStatus/list') {
+    const inventory = message.params.threadId
+      ? (mode !== 'mcp-leak'
+          && threadConfig?.['features.plugins'] === false
+          && threadConfig?.['features.apps'] === false
+          && threadConfig?.mcp_servers?.standalone?.enabled === false
+        ? [{ name: 'standalone', pluginId: null, tools: {}, runtimeStatus: 'disabled', authStatus: 'unsupported', resources: [], resourceTemplates: [] }]
+        : [{ name: 'leaked', pluginId: null, tools: { mutate: {} }, runtimeStatus: 'connected', authStatus: 'unsupported', resources: [], resourceTemplates: [] }])
+      : [
+          { name: 'flow_delegate', pluginId: 'flow@jakub', tools: { delegation_status: {} }, runtimeStatus: null, authStatus: 'unsupported', resources: [], resourceTemplates: [] },
+          { name: 'codex_apps', pluginId: null, tools: { 'sites.delete_site': {} }, runtimeStatus: null, authStatus: 'unsupported', resources: [], resourceTemplates: [] },
+          { name: 'standalone', pluginId: null, tools: { mutate: {} }, runtimeStatus: null, authStatus: 'unsupported', resources: [], resourceTemplates: [] },
+        ]
+    answer({ data: inventory, nextCursor: null })
+  }
+  else if (message.method === 'permissionProfile/list') {
+    if (!experimentalApi) say({ id: message.id, error: { code: -32602, message: 'experimental API disabled' } })
+    else answer({ data: [{ id: ':read-only', description: 'read', allowed: true }], nextCursor: null })
+  }
   else if (message.method === 'thread/start') {
+    threadConfig = message.params.config
+    const doctorProbe = message.params.serviceName === 'flow-delegation-doctor'
+    const expectedAccess = doctorProbe ? 'read' : process.env.FLOW_DELEGATION_ACCESS === 'workspace-write' ? 'write' : 'read'
+    const workspaceKey = doctorProbe ? process.cwd() : process.env.FLOW_DELEGATION_WORKSPACE_KEY
+    const filesystem = threadConfig?.permissions?.flow_delegation?.filesystem
     if (mode === 'provider-error') {
       say({ id: message.id, error: { code: -32603, message: 'account test@example.invalid failed at /home/test/private/provider.json' } })
+    } else if (!experimentalApi
+      || message.params.permissions !== 'flow_delegation'
+      || message.params.sandbox !== undefined
+      || filesystem?.[':minimal'] !== 'read'
+      || filesystem?.['/'] !== undefined
+      || filesystem?.[':root'] !== undefined
+      || filesystem?.[workspaceKey] !== expectedAccess
+      || (!doctorProbe && filesystem?.[process.env.TMPDIR] !== 'write')
+      || (expectedAccess === 'write' && filesystem?.[workspaceKey + '/.git'] !== 'read')
+      || threadConfig?.permissions?.flow_delegation?.network?.enabled !== false
+      || (!doctorProbe && !message.params.developerInstructions?.includes('<flow-charter>'))
+      || (!doctorProbe && !message.params.developerInstructions?.includes('Do not start subagents'))) {
+      say({ id: message.id, error: { code: -32602, message: 'missing restricted Flow delegation profile' } })
     } else if (mode === 'profile' && !message.params.developerInstructions.includes('authorized defensive research')) {
       say({ id: message.id, error: { code: -32602, message: 'missing defensive profile' } })
-    } else answer({ thread: { id: 'thread-test' } })
+    } else answer({ thread: { id: 'thread-test' }, activePermissionProfile: { id: 'flow_delegation', extends: null } })
   }
-  else if (message.method === 'thread/resume') answer({ thread: { id: message.params.threadId } })
+  else if (message.method === 'thread/resume') {
+    threadConfig = message.params.config
+    if (message.params.permissions !== 'flow_delegation' || message.params.sandbox !== undefined) {
+      say({ id: message.id, error: { code: -32602, message: 'resume lost restricted Flow delegation profile' } })
+    } else answer({ thread: { id: message.params.threadId }, activePermissionProfile: { id: 'flow_delegation', extends: null } })
+  }
   else if (message.method === 'turn/start') {
+    if (message.params.permissions !== undefined || message.params.sandboxPolicy !== undefined) {
+      say({ id: message.id, error: { code: -32602, message: 'turn replaced sticky permissions' } })
+      return
+    }
     done = false
     active = { threadId: message.params.threadId, turnId: 'turn-' + Date.now() }
     if (mode === 'accepted-crash') {
@@ -242,10 +306,21 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       setTimeout(() => process.exit(19), 20)
       return
     }
+    if (mode === 'detached-command') {
+      const writer = "setTimeout(() => require('node:fs').writeFileSync('codex-detached-survivor', 'bad'), 1000)"
+      const daemon = "require('node:child_process').spawn(process.execPath, ['-e', " + JSON.stringify(writer)
+        + "], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()"
+      spawn(process.execPath, ['-e', daemon], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()
+    }
     if (mode === 'approval') {
       timer = setTimeout(() => say({ method: 'item/commandExecution/requestApproval', id: 900, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'command-1' } }), 20)
     } else if (mode === 'permissions-approval') {
       timer = setTimeout(() => say({ method: 'item/permissions/requestApproval', id: 902, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'permissions-1', cwd: process.cwd(), permissions: { network: { enabled: true } }, startedAtMs: Date.now() } }), 20)
+    } else if (mode === 'failed-turn') {
+      timer = setTimeout(() => {
+        const error = { message: 'model gpt-private invalid for account test@example.invalid at /home/test/private/config.json' }
+        say({ method: 'turn/completed', params: { threadId: active.threadId, turn: { id: active.turnId, items: [], itemsView: { type: 'full' }, status: 'failed', error, startedAt: 1, completedAt: 2, durationMs: 10 } } })
+      }, 20)
     } else timer = setTimeout(() => finish(), mode === 'slow' || mode === 'steer' ? 2500 : 20)
   } else if (message.method === 'turn/interrupt') { answer({}); finish('interrupted', '') }
   else if (message.method === 'turn/steer') { answer({}); finish('completed', 'STEERED: ' + message.params.input[0].text) }
@@ -287,7 +362,7 @@ const runArgs = ['run', '--host', 'claude', '--cwd', repo, '--model', 'gpt-5.6-l
 const waitFor = async (jobId, stateDir, wanted = null) => {
   for (let i = 0; i < 80; i++) {
     const result = cli(['result', jobId], { stateDir })
-    if (['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval'].includes(result.status)) {
+    if (['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval', 'quarantined'].includes(result.status)) {
       if (wanted) assert.equal(result.status, wanted)
       return result
     }
@@ -310,7 +385,7 @@ const openStoreInChild = (stateDir, startAt) => new Promise((resolve) => {
 try {
   console.log('task and typed output')
   const happy = cli(runArgs, { input: 'Reply with OK', stateDir: state('happy') })
-  assert.equal(happy.status, 'succeeded')
+  assert.equal(happy.status, 'succeeded', JSON.stringify(happy))
   assert.equal(happy.output, 'OK from fake Codex')
   assert.equal(happy.model, 'gpt-5.6-luna')
   assert.equal(happy.serviceTier, 'default')
@@ -320,6 +395,12 @@ try {
   const happyDb = new DatabaseSync(join(state('happy'), 'jobs.sqlite3'), { readOnly: true })
   assert.equal(happyDb.prepare('SELECT prompt FROM jobs WHERE id=?').get(happy.jobId).prompt, null)
   happyDb.close()
+  const initializeError = cli(runArgs, {
+    input: 'Initialization failure', mode: 'initialize-error', stateDir: state('initialize-error'),
+  })
+  assert.equal(initializeError.status, 'failed')
+  assert.equal(initializeError.error.kind, 'APP_SERVER_ERROR')
+  assert.equal(providerScopeRunning(providerScopeName(initializeError.jobId)), false)
 
   const schemaFile = join(temp, 'schema.json')
   writeFileSync(schemaFile, JSON.stringify({ type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
@@ -336,7 +417,56 @@ try {
   writeFileSync(falseSchemaFile, 'false')
   const rejectedByBooleanSchema = cli([...runArgs, '--schema-file', falseSchemaFile], { input: 'Return anything', stateDir: state('schema-false') })
   assert.equal(rejectedByBooleanSchema.status, 'failed')
-  assert.equal(rejectedByBooleanSchema.error.kind, 'SCHEMA_OUTPUT')
+  assert.equal(rejectedByBooleanSchema.error.kind, 'BAD_SCHEMA')
+  assert.equal(jobCount(state('schema-false')), 0)
+  const incompleteSchemaFile = join(temp, 'incomplete-schema.json')
+  writeFileSync(incompleteSchemaFile, JSON.stringify({ type: 'object', properties: { answer: { const: 'yes' } } }))
+  const incompleteSchema = cli([...runArgs, '--schema-file', incompleteSchemaFile], { input: 'Return JSON', stateDir: state('schema-incomplete') })
+  assert.equal(incompleteSchema.status, 'failed')
+  assert.equal(incompleteSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(incompleteSchema.error.message, /additionalProperties/)
+  assert.equal(jobCount(state('schema-incomplete')), 0)
+  const untypedSchemaFile = join(temp, 'untyped-schema.json')
+  writeFileSync(untypedSchemaFile, JSON.stringify({
+    type: 'object', additionalProperties: false, required: ['answer'],
+    properties: { answer: { const: 'yes' } },
+  }))
+  const untypedSchema = cli([...runArgs, '--schema-file', untypedSchemaFile], { input: 'Return JSON', stateDir: state('schema-untyped') })
+  assert.equal(untypedSchema.status, 'failed')
+  assert.equal(untypedSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(untypedSchema.error.message, /explicit type/)
+  assert.equal(jobCount(state('schema-untyped')), 0)
+  const constrainedRefSchemaFile = join(temp, 'constrained-ref-schema.json')
+  writeFileSync(constrainedRefSchemaFile, JSON.stringify({
+    type: 'object', additionalProperties: false, required: ['answer'],
+    properties: { answer: { $ref: '#/$defs/answer', minLength: 1 } },
+    $defs: { answer: { type: 'string' } },
+  }))
+  const constrainedRefSchema = cli([...runArgs, '--schema-file', constrainedRefSchemaFile], { input: 'Return JSON', stateDir: state('schema-constrained-ref') })
+  assert.equal(constrainedRefSchema.status, 'failed')
+  assert.equal(constrainedRefSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(constrainedRefSchema.error.message, /explicit type/)
+  assert.equal(jobCount(state('schema-constrained-ref')), 0)
+  const constrainedAnyOfSchemaFile = join(temp, 'constrained-any-of-schema.json')
+  writeFileSync(constrainedAnyOfSchemaFile, JSON.stringify({
+    type: 'object', additionalProperties: false, required: ['answer'],
+    properties: { answer: { anyOf: [{ type: 'string' }, { type: 'null' }], minLength: 1 } },
+  }))
+  const constrainedAnyOfSchema = cli([...runArgs, '--schema-file', constrainedAnyOfSchemaFile], { input: 'Return JSON', stateDir: state('schema-constrained-any-of') })
+  assert.equal(constrainedAnyOfSchema.status, 'failed')
+  assert.equal(constrainedAnyOfSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(constrainedAnyOfSchema.error.message, /explicit type/)
+  assert.equal(jobCount(state('schema-constrained-any-of')), 0)
+  const unsupportedApplicatorSchemaFile = join(temp, 'unsupported-applicator-schema.json')
+  writeFileSync(unsupportedApplicatorSchemaFile, JSON.stringify({
+    type: 'object', additionalProperties: false, required: ['answer'],
+    properties: { answer: { oneOf: [{ type: 'string' }, { type: 'null' }] } },
+  }))
+  const unsupportedApplicatorSchema = cli([...runArgs, '--schema-file', unsupportedApplicatorSchemaFile], { input: 'Return JSON', stateDir: state('schema-unsupported-applicator') })
+  assert.equal(unsupportedApplicatorSchema.status, 'failed')
+  assert.equal(unsupportedApplicatorSchema.error.kind, 'BAD_SCHEMA')
+  assert.match(unsupportedApplicatorSchema.error.message, /unsupported oneOf/)
+  assert.equal(jobCount(state('schema-unsupported-applicator')), 0)
 
   const profile = cli([...runArgs, '--profile', 'defensive-security'], { input: 'Profile test', mode: 'profile', stateDir: state('profile') })
   assert.equal(profile.status, 'succeeded')
@@ -380,7 +510,8 @@ try {
   const escape = join(repo, 'escape')
   symlinkSync(temp, escape, 'dir')
   const nestedRead = cli([...runArgs, '--cwd', nestedDir], { input: 'nested read', stateDir: state('nested-read') })
-  assert.equal(nestedRead.status, 'succeeded')
+  assert.equal(nestedRead.status, 'failed')
+  assert.equal(nestedRead.error.kind, 'OUTSIDE_ROOTS')
   const widenedWrite = cli([...runArgs, '--cwd', nestedDir, '--access', 'workspace-write'], { input: 'nested write', stateDir: state('nested-write') })
   assert.equal(widenedWrite.status, 'failed')
   assert.equal(widenedWrite.error.kind, 'OUTSIDE_ROOTS')
@@ -401,6 +532,17 @@ try {
   assert.equal(providerError.error.message, 'Codex App Server rejected a request.')
   assert.equal(providerError.error.details.code, -32603)
   assert.doesNotMatch(JSON.stringify(providerError), /test@example\.invalid|\/home\/test\/private/)
+  const failedTurn = cli(runArgs, { input: 'fail in turn', mode: 'failed-turn', stateDir: state('failed-turn') })
+  assert.equal(failedTurn.status, 'failed')
+  assert.equal(failedTurn.error.kind, 'BAD_MODEL')
+  assert.equal(failedTurn.error.message, 'Codex rejected the requested model.')
+  assert.doesNotMatch(JSON.stringify(failedTurn), /test@example\.invalid|\/home\/test\/private|gpt-private/)
+  const failedTurnDb = new DatabaseSync(join(state('failed-turn'), 'jobs.sqlite3'), { readOnly: true })
+  const failedTurnJournal = failedTurnDb.prepare("SELECT payload_json FROM events WHERE job_id=? AND type='internal.error'").get(failedTurn.jobId)
+  failedTurnDb.close()
+  assert.match(failedTurnJournal.payload_json, /test@example\.invalid|\/home\/test\/private|gpt-private/)
+  assert.deepEqual(cli(['events', failedTurn.jobId], { stateDir: state('failed-turn') })
+    .find((event) => event.type === 'internal.error').payload, { redacted: true })
 
   console.log('rejected requests never reach the job table')
   const noModelState = state('no-model')
@@ -417,6 +559,13 @@ try {
   assert.equal(noHost.error.kind, 'BAD_REQUEST')
   assert.match(noHost.error.message, /--host/)
   assert.equal(jobCount(noHostState), 0)
+  const unsupportedLimitState = state('unsupported-limit')
+  const unsupportedLimit = cli([...runArgs, '--max-turns', '2'], {
+    input: 'x', stateDir: unsupportedLimitState,
+  })
+  assert.equal(unsupportedLimit.status, 'failed')
+  assert.equal(unsupportedLimit.error.kind, 'LIMIT_UNSUPPORTED')
+  assert.equal(jobCount(unsupportedLimitState), 0)
   const unknownHostState = state('unknown-host')
   const unknownHost = cli(['run', '--host', 'gemini', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low'], {
     input: 'x', stateDir: unknownHostState,
@@ -475,6 +624,37 @@ try {
   assert.equal(queuedStore.getJob(terminalRace.id).status, 'succeeded')
   queuedStore.close()
 
+  const trackedPidFile = join(temp, 'tracked-descendant.pid')
+  const trackedRootScript = `const {spawn}=require('node:child_process'); const {writeFileSync}=require('node:fs'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}); child.unref(); writeFileSync(${JSON.stringify(trackedPidFile)},String(child.pid)); setInterval(()=>{},1000)`
+  const trackedRoot = spawn(process.execPath, ['-e', trackedRootScript], { detached: true, stdio: 'ignore' })
+  let trackedPid = null
+  try {
+    for (let i = 0; i < 40 && !trackedPid; i++) {
+      try { trackedPid = Number(readFileSync(trackedPidFile, 'utf8')) || null } catch {}
+      if (!trackedPid) await delay(25)
+    }
+    assert.ok(trackedPid)
+    const knownDescendants = new Map()
+    for (let i = 0; i < 40 && !knownDescendants.has(trackedPid); i++) {
+      captureProcessDescendants(trackedRoot.pid, knownDescendants)
+      if (!knownDescendants.has(trackedPid)) await delay(25)
+    }
+    assert.ok(knownDescendants.has(trackedPid))
+    captureProcessDescendants(trackedRoot.pid, knownDescendants, { freeze: true })
+    let trackedState = ''
+    for (let i = 0; i < 20 && !/^State:\s+T/m.test(trackedState); i++) {
+      trackedState = readFileSync(`/proc/${trackedPid}/status`, 'utf8')
+      if (!/^State:\s+T/m.test(trackedState)) await delay(25)
+    }
+    assert.match(trackedState, /^State:\s+T/m)
+  } finally {
+    if (!trackedPid) {
+      try { trackedPid = Number(readFileSync(trackedPidFile, 'utf8')) || null } catch {}
+    }
+    if (trackedPid) try { process.kill(trackedPid, 'SIGKILL') } catch {}
+    try { process.kill(-trackedRoot.pid, 'SIGKILL') } catch {}
+  }
+
   const steerState = state('steer')
   const steerable = cli([...runArgs, '--detach'], { input: 'wait', mode: 'steer', stateDir: steerState })
   await delay(300)
@@ -514,6 +694,119 @@ try {
   assert.deepEqual(heldLeases.map((lease) => lease.job_id), [owned.jobId])
   await waitFor(owned.jobId, duplicateState, 'succeeded')
 
+  console.log('provider quarantine retains and safely releases a write lease')
+  const quarantineState = state('quarantine')
+  const quarantineStore = new JobStore(quarantineState)
+  const quarantinedJob = quarantineStore.createJob({
+    traceId: 'quarantined', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'quarantine', outputSchema: null,
+  })
+  quarantineStore.claim(quarantinedJob.id, process.pid, processStartToken(process.pid))
+  const provider = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  let providerToken = null
+  for (let i = 0; i < 40 && !providerToken; i++) {
+    providerToken = processStartToken(provider.pid)
+    if (!providerToken) await delay(25)
+  }
+  assert.ok(providerToken)
+  quarantineStore.setProviderProcess(quarantinedJob.id, {
+    pid: provider.pid,
+    startToken: providerToken,
+    processes: [{ pid: provider.pid, startToken: providerToken }],
+  })
+  quarantineStore.quarantine(quarantinedJob.id, 'unknown', {
+    error: { kind: 'PROVIDER_QUARANTINED', message: 'test quarantine', details: null },
+  })
+  quarantineStore.setProviderProcess(quarantinedJob.id, {
+    pid: provider.pid,
+    startToken: providerToken,
+    scope: 'flow-delegation-test-quarantine.scope',
+    processes: [{ pid: provider.pid, startToken: providerToken }],
+  })
+  assert.equal(quarantineStore.requireJob(quarantinedJob.id).providerScope, 'flow-delegation-test-quarantine.scope')
+  const blockedJob = quarantineStore.createJob({
+    traceId: 'quarantine-blocked', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'blocked', outputSchema: null,
+  })
+  assert.throws(
+    () => quarantineStore.claim(blockedJob.id, process.pid, processStartToken(process.pid)),
+    (error) => error.kind === 'WORKSPACE_BUSY',
+  )
+  quarantineStore.close()
+  const quarantined = cli(['status', quarantinedJob.id], { stateDir: quarantineState })
+  assert.equal(quarantined.status, 'quarantined')
+  assert.equal(quarantined.quarantine.resumeStatus, 'unknown')
+  assert.equal(quarantined.quarantine.trackedProcesses, 1)
+  const quarantineCancel = cli(['cancel', quarantinedJob.id], { stateDir: quarantineState })
+  assert.equal(quarantineCancel.status, 'failed')
+  assert.equal(quarantineCancel.error.kind, 'JOB_QUARANTINED')
+  provider.kill('SIGKILL')
+  await new Promise((resolve) => provider.once('exit', resolve))
+  const released = cli(['status', quarantinedJob.id], { stateDir: quarantineState })
+  assert.equal(released.status, 'unknown')
+  assert.equal(released.quarantine, null)
+  const releasedStore = new JobStore(quarantineState)
+  assert.equal(releasedStore.db.prepare('SELECT COUNT(*) AS count FROM leases').get().count, 0)
+  releasedStore.claim(blockedJob.id, process.pid, processStartToken(process.pid))
+  releasedStore.finish(blockedJob.id, 'cancelled')
+  releasedStore.close()
+
+  console.log('stale workers quarantine live providers before recovery')
+  const crashQuarantineState = state('crash-quarantine')
+  const crashQuarantineStore = new JobStore(crashQuarantineState)
+  const crashedJob = crashQuarantineStore.createJob({
+    traceId: 'crash-quarantine', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'recover after provider exit', outputSchema: null,
+  })
+  crashQuarantineStore.claim(crashedJob.id, process.pid, processStartToken(process.pid))
+  crashQuarantineStore.setRunning(crashedJob.id, { threadId: 'thread-test', turnId: 'recovered', accepted: true })
+  const orphanedScope = process.platform === 'linux' ? providerScopeName(crashedJob.id) : null
+  const orphanedLaunch = scopedProviderCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], orphanedScope)
+  const orphanedProvider = spawn(orphanedLaunch.command, orphanedLaunch.args, { stdio: 'ignore' })
+  let orphanedToken = null
+  for (let i = 0; i < 40 && !orphanedToken; i++) {
+    orphanedToken = processStartToken(orphanedProvider.pid)
+    if (!orphanedToken) await delay(25)
+  }
+  assert.ok(orphanedToken)
+  if (orphanedScope) {
+    for (let i = 0; i < 40 && !providerScopeRunning(orphanedScope); i++) await delay(25)
+    assert.equal(providerScopeRunning(orphanedScope), true)
+  }
+  crashQuarantineStore.setProviderProcess(crashedJob.id, {
+    pid: orphanedProvider.pid,
+    startToken: orphanedToken,
+    scope: orphanedScope,
+    processes: [{ pid: orphanedProvider.pid, startToken: orphanedToken }],
+  })
+  crashQuarantineStore.db.prepare('UPDATE jobs SET worker_pid=99999999, heartbeat_at=0 WHERE id=?').run(crashedJob.id)
+  crashQuarantineStore.close()
+  const crashQuarantined = cli(['status', crashedJob.id], { stateDir: crashQuarantineState })
+  assert.equal(crashQuarantined.status, 'quarantined')
+  assert.equal(crashQuarantined.quarantine.resumeStatus, 'reconciling')
+  if (orphanedScope) {
+    assert.equal(crashQuarantined.quarantine.providerScope, orphanedScope)
+    assert.equal(providerScopeRunning(orphanedScope), true)
+  }
+  const crashLeaseDb = new DatabaseSync(join(crashQuarantineState, 'jobs.sqlite3'), { readOnly: true })
+  assert.equal(crashLeaseDb.prepare('SELECT COUNT(*) AS count FROM leases').get().count, 1)
+  crashLeaseDb.close()
+  if (orphanedScope) signalProviderScope(orphanedScope, 'SIGKILL')
+  else orphanedProvider.kill('SIGKILL')
+  await new Promise((resolve) => orphanedProvider.once('exit', resolve))
+  const crashRecovered = cli(['status', crashedJob.id], { stateDir: crashQuarantineState })
+  assert.equal(crashRecovered.status, 'succeeded')
+  assert.equal(crashRecovered.output, 'RECOVERED')
+  const crashReleasedDb = new DatabaseSync(join(crashQuarantineState, 'jobs.sqlite3'), { readOnly: true })
+  assert.equal(crashReleasedDb.prepare('SELECT COUNT(*) AS count FROM leases').get().count, 0)
+  crashReleasedDb.close()
+
   console.log('unexpected approval and stale-job recovery')
   const approval = cli(runArgs, { input: 'Ask for approval', mode: 'approval', stateDir: state('approval') })
   assert.equal(approval.status, 'awaiting_approval')
@@ -529,6 +822,39 @@ try {
   })
   assert.equal(missingCodex.status, 'failed')
   assert.equal(missingCodex.error.kind, 'CODEX_NOT_INSTALLED')
+
+  const leakedMcp = cli(runArgs, { input: 'must not run', mode: 'mcp-leak', stateDir: state('mcp-leak') })
+  assert.equal(leakedMcp.status, 'failed')
+  assert.equal(leakedMcp.error.kind, 'MCP_ISOLATION')
+  assert.equal(leakedMcp.threadId, null)
+
+  const malformedProtocol = cli(runArgs, {
+    input: 'must not run', mode: 'malformed-protocol', stateDir: state('malformed-protocol'),
+  })
+  assert.equal(malformedProtocol.status, 'failed')
+  assert.equal(malformedProtocol.error.kind, 'APP_SERVER_PROTOCOL')
+
+  const previousCodexBin = process.env.FLOW_DELEGATION_CODEX_BIN
+  process.env.FLOW_DELEGATION_CODEX_BIN = fake
+  let stdinClosed
+  const stdinClosedNotice = new Promise((resolve) => { stdinClosed = resolve })
+  const brokenStdinClient = new AppServerClient({
+    cwd: repo,
+    env: { FLOW_FAKE_MODE: 'stdin-closed' },
+    onNotification: (method) => { if (method === 'fake/stdinClosed') stdinClosed() },
+  })
+  try {
+    await brokenStdinClient.start()
+    await stdinClosedNotice
+    await assert.rejects(
+      brokenStdinClient.request('account/read', {}, 2_000),
+      (error) => error.kind === 'APP_SERVER_EXIT',
+    )
+  } finally {
+    await brokenStdinClient.stop()
+    if (previousCodexBin === undefined) delete process.env.FLOW_DELEGATION_CODEX_BIN
+    else process.env.FLOW_DELEGATION_CODEX_BIN = previousCodexBin
+  }
 
   const acceptedCrashState = state('accepted-crash')
   const acceptedCrash = cli([...runArgs, '--access', 'workspace-write'], {
@@ -548,6 +874,15 @@ try {
   const midturnWrite = cli([...runArgs, '--access', 'workspace-write'], { input: 'crash after write acceptance', mode: 'midturn-crash', stateDir: state('midturn-write') })
   assert.equal(midturnWrite.status, 'unknown')
   assert.equal(midturnWrite.error.kind, 'APP_SERVER_EXIT')
+
+  if (process.platform === 'linux') {
+    const detachedCommand = cli(runArgs, {
+      input: 'start a detached command', mode: 'detached-command', stateDir: state('detached-command'),
+    })
+    assert.equal(detachedCommand.status, 'succeeded')
+    await delay(1_200)
+    assert.equal(existsSync(join(repo, 'codex-detached-survivor')), false)
+  }
 
   const recoveryState = state('recovery')
   const recoverable = cli(runArgs, { input: 'complete', stateDir: recoveryState })
@@ -649,6 +984,13 @@ try {
   const ancient = Date.now() - 15 * 24 * 60 * 60 * 1_000
   retentionStore.db.prepare('UPDATE jobs SET updated_at=? WHERE id IN (?, ?)').run(ancient, expired.id, expiredParent.id)
   retentionStore.db.prepare(`UPDATE jobs SET status='running', updated_at=? WHERE id=?`).run(ancient, expiredActive.id)
+  const tempRoot = join(retentionState, 'tmp')
+  const expiredTemp = join(tempRoot, `${expired.id}-expired`)
+  const recentTemp = join(tempRoot, `${recent.id}-terminal`)
+  const activeTemp = join(tempRoot, `${expiredActive.id}-active`)
+  mkdirSync(expiredTemp, { recursive: true })
+  mkdirSync(recentTemp, { recursive: true })
+  mkdirSync(activeTemp, { recursive: true })
   assert.ok(retentionStore.events(expired.id).length > 0)
   retentionStore.close()
   const pruned = new JobStore(retentionState)
@@ -658,6 +1000,10 @@ try {
   assert.equal(pruned.getJob(expiredActive.id).status, 'running')
   assert.equal(pruned.getJob(expiredParent.id).status, 'succeeded')
   assert.equal(pruned.getJob(liveChild.id).parentJobId, expiredParent.id)
+  assert.equal(existsSync(expiredTemp), false)
+  assert.equal(existsSync(recentTemp), false)
+  assert.equal(existsSync(activeTemp), true)
+  rmSync(activeTemp, { recursive: true, force: true })
   pruned.close()
 
   // A v1 database from before the schema shed jobs.delivery and leases.heartbeat_at. The rows
@@ -733,6 +1079,13 @@ try {
   ) VALUES ('legacy-job', 'legacy-trace', NULL, 'claude', 'codex', 0, 'task', 'workspace-write', 'detached',
     ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, 'legacy prompt', 'running', ?, ?, ?)`)
     .run(repo, repo, legacyAt, legacyAt, legacyAt)
+  legacyDb.prepare(`INSERT INTO jobs (
+    id, trace_id, parent_job_id, host, target, depth, mode, access, delivery,
+    cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+    prompt, status, created_at, updated_at, heartbeat_at
+  ) VALUES ('legacy-child', 'legacy-trace', 'legacy-job', 'claude', 'codex', 0, 'task', 'read-only', 'attached',
+    ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, NULL, 'succeeded', ?, ?, ?)`)
+    .run(repo, repo, legacyAt, legacyAt, legacyAt)
   legacyDb.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
     VALUES ('legacy-job', 1, 'job.queued', '{"status":"queued"}', ?)`).run(legacyAt)
   legacyDb.prepare(`INSERT INTO leases (workspace_key, job_id, heartbeat_at) VALUES (?, 'legacy-job', ?)`)
@@ -740,16 +1093,43 @@ try {
   legacyDb.close()
   const upgraded = new JobStore(legacyState)
   const columnsOf = (table) => upgraded.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
-  assert.equal(upgraded.userVersion(), 2)
+  assert.equal(upgraded.userVersion(), 5)
   assert.ok(!columnsOf('jobs').includes('delivery'))
+  assert.ok(columnsOf('jobs').includes('max_turns'))
+  assert.ok(columnsOf('jobs').includes('provider_processes_json'))
+  assert.ok(columnsOf('jobs').includes('provider_scope'))
   assert.ok(!columnsOf('leases').includes('heartbeat_at'))
   const legacyJob = upgraded.getJob('legacy-job')
   assert.equal(legacyJob.status, 'running')
   assert.equal(legacyJob.model, 'gpt-5.6-luna')
   assert.equal(legacyJob.workspaceKey, repo)
+  assert.equal(upgraded.getJob('legacy-child').parentJobId, 'legacy-job')
   assert.equal(upgraded.events('legacy-job').length, 1)
   assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases, 1)
+  assert.deepEqual(upgraded.db.prepare('PRAGMA foreign_key_check').all(), [])
+  assert.ok(upgraded.db.prepare('PRAGMA index_list(jobs)').all()
+    .some((index) => index.name === 'jobs_route_created_idx'))
   upgraded.close()
+
+  const v3State = state('legacy-v3')
+  const v3Seed = new JobStore(v3State)
+  const v3Job = v3Seed.createJob({
+    traceId: 'v3-job', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'v3', outputSchema: null,
+  })
+  v3Seed.close()
+  const v3Db = new DatabaseSync(join(v3State, 'jobs.sqlite3'))
+  v3Db.exec('DROP INDEX jobs_route_created_idx; ALTER TABLE jobs DROP COLUMN provider_scope; PRAGMA user_version=3;')
+  v3Db.close()
+  const v3Upgraded = new JobStore(v3State)
+  assert.equal(v3Upgraded.userVersion(), 5)
+  assert.ok(v3Upgraded.db.prepare('PRAGMA table_info(jobs)').all().some((column) => column.name === 'provider_scope'))
+  assert.ok(v3Upgraded.db.prepare('PRAGMA index_list(jobs)').all()
+    .some((index) => index.name === 'jobs_route_created_idx'))
+  assert.equal(v3Upgraded.getJob(v3Job.id).traceId, 'v3-job')
+  v3Upgraded.close()
 
   console.log('MCP registration, roots, progress, and attached result')
   const mcpState = state('mcp')
@@ -768,7 +1148,10 @@ try {
   await client.start()
   const tools = await client.listTools()
   const names = tools.tools.map((tool) => tool.name)
-  for (const name of ['delegate_to_codex', 'delegation_status', 'delegation_result', 'delegation_events', 'delegation_cancel', 'delegation_steer', 'delegation_continue', 'delegation_models', 'delegation_doctor']) assert.ok(names.includes(name), name)
+  for (const name of ['delegate_to_codex', 'delegation_status', 'delegation_result', 'delegation_events', 'delegation_list', 'delegation_cancel', 'delegation_steer', 'delegation_continue', 'delegation_models', 'delegation_doctor']) assert.ok(names.includes(name), name)
+  const delegateTool = tools.tools.find((tool) => tool.name === 'delegate_to_codex')
+  assert.equal(delegateTool.inputSchema.properties.maxTurns, undefined)
+  assert.equal(delegateTool.inputSchema.properties.maxBudgetUsd, undefined)
   const escaped = await client.callTool(
     'delegate_to_codex',
     { mode: 'task', prompt: 'escape', cwd: temp, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
@@ -823,6 +1206,75 @@ try {
   assert.equal(mcpContinued.structuredContent.job.threadId, mcpResult.structuredContent.job.threadId)
   assert.notEqual(mcpContinued.structuredContent.job.jobId, mcpResult.structuredContent.job.jobId)
   assert.ok(continuedProgress.length > 0)
+  const firstPage = await client.callTool('delegation_list', { limit: 1 }, { timeout: 30_000 })
+  assert.equal(firstPage.structuredContent.jobs.length, 1)
+  assert.equal(firstPage.structuredContent.jobs[0].host, 'claude')
+  assert.equal(firstPage.structuredContent.jobs[0].target, 'codex')
+  assert.equal(Object.hasOwn(firstPage.structuredContent.jobs[0], 'prompt'), false)
+  assert.equal(Object.hasOwn(firstPage.structuredContent.jobs[0], 'output'), false)
+  assert.ok(firstPage.structuredContent.nextCursor)
+  const secondPage = await client.callTool('delegation_list', {
+    limit: 1,
+    cursor: firstPage.structuredContent.nextCursor,
+  }, { timeout: 30_000 })
+  assert.equal(secondPage.structuredContent.jobs.length, 1)
+  assert.notEqual(secondPage.structuredContent.jobs[0].jobId, firstPage.structuredContent.jobs[0].jobId)
+  const mismatchedCursor = await client.callTool('delegation_list', {
+    status: 'succeeded',
+    limit: 1,
+    cursor: firstPage.structuredContent.nextCursor,
+  }, { timeout: 30_000 })
+  assert.equal(mismatchedCursor.isError, true)
+  assert.equal(mismatchedCursor.structuredContent.error.kind, 'BAD_REQUEST')
+  const succeededPage = await client.callTool('delegation_list', { status: 'succeeded', limit: 100 }, { timeout: 30_000 })
+  assert.ok(succeededPage.structuredContent.jobs.length >= 2)
+  assert.ok(succeededPage.structuredContent.jobs.every((job) => job.status === 'succeeded'))
+
+  const hiddenStore = new JobStore(mcpState)
+  for (let index = 0; index < 33; index++) {
+    const hiddenCwd = join(temp, `hidden-list-${index}`)
+    mkdirSync(hiddenCwd)
+    hiddenStore.createJob({
+      traceId: `hidden-list-job-${index}`, host: 'claude', target: 'codex', depth: 0,
+      mode: 'task', access: 'read-only', cwd: hiddenCwd, workspaceKey: hiddenCwd,
+      model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+      timeBudgetSeconds: 30, prompt: 'hidden', outputSchema: null,
+    })
+  }
+  hiddenStore.createJob({
+    traceId: 'other-route-list-job', host: 'codex', target: 'claude', depth: 0,
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'sonnet', effort: 'low', serviceTier: 'default', profile: 'standard',
+    timeBudgetSeconds: 30, prompt: 'other route', outputSchema: null,
+  })
+  hiddenStore.close()
+  let hiddenCursor = null
+  let firstHiddenCursor = null
+  let hiddenPages = 0
+  do {
+    const hiddenPage = await client.callTool('delegation_list', {
+      status: 'queued', limit: 100, ...(hiddenCursor ? { cursor: hiddenCursor } : {}),
+    }, { timeout: 30_000 })
+    assert.deepEqual(hiddenPage.structuredContent.jobs, [])
+    hiddenCursor = hiddenPage.structuredContent.nextCursor
+    if (!firstHiddenCursor) firstHiddenCursor = hiddenCursor
+    hiddenPages++
+  } while (hiddenCursor)
+  assert.ok(hiddenPages >= 2)
+  assert.ok(firstHiddenCursor)
+  const hiddenJobId = JSON.parse(Buffer.from(firstHiddenCursor, 'base64url').toString('utf8')).id
+  for (const [tool, input] of [
+    ['delegation_status', { jobId: hiddenJobId }],
+    ['delegation_result', { jobId: hiddenJobId }],
+    ['delegation_events', { jobId: hiddenJobId }],
+    ['delegation_steer', { jobId: hiddenJobId, text: 'hidden' }],
+    ['delegation_continue', { jobId: hiddenJobId, prompt: 'hidden' }],
+    ['delegation_cancel', { jobId: hiddenJobId }],
+  ]) {
+    const deniedHiddenJob = await client.callTool(tool, input, { timeout: 30_000 })
+    assert.equal(deniedHiddenJob.isError, true, tool)
+    assert.equal(deniedHiddenJob.structuredContent.error.kind, 'OUTSIDE_ROOTS', tool)
+  }
   const modelResult = await client.callTool('delegation_models', { cwd: repo }, { timeout: 30_000 })
   assert.equal(modelResult.structuredContent.models[0].id, 'gpt-5.6-luna')
   const escapedModels = await client.callTool('delegation_models', { cwd: temp }, { timeout: 30_000 })
@@ -830,7 +1282,52 @@ try {
   assert.equal(escapedModels.structuredContent.error.kind, 'OUTSIDE_ROOTS')
   const doctorResult = await client.callTool('delegation_doctor', { cwd: repo }, { timeout: 30_000 })
   assert.equal(doctorResult.structuredContent.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.workspace.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.containment.mode, 'systemd-scope')
+  assert.equal(doctorResult.structuredContent.checks.mcpIsolation.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.ok, true)
+  assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.profile, 'flow_delegation')
+  assert.equal(doctorResult.structuredContent.mcp.client.name, 'flow-smoke')
+  assert.equal(doctorResult.structuredContent.mcp.capabilities.roots.listChanged, true)
   await client.close()
+
+  const noRootsClient = new McpStdioClient({
+    command: process.execPath,
+    args: [bundle, 'mcp', '--host', 'claude', '--state-dir', state('mcp-no-roots')],
+    cwd: repo,
+    env: {
+      ...process.env,
+      CODEX_PROJECT_DIR: '',
+      CLAUDE_PROJECT_DIR: '',
+      FLOW_DELEGATION_CODEX_BIN: fake,
+      FLOW_FAKE_MODE: 'happy',
+    },
+    roots: [],
+  })
+  await noRootsClient.start()
+  const noRootsDoctor = await noRootsClient.callTool('delegation_doctor', {}, { timeout: 30_000 })
+  assert.equal(noRootsDoctor.isError, undefined)
+  assert.equal(noRootsDoctor.structuredContent.ok, false)
+  assert.equal(noRootsDoctor.structuredContent.checks.workspace.error.kind, 'NO_ROOTS')
+  assert.equal(noRootsDoctor.structuredContent.checks.appServer.ok, true)
+  const noRootsList = await noRootsClient.callTool('delegation_list', {}, { timeout: 30_000 })
+  assert.equal(noRootsList.isError, true)
+  assert.equal(noRootsList.structuredContent.error.kind, 'NO_ROOTS')
+  await noRootsClient.close()
+
+  const missingMcpHost = spawnSync(process.execPath, [bundle, 'mcp'], {
+    cwd: repo,
+    encoding: 'utf8',
+    timeout: 10_000,
+  })
+  assert.equal(missingMcpHost.status, 2)
+  assert.match(missingMcpHost.stderr, /--host is required/)
+
+  for (const entry of readdirSync(temp, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('state-')) continue
+    const jobTempRoot = join(temp, entry.name, 'tmp')
+    if (existsSync(jobTempRoot)) assert.deepEqual(readdirSync(jobTempRoot), [], `${entry.name} leaked a job temporary directory`)
+  }
 
   console.log('smoke-delegation: ALL PASS')
 } finally {

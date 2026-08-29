@@ -1,24 +1,16 @@
-import Ajv2020 from 'ajv/dist/2020.js'
 import { spawn } from 'node:child_process'
-import { assertRoute, capabilitiesForTarget, DelegationError, effortsForTarget, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
-import { AppServerClient, codexVersion } from './app-server.mjs'
+import { assertRoute, capabilitiesForTarget, DelegationError, effortsForTarget, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, restrictedPermissionConfig } from './app-server.mjs'
 import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
+import { providerContainmentSupport, providerScopeRunning } from './containment.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
+import { validateOutputSchema } from './schema.mjs'
 import { JobStore, defaultStateDir, processStartToken } from './store.mjs'
-import { canonicalRoots, canonicalWorkspace, immutableReview, worktreeKey, writableWorktreeKey } from './workspace.mjs'
+import { canonicalRoots, canonicalWorkspace, gitMetadataPaths, immutableReview, validatedWorktreeKey, worktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-function validateSchema(schema) {
-  if (schema == null) return null
-  if (Buffer.byteLength(JSON.stringify(schema)) > 64 * 1024) {
-    throw new DelegationError('BAD_SCHEMA', 'The output schema exceeds 64 KiB.')
-  }
-  const ajv = new Ajv2020({ allErrors: true, strict: false })
-  if (!ajv.validateSchema(schema)) throw new DelegationError('BAD_SCHEMA', 'outputSchema is not a valid JSON Schema.')
-  try { ajv.compile(schema) } catch { throw new DelegationError('BAD_SCHEMA', 'outputSchema cannot be compiled.') }
-  return schema
-}
+const LIST_SCAN_LIMIT = 1_000
+const LIST_VISIBILITY_PROBE_LIMIT = 32
 
 // Every field is type-checked before it is pattern-checked: a regex coerces its argument, so
 // an undefined model matched the shape test and only failed later, as an opaque NOT NULL
@@ -46,12 +38,79 @@ function validateStart(input, target) {
   if (!Number.isInteger(input.timeBudgetSeconds) || input.timeBudgetSeconds < 30 || input.timeBudgetSeconds > 7200) {
     throw new DelegationError('BAD_REQUEST', 'timeBudgetSeconds must be between 30 and 7200.')
   }
+  if (input.maxTurns !== null && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 1000)) {
+    throw new DelegationError('BAD_REQUEST', 'maxTurns must be between 1 and 1000.')
+  }
+  if (input.maxBudgetUsd !== null && (typeof input.maxBudgetUsd !== 'number'
+    || !Number.isFinite(input.maxBudgetUsd) || input.maxBudgetUsd < 0.01 || input.maxBudgetUsd > 1000)) {
+    throw new DelegationError('BAD_REQUEST', 'maxBudgetUsd must be between 0.01 and 1000.')
+  }
+  if (target !== 'claude' && (input.maxTurns !== null || input.maxBudgetUsd !== null)) {
+    throw new DelegationError('LIMIT_UNSUPPORTED', 'Codex App Server does not provide hard turn or cost limits for a delegated turn.')
+  }
 }
 
 function terminal(job) { return TERMINAL_STATES.includes(job.status) }
+function settled(job) { return terminal(job) || job.status === 'quarantined' }
+
+function processGroupRunning(processGroupId) {
+  if (process.platform === 'win32' || !Number.isInteger(processGroupId) || processGroupId <= 0) return false
+  try {
+    process.kill(-processGroupId, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
+
+function quarantineRunning(job) {
+  if (providerScopeRunning(job.providerScope)) return true
+  if (processGroupRunning(job.providerProcessGroupId)) return true
+  const identities = [
+    ...(job.providerPid && job.providerStartToken
+      ? [{ pid: job.providerPid, startToken: job.providerStartToken }]
+      : []),
+    ...(job.providerProcesses || []),
+  ]
+  if (!identities.length) return true
+  return identities.some(({ pid, startToken }) => processStartToken(pid) === startToken)
+}
+
+function providerRecorded(job) {
+  return Boolean(job.providerPid || job.providerProcessGroupId || job.providerScope || job.providerProcesses?.length)
+}
+
+function decodeListCursor(cursor, { host, target, status }) {
+  if (!cursor) return null
+  if (typeof cursor !== 'string' || cursor.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(cursor)) {
+    throw new DelegationError('BAD_REQUEST', 'The delegation list cursor is invalid.')
+  }
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+    if (value?.v !== 1 || value.host !== host || value.target !== target || value.status !== status
+      || !Number.isSafeInteger(value.createdAt) || typeof value.id !== 'string') {
+      throw new Error('cursor mismatch')
+    }
+    return { createdAt: value.createdAt, id: value.id }
+  } catch {
+    throw new DelegationError('BAD_REQUEST', 'The delegation list cursor is invalid.')
+  }
+}
+
+function encodeListCursor(job, { host, target, status }) {
+  return Buffer.from(JSON.stringify({
+    v: 1,
+    host,
+    target,
+    status,
+    createdAt: job.createdAt,
+    id: job.id,
+  })).toString('base64url')
+}
 
 export class DelegationService {
-  constructor({ host = 'claude', depth = 0, stateDir = defaultStateDir(), entryPath, projectDir = null } = {}) {
+  constructor({ host, depth = 0, stateDir = defaultStateDir(), entryPath, projectDir = null } = {}) {
+    targetForHost(host)
     this.host = host
     this.depth = depth
     this.stateDir = stateDir
@@ -89,6 +148,8 @@ export class DelegationService {
       prompt: input.prompt || '',
       cwd: input.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || 900,
+      maxTurns: input.maxTurns ?? null,
+      maxBudgetUsd: input.maxBudgetUsd ?? null,
       outputSchema: input.outputSchema ?? null,
       base: input.base || null,
       head: input.head || 'HEAD',
@@ -98,13 +159,26 @@ export class DelegationService {
     const target = this.target()
     validateStart(normalized, target)
     assertRoute({ host: this.host, target, depth: this.depth })
+    const containment = providerContainmentSupport()
+    if (!containment.ok) {
+      throw new DelegationError(containment.kind, 'Linux delegation requires a working systemd user scope for provider containment.')
+    }
+    if (target === 'codex') {
+      const host = codexHostSupport()
+      if (!host.ok) throw new DelegationError(host.kind, 'Codex delegation requires a Linux host.')
+      const codex = codexVersion()
+      if (!codex.ok) {
+        const message = codex.kind === 'CODEX_TOO_OLD'
+          ? `Codex delegation requires Codex CLI ${codex.minimum} or newer.`
+          : 'Codex could not be started or its version could not be read.'
+        throw new DelegationError(codex.kind, message)
+      }
+    }
     const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
     const cwd = await canonicalWorkspace(normalized.cwd, roots)
-    const workspaceKey = normalized.access === 'workspace-write'
-      ? await writableWorktreeKey(cwd, roots)
-      : await worktreeKey(cwd)
+    const workspaceKey = await validatedWorktreeKey(cwd, roots)
     const review = await immutableReview({ cwd, mode: normalized.mode, base: normalized.base, head: normalized.head, prompt: normalized.prompt })
-    const outputSchema = validateSchema(review.outputSchema || normalized.outputSchema)
+    const outputSchema = validateOutputSchema(review.outputSchema || normalized.outputSchema, target)
     return this.withStore((store) => {
       const job = store.createJob({
         ...normalized,
@@ -151,7 +225,7 @@ export class DelegationService {
           after = event.seq
           await onEvent(event)
         }
-        if (terminal(job)) return job
+        if (settled(job)) return job
         if (signal?.aborted && !cancelQueued) {
           store.requestCancel(jobId)
           cancelQueued = true
@@ -159,7 +233,7 @@ export class DelegationService {
         if (Date.now() - lastReconcile > 5_000) {
           lastReconcile = Date.now()
           job = await this.reconcile(jobId)
-          if (terminal(job)) return job
+          if (settled(job)) return job
         }
         await sleep(250)
       }
@@ -168,11 +242,84 @@ export class DelegationService {
 
   get(jobId) { return this.withStore((store) => this.requireRoute(store.requireJob(jobId))) }
 
+  async requireVisible(jobId, { rootUris = [], fallbackCwd = null } = {}) {
+    const job = this.get(jobId)
+    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
+    await canonicalWorkspace(job.cwd, roots)
+    return job
+  }
+
   result(jobId) { return resultEnvelope(this.get(jobId)) }
 
   events(jobId, options = {}) {
     this.get(jobId)
     return this.withStore((store) => store.events(jobId, options))
+  }
+
+  async list({ status = null, limit = 20, cursor = null } = {}, { rootUris = [], fallbackCwd = null } = {}) {
+    if (status !== null && !JOB_STATES.includes(status)) {
+      throw new DelegationError('BAD_REQUEST', 'status is invalid.')
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new DelegationError('BAD_REQUEST', 'limit must be between 1 and 100.')
+    }
+    const target = this.target()
+    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
+    if (!roots.length) throw new DelegationError('NO_ROOTS', 'The client did not provide a usable workspace root.')
+    const context = { host: this.host, target, status }
+    let before = decodeListCursor(cursor, context)
+    const visible = []
+    let scanned = 0
+    let lastScanned = null
+    let scanTruncated = false
+    const store = this.store()
+    const visibility = new Map()
+    let visibilityProbes = 0
+    const visibleFromRoots = async (cwd) => {
+      if (visibility.has(cwd)) return visibility.get(cwd)
+      if (visibilityProbes >= LIST_VISIBILITY_PROBE_LIMIT) return null
+      visibilityProbes++
+      try {
+        await canonicalWorkspace(cwd, roots)
+        visibility.set(cwd, true)
+        return true
+      } catch (error) {
+        if (!(error instanceof DelegationError)) throw error
+        visibility.set(cwd, false)
+        return false
+      }
+    }
+    try {
+      scan:
+      while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
+        const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned)
+        const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit })
+        if (!candidates.length) break
+        for (const job of candidates) {
+          const isVisible = await visibleFromRoots(job.cwd)
+          if (isVisible === null) {
+            scanTruncated = true
+            break scan
+          }
+          scanned++
+          lastScanned = job
+          before = { createdAt: job.createdAt, id: job.id }
+          if (!isVisible) continue
+          visible.push(this.requireRoute(job))
+          if (visible.length > limit) break scan
+        }
+        if (candidates.length < chunkLimit) break
+      }
+      if (!scanTruncated && visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
+        scanTruncated = store.listJobs({ host: this.host, target, status, before, limit: 1 }).length > 0
+      }
+    } finally { store.close() }
+    const jobs = visible.slice(0, limit)
+    const cursorJob = visible.length > limit ? jobs.at(-1) : (scanTruncated ? lastScanned : null)
+    return {
+      jobs,
+      nextCursor: cursorJob ? encodeListCursor(cursorJob, context) : null,
+    }
   }
 
   cancel(jobId) {
@@ -210,6 +357,8 @@ export class DelegationService {
       prompt: input.prompt,
       cwd: previous.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || previous.timeBudgetSeconds,
+      maxTurns: input.maxTurns ?? previous.maxTurns,
+      maxBudgetUsd: input.maxBudgetUsd ?? previous.maxBudgetUsd,
       outputSchema: input.outputSchema ?? null,
       parentJobId: previous.id,
       nativeThreadId: previous.nativeThreadId,
@@ -218,8 +367,9 @@ export class DelegationService {
 
   async models(cwd) {
     if (this.target() === 'claude') return claudeModels(cwd)
-    const client = await new AppServerClient({ cwd }).start()
+    const client = new AppServerClient({ cwd })
     try {
+      await client.start()
       const models = []
       let cursor = null
       do {
@@ -231,31 +381,80 @@ export class DelegationService {
     } finally { await client.stop() }
   }
 
-  async doctor(cwd) {
+  async doctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
     const target = this.target()
-    if (target === 'claude') return this.claudeDoctor(cwd)
+    if (target === 'claude') return this.claudeDoctor(cwd, { workspace })
     const checks = {
+      workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
+      host: codexHostSupport(),
+      containment: providerContainmentSupport({ fresh: true }),
       codex: codexVersion(),
       database: { ok: false },
       appServer: { ok: false },
       account: { ok: false },
+      permissionApi: { ok: false },
+      restrictedPermissions: { ok: false },
+      mcpIsolation: { ok: false },
     }
     try {
-      this.withStore((store) => store.db.prepare('SELECT 1').get())
-      checks.database = { ok: true, path: this.stateDir }
+      const quarantined = this.withStore((store) => store.quarantinedCount())
+      checks.database = { ok: true, path: this.stateDir, quarantined }
     } catch { checks.database = { ok: false, kind: 'DATABASE' } }
     // Each probe reports itself. Sharing one catch made an account failure read as a dead App
     // Server, which is the opposite of what doctor is for.
-    if (checks.codex.ok) {
+    if (checks.host.ok && checks.codex.ok && checks.containment.ok) {
       let client
       try {
-        client = await new AppServerClient({ cwd }).start()
+        client = new AppServerClient({ cwd: cwd || undefined, experimentalApi: true })
+        await client.start()
         checks.appServer = { ok: true }
       } catch (error) {
         checks.appServer = { ok: false, error: publicError(error) }
+        if (client) await client.stop()
       }
-      if (client) {
+      if (checks.appServer.ok) {
+        let config = null
+        try {
+          const profiles = await client.request('permissionProfile/list', { cursor: null, limit: 100, cwd: cwd || null }, 20_000)
+          if (!Array.isArray(profiles?.data)) throw new DelegationError('PERMISSION_PROFILE', 'Codex returned an invalid permission profile inventory.')
+          checks.permissionApi = { ok: true, profiles: profiles.data.length }
+        } catch (error) {
+          checks.permissionApi = { ok: false, error: publicError(error) }
+        }
+        try {
+          config = await isolatedThreadConfig(client)
+          if (!workspace.ok || !cwd) throw new DelegationError('NO_WORKSPACE', 'A workspace is required to verify restricted permissions.')
+          const workspaceKey = await worktreeKey(cwd)
+          const metadataPaths = await gitMetadataPaths(cwd)
+          config = {
+            ...config,
+            ...restrictedPermissionConfig({ cwd, workspaceKey, access: 'read-only' }, { gitMetadataPaths: metadataPaths }),
+          }
+          const thread = await client.request('thread/start', {
+            cwd,
+            runtimeWorkspaceRoots: [workspaceKey],
+            approvalPolicy: 'never',
+            approvalsReviewer: 'user',
+            permissions: CODEX_PERMISSION_PROFILE,
+            config,
+            ephemeral: true,
+            serviceName: 'flow-delegation-doctor',
+          }, 30_000)
+          const active = assertRestrictedPermissionProfile(thread)
+          checks.restrictedPermissions = { ok: true, ...active }
+          const isolation = await assertThreadMcpIsolated(client, thread.thread?.id)
+          checks.mcpIsolation = {
+            ok: true,
+            phase: 'thread',
+            standaloneServers: Object.keys(config.mcp_servers).length,
+            servers: isolation.servers,
+          }
+        } catch (error) {
+          const value = { ok: false, error: publicError(error) }
+          if (!checks.restrictedPermissions.ok) checks.restrictedPermissions = value
+          if (!checks.mcpIsolation.ok) checks.mcpIsolation = value
+        }
         try {
           const account = await client.request('account/read', { refreshToken: false }, 20_000)
           checks.account = { ok: Boolean(account.account) || !account.requiresOpenaiAuth, requiresOpenaiAuth: account.requiresOpenaiAuth }
@@ -267,20 +466,24 @@ export class DelegationService {
     return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), checks }
   }
 
-  async claudeDoctor(cwd) {
+  async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
     const checks = {
+      workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
       claude: claudeVersion(),
+      containment: providerContainmentSupport({ fresh: true }),
       agentSdk: claudeAgentSdkStatus(),
       database: { ok: false },
       account: claudeAuthStatus(),
       models: { ok: false },
     }
     try {
-      this.withStore((store) => store.db.prepare('SELECT 1').get())
-      checks.database = { ok: true, path: this.stateDir }
+      const quarantined = this.withStore((store) => store.quarantinedCount())
+      checks.database = { ok: true, path: this.stateDir, quarantined }
     } catch { checks.database = { ok: false, kind: 'DATABASE' } }
-    if (checks.claude.ok && checks.account.ok) {
+    if (!cwd) {
+      checks.models = { ok: false, kind: 'NO_WORKSPACE' }
+    } else if (checks.claude.ok && checks.account.ok && checks.containment.ok) {
       try {
         const models = await claudeModels(cwd)
         checks.models = { ok: models.length > 0, count: models.length }
@@ -298,7 +501,13 @@ export class DelegationService {
 
   async reconcile(jobId, { staleAfterMs = 15_000 } = {}) {
     let job = this.get(jobId)
-    if (terminal(job) || Date.now() - job.heartbeatAt < staleAfterMs) return job
+    if (terminal(job)) return job
+    if (job.status === 'quarantined') {
+      if (quarantineRunning(job)) return job
+      job = this.withStore((store) => store.resolveQuarantine(jobId))
+      if (terminal(job)) return job
+    }
+    if (Date.now() - job.heartbeatAt < staleAfterMs) return job
     // Recovery defers rather than deciding whenever the worker's identity cannot be settled:
     // a live process that might still own the job must not have its outcome overwritten.
     const defer = (reason, error = null) => this.withStore((store) => {
@@ -315,24 +524,31 @@ export class DelegationService {
         identityAmbiguous = !claimedToken || !liveToken
       } catch {}
     }
+    if (identityAmbiguous) return defer('worker_identity')
+    if (providerRecorded(job) && quarantineRunning(job)) {
+      return this.withStore((store) => store.quarantine(jobId, 'reconciling', {
+        error: {
+          kind: 'PROVIDER_QUARANTINED',
+          message: 'The provider process outlived its delegation worker.',
+          details: null,
+        },
+      }))
+    }
     const claimedRecovery = this.withStore((store) => store.markReconciling(jobId, job.heartbeatAt))
     job = this.get(jobId)
     if (terminal(job)) return job
     if (!claimedRecovery) return job
     if (job.target === 'claude') {
       if (!job.nativeThreadId) {
-        if (identityAmbiguous) return defer('worker_identity')
         return this.withStore((store) => store.finish(jobId, 'failed', {
           error: { kind: 'WORKER_EXIT', message: 'The worker exited before Claude created a session.', details: null },
         }))
       }
       if (!job.nativeTurnId || !job.turnAcceptedAt) {
-        if (identityAmbiguous) return defer('worker_identity')
         return this.withStore((store) => store.finish(jobId, 'failed', {
           error: { kind: 'WORKER_EXIT', message: 'The worker exited before Flow released the prompt to Claude.', details: null },
         }))
       }
-      if (identityAmbiguous) return defer('worker_identity')
       const acceptedWrite = job.access === 'workspace-write'
       return this.withStore((store) => store.finish(jobId, acceptedWrite ? 'unknown' : 'failed', {
         error: {
@@ -350,21 +566,19 @@ export class DelegationService {
       }))
     }
     if (!job.nativeThreadId) {
-      if (identityAmbiguous) return defer('worker_identity')
       return this.withStore((store) => store.finish(jobId, 'failed', { error: { kind: 'WORKER_EXIT', message: 'The worker exited before Codex created a thread.', details: null } }))
     }
     if (!job.nativeTurnId) {
-      if (identityAmbiguous) return defer('worker_identity')
       return this.withStore((store) => store.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Flow cannot identify which Codex turn belongs to the stale job.', details: null } }))
     }
     let client
     try {
-      client = await new AppServerClient({ cwd: job.cwd }).start()
+      client = new AppServerClient({ cwd: job.cwd })
+      await client.start()
       const response = await client.request('thread/read', { threadId: job.nativeThreadId, includeTurns: true }, 20_000)
       const turns = response.thread?.turns || []
       const turn = turns.find((item) => item.id === job.nativeTurnId)
       if (!turn || turn.status === 'inProgress') {
-        if (identityAmbiguous) return defer('turn_in_progress')
         return this.withStore((store) => store.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Codex could not prove the stale turn reached a terminal state.', details: null } }))
       }
       // The same fold the live worker uses. Recovery can read the controls table for a cancel
@@ -372,6 +586,7 @@ export class DelegationService {
       const cancelRequested = this.withStore((store) => store.cancelRequested(jobId))
       const outcome = foldTurnOutcome(turn, { cancelRequested, acceptedWrite: job.access === 'workspace-write' })
       return this.withStore((store) => {
+        if (outcome.internalError) store.recordInternalError(jobId, outcome.internalError)
         if (outcome.status !== 'succeeded') return store.finish(jobId, outcome.status, { error: outcome.error })
         let structured = null
         if (job.outputSchema != null) {
