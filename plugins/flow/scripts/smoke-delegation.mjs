@@ -176,9 +176,14 @@ new JobStore(process.argv[2]).close()
 
 writeFileSync(fake, `#!/usr/bin/env node
 import { spawn } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 if (process.argv[2] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0) }
 const mode = process.env.FLOW_FAKE_MODE || 'happy'
+// Real Codex re-execs its own binary inside the sandbox namespace, so the profile must
+// grant the provider executable; the fake stands in for that binary here.
+let selfPath = process.argv[1]
+try { selfPath = realpathSync(selfPath) } catch {}
 const say = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
 let active = null
 let threadConfig = null
@@ -274,6 +279,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       || filesystem?.[workspaceKey] !== expectedAccess
       || (!doctorProbe && filesystem?.[process.env.TMPDIR] !== 'write')
       || (expectedAccess === 'write' && filesystem?.[workspaceKey + '/.git'] !== 'read')
+      || filesystem?.[selfPath] !== 'read'
       || threadConfig?.permissions?.flow_delegation?.network?.enabled !== false
       || (!doctorProbe && !message.params.developerInstructions?.includes('<flow-charter>'))
       || (!doctorProbe && !message.params.developerInstructions?.includes('Do not start subagents'))) {

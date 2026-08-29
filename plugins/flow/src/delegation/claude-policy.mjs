@@ -78,16 +78,12 @@ export function sensitiveReadPaths(cwd = process.cwd()) {
   ]
 }
 
-export function providerExecutablePaths() {
+export function resolveExecutablePaths(executables) {
   const paths = new Set()
-  const configured = [
-    process.env.FLOW_DELEGATION_CLAUDE_BIN || 'claude',
-    process.env.FLOW_DELEGATION_CODEX_BIN || 'codex',
-  ]
   const suffixes = process.platform === 'win32'
     ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
     : ['']
-  for (const executable of configured) {
+  for (const executable of executables) {
     const candidates = isAbsolute(executable) || executable.includes(sep)
       ? [resolve(executable)]
       : (process.env.PATH || '').split(delimiter).flatMap((directory) =>
@@ -101,6 +97,13 @@ export function providerExecutablePaths() {
     }
   }
   return [...paths].sort()
+}
+
+export function providerExecutablePaths() {
+  return resolveExecutablePaths([
+    process.env.FLOW_DELEGATION_CLAUDE_BIN || 'claude',
+    process.env.FLOW_DELEGATION_CODEX_BIN || 'codex',
+  ])
 }
 
 function sensitiveEnvironment() {

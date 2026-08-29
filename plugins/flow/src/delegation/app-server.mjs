@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { createInterface } from 'node:readline'
+import { resolveExecutablePaths } from './claude-policy.mjs'
 import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope, signalTrackedProcessTree, trackedDescendantRunning } from './containment.mjs'
 import { DelegationError } from './contracts.mjs'
 import { processStartToken } from './store.mjs'
@@ -362,6 +363,38 @@ export function codexHostSupport() {
   return { ok: true, kind: null, platform: process.platform, required: 'linux' }
 }
 
+// Codex implements profile filesystem restrictions with bubblewrap and re-execs its own
+// binary inside that namespace to run every shell command. A profile that omits the Codex
+// install tree therefore breaks all delegated commands with execvp ENOENT while the job
+// still reports success (openai/codex#29049; npm installs under ~/.local are #24341). For
+// an npm install the re-exec target is the vendor ELF nested inside the @openai/codex
+// package, so the grant covers the whole package root, not just the resolved wrapper.
+// Read access here does let the sandboxed process launch a nested codex, but the profile
+// never grants ~/.codex and network stays disabled, so a nested launch has no auth and no
+// egress. Retire this grant when upstream binds its own runtime unconditionally.
+function packageRootFor(binaryPath) {
+  const segments = binaryPath.split(sep)
+  const index = segments.lastIndexOf('node_modules')
+  if (index === -1 || index + 1 >= segments.length) return binaryPath
+  const packageDepth = segments[index + 1].startsWith('@') ? 2 : 1
+  return segments.slice(0, index + 1 + packageDepth).join(sep) || binaryPath
+}
+
+let cachedCodexRuntimePaths = null
+export function codexRuntimeReadPaths() {
+  if (cachedCodexRuntimePaths) return cachedCodexRuntimePaths
+  const paths = new Set()
+  for (const binary of resolveExecutablePaths([process.env.FLOW_DELEGATION_CODEX_BIN || 'codex'])) {
+    // resolveExecutablePaths returns both the PATH entry (usually a symlink into the
+    // package) and its realpath; granting each keeps both exec routes readable without
+    // widening past the file or its package.
+    paths.add(packageRootFor(binary))
+    paths.add(binary)
+  }
+  cachedCodexRuntimePaths = [...paths].sort()
+  return cachedCodexRuntimePaths
+}
+
 export function restrictedPermissionConfig(job, { gitMetadataPaths = [], tempDir = null } = {}) {
   const filesystem = {
     ':minimal': 'read',
@@ -376,6 +409,7 @@ export function restrictedPermissionConfig(job, { gitMetadataPaths = [], tempDir
     }
   }
   for (const path of gitMetadataPaths) filesystem[path] = 'read'
+  for (const path of codexRuntimeReadPaths()) filesystem[path] ??= 'read'
   if (tempDir) filesystem[tempDir] = 'write'
   return {
     permissions: {
