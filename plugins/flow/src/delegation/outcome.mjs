@@ -84,6 +84,7 @@ export function foldTurnOutcome(turn, {
     return {
       status: 'failed',
       error: codexTurnError(turn.error),
+      internalError: turn.error || null,
     }
   }
   if (turn.status === 'completed') {

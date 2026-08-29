@@ -139,8 +139,12 @@ async function runCodexWorker({ jobId, stateDir }) {
     chmodSync(jobTempDir, 0o700)
     const metadataPaths = await gitMetadataPaths(job.cwd)
     heartbeat = setInterval(() => {
-      store.heartbeat(jobId)
-      rememberProvider({ discover: true })
+      try {
+        store.heartbeat(jobId)
+        rememberProvider({ discover: true })
+      } catch (error) {
+        store.recordInternalError(jobId, error)
+      }
     }, 1_000)
 
     // A kill mid-turn skips the cooperative interrupt. The child dies BEFORE the job is
@@ -356,6 +360,7 @@ async function runCodexWorker({ jobId, stateDir }) {
         latestMessage,
         transportError,
       })
+      if (outcome.internalError) store.recordInternalError(jobId, outcome.internalError)
       if (outcome.status === 'succeeded') {
         const structured = job.outputSchema != null ? validateStructured(job.outputSchema, outcome.output) : null
         await settle('succeeded', { output: outcome.output, structured, usage, error: null })
@@ -389,7 +394,8 @@ async function runCodexWorker({ jobId, stateDir }) {
     if (stallTimer) clearTimeout(stallTimer)
     await activeControlPoll.catch(() => {})
     try {
-      if (client && !await stopProvider()) {
+      const stopped = !client || await stopProvider()
+      if (!stopped) {
         const current = store.getJob(jobId)
         if (current && !TERMINAL_STATES.includes(current.status) && current.status !== 'quarantined') {
           quarantined = true
@@ -399,6 +405,9 @@ async function runCodexWorker({ jobId, stateDir }) {
             usage,
           })
         }
+      } else if (store.getJob(jobId)?.status === 'quarantined') {
+        store.resolveQuarantine(jobId)
+        quarantined = false
       }
     } catch (error) {
       serviceLog(stateDir, `Codex worker could not quarantine provider processes for ${jobId}: ${error?.stack || error}`)

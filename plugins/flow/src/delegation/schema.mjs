@@ -12,6 +12,12 @@ const UNSUPPORTED_APPLICATORS = [
   'patternProperties', 'prefixItems', 'propertyNames', 'then',
   'unevaluatedItems', 'unevaluatedProperties',
 ]
+const SCHEMA_MAPS = new Set(['$defs', 'definitions', 'dependentSchemas', 'patternProperties', 'properties'])
+const SCHEMA_ARRAYS = new Set(['allOf', 'anyOf', 'oneOf', 'prefixItems'])
+const SCHEMA_CHILDREN = new Set([
+  'additionalProperties', 'contains', 'else', 'if', 'items', 'not', 'propertyNames', 'then',
+  'unevaluatedItems', 'unevaluatedProperties',
+])
 
 function validateCodexNode(schema, path = '', { root = false } = {}) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
@@ -81,9 +87,23 @@ export function validateOutputSchema(schema, target) {
   return schema
 }
 
+function stripSchemaDialects(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return
+  delete schema.$schema
+  for (const [keyword, value] of Object.entries(schema)) {
+    if (SCHEMA_MAPS.has(keyword) && value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const child of Object.values(value)) stripSchemaDialects(child)
+    } else if (SCHEMA_ARRAYS.has(keyword) && Array.isArray(value)) {
+      for (const child of value) stripSchemaDialects(child)
+    } else if (SCHEMA_CHILDREN.has(keyword)) {
+      stripSchemaDialects(value)
+    }
+  }
+}
+
 export function providerOutputSchema(schema) {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.$schema === undefined) return schema
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema
   const providerSchema = structuredClone(schema)
-  delete providerSchema.$schema
+  stripSchemaDialects(providerSchema)
   return providerSchema
 }

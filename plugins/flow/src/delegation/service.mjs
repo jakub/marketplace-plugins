@@ -265,6 +265,19 @@ export class DelegationService {
     let lastScanned = null
     let scanTruncated = false
     const store = this.store()
+    const visibility = new Map()
+    const visibleFromRoots = async (cwd) => {
+      if (visibility.has(cwd)) return visibility.get(cwd)
+      try {
+        await canonicalWorkspace(cwd, roots)
+        visibility.set(cwd, true)
+        return true
+      } catch (error) {
+        if (!(error instanceof DelegationError)) throw error
+        visibility.set(cwd, false)
+        return false
+      }
+    }
     try {
       while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
         const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned)
@@ -274,13 +287,9 @@ export class DelegationService {
         lastScanned = candidates.at(-1)
         before = { createdAt: lastScanned.createdAt, id: lastScanned.id }
         for (const job of candidates) {
-          try {
-            await canonicalWorkspace(job.cwd, roots)
-            visible.push(this.requireRoute(job))
-            if (visible.length > limit) break
-          } catch (error) {
-            if (!(error instanceof DelegationError)) throw error
-          }
+          if (!await visibleFromRoots(job.cwd)) continue
+          visible.push(this.requireRoute(job))
+          if (visible.length > limit) break
         }
         if (visible.length > limit || candidates.length < chunkLimit) break
       }
@@ -361,7 +370,7 @@ export class DelegationService {
       workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
       host: codexHostSupport(),
-      containment: providerContainmentSupport(),
+      containment: providerContainmentSupport({ fresh: true }),
       codex: codexVersion(),
       database: { ok: false },
       appServer: { ok: false },
@@ -442,7 +451,7 @@ export class DelegationService {
       workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
       claude: claudeVersion(),
-      containment: providerContainmentSupport(),
+      containment: providerContainmentSupport({ fresh: true }),
       agentSdk: claudeAgentSdkStatus(),
       database: { ok: false },
       account: claudeAuthStatus(),
@@ -556,6 +565,7 @@ export class DelegationService {
       const cancelRequested = this.withStore((store) => store.cancelRequested(jobId))
       const outcome = foldTurnOutcome(turn, { cancelRequested, acceptedWrite: job.access === 'workspace-write' })
       return this.withStore((store) => {
+        if (outcome.internalError) store.recordInternalError(jobId, outcome.internalError)
         if (outcome.status !== 'succeeded') return store.finish(jobId, outcome.status, { error: outcome.error })
         let structured = null
         if (job.outputSchema != null) {

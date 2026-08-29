@@ -4,6 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { processStartToken } from './store.mjs'
 
 const probeWait = new Int32Array(new SharedArrayBuffer(4))
+let cachedContainmentSupport = null
 
 const scopeOptions = (scopeName) => [
   '--user',
@@ -19,10 +20,7 @@ export function providerScopeName(id = randomUUID()) {
   return `flow-delegation-${safe}.scope`
 }
 
-export function providerContainmentSupport() {
-  if (process.platform !== 'linux') {
-    return { ok: true, kind: null, mode: 'process-tree' }
-  }
+function probeProviderContainment() {
   const scopeName = providerScopeName(`probe-${process.pid}-${randomUUID()}`)
   try {
     // Leave a detached grandchild in the probe scope after systemd-run returns. A zero exit only
@@ -46,6 +44,15 @@ export function providerContainmentSupport() {
       Atomics.wait(probeWait, 0, 0, 25)
     }
   }
+}
+
+export function providerContainmentSupport({ fresh = false } = {}) {
+  if (process.platform !== 'linux') {
+    return { ok: true, kind: null, mode: 'process-tree' }
+  }
+  if (!fresh && cachedContainmentSupport) return cachedContainmentSupport
+  cachedContainmentSupport = probeProviderContainment()
+  return cachedContainmentSupport
 }
 
 export function scopedProviderCommand(command, args, scopeName) {
@@ -114,9 +121,10 @@ export function captureProcessDescendants(rootPid, knownDescendants, { freeze = 
           const token = processStartToken(pid)
           if (!token) continue
           queue.push(pid)
-          if (knownDescendants.get(pid) === token) continue
+          const known = knownDescendants.get(pid) === token
           knownDescendants.set(pid, token)
           if (freeze) try { process.kill(pid, 'SIGSTOP') } catch {}
+          if (known) continue
           added = true
         }
       }

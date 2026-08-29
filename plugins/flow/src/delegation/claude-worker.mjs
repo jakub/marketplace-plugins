@@ -9,6 +9,13 @@ import { JobStore, processStartToken, serviceLog } from './store.mjs'
 
 const STALL_SECONDS = 420
 const STARTUP_SECONDS = 30
+const RESULT_FAILURE_MESSAGES = {
+  RATE_LIMIT: 'Claude rejected the turn because the current plan or API rate limit is exhausted.',
+  CLAUDE_AUTH: 'Claude Code is not authenticated for Agent SDK use.',
+  BAD_MODEL: 'Claude rejected the requested model.',
+  MAX_TURNS: 'Claude reached the delegated turn limit.',
+  MAX_BUDGET: 'Claude reached the delegated cost limit.',
+}
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -62,17 +69,7 @@ function resultFailure(result, { assistantError = null, rateLimitStatus = null }
     : result?.subtype === 'error_max_budget_usd' ? 'MAX_BUDGET'
     : result?.subtype === 'error_max_structured_output_retries' ? 'SCHEMA_OUTPUT'
     : 'CLAUDE_TURN'
-  const message = kind === 'RATE_LIMIT'
-    ? 'Claude rejected the turn because the current plan or API rate limit is exhausted.'
-    : kind === 'CLAUDE_AUTH'
-      ? 'Claude Code is not authenticated for Agent SDK use.'
-      : kind === 'BAD_MODEL'
-        ? 'Claude rejected the requested model.'
-        : kind === 'MAX_TURNS'
-          ? 'Claude reached the delegated turn limit.'
-          : kind === 'MAX_BUDGET'
-            ? 'Claude reached the delegated cost limit.'
-        : 'Claude did not complete the delegated turn.'
+  const message = RESULT_FAILURE_MESSAGES[kind] || 'Claude did not complete the delegated turn.'
   return { kind, message, details: null }
 }
 
@@ -508,7 +505,8 @@ export async function runClaudeWorker({ jobId, stateDir }) {
     clearTurnTimers()
     await activeControlPoll.catch(() => {})
     try {
-      if (!await stopChild()) {
+      const stopped = await stopChild()
+      if (!stopped) {
         const current = store.getJob(jobId)
         if (current && !TERMINAL_STATES.includes(current.status) && current.status !== 'quarantined') {
           const acceptedWrite = current.access === 'workspace-write' && current.turnAcceptedAt
@@ -517,6 +515,8 @@ export async function runClaudeWorker({ jobId, stateDir }) {
             usage: resultUsage(terminalResult),
           })
         }
+      } else if (store.getJob(jobId)?.status === 'quarantined') {
+        store.resolveQuarantine(jobId)
       }
     } catch (error) {
       serviceLog(stateDir, `Claude worker could not quarantine provider processes for ${jobId}: ${error?.stack || error}`)

@@ -10,9 +10,17 @@ const CREDENTIAL_PATH_ENV = [
   'ANTHROPIC_CONFIG_DIR',
   'AWS_CONFIG_FILE',
   'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
   'CLAUDE_CONFIG_DIR',
+  'CLOUDSDK_CONFIG',
+  'CODEX_HOME',
+  'DOCKER_CONFIG',
+  'GH_CONFIG_DIR',
+  'GNUPGHOME',
   'GOOGLE_APPLICATION_CREDENTIALS',
+  'KUBECONFIG',
 ]
+const CREDENTIAL_PATH_LIST_ENV = new Set(['KUBECONFIG'])
 
 export const claudeTools = (access, { structured = false } = {}) => [
   ...(access === 'workspace-write' ? WRITE_TOOLS : READ_TOOLS),
@@ -29,14 +37,17 @@ export function sensitiveReadPaths() {
   const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
     const value = process.env[name]?.trim()
     if (!value) return []
-    const path = value === '~'
-      ? base
-      : value.startsWith('~/') || value.startsWith('~\\')
-        ? resolve(base, value.slice(2))
-        : resolve(value)
-    const paths = [path]
-    try { paths.push(realpathSync(path)) } catch {}
-    return paths
+    const values = CREDENTIAL_PATH_LIST_ENV.has(name) ? value.split(delimiter) : [value]
+    return values.map((entry) => entry.trim()).filter(Boolean).flatMap((entry) => {
+      const path = entry === '~'
+        ? base
+        : entry.startsWith('~/') || entry.startsWith('~\\')
+          ? resolve(base, entry.slice(2))
+          : resolve(entry)
+      const paths = [path]
+      try { paths.push(realpathSync(path)) } catch {}
+      return paths
+    })
   })
   return [
     resolve(base, '.ssh'),

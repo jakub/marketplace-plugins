@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { normalizeClaudeError } from '../src/delegation/claude-errors.mjs'
@@ -145,7 +145,9 @@ if (mode === 'schema-dialect') {
   const schemaIndex = args.indexOf('--json-schema')
   if (schemaIndex < 0) process.exit(20)
   const schema = JSON.parse(args[schemaIndex + 1])
-  if (schema?.$schema !== undefined) process.exit(20)
+  const hasDialect = (value) => value && typeof value === 'object'
+    && (Object.prototype.hasOwnProperty.call(value, '$schema') || Object.values(value).some(hasDialect))
+  if (hasDialect(schema)) process.exit(20)
 }
 if (mode === 'assert-limits') {
   const turns = args.indexOf('--max-turns')
@@ -365,7 +367,13 @@ try {
   const plainStructured = await plainPolicy({ hook_event_name: 'PreToolUse', tool_name: 'StructuredOutput', tool_input: { answer: 'yes' } })
   assert.equal(plainStructured.hookSpecificOutput.permissionDecision, 'deny')
   const dialectSchemaFile = join(temp, 'dialect-schema.json')
-  writeFileSync(dialectSchemaFile, JSON.stringify({ $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
+  writeFileSync(dialectSchemaFile, JSON.stringify({
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    additionalProperties: false,
+    required: ['answer'],
+    properties: { answer: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'string' } },
+  }))
   const schemaDialect = cli([...runArgs, '--schema-file', dialectSchemaFile], { input: 'JSON', mode: 'schema-dialect', stateDir: state('schema-dialect') })
   assert.deepEqual(schemaDialect.structured, { answer: 'yes' })
   const schemaBad = cli([...runArgs, '--schema-file', schemaFile], { input: 'JSON', mode: 'schema-bad', stateDir: state('schema-bad') })
@@ -518,6 +526,21 @@ try {
     assert.ok(configuredPaths.includes(linkedCredentials))
     assert.ok(configuredPaths.includes(realpathSync(linkedCredentials)))
   }
+  const previousDockerConfig = process.env.DOCKER_CONFIG
+  const previousKubeconfig = process.env.KUBECONFIG
+  const dockerConfig = join(temp, 'docker-config')
+  const kubeconfigA = join(temp, 'kube-a')
+  const kubeconfigB = join(temp, 'kube-b')
+  process.env.DOCKER_CONFIG = dockerConfig
+  process.env.KUBECONFIG = [kubeconfigA, kubeconfigB].join(delimiter)
+  const overridePaths = sensitiveReadPaths()
+  assert.ok(overridePaths.includes(dockerConfig))
+  assert.ok(overridePaths.includes(kubeconfigA))
+  assert.ok(overridePaths.includes(kubeconfigB))
+  if (previousDockerConfig === undefined) delete process.env.DOCKER_CONFIG
+  else process.env.DOCKER_CONFIG = previousDockerConfig
+  if (previousKubeconfig === undefined) delete process.env.KUBECONFIG
+  else process.env.KUBECONFIG = previousKubeconfig
   if (previousCredentials === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS
   else process.env.GOOGLE_APPLICATION_CREDENTIALS = previousCredentials
   const escapedEdit = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(temp, 'outside.txt') } })

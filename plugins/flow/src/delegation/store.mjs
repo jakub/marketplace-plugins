@@ -484,7 +484,7 @@ export class JobStore {
       && typeof entry.startToken === 'string' && entry.startToken)
     this.db.prepare(`UPDATE jobs SET provider_pid=?, provider_start_token=?,
       provider_process_group_id=?, provider_scope=?, provider_processes_json=?, updated_at=?
-      WHERE id=? AND status IN ('starting','running','reconciling')`)
+      WHERE id=? AND status IN ('starting','running','reconciling','quarantined')`)
       .run(Number.isInteger(pid) && pid > 0 ? pid : null,
         typeof startToken === 'string' && startToken ? startToken : null,
         Number.isInteger(processGroupId) && processGroupId > 0 ? processGroupId : null,

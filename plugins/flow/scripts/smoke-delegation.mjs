@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { AppServerClient } from '../src/delegation/app-server.mjs'
-import { providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
+import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
 import { assertRoute } from '../src/delegation/contracts.mjs'
 
@@ -530,6 +530,12 @@ try {
   assert.equal(failedTurn.error.kind, 'BAD_MODEL')
   assert.equal(failedTurn.error.message, 'Codex rejected the requested model.')
   assert.doesNotMatch(JSON.stringify(failedTurn), /test@example\.invalid|\/home\/test\/private|gpt-private/)
+  const failedTurnDb = new DatabaseSync(join(state('failed-turn'), 'jobs.sqlite3'), { readOnly: true })
+  const failedTurnJournal = failedTurnDb.prepare("SELECT payload_json FROM events WHERE job_id=? AND type='internal.error'").get(failedTurn.jobId)
+  failedTurnDb.close()
+  assert.match(failedTurnJournal.payload_json, /test@example\.invalid|\/home\/test\/private|gpt-private/)
+  assert.deepEqual(cli(['events', failedTurn.jobId], { stateDir: state('failed-turn') })
+    .find((event) => event.type === 'internal.error').payload, { redacted: true })
 
   console.log('rejected requests never reach the job table')
   const noModelState = state('no-model')
@@ -611,6 +617,34 @@ try {
   assert.equal(queuedStore.getJob(terminalRace.id).status, 'succeeded')
   queuedStore.close()
 
+  const trackedPidFile = join(temp, 'tracked-descendant.pid')
+  const trackedRootScript = `const {spawn}=require('node:child_process'); const {writeFileSync}=require('node:fs'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}); child.unref(); writeFileSync(${JSON.stringify(trackedPidFile)},String(child.pid)); setInterval(()=>{},1000)`
+  const trackedRoot = spawn(process.execPath, ['-e', trackedRootScript], { detached: true, stdio: 'ignore' })
+  let trackedPid = null
+  try {
+    for (let i = 0; i < 40 && !trackedPid; i++) {
+      try { trackedPid = Number(readFileSync(trackedPidFile, 'utf8')) || null } catch {}
+      if (!trackedPid) await delay(25)
+    }
+    assert.ok(trackedPid)
+    const knownDescendants = new Map()
+    for (let i = 0; i < 40 && !knownDescendants.has(trackedPid); i++) {
+      captureProcessDescendants(trackedRoot.pid, knownDescendants)
+      if (!knownDescendants.has(trackedPid)) await delay(25)
+    }
+    assert.ok(knownDescendants.has(trackedPid))
+    captureProcessDescendants(trackedRoot.pid, knownDescendants, { freeze: true })
+    let trackedState = ''
+    for (let i = 0; i < 20 && !/^State:\s+T/m.test(trackedState); i++) {
+      trackedState = readFileSync(`/proc/${trackedPid}/status`, 'utf8')
+      if (!/^State:\s+T/m.test(trackedState)) await delay(25)
+    }
+    assert.match(trackedState, /^State:\s+T/m)
+  } finally {
+    if (trackedPid) try { process.kill(trackedPid, 'SIGKILL') } catch {}
+    try { process.kill(-trackedRoot.pid, 'SIGKILL') } catch {}
+  }
+
   const steerState = state('steer')
   const steerable = cli([...runArgs, '--detach'], { input: 'wait', mode: 'steer', stateDir: steerState })
   await delay(300)
@@ -675,6 +709,13 @@ try {
   quarantineStore.quarantine(quarantinedJob.id, 'unknown', {
     error: { kind: 'PROVIDER_QUARANTINED', message: 'test quarantine', details: null },
   })
+  quarantineStore.setProviderProcess(quarantinedJob.id, {
+    pid: provider.pid,
+    startToken: providerToken,
+    scope: 'flow-delegation-test-quarantine.scope',
+    processes: [{ pid: provider.pid, startToken: providerToken }],
+  })
+  assert.equal(quarantineStore.requireJob(quarantinedJob.id).providerScope, 'flow-delegation-test-quarantine.scope')
   const blockedJob = quarantineStore.createJob({
     traceId: 'quarantine-blocked', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
     mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,

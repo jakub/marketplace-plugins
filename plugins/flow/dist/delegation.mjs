@@ -23399,7 +23399,7 @@ var JobStore = class {
     const safeProcesses = processes.filter((entry) => Number.isInteger(entry?.pid) && entry.pid > 0 && typeof entry.startToken === "string" && entry.startToken);
     this.db.prepare(`UPDATE jobs SET provider_pid=?, provider_start_token=?,
       provider_process_group_id=?, provider_scope=?, provider_processes_json=?, updated_at=?
-      WHERE id=? AND status IN ('starting','running','reconciling')`).run(
+      WHERE id=? AND status IN ('starting','running','reconciling','quarantined')`).run(
       Number.isInteger(pid) && pid > 0 ? pid : null,
       typeof startToken === "string" && startToken ? startToken : null,
       Number.isInteger(processGroupId) && processGroupId > 0 ? processGroupId : null,
@@ -23597,6 +23597,7 @@ var JobStore = class {
 
 // src/delegation/containment.mjs
 var probeWait = new Int32Array(new SharedArrayBuffer(4));
+var cachedContainmentSupport = null;
 var scopeOptions = (scopeName) => [
   "--user",
   "--scope",
@@ -23609,10 +23610,7 @@ function providerScopeName(id2 = randomUUID2()) {
   const safe = String(id2).toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 80);
   return `flow-delegation-${safe}.scope`;
 }
-function providerContainmentSupport() {
-  if (process.platform !== "linux") {
-    return { ok: true, kind: null, mode: "process-tree" };
-  }
+function probeProviderContainment() {
   const scopeName = providerScopeName(`probe-${process.pid}-${randomUUID2()}`);
   try {
     const probe = 'const {spawn}=require("node:child_process"); const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore",detached:true}); child.unref()';
@@ -23633,6 +23631,14 @@ function providerContainmentSupport() {
       Atomics.wait(probeWait, 0, 0, 25);
     }
   }
+}
+function providerContainmentSupport({ fresh = false } = {}) {
+  if (process.platform !== "linux") {
+    return { ok: true, kind: null, mode: "process-tree" };
+  }
+  if (!fresh && cachedContainmentSupport) return cachedContainmentSupport;
+  cachedContainmentSupport = probeProviderContainment();
+  return cachedContainmentSupport;
 }
 function scopedProviderCommand(command, args, scopeName) {
   if (process.platform !== "linux") return { command, args };
@@ -23719,12 +23725,13 @@ function captureProcessDescendants(rootPid, knownDescendants, { freeze = false }
           const token = processStartToken(pid);
           if (!token) continue;
           queue.push(pid);
-          if (knownDescendants.get(pid) === token) continue;
+          const known = knownDescendants.get(pid) === token;
           knownDescendants.set(pid, token);
           if (freeze) try {
             process.kill(pid, "SIGSTOP");
           } catch {
           }
+          if (known) continue;
           added = true;
         }
       }
@@ -56303,9 +56310,17 @@ var CREDENTIAL_PATH_ENV = [
   "ANTHROPIC_CONFIG_DIR",
   "AWS_CONFIG_FILE",
   "AWS_SHARED_CREDENTIALS_FILE",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
   "CLAUDE_CONFIG_DIR",
-  "GOOGLE_APPLICATION_CREDENTIALS"
+  "CLOUDSDK_CONFIG",
+  "CODEX_HOME",
+  "DOCKER_CONFIG",
+  "GH_CONFIG_DIR",
+  "GNUPGHOME",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "KUBECONFIG"
 ];
+var CREDENTIAL_PATH_LIST_ENV = /* @__PURE__ */ new Set(["KUBECONFIG"]);
 var claudeTools = (access3, { structured = false } = {}) => [
   ...access3 === "workspace-write" ? WRITE_TOOLS : READ_TOOLS,
   ...structured ? ["StructuredOutput"] : []
@@ -56319,13 +56334,16 @@ function sensitiveReadPaths() {
   const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
     const value = process.env[name]?.trim();
     if (!value) return [];
-    const path = value === "~" ? base : value.startsWith("~/") || value.startsWith("~\\") ? resolve6(base, value.slice(2)) : resolve6(value);
-    const paths = [path];
-    try {
-      paths.push(realpathSync4(path));
-    } catch {
-    }
-    return paths;
+    const values = CREDENTIAL_PATH_LIST_ENV.has(name) ? value.split(delimiter2) : [value];
+    return values.map((entry) => entry.trim()).filter(Boolean).flatMap((entry) => {
+      const path = entry === "~" ? base : entry.startsWith("~/") || entry.startsWith("~\\") ? resolve6(base, entry.slice(2)) : resolve6(entry);
+      const paths = [path];
+      try {
+        paths.push(realpathSync4(path));
+      } catch {
+      }
+      return paths;
+    });
   });
   return [
     resolve6(base, ".ssh"),
@@ -56620,6 +56638,20 @@ var UNSUPPORTED_APPLICATORS = [
   "unevaluatedItems",
   "unevaluatedProperties"
 ];
+var SCHEMA_MAPS = /* @__PURE__ */ new Set(["$defs", "definitions", "dependentSchemas", "patternProperties", "properties"]);
+var SCHEMA_ARRAYS = /* @__PURE__ */ new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+var SCHEMA_CHILDREN = /* @__PURE__ */ new Set([
+  "additionalProperties",
+  "contains",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties"
+]);
 function validateCodexNode(schema, path = "", { root = false } = {}) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
     throw new DelegationError("BAD_SCHEMA", `${objectAt(path)} must be an object for Codex structured output.`);
@@ -56689,10 +56721,23 @@ function validateOutputSchema(schema, target) {
   }
   return schema;
 }
+function stripSchemaDialects(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return;
+  delete schema.$schema;
+  for (const [keyword, value] of Object.entries(schema)) {
+    if (SCHEMA_MAPS.has(keyword) && value && typeof value === "object" && !Array.isArray(value)) {
+      for (const child of Object.values(value)) stripSchemaDialects(child);
+    } else if (SCHEMA_ARRAYS.has(keyword) && Array.isArray(value)) {
+      for (const child of value) stripSchemaDialects(child);
+    } else if (SCHEMA_CHILDREN.has(keyword)) {
+      stripSchemaDialects(value);
+    }
+  }
+}
 function providerOutputSchema(schema) {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema) || schema.$schema === void 0) return schema;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
   const providerSchema = structuredClone(schema);
-  delete providerSchema.$schema;
+  stripSchemaDialects(providerSchema);
   return providerSchema;
 }
 
@@ -57063,7 +57108,8 @@ function foldTurnOutcome(turn, {
   if (turn.status === "failed") {
     return {
       status: "failed",
-      error: codexTurnError(turn.error)
+      error: codexTurnError(turn.error),
+      internalError: turn.error || null
     };
   }
   if (turn.status === "completed") {
@@ -57454,6 +57500,19 @@ var DelegationService = class {
     let lastScanned = null;
     let scanTruncated = false;
     const store = this.store();
+    const visibility = /* @__PURE__ */ new Map();
+    const visibleFromRoots = async (cwd) => {
+      if (visibility.has(cwd)) return visibility.get(cwd);
+      try {
+        await canonicalWorkspace(cwd, roots);
+        visibility.set(cwd, true);
+        return true;
+      } catch (error2) {
+        if (!(error2 instanceof DelegationError)) throw error2;
+        visibility.set(cwd, false);
+        return false;
+      }
+    };
     try {
       while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
         const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned);
@@ -57463,13 +57522,9 @@ var DelegationService = class {
         lastScanned = candidates.at(-1);
         before = { createdAt: lastScanned.createdAt, id: lastScanned.id };
         for (const job of candidates) {
-          try {
-            await canonicalWorkspace(job.cwd, roots);
-            visible.push(this.requireRoute(job));
-            if (visible.length > limit) break;
-          } catch (error2) {
-            if (!(error2 instanceof DelegationError)) throw error2;
-          }
+          if (!await visibleFromRoots(job.cwd)) continue;
+          visible.push(this.requireRoute(job));
+          if (visible.length > limit) break;
         }
         if (visible.length > limit || candidates.length < chunkLimit) break;
       }
@@ -57549,7 +57604,7 @@ var DelegationService = class {
       workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
       host: codexHostSupport(),
-      containment: providerContainmentSupport(),
+      containment: providerContainmentSupport({ fresh: true }),
       codex: codexVersion(),
       database: { ok: false },
       appServer: { ok: false },
@@ -57631,7 +57686,7 @@ var DelegationService = class {
       workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
       claude: claudeVersion(),
-      containment: providerContainmentSupport(),
+      containment: providerContainmentSupport({ fresh: true }),
       agentSdk: claudeAgentSdkStatus(),
       database: { ok: false },
       account: claudeAuthStatus(),
@@ -57741,6 +57796,7 @@ var DelegationService = class {
       const cancelRequested = this.withStore((store) => store.cancelRequested(jobId2));
       const outcome = foldTurnOutcome(turn, { cancelRequested, acceptedWrite: job.access === "workspace-write" });
       return this.withStore((store) => {
+        if (outcome.internalError) store.recordInternalError(jobId2, outcome.internalError);
         if (outcome.status !== "succeeded") return store.finish(jobId2, outcome.status, { error: outcome.error });
         let structured = null;
         if (job.outputSchema != null) {
@@ -58114,6 +58170,13 @@ import { randomUUID as randomUUID4 } from "node:crypto";
 import { spawnSync as spawnSync4 } from "node:child_process";
 var STALL_SECONDS = 420;
 var STARTUP_SECONDS = 30;
+var RESULT_FAILURE_MESSAGES = {
+  RATE_LIMIT: "Claude rejected the turn because the current plan or API rate limit is exhausted.",
+  CLAUDE_AUTH: "Claude Code is not authenticated for Agent SDK use.",
+  BAD_MODEL: "Claude rejected the requested model.",
+  MAX_TURNS: "Claude reached the delegated turn limit.",
+  MAX_BUDGET: "Claude reached the delegated cost limit."
+};
 var delay = (ms2) => new Promise((resolve9) => setTimeout(resolve9, ms2));
 async function withStartupTimeout(promise, onTimeout, seconds = STARTUP_SECONDS) {
   let timer;
@@ -58154,7 +58217,7 @@ function resultUsage(result) {
 }
 function resultFailure(result, { assistantError = null, rateLimitStatus = null } = {}) {
   const kind = assistantError === "authentication_failed" || assistantError === "oauth_org_not_allowed" ? "CLAUDE_AUTH" : assistantError === "rate_limit" || rateLimitStatus === "rejected" ? "RATE_LIMIT" : assistantError === "billing_error" || assistantError === "account_on_hold" ? "BILLING" : assistantError === "model_not_found" ? "BAD_MODEL" : assistantError === "overloaded" ? "OVERLOADED" : result?.subtype === "error_max_turns" ? "MAX_TURNS" : result?.subtype === "error_max_budget_usd" ? "MAX_BUDGET" : result?.subtype === "error_max_structured_output_retries" ? "SCHEMA_OUTPUT" : "CLAUDE_TURN";
-  const message = kind === "RATE_LIMIT" ? "Claude rejected the turn because the current plan or API rate limit is exhausted." : kind === "CLAUDE_AUTH" ? "Claude Code is not authenticated for Agent SDK use." : kind === "BAD_MODEL" ? "Claude rejected the requested model." : kind === "MAX_TURNS" ? "Claude reached the delegated turn limit." : kind === "MAX_BUDGET" ? "Claude reached the delegated cost limit." : "Claude did not complete the delegated turn.";
+  const message = RESULT_FAILURE_MESSAGES[kind] || "Claude did not complete the delegated turn.";
   return { kind, message, details: null };
 }
 async function runClaudeWorker({ jobId: jobId2, stateDir }) {
@@ -58597,7 +58660,8 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     await activeControlPoll.catch(() => {
     });
     try {
-      if (!await stopChild()) {
+      const stopped = await stopChild();
+      if (!stopped) {
         const current = store.getJob(jobId2);
         if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
           const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
@@ -58606,6 +58670,8 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
             usage: resultUsage(terminalResult)
           });
         }
+      } else if (store.getJob(jobId2)?.status === "quarantined") {
+        store.resolveQuarantine(jobId2);
       }
     } catch (error2) {
       serviceLog(stateDir, `Claude worker could not quarantine provider processes for ${jobId2}: ${error2?.stack || error2}`);
@@ -58735,8 +58801,12 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
     chmodSync2(jobTempDir, 448);
     const metadataPaths = await gitMetadataPaths(job.cwd);
     heartbeat = setInterval(() => {
-      store.heartbeat(jobId2);
-      rememberProvider({ discover: true });
+      try {
+        store.heartbeat(jobId2);
+        rememberProvider({ discover: true });
+      } catch (error2) {
+        store.recordInternalError(jobId2, error2);
+      }
     }, 1e3);
     const onSignal = async (signal) => {
       if (signalStopping) return;
@@ -58955,6 +59025,7 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
         latestMessage,
         transportError
       });
+      if (outcome.internalError) store.recordInternalError(jobId2, outcome.internalError);
       if (outcome.status === "succeeded") {
         const structured = job.outputSchema != null ? validateStructured(job.outputSchema, outcome.output) : null;
         await settle("succeeded", { output: outcome.output, structured, usage, error: null });
@@ -58986,7 +59057,8 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
     await activeControlPoll.catch(() => {
     });
     try {
-      if (client && !await stopProvider()) {
+      const stopped = !client || await stopProvider();
+      if (!stopped) {
         const current = store.getJob(jobId2);
         if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
           quarantined = true;
@@ -58996,6 +59068,9 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
             usage
           });
         }
+      } else if (store.getJob(jobId2)?.status === "quarantined") {
+        store.resolveQuarantine(jobId2);
+        quarantined = false;
       }
     } catch (error2) {
       serviceLog(stateDir, `Codex worker could not quarantine provider processes for ${jobId2}: ${error2?.stack || error2}`);
