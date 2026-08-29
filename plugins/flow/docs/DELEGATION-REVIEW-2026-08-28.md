@@ -2,13 +2,13 @@
 
 This file keeps the full Codex App Server, Claude Agent SDK, and MCP review in one place. It separates completed work from deferred work so a later release does not have to reconstruct the review from chat history.
 
-The completed items below are present on the unreleased `fix/delegation-hardening` branch. They are not installed, pushed, or published. Flow remains at version 0.22.0 until release preparation updates both plugin manifests, the marketplace entry, and the catalog version.
+Flow 0.23.0 and marketplace catalog 0.33.0 include the completed items below. This ledger records the review that preceded that release and separates the remaining deferred work.
 
 ## Main findings
 
 ### 1. Delegated Codex inherited host MCP authority
 
-Status: fixed, unreleased.
+Status: fixed in Flow 0.23.0.
 
 A normal App Server thread loaded standalone MCP servers, plugin MCP servers, and app tools from the host's effective Codex configuration. The observed set included Flow itself, browser automation, developer documentation, Node REPL, and app tools. The delegated model therefore received more authority than the job contract declared.
 
@@ -37,7 +37,7 @@ Future client work should supply either MCP roots or the canonical project direc
 
 ### 3. The MCP client timeout was shorter than the job budget
 
-Status: fixed, unreleased.
+Status: fixed in Flow 0.23.0.
 
 Codex defaults an MCP tool call to 60 seconds. Flow allows attached jobs to run for up to 7,200 seconds. The client could therefore abandon a healthy job while the worker continued in the background.
 
@@ -47,7 +47,7 @@ Reference: <https://learn.chatgpt.com/docs/extend/mcp?surface=cli>.
 
 ### 4. App Server stdin errors could crash the Node process
 
-Status: fixed, unreleased.
+Status: fixed in Flow 0.23.0.
 
 The App Server client handled child process errors and exits but did not attach an error listener to the writable stdin pipe. A write that raced child shutdown could emit `EPIPE` as an uncaught stream error.
 
@@ -55,7 +55,7 @@ The client now listens for stdin errors, rejects all pending requests with `APP_
 
 ### 5. Codex read-only jobs could read outside the assigned workspace
 
-Status: fixed, unreleased.
+Status: fixed in Flow 0.23.0.
 
 Codex's built-in `readOnly` sandbox and `:read-only` permission profile both grant host-root read access. `runtimeWorkspaceRoots` labels the project but does not narrow that read grant. A controlled live job read a marker file outside the assigned repository.
 
@@ -65,7 +65,7 @@ Doctor now tests the permission-profile API, starts an ephemeral thread with the
 
 ### 6. Claude schema jobs denied the provider's structured-output tool
 
-Status: fixed, unreleased.
+Status: fixed in Flow 0.23.0.
 
 Claude Code emits a native `StructuredOutput` tool call when the Agent SDK requests JSON Schema output. Flow supplied the output format but omitted that tool from its allowlist, so Flow's own PreToolUse hook denied valid schema completion.
 
@@ -73,7 +73,7 @@ Schema jobs now add `StructuredOutput` to both Claude tool lists and to the poli
 
 ### 7. Delegated review workers did not receive the Flow charter
 
-Status: fixed, unreleased.
+Status: fixed in Flow 0.23.0.
 
 Codex review workers read the repository instructions, saw the required `<flow-charter>` block was missing, and could spend the turn diagnosing the missing session contract. The old developer instruction was also too short to carry current seat rules.
 
@@ -81,7 +81,7 @@ The build now reads `charter/charter.md` and injects that exact source into the 
 
 ### 8. Provider schema failures and failed turns exposed avoidable raw errors
 
-Status: fixed, unreleased.
+Status: fixed in Flow 0.23.0.
 
 Claude Code rejected a valid Draft 2020-12 schema when it contained the top-level `$schema` marker. Codex rejected schemas that passed generic Ajv validation but did not meet its strict structured-output rules, such as a `const` node without an explicit type. A failed Codex turn could also return the provider's raw error string, including account data, internal paths, and rejected model names.
 

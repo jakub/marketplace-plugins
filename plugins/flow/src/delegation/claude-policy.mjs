@@ -29,9 +29,14 @@ export function sensitiveReadPaths() {
   const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
     const value = process.env[name]?.trim()
     if (!value) return []
-    if (value === '~') return [base]
-    if (value.startsWith('~/') || value.startsWith('~\\')) return [resolve(base, value.slice(2))]
-    return [resolve(value)]
+    const path = value === '~'
+      ? base
+      : value.startsWith('~/') || value.startsWith('~\\')
+        ? resolve(base, value.slice(2))
+        : resolve(value)
+    const paths = [path]
+    try { paths.push(realpathSync(path)) } catch {}
+    return paths
   })
   return [
     resolve(base, '.ssh'),

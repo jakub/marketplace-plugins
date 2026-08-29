@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -509,6 +509,15 @@ try {
   const previousCredentials = process.env.GOOGLE_APPLICATION_CREDENTIALS
   process.env.GOOGLE_APPLICATION_CREDENTIALS = customCredentials
   assert.ok(sensitiveReadPaths().includes(customCredentials))
+  if (process.platform !== 'win32') {
+    writeFileSync(customCredentials, '{}')
+    const linkedCredentials = join(temp, 'linked-provider-credentials.json')
+    symlinkSync(customCredentials, linkedCredentials)
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = linkedCredentials
+    const configuredPaths = sensitiveReadPaths()
+    assert.ok(configuredPaths.includes(linkedCredentials))
+    assert.ok(configuredPaths.includes(realpathSync(linkedCredentials)))
+  }
   if (previousCredentials === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS
   else process.env.GOOGLE_APPLICATION_CREDENTIALS = previousCredentials
   const escapedEdit = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(temp, 'outside.txt') } })

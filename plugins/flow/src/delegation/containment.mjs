@@ -3,6 +3,8 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { processStartToken } from './store.mjs'
 
+const probeWait = new Int32Array(new SharedArrayBuffer(4))
+
 const scopeOptions = (scopeName) => [
   '--user',
   '--scope',
@@ -22,14 +24,28 @@ export function providerContainmentSupport() {
     return { ok: true, kind: null, mode: 'process-tree' }
   }
   const scopeName = providerScopeName(`probe-${process.pid}-${randomUUID()}`)
-  const result = spawnSync('systemd-run', [...scopeOptions(scopeName), '--', process.execPath, '-e', ''], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 10_000,
-  })
-  return result.status === 0
-    ? { ok: true, kind: null, mode: 'systemd-scope' }
-    : { ok: false, kind: 'CONTAINMENT_UNAVAILABLE', mode: null }
+  try {
+    // Leave a detached grandchild in the probe scope after systemd-run returns. A zero exit only
+    // proves that systemd accepted the command; Flow also needs cgroup.events for later liveness
+    // checks, quarantine, and lease release.
+    const probe = 'const {spawn}=require("node:child_process"); const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore",detached:true}); child.unref()'
+    const result = spawnSync('systemd-run', [...scopeOptions(scopeName), '--', process.execPath, '-e', probe], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10_000,
+    })
+    if (result.status !== 0) return { ok: false, kind: 'CONTAINMENT_UNAVAILABLE', mode: null }
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (providerScopeRunning(scopeName)) return { ok: true, kind: null, mode: 'systemd-scope' }
+      Atomics.wait(probeWait, 0, 0, 25)
+    }
+    return { ok: false, kind: 'CONTAINMENT_UNAVAILABLE', mode: null }
+  } finally {
+    signalProviderScope(scopeName, 'SIGKILL')
+    for (let attempt = 0; attempt < 20 && providerScopeRunning(scopeName); attempt++) {
+      Atomics.wait(probeWait, 0, 0, 25)
+    }
+  }
 }
 
 export function scopedProviderCommand(command, args, scopeName) {

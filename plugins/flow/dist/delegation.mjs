@@ -23596,6 +23596,7 @@ var JobStore = class {
 };
 
 // src/delegation/containment.mjs
+var probeWait = new Int32Array(new SharedArrayBuffer(4));
 var scopeOptions = (scopeName) => [
   "--user",
   "--scope",
@@ -23613,12 +23614,25 @@ function providerContainmentSupport() {
     return { ok: true, kind: null, mode: "process-tree" };
   }
   const scopeName = providerScopeName(`probe-${process.pid}-${randomUUID2()}`);
-  const result = spawnSync("systemd-run", [...scopeOptions(scopeName), "--", process.execPath, "-e", ""], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 1e4
-  });
-  return result.status === 0 ? { ok: true, kind: null, mode: "systemd-scope" } : { ok: false, kind: "CONTAINMENT_UNAVAILABLE", mode: null };
+  try {
+    const probe = 'const {spawn}=require("node:child_process"); const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore",detached:true}); child.unref()';
+    const result = spawnSync("systemd-run", [...scopeOptions(scopeName), "--", process.execPath, "-e", probe], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 1e4
+    });
+    if (result.status !== 0) return { ok: false, kind: "CONTAINMENT_UNAVAILABLE", mode: null };
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (providerScopeRunning(scopeName)) return { ok: true, kind: null, mode: "systemd-scope" };
+      Atomics.wait(probeWait, 0, 0, 25);
+    }
+    return { ok: false, kind: "CONTAINMENT_UNAVAILABLE", mode: null };
+  } finally {
+    signalProviderScope(scopeName, "SIGKILL");
+    for (let attempt = 0; attempt < 20 && providerScopeRunning(scopeName); attempt++) {
+      Atomics.wait(probeWait, 0, 0, 25);
+    }
+  }
 }
 function scopedProviderCommand(command, args, scopeName) {
   if (process.platform !== "linux") return { command, args };
@@ -56305,9 +56319,13 @@ function sensitiveReadPaths() {
   const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
     const value = process.env[name]?.trim();
     if (!value) return [];
-    if (value === "~") return [base];
-    if (value.startsWith("~/") || value.startsWith("~\\")) return [resolve6(base, value.slice(2))];
-    return [resolve6(value)];
+    const path = value === "~" ? base : value.startsWith("~/") || value.startsWith("~\\") ? resolve6(base, value.slice(2)) : resolve6(value);
+    const paths = [path];
+    try {
+      paths.push(realpathSync4(path));
+    } catch {
+    }
+    return paths;
   });
   return [
     resolve6(base, ".ssh"),
