@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { AppServerClient } from '../src/delegation/app-server.mjs'
 import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
-import { assertRoute } from '../src/delegation/contracts.mjs'
+import { assertRoute, capabilitiesForHost, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
 
 assert.equal(process.platform, 'linux', 'smoke-delegation requires the Linux Codex host and systemd-scope contract')
 
@@ -501,6 +501,34 @@ try {
   assert.match(row.base_sha, /^[0-9a-f]{40}$/)
   assert.match(row.head_sha, /^[0-9a-f]{40}$/)
   assert.ok(JSON.parse(row.output_schema_json).properties.findings)
+
+  console.log('host capability inventory')
+  const hostInventories = { claude: capabilitiesForHost('claude'), codex: capabilitiesForHost('codex') }
+  const claudeIds = Object.keys(hostInventories.claude.capabilities)
+  assert.ok(claudeIds.length > 0)
+  assert.deepEqual(claudeIds.sort(), Object.keys(hostInventories.codex.capabilities).sort(), 'every capability id names both hosts')
+  for (const [host, inventory] of Object.entries(hostInventories)) {
+    assert.equal(inventory.schemaVersion, HOST_CAPABILITIES_SCHEMA_VERSION, host)
+    assert.equal(inventory.schemaVersion, 1, host)
+    assert.equal(inventory.host, host)
+    assert.equal(typeof inventory.verifiedAgainst, 'string', host)
+    assert.ok(inventory.verifiedAgainst.length > 0, host)
+    for (const [id, entry] of Object.entries(inventory.capabilities)) {
+      assert.equal(typeof entry.supported, 'boolean', `${host}/${id} supported`)
+      assert.match(entry.verifiedAt, /^\d{4}-\d{2}-\d{2}$/, `${host}/${id} verifiedAt`)
+      assert.ok(!Number.isNaN(Date.parse(entry.verifiedAt)), `${host}/${id} verifiedAt is a real date`)
+      assert.ok(HOST_CAPABILITY_ASSURANCES.includes(entry.assurance), `${host}/${id} assurance`)
+      assert.equal(typeof entry.note, 'string', `${host}/${id} note`)
+      assert.ok(entry.note.length > 0, `${host}/${id} note`)
+    }
+  }
+  assert.throws(() => capabilitiesForHost('gemini'), (error) => error.kind === 'ROUTE_DENIED')
+  // The inventory is a shared constant. One caller flipping an entry would lie to every later
+  // reader in the process, so the deep freeze has to reject the write rather than ignore it.
+  assert.throws(() => { hostInventories.claude.capabilities['hook-ask'].supported = false }, TypeError)
+  assert.throws(() => { hostInventories.claude.capabilities.invented = {} }, TypeError)
+  assert.throws(() => { hostInventories.codex.verifiedAgainst = 'forged' }, TypeError)
+  assert.equal(capabilitiesForHost('claude').capabilities['hook-ask'].supported, true)
 
   console.log('route and nesting guards')
   assert.throws(
@@ -1308,6 +1336,14 @@ try {
   assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.profile, 'flow_delegation')
   assert.equal(doctorResult.structuredContent.mcp.client.name, 'flow-smoke')
   assert.equal(doctorResult.structuredContent.mcp.capabilities.roots.listChanged, true)
+  const doctorHostCapabilities = doctorResult.structuredContent.hostCapabilities
+  assert.equal(doctorHostCapabilities.schemaVersion, 1)
+  assert.equal(doctorHostCapabilities.host, 'claude')
+  assert.equal(doctorHostCapabilities.capabilities['hook-deny'].supported, true)
+  assert.equal(doctorResult.structuredContent.checks.hostCapabilities, undefined, 'the inventory is a sibling of checks, not a check')
+  // Unsupported entries are inventory, not failures. Doctor stays ok while they are present.
+  assert.ok(Object.values(doctorHostCapabilities.capabilities).some((entry) => entry.supported === false))
+  assert.equal(doctorResult.structuredContent.ok, true)
   await client.close()
 
   const noRootsClient = new McpStdioClient({
