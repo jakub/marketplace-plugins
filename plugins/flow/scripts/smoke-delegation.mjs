@@ -1249,6 +1249,7 @@ try {
   })
   hiddenStore.close()
   let hiddenCursor = null
+  let firstHiddenCursor = null
   let hiddenPages = 0
   do {
     const hiddenPage = await client.callTool('delegation_list', {
@@ -1256,9 +1257,24 @@ try {
     }, { timeout: 30_000 })
     assert.deepEqual(hiddenPage.structuredContent.jobs, [])
     hiddenCursor = hiddenPage.structuredContent.nextCursor
+    if (!firstHiddenCursor) firstHiddenCursor = hiddenCursor
     hiddenPages++
   } while (hiddenCursor)
   assert.ok(hiddenPages >= 2)
+  assert.ok(firstHiddenCursor)
+  const hiddenJobId = JSON.parse(Buffer.from(firstHiddenCursor, 'base64url').toString('utf8')).id
+  for (const [tool, input] of [
+    ['delegation_status', { jobId: hiddenJobId }],
+    ['delegation_result', { jobId: hiddenJobId }],
+    ['delegation_events', { jobId: hiddenJobId }],
+    ['delegation_steer', { jobId: hiddenJobId, text: 'hidden' }],
+    ['delegation_continue', { jobId: hiddenJobId, prompt: 'hidden' }],
+    ['delegation_cancel', { jobId: hiddenJobId }],
+  ]) {
+    const deniedHiddenJob = await client.callTool(tool, input, { timeout: 30_000 })
+    assert.equal(deniedHiddenJob.isError, true, tool)
+    assert.equal(deniedHiddenJob.structuredContent.error.kind, 'OUTSIDE_ROOTS', tool)
+  }
   const modelResult = await client.callTool('delegation_models', { cwd: repo }, { timeout: 30_000 })
   assert.equal(modelResult.structuredContent.models[0].id, 'gpt-5.6-luna')
   const escapedModels = await client.callTool('delegation_models', { cwd: temp }, { timeout: 30_000 })

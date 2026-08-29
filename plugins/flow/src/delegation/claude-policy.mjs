@@ -40,7 +40,7 @@ export const pathInside = (root, path) => {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
 }
 
-export function sensitiveReadPaths() {
+export function sensitiveReadPaths(cwd = process.cwd()) {
   const base = homedir()
   const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
     const value = process.env[name]?.trim()
@@ -51,7 +51,7 @@ export function sensitiveReadPaths() {
         ? base
         : entry.startsWith('~/') || entry.startsWith('~\\')
           ? resolve(base, entry.slice(2))
-          : resolve(entry)
+          : resolve(cwd, entry)
       const paths = [path]
       try { paths.push(realpathSync(path)) } catch {}
       return paths
@@ -117,7 +117,7 @@ export function claudeSandboxFor(job) {
     // executables here stops shell, language, and executable scripts from launching a raw
     // Claude or Codex child after they pass the command-text guard.
     denyRead: [...new Set([
-      ...sensitiveReadPaths(),
+      ...sensitiveReadPaths(job.cwd),
       ...providerExecutablePaths(),
       ...(existsSync('/proc') ? ['/proc'] : []),
     ])],
@@ -169,7 +169,7 @@ function readReason(job, value, { search = false } = {}) {
   if (pathInside('/proc', target)) {
     return 'Delegated workers cannot read process state.'
   }
-  if (sensitiveReadPaths().some((path) => pathInside(path, target) || (search && pathInside(target, path)))) {
+  if (sensitiveReadPaths(job.cwd).some((path) => pathInside(path, target) || (search && pathInside(target, path)))) {
     return 'The read target contains local authentication or credential state.'
   }
   return null

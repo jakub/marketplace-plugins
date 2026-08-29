@@ -56366,14 +56366,14 @@ var pathInside = (root, path) => {
   const rel = relative2(root, path);
   return rel === "" || !rel.startsWith(`..${sep5}`) && rel !== ".." && !isAbsolute4(rel);
 };
-function sensitiveReadPaths() {
+function sensitiveReadPaths(cwd = process.cwd()) {
   const base = homedir2();
   const configured = CREDENTIAL_PATH_ENV.flatMap((name) => {
     const value = process.env[name]?.trim();
     if (!value) return [];
     const values = CREDENTIAL_PATH_LIST_ENV.has(name) ? value.split(delimiter2) : [value];
     return values.map((entry) => entry.trim()).filter(Boolean).flatMap((entry) => {
-      const path = entry === "~" ? base : entry.startsWith("~/") || entry.startsWith("~\\") ? resolve6(base, entry.slice(2)) : resolve6(entry);
+      const path = entry === "~" ? base : entry.startsWith("~/") || entry.startsWith("~\\") ? resolve6(base, entry.slice(2)) : resolve6(cwd, entry);
       const paths = [path];
       try {
         paths.push(realpathSync4(path));
@@ -56436,7 +56436,7 @@ function claudeSandboxFor(job) {
     // executables here stops shell, language, and executable scripts from launching a raw
     // Claude or Codex child after they pass the command-text guard.
     denyRead: [.../* @__PURE__ */ new Set([
-      ...sensitiveReadPaths(),
+      ...sensitiveReadPaths(job.cwd),
       ...providerExecutablePaths(),
       ...existsSync3("/proc") ? ["/proc"] : []
     ])],
@@ -56485,7 +56485,7 @@ function readReason(job, value, { search = false } = {}) {
   if (pathInside("/proc", target)) {
     return "Delegated workers cannot read process state.";
   }
-  if (sensitiveReadPaths().some((path) => pathInside(path, target) || search && pathInside(target, path))) {
+  if (sensitiveReadPaths(job.cwd).some((path) => pathInside(path, target) || search && pathInside(target, path))) {
     return "The read target contains local authentication or credential state.";
   }
   return null;
@@ -57515,6 +57515,12 @@ var DelegationService = class {
   get(jobId2) {
     return this.withStore((store) => this.requireRoute(store.requireJob(jobId2)));
   }
+  async requireVisible(jobId2, { rootUris = [], fallbackCwd = null } = {}) {
+    const job = this.get(jobId2);
+    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd });
+    await canonicalWorkspace(job.cwd, roots);
+    return job;
+  }
   result(jobId2) {
     return resultEnvelope(this.get(jobId2));
   }
@@ -57913,6 +57919,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     }
   };
   const rootOptions = async () => ({ rootUris: await clientRoots() });
+  const requireVisibleJob = async (jobId2) => service.requireVisible(jobId2, await rootOptions());
   const doctorContext = async (requestedCwd) => {
     const clientCapabilities = server.server.getClientCapabilities() || {};
     const client = server.server.getClientVersion() || null;
@@ -58005,6 +58012,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     inputSchema: { jobId },
     annotations: { readOnlyHint: true, openWorldHint: false }
   }, asTool(async ({ jobId: jobId2 }) => {
+    await requireVisibleJob(jobId2);
     const job = await service.reconcile(jobId2);
     return toolResult({ ok: true, job: resultEnvelope(job) });
   }));
@@ -58012,7 +58020,10 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     description: "Read the typed result envelope for one delegation job.",
     inputSchema: { jobId },
     annotations: { readOnlyHint: true, openWorldHint: false }
-  }, asTool(async ({ jobId: jobId2 }) => toolResult({ ok: true, job: service.result(jobId2) })));
+  }, asTool(async ({ jobId: jobId2 }) => {
+    await requireVisibleJob(jobId2);
+    return toolResult({ ok: true, job: service.result(jobId2) });
+  }));
   server.registerTool("delegation_events", {
     description: "Read an ordered page of durable progress events.",
     inputSchema: {
@@ -58021,10 +58032,13 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       limit: number2().int().min(1).max(1e3).default(200)
     },
     annotations: { readOnlyHint: true, openWorldHint: false }
-  }, asTool(async ({ jobId: jobId2, after, limit }) => toolResult({
-    ok: true,
-    events: service.events(jobId2, { after, limit })
-  })));
+  }, asTool(async ({ jobId: jobId2, after, limit }) => {
+    await requireVisibleJob(jobId2);
+    return toolResult({
+      ok: true,
+      events: service.events(jobId2, { after, limit })
+    });
+  }));
   server.registerTool("delegation_list", {
     description: "List recent delegation jobs owned by this host route and visible from the current workspace roots. Prompts and outputs are omitted.",
     inputSchema: {
@@ -58049,12 +58063,18 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId },
     annotations: { destructiveHint: true, openWorldHint: false }
-  }, asTool(async ({ jobId: jobId2 }) => toolResult({ ok: true, job: resultEnvelope(service.cancel(jobId2)) })));
+  }, asTool(async ({ jobId: jobId2 }) => {
+    await requireVisibleJob(jobId2);
+    return toolResult({ ok: true, job: resultEnvelope(service.cancel(jobId2)) });
+  }));
   server.registerTool("delegation_steer", {
     description: capabilities.liveSteer ? `Add instructions to the active ${targetTitle} turn without starting a new job.` : `${targetTitle} does not support live turn steering. This tool returns CONTROL_UNSUPPORTED for ${targetTitle} jobs.`,
     inputSchema: { jobId, text: string2().min(1) },
     annotations: { openWorldHint: false }
-  }, asTool(async ({ jobId: jobId2, text }) => toolResult({ ok: true, job: resultEnvelope(service.steer(jobId2, text)) })));
+  }, asTool(async ({ jobId: jobId2, text }) => {
+    await requireVisibleJob(jobId2);
+    return toolResult({ ok: true, job: resultEnvelope(service.steer(jobId2, text)) });
+  }));
   server.registerTool("delegation_continue", {
     description: `Start a new job that continues an existing ${targetTitle} session.`,
     inputSchema: {
@@ -58071,6 +58091,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     },
     annotations: { openWorldHint: false }
   }, asTool(async (input, extra) => {
+    await requireVisibleJob(input.jobId);
     const job = await service.continue(input.jobId, input, await rootOptions());
     if (input.delivery === "detached") return toolResult({ ok: true, job: resultEnvelope(job) });
     const finished = await service.wait(job.id, attachedOptions(extra));

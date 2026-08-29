@@ -49,6 +49,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     try { return (await server.server.listRoots()).roots.map((root) => root.uri) } catch { return [] }
   }
   const rootOptions = async () => ({ rootUris: await clientRoots() })
+  const requireVisibleJob = async (jobId) => service.requireVisible(jobId, await rootOptions())
   const doctorContext = async (requestedCwd) => {
     const clientCapabilities = server.server.getClientCapabilities() || {}
     const client = server.server.getClientVersion() || null
@@ -139,6 +140,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     inputSchema: { jobId: jobId },
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, asTool(async ({ jobId }) => {
+    await requireVisibleJob(jobId)
     const job = await service.reconcile(jobId)
     return toolResult({ ok: true, job: resultEnvelope(job) })
   }))
@@ -147,7 +149,10 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     description: 'Read the typed result envelope for one delegation job.',
     inputSchema: { jobId: jobId },
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, asTool(async ({ jobId }) => toolResult({ ok: true, job: service.result(jobId) })))
+  }, asTool(async ({ jobId }) => {
+    await requireVisibleJob(jobId)
+    return toolResult({ ok: true, job: service.result(jobId) })
+  }))
 
   server.registerTool('delegation_events', {
     description: 'Read an ordered page of durable progress events.',
@@ -157,10 +162,13 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       limit: z.number().int().min(1).max(1000).default(200),
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, asTool(async ({ jobId, after, limit }) => toolResult({
-    ok: true,
-    events: service.events(jobId, { after, limit }),
-  })))
+  }, asTool(async ({ jobId, after, limit }) => {
+    await requireVisibleJob(jobId)
+    return toolResult({
+      ok: true,
+      events: service.events(jobId, { after, limit }),
+    })
+  }))
 
   server.registerTool('delegation_list', {
     description: 'List recent delegation jobs owned by this host route and visible from the current workspace roots. Prompts and outputs are omitted.',
@@ -187,7 +195,10 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId: jobId },
     annotations: { destructiveHint: true, openWorldHint: false },
-  }, asTool(async ({ jobId }) => toolResult({ ok: true, job: resultEnvelope(service.cancel(jobId)) })))
+  }, asTool(async ({ jobId }) => {
+    await requireVisibleJob(jobId)
+    return toolResult({ ok: true, job: resultEnvelope(service.cancel(jobId)) })
+  }))
 
   server.registerTool('delegation_steer', {
     description: capabilities.liveSteer
@@ -195,7 +206,10 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       : `${targetTitle} does not support live turn steering. This tool returns CONTROL_UNSUPPORTED for ${targetTitle} jobs.`,
     inputSchema: { jobId: jobId, text: z.string().min(1) },
     annotations: { openWorldHint: false },
-  }, asTool(async ({ jobId, text }) => toolResult({ ok: true, job: resultEnvelope(service.steer(jobId, text)) })))
+  }, asTool(async ({ jobId, text }) => {
+    await requireVisibleJob(jobId)
+    return toolResult({ ok: true, job: resultEnvelope(service.steer(jobId, text)) })
+  }))
 
   server.registerTool('delegation_continue', {
     description: `Start a new job that continues an existing ${targetTitle} session.`,
@@ -213,6 +227,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     },
     annotations: { openWorldHint: false },
   }, asTool(async (input, extra) => {
+    await requireVisibleJob(input.jobId)
     const job = await service.continue(input.jobId, input, await rootOptions())
     if (input.delivery === 'detached') return toolResult({ ok: true, job: resultEnvelope(job) })
     const finished = await service.wait(job.id, attachedOptions(extra))

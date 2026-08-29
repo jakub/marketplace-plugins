@@ -567,6 +567,12 @@ try {
   assert.ok(overridePaths.includes(kubeconfigA))
   assert.ok(overridePaths.includes(kubeconfigB))
   for (const path of additionalOverrides) assert.ok(overridePaths.includes(path))
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = 'relative-provider-credentials.json'
+  assert.ok(sensitiveReadPaths(repo).includes(join(repo, 'relative-provider-credentials.json')))
+  const relativeCredentialRead = await readHook({
+    hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: 'relative-provider-credentials.json' },
+  })
+  assert.equal(relativeCredentialRead.hookSpecificOutput.permissionDecision, 'deny')
   if (previousDockerConfig === undefined) delete process.env.DOCKER_CONFIG
   else process.env.DOCKER_CONFIG = previousDockerConfig
   if (previousKubeconfig === undefined) delete process.env.KUBECONFIG

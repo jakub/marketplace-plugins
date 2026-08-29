@@ -242,6 +242,13 @@ export class DelegationService {
 
   get(jobId) { return this.withStore((store) => this.requireRoute(store.requireJob(jobId))) }
 
+  async requireVisible(jobId, { rootUris = [], fallbackCwd = null } = {}) {
+    const job = this.get(jobId)
+    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
+    await canonicalWorkspace(job.cwd, roots)
+    return job
+  }
+
   result(jobId) { return resultEnvelope(this.get(jobId)) }
 
   events(jobId, options = {}) {
