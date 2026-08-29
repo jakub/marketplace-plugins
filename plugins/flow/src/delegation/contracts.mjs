@@ -3,7 +3,9 @@ export const TARGETS = ['claude', 'codex']
 export const MODES = ['task', 'review', 'adversarial-review']
 export const ACCESS_MODES = ['read-only', 'workspace-write']
 export const DELIVERIES = ['attached', 'detached']
-export const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+// Codex's live model catalog starts every model at 'low'; a 'minimal' request reaches the
+// provider and dies late as BAD_MODEL, blaming the wrong parameter. Reject it at the edge.
+export const CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const SERVICE_TIERS = ['default']
 export const ACTIVE_STATES = ['queued', 'starting', 'running', 'reconciling']
