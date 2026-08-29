@@ -4,6 +4,10 @@ This repository keeps hook behavior portable without pretending Claude Code and 
 have the same event protocol. The stable unit is the plugin's policy or domain state.
 Each harness gets a small adapter and its own registration file.
 
+Prompt text follows the same split. A stage that both harnesses run is one host-neutral
+skill body plus one profile per harness, and the command file that used to hold the steps
+becomes an alias that reads its own profile first.
+
 This document describes the implemented contract as of 2026-08-25. Product behavior
 that can change is based on the current Codex hooks documentation and must be rechecked
 before changing an adapter.
@@ -20,6 +24,9 @@ plugins/<name>/
   hooks/codex.json               Codex event registrations
   hooks/scripts/                 wire adapters and simple direct handlers
   lib/                           harness-neutral policy, rendering, or state
+  skills/<stage>/SKILL.md        harness-neutral prose, one [[gate:<id>]] per checkpoint
+  skills/<stage>/profiles/       one file per harness, one section per gate
+  skills/<stage>/agents/         Codex-side skill metadata and invocation policy
 ```
 
 There is no cross-plugin runtime package. Copying a small adapter boundary inside each
@@ -52,6 +59,7 @@ events, and recovery. A Codex App Server worker is the Phase 1 backend. See
 | Flow Bash guards | `PreToolUse` on `Bash` | `PreToolUse` on `Bash` | Existing no-backlog and Git guards; publication policy in `lib/hook-policy.mjs` |
 | Flow protected files | `file_path` from Edit/Write input | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
 | Flow publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
+| Flow land stage | `/flow:land` is an alias that reads `skills/land-stage/profiles/claude.md`, then the skill | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |
 | Gripe checkpoint | Claude transcript folded incrementally at `Stop` and `SubagentStop` | `PostToolUse` folds counters, parent `Stop` evaluates them | `lib/checkpoint.mjs` |
@@ -141,6 +149,7 @@ The adapters are ordinary stdin/stdout programs and can be tested from a working
 node scripts/smoke-plugin-manifests.mjs
 node plugins/flow/scripts/smoke-delegation.mjs
 node plugins/flow/scripts/smoke-codex-hooks.mjs
+node plugins/flow/scripts/smoke-stage-conformance.mjs
 node plugins/gripe/scripts/smoke-hooks.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs
 ```
@@ -149,7 +158,9 @@ The manifest test derives each plugin's version from the marketplace manifest an
 Claude/Codex/marketplace parity, supported Codex event names, `${PLUGIN_ROOT}` use, and
 every registered command target. Plugin smoke tests cover
 both positive and negative wire cases with throwaway state, including the captured Codex
-failure payload that deliberately remains unclassified.
+failure payload that deliberately remains unclassified. The stage conformance lint compares
+the skill's gate ids against each profile's sections in both directions, and runs the same
+checker over a broken fixture pair so a green run also shows the check can still fail.
 
 These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
 definitions until the user reviews them. Claude plugin installs still pull from the pinned
