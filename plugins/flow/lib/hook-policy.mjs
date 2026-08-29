@@ -10,16 +10,32 @@ const LOCKFILES = new Set([
 ])
 const BUILD_DIR = /(^|\/)(target|node_modules|dist|build|out|\.next|\.nuxt|\.venv|venv|__pycache__|\.tox|coverage|vendor)\//
 
+// The publication table. One entry per spelling, several spellings per operation, and the
+// `op` id is the stable name the rest of the system uses for "this exact kind of release":
+// it is what a human writes into a release sanction and what the Codex guard matches
+// against. Renaming an id invalidates every sanction that names it, so treat the ids as
+// the wire format they are. The file name below is shared with lib/release-sanction.mjs.
+//
+// `kind` splits the two consumers. `registry` is the irreversible-publication set the
+// Claude ask-gate has always covered. `github` is the merge classification, which only
+// the Codex release path consumes - publishReason ignores it, so adding merge here does
+// not change what the Claude guard asks about.
 const PUBLISH = [
-  [/\bcargo\s+publish\b/, 'crates.io', 'crates.io has no unpublish at all'],
-  [/\bnpm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\bpnpm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\byarn\s+npm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\bgem\s+push\b/, 'RubyGems', 'a yanked gem keeps its version number forever'],
-  [/\btwine\s+upload\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
-  [/\bpoetry\s+publish\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
-  [/\buv\s+publish\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
+  { op: 'cargo-publish', kind: 'registry', re: /\bcargo\s+publish\b/, registry: 'crates.io', why: 'crates.io has no unpublish at all' },
+  { op: 'npm-publish', kind: 'registry', re: /\bnpm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
+  { op: 'npm-publish', kind: 'registry', re: /\bpnpm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
+  { op: 'npm-publish', kind: 'registry', re: /\byarn\s+npm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
+  { op: 'gem-push', kind: 'registry', re: /\bgem\s+push\b/, registry: 'RubyGems', why: 'a yanked gem keeps its version number forever' },
+  { op: 'pypi-upload', kind: 'registry', re: /\btwine\s+upload\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
+  { op: 'pypi-upload', kind: 'registry', re: /\bpoetry\s+publish\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
+  { op: 'pypi-upload', kind: 'registry', re: /\buv\s+publish\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
+  { op: 'gh-pr-merge', kind: 'github', re: /\bgh\s+pr\s+merge\b/ },
 ]
+
+/** Every operation id the table can produce, in table order. The sanction helper validates against it. */
+export const PUBLISH_OPERATION_IDS = [...new Set(PUBLISH.map((entry) => entry.op))]
+
+const SANCTION_FILE = 'release-sanction.json'
 
 export function protectedFileReason(file) {
   const base = String(file).split('/').pop()
@@ -28,6 +44,13 @@ export function protectedFileReason(file) {
     return `flow: ${base} holds real credentials, and anything written there is one \`git add -A\` ` +
       'away from being in history forever. Put the key in your shell or a secret store and ' +
       `read it from the environment. Documenting a variable instead? Edit ${base}.example.`
+  }
+
+  if (base === SANCTION_FILE) {
+    return `flow: ${base} is human-written approval state. It records that a person looked at one ` +
+      'specific head SHA and said yes to publishing exactly that, and the release guard trusts ' +
+      'it on that basis. A model that can write this file can approve its own release, so it is ' +
+      'only ever written by scripts/release-sanction.mjs, run by the human in their own terminal.'
   }
 
   if (LOCKFILES.has(base)) {
@@ -44,28 +67,52 @@ export function protectedFileReason(file) {
   return null
 }
 
-export function publishReason(command) {
-  // Prose about publishing is not publishing. This deliberately matches the existing
-  // Claude guard: simple quoted literals are removed before policy sees the command.
-  // A backslash continuation is the same command, and the `&` inside a fd redirect is
-  // not the background separator - `npm publish \<newline> --dry-run` and
-  // `npm publish 2>&1 --dry-run` must each keep their own exemption. Only an odd run
-  // of backslashes escapes the newline: after `\\` the newline still separates
-  // commands, so joining there would let a dry-run segment exempt a real publish.
-  const bare = String(command)
+// Prose about publishing is not publishing. This deliberately matches the existing
+// Claude guard: simple quoted literals are removed before policy sees the command.
+// A backslash continuation is the same command, and the `&` inside a fd redirect is
+// not the background separator - `npm publish \<newline> --dry-run` and
+// `npm publish 2>&1 --dry-run` must each keep their own exemption. Only an odd run
+// of backslashes escapes the newline: after `\\` the newline still separates
+// commands, so joining there would let a dry-run segment exempt a real publish.
+//
+// A dry-run exempts only its own shell segment. A global check lets
+// `cargo publish --dry-run && cargo publish` bypass the second, real publication.
+// There is no dry run for a merge, but the segment discipline is one mechanism and the
+// merge classification rides on it unchanged.
+const liveSegments = (command) =>
+  String(command)
     .replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
     .replace(/'[^']*'/g, ' ')
     .replace(/"[^"]*"/g, ' ')
     .replace(/\d*>&\d*|&>>?/g, ' ')
-  // A dry-run exempts only its shell segment. A global check lets
-  // `cargo publish --dry-run && cargo publish` bypass the second, real publication.
-  for (const segment of bare.split(/&&|\|\||[;&|\n]/)) {
-    if (/--dry-run\b/.test(segment)) continue
-    for (const [re, registry, why] of PUBLISH) {
-      if (re.test(segment)) {
-        return `This publishes to ${registry}, which you cannot take back - ${why}. ` +
-          'Confirm the version number and the contents are what you mean to ship.'
-      }
+    .split(/&&|\|\||[;&|\n]/)
+    .filter((segment) => !/--dry-run\b/.test(segment))
+
+/**
+ * Every publication operation this command performs, as deduped op ids in the order the
+ * command reaches them. `[]` means nothing in the command publishes anything.
+ */
+export function publishOperations(command) {
+  const ops = []
+  for (const segment of liveSegments(command)) {
+    for (const entry of PUBLISH) {
+      if (entry.re.test(segment) && !ops.includes(entry.op)) ops.push(entry.op)
+    }
+  }
+  return ops
+}
+
+/**
+ * The human-facing reason a command needs a second look before it runs, or null. Reads
+ * registry operations only: a GitHub merge is classified, not asked about, because the
+ * Claude guard's behavior predates the merge op and must not change.
+ */
+export function publishReason(command) {
+  for (const op of publishOperations(command)) {
+    const entry = PUBLISH.find((e) => e.op === op && e.kind === 'registry')
+    if (entry) {
+      return `This publishes to ${entry.registry}, which you cannot take back - ${entry.why}. ` +
+        'Confirm the version number and the contents are what you mean to ship.'
     }
   }
   return null
