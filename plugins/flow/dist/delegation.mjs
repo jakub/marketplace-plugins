@@ -23003,6 +23003,7 @@ var PUBLISH = [
   { op: "gh-pr-merge", kind: "github", re: /\bgh\s+pr\s+merge\b/ }
 ];
 var PUBLISH_OPERATION_IDS = [...new Set(PUBLISH.map((entry) => entry.op))];
+var REGISTRY_OPERATION_IDS = [...new Set(PUBLISH.filter((entry) => entry.kind === "registry").map((entry) => entry.op))];
 var SANCTION_FILE = "release-sanction.json";
 function protectedFileReason(file) {
   const base = String(file).split("/").pop();
@@ -23030,14 +23031,17 @@ function publishOperations(command) {
   }
   return ops;
 }
-function publishReason(command) {
-  for (const op of publishOperations(command)) {
+function registryReason(operations) {
+  for (const op of Array.isArray(operations) ? operations : []) {
     const entry = PUBLISH.find((e) => e.op === op && e.kind === "registry");
     if (entry) {
       return `This publishes to ${entry.registry}, which you cannot take back - ${entry.why}. Confirm the version number and the contents are what you mean to ship.`;
     }
   }
   return null;
+}
+function publishReason(command) {
+  return registryReason(publishOperations(command));
 }
 
 // src/delegation/claude-policy.mjs

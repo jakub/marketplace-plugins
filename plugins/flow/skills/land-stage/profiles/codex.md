@@ -63,7 +63,8 @@ it, so an exported variable does not count.
 ### gate: squash-merge
 
 The merge is release-sanction-gated, because nothing on this host can put a confirmation
-prompt in front of the human at the moment the command runs. The required command form is:
+prompt in front of the human at the moment the command runs. The required command form is
+exactly this, on its own, with the literal 40-character SHA written out:
 
 ```bash
 gh pr merge <pr> --squash --match-head-commit <sanctioned-head-sha>
@@ -72,9 +73,20 @@ gh pr merge <pr> --squash --match-head-commit <sanctioned-head-sha>
 `--match-head-commit` makes the merge fail if the branch head moved after the sanction was
 written, so the thing that merges is the thing the human sanctioned. The sanction is a file
 the human writes and the publish guard verifies; the model never writes, edits, or generates
-that file, and a missing sanction is a stop, not a prompt to create one. Everything else in
-the step is unchanged: no `--delete-branch`, and confirm `state == MERGED` by re-reading the
-PR afterwards.
+that file, and a missing sanction is a stop, not a prompt to create one.
+
+Ask for the sanction by telling the human the repository slug, the branch, the full head SHA,
+and the PR number, so they can run `release-sanction.mjs approve --repo … --branch … --head …
+--pr <number> --op gh-pr-merge`. The guard binds all four: a merge that names a different PR,
+drops `--squash`, drops or mismatches `--match-head-commit`, adds `-R`/`--repo`, `--admin`,
+`--auto` or `--delete-branch`, or runs a second publication in the same command, is denied.
+So is wrapping the merge in `bash -lc`, `eval`, or any other form that hides it in a string:
+the guard reads inside those and refuses what it finds there.
+
+One attempt is all a sanction buys. The guard claims the file before it checks anything, so a
+denied attempt spends the approval too - read the denial, fix the command, then ask for a new
+sanction. Everything else in the step is unchanged: no `--delete-branch`, and confirm
+`state == MERGED` by re-reading the PR afterwards.
 
 ### gate: issue-closure
 

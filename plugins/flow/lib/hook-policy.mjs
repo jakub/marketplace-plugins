@@ -35,6 +35,12 @@ const PUBLISH = [
 /** Every operation id the table can produce, in table order. The sanction helper validates against it. */
 export const PUBLISH_OPERATION_IDS = [...new Set(PUBLISH.map((entry) => entry.op))]
 
+/** The op ids that push a version to a public package registry. Nobody can take these back. */
+export const REGISTRY_OPERATION_IDS = [...new Set(PUBLISH.filter((entry) => entry.kind === 'registry').map((entry) => entry.op))]
+
+/** True when this op id publishes to a public registry. A registry op is never sanctionable. */
+export const isRegistryOperation = (op) => REGISTRY_OPERATION_IDS.includes(op)
+
 const SANCTION_FILE = 'release-sanction.json'
 
 export function protectedFileReason(file) {
@@ -103,12 +109,12 @@ export function publishOperations(command) {
 }
 
 /**
- * The human-facing reason a command needs a second look before it runs, or null. Reads
- * registry operations only: a GitHub merge is classified, not asked about, because the
- * Claude guard's behavior predates the merge op and must not change.
+ * The same wording, from op ids that are already classified. A caller that had to do its own
+ * classification - the Codex guard reaches inside quoted payloads - asks with the ids it found
+ * rather than handing the command over to be classified a second, weaker way.
  */
-export function publishReason(command) {
-  for (const op of publishOperations(command)) {
+export function registryReason(operations) {
+  for (const op of Array.isArray(operations) ? operations : []) {
     const entry = PUBLISH.find((e) => e.op === op && e.kind === 'registry')
     if (entry) {
       return `This publishes to ${entry.registry}, which you cannot take back - ${entry.why}. ` +
@@ -116,5 +122,155 @@ export function publishReason(command) {
     }
   }
   return null
+}
+
+/**
+ * The human-facing reason a command needs a second look before it runs, or null. Reads
+ * registry operations only: a GitHub merge is classified, not asked about, because the
+ * Claude guard's behavior predates the merge op and must not change.
+ */
+export function publishReason(command) {
+  return registryReason(publishOperations(command))
+}
+
+// ------------------------------------------------------------------ reading through a shell
+//
+// Everything above treats a quoted string as inert text, which is right for prose and wrong
+// for `bash -lc 'gh pr merge 12'`. There the quotes hold a command the shell will run, so
+// stripping them classifies a real merge as nothing at all. The rest of this file is the
+// release path's reader: when the command names a form that executes a string, the payload
+// of every quoted string is read as a command too.
+//
+// This is deliberately one-sided. Prose that sits inside an exec form classifies as
+// publication and gets denied, which costs a human one rephrase; the opposite mistake lands
+// a merge nobody approved. Only the deny-by-default Codex path uses these functions, so the
+// Claude ask-gate keeps the prose exemption it has always had.
+
+const EXEC_FORM = /(?:^|[\s;&|(])(?:[^\s;&|(]*\/)?(?:sh|bash|zsh|ksh|dash)\s+-[A-Za-z]*c\b|(?:^|[\s;&|(])(?:eval|xargs)\b/
+
+const quotedPayloads = (text) =>
+  [...String(text).matchAll(/'([^']*)'|"((?:\\.|[^"])*)"/g)].map((match) => match[1] ?? match[2] ?? '')
+
+/**
+ * Every publication operation the command performs, including the ones hidden in a quoted
+ * payload that a shell-execution form will run. Recursion terminates because a payload is
+ * always shorter than the text it came out of.
+ */
+export function publishOperationsStrict(command) {
+  const ops = publishOperations(command)
+  if (EXEC_FORM.test(String(command))) {
+    for (const payload of quotedPayloads(command)) {
+      for (const op of publishOperationsStrict(payload)) if (!ops.includes(op)) ops.push(op)
+    }
+  }
+  return ops
+}
+
+// liveSegments destroys quoting, which is what its callers want and the opposite of what a
+// word-level parse needs. This splits on the same separators while leaving quoted text
+// intact, so `gh pr merge 12 -b "a; b"` stays one segment instead of two.
+function rawSegments(text) {
+  const source = String(text).replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
+  const segments = []
+  let current = ''
+  let quote = null
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i]
+    if (quote) {
+      current += char
+      if (char === '\\' && quote === '"' && i + 1 < source.length) current += source[++i]
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === '"' || char === "'") { quote = char; current += char; continue }
+    if (char === '\\' && i + 1 < source.length) { current += char + source[++i]; continue }
+    if (char === ';' || char === '&' || char === '|' || char === '\n') { segments.push(current); current = ''; continue }
+    current += char
+  }
+  segments.push(current)
+  return segments.filter((segment) => segment.trim() !== '')
+}
+
+// The word split from src/delegation/claude-policy.mjs, copied rather than imported: that
+// module imports this one, and a hook script must not drag the delegation tree in to read
+// a flag off a command line.
+function shellWords(segment) {
+  const words = []
+  const pattern = /"((?:\\.|[^"])*)"|'([^']*)'|([^\s]+)/g
+  for (const match of String(segment).matchAll(pattern)) {
+    words.push((match[1] ?? match[2] ?? match[3] ?? '').replace(/\\([\\"'])/g, '$1'))
+  }
+  return words
+}
+
+function releaseSegments(command) {
+  const segments = rawSegments(command)
+  if (EXEC_FORM.test(String(command))) {
+    for (const payload of quotedPayloads(command)) segments.push(...releaseSegments(payload))
+  }
+  return segments
+}
+
+// `gh pr merge` flags that take their value as the next word. Consuming them is what keeps
+// `--body 12` from reading as the pull request number.
+const MERGE_VALUE_FLAGS = new Set([
+  '-R', '--repo', '-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email',
+  '--match-head-commit',
+])
+
+// Flags that change which pull request merges, or how much authority the merge carries. A
+// sanction names one repository, one branch, one head and one pull request, so a merge that
+// carries any of these is not the merge that was approved.
+const DISQUALIFYING = [
+  { name: '--repo', test: (word) => word === '--repo' || word.startsWith('--repo=') || /^-R.*$/.test(word) },
+  { name: '--admin', test: (word) => word === '--admin' },
+  { name: '--auto', test: (word) => word === '--auto' },
+  { name: '--delete-branch', test: (word) => word === '-d' || word === '--delete-branch' },
+]
+
+function parseMerge(words, start) {
+  const targets = []
+  let squash = false
+  let matchHead = null
+  for (let i = start; i < words.length; i++) {
+    const word = words[i]
+    if (word === '--') { targets.push(...words.slice(i + 1).filter((rest) => rest !== '')); break }
+    if (!word.startsWith('-')) { targets.push(word); continue }
+    const equals = word.indexOf('=')
+    const flag = equals === -1 ? word : word.slice(0, equals)
+    const inline = equals === -1 ? null : word.slice(equals + 1)
+    if (flag === '--squash' || flag === '-s') squash = true
+    else if (flag === '--match-head-commit') matchHead = inline === null ? (words[++i] ?? null) : inline
+    else if (inline === null && MERGE_VALUE_FLAGS.has(flag)) i++
+  }
+  return { targets, squash, matchHead }
+}
+
+/**
+ * Every `gh pr merge` the command runs, parsed into the facts a release sanction is checked
+ * against, plus the flags anywhere in a merge segment that disqualify the whole command.
+ * Quoted payloads under an exec form are parsed too, so `bash -lc 'gh pr merge 12'` is read
+ * as the merge it is.
+ */
+export function mergeCommandFacts(command) {
+  const invocations = []
+  const disqualifiers = new Set()
+  for (const segment of releaseSegments(command)) {
+    const words = shellWords(segment)
+    // An environment assignment redirects `gh` as effectively as a flag does, and it is the
+    // one form that does not look like a flag at all.
+    for (const word of words) {
+      const env = /^(GH_REPO|GH_HOST)=/.exec(word)
+      if (env) disqualifiers.add(`a ${env[1]} assignment`)
+    }
+    const at = words.findIndex((word, i) =>
+      String(word).split('/').pop() === 'gh' && words[i + 1] === 'pr' && words[i + 2] === 'merge')
+    if (at === -1) continue
+    for (const word of words) {
+      for (const rule of DISQUALIFYING) if (rule.test(word)) disqualifiers.add(rule.name)
+    }
+    invocations.push(parseMerge(words, at + 3))
+  }
+  return { invocations, disqualifiers: [...disqualifiers] }
 }
 

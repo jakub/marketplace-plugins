@@ -8,7 +8,9 @@ disable-model-invocation: true
 
 This stage is the back of the prep → issue → land process. The issue run stopped at an open PR and left it there; once the human is happy with it, this stage runs the closing ritual - the gates, the merge, the cleanup, and a survey of what to do next.
 
-Every gate below carries a `[[gate:<id>]]` marker. The host profile you read alongside this file has one section per marker and says what that gate binds to here. Where a step needs a decision from the human, the profile's human-choice binding says how to put the choice in front of them and how the answer comes back.
+First, before the argument step or anything else: read the profile for the active host from `profiles/` next to this file, and adopt its bindings for every `[[gate:]]` below. If no profile there matches the session's host, stop and say so before taking any action.
+
+Every gate below carries a `[[gate:<id>]]` marker. The profile you just read has one section per marker and says what that gate binds to here. Where a step needs a decision from the human, the profile's human-choice binding says how to put the choice in front of them and how the answer comes back.
 
 ## Core principles
 
