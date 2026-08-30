@@ -13,7 +13,10 @@ export const markerGrammar = (keyword) => ({
   // Anything that looks like it was meant to be a marker or a heading, canonical or not. A typo
   // like [[gate:bad_id]] or a capitalized "### Gate:" drops out of both extractors at once and
   // the id comparison still comes back equal, so these run first and pre-empt it.
-  markerLike: `[[${keyword}`,
+  // The near-miss opener ignores case and the spaces a human leaves around the keyword and the
+  // colon, so "[[Gate:x]]", "[[ gate:x]]" and "[[gate : x]]" are all caught and reported rather
+  // than skipped in silence. The canonical grammar below is unchanged and stays exact.
+  markerLike: new RegExp(`\\[\\[\\s*${keyword}`, 'gi'),
   canonicalMarker: new RegExp(`\\[\\[${keyword}:[a-z][a-z0-9-]*\\]\\]`, 'y'),
   headingLike: new RegExp(`^###\\s*${keyword}\\b.*$`, 'gim'),
   canonicalHeading: new RegExp(`^### ${keyword}: [a-z][a-z0-9-]*$`),
@@ -36,10 +39,13 @@ export const repeats = (list) => [...new Set(list.filter((v, i) => list.indexOf(
 
 const idsOf = (re, text) => [...text.matchAll(re)].map((m) => m[1])
 
-// Every markerLike substring that the canonical marker regex would not match, as written.
+// Every marker-like opener the canonical marker regex would not match, as written. The scan
+// finds where a marker was attempted; the sticky canonical test at that same offset decides
+// whether the attempt succeeded.
 const badMarkers = (text, { markerLike, canonicalMarker }) => {
   const found = []
-  for (let at = text.indexOf(markerLike); at !== -1; at = text.indexOf(markerLike, at + 1)) {
+  for (const hit of text.matchAll(markerLike)) {
+    const at = hit.index
     canonicalMarker.lastIndex = at
     if (canonicalMarker.test(text)) continue
     const line = text.slice(at).split('\n')[0]

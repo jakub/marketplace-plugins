@@ -150,6 +150,13 @@ const stageRoleClaims = (root) => {
   return problems
 }
 
+// Where a role section stops. An ATX heading ends it, and so does a setext one: a line of text
+// with nothing but = or - under it renders as a heading too, so a scan that only knows about #
+// would swallow the next section's title and its body and call the empty section above it full.
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)\s*$/
+const endsSection = (rest, at) => /^#{1,6} /.test(rest[at])
+  || (rest[at].trim() !== '' && SETEXT_UNDERLINE.test(rest[at + 1] ?? ''))
+
 // A heading with nothing under it binds nothing, and the engine's set comparison cannot see it.
 const emptyBindings = (profiles) => Object.entries(readable(profiles)).flatMap(([name, text]) => {
   const lines = text.split('\n')
@@ -158,7 +165,7 @@ const emptyBindings = (profiles) => Object.entries(readable(profiles)).flatMap((
     const heading = /^### role: ([a-z][a-z0-9-]*)$/.exec(line)
     if (!heading) continue
     const rest = lines.slice(at + 1)
-    const end = rest.findIndex((l) => /^#{1,6} /.test(l))
+    const end = rest.findIndex((_, i) => endsSection(rest, i))
     const section = end === -1 ? rest : rest.slice(0, end)
     if (section.join('\n').trim() === '') {
       problems.push(`${name} declares role ${heading[1]} with an empty section`)
@@ -294,6 +301,34 @@ const CASES = [
       },
     ).problems,
     names: ['hidden.md has no "### role: mini-publish" section for a role the charter marks'],
+    count: 1,
+  },
+  {
+    // The near miss the old substring scan walked straight past: right shape, wrong case. It
+    // matches neither extractor, so without this the id sets still compare equal and the
+    // charter marks a role no profile can bind.
+    label: 'miscased-marker',
+    run: () => charterProblems(
+      'The charter marks [[Role:mini-seat]].\n',
+      { 'mini.md': '### role: mini-seat\nThe seat that does the work.\n' },
+    ).problems,
+    names: ['[[Role:mini-seat]]', 'not a canonical [[role:<id>]] marker'],
+    count: 1,
+  },
+  {
+    // Underlined text is a heading, so the mini-seat section really is empty. A scan that only
+    // stops at # reads the next section's title and body as mini-seat's binding.
+    label: 'setext-masked-empty',
+    run: () => emptyBindings({ 'setext.md': [
+      '### role: mini-seat',
+      '',
+      'Bindings',
+      '--------',
+      '',
+      'The seat that does the work.',
+      '',
+    ].join('\n') }),
+    names: ['setext.md declares role mini-seat with an empty section'],
     count: 1,
   },
   {
