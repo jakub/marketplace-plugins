@@ -19,9 +19,9 @@ Delegation is not free however: each agent re-establishes context and reports ba
 
 Never spawn more than ~20 parallel agents without the user's confirmation first.
 
-Permissions scale with how reversible the change is. Read-only agents: spawn freely. Agents that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
+Permissions scale with how reversible the change is. Read-only agents: spawn freely and often. Agents that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
  
-## Cross-family delegation
+## Cross-Family Delegation
 Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses
 `delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to
 inspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either
@@ -85,7 +85,7 @@ Do not use Opus for taste calls - Fable is always used here.
 Sol is in between Opus and Fable. It's an extremely competent, hard working, persistent model that writes code slightly uglier than Anthropic models. Sol is your default option for an outside or decorrelated opinion, adversarial reviews, and competing designs. Use it to review and challenge both Opus and Fable.
 
 ### Daybreak Blue
-Daybreak Blue is a version of Sol without cyber classifiers, intended for defensive work by approved security researchers. Prefer Daybreak Blue over Sol for cyber or security-sensitive tasks.
+Daybreak Blue is a version of Sol without cyber classifiers, intended for vulnerability finding and defensive work by approved security researchers. Prefer Daybreak Blue over Sol for cyber or security-sensitive tasks.
 
 ### Fable
 Fable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.
@@ -100,6 +100,8 @@ Subagents do **NOT** inherit this charter - only `fork` does, by copying your co
 Pure locate/search fan-outs (built-in Explore et al.) spawn with `model: sonnet` - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.
 
 Review non-trivial changes before assuming they're done, and monitor every backgrounded command.
+
+Spawning parallel implementers is permitted if there is sufficient isolation between the tasks handed out.
 
 ## Rules of Engagement - Everything Else
 Before adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.
@@ -151,6 +153,6 @@ PR descriptions: summary narrative + one-line-per-commit changelog.
 Find the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
 
 ## Gripes
-If the `gripe` plugin is installed, the `gripe` CLI is available through the shell. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself.
+If the `gripe` plugin is installed, the `gripe` CLI is available through the shell. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.
 
 </flow-charter>
