@@ -155,6 +155,6 @@ PR descriptions: summary narrative + one-line-per-commit changelog.
 Find the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
 
 ## Gripes
-If the `gripe` plugin is installed, the friction log is available [[role:gripe-cli]]. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.
+If the `gripe` plugin is installed, the friction log is available [[role:gripe-cli]] - your host binding says how, or that it isn't. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.
 
 </flow-charter>
