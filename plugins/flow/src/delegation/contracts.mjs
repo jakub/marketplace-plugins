@@ -102,6 +102,80 @@ export function capabilitiesForTarget(target) {
   }
 }
 
+export const HOST_CAPABILITIES_SCHEMA_VERSION = 1
+export const HOST_CAPABILITY_ASSURANCES = ['mechanism', 'contract', 'unverified']
+
+// What the host harness itself can do, which is a different question from what a delegated
+// target can do. capabilitiesForTarget answers "can I steer this job"; this table answers
+// "does the harness I am running under have a permission prompt". It is a hand-maintained
+// inventory, so it is biased false: an entry nobody has probed reads supported:false with
+// assurance 'unverified', and a reader never mistakes silence for support. 'mechanism' means
+// a named feature was observed doing the thing. 'contract' means the behaviour rests on an
+// agreement both sides keep, with no platform receipt to check. Every id names both hosts, so
+// a gap is visible in this source rather than at the call site.
+const HOST_CAPABILITY_VERIFIED_AT = '2026-08-29'
+const HOST_VERIFIED_AGAINST = { claude: 'claude-code 2.1.251', codex: 'codex-cli 0.151.0' }
+const HOST_CAPABILITY_TABLE = {
+  'plugin-skill-contribution': {
+    claude: { supported: true, assurance: 'mechanism', note: 'A plugin ships skills under skills/ and the loader registers them.' },
+    codex: { supported: true, assurance: 'mechanism', note: 'Live probe: Codex discovers a plugin\'s skills with no extra configuration.' },
+  },
+  'plugin-command-contribution': {
+    claude: { supported: true, assurance: 'mechanism', note: 'A plugin ships slash commands under commands/ and the loader registers them.' },
+    codex: { supported: false, assurance: 'unverified', note: 'Live probe: Codex did not discover a plugin\'s commands/ directory.' },
+  },
+  'implicit-skill-suppression': {
+    claude: { supported: true, assurance: 'mechanism', note: 'Skill frontmatter disable-model-invocation keeps a skill out of automatic selection.' },
+    codex: { supported: false, assurance: 'unverified', note: 'The 0.151.0 source honors allow_implicit_invocation, but nothing proves the plugin-loader path reaches that code. A live capture of a plugin-supplied agents/openai.yaml staying out of automatic selection flips this to true.' },
+  },
+  'structured-question': {
+    claude: { supported: true, assurance: 'mechanism', note: 'The interactive ask tool returns the option the human picked.' },
+    codex: { supported: false, assurance: 'unverified', note: 'No interactive question tool that returns a chosen option.' },
+  },
+  'suspended-turn-ask': {
+    claude: { supported: false, assurance: 'unverified', note: 'Not needed. The interactive ask tool already collects an answer mid-turn.' },
+    codex: { supported: true, assurance: 'contract', note: 'The turn ends with the question and the human answers in the next turn. The platform sends no receipt, so the protocol is the whole assurance.' },
+  },
+  'hook-ask': {
+    claude: { supported: true, assurance: 'mechanism', note: 'A hook returning ask shows the human a permission prompt.' },
+    codex: { supported: false, assurance: 'mechanism', note: 'Codex 0.151.0 accepts an ask decision and then fails open, running the command with no prompt. false is the honest value.' },
+  },
+  'hook-deny': {
+    claude: { supported: true, assurance: 'mechanism', note: 'A hook returning deny stops the tool call.' },
+    codex: { supported: true, assurance: 'mechanism', note: 'A hook returning deny stops the tool call.' },
+  },
+  'per-seat-tool-allowlist': {
+    claude: { supported: true, assurance: 'mechanism', note: 'An agent definition\'s tools frontmatter fixes the tool list for that seat.' },
+    codex: { supported: false, assurance: 'unverified', note: 'No per-seat tool allowlist found.' },
+  },
+}
+
+function deepFreeze(value) {
+  for (const child of Object.values(value)) {
+    if (child && typeof child === 'object') deepFreeze(child)
+  }
+  return Object.freeze(value)
+}
+
+const HOST_CAPABILITIES = deepFreeze(Object.fromEntries(HOSTS.map((host) => [host, {
+  schemaVersion: HOST_CAPABILITIES_SCHEMA_VERSION,
+  host,
+  verifiedAgainst: HOST_VERIFIED_AGAINST[host],
+  capabilities: Object.fromEntries(Object.entries(HOST_CAPABILITY_TABLE).map(([id, hosts]) => [id, {
+    supported: hosts[host].supported,
+    verifiedAt: HOST_CAPABILITY_VERIFIED_AT,
+    assurance: hosts[host].assurance,
+    note: hosts[host].note,
+  }])),
+}])))
+
+export function capabilitiesForHost(host) {
+  if (!HOSTS.includes(host)) {
+    throw new DelegationError('ROUTE_DENIED', 'The delegation host names an unknown model family.')
+  }
+  return HOST_CAPABILITIES[host]
+}
+
 function publicQuarantine(job) {
   if (job.status !== 'quarantined') return null
   return {

@@ -10,15 +10,23 @@ const LOCKFILES = new Set([
 ])
 const BUILD_DIR = /(^|\/)(target|node_modules|dist|build|out|\.next|\.nuxt|\.venv|venv|__pycache__|\.tox|coverage|vendor)\//
 
+// The publication table. One entry per spelling, several spellings per operation, and the
+// `op` id is the stable name the rest of the system uses for "this exact kind of release".
+//
+// `kind` splits the two consumers. `registry` is the irreversible-publication set the
+// Claude ask-gate has always covered. `github` names the merge so it has a stable id.
+// publishReason ignores it, and the Codex merge deny reads mergeShapes() at the bottom of
+// this file rather than this table, so adding merge here changed no guard's answer.
 const PUBLISH = [
-  [/\bcargo\s+publish\b/, 'crates.io', 'crates.io has no unpublish at all'],
-  [/\bnpm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\bpnpm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\byarn\s+npm\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
-  [/\bgem\s+push\b/, 'RubyGems', 'a yanked gem keeps its version number forever'],
-  [/\btwine\s+upload\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
-  [/\bpoetry\s+publish\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
-  [/\buv\s+publish\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
+  { op: 'cargo-publish', kind: 'registry', re: /\bcargo\s+publish\b/, registry: 'crates.io', why: 'crates.io has no unpublish at all' },
+  { op: 'npm-publish', kind: 'registry', re: /\bnpm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
+  { op: 'npm-publish', kind: 'registry', re: /\bpnpm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
+  { op: 'npm-publish', kind: 'registry', re: /\byarn\s+npm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
+  { op: 'gem-push', kind: 'registry', re: /\bgem\s+push\b/, registry: 'RubyGems', why: 'a yanked gem keeps its version number forever' },
+  { op: 'pypi-upload', kind: 'registry', re: /\btwine\s+upload\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
+  { op: 'pypi-upload', kind: 'registry', re: /\bpoetry\s+publish\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
+  { op: 'pypi-upload', kind: 'registry', re: /\buv\s+publish\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
+  { op: 'gh-pr-merge', kind: 'github', re: /\bgh\s+pr\s+merge\b/ },
 ]
 
 export function protectedFileReason(file) {
@@ -28,6 +36,13 @@ export function protectedFileReason(file) {
     return `flow: ${base} holds real credentials, and anything written there is one \`git add -A\` ` +
       'away from being in history forever. Put the key in your shell or a secret store and ' +
       `read it from the environment. Documenting a variable instead? Edit ${base}.example.`
+  }
+
+  if (/(^|\/)\.flow\/managed$/.test(file)) {
+    return 'flow: .flow/managed is the committed marker that opts this repository into flow\'s merge ' +
+      'guardrail, the one that routes a Codex land through scripts/land-merge.mjs instead of a raw ' +
+      'merge command. A session that could edit or delete it could opt the repository out of ' +
+      'its own guardrail, so this file is changed by a human commit, not by a tool call.'
   }
 
   if (LOCKFILES.has(base)) {
@@ -44,30 +59,209 @@ export function protectedFileReason(file) {
   return null
 }
 
-export function publishReason(command) {
-  // Prose about publishing is not publishing. This deliberately matches the existing
-  // Claude guard: simple quoted literals are removed before policy sees the command.
-  // A backslash continuation is the same command, and the `&` inside a fd redirect is
-  // not the background separator - `npm publish \<newline> --dry-run` and
-  // `npm publish 2>&1 --dry-run` must each keep their own exemption. Only an odd run
-  // of backslashes escapes the newline: after `\\` the newline still separates
-  // commands, so joining there would let a dry-run segment exempt a real publish.
-  const bare = String(command)
+// Prose about publishing is not publishing. This deliberately matches the existing
+// Claude guard: simple quoted literals are removed before policy sees the command.
+// A backslash continuation is the same command, and the `&` inside a fd redirect is
+// not the background separator - `npm publish \<newline> --dry-run` and
+// `npm publish 2>&1 --dry-run` must each keep their own exemption. Only an odd run
+// of backslashes escapes the newline: after `\\` the newline still separates
+// commands, so joining there would let a dry-run segment exempt a real publish.
+//
+// A dry-run exempts only its own shell segment. A global check lets
+// `cargo publish --dry-run && cargo publish` bypass the second, real publication.
+// There is no dry run for a merge, but the segment discipline is one mechanism and the
+// merge classification rides on it unchanged.
+const liveSegments = (command) =>
+  String(command)
     .replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
     .replace(/'[^']*'/g, ' ')
     .replace(/"[^"]*"/g, ' ')
     .replace(/\d*>&\d*|&>>?/g, ' ')
-  // A dry-run exempts only its shell segment. A global check lets
-  // `cargo publish --dry-run && cargo publish` bypass the second, real publication.
-  for (const segment of bare.split(/&&|\|\||[;&|\n]/)) {
-    if (/--dry-run\b/.test(segment)) continue
-    for (const [re, registry, why] of PUBLISH) {
-      if (re.test(segment)) {
-        return `This publishes to ${registry}, which you cannot take back - ${why}. ` +
-          'Confirm the version number and the contents are what you mean to ship.'
-      }
+    .split(/&&|\|\||[;&|\n]/)
+    .filter((segment) => !/--dry-run\b/.test(segment))
+
+/**
+ * Every publication operation this command performs, as deduped op ids in the order the
+ * command reaches them. `[]` means nothing in the command publishes anything.
+ */
+export function publishOperations(command) {
+  const ops = []
+  for (const segment of liveSegments(command)) {
+    for (const entry of PUBLISH) {
+      if (entry.re.test(segment) && !ops.includes(entry.op)) ops.push(entry.op)
+    }
+  }
+  return ops
+}
+
+/**
+ * The same wording, from op ids that are already classified. A caller that had to do its own
+ * classification - the Codex guard reaches inside quoted payloads - asks with the ids it found
+ * rather than handing the command over to be classified a second, weaker way.
+ */
+export function registryReason(operations) {
+  for (const op of Array.isArray(operations) ? operations : []) {
+    const entry = PUBLISH.find((e) => e.op === op && e.kind === 'registry')
+    if (entry) {
+      return `This publishes to ${entry.registry}, which you cannot take back - ${entry.why}. ` +
+        'Confirm the version number and the contents are what you mean to ship.'
     }
   }
   return null
+}
+
+/**
+ * The human-facing reason a command needs a second look before it runs, or null. Reads
+ * registry operations only: a GitHub merge is classified, not asked about, because the
+ * Claude guard's behavior predates the merge op and must not change.
+ */
+export function publishReason(command) {
+  return registryReason(publishOperations(command))
+}
+
+// ------------------------------------------------------------------ reading through a shell
+//
+// Everything above treats a quoted string as inert text, which is right for prose and wrong
+// for `bash -lc 'gh pr merge 12'`. There the quotes hold a command the shell will run, so
+// stripping them classifies a real merge as nothing at all. The rest of this file reads
+// through that wrapper: when the command names a form that executes a string, the payload
+// of every quoted string is classified too.
+//
+// This is deliberately one-sided. Prose that sits inside an exec form classifies as
+// publication and gets denied, which costs a human one rephrase; the opposite mistake lands
+// a merge nobody approved. Only the deny-by-default Codex path uses these functions, so the
+// Claude ask-gate keeps the prose exemption it has always had.
+
+const EXEC_FORM = /(?:^|[\s;&|(])(?:[^\s;&|(]*\/)?(?:sh|bash|zsh|ksh|dash)\s+-[A-Za-z]*c\b|(?:^|[\s;&|(])(?:eval|xargs)\b/
+
+const quotedPayloads = (text) =>
+  [...String(text).matchAll(/'([^']*)'|"((?:\\.|[^"])*)"/g)].map((match) => match[1] ?? match[2] ?? '')
+
+/**
+ * Run `classify` over the command, and over every quoted payload a shell-execution form would
+ * hand to a shell. Results are deduped in the order they are reached, so a classifier that
+ * returns op ids and one that returns English reasons both work. Recursion terminates because
+ * a payload is always shorter than the text it came out of.
+ *
+ * @param {string} command
+ * @param {(text: string) => string[]} classify
+ * @returns {string[]}
+ */
+export function scanThroughShell(command, classify) {
+  const found = []
+  const add = (items) => {
+    for (const item of items) if (!found.includes(item)) found.push(item)
+  }
+  add(classify(String(command)))
+  if (EXEC_FORM.test(String(command))) {
+    for (const payload of quotedPayloads(command)) add(scanThroughShell(payload, classify))
+  }
+  return found
+}
+
+/**
+ * Every publication operation the command performs, including the ones hidden in a quoted
+ * payload that a shell-execution form will run.
+ */
+export const publishOperationsStrict = (command) => scanThroughShell(command, publishOperations)
+
+// liveSegments destroys quoting, which is what its callers want and the opposite of what a
+// word-level parse needs. This splits on the same separators while leaving quoted text
+// intact, so `gh pr merge 12 -b "a; b"` stays one segment instead of two.
+function rawSegments(text) {
+  const source = String(text).replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
+  const segments = []
+  let current = ''
+  let quote = null
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i]
+    if (quote) {
+      current += char
+      if (char === '\\' && quote === '"' && i + 1 < source.length) current += source[++i]
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === '"' || char === "'") { quote = char; current += char; continue }
+    if (char === '\\' && i + 1 < source.length) { current += char + source[++i]; continue }
+    if (char === ';' || char === '&' || char === '|' || char === '\n') { segments.push(current); current = ''; continue }
+    current += char
+  }
+  segments.push(current)
+  return segments.filter((segment) => segment.trim() !== '')
+}
+
+// The word split from src/delegation/claude-policy.mjs, copied rather than imported: that
+// module imports this one, and a hook script must not drag the delegation tree in to read
+// a flag off a command line.
+function shellWords(segment) {
+  const words = []
+  const pattern = /"((?:\\.|[^"])*)"|'([^']*)'|([^\s]+)/g
+  for (const match of String(segment).matchAll(pattern)) {
+    words.push((match[1] ?? match[2] ?? match[3] ?? '').replace(/\\([\\"'])/g, '$1'))
+  }
+  return words
+}
+
+// --------------------------------------------------------------------- the merge tripwire
+//
+// This used to be an authorization boundary. The Codex guard parsed the merge command word
+// by word, matched every flag against a human-written sanction, and let the one approved
+// spelling through. Reading shell text well enough to authorize on it is not a fight this
+// code can win, and losing it once lands a merge nobody approved.
+//
+// So the merge no longer happens through a command the model writes. In a repo that opts in
+// with a committed `.flow/managed` file, the Codex guard denies every merge shape it can
+// recognize, and scripts/land-merge.mjs performs the merge after re-deriving the repository,
+// the pull request, its head, its state and its base from GitHub itself. That makes the
+// functions below a coarse tripwire whose job is to catch the ordinary spellings and say
+// where the executor is.
+//
+// Over-matching is the cheap mistake here: a false positive costs one rephrase. The one thing
+// these must never match is the executor's own invocation, which names no merge surface at
+// all, because a tripwire that fires on the way out is a gate with nothing behind it.
+//
+// This is a cooperative guardrail, not a security boundary, so the ways past this text match -
+// a shell option before -c, a gh flag between `pr` and `merge`, a cd into the repo, a GH_REPO
+// redirect - are known and accepted. They do not matter, because a model at the same uid could
+// merge without any command this classifier ever sees. The enforcement that counts is the
+// committed `.flow/managed` marker plus the executor, which re-derives what it merges from the
+// origin remote and GitHub rather than trusting this classifier or the conversation.
+
+const isGh = (word) => String(word).split('/').pop() === 'gh'
+
+// One rendering of one command. `gh` has to be a word, and the merge has to be in its
+// arguments, so `git commit -m "gh pr merge later"` is the prose it is.
+function mergeShapesIn(text) {
+  const found = []
+  const add = (reason) => { if (!found.includes(reason)) found.push(reason) }
+  for (const segment of rawSegments(text)) {
+    const words = shellWords(segment)
+    const at = words.findIndex(isGh)
+    if (at === -1) continue
+    const args = words.slice(at + 1)
+    if (args.some((word, i) => word === 'pr' && args[i + 1] === 'merge')) add('it runs `gh pr merge`')
+    if (args.includes('api')) {
+      // The REST merge endpoint is `PUT /repos/{owner}/{repo}/pulls/{n}/merge`, and the
+      // branch-merge endpoint next to it ends in `/merges`. Both count.
+      if (args.some((word) => word.includes('/merge'))) add('it calls a GitHub merge endpoint through `gh api`')
+      if (/mergePullRequest/.test(segment)) add('it sends a mergePullRequest GraphQL mutation')
+    }
+  }
+  return found
+}
+
+/**
+ * Reasons this command looks like it merges a pull request, or `[]` when nothing in it does.
+ *
+ * Each command is read twice. Once with quoted text intact, because that is the text a shell
+ * would act on and it is where a quoted API path or GraphQL body lives. Once with quoted
+ * literals removed, the same rendering the publication table sees, because a quote that never
+ * closes parses differently in the two passes and only one of them has to notice.
+ */
+export function mergeShapes(command) {
+  return scanThroughShell(command, (text) => [
+    ...mergeShapesIn(text),
+    ...mergeShapesIn(String(text).replace(/'[^']*'/g, ' ').replace(/"[^"]*"/g, ' ')),
+  ])
 }
 

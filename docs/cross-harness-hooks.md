@@ -4,6 +4,10 @@ This repository keeps hook behavior portable without pretending Claude Code and 
 have the same event protocol. The stable unit is the plugin's policy or domain state.
 Each harness gets a small adapter and its own registration file.
 
+Prompt text follows the same split. A stage that both harnesses run is one host-neutral
+skill body plus one profile per harness, and the command file that used to hold the steps
+becomes an alias that reads its own profile first.
+
 This document describes the implemented contract as of 2026-08-25. Product behavior
 that can change is based on the current Codex hooks documentation and must be rechecked
 before changing an adapter.
@@ -20,6 +24,9 @@ plugins/<name>/
   hooks/codex.json               Codex event registrations
   hooks/scripts/                 wire adapters and simple direct handlers
   lib/                           harness-neutral policy, rendering, or state
+  skills/<stage>/SKILL.md        harness-neutral prose, one [[gate:<id>]] per checkpoint
+  skills/<stage>/profiles/       one file per harness, one section per gate
+  skills/<stage>/agents/         Codex-side skill metadata and invocation policy
 ```
 
 There is no cross-plugin runtime package. Copying a small adapter boundary inside each
@@ -51,7 +58,9 @@ events, and recovery. A Codex App Server worker is the Phase 1 backend. See
 | Flow charter | Two `SessionStart` commands, split below Claude's output cap | One ordered `SessionStart` command with a 5,000-token inline limit | Hand-authored `charter/charter.md` |
 | Flow Bash guards | `PreToolUse` on `Bash` | `PreToolUse` on `Bash` | Existing no-backlog and Git guards; publication policy in `lib/hook-policy.mjs` |
 | Flow protected files | `file_path` from Edit/Write input | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
-| Flow publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
+| Flow registry publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
+| Flow pull request merge | Pre-approved `gh pr merge --squash --match-head-commit`, no per-command prompt. The human's explicit `/flow:land` invocation, then the stage's CI-green and unresolved-thread checks, are the gate | Same gate (the human asked in words), same checks; a repo with a committed `.flow/managed` marker routes the merge through `scripts/land-merge.mjs`, which re-derives every fact from GitHub before merging | `mergeShapes()` classifies the routed commands; the executor holds the checks |
+| Flow land stage | `/flow:land` is an alias that reads `skills/land-stage/profiles/claude.md`, then the skill | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |
 | Gripe checkpoint | Claude transcript folded incrementally at `Stop` and `SubagentStop` | `PostToolUse` folds counters, parent `Stop` evaluates them | `lib/checkpoint.mjs` |
@@ -70,6 +79,35 @@ on the exact irreversible operation the guard exists to stop.
 The shared policy returns a reason. Claude's adapter turns it into an approval request.
 Codex's adapter denies the command and tells the agent that the human can run it after
 review. This is a capability difference, not a policy fork.
+
+### The Codex merge path is a cooperative guardrail, not a boundary
+
+Claude does not prompt per command. The `gh pr merge --squash` runs pre-approved under the
+session's `Bash(gh:*)` allowance, and the Claude publish guard asks only about package-registry
+publishes, not this merge. The gate is upstream of the command: the land stage runs only when the
+human invokes `/flow:land`, and its own CI-green and unresolved-thread checks decide whether the
+merge is warranted. Codex has the same gate in different clothes: the human asks for the land in
+words, the same stage gates run, and in a repo carrying a committed `.flow/managed` marker the
+publish guard routes the merge through `scripts/land-merge.mjs` instead of a raw gh command. (An
+earlier design added a human-written release sanction here; it was retired 2026-08-29 - the
+per-land ceremony cost more than it bought at this trust level, and the Claude path never had it.)
+
+None of this is a security boundary. Everything runs as one uid, where a determined model could
+substitute its own gh, call the GitHub API with the token, or curl the merge endpoint, and no
+hook would see it. The guard's classifier is also coarse by design: a shell option before `-c`,
+a gh flag between `pr` and `merge`, a `cd` into the repo, or a `GH_REPO` redirect can slip a
+merge-shaped command past the text match. These are known and accepted limits, not defects to
+chase, because closing them buys nothing at same-uid.
+
+What the guardrail actually enforces is downstream and deterministic. The committed
+`.flow/managed` marker enrols the repository (a deleted worktree copy does not un-enrol it, and
+the marker is a protected file). The executor takes only a pull request number, pins every
+gh call to the repository derived from the origin remote, reads the head, state, draft flag and
+base from live GitHub state, refuses an armed auto-merge or a merge-queue base, merges with
+`--match-head-commit` pinned to the head it verified, and reports merged, failed, or genuinely
+unknown rather than guessing. It stops the accident: a merge of the wrong pull request, of a
+head nobody saw, onto a base nobody was shown. It does not pretend to stop an adversary who
+already owns the uid.
 
 ### Codex protected-file checks parse the patch envelope
 
@@ -141,6 +179,7 @@ The adapters are ordinary stdin/stdout programs and can be tested from a working
 node scripts/smoke-plugin-manifests.mjs
 node plugins/flow/scripts/smoke-delegation.mjs
 node plugins/flow/scripts/smoke-codex-hooks.mjs
+node plugins/flow/scripts/smoke-stage-conformance.mjs
 node plugins/gripe/scripts/smoke-hooks.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs
 ```
@@ -149,7 +188,9 @@ The manifest test derives each plugin's version from the marketplace manifest an
 Claude/Codex/marketplace parity, supported Codex event names, `${PLUGIN_ROOT}` use, and
 every registered command target. Plugin smoke tests cover
 both positive and negative wire cases with throwaway state, including the captured Codex
-failure payload that deliberately remains unclassified.
+failure payload that deliberately remains unclassified. The stage conformance lint compares
+the skill's gate ids against each profile's sections in both directions, and runs the same
+checker over the per-case broken fixtures so a green run also shows the check can still fail.
 
 These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
 definitions until the user reviews them. Claude plugin installs still pull from the pinned

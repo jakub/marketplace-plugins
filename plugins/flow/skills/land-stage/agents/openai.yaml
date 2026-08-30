@@ -1,0 +1,5 @@
+interface:
+  display_name: "Land Stage"
+  short_description: "Land one named PR through the flow gates"
+policy:
+  allow_implicit_invocation: false

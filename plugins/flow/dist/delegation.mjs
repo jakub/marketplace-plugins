@@ -22831,6 +22831,66 @@ function capabilitiesForTarget(target) {
     }
   };
 }
+var HOST_CAPABILITIES_SCHEMA_VERSION = 1;
+var HOST_CAPABILITY_VERIFIED_AT = "2026-08-29";
+var HOST_VERIFIED_AGAINST = { claude: "claude-code 2.1.251", codex: "codex-cli 0.151.0" };
+var HOST_CAPABILITY_TABLE = {
+  "plugin-skill-contribution": {
+    claude: { supported: true, assurance: "mechanism", note: "A plugin ships skills under skills/ and the loader registers them." },
+    codex: { supported: true, assurance: "mechanism", note: "Live probe: Codex discovers a plugin's skills with no extra configuration." }
+  },
+  "plugin-command-contribution": {
+    claude: { supported: true, assurance: "mechanism", note: "A plugin ships slash commands under commands/ and the loader registers them." },
+    codex: { supported: false, assurance: "unverified", note: "Live probe: Codex did not discover a plugin's commands/ directory." }
+  },
+  "implicit-skill-suppression": {
+    claude: { supported: true, assurance: "mechanism", note: "Skill frontmatter disable-model-invocation keeps a skill out of automatic selection." },
+    codex: { supported: false, assurance: "unverified", note: "The 0.151.0 source honors allow_implicit_invocation, but nothing proves the plugin-loader path reaches that code. A live capture of a plugin-supplied agents/openai.yaml staying out of automatic selection flips this to true." }
+  },
+  "structured-question": {
+    claude: { supported: true, assurance: "mechanism", note: "The interactive ask tool returns the option the human picked." },
+    codex: { supported: false, assurance: "unverified", note: "No interactive question tool that returns a chosen option." }
+  },
+  "suspended-turn-ask": {
+    claude: { supported: false, assurance: "unverified", note: "Not needed. The interactive ask tool already collects an answer mid-turn." },
+    codex: { supported: true, assurance: "contract", note: "The turn ends with the question and the human answers in the next turn. The platform sends no receipt, so the protocol is the whole assurance." }
+  },
+  "hook-ask": {
+    claude: { supported: true, assurance: "mechanism", note: "A hook returning ask shows the human a permission prompt." },
+    codex: { supported: false, assurance: "mechanism", note: "Codex 0.151.0 accepts an ask decision and then fails open, running the command with no prompt. false is the honest value." }
+  },
+  "hook-deny": {
+    claude: { supported: true, assurance: "mechanism", note: "A hook returning deny stops the tool call." },
+    codex: { supported: true, assurance: "mechanism", note: "A hook returning deny stops the tool call." }
+  },
+  "per-seat-tool-allowlist": {
+    claude: { supported: true, assurance: "mechanism", note: "An agent definition's tools frontmatter fixes the tool list for that seat." },
+    codex: { supported: false, assurance: "unverified", note: "No per-seat tool allowlist found." }
+  }
+};
+function deepFreeze(value) {
+  for (const child of Object.values(value)) {
+    if (child && typeof child === "object") deepFreeze(child);
+  }
+  return Object.freeze(value);
+}
+var HOST_CAPABILITIES = deepFreeze(Object.fromEntries(HOSTS.map((host) => [host, {
+  schemaVersion: HOST_CAPABILITIES_SCHEMA_VERSION,
+  host,
+  verifiedAgainst: HOST_VERIFIED_AGAINST[host],
+  capabilities: Object.fromEntries(Object.entries(HOST_CAPABILITY_TABLE).map(([id2, hosts]) => [id2, {
+    supported: hosts[host].supported,
+    verifiedAt: HOST_CAPABILITY_VERIFIED_AT,
+    assurance: hosts[host].assurance,
+    note: hosts[host].note
+  }]))
+}])));
+function capabilitiesForHost(host) {
+  if (!HOSTS.includes(host)) {
+    throw new DelegationError("ROUTE_DENIED", "The delegation host names an unknown model family.");
+  }
+  return HOST_CAPABILITIES[host];
+}
 function publicQuarantine(job) {
   if (job.status !== "quarantined") return null;
   return {
@@ -22928,19 +22988,23 @@ var LOCKFILES = /* @__PURE__ */ new Set([
 ]);
 var BUILD_DIR = /(^|\/)(target|node_modules|dist|build|out|\.next|\.nuxt|\.venv|venv|__pycache__|\.tox|coverage|vendor)\//;
 var PUBLISH = [
-  [/\bcargo\s+publish\b/, "crates.io", "crates.io has no unpublish at all"],
-  [/\bnpm\s+publish\b/, "npm", "npm unpublish is a 72-hour window, and only while nothing depends on it"],
-  [/\bpnpm\s+publish\b/, "npm", "npm unpublish is a 72-hour window, and only while nothing depends on it"],
-  [/\byarn\s+npm\s+publish\b/, "npm", "npm unpublish is a 72-hour window, and only while nothing depends on it"],
-  [/\bgem\s+push\b/, "RubyGems", "a yanked gem keeps its version number forever"],
-  [/\btwine\s+upload\b/, "PyPI", "PyPI will not let you reuse a version number, even after deletion"],
-  [/\bpoetry\s+publish\b/, "PyPI", "PyPI will not let you reuse a version number, even after deletion"],
-  [/\buv\s+publish\b/, "PyPI", "PyPI will not let you reuse a version number, even after deletion"]
+  { op: "cargo-publish", kind: "registry", re: /\bcargo\s+publish\b/, registry: "crates.io", why: "crates.io has no unpublish at all" },
+  { op: "npm-publish", kind: "registry", re: /\bnpm\s+publish\b/, registry: "npm", why: "npm unpublish is a 72-hour window, and only while nothing depends on it" },
+  { op: "npm-publish", kind: "registry", re: /\bpnpm\s+publish\b/, registry: "npm", why: "npm unpublish is a 72-hour window, and only while nothing depends on it" },
+  { op: "npm-publish", kind: "registry", re: /\byarn\s+npm\s+publish\b/, registry: "npm", why: "npm unpublish is a 72-hour window, and only while nothing depends on it" },
+  { op: "gem-push", kind: "registry", re: /\bgem\s+push\b/, registry: "RubyGems", why: "a yanked gem keeps its version number forever" },
+  { op: "pypi-upload", kind: "registry", re: /\btwine\s+upload\b/, registry: "PyPI", why: "PyPI will not let you reuse a version number, even after deletion" },
+  { op: "pypi-upload", kind: "registry", re: /\bpoetry\s+publish\b/, registry: "PyPI", why: "PyPI will not let you reuse a version number, even after deletion" },
+  { op: "pypi-upload", kind: "registry", re: /\buv\s+publish\b/, registry: "PyPI", why: "PyPI will not let you reuse a version number, even after deletion" },
+  { op: "gh-pr-merge", kind: "github", re: /\bgh\s+pr\s+merge\b/ }
 ];
 function protectedFileReason(file) {
   const base = String(file).split("/").pop();
   if (SECRET.test(file) && !SECRET_EXEMPT.test(file)) {
     return `flow: ${base} holds real credentials, and anything written there is one \`git add -A\` away from being in history forever. Put the key in your shell or a secret store and read it from the environment. Documenting a variable instead? Edit ${base}.example.`;
+  }
+  if (/(^|\/)\.flow\/managed$/.test(file)) {
+    return "flow: .flow/managed is the committed marker that opts this repository into flow's merge guardrail, the one that routes a Codex land through scripts/land-merge.mjs instead of a raw merge command. A session that could edit or delete it could opt the repository out of its own guardrail, so this file is changed by a human commit, not by a tool call.";
   }
   if (LOCKFILES.has(base)) {
     return `flow: ${base} is generated by a resolver from a manifest, not written by hand. Change the manifest and re-run the resolver, so the lockfile and the manifest agree. If you are resolving a merge conflict, take one side whole and re-resolve.`;
@@ -22950,17 +23014,27 @@ function protectedFileReason(file) {
   }
   return null;
 }
-function publishReason(command) {
-  const bare = String(command).replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, "$1 ").replace(/'[^']*'/g, " ").replace(/"[^"]*"/g, " ").replace(/\d*>&\d*|&>>?/g, " ");
-  for (const segment of bare.split(/&&|\|\||[;&|\n]/)) {
-    if (/--dry-run\b/.test(segment)) continue;
-    for (const [re2, registry2, why] of PUBLISH) {
-      if (re2.test(segment)) {
-        return `This publishes to ${registry2}, which you cannot take back - ${why}. Confirm the version number and the contents are what you mean to ship.`;
-      }
+var liveSegments = (command) => String(command).replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, "$1 ").replace(/'[^']*'/g, " ").replace(/"[^"]*"/g, " ").replace(/\d*>&\d*|&>>?/g, " ").split(/&&|\|\||[;&|\n]/).filter((segment) => !/--dry-run\b/.test(segment));
+function publishOperations(command) {
+  const ops = [];
+  for (const segment of liveSegments(command)) {
+    for (const entry of PUBLISH) {
+      if (entry.re.test(segment) && !ops.includes(entry.op)) ops.push(entry.op);
+    }
+  }
+  return ops;
+}
+function registryReason(operations) {
+  for (const op of Array.isArray(operations) ? operations : []) {
+    const entry = PUBLISH.find((e) => e.op === op && e.kind === "registry");
+    if (entry) {
+      return `This publishes to ${entry.registry}, which you cannot take back - ${entry.why}. Confirm the version number and the contents are what you mean to ship.`;
     }
   }
   return null;
+}
+function publishReason(command) {
+  return registryReason(publishOperations(command));
 }
 
 // src/delegation/claude-policy.mjs
@@ -24165,7 +24239,7 @@ function signalTrackedProcessTree(rootPid, knownDescendants, signal) {
 }
 
 // src/delegation/version.mjs
-var VERSION = true ? "0.23.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
+var VERSION = true ? "0.26.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
 
 // src/delegation/app-server.mjs
 var APPROVAL_METHODS = /* @__PURE__ */ new Set([
@@ -57764,7 +57838,7 @@ var DelegationService = class {
         }
       }
     }
-    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), checks };
+    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), hostCapabilities: capabilitiesForHost(this.host), checks };
   }
   async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
     const checks = {
@@ -57797,6 +57871,7 @@ var DelegationService = class {
       ok: Object.values(checks).every((check) => check.ok),
       target: "claude",
       capabilities: this.capabilities(),
+      hostCapabilities: capabilitiesForHost(this.host),
       checks
     };
   }

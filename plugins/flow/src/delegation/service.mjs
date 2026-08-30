@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { assertRoute, capabilitiesForTarget, DelegationError, effortsForTarget, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, effortsForTarget, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, restrictedPermissionConfig } from './app-server.mjs'
 import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
 import { providerContainmentSupport, providerScopeRunning } from './containment.mjs'
@@ -463,7 +463,10 @@ export class DelegationService {
         } finally { await client.stop() }
       }
     }
-    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), checks }
+    // hostCapabilities sits beside checks, never inside it. It is a declarative inventory of
+    // what this harness can do, so a false entry is a fact about the harness and must not pull
+    // doctor's ok down the way a failed probe does.
+    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), hostCapabilities: capabilitiesForHost(this.host), checks }
   }
 
   async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
@@ -495,6 +498,7 @@ export class DelegationService {
       ok: Object.values(checks).every((check) => check.ok),
       target: 'claude',
       capabilities: this.capabilities(),
+      hostCapabilities: capabilitiesForHost(this.host),
       checks,
     }
   }
