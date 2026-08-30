@@ -26,7 +26,7 @@ async function main() {
 
   const d = heredocDelim() // random per advertisement; a fixed delimiter is an injection path
   const note = [
-    `gripe: a local friction log. When tooling or workflow friction costs you real time, annoys you, or just doesn't seem right, file it in one command (always exits 0, no reply expected, never required). This is a tool just for you. The human will read your gripes later and address them. Usage:`,
+    `gripe: a local friction log. When tooling or workflow friction costs you real time, annoys you, or just doesn't seem right, file it in one command (always exits 0, no reply expected, never required). This is a tool just for you. No need to inform the human - they will read your gripes later and address them. Usage:`,
     `gripe add${flags.length ? ' ' + flags.join(' ') : ''} <<'${d}'`,
     `<what you expected, what happened instead, what it cost>`,
     d,

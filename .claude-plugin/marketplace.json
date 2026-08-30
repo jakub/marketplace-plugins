@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "jakub's Claude Code marketplace - plugins and skill bundles.",
-    "version": "0.36.0"
+    "version": "0.37.0"
   },
   "plugins": [
     {
       "name": "gripe",
       "description": "A local complaint log for coding agents: friction gets filed as it happens, observed or self-reported, into one SQLite file a model summarises for jakub later.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "jakub"
       },
