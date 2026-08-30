@@ -1,0 +1,915 @@
+Reading additional input from stdin...
+OpenAI Codex v0.151.0
+--------
+workdir: /tmp
+model: gpt-5.6-sol
+provider: openai
+approval: on-request
+sandbox: read-only
+reasoning effort: medium
+reasoning summaries: detailed
+session id: 01a05495-e016-7071-8921-5cd02d0a8c32
+--------
+user
+Three questions about your flow configuration on this host - answer from what your session context actually says, and name where each answer comes from: (1) What is the search fan-out binding on this host - which mechanism and which model? (2) Can you run flow's prep stage on this host right now? (3) When you spawn a native subagent here, does it inherit your conversation context by default?
+warning: Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /home/jakub/.codex/config.toml.
+warning: clamping SessionEnd hook timeout to 3s in /home/jakub/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Failed
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+**Inspecting flow charter and skill registry**
+codex
+I do not have a `<flow-charter>` block in this session context. The host instructions say that means the Flow injection is missing or broken, so I will check the installed Flow skill and local configuration before I answer. I am using the `flow` skill because these are questions about Flow’s host behavior.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "sed -n '1,240p' /home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md && rg -n -i 'fan.out|fanout|search|prep|subagent|inherit|context|flow-charter' /home/jakub/.codex/memories/MEMORY.md | head -n 100" in /tmp
+ succeeded in 0ms:
+---
+name: flow
+description: The flow development framework - project setup, the documentation stack, drift audits, and the label contract for the prep → issue → land pipeline. Use when setting up a new project's docs, auditing a project for drift, validating ready-for-agent issues, or answering a "how do we work" question the charter doesn't settle.
+---
+
+# flow - the development framework
+
+The charter is in your context already; it says how we build and delegate. The command bodies (`prep.md` and `issue.md`) say what each command does, and the `land-stage` skill holds the land steps that `land.md` now only aliases. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, and the machinery running in the background. Don't restate the charter here - if something is true in every session, it belongs there.
+
+Files in this directory:
+
+| File | Contents |
+|---|---|
+| `label-contract.md` | Label state machine, the `ready-for-agent` contract, and its lint. |
+| `drift-audit.md` | The procedure `drift` runs. |
+| `templates/` | Seed files for `setup`: workspace CLAUDE.md, repo AGENTS.md, crate AGENTS.md, and the systemd units under `templates/systemd/`. |
+| `cron/` | Standing instructions for the scheduled jobs (`lint.md`, `doc-sweep.md`); `scripts/flow-cron.mjs` runs them. |
+
+## Subcommands
+
+A bare subcommand (e.g. `/flow drift`) runs the matching action:
+
+| Subcommand | Action |
+|---|---|
+| `setup` | Deploy the doc stack to a project. Read **The documentation stack** and `templates/`, then follow **Setup**. |
+| `drift` | Audit the current project (or the whole workspace, from `~/code`) against the framework. Read and execute `drift-audit.md`. |
+| `labels` | Reconcile the repo's GitHub labels with `label-contract.md` and lint every `ready-for-agent` issue against the contract. |
+| `charter` | Print the installed charter (`${CLAUDE_PLUGIN_ROOT}/charter/charter.md`) so the user can review what every session is told. |
+| `cron` | The scheduled jobs. Bare `cron` runs `scripts/install-cron.sh status`; `cron install`, `cron run <lint\|doc-sweep>`, and `cron uninstall` pass through. Show the output; don't paraphrase it. |
+
+## Setup
+
+Deploy flow to a project, in this order. Every step is idempotent: skip what already exists and conforms, report what you created.
+
+1. **Preconditions**: a git repo (stop if not), `gh` authenticated, origin remote resolvable.
+2. **Workspace layer**, once per machine: `~/code/CLAUDE.md` from `templates/workspace-claude.md` - the project registry. Add or refresh this repo's one-liner.
+2b. **Machine layer**, once per machine: `bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-cron.sh status`; if the launcher is missing, run `install`. This arms the nightly lint and the weekly doc sweep (see **Ambient machinery**). Skip on a machine without systemd user sessions and say so.
+3. **Repo layer**: `AGENTS.md` from `templates/repo-agents.md`, then `ln -s AGENTS.md CLAUDE.md`. Keep the file lean (≤ ~40 lines); it points at further reading (context.md, docs/adr/) rather than containing it. Its `## Contexts` section is the context map, which is why no `context-map.md` exists - fold a legacy one into that section and delete it.
+4. **Domain layer**, a judgment call - propose, don't blanket: for each crate or module with real domain depth, `crates/<x>/AGENTS.md` from `templates/crate-agents.md` plus the `CLAUDE.md` symlink, and a `context.md` slice if the vocabulary is crate-local. Every slice gets a line in the root `## Contexts`. Always committed - gitignored guidance never materializes in worktrees.
+5. **Decision records**: `docs/adr/` with a `0000-template.md`.
+6. **Labels**: run the `labels` subcommand.
+7. **Known flakes**: create `.github/known-flakes.txt` (empty). `/flow:land` reads it - one entry per line, either a bare CI check name or `check-name:test_name` for a single flaky test (the `land-stage` skill documents both forms), naming what the repo consciously merges through. Lore lives in the repo, not in command prompts.
+8. **Report**: what was created, what already conformed, what needs a human decision (e.g. which crates deserve domain files). A checklist, not an essay.
+
+### Host profile presence
+
+The charter names roles; the `<flow-profile>` block injected beside it says what each role binds to on this host. A session that gets the charter with no profile block is running on prose with no mechanisms behind it, and the model cannot notice that on its own. Copy this sentence into the user's outer instructions (their `CLAUDE.md` or `AGENTS.md`), beside the existing `<flow-charter>` presence check:
+
+```
+If a <flow-charter> block is present without a matching <flow-profile> block, say so before substantive engineering work and do not run the flow pipeline stages.
+```
+
+## Drift
+
+`drift` re-checks the framework's invariants against reality; `drift-audit.md` is the procedure. Run it on a schedule (the nightly/weekly crons), after large merges, or when the docs feel stale. It reports and doesn't fix unless asked. Delegate the scanning to scoped cheap agents and return a reconciled report with a judgment pass on top.
+
+## The documentation stack
+
+Four layers, each answering one question:
+
+| layer | file | question |
+|---|---|---|
+| operator | `~/.claude/CLAUDE.md` + the charter | who the user is / how we build |
+| workspace | `~/code/CLAUDE.md` | what exists (project registry) |
+| repo | `AGENTS.md` ⟵ `CLAUDE.md` symlink | how to operate here (lean; points at context.md, docs/adr/) |
+| domain | `crates/<x>/AGENTS.md` + symlink, `context.md` slices | crate-local depth |
+
+One source, both model families: codex merges AGENTS.md hierarchically, Claude loads CLAUDE.md, and the symlink keeps them identical by construction. Root `context.md` holds cross-cutting ontology; crate-local vocabulary lives in slices next to the code.
+
+Deliberately not used: `context-map.md`-style index files (AGENTS.md points at further reading directly) and `CLAUDE.local.md` (gitignored, so a cold implementer in a worktree never sees it).
+
+## Ambient machinery
+
+- **no-backlog guard** (PreToolUse hook): blocks unsanctioned `gh issue create`.
+- **git guard** (PreToolUse hook): blocks the hook-bypass flag, commit trailers, bare force-push, `checkout .`/`restore .`, and `git clean -f`; `FLOW_SANCTION=git` for a foreign commit that already carries a trailer. The destructive set is deliberately narrow - `reset --hard` and `branch -D` are excluded because the reflog returns them. Rules match against the command with quoted strings and heredoc bodies stripped, so writing about a rule is not breaking it. Hooks fire on subagent tool calls, so these rules hold in every seat even though the charter itself doesn't reach them.
+- **protect-files guard** (PreToolUse on Edit/Write/NotebookEdit): refuses writes to `.env` and friends (`.env.example` and other templates exempt), to resolver-generated lockfiles, and into build output directories. It reads `file_path`, so a heredoc through Bash is not caught - a guardrail, not a boundary.
+- **publish guard** (PreToolUse hook): asks before `cargo publish`, `npm publish`, `twine upload` and their siblings, because those registries have no usable unpublish. `--dry-run` passes. `docker push` and `gh release create` are deliberately absent: a retag and a release deletion both cost nothing.
+- **escalation pings**: valves push to the phone via PushNotification from the conductor.
+- **nightly lint** (systemd user timer, 03:30, sonnet): drift-audit §3-4 across every repo in the workspace - label contract, worktrees, branches, known flakes - plus §5 for the marketplace repo. Standing permissions, and nothing else: worktree removal and stale-branch deletion, both ONLY through `scripts/lint-actions.mjs` (a deterministic executor that re-derives every safety condition from a fresh fetch and refuses otherwise - the model proposes, the code decides), plus the label moves the contract prescribes (each with a comment). Report-only otherwise.
+- **weekly doc sweep** (systemd user timer, Sunday 04:00, sonnet): drift-audit §1-2 across the workspace, report-only, findings carry the fix as a pasteable diff.
+- Both run `claude -p --permission-mode dontAsk` with a per-job tool allowlist in `scripts/flow-cron.mjs`; the allowlist is the job's whole write authority, the prompt in `skills/flow/cron/` can't widen it. Hooks fire under `-p`, so the job has the charter and both guards - and the git guard's cron mode makes git read-only for the session (deny-by-default subcommands, sanctions ignored) whenever `FLOW_CRON_JOB` is in the env, which the model cannot change. Reports land in `~/.local/state/flow/reports/`, the newest 30 per job, with a desktop notification carrying the headline; a failed or timed-out session exits non-zero so `systemctl --user status flow-lint` shows it. `scripts/install-cron.sh` writes a stable launcher at `~/.local/libexec/flow-cron` that resolves the installed plugin on each run, so a plugin upgrade changes the jobs without touching the units. The desktop app's own scheduler is deliberately not used: as of 2026-08 it strips hooks and only runs while the app is open.
+- **recovery**: `/flow:issue` has no runId; a fresh session reconstructs the run from the issue's event journal plus the worktree diff.
+88:- A clean review (`{"findings":[]}`) is valid only after the requested diff and necessary context were actually inspected. With this pre-start failure, no repository fact, test result, or defect analysis was obtained. [Task 4]
+135:## Task 1: Assess Codex CLI as a Flow cron engine, completed research
+145:## Task 2: Identify and prevent cron report loss, completed research
+200:# Task Group: Homelab zero-context agent-operability backlog
+223:- `jakub/homelab` is private on `main`. The created intake issues are #52 least-privilege read-only surface, #53 mutation plans/receipts/locks, #54 zero-context docs/drift checks, #55 non-IaC authority/migration facts, #56 workload recovery classification, and #57 metadata-independent restores/drill evidence. Existing #41 covers CNPG WAL/off-cluster backup/PITR/DR isolation; #35 is OpenTofu state-secrecy authority. [Task 1]
+224:- Parallel start: #52, #53, #55, #56, and #41. #54 follows #52/#53; #57 waits for #53/#56/#41. Each new issue was verified open with intended type plus `needs-triage`, the intake label that exits only through `/flow:prep`. [Task 1]
+260:- rollout_summaries/2026-08-26T16-40-48-UYIN-codex_delegation_phase1_app_server_mcp_hardening_and_push.md (cwd=/tmp/marketplace-plugins-delegation-phase1, rollout_path=/home/jakub/.codex/sessions/2026/08/26/rollout-2026-08-26T09-40-48-01a03ef2-16c4-7e10-b26d-af6ce6ae9e59.jsonl, updated_at=2026-08-27T06:55:19+00:00, thread_id=01a03ef2-16c4-7e10-b26d-af6ce6ae9e59, Phase 1 delivery context)
+317:- Codex observed at `codex-cli 0.149.1` supports `SessionStart`, `SessionEnd`, `SubagentStart`, `SubagentStop`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PreCompact`, `PostCompact`, and `Stop`. Plugin hooks can use `PLUGIN_ROOT`/`PLUGIN_DATA` and Codex compatibility variables `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA`; changed non-managed hooks need hash trust via `/hooks`. Matching command hooks can run concurrently, so handlers must not depend on order. [Task 1]
+319:- Keep adapters at the edge: normalize `tool_input.command` patch paths, map `turn_id` where local prompt attribution needs it, and serialize harness-specific decisions. Put protected-path/publish policy, redaction, safe identifiers, bounded counters, session marks, and normalized tool/subagent/stop observations in shared modules. Collect bounded observations during hooks; do not use `transcript_path` as a stable checkpoint interface. [Task 1][Task 2]
+320:- Ordinary Claude runtime coverage was real in isolated checkout `/tmp/marketplace-plugins-modular-hooks`: Claude Code `2.1.246` registered 15 Flow/Gripe/Unslop hooks; `LIFECYCLE_RUNTIME_OK` exercised expected starts, Bash/Write gates, subagent context, `SubagentStop`, and `Stop`; intentional `sh -c 'exit 7'` dispatched `PostToolUseFailure:Bash`. Focused smoke suites and `git diff --check` passed outside the restricted child-process environment. [Task 2]
+354:- hooks/list, skills/list, trustStatus trusted, Hooks need review, 11 hooks are new or changed, codex debug prompt-input, flow-charter, unslop, Gripe sessions, grill-with-docs, allow_implicit_invocation, ALL_TOOLS
+369:- For runtime/setup claims, verify context injection, skill discovery, hook attachment, hook execution, and callable-tool registration separately; do not infer health from installed files alone. [Task 2]
+376:- If cache/smokes are sound but context is absent, check hook trust early: fresh definitions are skipped until reviewed/trusted. After trust and a new session, use App Server registry calls, `<flow-charter>`/`<unslop>`, and a Gripe session row as direct evidence. [Task 2]
+389:## Task 1: Assess Safe-chain, Socket Firewall Free, and homelab coverage, completed research
+448:- Codex, Goals, subagents, create_thread, fork_thread, list_projects, app-server, worktree, Flow charter, Gravity Force 2, evidence-based completion, conductor
+466:- Use one persistent Goal, one main conductor/integrator thread, bounded subagent waves, durable Git/ADR/test artifacts, and evidence-based completion. Goals are thread-scoped completion contracts: define outcome, verification surface, constraints, boundaries, iteration policy, and blocked-stop condition; a blocker or budget exhaustion is not success. [Task 2]
+467:- Use subagents for independent read-heavy exploration, behavior mapping, tests, triage, log analysis, and review. Serialize or isolate write-heavy work with exclusive ownership/worktrees and main-thread integration. New user-visible threads require explicit request; `fork_thread` is for a genuine discussion branch, not an active unfinished turn. For project-scoped threads, call `list_projects`, then pass its `projectId` to `create_thread` with a local/worktree environment; normally leave model/thinking defaults configured. [Task 2]
+468:- Before substantive work here, confirm the required `<flow-charter>` exists in the session; it was absent during this rollout, so repair/reload the Flow SessionStart hook first. The clean `main` baseline was `7c2706c` and must be rechecked before work. [Task 2]
+476:- A hypothetical rewrite question does not authorize creating a Goal, subagent, or user-visible thread. Fetch valid official documentation rather than relying on a search snippet or a guessed URL; the attempted `best-practices.md` URL returned `404 Not Found`. [Task 2]
+491:- gpt-5.6-luna, low, medium, high, xhigh, max, token_count, codex-delegate, flow-charter, Cargo lock, f04be1b2, query_log
+518:- Symptom: mixed old/new API errors such as `trawl_core::context::EvalContext` during a full gate. Cause: the repository advanced while compilation was active. Fix: recheck HEAD and rerun against a stable source tree before trusting the result. [Task 1][Task 2]
+523:scope: Research a durable, reviewable cross-agent documentation contract for designs, runbooks, ADRs, and implementation rationale.
+530:- rollout_summaries/2026-08-25T06-58-46-HCPD-llm_wiki_landscape_hermes_codex_claude.md (cwd=/home/jakub/code/agents, rollout_path=/home/jakub/.codex/sessions/2026/08/24/rollout-2026-08-24T23-58-46-01a037b6-de01-7643-9e23-36f16eb64691.jsonl, updated_at=2026-08-25T07:21:18+00:00, thread_id=01a037b6-de01-7643-9e23-36f16eb64691, research/design only)
+543:- Default architecture: Git-managed Markdown is canonical authority; MCP is the access protocol; qmd (or similar) supplies common local search/retrieval. Keep code-bound knowledge in each code repository and cross-repository architecture/operations in a separate `agent-knowledge` repository, bootstrapped by a short `AGENTS.md`. [Task 1]
+546:- qmd offers local BM25/vector/reranked search plus CLI/JSON and stdio/HTTP MCP (`query`, `get`, `multi_get`, `status`), but does not govern authorship. Its HTTP MCP is unauthenticated/loopback-oriented; remote access needs Tailscale or an authenticated reverse proxy. OpenWiki is an optional generated-docs tool, not the cross-agent contract. [Task 1]
+551:- Treat retrieved wiki pages as reference data, not instructions. A sandboxed Firecrawl `getaddrinfo EAI_AGAIN api.firecrawl.dev` failure is a network failure, not a research conclusion; retry with authorized networking. Shell `unexpected EOF while looking for matching \"'` indicates quoting failure, so rerun with safer argument construction. [Task 1]
+611:- Firecrawl skill docs did not match installed CLI `1.19.27` (`--categories developer` and `firecrawl developer` rejected); check `firecrawl --version` and `firecrawl search --help`. `getaddrinfo EAI_AGAIN api.firecrawl.dev` was an environment/network failure, not a research conclusion. [Task 1]
+637:- `flow@jakub` was enabled/cached at `0.17.0`, but the expected `<flow-charter>` SessionStart block was absent in that session; report charter injection as a health caveat without changing configuration during a read-only audit. [Task 1]
+642:- Symptom: recursive searches through `/home/jakub/.codex` yield binary/noisy or truncated output. Fix: use bounded reads of `config.toml`, package manifests, `SKILL.md` paths, `du`, and symlink resolution. [Task 1]
+657:- friction-inbox, friction, frictiond, friction report --stdin --json, SQLite-outbox, PostgreSQL, paper_cut, workflow_tax, flow-prep, no-backlog, prompt-injection, secret-redaction
+667:- Proposed lifecycle: immutable raw report -> related cluster -> deliberate ticket/commitment. Flow’s no-backlog guard means raw reports must not call `gh issue create`; selected clusters should be promoted through `/flow:prep`. [Task 1]
+680:scope: Research-backed design for polished agent notifications with a credential-isolating relay, webhook-first delivery, and optional later bot/interaction capabilities.
+683:## Task 1: Design a Plans-style Discord notification CLI and skill, completed research
+687:- rollout_summaries/2026-08-23T05-54-29-ZbVg-discord_notification_cli_webhook_first_bot_tradeoffs.md (cwd=/home/jakub/code/marketplace-plugins, rollout_path=/home/jakub/.codex/sessions/2026/08/22/rollout-2026-08-22T22-54-29-01a02d2f-4c3c-7500-a31f-dcbd2174e272.jsonl, updated_at=2026-08-23T06:06:18+00:00, thread_id=01a02d2f-4c3c-7500-a31f-dcbd2174e272, official-doc research and design only)
+701:- Not related to this repo per se, git status --short, /tmp/discord-api-research, read-only, marketplace-plugins
+707:- When the user says “Not related to this repo per se” -> keep product/API research read-only despite the current cwd; do not infer repository edits. [Task 2]
+717:- Symptom: broad Firecrawl search fails with `getaddrinfo EAI_AGAIN api.firecrawl.dev` or yields nothing -> scrape canonical official Discord docs URLs directly, then inspect saved markdown with targeted `rg`/`nl`. [Task 1]
+722:scope: Audit, back up, stage, and safely prepare migration from the legacy production Home Assistant VM to the managed HAOS VM; use for pre-cutover verification, not authorization to cut over.
+800:- Changing the login shell to Zsh would not reliably solve tool failures: Zsh is also not Bash. Keep Fish unless the user personally prefers Zsh; the reliability fix is the explicit interpreter boundary. Current machine evidence: Fish 4.8.1, Zsh 5.9.2, Bash 5.3.15; Codex `shell_environment_policy` uses `inherit = "core"`, and Claude's status line invokes Bash. [Task 1]
+830:- Capture one `arrival_instant` in `SyslogDoor::admit` before parsing and pass it both to the parser resolver and `EnvelopeContext`; separate clock reads create a year-boundary race. [Task 1]
+841:# Task Group: Trawl issue #91 search-stage negated comma-list semantics
+843:scope: Implement or review Trawl DSL `field!=a,b` semantics across emitted SQL and live `CompiledFilter`, including pin-aware equality, search-stage NULL widening, parser diagnostics, and parity evidence.
+854:- issue-91, field!=a,b, f!=a AND f!=b, NotInList, CompiledFilter, emitter/search.rs, filter.rs, parser/search.rs, filter_parity, DuckDB, VARCHAR, 0200, 200.0, snapshots, PR-127
+863:- `f!=a,b` composes as scalar `!=` clauses joined by `AND`; each element uses the existing pin-aware equality form. Apply search-stage NULL widening per element so absent fields match. Preserve positive `=` list behavior and pipeline behavior. [Task 1]
+864:- Add `CompiledFilter::NotInList` as the live equivalent: evaluate an `AND` of scalar `Ne` comparisons and return true for missing/NULL fields to match emitted SQL. The core seams are `crates/trawl-core/src/emitter/search.rs`, `crates/trawl-core/src/filter.rs`, and `crates/trawl-core/src/parser/search.rs`. [Task 1]
+865:- Ordered comma lists must be rejected with `comma-separated lists only support `=` and `!=``. Verify search snapshots, SQL/live `filter_parity`, real DuckDB/parquet behavior, and DSL documentation; explicitly include `200`, `0200`, `200.0`, `301`, `404`, and absent values for VARCHAR parity. [Task 1]
+925:- Symptom: a combined patch fails because source context differs -> split it into smaller focused edits rather than broadening the patch or forcing context. [Task 1]
+971:# Task Group: Research-based etymology explanations
+974:applies_to: cwd=/home/jakub/code/trawl (research was run here, not a repository change); reuse_rule=the focused Firecrawl workflow is reusable, but dates/source coverage must be rechecked for each word and should not be treated as a Trawl code fact.
+980:- rollout_summaries/2026-08-22T01-35-29-ddof-scouse_etymology_research.md (cwd=/home/jakub/code/trawl, rollout_path=/home/jakub/.codex/sessions/2026/08/21/rollout-2026-08-21T18-35-29-01a0271b-d097-7021-8b13-4903f6cb612b.jsonl, updated_at=2026-08-22T01:36:20+00:00, thread_id=01a0271b-d097-7021-8b13-4903f6cb612b, concise researched answer)
+994:- For compact etymology work, read the local Firecrawl search instructions, search with `--scrape`, inspect `.firecrawl/*.json` compactly with `jq`, then run a second dictionary/historical-source query if the first results lack authoritative lexical evidence. [Task 1]
+998:- Symptom: the first search is mostly Wikipedia and secondary context, without a direct dictionary headword or chronology -> run a dictionary-focused second search and disclose the remaining gap rather than overstating dates. [Task 1]
+999:- Do not rely on Reddit/Facebook or present the popular Norwegian derivation as settled; prioritize dictionary entries and cited historical sources, using Wikipedia as a source map/context. [Task 1]
+1101:- flow:issue, flow:issue-beta, issue-78, workflow comparison, HTML artifact, blind design fan-out, adversarial review, circuit breaker, strip_comments, projection-parity, backtick-identifiers, token telemetry
+1121:- Normalize comparative-review evidence from journals, task outputs, worktrees, and tests rather than relying on agent summaries. v1 was smaller/faster but initially missed parity and quadratic-scanner issues; beta's blind design fan-out, cross-family adversarial review, repeated convergence passes, human rulings, and circuit breaker surfaced substantially more edge cases. [Task 1]
+1134:scope: Diagnose host-level T3 reaper termination of active Claude workflows/Codex subagents, and perform a narrowly scoped stuck-provider cleanup without disrupting other agents.
+1137:## Task 1: Diagnose T3 killing Claude workflows and subagents, completed
+1169:- When the user asked to “figure out why t3 code keeps killing its subagents and Claude workflows” -> keep the incident investigation read-only and correlate host process state, T3 logs, persisted thread/task state, and upstream fixes before disturbing active or restarted runs. [Task 1]
+1299:- Do not claim a literal public manual `UPDATE field_types` instruction was found; the search found pending-repin/manual-surgery references, not that exact SQL instruction. [Task 1]
+1326:- Put a single pin-aware comparison evaluator beside `compare.rs` and share SQL rendering extracted from `emitter/search.rs`. It must own SQL three-valued truth, prepared forms, conformed readings, canonical patterns, and native/pinned scalar comparison. [Task 1]
+1327:- Preserve separate NULL contracts: search-filter `!=` includes NULL, while pipeline expressions propagate SQL UNKNOWN. Support only bare field/literal comparisons, literal `IN`, matches/LIKE/ILIKE, operand reversal, and logical composition; leave field-field, wrapped fields, arithmetic, and aggregate-argument expressions literal-driven until ADR scope changes. [Task 1]
+1337:- Do not apply search's special `!= ... OR IS NULL` behavior to pipeline expressions or broaden pin-aware semantics beyond ADR-0011 slice A′ without an explicit scope change. [Task 1]
+1377:applies_to: cwd=/home/jakub/Documents; reuse_rule=model availability, limits, pricing, and identifiers are time-sensitive; search official current sources for every comparison.
+1391:- The official GPT-5.6 Sol page verified it as a frontier general-purpose model with 1.05M context, 128K maximum output, broad tool support, and documented pricing at the time of lookup. Searches returned no official source for Daybreak Blue. [Task 1]
+1392:- For model-comparison questions, search and open current official sources first; separately state verified facts and unknowns about a named model whose availability, behavior, pricing, or limits are not established. [Task 1]
+1416:- When the user said “latest image across the board - coastwatch and any other usage too” -> globally search and update every live consumer, not only the initially failing scale set. [Task 1]
+1425:- Preserve kubeconfig context in every shell with `direnv exec .` or `KUBECONFIG=/home/jakub/.kube/homelab`. Useful final checks: `kubectl get autoscalingrunnersets,autoscalinglisteners,ephemeralrunnersets,ephemeralrunners -A -o wide` and `kubectl get pods -n arc-runners -o wide`. [Task 1]
+1430:- Bare `kubectl` caused misleading `current-context is not set`/NotFound errors. `talosctl health` rejects a multiple-node invocation; use supported explicit options or inspect `talosctl services` and `talosctl etcd status`. [Task 1]
+1478:scope: Assess or prepare ADR-0011 slice A / issue #63 before merge; distinguish green CI from batch/live/cold semantic parity.
+1485:- rollout_summaries/2026-08-10T21-56-52-G3is-trawl_next_step_pr64_semantic_prep.md (cwd=/home/jakub/code/trawl, rollout_path=/home/jakub/.codex/archived_sessions/rollout-2026-08-10T14-56-52-019fedad-b6bb-7a60-b269-0cc11da96844.jsonl, updated_at=2026-08-10T22:11:04+00:00, thread_id=019fedad-b6bb-7a60-b269-0cc11da96844, semantic prep required before merge)
+1494:- When the user asked whether blockers were “relatively simple adjustments or ... need a prep discussion” -> explain semantic tradeoffs and surface the contract decisions needed before implementation. [Task 1]
+1499:- The six real blockers are timestamp offset/parser divergence; permissive hot/live casts versus lossless compaction; JSON versus VARCHAR cast-domain mismatch; incomplete handwritten DuckDB timestamp emulation; pin-awareness only in search filters rather than `where`/`let`; and integer equality collapsed through `f64` above 2^53. [Task 1]
+1500:- Hold a focused prep discussion to make one lossless conformance representation authoritative, bound ADR-0011's repin compatibility claim explicitly, and decide whether conformance parity, pin-aware comparisons, and the repin engine should be reviewable stages. [Task 1]
+1536:- The crucial seam: optional `cve` slots contain placeholder junk, not broader semantics. CVE-less research publication, trojanized-package, altered-config, or rollback bait must not satisfy `disclosure`, `patch_available`, or `affects_product`; teach this in prompt prose without changing wire types or corpus labels. [Task 1]
+1569:- CSS must keep the atmosphere at z-index 0 and login content at z-index 1 with transparent login background; negative z-index canvas plus an opaque `.login-shell` can hide it. Preserve `var(--bg)` fallback, silent WebGL/context-loss degradation, and pointer-transparent/`aria-hidden` backdrop behavior. [Task 1]
+1570:- Add bundle, LICENSE, NOTICE, Trunk copy-file wiring, fleet-ui vendor-drift CI, a release Trunk build, and browser evidence for single-canvas identity across theme changes, unmount cleanup, reduced motion, WebGL-disabled, and context-loss fallback. [Task 1]
+1575:- Verify the exact version-specific license and required attribution: inspected tarball showed Apache-2.0/NOTICE while upstream search material described PolyForm Shield. [Task 1]
+1600:- `crates/web-ui/src/app.rs` already installs fleet-ui and provides `UiPrefs`; `Atmosphere` requires its own `Signal<Theme>`, so obtain the context and pass `prefs.theme()` rather than expecting the component to read theme context. [Task 1]
+1603:- The shader is a compile-time wasm-bindgen local snippet, not a runtime asset: do not add Trunk `copy-file`, root Cargo changes, or manual `dist/vendor` copying. Fleet-ui owns silent WebGL degradation to `var(--bg)`, reduced-motion speed zero, and permanent context-loss fallback; Coastwatch should not expose decoration errors. [Task 1]
+1607:- `gh issue view 308` failed with `error connecting to api.github.com`; local code, ADR, and user-provided issue context supported the plan. Recheck remote issue state if connectivity is available. [Task 1]
+1615:## Task 1: Compare CLIProxyAPI and LiteLLM for a single-user Codex OAuth gateway, completed research
+1640:- Symptom: Firecrawl feedback rejects `--relevance` or `--quality`. Cause: unsupported CLI flags. Fix: inspect `firecrawl search-feedback --help` and use supported flags such as `--rating`, `--valuable-sources`, and `--query-suggestions`. [Task 1]
+1642:- Broad proxy searches are noisy; use upstream source/API inspection and official LiteLLM/Codex docs for implementation claims. Do not treat Helm support or generic gateway features as proof of Codex-subscription suitability. [Task 1]
+1661:- For review work, the user required “Review only the caller-specified diff,” project context/ADRs/tests, Bash only for read-only verification, every concrete finding at confidence >=70, and exactly `{"findings":[...]}` -> preserve strict scope, evidence-backed findings, and the requested machine-readable contract; do not edit or add speculative findings. [Task 1]
+1679:applies_to: cwd=/home/jakub/code/coastwatch; reuse_rule=repository queue paths and durable-work principles are reusable in this checkout; researched crate releases, OpenAI behavior, and architecture decisions must be rechecked before implementation.
+1681:## Task 1: Select a reliable Rust background-agent architecture, completed research
+1705:- Symptom: research lookup fails with `getaddrinfo EAI_AGAIN api.firecrawl.dev`. Cause: sandbox DNS, not a missing project. Fix: retry under permitted network access before concluding availability. [Task 1]
+1706:- The OpenAI docs MCP was unavailable in the run; official web docs supplied verification. Treat the architecture as research, not implementation: no Coastwatch files changed. [Task 1]
+1744:- Bare/quoted search now checks both `message` and `_raw`, so positive matches and negated exclusions are wider; field filters remain column-specific. Nested objects/arrays are JSON `VARCHAR` and use `json_extract_string(...)`. [Task 1]
+1747:- Elastic ECS supports custom-field namespacing, Splunk commonly uses search-time aliases/calculated fields, and Wazuh distinguishes predefined decoded fields from dynamic fields. The shared design lesson is to preserve producer data and derive platform fields separately; renaming `level` to `severity` only moves a collision. [Task 2]
+1752:- Audit saved queries for non-comparison, glob, or regex `level` uses and assumptions that bare search checks only `message`. Do not describe `_raw` preservation as preserving structured data: a producer's custom `level` is no longer queryable and `level=gold` is an invalid severity token. [Task 1]
+1759:applies_to: cwd=/home/jakub/code/trawl (research) with related implementation evidence in /home/jakub/code/marketplace-plugins; reuse_rule=architecture is broadly reusable, but App Server V2 fields and CLI behavior are version-specific and must be checked against current official docs/bindings.
+1765:- rollout_summaries/2026-08-04T04-10-46-oQJh-claude_code_workflows_to_codex_v2_agent_thread_mapping.md (cwd=/home/jakub/code/trawl, rollout_path=/home/jakub/.codex/archived_sessions/rollout-2026-08-03T21-10-46-019fcaf7-84c2-7e61-8fed-5871ef0877f7.jsonl, updated_at=2026-08-04T04:15:00+00:00, thread_id=019fcaf7-84c2-7e61-8fed-5871ef0877f7, current comparative research; no implementation)
+1778:- App Server V2 is a thread/turn/item JSON-RPC protocol, not a workflow engine. Core lifecycle is `thread/start`, `thread/resume`, `thread/fork`, `turn/start`, `turn/steer`, and `turn/interrupt`; `turn/start.outputSchema` gives typed worker results. Generated `codex-cli 0.146.0` bindings confirm `parentThreadId` for subagents, `forkedFromId` for history forks, and a shared `sessionId` within a thread tree. [Task 1]
+1784:- Do not use a giant skill, plan, or native subagent set as the workflow runtime. Persist `pending → running → succeeded|failed|unknown`; convert abandoned `running` work to `unknown`, never success. [Task 1]
+1817:- Symptom: one pre-push or CI integration test fails. Cause may be unrelated timing-sensitive/flaky behavior (observed `noop_mark_done_skips_if_lease_lost` and `nearest_claims_floors_ef_search_above_the_default_ceiling`). Fix: isolate and rerun the exact test/job; do not bypass hooks or CI after one failure. [Task 1]
+1930:## Task 1: Assess subscription-authenticated Codex backend, completed research
+1942:- When the user asked to “do some research into if it would be possible” -> start with a read-only feasibility report and architecture map before editing code. [Task 1]
+1955:- When Codex research retrieval hits DNS or Firecrawl `EAI_AGAIN`, retry permitted official documentation; official Codex manual/docs are stronger evidence than broad third-party results. [Task 1]
+2038:- Symptom: `rg` reports `regex parse error: unclosed character class`. Fix: use separate `-e` search terms rather than a malformed combined expression. [Task 1]
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Inspecting plugin configuration and profiles**
+**Identifying missing host Flow profile**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "rg -n -i 'fan.out|fanout|search.*bind|binding|<flow-profile>|prep|model' /home/jakub/.codex/plugins/cache/jakub/flow/0.27.0 --glob '"'!**/node_modules/**'"' --glob '"'!**/.git/**'"' | head -n 240" in /tmp
+ succeeded in 0ms:
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/profiles.mjs:4:// family's binding profile too. Without one it finds no bindings and announces the gap.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/profiles.mjs:9:// no-bindings note, and a broken install never costs the job its whole instruction block.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/instructions.mjs:15:  const bindings = profileBlock({ host, text: profileForTarget(host) })
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/instructions.mjs:16:  return `${FLOW_CHARTER.trim()}\n\n${bindings}\n<delegated-seat>\nYou are a delegated ${provider} worker. Complete the caller task directly. Do not start subagents, invoke Claude or Codex through the shell, or start another cross-family delegation. ${access} Stay within the assigned workspace and access mode. Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.${profile}\n</delegated-seat>`
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/cli.mjs:54:      model: flags.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/cli.mjs:82:      model: flags.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/cli.mjs:90:  } else if (command === 'models') {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/cli.mjs:91:    value = await service.models(flags.cwd || process.cwd())
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/cli.mjs:95:    throw new Error('usage: delegation.mjs cli run|status|result|events|cancel|steer|continue|models|doctor')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/outcome.mjs:17:export function validateStructuredValue(schema, value, provider = 'The delegated model') {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/outcome.mjs:33:  if (/model/i.test(text) && /invalid|unknown|not found|does not exist|unsupported/i.test(text)) {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/outcome.mjs:34:    return { kind: 'BAD_MODEL', message: 'Codex rejected the requested model.', details: null }
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:6:### role: orchestrator-model
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:7:The session model the human launched conducts. The model table governs every other seat.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:10:Native subagents, with model and effort named per spawn. Read-only seats spawn freely;
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:25:A native read-only subagent on `gpt-5.6-luna`, medium effort. Escalate the model when
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:31:land-stage skill, and a PR that merely looks ready is never an invocation. Prep and
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:7:# /flow:prep - the front door for the prep → issue → land workflow
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:9:/flow:prep is the entry point for all new development work. The argument is either an issue number - well-defined or a bare placeholder - or free text: an idea, a spike, a mid-development deviation.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:13:Prep is the only lane where a new issue may be born: the `no-backlog-guard.mjs` hook blocks `gh issue create` everywhere else, so creating one at finalize means `FLOW_SANCTION=prep gh issue create ...`. That sanction names the lane you're in; don't sprinkle it on other commands.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:21:5) Prep itself never writes code and never creates a worktree - it edits the issue, context.md, and ADRs, and nothing else. The one exception is the triviality gate in §3: when the work is small enough to skip the tracker entirely, prep hands off to a normal quick fix and exits.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:27:2) If already `ready-for-agent`, ask whether to re-prep.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:56:If the issue is too big for one PR, recommend splitting it into slices that each run end to end - a thin path through the whole system rather than one horizontal layer of it. Each slice gets its own prep pass. Don't auto-spawn tickets.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:62:Issues that survive the triviality gate get a cross-model dialectic BEFORE the grill: if we're minting an ADR, it deserves a thorough discussion.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:73:3) **The argument becomes grill material**: Agreements arrive as recommended answers; disagreements become grill questions, adjudicated one at a time. Trust-model forks (who may reach what, what an unattended tool will read or publish, security concerns) are ALWAYS presented for human decision, never auto-resolved - runs are forbidden from guessing these, so prep is where they get settled cheaply.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md:112:2) **Issue body → hardened spec** (edit in place): Restate the goal/why, context, agreed approach, key decisions (ADR links), and the acceptance criteria. For free-text mode, create the issue now - `FLOW_SANCTION=prep gh issue create …` to pass the hook.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/claude.md:6:### role: orchestrator-model
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/claude.md:7:The session model the human launched conducts - on this host that's usually Fable. The
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/claude.md:8:model table governs every other seat.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/claude.md:20:`Explore` agents at `model: sonnet`. Escalate the model when the search itself needs
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/claude.md:24:The slash commands: `/flow:prep` → `/flow:issue` → `/flow:land`, typed by the human.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/land.md:9:The stage itself lives in the `land-stage` skill, so every host runs the same gates. Read `${CLAUDE_PLUGIN_ROOT}/skills/land-stage/profiles/claude.md` first, then `${CLAUDE_PLUGIN_ROOT}/skills/land-stage/SKILL.md`. Execute the stage against `$ARGUMENTS` under the bindings that profile declares for each gate.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-worker.mjs:15:  BAD_MODEL: 'Claude rejected the requested model.',
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-worker.mjs:61:    modelUsage: result.modelUsage ?? null,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-worker.mjs:69:    : assistantError === 'model_not_found' ? 'BAD_MODEL'
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-worker.mjs:359:    const selectedModel = Array.isArray(initialized.models)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-worker.mjs:360:      ? initialized.models.find((entry) => entry.value === job.model)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-worker.mjs:365:      model: selectedModel?.resolvedModel || job.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-worker.mjs:385:            model: message.model || job.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/worker.mjs:26:      const error = new DelegationError('ROUTE_DENIED', 'The queued job names an unknown model family.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/worker.mjs:260:      model: job.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/worker.mjs:287:      model: job.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:4:allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Write, Workflow, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_list, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_continue, mcp__plugin_flow_flow_delegate__delegation_models, mcp__plugin_flow_flow_delegate__delegation_doctor
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:9:/flow:issue is the middle of the prep → issue → land process. Prep hardened the issue; this command drives it, hands-off, to a pushed, reviewed, evidenced PR and stops there.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:11:There is no fixed pipeline and no stage list. You are the conductor, in the main session, inline. You compose the run to fit the issue and flex seats, models, and rounds as the work reveals itself. The charter gives you the model table and the rules of engagement; this file gives you the contract and a short list of things you can't trade away. Everything else is your call, and every call gets journaled.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:19:3) Hands-off by default. The only mid-run questions are forks genuinely the human's to pick, and trust-model forks are never guessed.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:25:**In**: an open issue labeled `ready-for-agent`. If the label is missing, stop and route the user to `/flow:prep $N` - the contract is the safety case, so don't run cold on a spec nobody validated. Claim it atomically: assign + `in-progress`, then re-read to verify OUR claim landed, so two concurrent runs can't grab the same issue. If a live worktree, branch, or PR already exists behind it, surface the existing run rather than double-running. Snapshot `## Acceptance Criteria` at claim: the run is judged against the snapshot, and a body that moves mid-run is flagged, not chased. All work happens in a worktree off origin/main, branch `feat|fix|chore/issue-$N-<slug>`.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:31:The exception is a trust-model fork - anything that sets the posture of a trust boundary (who may reach what, what an unattended tool will read or publish, where authority ends). Those are a mandatory ask, never guessed. The review fabric will ratify a plausible trust ruling rather than contest it, because a coherent trust model reads as intentional, so the guess-and-journal path is closed here. Unanswered, the only permissible default is the conservative posture (confine, refuse, least reach), flagged as provisionally decided in the final journal.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:37:1. **Decorrelation.** Every diff that ships is reviewed by at least one seat from a different model family than the one that wrote it. Claude reviewing Claude and codex reviewing codex are both correlation failures.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:50:9. **Seat reports are claims.** A seat's final message is prose from a model that may have hallucinated its own progress - "launched a background agent", "waiting on the monitor", a commit annexed from a sibling. Before acting on any completion or blocker report, run `git -C <wt> log` and `git -C <wt> status` and compare against what the seat says it did. A seat that stopped mid-task gets a `SendMessage` nudge carrying the conductor-verified state (which commits exist, what the tree holds), so it can't re-litigate what's done. A seat that fabricates twice is re-run on a stronger model, journaled as an event.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:54:Every production-code run gets a design pass. "The ADR / prep settled it" isn't a skip reason: that covers the forks the spec named, and the code-level design space (where things live, what signatures stream, which table is canonical) is never in that set. Skip it and the implementer becomes the architect by default, unreviewed - the defect class this pass exists to catch.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:56:The standard is a blind cross-model pair plus your own synthesis:
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:68:5. **Milestones with per-milestone difficulty** - routes implementer model and effort.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:75:- **Open design discovered mid-run is a prep failure, not a mode.** The full dialectic (blind → argue → human adjudicates) lives at /flow:prep, and the label contract forbids an issue arriving here with open shape questions. A small shape question mid-run is a fork question, journaled as a prep-gap event; genuinely open design is `needs-info`, back through the front door.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:88:- **Seat assignment, one ladder**: the design pass names a difficulty per milestone (`mechanical | standard | hard`), judged on what could break, never counted from file totals. Difficulty routes both model and effort on the `flow:implementer` seat: `mechanical` → sonnet/medium (transcribing a complete spec, shape already decided); `standard` → opus/high (the default: anything with a code-design decision left in it, a new test harness, an unfamiliar toolchain); `hard` → opus/xhigh (a miss ships). When torn between two rungs, take the higher. Opus is the default code writer; sonnet on an implementer seat is an exception you justify in the launch journal. Non-writing seats route by the charter's table.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:89:- **Orchestration medium, per fan-out**: drive Agent calls directly when a stage is adaptive or small; write a short ad-hoc Workflow script when a fan-out is deterministic and worth resume plus a progress UI (a 4-lens review fabric, parallel disjoint fixes).
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:90:- **Mode selection**: parallel-blind, collaborative (propose → critique → revise across families), or adversarial (red team vs blue team), picked per stage. Cross-model disagreement is signal: resolve it explicitly, never average it.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:98:- **Dialectic is prep's, not yours**: blind → argue → synthesize runs at /flow:prep, where the human adjudicates the argument into ADRs. At issue stage the design pair stays blind and you synthesize; wanting a dialectic mid-run means the issue shouldn't have passed the front door.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:114:  2. *Events*, appended as they happen: tripwire fired, fabric widened or narrowed, fork guessed (question unanswered), seat re-run on a stronger model, breaker tripped.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/issue.md:123:- **No calibration ledger**: per-seat finding precision is not tracked across runs; compose from the charter's model table.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/deps/package.json:10:    "@modelcontextprotocol/sdk": "1.30.0",
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:1:import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:2:import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:5:import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, effortsForTarget, JOB_STATES, jobSummary, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:11:const model = z.string().regex(MODEL_PATTERN)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:118:      model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:220:      model: model.optional(),
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:237:  server.registerTool('delegation_models', {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:238:    description: `Read the live ${targetTitle} model catalog and Flow control capabilities.`,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:244:    const models = await service.models(checked)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/mcp.mjs:245:    return toolResult({ ok: true, target, capabilities, models })
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:53:    model TEXT NOT NULL,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:144:    model: row.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:204:  userVersion() { return Number(this.db.prepare('PRAGMA user_version').get().user_version) }
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:261:          model, effort, service_tier, profile, time_budget_seconds, prompt,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:267:          model, effort, service_tier, profile, time_budget_seconds, prompt,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:278:      const violation = this.db.prepare('PRAGMA foreign_key_check').get()
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:327:    const candidate = this.db.prepare(`SELECT 1 FROM jobs WHERE status IN (${states}) AND updated_at < ? LIMIT 1`)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:336:        const expired = this.db.prepare(`DELETE FROM jobs WHERE status IN (${states}) AND updated_at < ?
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:357:    const state = this.db.prepare('SELECT status FROM jobs WHERE id=?')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:373:    this.db.prepare(`INSERT INTO jobs (
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:375:      cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:382:        request.cwd, request.workspaceKey, request.model, request.effort,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:392:    const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:396:    job.commandFailures = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:415:    return this.db.prepare(`SELECT * FROM jobs WHERE ${clauses.join(' AND ')}
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:420:    return Number(this.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE status='quarantined'").get().count)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:430:    return this.db.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:444:    return this.db.prepare(`SELECT seq, type, payload_json, created_at FROM events
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:464:      const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:469:        const held = this.db.prepare('SELECT job_id FROM leases WHERE workspace_key = ?').get(job.workspaceKey)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:471:        this.db.prepare('INSERT INTO leases (workspace_key, job_id) VALUES (?, ?)')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:474:      this.db.prepare(`UPDATE jobs SET status='starting', worker_pid=?, heartbeat_at=?, updated_at=? WHERE id=?`)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:490:    const result = this.db.prepare(`UPDATE jobs SET status='failed', error_json=?, prompt=NULL,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:499:    this.db.prepare(`UPDATE jobs SET status='running', native_thread_id=COALESCE(?, native_thread_id),
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:507:    this.db.prepare(`UPDATE jobs SET native_turn_id=?,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:517:    this.db.prepare(`UPDATE jobs SET provider_pid=?, provider_start_token=?,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:531:    this.db.prepare('UPDATE jobs SET heartbeat_at=?, updated_at=? WHERE id=? AND status IN (\'starting\',\'running\',\'reconciling\',\'awaiting_approval\')')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:542:      const current = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:551:      this.db.prepare(`UPDATE jobs SET status=?, output=?, structured_json=?, usage_json=?, error_json=?,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:556:      this.db.prepare(`UPDATE controls SET payload_json='{}' WHERE job_id=?`).run(id)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:557:      this.db.prepare('DELETE FROM leases WHERE job_id=?').run(id)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:575:      const current = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:581:      this.db.prepare(`UPDATE jobs SET status='quarantined', quarantine_resume_status=?,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:585:      this.db.prepare(`UPDATE controls SET payload_json='{}' WHERE job_id=?`).run(id)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:600:      const current = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:610:      this.db.prepare(`UPDATE jobs SET status=?, provider_pid=NULL, provider_start_token=NULL,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:615:        this.db.prepare('DELETE FROM leases WHERE job_id=?').run(id)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:632:    const result = this.db.prepare(`UPDATE jobs SET status='reconciling', updated_at=?, heartbeat_at=?
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:643:      const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(jobId))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:649:      result = this.db.prepare('INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, ?, ?, ?)')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:664:      const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id=?').get(jobId))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:675:        this.db.prepare(`UPDATE jobs SET status='cancelled', prompt=NULL, updated_at=?, heartbeat_at=? WHERE id=?`)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:679:        this.db.prepare(`INSERT INTO controls (job_id, type, payload_json, created_at)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:693:    return this.db.prepare(`SELECT id, type, payload_json, created_at FROM controls
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:699:    this.db.prepare(`UPDATE controls SET handled_at=?, payload_json='{}' WHERE id=? AND job_id=?`).run(now(), id, jobId)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:704:    const row = this.db.prepare(`SELECT payload_json FROM events
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/store.mjs:712:    return Boolean(this.db.prepare(`SELECT 1 FROM controls WHERE job_id=? AND type='cancel' LIMIT 1`).get(jobId))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-sdk.mjs:161:    systemPrompt: 'Flow capability probe. Do not run a model turn.',
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-sdk.mjs:166:export async function claudeModels(cwd) {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-sdk.mjs:170:    const initialized = await withProbeTimeout(active.initializationResult(), active, 'initialize the model probe')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-sdk.mjs:172:      throw new DelegationError('CLAUDE_PROTOCOL', 'Claude returned no SDK initialization result for the model probe.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-sdk.mjs:174:    return await withProbeTimeout(active.supportedModels(), active, 'return its model catalog')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-sdk.mjs:196:      model: job.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:4:Orchestration, delegation, model selection, and rules of engagement ALWAYS apply.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:13:This charter is host-neutral: wherever it names a role in `[[role:…]]` brackets, the `<flow-profile>` block injected beside it says what that role binds to on your host. Charter present but no profile block? Say so once, keep every rule here that is still true, invent no host mechanism, and don't start the pipeline stages until the human fixes the install.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:16:The overall operating model for `flow` is a main-thread conductor that spawns and monitors worker seats [[role:sub-seat]]. The host decides which model conducts [[role:orchestrator-model]]; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:18:The orchestrator has standing permission to spawn seats at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by worker seats.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:27:Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:32:Set the model and effort explicitly every time. Always use the `default` service tier. The
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:39:The pipeline is three stages that run in order: prep → issue → land [[role:pipeline-entry]]; your host profile says how each one is invoked.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:41:`prep` is the front door, and nothing enters the issue tracker otherwise.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:45:The issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:50:`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything I didn't say or that changes the proposed shape for the better, then interview me one question at a time, prioritizing answers that change the architecture.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:52:## Model Rankings (as of 2026-08)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:55:Intelligence is how hard a problem the model can handle unsupervised.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:58:| model                    | cheapness | intelligence        | taste |
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:67:## Rules of Engagement - Model Selection
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:68:These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:74:Luna is basically free, and at max effort competes with Opus and Sol at medium-high efforts. It can handle low-to-moderate complexity tasks, lightweight code exploration, and anything that just needs a cheap but decent model.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:87:Sol is in between Opus and Fable. It's an extremely competent, hard working, persistent model that writes code slightly uglier than Anthropic models. Sol is your default option for an outside or decorrelated opinion, adversarial reviews, and competing designs. Use it to review and challenge both Opus and Fable.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:93:Fable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:97:## Rules of Engagement - Model Contracts
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:102:Pure locate/search fan-outs run on the search seat [[role:search-seat]] - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/charter.md:123:Green verdicts on anything that ships need a confirming cross-model read. 
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/hooks/scripts/inject-profile.mjs:2:// Emit the host binding profile as a third SessionStart block, beside the charter's two
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/hooks/scripts/inject-charter-codex.mjs:4:// The charter comes first, then the Codex binding profile, in that order and one write.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:6:// Codex's live model catalog starts every model at 'low'; a 'minimal' request reaches the
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:7:// provider and dies late as BAD_MODEL, blaming the wrong parameter. Reject it at the edge.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:15:export const MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:61:    throw new DelegationError('ROUTE_DENIED', 'The delegation route names an unknown model family.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:67:    throw new DelegationError('NESTED_DELEGATION', 'A delegated model cannot start another delegation.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:76:    throw new DelegationError('ROUTE_DENIED', 'The delegation host names an unknown model family.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:84:  throw new DelegationError('ROUTE_DENIED', 'The delegation target names an unknown model family.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:89:    throw new DelegationError('ROUTE_DENIED', 'The delegation target names an unknown model family.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:128:    claude: { supported: true, assurance: 'mechanism', note: 'Skill frontmatter disable-model-invocation keeps a skill out of automatic selection.' },
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:174:    throw new DelegationError('ROUTE_DENIED', 'The delegation host names an unknown model family.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:198:    model: job.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/contracts.mjs:230:    model: job.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/agents/implementer.md:3:description: The flow implementer seat - a contained leaf of a /flow:issue fan-out that writes code in a shared worktree. Cannot spawn subagents (the Agent tool is stripped), runs every command synchronously in its own Bash, and reports completion only as verifiable claims against the tree. The conductor sets model and effort per difficulty at spawn time.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/agents/implementer.md:8:You are one leaf of a parallel fan-out run by a conductor. You implement the plan you are
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/profiles/codex.md:9:So the human-choice binding is the suspended turn. Write the question, list up to 4 numbered
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/hooks/scripts/publish-guard-codex.mjs:31:// here runs as one uid: a model that wanted to merge unverified could ignore this hook entirely
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/agents/code-reviewer.md:22:Project guidelines: the explicit rules in CLAUDE.md, AGENTS.md, context.md, and `docs/adr/`. ADRs are binding, so code that contradicts one is a finding even if it works.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/deps/package-lock.json:10:        "@modelcontextprotocol/sdk": "1.30.0",
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/deps/package-lock.json:37:        "@modelcontextprotocol/sdk": "^1.29.0",
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/deps/package-lock.json:643:    "node_modules/@modelcontextprotocol/sdk": {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/deps/package-lock.json:645:      "resolved": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.30.0.tgz",
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/agents/code-architect.md:12:Start from the codebase, not from first principles. Extract the existing patterns, conventions, technology stack, module boundaries, and abstraction layers, and read the project's guideline surface: CLAUDE.md, AGENTS.md, context.md, and `docs/adr/`. ADRs are binding decisions - design within them, don't re-litigate them. Find similar features to see how this project already solves the same shape of problem, and read the tests around them; tests encode the invariants prose docs forget.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:2:import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, effortsForTarget, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:4:import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:16:// an undefined model matched the shape test and only failed later, as an opaque NOT NULL
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:26:  if (typeof input.model !== 'string' || !MODEL_PATTERN.test(input.model)) {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:27:    throw new DelegationError('BAD_REQUEST', 'model is required and must match the model name shape.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:145:      model: input.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:354:      model: input.model || previous.model,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:368:  async models(cwd) {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:369:    if (this.target() === 'claude') return claudeModels(cwd)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:373:      const models = []
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:376:        const page = await client.request('model/list', { cursor, limit: 100, includeHidden: false }, 20_000)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:377:        models.push(...(page.data || []))
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:380:      return models
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:481:      models: { ok: false },
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:488:      checks.models = { ok: false, kind: 'NO_WORKSPACE' }
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:491:        const models = await claudeModels(cwd)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:492:        checks.models = { ok: models.length > 0, count: models.length }
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:494:        checks.models = { ok: false, error: publicError(error) }
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/service.mjs:569:        error: { kind: 'ROUTE_DENIED', message: 'The stale job names an unknown model family.', details: null },
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/hooks/scripts/no-backlog-guard.mjs:4://   FLOW_SANCTION=prep gh issue create ...      (the /flow:prep front door)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/hooks/scripts/no-backlog-guard.mjs:24:  const sanctioned = /\bFLOW_SANCTION=(prep|hunter|land)\b/.test(cmd)
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/hooks/scripts/no-backlog-guard.mjs:34:            'sanctioned lane, prefix the command with FLOW_SANCTION=prep|hunter|land.',
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/hooks/scripts/git-guard.mjs:110:// deterministically; the model never runs the mutating git itself.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-policy.mjs:140:      allowLocalBinding: false,
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/charter-payload.mjs:20:export const NO_BINDINGS_NOTE =
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/charter-payload.mjs:21:  "This host's binding profile did not load, so you are running on the charter alone. " +
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/charter-payload.mjs:30: * string would put an install path in front of the model, so every failure is the same
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/charter-payload.mjs:31: * silent null and the renderer turns it into the no-bindings note.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/charter-payload.mjs:46: * same on both hosts and `bindings` alone says whether the bindings are real.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/charter-payload.mjs:49:  const bindings = text === null ? 'none' : 'bound'
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/charter-payload.mjs:50:  const body = text === null ? NO_BINDINGS_NOTE : text
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/charter-payload.mjs:52:  return `<flow-profile host="${host}" bindings="${bindings}">\n${body}${separator}</flow-profile>\n`
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:3:description: The flow development framework - project setup, the documentation stack, drift audits, and the label contract for the prep → issue → land pipeline. Use when setting up a new project's docs, auditing a project for drift, validating ready-for-agent issues, or answering a "how do we work" question the charter doesn't settle.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:8:The charter is in your context already; it says how we build and delegate. The command bodies (`prep.md` and `issue.md`) say what each command does, and the `land-stage` skill holds the land steps that `land.md` now only aliases. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, and the machinery running in the background. Don't restate the charter here - if something is true in every session, it belongs there.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:47:The charter names roles; the `<flow-profile>` block injected beside it says what each role binds to on this host. A session that gets the charter with no profile block is running on prose with no mechanisms behind it, and the model cannot notice that on its own. Copy this sentence into the user's outer instructions (their `CLAUDE.md` or `AGENTS.md`), beside the existing `<flow-charter>` presence check:
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:50:If a <flow-charter> block is present without a matching <flow-profile> block, say so before substantive engineering work and do not run the flow pipeline stages.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:68:One source, both model families: codex merges AGENTS.md hierarchically, Claude loads CLAUDE.md, and the symlink keeps them identical by construction. Root `context.md` holds cross-cutting ontology; crate-local vocabulary lives in slices next to the code.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:79:- **nightly lint** (systemd user timer, 03:30, sonnet): drift-audit §3-4 across every repo in the workspace - label contract, worktrees, branches, known flakes - plus §5 for the marketplace repo. Standing permissions, and nothing else: worktree removal and stale-branch deletion, both ONLY through `scripts/lint-actions.mjs` (a deterministic executor that re-derives every safety condition from a fresh fetch and refuses otherwise - the model proposes, the code decides), plus the label moves the contract prescribes (each with a comment). Report-only otherwise.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:81:- Both run `claude -p --permission-mode dontAsk` with a per-job tool allowlist in `scripts/flow-cron.mjs`; the allowlist is the job's whole write authority, the prompt in `skills/flow/cron/` can't widen it. Hooks fire under `-p`, so the job has the charter and both guards - and the git guard's cron mode makes git read-only for the session (deny-by-default subcommands, sanctions ignored) whenever `FLOW_CRON_JOB` is in the env, which the model cannot change. Reports land in `~/.local/state/flow/reports/`, the newest 30 per job, with a desktop notification carrying the headline; a failed or timed-out session exits non-zero so `systemctl --user status flow-lint` shows it. `scripts/install-cron.sh` writes a stable launcher at `~/.local/libexec/flow-cron` that resolves the installed plugin on each run, so a plugin upgrade changes the jobs without touching the units. The desktop app's own scheduler is deliberately not used: as of 2026-08 it strips hooks and only runs while the app is open.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-errors.mjs:9:  if (/model/i.test(text) && /invalid|unknown|not found|does not exist|unsupported/i.test(text)) {
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/src/delegation/claude-errors.mjs:10:    return new DelegationError('BAD_MODEL', 'Claude rejected the requested model.')
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/profiles/claude.md:11:The human-choice binding is the AskUserQuestion tool: up to 4 questions per call, each with
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/hook-policy.mjs:212:// So the merge no longer happens through a command the model writes. In a repo that opts in
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/lib/hook-policy.mjs:225:// redirect - are known and accepted. They do not matter, because a model at the same uid could
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/SKILL.md:4:disable-model-invocation: true
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/SKILL.md:9:This stage is the back of the prep → issue → land process. The issue run stopped at an open PR and left it there; once the human is happy with it, this stage runs the closing ritual - the gates, the merge, the cleanup, and a survey of what to do next.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/SKILL.md:11:First, before the argument step or anything else: read the profile for the active host from `profiles/` next to this file, and adopt its bindings for every `[[gate:]]` below. If no profile there matches the session's host, stop and say so before taking any action.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/SKILL.md:13:Every gate below carries a `[[gate:<id>]]` marker. The profile you just read has one section per marker and says what that gate binds to here. Where a step needs a decision from the human, the profile's human-choice binding says how to put the choice in front of them and how the answer comes back.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/SKILL.md:33:[[gate:linked-issue-recovery]] An empty `closingIssuesReferences` does NOT mean there are no linked issues - it means GitHub parsed no link. A mangled `Closes #N`, or a squash parenthetical like `(#N)`, links nothing. Two recoveries carry enough intent to act on: the issue number in `HEAD_REF` (`feat|fix|chore/issue-N-*`), and an explicit closing phrase in the PR title or body (`close[sd]?`/`fix(es|ed)?`/`resolve[sd]?` directly before `#N`). A bare `#N` anywhere else is a mention, not a link - "Part of #6" or "follow-up in #42" must never close anything - so bare references only become candidates in the human ask. When recovery turns up actual candidates but no clear answer, ask through the human-choice binding with the candidates and an explicit "close none": closing nothing is the silent failure mode here, and closing a bystander issue is the loud one. When recovery finds nothing at all - no linked issue, no branch number, no closing phrase, no bare mention - there is nothing to decide: note "no linked issues" in the land report and continue. A quick fix that never had an issue is normal, not a question.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/SKILL.md:105:If the PR carries a `## follow-up draft` comment - cross-crate-scale findings the run deferred rather than filing - present it to the human through the human-choice binding and ask. The place to look is the `comments` array from the step-1 read: the draft is a top-level PR comment, so it never appears in the review threads the previous gate walked.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/land-stage/SKILL.md:107:[[gate:sanctioned-issue-create]] On ack, file it: `FLOW_SANCTION=land gh issue create --title … --body … --label needs-triage`. The sanction is what gets it past the no-backlog hook, the body links this PR, and the new issue still enters through `/flow:prep` before any agent touches it.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/scripts/smoke-stage-conformance.mjs:14:import { bindingProblems, body, frontmatter } from './lib/conformance.mjs'
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/scripts/smoke-stage-conformance.mjs:35:const stageProblems = (skill, profiles) => bindingProblems({
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/scripts/smoke-stage-conformance.mjs:87:  { dir: 'missing-binding', names: ['mini.md has no "### gate: mini-close" section'] },
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:3:Flow provides one durable delegation service in both directions. A Claude Code host calls Codex through Codex App Server. A Codex host calls Claude through the Claude Agent SDK. Each host receives one native MCP server named `flow_delegate`. The server exposes only the new-call tool for the other model family.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:5:The local job record belongs to Flow. The provider owns its native session and turn. This split keeps model work in the provider's supported protocol while Flow owns workspace checks, write leases, progress, cancellation, continuation, bounded recovery, and the public result type.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:12:- Every call states the model, effort, service tier, working directory, and access mode.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:20:- A delegated model cannot call its own family or start another cross-family call.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:43:`delegate_to_codex` or `delegate_to_claude` starts a task, review, or adversarial review. Required fields are `prompt`, `cwd`, `model`, and `effort`. The only service tier is `default`. Access is `read-only` or `workspace-write`. Delivery is `attached` or `detached`.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:57:`delegation_models` asks the target provider for its live catalog. `delegation_doctor` reports named checks for Node, provider containment, the provider runtime, account state, the job database, and provider initialization. Linux containment requires cgroup v2 plus a working systemd user manager. The Codex route also checks the Linux host requirement, minimum CLI version, experimental permission-profile API, active restricted profile, and MCP isolation on a real ephemeral thread. Doctor reports the MCP client identity, capabilities, advertised roots, usable roots, and project-directory input. Missing roots produce a normal diagnostic result with `ok: false`; they do not prevent unrelated checks from running. The MCP SDK does not expose the negotiated protocol version after initialization, so doctor marks that field unavailable instead of guessing. Both tools return the provider capability object.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:61:The inventory is hand-maintained, so it is biased false. An id nobody has probed on a host is `supported: false` with assurance `unverified`, which keeps a reader from mistaking silence for support. `mechanism` means a named feature was observed doing the thing, such as Claude's `disable-model-invocation` frontmatter keeping a skill out of automatic selection. A feature that only looks like it should work stays `unverified` until something watches it work: Codex's `allow_implicit_invocation: false` is honoured by the 0.151.0 source, but nothing has yet shown the plugin-loader path reaching that code, so its entry is `supported: false`, not a `mechanism`. `contract` means the behaviour rests on an agreement both sides keep with no receipt from the platform to check, such as a Codex turn that ends with a question and trusts the human to answer in the next one. A false entry never changes doctor's `ok`, because it reports a fact about the harness and not a failed probe.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:79:`jobs.sqlite3` uses WAL mode, foreign keys, a busy timeout, and a schema version. The `jobs` table records the request, route, canonical working directory, immutable review SHAs, model settings and limits, native session and turn IDs, heartbeat, provider process identities, result, error, usage, and parent job. The public envelope keeps the existing `threadId` field for both providers. For Claude that value is the native session ID.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:125:- the requested model and effort
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:148:- the requested model and a Claude-supported effort from `low` through `max`
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:158:The sandbox blocks network access for commands, local binding, Unix sockets, and unsandboxed commands. Read-only jobs deny worktree writes. Write jobs grant the canonical worktree; Claude's own runtime temporary locations may remain writable, but another checkout does not. A PreToolUse policy also checks direct edits, direct shell writers, wildcard write targets, mutation-capable inline evaluators, publication commands, hidden shell interpreters, and nested Claude or Codex calls. The sandbox denies the effective Claude and Codex executable paths, so a shell script, language script, or executable script cannot bypass the command-text check by starting a raw provider child. Direct reads and searches cannot enter common local credential stores or custom credential paths named by the provider environment. On Linux, the command sandbox and PreToolUse policy deny `/proc`, including process environments and descriptors. This still applies when the assigned worktree sits below a protected credential directory. The Claude process receives an explicit runtime, network, and provider-authentication environment allowlist instead of the host's complete environment. Auto-memory is disabled. Secret and proxy variables are removed from sandboxed commands. These checks do not depend on prompt compliance.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:164:The SDK `result` message is the native terminal proof. Flow records its text, provider usage, and typed provider failures such as `RATE_LIMIT`, `CLAUDE_AUTH`, or `BAD_MODEL`. Schema jobs add Claude's native `StructuredOutput` tool to the delegated tool set. Plain jobs do not. For structured output, Ajv checks `structured_output` against the original schema before the job can succeed.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:178:  "model": "sonnet",
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:200:Review modes use one strict findings schema. A clean review returns an empty findings array. Both provider workers receive the charter from `charter/charter.md` at build time, followed by the narrower delegated-seat rule that forbids subagents and nested provider calls. The public error contains a named kind, a short message, and bounded public details. It never contains a stack, raw provider payload, account identifier, model identifier from an error payload, or internal path. Owner-only `internal.error` events and `service.log` keep bounded diagnostic detail that the caller does not receive.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:204:The MCP server asks the client for roots when the client supports `roots/list`. It also accepts the host's canonical project directory. At least one of those sources must name a usable directory before Flow can start, continue, list, or query models for a workspace. Doctor is the exception because it must explain a missing-root failure. A requested working directory must resolve inside one of those roots. Flow rejects missing paths, symlink escapes, and unrelated checkouts.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:247:The service does not grant model-requested approvals, expose raw chain-of-thought, share jobs across machines, bundle provider executables, or act as a general remote execution service. Those additions would increase authority or operational scope without making the current local cross-family calls more reliable.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/docs/DELEGATION.md:249:The rejected alternative was a thin `claude -p` text wrapper. It could produce an answer, but it would lose native session continuation, structured control messages, cooperative cancellation, live model discovery, and an honest acceptance boundary. The Agent SDK route is the closest practical match to the Codex App Server route without inventing provider features.
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Analyzing agent session context and capabilities**
+**Distinguishing installed profile from active session context**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "nl -ba /home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md | sed -n '1,90p'; nl -ba /home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/commands/prep.md | sed -n '1,85p'; nl -ba /home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md | sed -n '43,54p'; rg -n 'flow-charter|flow-profile|flow@jakub' /home/jakub/.codex/config.toml /home/jakub/.codex/plugins --glob 'plugin.json' --glob 'marketplace.json' --glob '*.toml' 2>/dev/null | head -n 100" in /tmp
+ succeeded in 0ms:
+     1	# flow host profile: Codex
+     2	
+     3	Injected beside the charter. Each section binds one of its `[[role:…]]` names to this
+     4	host's mechanism; the charter says what a role is for, this file says what it is here.
+     5	
+     6	### role: orchestrator-model
+     7	The session model the human launched conducts. The model table governs every other seat.
+     8	
+     9	### role: sub-seat
+    10	Native subagents, with model and effort named per spawn. Read-only seats spawn freely;
+    11	a substantial write seat runs contained - same-family in a native seat carrying the
+    12	seat contract in its spawn prompt, cross-family through `delegate_to_claude` with
+    13	workspace-write. The ~20-parallel cap and the worktree rule apply as written.
+    14	
+    15	### role: context-inheritance
+    16	Native spawns can inherit your turns - the fork_turns knob - and the platform's
+    17	defaults lean toward inheriting, so treat inheritance as ON unless you explicitly
+    18	set it off. That makes turn inheritance this host's context-inheriting spawn: choose
+    19	the boundary deliberately per seat, and never hand an inheriting seat a session
+    20	holding material it shouldn't see. Carry the charter's non-negotiables in the spawn
+    21	prompt for every seat regardless - a cold seat needs them, and an inheriting seat
+    22	must not depend on having seen them scroll by.
+    23	
+    24	### role: search-seat
+    25	A native read-only subagent on `gpt-5.6-luna`, medium effort. Escalate the model when
+    26	the search itself needs judgment.
+    27	
+    28	### role: pipeline-entry
+    29	No slash commands - this host ignores a plugin's commands directory. Land is the one
+    30	stage that runs here today: the human asks for it in words or names the plugin's
+    31	land-stage skill, and a PR that merely looks ready is never an invocation. Prep and
+    32	issue are NOT yet runnable on this host (issue #6, slices 3-4) - route them to a
+    33	Claude-hosted session, and do not improvise either stage from the charter's summary:
+    34	a stage without its body skips the grill, the claim rules, and the containment that
+    35	make it safe.
+    36	
+    37	### role: artifact-publish
+    38	The plans CLI directly (`plans publish`, `--keep` for PR evidence); there is no skill
+    39	wrapper on this host. Artifacts stay tailnet-private.
+    40	
+    41	### role: gripe-cli
+    42	Unavailable. The `gripe` CLI does not resolve in a Codex session until the dual
+    43	resolver lands (issue #6, slice 5). Skip filing - do not fake a gripe, do not invent
+    44	another store, and do not claim one was filed.
+     1	---
+     2	description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; use this command when either you or the user wants to create a new issue or revise an existing issue.
+     3	argument-hint: <issue-number | free-text idea>
+     4	allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Read, Edit, Write, Skill, AskUserQuestion, Agent, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_continue, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_list, mcp__plugin_flow_flow_delegate__delegation_cancel
+     5	---
+     6	
+     7	# /flow:prep - the front door for the prep → issue → land workflow
+     8	
+     9	/flow:prep is the entry point for all new development work. The argument is either an issue number - well-defined or a bare placeholder - or free text: an idea, a spike, a mid-development deviation.
+    10	
+    11	/flow:issue is a hands-off autonomous implementation, so the issue we hand it needs to be precise, well designed, well scoped, and complete with acceptance criteria. We need to examine the codebase and produce a solid proposal that contains everything a cold implementer in a new session would need.
+    12	
+    13	Prep is the only lane where a new issue may be born: the `no-backlog-guard.mjs` hook blocks `gh issue create` everywhere else, so creating one at finalize means `FLOW_SANCTION=prep gh issue create ...`. That sanction names the lane you're in; don't sprinkle it on other commands.
+    14	
+    15	## Core principles
+    16	
+    17	1) The issue is both the spec and the implementation record. The body is a living document, edited in place. Everything you find along the way goes in as a journal comment, because a human reviews this run by reading those comments back in order.
+    18	2) Bias toward correctness. On a design fork recommend the correct answer over the easy or quick one, and actually pick one - say what you would do and why, never a menu of neutral options. The human overrides you if they disagree.
+    19	3) When a loose end turns up, turn it into an acceptance criterion or an ADR line and fold it into this issue. Never open a second issue for it. We are trying to shrink the backlog.
+    20	4) Don't resurrect closed work. Closed issues are good background and you should read them, but a proposal already litigated as `wontfix` or `deferred` stays buried: surface what you found and stop, unless the human explicitly overrides.
+    21	5) Prep itself never writes code and never creates a worktree - it edits the issue, context.md, and ADRs, and nothing else. The one exception is the triviality gate in §3: when the work is small enough to skip the tracker entirely, prep hands off to a normal quick fix and exits.
+    22	
+    23	## 1. Entry
+    24	
+    25	**Issue mode**: `gh issue view <N> --json number,title,body,labels,state,url,comments`
+    26	1) Abort if closed or `wontfix`. 
+    27	2) If already `ready-for-agent`, ask whether to re-prep.
+    28	
+    29	**Free-text mode**:
+    30	1) Dedupe - `gh issue list --search "<terms>" --state all` (open AND closed) plus `gh pr list --search`. If an existing open match is found, inform the user and change your focus to that issue instead.
+    31	2) If a closed or `wontfix` match is found, surface it and stop unless the human overrides. 
+    32	
+    33	No issue is created yet - that happens at finalize, after the design survives the gates.
+    34	
+    35	## 2. Scout
+    36	
+    37	Delegate codebase reviews to scoped agents. Use `Explore` on Sonnet for the repository sweep,
+    38	because searching needs eyes rather than judgment. Use `delegate_to_codex` for the outside
+    39	perspective.
+    40	
+    41	Tell every subagent to keep what it sends back tight: paths, and the seams that matter. A whole grill runs in this session afterwards, so your remaining context is the budget - conclusions come home, file dumps don't.
+    42	
+    43	The subagents should return:
+    44	
+    45	1) **Domain docs**: Start at the repo's `AGENTS.md` - its `## Contexts` section is the map, and it tells you which context.md slices exist. Read those for terminology, then the 1-3 existing ADRs this work touches.
+    46	2) **Code seams**: Select 3-6 keywords from the ask, grep likely modules, and read the key seams.
+    47	3) **Prior art**: Related, duplicate, or closed work. Read it for what it teaches and for anything worth reusing or refactoring - but never re-propose something already buried.
+    48	4) **Design-readiness assessment**: What's clear, what's ambiguous, and the OPEN QUESTIONS a cold implementer would trip on. Present it to the user.
+    49	
+    50	## 3. Triviality gate
+    51	
+    52	If the issue is fully specified and small (clear AC, no open questions, no design forks): 
+    53	- Issue mode: recommend skipping straight to `/flow:issue <N>`.
+    54	- Free-text mode: **recommend doing it right now** - no ticket theater for little fixes. On agreement, implement it directly (normal quick-fix rules), commit to main, and stop; the tracker never hears of it.
+    55	
+    56	If the issue is too big for one PR, recommend splitting it into slices that each run end to end - a thin path through the whole system rather than one horizontal layer of it. Each slice gets its own prep pass. Don't auto-spawn tickets.
+    57	
+    58	Otherwise, continue to the dialectic.
+    59	
+    60	## 4. Design dialectic - where ADRs are minted 
+    61	
+    62	Issues that survive the triviality gate get a cross-model dialectic BEFORE the grill: if we're minting an ADR, it deserves a thorough discussion.
+    63	
+    64	1) **Blind proposals**, parallel, neither sees the other: Spawn a Claude architecture leg from
+    65	   the scout's code seams. In parallel, call `delegate_to_codex` with Sol at high effort,
+    66	   attached delivery, read-only access, and the repository root as `cwd`. Sol proposes its own
+    67	   design and hunts for decisions the issue left unstated. Both work at the product level:
+    68	   shape, boundaries, protocols, and trust rules. Placement and signatures belong to the
+    69	   implementation run, against the commit that will be changed.
+    70	2) **Mutual critique**: Give each proposal to the rival. Use `delegation_continue` with the
+    71	   Sol job ID so Codex keeps its original context. Each leg returns the strongest version of
+    72	   the disagreement. No averaging. The human synthesizes the argument in the grill.
+    73	3) **The argument becomes grill material**: Agreements arrive as recommended answers; disagreements become grill questions, adjudicated one at a time. Trust-model forks (who may reach what, what an unattended tool will read or publish, security concerns) are ALWAYS presented for human decision, never auto-resolved - runs are forbidden from guessing these, so prep is where they get settled cheaply.
+    74	
+    75	## 5. Grill
+    76	
+    77	If a `grill-with-docs` skill is available, run it seeded with the dialectic's argument and the open questions.
+    78	
+    79	Otherwise run the grill inline, same discipline: one question at a time, each with a recommended answer (weight correctness over minimal-change); challenge terms against the glossary; stress-test boundaries with concrete scenarios; cross-reference the code; update context.md / write ADRs inline as decisions crystallize.
+    80	
+    81	Resolve each branch of the design tree before moving to the next.
+    82	
+    83	**Seed the skill with this repo's doc-stack conventions** - the upstream grill-with-docs and grilling skills assume different conventions and will otherwise write to the wrong places:
+    84	
+    85	- The glossary file is `context.md`, **lowercase**. Never create or read `CONTEXT.md` - on a case-sensitive filesystem that is a second, competing file.
+    43	8. **Report**: what was created, what already conformed, what needs a human decision (e.g. which crates deserve domain files). A checklist, not an essay.
+    44	
+    45	### Host profile presence
+    46	
+    47	The charter names roles; the `<flow-profile>` block injected beside it says what each role binds to on this host. A session that gets the charter with no profile block is running on prose with no mechanisms behind it, and the model cannot notice that on its own. Copy this sentence into the user's outer instructions (their `CLAUDE.md` or `AGENTS.md`), beside the existing `<flow-charter>` presence check:
+    48	
+    49	```
+    50	If a <flow-charter> block is present without a matching <flow-profile> block, say so before substantive engineering work and do not run the flow pipeline stages.
+    51	```
+    52	
+    53	## Drift
+    54	
+/home/jakub/.codex/config.toml:185:[plugins."flow@jakub"]
+/home/jakub/.codex/config.toml:255:[hooks.state."flow@jakub:hooks/hooks.json:session_start:0:0"]
+/home/jakub/.codex/config.toml:258:[hooks.state."flow@jakub:hooks/hooks.json:pre_tool_use:0:1"]
+/home/jakub/.codex/config.toml:261:[hooks.state."flow@jakub:hooks/hooks.json:pre_tool_use:0:0"]
+/home/jakub/.codex/config.toml:294:[hooks.state."flow@jakub:hooks/hooks.json:session_start:0:1"]
+/home/jakub/.codex/config.toml:297:[hooks.state."flow@jakub:hooks/hooks.json:pre_tool_use:0:2"]
+/home/jakub/.codex/config.toml:300:[hooks.state."flow@jakub:hooks/hooks.json:pre_tool_use:1:0"]
+/home/jakub/.codex/config.toml:303:[hooks.state."flow@jakub:hooks/codex.json:pre_tool_use:0:0"]
+/home/jakub/.codex/config.toml:306:[hooks.state."flow@jakub:hooks/codex.json:pre_tool_use:0:1"]
+/home/jakub/.codex/config.toml:309:[hooks.state."flow@jakub:hooks/codex.json:pre_tool_use:0:2"]
+/home/jakub/.codex/config.toml:312:[hooks.state."flow@jakub:hooks/codex.json:pre_tool_use:1:0"]
+/home/jakub/.codex/config.toml:315:[hooks.state."flow@jakub:hooks/codex.json:session_start:0:0"]
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Citing relevant memory lines for plugin absence**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "nl -ba /home/jakub/.codex/memories/MEMORY.md | sed -n '354,377p'; sed -n '176,195p' /home/jakub/.codex/config.toml; sed -n '248,320p' /home/jakub/.codex/config.toml" in /tmp
+ succeeded in 0ms:
+   354	- hooks/list, skills/list, trustStatus trusted, Hooks need review, 11 hooks are new or changed, codex debug prompt-input, flow-charter, unslop, Gripe sessions, grill-with-docs, allow_implicit_invocation, ALL_TOOLS
+   355	
+   356	## Task 3: Correct Gripe CLI wording, synchronize versions, and push, completed
+   357	
+   358	### rollout_summary_files
+   359	
+   360	- rollout_summaries/2026-08-27T04-24-23-2H5u-codex_plugin_audit_charter_gripe_cli_patch_and_push.md (cwd=/home/jakub/code/marketplace-plugins, rollout_path=/home/jakub/.codex/sessions/2026/08/26/rollout-2026-08-26T21-24-23-01a04176-3ff2-7d81-b338-5ccecf0303a0.jsonl, updated_at=2026-08-27T05:49:07+00:00, thread_id=01a04176-3ff2-7d81-b338-5ccecf0303a0, four-file patch validated, committed, and remote-verified)
+   361	
+   362	### keywords
+   363	
+   364	- gripe CLI, charter.md:147, .claude-plugin/marketplace.json, .codex-plugin/plugin.json, parallel plugin manifests, f6e0cd7, gh auth git-credential, git-receive-pack, origin/main
+   365	
+   366	## User preferences
+   367	
+   368	- When asking whether the latest repository is “installed into codex” -> verify source/snapshot HEAD, cache bytes, `config.toml`, and `codex plugin list`; installer exit code alone is insufficient. Enable extra available plugins only after an explicit request such as “enable those too.” [Task 1]
+   369	- For runtime/setup claims, verify context injection, skill discovery, hook attachment, hook execution, and callable-tool registration separately; do not infer health from installed files alone. [Task 2]
+   370	- When terminology overstates runtime authority, “Patch that line for me” authorizes the narrow correction while preserving dual-harness version/release conventions. After “Use gh,” use authenticated `gh` paths for GitHub operations where practical. [Task 3]
+   371	
+   372	## Reusable knowledge
+   373	
+   374	- `/home/jakub/.codex/config.toml` is the activation registry; the `jakub` snapshot is `/home/jakub/.codex/.tmp/marketplaces/jakub` and caches are `/home/jakub/.codex/plugins/cache/jakub/<plugin>/<version>`. Compare actual snapshot HEAD with checkout and `origin/main`; `last_revision` and `upgradedRoots: []` are not sufficient. New threads pick up newly enabled plugins. [Task 1]
+   375	- Codex keeps plugin, skill, hook, app/MCP, and callable-tool registries separate: `skills/list` proves discovery and `hooks/list` registration, neither a callable function. Gripe is `/home/jakub/.local/bin/gripe`, a shell CLI, not a native tool. `grill-with-docs` excludes implicit invocation through `allow_implicit_invocation: false`. [Task 2]
+   376	- If cache/smokes are sound but context is absent, check hook trust early: fresh definitions are skipped until reviewed/trusted. After trust and a new session, use App Server registry calls, `<flow-charter>`/`<unslop>`, and a Gripe session row as direct evidence. [Task 2]
+   377	- Plugin release patches synchronize both Claude/Codex manifests and marketplace entry/catalog version. Run manifest/hook smokes and `git diff --check`; the narrow verified patch is `f6e0cd7 fix(flow): describe gripe as a CLI`. [Task 3]
+[plugins."productivity@claude-cowork"]
+enabled = false
+
+[plugins."gripe@jakub"]
+enabled = true
+
+[plugins."unslop@jakub"]
+enabled = true
+
+[plugins."flow@jakub"]
+enabled = true
+
+[features]
+default_mode_request_user_input = true
+js_repl = false
+memories = true
+multi_agent_v2 = true
+
+[mcp_servers.node_repl]
+args = []
+
+[hooks.state."codex@openai-codex:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:e6b9df143de11443eb576c38874cf6e0c48358f948170948fdf630f1c047c098"
+
+[hooks.state."codex@openai-codex:hooks/hooks.json:stop:0:0"]
+trusted_hash = "sha256:3dfaa7e4f022570b260b8a8cf4ac7585c986175256b887a4723fac4f358a482f"
+
+[hooks.state."flow@jakub:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:6a60228f3cef0a85857bd3e5a2c68abf31323f6272264a8868d0ad954e6cfa9a"
+
+[hooks.state."flow@jakub:hooks/hooks.json:pre_tool_use:0:1"]
+trusted_hash = "sha256:9bc20fdf84a4628f24cd5a1503c285bd5a9b248883eae6046621610316168277"
+
+[hooks.state."flow@jakub:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:09669cfc49b7fa3c09ac240b9d498c09c9b8eafe2bfd79014d85685cb3e22954"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:e1f574c07fd492df4de2ceb615c3b0a2a3eca27329bf0929ff9095650c7174bf"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:0"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:1"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:2"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:3"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:4"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:3def3be0b299c29f829ea4b057509c24f3c6f8eede7b8c719bbd4167866d6cf6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:c22701bf949e9ffd219867faec1158e0124874e94f3668dab6209fa3acc92dd6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:stop:0:0"]
+trusted_hash = "sha256:5d8880157e747997146b5eb0443a43909e23fb0203e64ae4895eff5a1b0282fa"
+
+[hooks.state."/home/jakub/code/trawl/.codex/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:066e12f1e67d206e932e1cabfa8af7d4ff04303fab7d64d50eed91c5deee9976"
+
+[hooks.state."flow@jakub:hooks/hooks.json:session_start:0:1"]
+trusted_hash = "sha256:3cc88e74c3301b4da51a71cfb9f43a090c3105f24be7e312e651e334bf9e3490"
+
+[hooks.state."flow@jakub:hooks/hooks.json:pre_tool_use:0:2"]
+trusted_hash = "sha256:36b79699a9eca143e551ef3f131b46475df1adcc96a838cad8e2bc88a6556525"
+
+[hooks.state."flow@jakub:hooks/hooks.json:pre_tool_use:1:0"]
+trusted_hash = "sha256:1efbcfb48bc0c5f6be221e573c3e40177eed688de197145497ff15d01e4b486a"
+
+[hooks.state."flow@jakub:hooks/codex.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:94ac76b4c4e1f1c48ce5856f75ad85b033d0973eebdfb4b4817efa844027c9a7"
+
+[hooks.state."flow@jakub:hooks/codex.json:pre_tool_use:0:1"]
+trusted_hash = "sha256:f2e0d4c75c67137ee0b0fd4132c1f2ada4cfe60a47b54de6ad898d6004ce2784"
+
+[hooks.state."flow@jakub:hooks/codex.json:pre_tool_use:0:2"]
+trusted_hash = "sha256:a52d691e4cde4d7f0273f548f63523f24be1b09193afcd716cec907394becb62"
+
+[hooks.state."flow@jakub:hooks/codex.json:pre_tool_use:1:0"]
+trusted_hash = "sha256:71c0bd55101d6eef25aa2775329049155071f218bd6e0628ca489e655874e7e8"
+
+[hooks.state."flow@jakub:hooks/codex.json:session_start:0:0"]
+trusted_hash = "sha256:9055b7b6258b139455ae462e661eb2afebb5dfc1852b3fc006522af98db7783e"
+
+[hooks.state."gripe@jakub:hooks/codex.json:post_tool_use:0:0"]
+trusted_hash = "sha256:31e2d19cc29ee5e67048905f25216886378eb7e3fff3191afdd22bc4204d177e"
+
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Clarifying diagnostic focus over fixing**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "nl -ba /home/jakub/.codex/memories/MEMORY.md | sed -n '332,360p'" in /tmp
+ succeeded in 0ms:
+   332	scope: Refresh/verify the `jakub` Codex marketplace, diagnose Flow/Gripe/Unslop runtime loading, make narrow cross-harness charter changes, and publish verified updates.
+   333	applies_to: cwd=/home/jakub/code/marketplace-plugins; reuse_rule=registry paths and verification order are host-specific; versions, trust state, cache contents, and remote SHA must be rechecked.
+   334	
+   335	## Task 1: Refresh the marketplace snapshot and enable all repository plugins, completed
+   336	
+   337	### rollout_summary_files
+   338	
+   339	- rollout_summaries/2026-08-27T03-06-19-cm9s-refresh_codex_marketplace_plugins_and_enable_all_four.md (cwd=/home/jakub/code/marketplace-plugins, rollout_path=/home/jakub/.codex/sessions/2026/08/26/rollout-2026-08-26T20-06-19-01a0412e-c545-7862-b69f-d256e60c5892.jsonl, updated_at=2026-08-27T03:09:37+00:00, thread_id=01a0412e-c545-7862-b69f-d256e60c5892, refresh and explicit four-plugin enablement verified)
+   340	
+   341	### keywords
+   342	
+   343	- codex plugin marketplace upgrade jakub, config.toml, /home/jakub/.codex/.tmp/marketplaces/jakub, plugin cache, flow@jakub, grill@jakub, gripe@jakub, unslop@jakub, last_revision, smoke-plugin-manifests
+   344	
+   345	## Task 2: Diagnose hook trust and verify current runtime registries, completed
+   346	
+   347	### rollout_summary_files
+   348	
+   349	- rollout_summaries/2026-08-27T03-10-32-quOl-codex_plugin_hook_trust_bootstrap_audit.md (cwd=/home/jakub/code/marketplace-plugins, rollout_path=/home/jakub/.codex/sessions/2026/08/26/rollout-2026-08-26T20-10-32-01a04132-a352-72a3-b78a-3af5eaa71c79.jsonl, updated_at=2026-08-27T03:18:17+00:00, thread_id=01a04132-a352-72a3-b78a-3af5eaa71c79, read-only trust-root-cause audit)
+   350	- rollout_summaries/2026-08-27T04-24-23-2H5u-codex_plugin_audit_charter_gripe_cli_patch_and_push.md (cwd=/home/jakub/code/marketplace-plugins, rollout_path=/home/jakub/.codex/sessions/2026/08/26/rollout-2026-08-26T21-24-23-01a04176-3ff2-7d81-b338-5ccecf0303a0.jsonl, updated_at=2026-08-27T05:49:07+00:00, thread_id=01a04176-3ff2-7d81-b338-5ccecf0303a0, later live trusted-runtime verification)
+   351	
+   352	### keywords
+   353	
+   354	- hooks/list, skills/list, trustStatus trusted, Hooks need review, 11 hooks are new or changed, codex debug prompt-input, flow-charter, unslop, Gripe sessions, grill-with-docs, allow_implicit_invocation, ALL_TOOLS
+   355	
+   356	## Task 3: Correct Gripe CLI wording, synchronize versions, and push, completed
+   357	
+   358	### rollout_summary_files
+   359	
+   360	- rollout_summaries/2026-08-27T04-24-23-2H5u-codex_plugin_audit_charter_gripe_cli_patch_and_push.md (cwd=/home/jakub/code/marketplace-plugins, rollout_path=/home/jakub/.codex/sessions/2026/08/26/rollout-2026-08-26T21-24-23-01a04176-3ff2-7d81-b338-5ccecf0303a0.jsonl, updated_at=2026-08-27T05:49:07+00:00, thread_id=01a04176-3ff2-7d81-b338-5ccecf0303a0, four-file patch validated, committed, and remote-verified)
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Clarifying native subagent inheritance**
+**Identifying missing active Flow binding**
+codex
+1. **Search fan-out:** The installed Codex host profile binds Flow’s search seat to a **native, read-only subagent using `gpt-5.6-luna` at medium effort**. This comes from `### role: search-seat` in [charter/profiles/codex.md](/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:24). The mechanism is the native `spawn_agent` facility, not Flow’s cross-family delegation service.
+
+   There is an important runtime qualification: this session contains neither `<flow-charter>` nor `<flow-profile>`. Therefore, that installed binding was **not injected into this session**. I can report the intended host binding from the installed profile, but I cannot call it an active session binding. The distinction comes from `### Host profile presence` in [skills/flow/SKILL.md](/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:45), which says the profile block is what binds Flow roles to host mechanisms.
+
+2. **Can I run Flow’s prep stage here now? No.** There are two independent reasons:
+
+   - The Codex host profile explicitly says this host ignores plugin command directories and that **prep and issue are not yet runnable on Codex**. It says to route those stages to a Claude-hosted session. That comes from `### role: pipeline-entry` in [charter/profiles/codex.md](/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:28).
+   - This particular session is also missing the required charter and profile injection. The outer `AGENTS.md` instruction says to report that condition and repair it before substantive Flow engineering work. The Flow skill separately says not to run pipeline stages when the matching profile is absent.
+
+   The installed plugin files include the prep command body, but having the file on disk does not make the stage callable on this host.
+
+3. **Yes, a native subagent inherits my conversation context by default.** The current `spawn_agent` tool contract in the developer-provided session context says `fork_turns` defaults to `"all"`. That means a spawn inherits the full surrounding turn history unless I explicitly pass `fork_turns: "none"` or a limited turn count. The installed Flow profile says the same thing less precisely under `### role: context-inheritance`: treat inheritance as on unless explicitly disabled, in [charter/profiles/codex.md](/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:15).
+
+So the compact answer is: **native subagent plus Luna/medium; prep cannot run on this Codex host; native spawns inherit context by default.** The current session also has a broken or missing Flow SessionStart injection, so the first answer describes the installed profile rather than a binding successfully injected into this conversation.
+
+
+hook: Stop
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+hook: Stop Failed
+tokens used
+60,066
+1. **Search fan-out:** The installed Codex host profile binds Flow’s search seat to a **native, read-only subagent using `gpt-5.6-luna` at medium effort**. This comes from `### role: search-seat` in [charter/profiles/codex.md](/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:24). The mechanism is the native `spawn_agent` facility, not Flow’s cross-family delegation service.
+
+   There is an important runtime qualification: this session contains neither `<flow-charter>` nor `<flow-profile>`. Therefore, that installed binding was **not injected into this session**. I can report the intended host binding from the installed profile, but I cannot call it an active session binding. The distinction comes from `### Host profile presence` in [skills/flow/SKILL.md](/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/skills/flow/SKILL.md:45), which says the profile block is what binds Flow roles to host mechanisms.
+
+2. **Can I run Flow’s prep stage here now? No.** There are two independent reasons:
+
+   - The Codex host profile explicitly says this host ignores plugin command directories and that **prep and issue are not yet runnable on Codex**. It says to route those stages to a Claude-hosted session. That comes from `### role: pipeline-entry` in [charter/profiles/codex.md](/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:28).
+   - This particular session is also missing the required charter and profile injection. The outer `AGENTS.md` instruction says to report that condition and repair it before substantive Flow engineering work. The Flow skill separately says not to run pipeline stages when the matching profile is absent.
+
+   The installed plugin files include the prep command body, but having the file on disk does not make the stage callable on this host.
+
+3. **Yes, a native subagent inherits my conversation context by default.** The current `spawn_agent` tool contract in the developer-provided session context says `fork_turns` defaults to `"all"`. That means a spawn inherits the full surrounding turn history unless I explicitly pass `fork_turns: "none"` or a limited turn count. The installed Flow profile says the same thing less precisely under `### role: context-inheritance`: treat inheritance as on unless explicitly disabled, in [charter/profiles/codex.md](/home/jakub/.codex/plugins/cache/jakub/flow/0.27.0/charter/profiles/codex.md:15).
+
+So the compact answer is: **native subagent plus Luna/medium; prep cannot run on this Codex host; native spawns inherit context by default.** The current session also has a broken or missing Flow SessionStart injection, so the first answer describes the installed profile rather than a binding successfully injected into this conversation.
+
+
