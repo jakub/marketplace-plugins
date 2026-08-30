@@ -2,7 +2,7 @@
 // Codex publish guard. Three jobs, and they are not the same job.
 //
 // 1. Registry publication. crates.io, npm, PyPI and RubyGems have no real undo, and Codex
-//    cannot turn a PreToolUse hook result into an approval prompt: as of Codex CLI 0.149.1 an
+//    cannot turn a PreToolUse hook result into an approval prompt: as of Codex CLI 0.151.0 an
 //    unsupported `ask` reads as a hook failure and the command runs anyway. So publication
 //    fails closed here instead of asking, everywhere, with no way through from inside a
 //    session. The human types it in their own terminal.
@@ -42,7 +42,6 @@
 // `git rev-parse`.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -59,7 +58,6 @@ const REGISTRY_MANUAL =
 
 const PLUGIN_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 const EXECUTOR = join(PLUGIN_ROOT, 'scripts', 'land-merge.mjs')
-const MANAGED_MARKER = join('.flow', 'managed')
 
 const SANCTION = sanctionPath(process.env)
 
@@ -86,9 +84,10 @@ const git = (root, args) => execFileSync('git', ['-C', root, ...args], {
  * answer is treated as an answer of "managed": failing closed here costs a denial the human can
  * resolve, and failing open costs an unreviewed merge.
  *
- * The opt-in lives in git, not in the working tree. A worktree copy of `.flow/managed` is the
- * fast answer, but the marker being committed at HEAD is what actually enrolls the repository,
- * so a deleted or never-checked-out worktree copy does not un-enroll it. `git ls-tree` lists the
+ * The opt-in lives in git, not in the working tree: the marker committed at HEAD is what
+ * enrolls the repository, exactly as documented, so a deleted worktree copy does not un-enroll
+ * it and an untracked or merely staged copy does not enroll some unrelated clone the session
+ * happens to be sitting in. `git ls-tree` lists the
  * path when it is committed at HEAD and prints nothing when it is not, both on a clean exit 0.
  * Empty output is a real "not committed" and leaves the repository unmanaged; non-empty output
  * is managed. Any nonzero exit or error from the probe - a repository with no HEAD yet, a broken
@@ -104,7 +103,6 @@ const isManagedRepo = (cwd) => {
     return true
   }
   if (root === '') return true
-  if (existsSync(join(root, MANAGED_MARKER))) return true
   try {
     return git(root, ['ls-tree', '--name-only', 'HEAD', '--', '.flow/managed']).trim() !== ''
   } catch {

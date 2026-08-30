@@ -516,7 +516,11 @@ try {
     for (const [id, entry] of Object.entries(inventory.capabilities)) {
       assert.equal(typeof entry.supported, 'boolean', `${host}/${id} supported`)
       assert.match(entry.verifiedAt, /^\d{4}-\d{2}-\d{2}$/, `${host}/${id} verifiedAt`)
-      assert.ok(!Number.isNaN(Date.parse(entry.verifiedAt)), `${host}/${id} verifiedAt is a real date`)
+      // Date.parse alone normalizes an impossible date ('2023-02-31' becomes March 3), so the
+      // round-trip back to YYYY-MM-DD is what proves the calendar date is real.
+      const verifiedMs = Date.parse(entry.verifiedAt)
+      assert.ok(!Number.isNaN(verifiedMs), `${host}/${id} verifiedAt is a real date`)
+      assert.equal(new Date(verifiedMs).toISOString().slice(0, 10), entry.verifiedAt, `${host}/${id} verifiedAt is a real calendar date`)
       assert.ok(HOST_CAPABILITY_ASSURANCES.includes(entry.assurance), `${host}/${id} assurance`)
       assert.equal(typeof entry.note, 'string', `${host}/${id} note`)
       assert.ok(entry.note.length > 0, `${host}/${id} note`)

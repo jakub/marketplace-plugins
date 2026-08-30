@@ -25,12 +25,12 @@ Every gate below carries a `[[gate:<id>]]` marker. The profile you just read has
 The argument is a PR number, or nothing at all: with no argument, resolve the PR from the current branch (`gh pr view --json number`). Abort with usage if neither resolves. Three origins authorize the number: the argument, the entry point the human invoked resolving the current branch, or the human naming the PR in words. Anything else is a stop. This stage never picks its own PR out of a survey, a green build, or whatever work sits next to it.
 
 ```bash
-gh pr view $PR --json number,title,state,headRefName,baseRefName,url,isDraft,mergeable,mergeStateStatus,closingIssuesReferences,statusCheckRollup
+gh pr view $PR --json number,title,body,state,headRefName,headRefOid,baseRefName,url,isDraft,isCrossRepository,mergeable,mergeStateStatus,autoMergeRequest,closingIssuesReferences,statusCheckRollup,comments
 ```
 
-Abort if the PR is not OPEN, or if it is a draft. Record `HEAD_REF`, `BASE_REF`, and `LINKED_ISSUES`.
+Abort if the PR is not OPEN, or if it is a draft. Record `HEAD_REF`, `HEAD_SHA` (the `headRefOid` - every gate below inspects THIS commit, and the merge in step 6 is pinned to it), `BASE_REF`, and `LINKED_ISSUES`. The `body` and `comments` come along in the same read because steps 1 and 5 parse them.
 
-[[gate:linked-issue-recovery]] An empty `closingIssuesReferences` does NOT mean there are no linked issues - it means GitHub parsed no link. A mangled `Closes #N`, or a squash parenthetical like `(#N)`, links nothing. Fall back to parsing the issue number out of `HEAD_REF` (`feat|fix|chore/issue-N-*`) and any `#N` references in the PR title and body. If it is still ambiguous, ask the human through the human-choice binding: closing nothing is the failure mode here, and it is a silent one.
+[[gate:linked-issue-recovery]] An empty `closingIssuesReferences` does NOT mean there are no linked issues - it means GitHub parsed no link. A mangled `Closes #N`, or a squash parenthetical like `(#N)`, links nothing. Two recoveries carry enough intent to act on: the issue number in `HEAD_REF` (`feat|fix|chore/issue-N-*`), and an explicit closing phrase in the PR title or body (`close[sd]?`/`fix(es|ed)?`/`resolve[sd]?` directly before `#N`). A bare `#N` anywhere else is a mention, not a link - "Part of #6" or "follow-up in #42" must never close anything - so bare references only become candidates in the human ask. If recovery is empty or ambiguous, ask through the human-choice binding with the candidates and an explicit "close none": closing nothing is the silent failure mode here, and closing a bystander issue is the loud one.
 
 ## 2. Stacked-chain guard [[gate:stacked-chain]]
 
@@ -46,10 +46,10 @@ The JSON rollup mixes CheckRuns with commit statuses, which is how external revi
 
 - **All SUCCESS / NEUTRAL / SKIPPED**: proceed.
 - **Anything pending**: wait briefly and re-read. Still pending → report it and stop.
-- [[gate:flake-allowance]] **A failure listed in the repo's `.github/known-flakes.txt`**: note it and merge through. Entries are one per line in two forms - a bare check name means the whole check is flaky, while `check-name:test_name` means one flaky test inside a suite check, and merging through then requires the job log to show THAT test as the sole failure.
+- [[gate:flake-allowance]] **A failure listed in the repo's `.github/known-flakes.txt`**: note it and merge through. Read the allowlist from the base branch, never from the PR: `git fetch origin $BASE_REF && git show origin/$BASE_REF:.github/known-flakes.txt`. The PR's own copy is part of what is being reviewed, and a branch that adds its failing check to the allowlist must not get to wave itself through - an entry that exists only on the PR side is a diff to flag, not an allowance. Entries are one per line in two forms - a bare check name means the whole check is flaky, while `check-name:test_name` means one flaky test inside a suite check, and merging through then requires the job log to show THAT test as the sole failure.
 - **Anything else**, including an errored or stale check: abort and show it. The one exception is the valve below.
 
-[[gate:rerun-once]] **The rerun-once valve** covers a suite check failing on a single test. All three of these have to hold: the failing test predates this PR (`git log -S <test_name>` finds no commit on the branch that introduced it), its file and paths don't overlap the PR diff, and the failure is timing-shaped - a timeout, an elapsed-time assertion, pool starvation - rather than an assertion on values. Then rerun the failed job ONCE (`gh run rerun <id> --failed`), re-read the rollup, and note the rerun in the land report.
+[[gate:rerun-once]] **The rerun-once valve** covers a suite check failing on a single test. All three of these have to hold: the failing test predates this PR (`git log origin/$BASE_REF..HEAD -S <test_name>` finds no commit - the range matters, because an unbounded `git log -S` walks all of history and finds the commit that originally introduced the test on main, which proves nothing about this PR), its file and paths don't overlap the PR diff, and the failure is timing-shaped - a timeout, an elapsed-time assertion, pool starvation - rather than an assertion on values. Then rerun the failed job ONCE (`gh run rerun <id> --failed`), re-read the rollup, and note the rerun in the land report.
 
 Red twice on identical code is real: abort. Never rerun an assertion failure - that one is telling you the truth.
 
@@ -102,7 +102,7 @@ This is where a review that landed after the issue run finished gets caught. Tha
 
 ## 5. Escape-hatch ack [[gate:escape-hatch-ack]]
 
-If the PR carries a `## follow-up draft` comment - cross-crate-scale findings the run deferred rather than filing - present it to the human through the human-choice binding and ask.
+If the PR carries a `## follow-up draft` comment - cross-crate-scale findings the run deferred rather than filing - present it to the human through the human-choice binding and ask. The place to look is the `comments` array from the step-1 read: the draft is a top-level PR comment, so it never appears in the review threads the previous gate walked.
 
 [[gate:sanctioned-issue-create]] On ack, file it: `FLOW_SANCTION=land gh issue create --title … --body … --label needs-triage`. The sanction is what gets it past the no-backlog hook, the body links this PR, and the new issue still enters through `/flow:prep` before any agent touches it.
 
@@ -110,17 +110,21 @@ On decline, reply to the draft comment saying it was consciously dropped, so the
 
 ## 6. Merge and close
 
-1) [[gate:squash-merge]] `gh pr merge $PR --squash`, deliberately WITHOUT `--delete-branch`. The issue run's worktree still holds the local branch, so the local delete fails - and a non-zero exit would mask a merge that actually succeeded. Confirm with `gh pr view $PR --json state,mergeCommit` that `state == MERGED`. If it isn't, report and stop; never retry blindly.
+1) [[gate:squash-merge]] First, two arming checks: if the step-1 read showed `autoMergeRequest` set, stop - someone armed an auto-merge that will land this PR out of sight, and that gets surfaced to the human, not merged over. If the base branch uses a merge queue, stop the same way: this stage performs an immediate merge, and a command that quietly enqueues instead leaves an armed future merge behind the moment your gate observations go stale.
 
-2) [[gate:remote-branch-delete]] Delete the remote branch: `git push origin --delete $HEAD_REF`. Best effort - the repo's auto-delete may have raced you, and "remote ref does not exist" is a fine outcome. The LOCAL branch waits for step 7, after the worktree is gone.
+Then `gh pr merge $PR --squash --match-head-commit $HEAD_SHA`, deliberately WITHOUT `--delete-branch`. The issue run's worktree still holds the local branch, so the local delete fails - and a non-zero exit would mask a merge that actually succeeded. `--match-head-commit` is GitHub's own re-check that the head is still the commit every gate above inspected; a push that raced the gates fails the merge instead of landing unreviewed, and the answer to that failure is to re-run the gates, never to re-issue the merge with a fresh SHA.
+
+Confirm with `gh pr view $PR --json state,mergeCommit,autoMergeRequest` that `state == MERGED`. If it isn't, do not treat that as a clean failure yet: `autoMergeRequest` now set means the merge call armed a deferred merge rather than performing one, and that is an ARMED state to report to the human verbatim. Either way, report and stop; never retry blindly.
+
+2) [[gate:remote-branch-delete]] Delete the remote branch: `git push origin --delete $HEAD_REF` - but only when the step-1 read showed `isCrossRepository: false`. On a fork PR, `origin` is the base repo and `HEAD_REF` is a name in someone else's repo; the same spelling would delete an unrelated base-repo branch that happens to share the name. A fork's branch is theirs to clean up - skip and say so. Otherwise best effort - the repo's auto-delete may have raced you, and "remote ref does not exist" is a fine outcome. The LOCAL branch waits for step 7, after the worktree is gone.
 
 3) [[gate:issue-closure]] For every issue in `LINKED_ISSUES`, including any the step-1 fallback recovered: `gh issue view <N> --json state`. A squash-ref with a parenthetical `(#N)` auto-closes nothing. Still OPEN → `gh issue close <N> --comment "Landed via PR #$PR (<url>)."`. Report the final state of every linked issue, closed or not.
 
 ## 7. Local cleanup
 
-1) Get main current: `git switch main && git pull --ff-only`.
+1) Get main current - from the checkout that owns it. `git worktree list` names the canonical checkout (the first entry, or wherever `main` is checked out); call it `$MAIN_WT`. A plain `git switch main` run from the issue worktree fails, because main is already checked out over there, and the `&&`-chained cleanup behind it silently never runs. So: `git -C $MAIN_WT pull --ff-only` (switch first with `git -C $MAIN_WT switch main` only if that checkout is parked elsewhere).
 
-2) [[gate:worktree-retirement]] Retire the worktree (`git worktree remove`), then delete the local branch. `git branch -d` will refuse: a squash-merged branch is no ancestor of main, so once its upstream ref is pruned git can't see that it landed. You proved `state == MERGED` back in step 6, so `git branch -D <branch>` is the correct call. Finish with `git fetch --prune`, so stale remote-tracking refs don't survey as live branches.
+2) [[gate:worktree-retirement]] Retire the worktree from OUTSIDE it: `git -C $MAIN_WT worktree remove <path>` - git refuses to remove the worktree the command is standing in, so run it from the canonical checkout, and if the session's own shell sits inside the doomed worktree, use absolute paths from here on. Then delete the local branch. `git branch -d` will refuse: a squash-merged branch is no ancestor of main, so once its upstream ref is pruned git can't see that it landed. You proved `state == MERGED` back in step 6, so `git branch -D <branch>` is the correct call. Finish with `git fetch --prune`, so stale remote-tracking refs don't survey as live branches.
 
 3) [[gate:evidence-preservation]] Evidence branch: the ledger may have committed captures to `flow-evidence` (or the repo's own convention) under a `pr-$PR/` path. **Nothing about that branch gets deleted, force-pushed, or rewritten - not now, not later.** The ledger embeds those captures as SHA-pinned raw urls, which resolve only while the commit object survives; deleting the branch or rewriting its history makes every one of them GC-eligible, and GitHub's grace period for dangling commits is a courtesy, not a contract. Pruning the directory in a fresh commit is safe but buys nothing - the blobs stay in history either way.
 

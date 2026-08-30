@@ -54,13 +54,14 @@ const tmp = mkdtempSync(join(tmpdir(), 'flow-release-path-'))
 const repo = join(tmp, 'repo')       // opts into flow: .flow/managed is committed and present
 const mdel = join(tmp, 'mdel')       // .flow/managed is committed but the worktree copy is gone
 const plain = join(tmp, 'plain')     // no marker, one commit so HEAD is readable
+const muntr = join(tmp, 'muntr')     // .flow/managed exists only untracked: NOT enrolled
 const nohead = join(tmp, 'nohead')   // a repository with no commit yet: the marker probe errors
 const ghe = join(tmp, 'ghe')         // origin on a GitHub Enterprise host, same owner/name slug
 const norepo = join(tmp, 'norepo')   // not a git repository at all
 const state = join(tmp, 'state')
 const bin = join(tmp, 'bin')
 const SANCTION = join(state, 'release-sanction.json')
-for (const dir of [repo, mdel, plain, nohead, ghe, norepo, state, bin]) mkdirSync(dir)
+for (const dir of [repo, mdel, plain, muntr, nohead, ghe, norepo, state, bin]) mkdirSync(dir)
 
 const SLUG = 'jakub/marketplace-plugins'
 const IDENTITY = 'github.com/jakub/marketplace-plugins'
@@ -113,6 +114,18 @@ plainGit('remote', 'add', 'origin', 'git@github.com:someone/unmanaged.git')
 writeFileSync(join(plain, 'file.txt'), 'plain\n')
 plainGit('add', 'file.txt')
 plainGit('commit', '-q', '-m', 'first')
+
+// muntr: the marker exists in the working tree but was never committed. Enrollment is the
+// marker committed at HEAD, so this repository is NOT managed - a stray file dropped into an
+// unrelated clone must not turn the merge guardrail on there.
+const muntrGit = gitIn(muntr)
+muntrGit('init', '-q', '-b', 'main')
+muntrGit('remote', 'add', 'origin', 'git@github.com:someone/untracked.git')
+writeFileSync(join(muntr, 'file.txt'), 'muntr\n')
+muntrGit('add', 'file.txt')
+muntrGit('commit', '-q', '-m', 'first')
+mkdirSync(join(muntr, '.flow'))
+writeFileSync(join(muntr, '.flow', 'managed'), 'never committed\n')
 
 // nohead: initialized with a remote but no commit, so HEAD is unborn and the marker probe
 // errors rather than answering. The guard must fail closed to managed on that error.
@@ -216,9 +229,9 @@ const isPinned = (args) => {
 }
 
 const envBase = () => ({ FLOW_CRON_JOB: '', FLOW_STATE: state, HOME: tmp })
-const runExecutor = (args, { cwd = repo, env = {}, st } = {}) => {
+const runExecutor = (args, { cwd = repo, env = {}, st, now } = {}) => {
   const s = st || freshState()
-  const result = landMerge({ argv: args, env: { ...envBase(), ...env }, cwd, runGh: makeRunGh(s), nowMs: Date.now() })
+  const result = landMerge({ argv: args, env: { ...envBase(), ...env }, cwd, runGh: makeRunGh(s), nowMs: Date.now(), ...(now ? { now } : {}) })
   return { code: result.code, stdout: result.stdout, stderr: result.stderr, calls: s.calls, merges: s.merges, st: s }
 }
 
@@ -281,8 +294,11 @@ check('a dry run publishes nothing', JSON.stringify(publishOperations('cargo pub
 check('merge in prose is not a merge', JSON.stringify(publishOperations('echo "gh pr merge after review"')) === '[]')
 check('ordinary work publishes nothing', JSON.stringify(publishOperations('git status --porcelain')) === '[]')
 check('publishReason ignores the merge op', publishReason(MERGE) === null)
+// Same isolated environment as guard(): a stray FLOW_CRON_JOB or FLOW_STATE in the
+// operator's shell must not change what these checks prove.
 const claude = (command) => execFileSync(process.execPath, [CLAUDE_GUARD], {
   input: JSON.stringify({ tool_input: { command } }), encoding: 'utf8',
+  env: { ...gitEnv, FLOW_CRON_JOB: '', FLOW_STATE: state },
 }).trim()
 check('the Claude guard says nothing about a merge', claude(MERGE) === '')
 check('the Claude guard still asks about cargo publish', claude('cargo publish').includes('permissionDecision'))
@@ -347,6 +363,7 @@ console.log('\nin a repo without the marker, flow gates no merges')
 allows('a plain merge passes', MERGE, { cwd: plain })
 allows('so does the REST endpoint', `gh api repos/someone/unmanaged/pulls/${PR}/merge -X PUT`, { cwd: plain })
 allows('so does a merge wrapped in bash -lc', QUOTED, { cwd: plain })
+allows('an uncommitted marker does not enroll a repo', MERGE, { cwd: muntr })
 
 console.log('\nregistry publication is denied in both')
 const PLAIN = 'This publishes to crates.io, which you cannot take back - crates.io has no unpublish at all. ' +
@@ -445,10 +462,10 @@ check('and merged nothing', gheRun.merges.length === 0, JSON.stringify(gheRun.me
 check('the claim is spent', !existsSync(SANCTION) && tombstones('denied').length === 1, JSON.stringify(tombstones('denied')))
 
 console.log('\nthe executor refuses, and spends the sanction doing it')
-const executorDenies = (name, args, substring, { sanctionOverrides, st, env, cwd, merges = 0, verdict = 'denied' } = {}) => {
+const executorDenies = (name, args, substring, { sanctionOverrides, st, env, cwd, now, merges = 0, verdict = 'denied' } = {}) => {
   clearTombstones()
   sanction(sanctionOverrides)
-  const result = runExecutor(args, { st, env, cwd })
+  const result = runExecutor(args, { st, env, cwd, now })
   check(name, result.code === 1 && result.stderr.includes(substring), `code ${result.code}: ${(result.stderr || result.stdout).trim()}`)
   check(`${name}: merged ${merges}`, result.merges.length === merges, JSON.stringify(result.merges))
   check(
@@ -478,6 +495,11 @@ executorDenies('an expired sanction is refused', [String(PR)], 'expired at', {
     issuedAt: new Date(Date.now() - 31 * 60_000).toISOString(),
     expiresAt: new Date(Date.now() - 60_000).toISOString(),
   },
+})
+// Valid on the entry clock, expired by the time the reads are done: the live-clock re-check
+// right before the mutation is what has to catch it, and no merge may run.
+executorDenies('a sanction that expires mid-run is refused', [String(PR)], 'while the checks ran', {
+  now: () => Date.now() + 11 * 60_000,
 })
 executorDenies('a sanction issued in the future is refused', [String(PR)], 'in the future', {
   sanctionOverrides: {
@@ -576,7 +598,6 @@ check('with no sanction it refuses', noSanction.code === 1 && noSanction.stderr.
 check('and calls gh not at all', noSanction.calls.length === 0, JSON.stringify(noSanction.calls))
 check('and leaves no tombstone, having claimed nothing', tombstones('denied').length === 0)
 
-sanction()
 writeFileSync(SANCTION, '{ this is not json')
 const malformed = runExecutor([String(PR)])
 check('a malformed sanction is refused', malformed.code === 1 && malformed.stderr.includes('could not be read as an object'), malformed.stderr)

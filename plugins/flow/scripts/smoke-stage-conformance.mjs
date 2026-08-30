@@ -139,6 +139,7 @@ ok(`commands/land.md has ${headings.length} "##" heading(s)`)
 const landAllowance = ALLOWED_TOOLS.exec(frontmatter(land)?.[1] ?? '')?.[0]
 const profileAllowance = ALLOWED_TOOLS.exec(profiles['claude.md'])?.[0]
 assert.ok(landAllowance, 'commands/land.md declares no allowed-tools')
+assert.ok(profileAllowance, 'profiles/claude.md declares no allowed-tools')
 assert.equal(landAllowance, profileAllowance)
 ok('the alias and the Claude profile declare the same allowed-tools line')
 

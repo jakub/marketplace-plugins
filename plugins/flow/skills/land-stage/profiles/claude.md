@@ -12,6 +12,8 @@ The human-choice binding is the AskUserQuestion tool: up to 4 questions per call
 selectable options, and the answer comes back inside the same turn. Never replace it with a
 prose question the human has to answer in an essay.
 
+## Gates
+
 ### gate: resolve-pr
 
 `$ARGUMENTS` from the `/flow:land` invocation is the PR number. Empty means resolve from the
@@ -36,13 +38,15 @@ No host difference. Both `gh pr view --json statusCheckRollup` and `gh pr checks
 
 ### gate: flake-allowance
 
-No host difference. Reading `.github/known-flakes.txt` is the Read tool; reading a job log is
-`gh run view --log-failed`.
+No host difference. The allowlist read is `git show origin/$BASE_REF:.github/known-flakes.txt`
+after a fetch, under `Bash(git:*)` - the base branch's copy, as the stage requires, never the
+PR's worktree copy. Reading a job log is `gh run view --log-failed`.
 
 ### gate: rerun-once
 
-No host difference. `git log -S <test_name>` and `gh run rerun <id> --failed` are both inside
-the allowance, and git-guard passes read-only `git log`.
+No host difference. `git log origin/$BASE_REF..HEAD -S <test_name>` and
+`gh run rerun <id> --failed` are both inside the allowance, and git-guard passes read-only
+`git log`.
 
 ### gate: unresolved-threads
 
@@ -62,12 +66,15 @@ has to be part of the same Bash call, not exported earlier.
 
 ### gate: squash-merge
 
-`gh pr merge $PR --squash`, with no confirmation prompt in front of it. The command runs
-pre-approved under the `Bash(gh:*)` allowance, and the publish guard in the PreToolUse chain
-asks only about package-registry publishes, so nothing stops this call to check with the
-human. The gate is upstream of the command. `/flow:land` is the human's own invocation, and
-the stage's CI and unresolved-thread gates decide whether the merge is warranted. Issue the
-merge exactly once, after those gates pass, and never bundle it into a batch of other work.
+`gh pr merge $PR --squash --match-head-commit $HEAD_SHA`, with no confirmation prompt in
+front of it. The command runs pre-approved under the `Bash(gh:*)` allowance, and the publish
+guard in the PreToolUse chain asks only about package-registry publishes, so nothing stops
+this call to check with the human. The gate is upstream of the command. `/flow:land` is the
+human's own invocation, and the stage's CI and unresolved-thread gates decide whether the
+merge is warranted. `--match-head-commit` pins the merge to the head those gates inspected;
+the arming checks and the armed-state re-read the stage describes all run under `Bash(gh:*)`.
+Issue the merge exactly once, after those gates pass, and never bundle it into a batch of
+other work.
 
 ### gate: issue-closure
 

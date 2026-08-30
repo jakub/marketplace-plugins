@@ -5,11 +5,13 @@ Read this with `SKILL.md`. The stage is host-neutral prose; this file says what 
 about it, the section says so rather than inventing a difference.
 
 There is no in-turn question tool here, and a PreToolUse hook cannot ask for confirmation:
-as of Codex CLI 0.149.1 an `ask` result reads as a hook failure and the command runs anyway.
+as of Codex CLI 0.151.0 an `ask` result reads as a hook failure and the command runs anyway.
 So the human-choice binding is the suspended turn. Write the question, list up to 4 numbered
 options with a one-line consequence each, then end the turn. The human's next message is the
 answer. Do not guess an answer to keep the run moving, and do not stack two questions into
 one suspension.
+
+## Gates
 
 ### gate: resolve-pr
 
@@ -36,13 +38,14 @@ No host difference. Read the rollup JSON, then cross-read `gh pr checks $PR`.
 
 ### gate: flake-allowance
 
-No host difference. Read `.github/known-flakes.txt` from the worktree; read a job log with
+No host difference. The allowlist read is `git show origin/$BASE_REF:.github/known-flakes.txt`
+after a fetch - the base branch's copy, as the stage requires, never the PR's. A job log is
 `gh run view --log-failed`.
 
 ### gate: rerun-once
 
-No host difference. `git log -S <test_name>` is read-only, and `gh run rerun <id> --failed`
-runs once.
+No host difference. `git log origin/$BASE_REF..HEAD -S <test_name>` is read-only, and
+`gh run rerun <id> --failed` runs once.
 
 ### gate: unresolved-threads
 

@@ -117,9 +117,12 @@ const MERGE_QUEUE_QUERY =
  * @param {string} args.cwd where the origin remote is read from
  * @param {(ghArgs: string[], timeoutMs: number) => {code: number, stdout: string, stderr: string}} args.runGh
  * @param {number} args.nowMs wall clock at verification time
+ * @param {() => number} [args.now] live clock, re-read right before the merge. The gh reads
+ *        between the verdict and the merge can take minutes at their worst, and a sanction
+ *        that expired during them must not still merge on the strength of the entry clock.
  * @returns {{code: number, stdout: string, stderr: string}}
  */
-export function landMerge({ argv, env, cwd, runGh, nowMs }) {
+export function landMerge({ argv, env, cwd, runGh, nowMs, now = () => Date.now() }) {
   const SANCTION = sanctionPath(env)
   const stateDir = dirname(SANCTION)
   const USAGE = usageFor(SANCTION)
@@ -254,6 +257,13 @@ export function landMerge({ argv, env, cwd, runGh, nowMs }) {
   }
   if (recheck.headRefOid !== sanction.head) {
     return refuse(`the head of #${prNumber} moved between the check and the merge; the sanction approved ${String(sanction.head).slice(0, 12)}`)
+  }
+
+  // The verdict above ran on the clock captured at entry, and the gh reads since then took
+  // real time. Expiry is the one predicate that decays on its own, so it alone is re-checked
+  // on a live clock here, at the last instant before the mutation.
+  if (now() >= Date.parse(sanction.expiresAt)) {
+    return refuse(`the sanction expired at ${sanction.expiresAt} while the checks ran; ask for a fresh one`)
   }
 
   // argv, not a shell line. There is no quoting to get wrong and nothing for a later reader to
