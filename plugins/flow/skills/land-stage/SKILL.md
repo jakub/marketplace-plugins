@@ -1,6 +1,7 @@
 ---
 name: land-stage
 description: Land one named pull request through the flow gates - the CI and unresolved-thread checks, the escape-hatch ack, the squash-merge, explicit issue closure, worktree retirement, and a survey of what to do next. The only merge path. MUST only run when the operator explicitly asks to land a specific PR; never start it from adjacent work, a finished review, or a green build.
+disable-model-invocation: true
 ---
 
 # land-stage - the human gate
@@ -19,7 +20,7 @@ Every gate below carries a `[[gate:<id>]]` marker. The host profile you read alo
 
 ## 1. Resolve [[gate:resolve-pr]]
 
-The argument is a PR number, or nothing at all: with no argument, resolve the PR from the current branch (`gh pr view --json number`). Abort with usage if neither resolves. Stop here unless the number came from the argument or from the human explicitly asking to land that PR - this stage never picks its own PR.
+The argument is a PR number, or nothing at all: with no argument, resolve the PR from the current branch (`gh pr view --json number`). Abort with usage if neither resolves. Three origins authorize the number: the argument, the entry point the human invoked resolving the current branch, or the human naming the PR in words. Anything else is a stop. This stage never picks its own PR out of a survey, a green build, or whatever work sits next to it.
 
 ```bash
 gh pr view $PR --json number,title,state,headRefName,baseRefName,url,isDraft,mergeable,mergeStateStatus,closingIssuesReferences,statusCheckRollup,reviewThreads

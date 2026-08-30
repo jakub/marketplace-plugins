@@ -22845,7 +22845,7 @@ var HOST_CAPABILITY_TABLE = {
   },
   "implicit-skill-suppression": {
     claude: { supported: true, assurance: "mechanism", note: "Skill frontmatter disable-model-invocation keeps a skill out of automatic selection." },
-    codex: { supported: true, assurance: "mechanism", note: "agents/openai.yaml allow_implicit_invocation: false, read in the 0.151.0 source." }
+    codex: { supported: true, assurance: "contract", note: "The 0.151.0 source reads allow_implicit_invocation out of agents/openai.yaml and acts on it, but no live loader probe has confirmed that yet." }
   },
   "structured-question": {
     claude: { supported: true, assurance: "mechanism", note: "The interactive ask tool returns the option the human picked." },
@@ -24242,7 +24242,7 @@ function signalTrackedProcessTree(rootPid, knownDescendants, signal) {
 }
 
 // src/delegation/version.mjs
-var VERSION = true ? "0.24.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
+var VERSION = true ? "0.25.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
 
 // src/delegation/app-server.mjs
 var APPROVAL_METHODS = /* @__PURE__ */ new Set([

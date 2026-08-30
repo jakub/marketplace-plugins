@@ -63,10 +63,12 @@ has to be part of the same Bash call, not exported earlier.
 
 ### gate: squash-merge
 
-`gh pr merge $PR --squash`, under the ask-gated guard: the PreToolUse chain returns
-`permissionDecision: ask` for anything irreversible, and Claude Code turns that into a
-confirmation prompt the human answers before the command runs. That prompt is the gate, so
-the merge command is issued exactly once and never pre-approved in a batch.
+`gh pr merge $PR --squash`, with no confirmation prompt in front of it. The command runs
+pre-approved under the `Bash(gh:*)` allowance, and the publish guard in the PreToolUse chain
+asks only about package-registry publishes, so nothing stops this call to check with the
+human. The gate is upstream of the command. `/flow:land` is the human's own invocation, and
+the stage's CI and unresolved-thread gates decide whether the merge is warranted. Issue the
+merge exactly once, after those gates pass, and never bundle it into a batch of other work.
 
 ### gate: issue-closure
 
