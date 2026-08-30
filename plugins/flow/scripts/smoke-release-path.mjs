@@ -1,47 +1,41 @@
 #!/usr/bin/env node
-// Smoke harness for flow's release path: hooks/scripts/publish-guard-codex.mjs (the tripwire),
-// scripts/land-merge.mjs (the executor that actually merges), lib/release-sanction.mjs (the
-// policy both sides of that split agree on), and scripts/release-sanction.mjs (the human's
-// half).
+// Smoke harness for flow's release path: hooks/scripts/publish-guard-codex.mjs (the tripwire
+// that routes merges to the executor) and scripts/land-merge.mjs (the executor that actually
+// merges).
 //
 // The executor is a cooperative guardrail, not a security boundary: at one uid a model could
-// ignore it. What the cases below prove is that the ordinary and casually-injected paths get
-// caught - the executor pins every gh call to the host-qualified repository the origin remote
-// names, matches the sanction on host as well as owner and name, refuses a merge queue or an
-// armed auto-merge before mutating, and spends its single-use approval whatever happens. After
-// the merge it reads the pull request back and reports honest outcomes: our confirmed merge, a
-// foreign merge of the same number that it will not claim, an authoritative failure, or a
-// genuinely unknown result it tells the operator to verify by hand rather than retry.
+// ignore it. What the cases below prove is that the ordinary path is verified - the executor
+// pins every gh call to the host-qualified repository the origin remote names, refuses a
+// closed or draft pull request, a non-default base, a merge queue or an armed auto-merge
+// before mutating, merges with --match-head-commit pinned to the head it verified, and
+// reports honest outcomes afterwards: our confirmed merge, a foreign merge of the same number
+// that it will not claim, an authoritative failure, or a genuinely unknown result it tells
+// the operator to verify by hand rather than retry.
 //
 // The executor is driven in process through its exported landMerge() with a fake gh injected as
 // a plain function across the module boundary. No environment variable selects the gh binary.
-// The one exception is the two-process race, which needs real operating-system processes to
-// prove the rename() lock; that one uses a fake gh on PATH, the way the production CLI resolves
-// the real one.
 //
 // "managed" is a property of the repository: a committed .flow/managed marker enrols it, and a
 // deleted working-tree copy does not un-enrol it. The marker probe reads the committed tree, so a
 // repository with no HEAD yet cannot be probed and fails closed to managed. These repositories
-// cover that - marked, marked-but-worktree-copy-deleted, unmarked-with-a-commit, and
-// no-commit-yet - plus one directory that is no repository at all.
+// cover that - marked, marked-but-worktree-copy-deleted, unmarked-with-a-commit,
+// marker-only-untracked, and no-commit-yet - plus one directory that is no repository at all.
 //
 // Run: node plugins/flow/scripts/smoke-release-path.mjs
 
-import { execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { mergeShapes, publishOperations, publishOperationsStrict, publishReason } from '../lib/hook-policy.mjs'
-import { releaseVerdict } from '../lib/release-sanction.mjs'
 import { landMerge } from './land-merge.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const GUARD = join(ROOT, 'hooks', 'scripts', 'publish-guard-codex.mjs')
 const CLAUDE_GUARD = join(ROOT, 'hooks', 'scripts', 'publish-guard.mjs')
 const EXECUTOR = join(ROOT, 'scripts', 'land-merge.mjs')
-const HELPER = join(ROOT, 'scripts', 'release-sanction.mjs')
 
 let bad = 0
 const check = (name, ok, detail = '') => {
@@ -58,10 +52,7 @@ const muntr = join(tmp, 'muntr')     // .flow/managed exists only untracked: NOT
 const nohead = join(tmp, 'nohead')   // a repository with no commit yet: the marker probe errors
 const ghe = join(tmp, 'ghe')         // origin on a GitHub Enterprise host, same owner/name slug
 const norepo = join(tmp, 'norepo')   // not a git repository at all
-const state = join(tmp, 'state')
-const bin = join(tmp, 'bin')
-const SANCTION = join(state, 'release-sanction.json')
-for (const dir of [repo, mdel, plain, muntr, nohead, ghe, norepo, state, bin]) mkdirSync(dir)
+for (const dir of [repo, mdel, plain, muntr, nohead, ghe, norepo]) mkdirSync(dir)
 
 const SLUG = 'jakub/marketplace-plugins'
 const IDENTITY = 'github.com/jakub/marketplace-plugins'
@@ -133,8 +124,8 @@ const noheadGit = gitIn(nohead)
 noheadGit('init', '-q', '-b', 'main')
 noheadGit('remote', 'add', 'origin', 'git@github.com:someone/nohead.git')
 
-// ghe: same owner/name as the managed repo, but the origin is a GitHub Enterprise host. A
-// sanction that defaults to github.com must not authorize a merge here.
+// ghe: same owner/name as the managed repo, but the origin is a GitHub Enterprise host. The
+// executor must derive and pin the host-qualified identity, not assume github.com.
 const gheGit = gitIn(ghe)
 gheGit('init', '-q', '-b', 'main')
 gheGit('remote', 'add', 'origin', `git@${GHE_HOST}:${SLUG}.git`)
@@ -152,8 +143,8 @@ const freshState = (overrides = {}) => ({
   recheckBase: null,
   recheckHead: null,
   // The confirming read after the merge, and the post-merge queue re-read. These default to
-  // matching the sanction (an honest, clean merge); a case that wants a foreign or armed outcome
-  // overrides them.
+  // matching the first read (an honest, clean merge); a case that wants a foreign or armed
+  // outcome overrides them.
   afterHead: null,
   afterBase: null,
   afterUrl: null,
@@ -217,21 +208,21 @@ const makeRunGh = (st) => (args) => {
 
 // Every gh call the executor makes must name the repository derived from origin, so no ambient
 // GH_REPO or GH_HOST can redirect it. graphql pins the host instead of --repo.
-const isPinned = (args) => {
+const pinnedTo = (identity, host) => (args) => {
   if (args[0] === 'api' && args[1] === 'graphql') {
     const hi = args.indexOf('--hostname')
-    return hi >= 0 && args[hi + 1] === 'github.com'
+    return hi >= 0 && args[hi + 1] === host
   }
   // `gh repo view` names the repository as a positional; `gh pr view` and `gh pr merge` use --repo.
-  if (args[0] === 'repo' && args[1] === 'view') return args[2] === IDENTITY
+  if (args[0] === 'repo' && args[1] === 'view') return args[2] === identity
   const ri = args.indexOf('--repo')
-  return ri >= 0 && args[ri + 1] === IDENTITY
+  return ri >= 0 && args[ri + 1] === identity
 }
+const isPinned = pinnedTo(IDENTITY, 'github.com')
 
-const envBase = () => ({ FLOW_CRON_JOB: '', FLOW_STATE: state, HOME: tmp })
-const runExecutor = (args, { cwd = repo, env = {}, st, now } = {}) => {
+const runExecutor = (args, { cwd = repo, env = {}, st } = {}) => {
   const s = st || freshState()
-  const result = landMerge({ argv: args, env: { ...envBase(), ...env }, cwd, runGh: makeRunGh(s), nowMs: Date.now(), ...(now ? { now } : {}) })
+  const result = landMerge({ argv: args, env: { FLOW_CRON_JOB: '', HOME: tmp, ...env }, cwd, runGh: makeRunGh(s) })
   return { code: result.code, stdout: result.stdout, stderr: result.stderr, calls: s.calls, merges: s.merges, st: s }
 }
 
@@ -240,7 +231,7 @@ const guard = (command, { env = {}, cwd = repo } = {}) => {
   const out = execFileSync(process.execPath, [GUARD], {
     input: JSON.stringify({ tool_input: { command }, cwd }),
     encoding: 'utf8',
-    env: { ...gitEnv, FLOW_CRON_JOB: '', FLOW_STATE: state, ...env },
+    env: { ...gitEnv, FLOW_CRON_JOB: '', ...env },
   }).trim()
   return out ? JSON.parse(out) : null
 }
@@ -256,33 +247,6 @@ const allows = (name, command, options) => {
   check(name, decision === null, `denied: ${reasonOf(decision)}`)
 }
 
-// -------------------------------------------------------------------------- sanction helpers
-const sanction = (overrides = {}) => {
-  const issued = Date.now()
-  const body = {
-    schema: 1,
-    host: 'github.com',
-    repo: SLUG,
-    branch: BRANCH,
-    expectedBase: 'main',
-    head,
-    prNumber: PR,
-    operations: ['gh-pr-merge'],
-    issuedAt: new Date(issued).toISOString(),
-    expiresAt: new Date(issued + 10 * 60_000).toISOString(),
-    ...overrides,
-  }
-  writeFileSync(SANCTION, JSON.stringify(body, null, 2))
-  return body
-}
-const clearSanction = () => { rmSync(SANCTION, { force: true }) }
-const tombstones = (verdict) => readdirSync(state).filter((f) => f.startsWith(`release-sanction.${verdict}.`))
-const clearTombstones = () => {
-  for (const file of readdirSync(state)) {
-    if (file !== 'release-sanction.json') rmSync(join(state, file), { force: true })
-  }
-}
-
 const MERGE = `gh pr merge ${PR} --squash --match-head-commit ${head}`
 const QUOTED = `bash -lc 'gh pr merge ${PR} --squash --match-head-commit ${head}'`
 
@@ -294,11 +258,11 @@ check('a dry run publishes nothing', JSON.stringify(publishOperations('cargo pub
 check('merge in prose is not a merge', JSON.stringify(publishOperations('echo "gh pr merge after review"')) === '[]')
 check('ordinary work publishes nothing', JSON.stringify(publishOperations('git status --porcelain')) === '[]')
 check('publishReason ignores the merge op', publishReason(MERGE) === null)
-// Same isolated environment as guard(): a stray FLOW_CRON_JOB or FLOW_STATE in the
-// operator's shell must not change what these checks prove.
+// Same isolated environment as guard(): a stray FLOW_CRON_JOB in the operator's shell must
+// not change what these checks prove.
 const claude = (command) => execFileSync(process.execPath, [CLAUDE_GUARD], {
   input: JSON.stringify({ tool_input: { command } }), encoding: 'utf8',
-  env: { ...gitEnv, FLOW_CRON_JOB: '', FLOW_STATE: state },
+  env: { ...gitEnv, FLOW_CRON_JOB: '' },
 }).trim()
 check('the Claude guard says nothing about a merge', claude(MERGE) === '')
 check('the Claude guard still asks about cargo publish', claude('cargo publish').includes('permissionDecision'))
@@ -335,8 +299,7 @@ check('nor is reading the pull request', JSON.stringify(mergeShapes(`gh pr view 
 check('nor is git merge', JSON.stringify(mergeShapes('git merge --ff-only origin/main')) === '[]')
 
 // ---------------------------------------------------------------- the guard, managed repo
-console.log('\nin a repo with .flow/managed, merging by hand is denied')
-clearSanction()
+console.log('\nin a repo with .flow/managed, merging by hand is routed to the executor')
 denies('a plain merge is denied', MERGE, 'node ')
 denies('and the denial names the executor', MERGE, EXECUTOR)
 denies('and says the repository opted in', MERGE, '.flow/managed')
@@ -372,10 +335,10 @@ const PLAIN = 'This publishes to crates.io, which you cannot take back - crates.
   'Run the publish command yourself after reviewing the version and package contents.'
 const plainDecision = guard('cargo publish -p flow')
 check('the plain publication deny text is unchanged', reasonOf(plainDecision).startsWith(PLAIN), reasonOf(plainDecision))
-denies('npm publish, managed', 'npm publish', 'registry publication stays manual')
-denies('npm publish, unmanaged', 'npm publish', 'registry publication stays manual', { cwd: plain })
-denies('a quoted registry publish, managed', "bash -lc 'npm publish'", 'registry publication stays manual')
-denies('a quoted registry publish, unmanaged', "bash -lc 'npm publish'", 'registry publication stays manual', { cwd: plain })
+denies('npm publish, managed', 'npm publish', 'Registry publication stays manual')
+denies('npm publish, unmanaged', 'npm publish', 'Registry publication stays manual', { cwd: plain })
+denies('a quoted registry publish, managed', "bash -lc 'npm publish'", 'Registry publication stays manual')
+denies('a quoted registry publish, unmanaged', "bash -lc 'npm publish'", 'Registry publication stays manual', { cwd: plain })
 
 console.log('\nscheduled jobs merge nothing anywhere, executor included')
 denies('a cron job is denied in a managed repo', MERGE, 'scheduled jobs do not merge', { env: { FLOW_CRON_JOB: 'lint' } })
@@ -389,18 +352,10 @@ denies(
 )
 allows('but the executor invocation is fine in an attended session', `node ${EXECUTOR} ${PR}`)
 
-console.log('\nthe model may not approve itself')
-denies('writing the sanction path is denied', `echo '{}' > ${SANCTION}`, 'directly')
-denies('naming the sanction file is denied', 'mv /tmp/x.json ~/.local/state/flow/release-sanction.json', 'names the release sanction file')
-denies('running the helper is denied', `node ${HELPER} approve --repo ${SLUG} --branch ${BRANCH} --head ${head} --pr ${PR} --op gh-pr-merge`, 'runs the release sanction helper')
-denies('revoking through the helper is denied', 'node plugins/flow/scripts/release-sanction.mjs revoke', 'runs the release sanction helper')
-allows('staging the helper file is ordinary work', 'git add plugins/flow/scripts/release-sanction.mjs')
-
 console.log('\nordinary commands are untouched')
-sanction()
 allows('git status', 'git status --porcelain')
 allows('git add', 'git add -A plugins/flow')
-allows('git commit', 'git commit -m "fix(flow): close release-sanction bypasses"')
+allows('git commit', 'git commit -m "fix(flow): route the land through the executor"')
 allows('git push', 'git push -u origin feat/issue-6-land-cross-harness')
 allows('git commit describing a merge', 'git commit -m "chore: note that gh pr merge is the only land path"')
 allows('a test run', 'npm test -- --watch=false')
@@ -409,20 +364,15 @@ allows('a dry run through a shell', "bash -lc 'cargo publish --dry-run'")
 allows('a merge described in prose', `gh pr comment ${PR} -b "run gh pr merge once CI is green"`)
 allows('reading a PR', `gh pr view ${PR} --json state,mergeCommit`)
 allows('a local merge', 'git merge --ff-only origin/main')
-check('the guard never touches the sanction', existsSync(SANCTION))
-check('not even when it denies a merge', (guard(MERGE), existsSync(SANCTION)))
 
 // ------------------------------------------------------------------------------ the executor
 console.log('\nthe executor merges once, pinning every call to the origin repository')
-clearSanction()
-clearTombstones()
-sanction()
 const merged = runExecutor([String(PR)])
 check('it exits 0', merged.code === 0, `${merged.stdout}${merged.stderr}`)
 check('and says what it merged', merged.stdout.includes(`merged #${PR} on ${IDENTITY}`), merged.stdout)
 check('it merged exactly once', merged.merges.length === 1, JSON.stringify(merged.merges))
 check(
-  'with --repo, --squash and the sanctioned head',
+  'with --repo, --squash and the verified head',
   JSON.stringify(merged.merges[0]) === JSON.stringify(['pr', 'merge', String(PR), '--repo', IDENTITY, '--squash', '--match-head-commit', head]),
   JSON.stringify(merged.merges[0]),
 )
@@ -430,349 +380,126 @@ check('every gh call is pinned to the origin repository', merged.calls.every(isP
 check('it read the live pull request first', merged.calls.some((a) => a[0] === 'pr' && a[1] === 'view'))
 check('and the repository default branch', merged.calls.some((a) => a[0] === 'repo' && a[1] === 'view'))
 check('and checked the base for a merge queue', merged.calls.some((a) => a[0] === 'api' && a[1] === 'graphql'))
-check('the sanction is spent', !existsSync(SANCTION))
-check('a tombstone records the use', tombstones('consumed').length === 1, JSON.stringify(tombstones('consumed')))
 
 console.log('\na stray GH_REPO cannot redirect the executor')
-clearSanction()
-clearTombstones()
-sanction()
 const redirected = runExecutor([String(PR)], { env: { GH_REPO: 'someone/evil', GH_HOST: 'evil.example' } })
 check('it still merges the origin repository', redirected.code === 0, `${redirected.stdout}${redirected.stderr}`)
 check('and every call stayed pinned', redirected.calls.every(isPinned), JSON.stringify(redirected.calls.filter((a) => !isPinned(a))))
 
 console.log('\na read GitHub redirected to another repository is refused')
-clearSanction()
-clearTombstones()
-sanction()
 const wrongUrl = runExecutor([String(PR)], { st: freshState({ pr: { url: 'https://github.com/someone/evil/pull/12' } }) })
 check('it refuses on the mismatched url', wrongUrl.code === 1 && wrongUrl.stderr.includes('was redirected'), wrongUrl.stderr)
 check('and merged nothing', wrongUrl.merges.length === 0, JSON.stringify(wrongUrl.merges))
 
-console.log('\na github.com sanction is refused against a same-slug GitHub Enterprise remote')
-clearSanction()
-clearTombstones()
-sanction() // host defaults to github.com
+console.log('\na GitHub Enterprise origin pins the GHE identity, not github.com')
 const gheRun = runExecutor([String(PR)], {
   cwd: ghe,
   st: freshState({ pr: { url: `https://${GHE_HOST}/${SLUG}/pull/${PR}` } }),
 })
-check('it refuses on the host mismatch', gheRun.code === 1 && gheRun.stderr.includes('is for host'), gheRun.stderr)
-check('and merged nothing', gheRun.merges.length === 0, JSON.stringify(gheRun.merges))
-check('the claim is spent', !existsSync(SANCTION) && tombstones('denied').length === 1, JSON.stringify(tombstones('denied')))
+check('it merges against the GHE host', gheRun.code === 0, `${gheRun.stdout}${gheRun.stderr}`)
+check(
+  'and every call is pinned to the GHE identity',
+  gheRun.calls.every(pinnedTo(`${GHE_HOST}/${SLUG}`, GHE_HOST)),
+  JSON.stringify(gheRun.calls.filter((a) => !pinnedTo(`${GHE_HOST}/${SLUG}`, GHE_HOST)(a))),
+)
+check('a github.com url against a GHE origin is refused', (() => {
+  const crossed = runExecutor([String(PR)], { cwd: ghe })
+  return crossed.code === 1 && crossed.stderr.includes('was redirected') && crossed.merges.length === 0
+})())
 
-console.log('\nthe executor refuses, and spends the sanction doing it')
-const executorDenies = (name, args, substring, { sanctionOverrides, st, env, cwd, now, merges = 0, verdict = 'denied' } = {}) => {
-  clearTombstones()
-  sanction(sanctionOverrides)
-  const result = runExecutor(args, { st, env, cwd, now })
+console.log('\nthe executor refuses what should not merge, before mutating anything')
+const executorRefuses = (name, args, substring, { st, env, cwd, merges = 0 } = {}) => {
+  const result = runExecutor(args, { st, env, cwd })
   check(name, result.code === 1 && result.stderr.includes(substring), `code ${result.code}: ${(result.stderr || result.stdout).trim()}`)
   check(`${name}: merged ${merges}`, result.merges.length === merges, JSON.stringify(result.merges))
-  check(
-    `${name}: the claim is tombstoned as ${verdict}`,
-    !existsSync(SANCTION) && tombstones(verdict).length === 1,
-    `sanction ${existsSync(SANCTION)}, ${verdict} tombstones ${JSON.stringify(tombstones(verdict))}`,
-  )
 }
 
-executorDenies('another pull request number is refused', ['13'], 'asked to merge #13')
-executorDenies('another repository is refused', [String(PR)], 'the sanction is for repository', { sanctionOverrides: { repo: 'someone/else' } })
-executorDenies('another branch is refused', [String(PR)], 'the sanction is for branch', { sanctionOverrides: { branch: 'feat/other' } })
-executorDenies('a moved head is refused', [String(PR)], 'the head has moved', { sanctionOverrides: { head: 'b'.repeat(40) } })
-executorDenies('a closed pull request is refused', [String(PR)], 'only an open pull request', { st: freshState({ pr: { state: 'CLOSED' } }) })
-executorDenies('an already merged one is refused', [String(PR)], 'only an open pull request', { st: freshState({ pr: { state: 'MERGED' } }) })
-executorDenies('a draft is refused', [String(PR)], 'is a draft', { st: freshState({ pr: { isDraft: true } }) })
-executorDenies(
+executorRefuses('a closed pull request is refused', [String(PR)], 'only an open pull request', { st: freshState({ pr: { state: 'CLOSED' } }) })
+executorRefuses('an already merged one is refused', [String(PR)], 'only an open pull request', { st: freshState({ pr: { state: 'MERGED' } }) })
+executorRefuses('a draft is refused', [String(PR)], 'is a draft', { st: freshState({ pr: { isDraft: true } }) })
+executorRefuses('an unreadable draft flag is refused', [String(PR)], 'cannot be shown ready', { st: freshState({ pr: { isDraft: null } }) })
+executorRefuses('an unreadable head is refused', [String(PR)], '40-character', { st: freshState({ pr: { headRefOid: 'short' } }) })
+executorRefuses(
   'a base other than the default branch is refused',
-  [String(PR)], 'lands on the default branch', { st: freshState({ pr: { baseRefName: 'release/1.x' } }) },
+  [String(PR)], 'the default branch is', { st: freshState({ pr: { baseRefName: 'release/1.x' } }) },
 )
-executorDenies(
-  'an expected-base mismatch is refused',
-  [String(PR)], 'approved a merge onto', { sanctionOverrides: { expectedBase: 'release/1.x' } },
+executorRefuses(
+  'an unreadable default branch is refused',
+  [String(PR)], 'default branch could not be read', { st: freshState({ defaultBranch: null }) },
 )
-executorDenies('an expired sanction is refused', [String(PR)], 'expired at', {
-  sanctionOverrides: {
-    issuedAt: new Date(Date.now() - 31 * 60_000).toISOString(),
-    expiresAt: new Date(Date.now() - 60_000).toISOString(),
-  },
-})
-// Valid on the entry clock, expired by the time the reads are done: the live-clock re-check
-// right before the mutation is what has to catch it, and no merge may run.
-executorDenies('a sanction that expires mid-run is refused', [String(PR)], 'while the checks ran', {
-  now: () => Date.now() + 11 * 60_000,
-})
-executorDenies('a sanction issued in the future is refused', [String(PR)], 'in the future', {
-  sanctionOverrides: {
-    issuedAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-    expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
-  },
-})
-executorDenies('an oversized window is refused', [String(PR)], 'more than 30 minutes', {
-  sanctionOverrides: { expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString() },
-})
-executorDenies('a backdated issue time is refused', [String(PR)], 'more than 30 minutes', {
-  sanctionOverrides: {
-    issuedAt: new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
-    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-  },
-})
-executorDenies('another schema version is refused', [String(PR)], 'schema', { sanctionOverrides: { schema: 2 } })
-executorDenies('a sanction with no pull request number is refused', [String(PR)], 'names no pull request number', { sanctionOverrides: { prNumber: undefined } })
-executorDenies('a sanction with no expected base is refused', [String(PR)], 'no expected base branch', { sanctionOverrides: { expectedBase: undefined } })
-executorDenies('a registry operation is refused', [String(PR)], 'no sanction covers registry publication', { sanctionOverrides: { operations: ['npm-publish'] } })
-executorDenies(
-  'a sanction covering more than the merge is refused',
-  [String(PR)], 'a merge is approved on its own', { sanctionOverrides: { operations: ['gh-pr-merge', 'gh-pr-close'] } },
-)
-executorDenies('a directory with no origin remote is refused', [String(PR)], 'no readable origin remote', { cwd: norepo })
+executorRefuses('a directory with no origin remote is refused', [String(PR)], 'no readable origin remote', { cwd: norepo })
 
 // Never leave an armed future merge behind. Both are caught before the merge call.
-executorDenies(
+executorRefuses(
   'a pull request with auto-merge already armed is refused',
   [String(PR)], 'auto-merge armed', { st: freshState({ pr: { autoMergeRequest: { enabledBy: { login: 'bot' } } } }) },
 )
-executorDenies(
+executorRefuses(
   'a base carrying a merge queue is refused before mutating',
   [String(PR)], 'uses a merge queue', { st: freshState({ mergeQueue: { id: 'MQ_kwABC' } }) },
 )
-executorDenies(
+executorRefuses(
   'an unreadable merge-queue status is refused',
   [String(PR)], 'could not be read', { st: freshState({ graphqlFails: true }) },
 )
 
-// The last re-read of base and head, right before the merge, catches a retarget the first read
-// did not see.
-executorDenies(
+// The last re-read of base and head, right before the merge, catches movement the first read
+// did not see - a retarget, or a push that raced the gates.
+executorRefuses(
   'a retarget between the check and the merge is refused',
   [String(PR)], 'was retargeted to', { st: freshState({ recheckBase: 'release/9.x' }) },
 )
-executorDenies(
+executorRefuses(
   'a head moved between the check and the merge is refused',
-  [String(PR)], 'moved between the check and the merge', { st: freshState({ recheckHead: 'c'.repeat(40) }) },
+  [String(PR)], 'moved mid-run', { st: freshState({ recheckHead: 'c'.repeat(40) }) },
 )
 
 // The merge ran, gh reported failure, and the confirming read shows a clean OPEN with nothing
 // armed. That is the one non-MERGED shape that is an authoritative failure rather than UNKNOWN.
-executorDenies('a gh merge that fails and stays cleanly open is a failure', [String(PR)], '`gh pr merge` failed', {
+executorRefuses('a gh merge that fails and stays cleanly open is a failure', [String(PR)], '`gh pr merge` failed', {
   st: freshState({ mergeExit: 1, mergeStderr: 'X Pull request #12 is not mergeable: the head commit has changed\n' }),
   merges: 1,
 })
 
-// A MERGED read is our success only if the merged pull request is still the one we approved. A
+// A MERGED read is our success only if the merged pull request is still the one we verified. A
 // foreign merge of the same number - a different head - is reported UNKNOWN, never claimed.
-executorDenies('a MERGED read whose head no longer matches is not claimed as our merge', [String(PR)], 'no longer matches', {
-  st: freshState({ afterHead: 'd'.repeat(40) }), merges: 1, verdict: 'unknown',
+executorRefuses('a MERGED read whose head no longer matches is not claimed as our merge', [String(PR)], 'no longer matches', {
+  st: freshState({ afterHead: 'd'.repeat(40) }), merges: 1,
 })
 
 // A non-MERGED read after the merge call is not automatically a failure. An armed auto-merge, an
 // armed or unreadable merge queue, or gh reporting success while the pull request is still open
 // are all UNKNOWN: the merge may still land, so a blind retry would be wrong.
-executorDenies('an armed auto-merge after a non-MERGED read is UNKNOWN', [String(PR)], 'auto-merge armed', {
-  st: freshState({ mergeExit: 1, afterAutoMerge: { enabledBy: { login: 'bot' } } }), merges: 1, verdict: 'unknown',
+executorRefuses('an armed auto-merge after a non-MERGED read is UNKNOWN', [String(PR)], 'auto-merge armed', {
+  st: freshState({ mergeExit: 1, afterAutoMerge: { enabledBy: { login: 'bot' } } }), merges: 1,
 })
-executorDenies('a merge queue armed only after the merge call is UNKNOWN', [String(PR)], 'merge-queue status is armed', {
-  st: freshState({ mergeExit: 1, afterMergeQueue: { id: 'MQ_after' } }), merges: 1, verdict: 'unknown',
+executorRefuses('a merge queue armed only after the merge call is UNKNOWN', [String(PR)], 'merge-queue status is armed', {
+  st: freshState({ mergeExit: 1, afterMergeQueue: { id: 'MQ_after' } }), merges: 1,
 })
-executorDenies('an unreadable merge queue after the merge call is UNKNOWN', [String(PR)], 'merge-queue status is unreadable', {
-  st: freshState({ mergeExit: 1, afterGraphqlFails: true }), merges: 1, verdict: 'unknown',
+executorRefuses('an unreadable merge queue after the merge call is UNKNOWN', [String(PR)], 'merge-queue status is unreadable', {
+  st: freshState({ mergeExit: 1, afterGraphqlFails: true }), merges: 1,
 })
-executorDenies('a merge that reports success but lands nothing is UNKNOWN, not a failure', [String(PR)], 'could not confirm', {
-  st: freshState({ mergeLandsNothing: true }), merges: 1, verdict: 'unknown',
+executorRefuses('a merge that reports success but lands nothing is UNKNOWN, not a failure', [String(PR)], 'could not confirm', {
+  st: freshState({ mergeLandsNothing: true }), merges: 1,
 })
 
-// A lost confirming read is UNKNOWN, not denied: the merge may or may not have landed.
-console.log('\nan unconfirmable outcome is reported UNKNOWN, not denied')
-clearTombstones()
-sanction()
+// A lost confirming read is UNKNOWN, not refused: the merge may or may not have landed.
+console.log('\nan unconfirmable outcome is reported UNKNOWN, not refused')
 const unknown = runExecutor([String(PR)], { st: freshState({ mergeExit: 1, confirmFails: true }) })
 check('it reports it could not confirm', unknown.code === 1 && unknown.stderr.includes('could not confirm'), unknown.stderr)
-check('it does not claim the merge was denied', !unknown.stderr.includes('refused'), unknown.stderr)
+check('it does not claim the merge was refused', !unknown.stderr.includes('refused'), unknown.stderr)
 check('it merged once', unknown.merges.length === 1, JSON.stringify(unknown.merges))
-check('the claim is tombstoned as unknown', !existsSync(SANCTION) && tombstones('unknown').length === 1, JSON.stringify(tombstones('unknown')))
 
-console.log('\nthings the executor refuses before it claims anything')
-clearTombstones()
-clearSanction()
-const noSanction = runExecutor([String(PR)])
-check('with no sanction it refuses', noSanction.code === 1 && noSanction.stderr.includes('no release sanction is on file'), noSanction.stderr)
-check('and calls gh not at all', noSanction.calls.length === 0, JSON.stringify(noSanction.calls))
-check('and leaves no tombstone, having claimed nothing', tombstones('denied').length === 0)
-
-writeFileSync(SANCTION, '{ this is not json')
-const malformed = runExecutor([String(PR)])
-check('a malformed sanction is refused', malformed.code === 1 && malformed.stderr.includes('could not be read as an object'), malformed.stderr)
-check('and it was still spent', !existsSync(SANCTION))
-
-clearTombstones()
-sanction()
+console.log('\nthings the executor refuses before reading anything')
 const cron = runExecutor([String(PR)], { env: { FLOW_CRON_JOB: 'lint' } })
 check('a scheduled job cannot merge', cron.code === 1 && cron.stderr.includes('nobody is watching'), cron.stderr)
-check('and the sanction survives', existsSync(SANCTION))
+check('and calls gh not at all', cron.calls.length === 0, JSON.stringify(cron.calls))
 const notANumber = runExecutor(['twelve'])
 check('a pull request number that is not a number exits 2', notANumber.code === 2, notANumber.stderr)
 const noArgs = runExecutor([])
 check('no argument exits 2', noArgs.code === 2, noArgs.stderr)
 const tooMany = runExecutor([String(PR), '--admin'])
 check('a second argument exits 2', tooMany.code === 2, tooMany.stderr)
-check('none of those spent the sanction', existsSync(SANCTION))
-
-// ---------------------------------------------------------------- two executors, one sanction
-// rename() is the lock. This one needs real processes, so it uses a fake gh on PATH the way the
-// production CLI resolves the real one. Whichever process moves the file first owns the
-// approval; the other gets ENOENT and never reaches gh.
-console.log('\ntwo runs racing for one sanction')
-const ghLog = join(tmp, 'gh-calls.log')
-const ghState = join(tmp, 'gh-state.json')
-const ghImpl = join(tmp, 'gh-impl.mjs')
-writeFileSync(ghImpl, `
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
-const argv = process.argv.slice(2)
-appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(argv) + '\\n')
-const path = process.env.FAKE_GH_STATE
-const state = JSON.parse(readFileSync(path, 'utf8'))
-const say = (v) => { process.stdout.write(JSON.stringify(v)); process.exit(0) }
-if (argv[0] === 'pr' && argv[1] === 'view') {
-  const ji = argv.indexOf('--json'); const fields = ji >= 0 ? argv[ji + 1] : ''
-  if (fields === 'state,headRefOid,baseRefName,url,autoMergeRequest') say({ state: state.merged ? 'MERGED' : state.pr.state, headRefOid: state.pr.headRefOid, baseRefName: state.pr.baseRefName, url: state.pr.url, autoMergeRequest: null })
-  if (fields === 'baseRefName,headRefOid') say({ baseRefName: state.pr.baseRefName, headRefOid: state.pr.headRefOid })
-  say({ ...state.pr })
-}
-if (argv[0] === 'repo' && argv[1] === 'view') say({ defaultBranchRef: { name: state.defaultBranch } })
-if (argv[0] === 'api' && argv[1] === 'graphql') say({ data: { repository: { mergeQueue: null } } })
-if (argv[0] === 'pr' && argv[1] === 'merge') {
-  state.merged = true
-  writeFileSync(path, JSON.stringify(state))
-  process.stdout.write('fake gh: merged\\n'); process.exit(0)
-}
-process.stderr.write('fake gh: unexpected ' + argv.join(' ') + '\\n'); process.exit(3)
-`)
-writeFileSync(join(bin, 'gh'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(ghImpl)} "$@"\n`, { mode: 0o755 })
-writeFileSync(ghLog, '')
-writeFileSync(ghState, JSON.stringify({
-  defaultBranch: 'main', merged: false,
-  pr: { headRefOid: head, headRefName: BRANCH, state: 'OPEN', isDraft: false, baseRefName: 'main', url: `https://github.com/${SLUG}/pull/${PR}`, autoMergeRequest: null },
-}))
-const mergeCalls = () => readFileSync(ghLog, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((a) => a[0] === 'pr' && a[1] === 'merge')
-
-clearTombstones()
-sanction()
-const raceEnv = { ...gitEnv, FLOW_CRON_JOB: '', FLOW_STATE: state, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_LOG: ghLog, FAKE_GH_STATE: ghState }
-const executorAsync = () => new Promise((resolve) => {
-  const child = spawn(process.execPath, [EXECUTOR, String(PR)], { cwd: repo, env: raceEnv, stdio: ['ignore', 'pipe', 'pipe'] })
-  let err = ''
-  child.stderr.on('data', (chunk) => { err += chunk })
-  child.on('close', (code) => resolve({ code, stderr: err }))
-})
-const race = await Promise.all([executorAsync(), executorAsync()])
-check('exactly one of the two merges', race.filter((r) => r.code === 0).length === 1, JSON.stringify(race))
-check('and gh saw exactly one merge', mergeCalls().length === 1, JSON.stringify(mergeCalls()))
-check(
-  'the loser is told the sanction is gone',
-  race.some((r) => r.code === 1 && r.stderr.includes('another run claimed it first')),
-  JSON.stringify(race),
-)
-check('and the sanction is spent', !existsSync(SANCTION))
-
-// ------------------------------------------------------------------------ the policy itself
-console.log('\nthe policy on its own')
-const facts = {
-  slug: SLUG, host: 'github.com', number: PR, branch: BRANCH, head, state: 'OPEN', isDraft: false, base: 'main', defaultBranch: 'main',
-}
-const good = { schema: 1, host: 'github.com', repo: SLUG, branch: BRANCH, expectedBase: 'main', head, prNumber: PR, operations: ['gh-pr-merge'] }
-const timed = (body) => ({
-  ...body,
-  issuedAt: new Date(Date.now() - 60_000).toISOString(),
-  expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-})
-const verdict = (over = {}, pr = {}) => releaseVerdict({
-  operations: ['gh-pr-merge'], sanction: timed({ ...good, ...over }), pr: { ...facts, ...pr }, nowMs: Date.now(),
-})
-check('the matching case allows', verdict().allowed, verdict().reason)
-check('the reason is host-qualified', verdict().reason.includes(`github.com/${SLUG}`), verdict().reason)
-check('a registry operation is refused on its own terms', releaseVerdict({
-  operations: ['npm-publish'], sanction: timed(good), pr: facts, nowMs: Date.now(),
-}).reason.includes('never sanctioned'))
-check('no sanction denies', releaseVerdict({ operations: ['gh-pr-merge'], sanction: null, pr: facts, nowMs: Date.now() }).reason.includes('could not be read'))
-check('no facts deny', releaseVerdict({ operations: ['gh-pr-merge'], sanction: timed(good), pr: null, nowMs: Date.now() }).reason.includes('no pull request facts'))
-check('an unreadable clock denies', releaseVerdict({ operations: ['gh-pr-merge'], sanction: timed(good), pr: facts, nowMs: NaN }).reason.includes('clock value'))
-check('a string pull request number denies', verdict({ prNumber: '12' }).reason.includes('names no pull request number'))
-check('an unreadable head denies', verdict({}, { head: 'not-a-sha' }).reason.includes('40-character'))
-check('an unreadable draft flag denies', verdict({}, { isDraft: null }).reason.includes('cannot be shown ready'))
-check('an unreadable default branch denies', verdict({}, { defaultBranch: null }).reason.includes('default branch could not be read'))
-check('an unreadable state denies', verdict({}, { state: null }).reason.includes('only an open pull request'))
-check('a missing expected base denies', verdict({ expectedBase: undefined }).reason.includes('no expected base branch'))
-check('an expected-base mismatch denies', verdict({ expectedBase: 'release/1.x' }).reason.includes('approved a merge onto'))
-// Host is matched, not decorative: a sanction for github.com/owner/name must not authorize a
-// merge on a GitHub Enterprise host that carries the same owner/name.
-check('a host mismatch denies', verdict({ host: 'github.com' }, { host: GHE_HOST }).reason.includes('is for host'), verdict({ host: 'github.com' }, { host: GHE_HOST }).reason)
-check('a missing sanction host denies', verdict({ host: undefined }).reason.includes('names no host'))
-check('an unreadable remote host denies', verdict({}, { host: null }).reason.includes('no readable remote host'))
-check('the host matches case-insensitively', verdict({ host: 'GitHub.com' }).allowed)
-
-// ------------------------------------------------------------------------------ the helper
-console.log('\nthe human helper')
-clearSanction()
-clearTombstones()
-const helper = (args, env = {}) => {
-  try {
-    const stdout = execFileSync(process.execPath, [HELPER, ...args], {
-      encoding: 'utf8', env: { ...gitEnv, FLOW_CRON_JOB: '', FLOW_STATE: state, ...env }, stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    return { code: 0, stdout }
-  } catch (error) {
-    return { code: error.status ?? 1, stdout: String(error.stdout || ''), stderr: String(error.stderr || '') }
-  }
-}
-const approveArgs = (...extra) => ['approve', '--repo', SLUG, '--branch', BRANCH, '--head', head, '--pr', String(PR), '--op', 'gh-pr-merge', ...extra]
-const approved = helper(approveArgs())
-check('approve succeeds', approved.code === 0, approved.stderr)
-check('the sanction is mode 0600', (statSync(SANCTION).mode & 0o777) === 0o600, (statSync(SANCTION).mode & 0o777).toString(8))
-check('it records the pull request number', JSON.parse(readFileSync(SANCTION, 'utf8')).prNumber === PR)
-check('it defaults the expected base to main', JSON.parse(readFileSync(SANCTION, 'utf8')).expectedBase === 'main')
-check('it defaults the host to github.com', JSON.parse(readFileSync(SANCTION, 'utf8')).host === 'github.com')
-const endToEnd = runExecutor([String(PR)])
-check('the executor honors what the helper wrote', endToEnd.code === 0, `${endToEnd.stdout}${endToEnd.stderr}`)
-check('and merged once', endToEnd.merges.length === 1, JSON.stringify(endToEnd.merges))
-
-const withBase = helper(approveArgs('--base', 'release/2.x'))
-check('an explicit --base is recorded', withBase.code === 0 && JSON.parse(readFileSync(SANCTION, 'utf8')).expectedBase === 'release/2.x', withBase.stderr)
-
-const withHost = helper(['approve', '--repo', `${GHE_HOST}/${SLUG}`, '--branch', BRANCH, '--head', head, '--pr', String(PR), '--op', 'gh-pr-merge'])
-check(
-  'a host-qualified --repo records the host and the slug separately',
-  withHost.code === 0 &&
-    JSON.parse(readFileSync(SANCTION, 'utf8')).host === GHE_HOST &&
-    JSON.parse(readFileSync(SANCTION, 'utf8')).repo === SLUG,
-  withHost.stderr,
-)
-const badRepo = helper(['approve', '--repo', 'a/b/c/d', '--branch', BRANCH, '--head', head, '--pr', String(PR), '--op', 'gh-pr-merge'])
-check('a --repo with more than three parts is refused', badRepo.code === 2 && badRepo.stderr.includes('owner/name'), badRepo.stderr)
-
-const noPr = helper(['approve', '--repo', SLUG, '--branch', BRANCH, '--head', head, '--op', 'gh-pr-merge'])
-check('approve without --pr is refused', noPr.code === 2 && noPr.stderr.includes('--pr <number> is required'), noPr.stderr)
-const badPr = helper(approveArgs().map((arg) => (arg === String(PR) ? 'twelve' : arg)))
-check('a pull request number that is not a number is refused', badPr.code === 2, badPr.stderr)
-
-const registryOp = helper(['approve', '--repo', SLUG, '--branch', BRANCH, '--head', head, '--op', 'npm-publish'])
-check(
-  'approving a registry publication is refused',
-  registryOp.code === 2 && registryOp.stderr.includes('registry publication stays manual'),
-  registryOp.stderr,
-)
-
-const cronApprove = helper(approveArgs(), { FLOW_CRON_JOB: 'lint' })
-check('approve refuses under FLOW_CRON_JOB', cronApprove.code === 2 && cronApprove.stderr.includes('unattended'), cronApprove.stderr)
-
-const typo = helper(['approve', '--repo', SLUG, '--branch', BRANCH, '--head', head, '--pr', String(PR), '--op', 'gh-pr-mrege'])
-check('an unknown operation id is refused', typo.code === 2 && typo.stderr.includes('unknown operation'), typo.stderr)
-const longTtl = helper(approveArgs('--ttl-minutes', '600'))
-check('a ttl beyond 30 minutes is refused', longTtl.code === 2 && longTtl.stderr.includes('between 1 and 30'), longTtl.stderr)
-const shortSha = helper(['approve', '--repo', SLUG, '--branch', BRANCH, '--head', head.slice(0, 12), '--pr', String(PR), '--op', 'gh-pr-merge'])
-check('an abbreviated SHA is refused', shortSha.code === 2 && shortSha.stderr.includes('40-character'), shortSha.stderr)
-const removed = helper(['revoke'])
-check('revoke removes the sanction on file', removed.code === 0 && removed.stdout.includes('revoked'), removed.stdout)
-const revoked = helper(['revoke'])
-check('revoke reports an empty path when there is none', revoked.code === 0 && revoked.stdout.includes('no sanction on file'), revoked.stdout)
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(bad === 0 ? '\nrelease path: ALL PASS' : `\nrelease path: ${bad} FAILURE(S)`)

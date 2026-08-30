@@ -144,10 +144,6 @@ const HOST_CAPABILITY_TABLE = {
     claude: { supported: true, assurance: 'mechanism', note: 'A hook returning deny stops the tool call.' },
     codex: { supported: true, assurance: 'mechanism', note: 'A hook returning deny stops the tool call.' },
   },
-  'sha-bound-release-sanction': {
-    claude: { supported: false, assurance: 'unverified', note: 'Claude gates a release through hook-ask instead.' },
-    codex: { supported: true, assurance: 'contract', note: 'A sanction bound to a commit SHA is a guardrail under same-uid trust, not a security boundary.' },
-  },
   'per-seat-tool-allowlist': {
     claude: { supported: true, assurance: 'mechanism', note: 'An agent definition\'s tools frontmatter fixes the tool list for that seat.' },
     codex: { supported: false, assurance: 'unverified', note: 'No per-seat tool allowlist found.' },

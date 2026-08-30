@@ -11,14 +11,10 @@ const LOCKFILES = new Set([
 const BUILD_DIR = /(^|\/)(target|node_modules|dist|build|out|\.next|\.nuxt|\.venv|venv|__pycache__|\.tox|coverage|vendor)\//
 
 // The publication table. One entry per spelling, several spellings per operation, and the
-// `op` id is the stable name the rest of the system uses for "this exact kind of release":
-// it is what a human writes into a release sanction and what the Codex guard matches
-// against. Renaming an id invalidates every sanction that names it, so treat the ids as
-// the wire format they are. The file name below is shared with lib/release-sanction.mjs.
+// `op` id is the stable name the rest of the system uses for "this exact kind of release".
 //
 // `kind` splits the two consumers. `registry` is the irreversible-publication set the
-// Claude ask-gate has always covered. `github` names the merge so a release sanction has a
-// stable id to carry and the sanction helper has something to validate `--op` against.
+// Claude ask-gate has always covered. `github` names the merge so it has a stable id.
 // publishReason ignores it, and the Codex merge deny reads mergeShapes() at the bottom of
 // this file rather than this table, so adding merge here changed no guard's answer.
 const PUBLISH = [
@@ -33,7 +29,7 @@ const PUBLISH = [
   { op: 'gh-pr-merge', kind: 'github', re: /\bgh\s+pr\s+merge\b/ },
 ]
 
-/** Every operation id the table can produce, in table order. The sanction helper validates against it. */
+/** Every operation id the table can produce, in table order. */
 export const PUBLISH_OPERATION_IDS = [...new Set(PUBLISH.map((entry) => entry.op))]
 
 /** The op ids that push a version to a public package registry. Nobody can take these back. */
@@ -41,8 +37,6 @@ export const REGISTRY_OPERATION_IDS = [...new Set(PUBLISH.filter((entry) => entr
 
 /** True when this op id publishes to a public registry. A registry op is never sanctionable. */
 export const isRegistryOperation = (op) => REGISTRY_OPERATION_IDS.includes(op)
-
-const SANCTION_FILE = 'release-sanction.json'
 
 export function protectedFileReason(file) {
   const base = String(file).split('/').pop()
@@ -53,17 +47,10 @@ export function protectedFileReason(file) {
       `read it from the environment. Documenting a variable instead? Edit ${base}.example.`
   }
 
-  if (base === SANCTION_FILE) {
-    return `flow: ${base} is human-written approval state. It records that a person looked at one ` +
-      'specific head SHA and said yes to publishing exactly that, and scripts/land-merge.mjs ' +
-      'merges on that basis. A model that can write this file can approve its own release, so it is ' +
-      'only ever written by scripts/release-sanction.mjs, run by the human in their own terminal.'
-  }
-
   if (/(^|\/)\.flow\/managed$/.test(file)) {
     return 'flow: .flow/managed is the committed marker that opts this repository into flow\'s merge ' +
-      'guardrail, the one that keeps a Codex session from merging by hand and routes the land through ' +
-      'scripts/land-merge.mjs. A session that could edit or delete it could opt the repository out of ' +
+      'guardrail, the one that routes a Codex land through scripts/land-merge.mjs instead of a raw ' +
+      'merge command. A session that could edit or delete it could opt the repository out of ' +
       'its own guardrail, so this file is changed by a human commit, not by a tool call.'
   }
 
