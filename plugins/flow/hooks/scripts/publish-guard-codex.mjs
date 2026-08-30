@@ -96,7 +96,7 @@ const isManagedRepo = (cwd) => {
 const mergeDenial = (shapes) =>
   `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
   'merge guardrail with a committed .flow/managed file. Merges here run through the executor, not a raw gh ' +
-  `command: \`node ${EXECUTOR} <pr-number>\`. It takes the pull request number and nothing else, derives the ` +
+  `command: \`node "${EXECUTOR}" <pr-number>\`. It takes the pull request number and nothing else, derives the ` +
   'repository from the origin remote, reads the head SHA, the state, the draft flag and the base branch from ' +
   'GitHub, merges with --match-head-commit pinned to that verified head, and confirms the outcome by ' +
   're-reading the pull request. Run it when the human has asked to land this pull request and the land gates ' +
