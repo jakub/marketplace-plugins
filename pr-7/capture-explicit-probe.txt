@@ -1,0 +1,190 @@
+Reading additional input from stdin...
+OpenAI Codex v0.151.0
+--------
+workdir: /tmp/flow-land-live/unmanaged
+model: gpt-5.6-sol
+provider: openai
+approval: on-request
+sandbox: read-only
+reasoning effort: medium
+reasoning summaries: detailed
+session id: 01a050b4-d214-7f43-a46b-3843b326c368
+--------
+user
+Two read-only checks, do not execute any skill: (1) List the skills available to you from the flow plugin - names and descriptions as your catalog shows them. (2) Call the flow_delegate delegation_doctor MCP tool and report its host-capabilities section verbatim.
+warning: Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /home/jakub/.codex/config.toml.
+warning: clamping SessionEnd hook timeout to 3s in /home/jakub/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Failed
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+codex
+I’ll inspect the callable tool catalog for `delegation_doctor`, then run that single read-only diagnostic. I will not open or execute any skill.
+mcp: flow_delegate/delegation_doctor started
+mcp: flow_delegate/delegation_doctor (completed)
+hook: PostToolUse
+hook: PostToolUse Completed
+**Cataloging flow plugin skill descriptions**
+codex
+1. Skills available from the `flow` plugin
+
+- `flow:flow`  
+  `The flow development framework - project setup, the documentation stack, drift audits, and the label contract for the prep → issue → land pipeline. Use when setting up a new project's docs, auditing a project for drift, validating ready-for-agent issues, or answering a "how do we work" question the charter doesn't settle.`
+
+2. `delegation_doctor` host-capabilities section, verbatim
+
+```json
+"hostCapabilities": {
+  "schemaVersion": 1,
+  "host": "codex",
+  "verifiedAgainst": "codex-cli 0.151.0",
+  "capabilities": {
+    "plugin-skill-contribution": {
+      "supported": true,
+      "verifiedAt": "2026-08-29",
+      "assurance": "mechanism",
+      "note": "Live probe: Codex discovers a plugin's skills with no extra configuration."
+    },
+    "plugin-command-contribution": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "unverified",
+      "note": "Live probe: Codex did not discover a plugin's commands/ directory."
+    },
+    "implicit-skill-suppression": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "unverified",
+      "note": "The 0.151.0 source honors allow_implicit_invocation, but nothing proves the plugin-loader path reaches that code. A live capture of a plugin-supplied agents/openai.yaml staying out of automatic selection flips this to true."
+    },
+    "structured-question": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "unverified",
+      "note": "No interactive question tool that returns a chosen option."
+    },
+    "suspended-turn-ask": {
+      "supported": true,
+      "verifiedAt": "2026-08-29",
+      "assurance": "contract",
+      "note": "The turn ends with the question and the human answers in the next turn. The platform sends no receipt, so the protocol is the whole assurance."
+    },
+    "hook-ask": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "mechanism",
+      "note": "Codex 0.151.0 accepts an ask decision and then fails open, running the command with no prompt. false is the honest value."
+    },
+    "hook-deny": {
+      "supported": true,
+      "verifiedAt": "2026-08-29",
+      "assurance": "mechanism",
+      "note": "A hook returning deny stops the tool call."
+    },
+    "sha-bound-release-sanction": {
+      "supported": true,
+      "verifiedAt": "2026-08-29",
+      "assurance": "contract",
+      "note": "A sanction bound to a commit SHA is a guardrail under same-uid trust, not a security boundary."
+    },
+    "per-seat-tool-allowlist": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "unverified",
+      "note": "No per-seat tool allowlist found."
+    }
+  }
+}
+```
+hook: Stop
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+hook: Stop Failed
+tokens used
+34,411
+1. Skills available from the `flow` plugin
+
+- `flow:flow`  
+  `The flow development framework - project setup, the documentation stack, drift audits, and the label contract for the prep → issue → land pipeline. Use when setting up a new project's docs, auditing a project for drift, validating ready-for-agent issues, or answering a "how do we work" question the charter doesn't settle.`
+
+2. `delegation_doctor` host-capabilities section, verbatim
+
+```json
+"hostCapabilities": {
+  "schemaVersion": 1,
+  "host": "codex",
+  "verifiedAgainst": "codex-cli 0.151.0",
+  "capabilities": {
+    "plugin-skill-contribution": {
+      "supported": true,
+      "verifiedAt": "2026-08-29",
+      "assurance": "mechanism",
+      "note": "Live probe: Codex discovers a plugin's skills with no extra configuration."
+    },
+    "plugin-command-contribution": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "unverified",
+      "note": "Live probe: Codex did not discover a plugin's commands/ directory."
+    },
+    "implicit-skill-suppression": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "unverified",
+      "note": "The 0.151.0 source honors allow_implicit_invocation, but nothing proves the plugin-loader path reaches that code. A live capture of a plugin-supplied agents/openai.yaml staying out of automatic selection flips this to true."
+    },
+    "structured-question": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "unverified",
+      "note": "No interactive question tool that returns a chosen option."
+    },
+    "suspended-turn-ask": {
+      "supported": true,
+      "verifiedAt": "2026-08-29",
+      "assurance": "contract",
+      "note": "The turn ends with the question and the human answers in the next turn. The platform sends no receipt, so the protocol is the whole assurance."
+    },
+    "hook-ask": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "mechanism",
+      "note": "Codex 0.151.0 accepts an ask decision and then fails open, running the command with no prompt. false is the honest value."
+    },
+    "hook-deny": {
+      "supported": true,
+      "verifiedAt": "2026-08-29",
+      "assurance": "mechanism",
+      "note": "A hook returning deny stops the tool call."
+    },
+    "sha-bound-release-sanction": {
+      "supported": true,
+      "verifiedAt": "2026-08-29",
+      "assurance": "contract",
+      "note": "A sanction bound to a commit SHA is a guardrail under same-uid trust, not a security boundary."
+    },
+    "per-seat-tool-allowlist": {
+      "supported": false,
+      "verifiedAt": "2026-08-29",
+      "assurance": "unverified",
+      "note": "No per-seat tool allowlist found."
+    }
+  }
+}
+```

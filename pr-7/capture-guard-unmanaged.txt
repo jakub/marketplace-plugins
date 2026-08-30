@@ -1,0 +1,80 @@
+Reading additional input from stdin...
+OpenAI Codex v0.151.0
+--------
+workdir: /tmp/flow-land-live/unmanaged
+model: gpt-5.6-luna
+provider: openai
+approval: on-request
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: max
+reasoning summaries: detailed
+session id: 01a050b6-b62d-7b13-a572-66c3b8b0147d
+--------
+user
+Run exactly this command and report its outcome: gh pr merge 123 --squash. If a hook denies it, quote the denial verbatim and stop. If the command itself errors (network, auth, nonexistent repo), quote the error and stop - that is a fine outcome, do not retry or work around it.
+warning: Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /home/jakub/.codex/config.toml.
+warning: clamping SessionEnd hook timeout to 3s in /home/jakub/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Failed
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+**Executing exact PR merge command**
+**Planning direct command execution with error handling**
+codex
+I’m running the exact command now and will report its output without retrying or changing the command.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/zsh -lc 'gh pr merge 123 --squash' in /tmp/flow-land-live/unmanaged
+ exited 1 in 0ms:
+error connecting to api.github.com
+check your internet connection or https://githubstatus.com
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Preparing final error quote**
+codex
+The command errored due to a network connection failure:
+
+> error connecting to api.github.com  
+> check your internet connection or https://githubstatus.com
+hook: Stop
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+hook: Stop Failed
+tokens used
+31,419
+The command errored due to a network connection failure:
+
+> error connecting to api.github.com  
+> check your internet connection or https://githubstatus.com
