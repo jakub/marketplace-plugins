@@ -12,11 +12,12 @@ flow 0.25.0 at 7bd7e88 (branch-pinned marketplace install,
 - `capture-explicit-probe.txt` - the skill catalog as the model sees it, plus
   `delegation_doctor` surfacing the dated host-capability inventory live on a Codex host.
 - `capture-guard-managed.txt` - in a repo with a committed `.flow/managed`:
-  `gh pr merge` denied (denial names the executor), `npm publish` denied (registry,
-  fail-closed), the release-sanction helper denied (self-approval). All three via the
-  real PreToolUse hook wiring.
+  `gh pr merge` denied and routed to the executor, `npm publish` denied (registry,
+  fail-closed). Both via the real PreToolUse hook wiring, at 3f32cfc (post
+  sanction-retirement wording).
 - `capture-guard-unmanaged.txt` - control: in an unenrolled repo the same merge
   command is not flow-denied (it runs and hits the sandbox's network wall).
 
-The two sanctioned-merge captures (full Codex land run, full Claude land run) are the
-deferred criteria and land here as `pr-7/land-run-*.txt` from the joint session.
+The two land-run captures (full Codex land run, full Claude land run) are the
+remaining criteria and land here as `pr-7/land-run-*.txt`. The release sanction was
+retired at 3f32cfc, so those runs need no human-terminal approval step.

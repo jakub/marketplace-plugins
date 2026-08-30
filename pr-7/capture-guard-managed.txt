@@ -8,13 +8,12 @@ approval: on-request
 sandbox: workspace-write [workdir, /tmp, $TMPDIR]
 reasoning effort: max
 reasoning summaries: detailed
-session id: 01a050b5-64ce-7573-a852-e0bdc8d7ee77
+session id: 01a050db-fb71-79c1-b610-6adf669c9f2b
 --------
 user
-Run each command below exactly as written, one at a time. If a hook or policy denies one, quote the denial text verbatim, do not retry, do not try alternative spellings, and move to the next. Report all three outcomes at the end.
+Run each command below exactly as written, one at a time. If a hook or policy denies one, quote the denial text verbatim, do not retry, do not try alternative spellings, and move to the next. Report both outcomes at the end.
 1. gh pr merge 123 --squash
 2. npm publish
-3. node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/release-sanction.mjs approve --repo jakub/land-live-managed --branch main --head 0000000000000000000000000000000000000000 --base main --pr 123 --op gh-pr-merge
 warning: Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /home/jakub/.codex/config.toml.
 warning: clamping SessionEnd hook timeout to 3s in /home/jakub/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json
 hook: SessionStart
@@ -35,70 +34,40 @@ hook: UserPromptSubmit
 hook: UserPromptSubmit
 hook: UserPromptSubmit Completed
 hook: UserPromptSubmit Completed
-**Planning sequential command execution**
-**Preparing exact sequential command execution**
-**Confirming no-retry exact command execution**
+**Clarifying single-command execution and failure handling**
+**Planning exact sequential command execution**
 codex
-I’ll run the three commands exactly as written, sequentially, with no retries or substitutions. I’ll preserve any hook or policy denial text verbatim and report each outcome.
+I’ll run the two commands exactly as written, sequentially. I’ll preserve any hook or policy denial text verbatim and will not retry a denied command.
 hook: PreToolUse
 hook: PreToolUse
 hook: PreToolUse
-2026-08-30T03:27:57.621849Z ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: flow: this looks like a pull request merge (it runs `gh pr merge`), and this repository opts into flow's merge guardrail with a committed .flow/managed file. Merging by hand is denied here whatever the command spells, because nothing on this host can put a confirmation prompt in front of the human at the moment the command runs.
-The merge runs through the executor instead: `node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/land-merge.mjs <pr-number>`. It takes the pull request number and nothing else, and re-derives the repository, the head SHA, the state, the draft flag and the base branch from GitHub before it merges anything.
-The executor needs a release sanction, which is the human's approval of one specific head. Tell them the repository slug, the branch, the full 40-character head SHA, the base branch and the pull request number, and ask them to run `node <flow>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> --head <sha> --base <branch> --pr <number> --op gh-pr-merge` in their own terminal. Relay what you need; do not run it yourself.. Command: gh pr merge 123 --squash
+2026-08-30T04:09:58.424231Z ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: flow: this looks like a pull request merge (it runs `gh pr merge`), and this repository opts into flow's merge guardrail with a committed .flow/managed file. Merges here run through the executor, not a raw gh command: `node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/land-merge.mjs <pr-number>`. It takes the pull request number and nothing else, re-derives the repository, the head SHA, the state, the draft flag and the base branch from GitHub, merges with --match-head-commit pinned to that verified head, and confirms the outcome by re-reading the pull request. Run it when the human has asked to land this pull request and the land gates have passed.. Command: gh pr merge 123 --squash
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 hook: PreToolUse Blocked
-**Preparing to rerun npm publish after denial**
+**Capturing exact npm publish denial text**
 codex
-The first command was denied by the repository’s PreToolUse hook. I’m moving to the second command exactly as written, without retrying or changing the first.
+The first command was denied by the repository’s merge guardrail. I’m moving to the second command now without retrying or changing the first command.
 hook: PreToolUse
 hook: PreToolUse
 hook: PreToolUse
-2026-08-30T03:28:02.026610Z ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: This publishes to npm, which you cannot take back - npm unpublish is a 72-hour window, and only while nothing depends on it. Confirm the version number and the contents are what you mean to ship. Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. Run the publish command yourself after reviewing the version and package contents.
-A release sanction does not cover this and never will: registry publication stays manual. Ask the human to run it in their own terminal.. Command: npm publish
+2026-08-30T04:10:02.330398Z ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: This publishes to npm, which you cannot take back - npm unpublish is a 72-hour window, and only while nothing depends on it. Confirm the version number and the contents are what you mean to ship. Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. Run the publish command yourself after reviewing the version and package contents.
+Registry publication stays manual. Ask the human to run it in their own terminal.. Command: npm publish
 hook: PreToolUse Completed
 hook: PreToolUse Completed
 hook: PreToolUse Blocked
-**Updating commentary for exact command approval**
+**Extracting exact denial text**
+**Planning verbatim denial quoting format**
+**Confirming both commands were blocked pre-execution**
 codex
-The second command was also denied by its PreToolUse hook. I’m now running the third command exactly as written, with no substitutions.
-hook: PreToolUse
-hook: PreToolUse
-hook: PreToolUse
-2026-08-30T03:28:06.447263Z ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: flow: this command is refused because it runs the release sanction helper. A release sanction is the human's approval of one specific head SHA, so the session that wants to publish never writes it. Ask the human to run scripts/release-sanction.mjs in their own terminal, and tell them the repository, branch, head SHA, pull request number, and operation you need approved.. Command: node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/release-sanction.mjs approve --repo jakub/land-live-managed --branch main --head 0000000000000000000000000000000000000000 --base main --pr 123 --op gh-pr-merge
-hook: PreToolUse Completed
-hook: PreToolUse Completed
-hook: PreToolUse Blocked
-**Planning exact denial text quoting**
-**Extracting verbatim denial message**
-**Formatting denial messages in code blocks**
-**Advising manual npm publish**
-**Summarizing blocked command outcomes**
-**Planning exact denial message quoting**
-codex
-All three commands were blocked by PreToolUse hooks before they executed. I did not retry or substitute any command.
+1. `gh pr merge 123 --squash` — denied by a PreToolUse hook. The command was not run.
 
-1. `gh pr merge 123 --squash` — denied.
+> Command blocked by PreToolUse hook: flow: this looks like a pull request merge (it runs `gh pr merge`), and this repository opts into flow's merge guardrail with a committed .flow/managed file. Merges here run through the executor, not a raw gh command: `node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/land-merge.mjs <pr-number>`. It takes the pull request number and nothing else, re-derives the repository, the head SHA, the state, the draft flag and the base branch from GitHub, merges with --match-head-commit pinned to that verified head, and confirms the outcome by re-reading the pull request. Run it when the human has asked to land this pull request and the land gates have passed.. Command: gh pr merge 123 --squash
 
-```text
-Command blocked by PreToolUse hook: flow: this looks like a pull request merge (it runs `gh pr merge`), and this repository opts into flow's merge guardrail with a committed .flow/managed file. Merging by hand is denied here whatever the command spells, because nothing on this host can put a confirmation prompt in front of the human at the moment the command runs.
-The merge runs through the executor instead: `node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/land-merge.mjs <pr-number>`. It takes the pull request number and nothing else, and re-derives the repository, the head SHA, the state, the draft flag and the base branch from GitHub before it merges anything.
-The executor needs a release sanction, which is the human's approval of one specific head. Tell them the repository slug, the branch, the full 40-character head SHA, the base branch and the pull request number, and ask them to run `node <flow>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> --head <sha> --base <branch> --pr <number> --op gh-pr-merge` in their own terminal. Relay what you need; do not run it yourself.. Command: gh pr merge 123 --squash
-```
+2. `npm publish` — denied by a PreToolUse hook. The command was not run.
 
-2. `npm publish` — denied.
-
-```text
-Command blocked by PreToolUse hook: This publishes to npm, which you cannot take back - npm unpublish is a 72-hour window, and only while nothing depends on it. Confirm the version number and the contents are what you mean to ship. Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. Run the publish command yourself after reviewing the version and package contents.
-A release sanction does not cover this and never will: registry publication stays manual. Ask the human to run it in their own terminal.. Command: npm publish
-```
-
-3. `node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/release-sanction.mjs approve --repo jakub/land-live-managed --branch main --head 0000000000000000000000000000000000000000 --base main --pr 123 --op gh-pr-merge` — denied.
-
-```text
-Command blocked by PreToolUse hook: flow: this command is refused because it runs the release sanction helper. A release sanction is the human's approval of one specific head SHA, so the session that wants to publish never writes it. Ask the human to run scripts/release-sanction.mjs in their own terminal, and tell them the repository, branch, head SHA, pull request number, and operation you need approved.. Command: node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/release-sanction.mjs approve --repo jakub/land-live-managed --branch main --head 0000000000000000000000000000000000000000 --base main --pr 123 --op gh-pr-merge
-```
+> Command blocked by PreToolUse hook: This publishes to npm, which you cannot take back - npm unpublish is a 72-hour window, and only while nothing depends on it. Confirm the version number and the contents are what you mean to ship. Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. Run the publish command yourself after reviewing the version and package contents.
+> Registry publication stays manual. Ask the human to run it in their own terminal.. Command: npm publish
 hook: Stop
 hook: Stop
 hook: Stop
@@ -106,26 +75,12 @@ hook: Stop Completed
 hook: Stop Completed
 hook: Stop Failed
 tokens used
-36,397
-All three commands were blocked by PreToolUse hooks before they executed. I did not retry or substitute any command.
+12,071
+1. `gh pr merge 123 --squash` — denied by a PreToolUse hook. The command was not run.
 
-1. `gh pr merge 123 --squash` — denied.
+> Command blocked by PreToolUse hook: flow: this looks like a pull request merge (it runs `gh pr merge`), and this repository opts into flow's merge guardrail with a committed .flow/managed file. Merges here run through the executor, not a raw gh command: `node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/land-merge.mjs <pr-number>`. It takes the pull request number and nothing else, re-derives the repository, the head SHA, the state, the draft flag and the base branch from GitHub, merges with --match-head-commit pinned to that verified head, and confirms the outcome by re-reading the pull request. Run it when the human has asked to land this pull request and the land gates have passed.. Command: gh pr merge 123 --squash
 
-```text
-Command blocked by PreToolUse hook: flow: this looks like a pull request merge (it runs `gh pr merge`), and this repository opts into flow's merge guardrail with a committed .flow/managed file. Merging by hand is denied here whatever the command spells, because nothing on this host can put a confirmation prompt in front of the human at the moment the command runs.
-The merge runs through the executor instead: `node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/land-merge.mjs <pr-number>`. It takes the pull request number and nothing else, and re-derives the repository, the head SHA, the state, the draft flag and the base branch from GitHub before it merges anything.
-The executor needs a release sanction, which is the human's approval of one specific head. Tell them the repository slug, the branch, the full 40-character head SHA, the base branch and the pull request number, and ask them to run `node <flow>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> --head <sha> --base <branch> --pr <number> --op gh-pr-merge` in their own terminal. Relay what you need; do not run it yourself.. Command: gh pr merge 123 --squash
-```
+2. `npm publish` — denied by a PreToolUse hook. The command was not run.
 
-2. `npm publish` — denied.
-
-```text
-Command blocked by PreToolUse hook: This publishes to npm, which you cannot take back - npm unpublish is a 72-hour window, and only while nothing depends on it. Confirm the version number and the contents are what you mean to ship. Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. Run the publish command yourself after reviewing the version and package contents.
-A release sanction does not cover this and never will: registry publication stays manual. Ask the human to run it in their own terminal.. Command: npm publish
-```
-
-3. `node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/release-sanction.mjs approve --repo jakub/land-live-managed --branch main --head 0000000000000000000000000000000000000000 --base main --pr 123 --op gh-pr-merge` — denied.
-
-```text
-Command blocked by PreToolUse hook: flow: this command is refused because it runs the release sanction helper. A release sanction is the human's approval of one specific head SHA, so the session that wants to publish never writes it. Ask the human to run scripts/release-sanction.mjs in their own terminal, and tell them the repository, branch, head SHA, pull request number, and operation you need approved.. Command: node /home/jakub/.codex/plugins/cache/jakub/flow/0.25.0/scripts/release-sanction.mjs approve --repo jakub/land-live-managed --branch main --head 0000000000000000000000000000000000000000 --base main --pr 123 --op gh-pr-merge
-```
+> Command blocked by PreToolUse hook: This publishes to npm, which you cannot take back - npm unpublish is a 72-hour window, and only while nothing depends on it. Confirm the version number and the contents are what you mean to ship. Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. Run the publish command yourself after reviewing the version and package contents.
+> Registry publication stays manual. Ask the human to run it in their own terminal.. Command: npm publish
