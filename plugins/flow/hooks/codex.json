@@ -8,7 +8,7 @@
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/scripts/inject-charter-codex.mjs\"",
             "timeout": 5,
-            "additionalContextLimit": 5000
+            "additionalContextLimit": 6000
           }
         ]
       }

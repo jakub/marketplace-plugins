@@ -4,14 +4,20 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  CODEX_CHARTER_BYTE_BUDGET,
+  CODEX_INLINE_BYTE_BUDGET,
+  CODEX_PROFILE_BYTE_BUDGET,
+  NO_BINDINGS_NOTE,
+  profileBlock,
+  readProfile,
+} from '../lib/charter-payload.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-// Codex enforces an approximate token limit. Keep this English-prose payload well below the
-// configured 5,000-token threshold; spilling remains the runtime fallback, not the target.
-const CODEX_CHARTER_BYTE_BUDGET = 15_000
 const rawHook = (name, input) => execFileSync(
   process.execPath,
   [join(ROOT, 'hooks', 'scripts', name)],
@@ -105,17 +111,44 @@ for (const output of [
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /without an inspectable command/)
 }
 
-const charter = execFileSync(
+// The Codex SessionStart payload is the charter, then a blank line, then the Codex binding
+// profile. Building the expectation from the same lib the hook uses keeps this an equality
+// check on the wiring, not a second copy of the block's shape.
+const charterText = readFileSync(join(ROOT, 'charter', 'charter.md'), 'utf8')
+const codexProfile = profileBlock(readProfile(ROOT, 'codex'))
+const payload = execFileSync(
   process.execPath,
   [join(ROOT, 'hooks', 'scripts', 'inject-charter-codex.mjs')],
   { env: { ...process.env, PLUGIN_ROOT: ROOT }, encoding: 'utf8' },
 )
-assert.equal(charter, readFileSync(join(ROOT, 'charter', 'charter.md'), 'utf8'))
-assert.match(charter, /<flow-charter>/)
-assert.match(charter, /<\/flow-charter>/)
+assert.equal(payload, charterText + '\n' + codexProfile)
+assert.match(payload, /<flow-charter>/)
+assert.match(payload, /<\/flow-charter>/)
+assert.match(payload, /<flow-profile host="codex" bindings="bound">/)
 assert.ok(
-  Buffer.byteLength(charter) < CODEX_CHARTER_BYTE_BUDGET,
+  Buffer.byteLength(charterText) < CODEX_CHARTER_BYTE_BUDGET,
   `Flow charter exceeds the ${CODEX_CHARTER_BYTE_BUDGET}-byte Codex inline maintenance budget`,
 )
+assert.ok(
+  Buffer.byteLength(codexProfile) <= CODEX_PROFILE_BYTE_BUDGET,
+  `Codex binding profile exceeds the ${CODEX_PROFILE_BYTE_BUDGET}-byte budget`,
+)
+assert.ok(
+  Buffer.byteLength(payload) < CODEX_INLINE_BYTE_BUDGET,
+  `Codex SessionStart payload exceeds the ${CODEX_INLINE_BYTE_BUDGET}-byte inline maintenance budget`,
+)
+
+// A root with no charter/profiles/ directory still yields a block, and the block tells the
+// session what it lost. This is the failure a silent read would hide. execFileSync throws on
+// a non-zero exit, so reaching the assertions is itself the exit-0 check.
+const bare = mkdtempSync(join(tmpdir(), 'flow-profile-'))
+const missing = execFileSync(
+  process.execPath,
+  [join(ROOT, 'hooks', 'scripts', 'inject-profile.mjs'), 'codex'],
+  { env: { ...process.env, CLAUDE_PLUGIN_ROOT: bare, PLUGIN_ROOT: bare }, encoding: 'utf8' },
+)
+assert.match(missing, /<flow-profile host="codex" bindings="none">/)
+assert.ok(missing.includes(NO_BINDINGS_NOTE), 'a missing profile must carry the no-bindings note')
+assert.match(missing, /<\/flow-profile>\n$/)
 
 console.log('flow Codex hooks: ALL PASS')
