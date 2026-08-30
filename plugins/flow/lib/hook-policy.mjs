@@ -29,15 +29,6 @@ const PUBLISH = [
   { op: 'gh-pr-merge', kind: 'github', re: /\bgh\s+pr\s+merge\b/ },
 ]
 
-/** Every operation id the table can produce, in table order. */
-export const PUBLISH_OPERATION_IDS = [...new Set(PUBLISH.map((entry) => entry.op))]
-
-/** The op ids that push a version to a public package registry. Nobody can take these back. */
-export const REGISTRY_OPERATION_IDS = [...new Set(PUBLISH.filter((entry) => entry.kind === 'registry').map((entry) => entry.op))]
-
-/** True when this op id publishes to a public registry. A registry op is never sanctionable. */
-export const isRegistryOperation = (op) => REGISTRY_OPERATION_IDS.includes(op)
-
 export function protectedFileReason(file) {
   const base = String(file).split('/').pop()
 
@@ -233,8 +224,8 @@ function shellWords(segment) {
 // a shell option before -c, a gh flag between `pr` and `merge`, a cd into the repo, a GH_REPO
 // redirect - are known and accepted. They do not matter, because a model at the same uid could
 // merge without any command this classifier ever sees. The enforcement that counts is the
-// committed `.flow/managed` marker plus the executor and its human-written sanction, not this
-// classifier.
+// committed `.flow/managed` marker plus the executor, which re-derives what it merges from the
+// origin remote and GitHub rather than trusting this classifier or the conversation.
 
 const isGh = (word) => String(word).split('/').pop() === 'gh'
 

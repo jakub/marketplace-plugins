@@ -27,6 +27,14 @@
 // the machine asking for the merge; there is no matching flag for the base, so a retarget
 // between the last re-read and the merge is an unclosable client-side race.
 //
+// One accepted race, stated so nobody rediscovers it: two attended sessions asked to land the
+// same pull request can both exit 0. If the second session's merge call fails because the
+// first already landed it, the confirming read still shows MERGED at the verified head and
+// base, and this program reports success - deliberately, because a lost merge response with a
+// real landed merge must read as success, and the two cases are indistinguishable from here.
+// What landed is exactly the head both sessions verified, so the cost is double-claimed
+// credit and an idempotent second cleanup, not a wrong merge.
+//
 // Hardening that keeps the ordinary path honest. Every gh call pins `--repo host/owner/repo`,
 // derived from the origin remote, and the child environment has GH_REPO and GH_HOST removed, so
 // a stray or injected redirect cannot point gh at a different repository than the one this

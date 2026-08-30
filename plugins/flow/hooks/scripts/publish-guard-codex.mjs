@@ -12,10 +12,12 @@
 //    for" from "some clone the session happens to be sitting in". The marker being committed
 //    at HEAD is the opt-in, so deleting the working-tree copy does not turn the guardrail off.
 //    In an opted-in repository every merge command this guard can recognize is denied and the
-//    denial names scripts/land-merge.mjs, the executor that performs the merge after
-//    re-deriving every fact from GitHub. This is routing, not approval: the human asking to
-//    land is the authorization, exactly as on the Claude host, and the executor is denied to
-//    nobody - the deny just keeps the merge on the path that verifies what it merges. In any
+//    denial names scripts/land-merge.mjs, the executor that performs the merge after deriving
+//    the repository from the origin remote and the pull request's live facts from GitHub.
+//    This is routing, not approval: the human asking to land is the authorization, exactly as
+//    on the Claude host, and in an attended session the executor invocation passes this guard
+//    untouched - the deny just keeps the merge on the path that verifies what it merges.
+//    (Scheduled jobs are the exception below: cron merges nothing, executor included.) In any
 //    other repository this guard does no merge gating at all.
 //
 // A cooperative guardrail, not a security boundary. Reading shell text well enough to
@@ -94,10 +96,11 @@ const isManagedRepo = (cwd) => {
 const mergeDenial = (shapes) =>
   `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
   'merge guardrail with a committed .flow/managed file. Merges here run through the executor, not a raw gh ' +
-  `command: \`node ${EXECUTOR} <pr-number>\`. It takes the pull request number and nothing else, re-derives ` +
-  'the repository, the head SHA, the state, the draft flag and the base branch from GitHub, merges with ' +
-  '--match-head-commit pinned to that verified head, and confirms the outcome by re-reading the pull request. ' +
-  'Run it when the human has asked to land this pull request and the land gates have passed.'
+  `command: \`node ${EXECUTOR} <pr-number>\`. It takes the pull request number and nothing else, derives the ` +
+  'repository from the origin remote, reads the head SHA, the state, the draft flag and the base branch from ' +
+  'GitHub, merges with --match-head-commit pinned to that verified head, and confirms the outcome by ' +
+  're-reading the pull request. Run it when the human has asked to land this pull request and the land gates ' +
+  'have passed.'
 
 const decide = (input) => {
   const command = input?.tool_input?.command

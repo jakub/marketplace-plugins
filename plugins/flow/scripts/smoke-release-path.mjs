@@ -207,11 +207,15 @@ const makeRunGh = (st) => (args) => {
 }
 
 // Every gh call the executor makes must name the repository derived from origin, so no ambient
-// GH_REPO or GH_HOST can redirect it. graphql pins the host instead of --repo.
+// GH_REPO or GH_HOST can redirect it. graphql pins the host with --hostname and must also carry
+// the owner and name as form fields - a query against the right host but the wrong repository
+// would read the wrong merge queue, so hostname alone is not pinned.
 const pinnedTo = (identity, host) => (args) => {
   if (args[0] === 'api' && args[1] === 'graphql') {
     const hi = args.indexOf('--hostname')
-    return hi >= 0 && args[hi + 1] === host
+    const [, owner, name] = identity.split('/')
+    return hi >= 0 && args[hi + 1] === host &&
+      args.includes(`owner=${owner}`) && args.includes(`name=${name}`)
   }
   // `gh repo view` names the repository as a positional; `gh pr view` and `gh pr merge` use --repo.
   if (args[0] === 'repo' && args[1] === 'view') return args[2] === identity
@@ -380,6 +384,11 @@ check('every gh call is pinned to the origin repository', merged.calls.every(isP
 check('it read the live pull request first', merged.calls.some((a) => a[0] === 'pr' && a[1] === 'view'))
 check('and the repository default branch', merged.calls.some((a) => a[0] === 'repo' && a[1] === 'view'))
 check('and checked the base for a merge queue', merged.calls.some((a) => a[0] === 'api' && a[1] === 'graphql'))
+check(
+  'the merge-queue query names the branch it checks',
+  merged.calls.some((a) => a[0] === 'api' && a[1] === 'graphql' && a.includes('base=main')),
+  JSON.stringify(merged.calls.filter((a) => a[0] === 'api')),
+)
 
 console.log('\na stray GH_REPO cannot redirect the executor')
 const redirected = runExecutor([String(PR)], { env: { GH_REPO: 'someone/evil', GH_HOST: 'evil.example' } })
@@ -491,8 +500,11 @@ check('it does not claim the merge was refused', !unknown.stderr.includes('refus
 check('it merged once', unknown.merges.length === 1, JSON.stringify(unknown.merges))
 
 console.log('\nthings the executor refuses before reading anything')
-const cron = runExecutor([String(PR)], { env: { FLOW_CRON_JOB: 'lint' } })
-check('a scheduled job cannot merge', cron.code === 1 && cron.stderr.includes('nobody is watching'), cron.stderr)
+// cwd is a directory with no origin remote on purpose: if the cron check ever moved below the
+// origin read, this case would refuse with "no readable origin remote" instead, so the
+// substring match is what proves the ordering - not just the absence of gh calls.
+const cron = runExecutor([String(PR)], { env: { FLOW_CRON_JOB: 'lint' }, cwd: norepo })
+check('a scheduled job cannot merge, before even the origin read', cron.code === 1 && cron.stderr.includes('nobody is watching'), cron.stderr)
 check('and calls gh not at all', cron.calls.length === 0, JSON.stringify(cron.calls))
 const notANumber = runExecutor(['twelve'])
 check('a pull request number that is not a number exits 2', notANumber.code === 2, notANumber.stderr)

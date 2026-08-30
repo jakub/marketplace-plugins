@@ -22998,8 +22998,6 @@ var PUBLISH = [
   { op: "pypi-upload", kind: "registry", re: /\buv\s+publish\b/, registry: "PyPI", why: "PyPI will not let you reuse a version number, even after deletion" },
   { op: "gh-pr-merge", kind: "github", re: /\bgh\s+pr\s+merge\b/ }
 ];
-var PUBLISH_OPERATION_IDS = [...new Set(PUBLISH.map((entry) => entry.op))];
-var REGISTRY_OPERATION_IDS = [...new Set(PUBLISH.filter((entry) => entry.kind === "registry").map((entry) => entry.op))];
 function protectedFileReason(file) {
   const base = String(file).split("/").pop();
   if (SECRET.test(file) && !SECRET_EXEMPT.test(file)) {
