@@ -14,9 +14,12 @@ one suspension.
 ### gate: resolve-pr
 
 There is no slash-command argument. The PR number comes out of the human's message asking to
-land it. `agents/openai.yaml` sets `allow_implicit_invocation: false`, so this stage starts
-only when the human names the plugin-namespaced `land-stage` skill or asks for the land in
-words; a PR that merely looks ready is not an invocation.
+land it. `agents/openai.yaml` sets `allow_implicit_invocation: false` as the intended way to
+keep this stage out of automatic selection, but that suppression is unverified on Codex's
+plugin-loader path (the capability inventory in `src/delegation/contracts.mjs` marks it
+`supported: false`), so do not lean on it. The actual gate is the human: this stage runs only
+when they name the plugin-namespaced `land-stage` skill or ask for the land in words, and a PR
+that merely looks ready is never an invocation.
 
 ### gate: linked-issue-recovery
 
@@ -70,26 +73,46 @@ merge runs through flow's executor instead:
 node <plugin-root>/scripts/land-merge.mjs <pr>
 ```
 
+This is a cooperative guardrail, not a security boundary. Everything runs as one uid, and the
+guard's text match is coarse: a shell option before `-c`, a gh flag wedged between `pr` and
+`merge`, a `cd` into the repo, or a `GH_REPO` redirect can slip a merge-shaped command past it,
+and a determined model could ignore the whole path and call the GitHub API with the token. None
+of that is what the guardrail is for. The enforcement that counts is downstream and
+deterministic: the committed `.flow/managed` marker enrols the repository, and the executor
+claims one human-written release sanction and re-checks it against live GitHub state. Do not
+try to route around the guard; a denial means take the executor path, not find a spelling that
+passes.
+
 The ceremony, in order. Suspend the turn and give the human the repository slug, the branch,
-the full 40-character head SHA, the pull request number, and one line on what landing it
-changes. They approve it in their own terminal:
+the base branch, the full 40-character head SHA, the pull request number, and one line on what
+landing it changes. They approve it in their own terminal:
 
 ```bash
-node <plugin-root>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> --head <sha> --pr <number> --op gh-pr-merge
+node <plugin-root>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> --base <branch> --head <sha> --pr <number> --op gh-pr-merge
 ```
 
-Never run that yourself. The guard denies it, and an approval the session can write approves
-nothing. A missing sanction is a stop, not a prompt to create one. Once the human says they
-have written it, run the executor.
+`--base` defaults to `main`, so leave it off unless the repository renamed its default branch.
+Never run that command yourself. The guard denies it, and an approval the session can write
+approves nothing. A missing sanction is a stop, not a prompt to create one. Once the human says
+they have written it, run the executor.
 
 The executor takes the pull request number and nothing else, so there is no command form to
-get right. It claims the sanction first, then re-derives the repository slug from the origin
-remote and reads the head SHA, state, draft flag and base branch from GitHub. It refuses
-unless all of those match the approval and the pull request is open, ready for review, and
-targeting the default branch. Then it merges with `--squash` and `--match-head-commit
-<sanctioned head>`, which is GitHub's own re-check that the branch did not move, and re-reads
-the pull request to confirm `MERGED`. Its exit code is the gate: 0 with the merge confirmed,
-or 1 with one line on stderr naming what failed.
+get right. It claims the sanction first, then derives the host, owner and repository from the
+origin remote, pins every gh call to that repository, and reads the head SHA, state, draft
+flag and base branch from GitHub. It refuses unless all of those match the approval and the
+pull request is open, ready for review, and targeting the base the human approved (which must
+be the default branch). It also refuses before touching anything if the pull request already
+has auto-merge armed or the base carries a merge queue, because it only ever performs an
+immediate squash-merge and will not leave an armed future merge behind. Then it merges with
+`--squash` and `--match-head-commit <sanctioned head>`, GitHub's own re-check that the branch
+did not move, and re-reads the pull request.
+
+Its exit code is the gate, and it reports three distinct outcomes. Exit 0 means the re-read
+confirmed `MERGED`. Exit 1 with `refused` on stderr means a check failed or the re-read showed
+the pull request still open, and nothing landed. Exit 1 that says it could not confirm means
+the merge outcome is genuinely unknown: the merge may or may not have landed, so look at the
+pull request yourself before doing anything else, and do not report it as either merged or
+failed.
 
 One attempt is all a sanction buys, whatever the outcome. The claim happens before any check,
 so a refusal spends the approval too. Read the reason, fix what it names, then ask for a new

@@ -68,7 +68,7 @@ query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
           id
           isResolved
           isOutdated
-          comments(first: 10) { nodes { author { login } body path url } }
+          comments(last: 20) { nodes { author { login } body path url } }
         }
       }
     }
@@ -76,7 +76,7 @@ query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
 }' -f owner=<owner> -f repo=<repo> -F pr=$PR
 ```
 
-A thread is unresolved when `isResolved` is false. Keep paging with `-f cursor=<endCursor>` while `pageInfo.hasNextPage` is true; 100 covers one round on a normal PR, and a truncated read looks exactly like a clean one. Each node's `id` is the thread id the two mutations below take. The REST comments endpoint (`gh api repos/{owner}/{repo}/pulls/$PR/comments`) has no thread id and no resolved flag, so it can show you a comment but cannot settle its thread.
+A thread is unresolved when `isResolved` is false. Keep paging with `-f cursor=<endCursor>` while `pageInfo.hasNextPage` is true; 100 covers one round on a normal PR, and a truncated read looks exactly like a clean one. The comments use `last: 20`, not `first`, so a long back-and-forth shows its newest messages - the reviewer's latest reply is what decides whether the thread still stands, and the opening comment on a thread past 20 messages would tell you nothing about where it landed. Each node's `id` is the thread id the two mutations below take. The REST comments endpoint (`gh api repos/{owner}/{repo}/pulls/$PR/comments`) has no thread id and no resolved flag, so it can show you a comment but cannot settle its thread.
 
 Unresolved threads from external reviewers block the merge.
 

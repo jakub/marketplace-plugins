@@ -3,7 +3,7 @@
 // its guards deny the commands that would let it try.
 //
 // A Codex session cannot be asked to confirm a merge from a hook, so it asks you instead:
-// repository, branch, head SHA, and which pull request it wants to land. You look at what is
+// repository, branch, base, head SHA, and which pull request it wants to land. You look at what is
 // about to ship and run `approve` here in your own terminal. The session then runs
 // scripts/land-merge.mjs, which claims what you wrote, checks it against the pull request as
 // GitHub reports it, and merges once if every fact still matches. Anything else, including
@@ -33,7 +33,7 @@ const USAGE = `flow release sanction - your approval of one specific merge.
 
   release-sanction.mjs approve --repo <owner/name> --branch <branch> --head <40-char sha>
                                --pr <number> --op ${MERGE_OPERATION_ID}
-                               [--ttl-minutes <1-${MAX_TTL_MINUTES}>]
+                               [--base <branch>] [--ttl-minutes <1-${MAX_TTL_MINUTES}>]
   release-sanction.mjs revoke
 
 Operation ids you can approve: ${SANCTIONABLE_OPERATION_IDS.join(', ')}
@@ -88,7 +88,7 @@ const opts = { op: [] }
 for (let i = 1; i < argv.length; i += 2) {
   const flag = argv[i]
   const value = argv[i + 1]
-  if (!/^--(repo|branch|head|pr|op|ttl-minutes)$/.test(flag)) die(`unknown or misplaced option ${JSON.stringify(flag)}.`)
+  if (!/^--(repo|branch|base|head|pr|op|ttl-minutes)$/.test(flag)) die(`unknown or misplaced option ${JSON.stringify(flag)}.`)
   if (value === undefined || value.startsWith('--')) die(`${flag} needs a value.`)
   if (flag === '--op') opts.op.push(value)
   else opts[flag.slice(2)] = value
@@ -96,6 +96,9 @@ for (let i = 1; i < argv.length; i += 2) {
 
 if (!/^[^\s/]+\/[^\s/]+$/.test(opts.repo || '')) die('--repo must be the owner/name slug, as `gh repo view` prints it.')
 if (!opts.branch) die('--branch is required: a sanction approves one branch.')
+// The base the merge lands on. Flow lands on main across this whole system - the land stage
+// refuses any other base - so main is the default and --base is only for a repo that renamed it.
+const base = opts.base || 'main'
 if (!/^[0-9a-f]{40}$/.test(opts.head || '')) die('--head must be the full 40-character lowercase SHA, as `git rev-parse HEAD` prints it.')
 if (opts.op.length === 0) die('at least one --op is required: a sanction approves named operations, not publication in general.')
 for (const op of opts.op) {
@@ -125,6 +128,7 @@ const sanction = {
   schema: SANCTION_SCHEMA_VERSION,
   repo: opts.repo,
   branch: opts.branch,
+  expectedBase: base,
   head: opts.head,
   operations: [...new Set(opts.op)],
   issuedAt: issued.toISOString(),
@@ -142,7 +146,7 @@ renameSync(temp, path)
 
 process.stdout.write(
   `approved ${sanction.operations.join(', ')}${pr === null ? '' : ` of #${pr}`} on ${sanction.repo} ` +
-  `${sanction.branch} at ${sanction.head.slice(0, 12)}\n` +
+  `${sanction.branch} onto ${sanction.expectedBase} at ${sanction.head.slice(0, 12)}\n` +
   `  sanction: ${path}\n` +
   `  expires:  ${sanction.expiresAt} (${ttl} minutes)\n` +
   '  one attempt, and only while the head still matches. A refused attempt spends it too.\n' +

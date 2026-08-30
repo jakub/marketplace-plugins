@@ -29,6 +29,16 @@
 // retargeted base, a converted draft - invalidates the approval and forces a fresh human
 // look at what is about to ship.
 //
+// This is a cooperative guardrail, not a security boundary. Everything runs as one uid, so a
+// determined model with a shell could substitute gh, use curl, or call the GitHub API with
+// the token directly, and none of the checks below would ever see it. What the checks stop is
+// the accident and the casual injected instruction: a merge of the wrong pull request, of a
+// head the human never saw, onto a base they were not shown. The base check is the clearest
+// example of the limit. The caller re-reads the base right before it merges, but a retarget
+// that lands between that read and GitHub's own merge is an unclosable race on the client
+// side; only GitHub could close it, and it does not offer a base-match flag the way it offers
+// --match-head-commit for the head.
+//
 // Deny by default. Every predicate must hold, and anything absent, malformed, or of the
 // wrong type is a denial that names the predicate which failed.
 
@@ -37,7 +47,12 @@ import { join } from 'node:path'
 
 import { isRegistryOperation } from './hook-policy.mjs'
 
-/** Bumped whenever the file's meaning changes. A sanction written for another version is refused, never guessed at. */
+/**
+ * Bumped whenever the file's meaning changes. A sanction written for another version is
+ * refused, never guessed at. `expectedBase` was added within schema 1: it is a new required
+ * field, which is safe because a sanction lives at most 30 minutes and is single-use, so no
+ * old file survives to be read by a newer verifier.
+ */
 export const SANCTION_SCHEMA_VERSION = 1
 
 /** Shared with the protected-file rule in hook-policy.mjs, which denies editor writes to this name. */
@@ -87,6 +102,7 @@ const millis = (v) => {
  * @param {object|null} args.sanction the parsed sanction file, or null when absent or unreadable
  * @param {object} args.pr live facts, read from GitHub rather than from the session
  * @param {string|null} args.pr.slug owner/name derived from the origin remote
+ * @param {string|null} [args.pr.host] the remote host derived from the origin remote, for the reason string
  * @param {number|null} args.pr.number the pull request the caller was asked to merge
  * @param {string|null} args.pr.branch headRefName
  * @param {string|null} args.pr.head headRefOid
@@ -163,6 +179,13 @@ export function releaseVerdict({ operations, sanction, pr, nowMs } = {}) {
   if (pr.base !== pr.defaultBranch) {
     return deny(`#${pr.number} targets ${show(pr.base)} and the default branch is ${show(pr.defaultBranch)}; a sanctioned merge lands on the default branch`)
   }
+  // The human names the base they approved. It has to equal the default branch above, so this
+  // is redundant on a well-behaved pull request, but it makes the approval say out loud what
+  // it lands on, and it catches a retarget the human never looked at.
+  if (!isText(sanction.expectedBase)) return deny(`the sanction names no expected base branch (found ${show(sanction.expectedBase)}); approve with --base <branch>`)
+  if (sanction.expectedBase !== pr.base) {
+    return deny(`the sanction approved a merge onto ${show(sanction.expectedBase)} and #${pr.number} now targets ${show(pr.base)}`)
+  }
 
   if (!Array.isArray(sanction.operations) || sanction.operations.length === 0 || !sanction.operations.every(isText)) {
     return deny('the sanction lists no operations, so it authorizes nothing')
@@ -200,8 +223,9 @@ export function releaseVerdict({ operations, sanction, pr, nowMs } = {}) {
     return deny(`the sanction covers ${show(sanction.issuedAt)} to ${show(sanction.expiresAt)}, more than 30 minutes; approval is good for one short window, not a standing permission`)
   }
 
+  const where = isText(pr.host) ? `${pr.host}/${pr.slug}` : pr.slug
   return {
     allowed: true,
-    reason: `sanction covers ${operations.join(', ')} of #${pr.number} on ${pr.slug} ${pr.branch} at ${pr.head.slice(0, 12)}`,
+    reason: `sanction covers ${operations.join(', ')} of #${pr.number} on ${where} ${pr.branch} onto ${pr.base} at ${pr.head.slice(0, 12)}`,
   }
 }
