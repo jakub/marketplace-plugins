@@ -4,7 +4,8 @@
 // The charter also has to stay free of host names outside the three sections that name models
 // on purpose, and the roles have to stay charter-only, so a stage never rebinds one. The same
 // checker functions run over the broken cases under scripts/fixtures/charter-conformance/, one
-// directory per way the set can go wrong, so a green run also means the checker can still fail.
+// directory per way the set can go wrong, plus a couple built in memory, so a green run also
+// means the checker can still fail.
 // Run: node plugins/flow/scripts/smoke-charter-conformance.mjs
 
 import assert from 'node:assert/strict'
@@ -134,6 +135,12 @@ const stageRoleClaims = (root) => {
   return problems
 }
 
+// An HTML comment reaches no session: the hook prints the profile verbatim and the model reads
+// it as markup, so "<!-- TODO -->" under a heading binds exactly as much as a blank line. The
+// unterminated alternative closes on end-of-body, because text after an opener nobody closed is
+// inside the comment too.
+const uncommented = (text) => text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+
 // A heading with nothing under it binds nothing, and the engine's set comparison cannot see it.
 const emptyBindings = (name, text) => {
   const lines = lf(text).split('\n')
@@ -144,7 +151,7 @@ const emptyBindings = (name, text) => {
     const rest = lines.slice(at + 1)
     const end = rest.findIndex((l) => /^#{1,6} /.test(l))
     const section = end === -1 ? rest : rest.slice(0, end)
-    if (!section.some((l) => l.trim() !== '')) {
+    if (uncommented(section.join('\n')).trim() === '') {
       problems.push(`${name} declares role ${heading[1]} with an empty section`)
     }
   }
@@ -228,8 +235,10 @@ assert.ok(skill.includes(POINTER), 'skills/flow/SKILL.md no longer carries the e
 ok('the flow skill carries the presence sentence verbatim')
 
 console.log('the negative fixtures')
-// One directory per way the set can be wrong. Each case names the substrings its failure has to
-// contain, so a checker that fails for some unrelated reason does not count as proof.
+// One directory per way the set can be wrong, plus the cases whose whole content is a few lines
+// of profile text and would make a directory dishonest about what is under test. Each case names
+// the substrings its failure has to contain, so a checker that fails for some unrelated reason
+// does not count as proof.
 const bindings = (at) => charterProblems(read(at, 'charter.md'), profilesIn(at)).problems
 const CASES = [
   {
@@ -256,20 +265,42 @@ const CASES = [
       'skills/mini-stage/SKILL.md writes a [[role: marker',
     ],
   },
+  {
+    label: 'commented-out-binding',
+    run: () => emptyBindings('commented.md', [
+      '### role: mini-seat',
+      '<!-- TODO -->',
+      '',
+      '### role: mini-publish',
+      '<!-- TODO:',
+      'bind this once the CLI resolves here',
+      '-->',
+      '',
+      '### role: mini-search',
+      'A read-only seat.',
+      '',
+    ].join('\n')),
+    names: [
+      'commented.md declares role mini-seat with an empty section',
+      'commented.md declares role mini-publish with an empty section',
+    ],
+    count: 2,
+  },
 ]
-for (const { dir, run, names, count } of CASES) {
-  const found = run(join(FIXTURE, dir))
-  assert.ok(found.length > 0, `the checker passed ${dir}, a fixture built to fail`)
+for (const { dir, label, run, names, count } of CASES) {
+  const which = dir ?? label
+  const found = dir ? run(join(FIXTURE, dir)) : run()
+  assert.ok(found.length > 0, `the checker passed ${which}, a case built to fail`)
   if (count !== undefined) {
-    assert.equal(found.length, count, `${dir} reported ${found.length} problems, expected ${count}: ${found.join('; ')}`)
+    assert.equal(found.length, count, `${which} reported ${found.length} problems, expected ${count}: ${found.join('; ')}`)
   }
   for (const name of names) {
     assert.ok(
       found.some((p) => p.includes(name)),
-      `${dir} failed without naming "${name}": ${found.join('; ')}`,
+      `${which} failed without naming "${name}": ${found.join('; ')}`,
     )
   }
-  ok(`the checker fails ${dir} and names the gap: ${found[0]}`)
+  ok(`the checker fails ${which} and names the gap: ${found[0]}`)
 }
 
 console.log(`\ncharter conformance: ALL PASS (${checks} checks)`)
