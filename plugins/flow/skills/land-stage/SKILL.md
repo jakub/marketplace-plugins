@@ -25,7 +25,7 @@ Every gate below carries a `[[gate:<id>]]` marker. The profile you just read has
 The argument is a PR number, or nothing at all: with no argument, resolve the PR from the current branch (`gh pr view --json number`). Abort with usage if neither resolves. Three origins authorize the number: the argument, the entry point the human invoked resolving the current branch, or the human naming the PR in words. Anything else is a stop. This stage never picks its own PR out of a survey, a green build, or whatever work sits next to it.
 
 ```bash
-gh pr view $PR --json number,title,state,headRefName,baseRefName,url,isDraft,mergeable,mergeStateStatus,closingIssuesReferences,statusCheckRollup,reviewThreads
+gh pr view $PR --json number,title,state,headRefName,baseRefName,url,isDraft,mergeable,mergeStateStatus,closingIssuesReferences,statusCheckRollup
 ```
 
 Abort if the PR is not OPEN, or if it is a draft. Record `HEAD_REF`, `BASE_REF`, and `LINKED_ISSUES`.
@@ -55,9 +55,48 @@ Red twice on identical code is real: abort. Never rerun an assertion failure - t
 
 ## 4. External-threads gate [[gate:unresolved-threads]]
 
-Read the unresolved threads from `reviewThreads`, or `gh api repos/{owner}/{repo}/pulls/$PR/comments`. Unresolved threads from external reviewers block the merge.
+Threads are not reachable through `gh pr view --json`. That field list rejects `reviewThreads` with "Unknown JSON field" (gh 2.98.0, checked 2026-08-29), so read them over GraphQL:
+
+```bash
+gh api graphql -f query='
+query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(first: 10) { nodes { author { login } body path url } }
+        }
+      }
+    }
+  }
+}' -f owner=<owner> -f repo=<repo> -F pr=$PR
+```
+
+A thread is unresolved when `isResolved` is false. Keep paging with `-f cursor=<endCursor>` while `pageInfo.hasNextPage` is true; 100 covers one round on a normal PR, and a truncated read looks exactly like a clean one. Each node's `id` is the thread id the two mutations below take. The REST comments endpoint (`gh api repos/{owner}/{repo}/pulls/$PR/comments`) has no thread id and no resolved flag, so it can show you a comment but cannot settle its thread.
+
+Unresolved threads from external reviewers block the merge.
 
 Each one ends in exactly one of three states: it was fixed (resolve the thread, note the commit), it was answered and the run's reply stands (resolve it), or it is genuinely open - which means fixing it now in a quick pass on the branch, or sending the PR back through a fix round.
+
+Replying and resolving are two separate mutations, and `gh pr comment` is neither: it posts a fresh top-level comment on the PR, which leaves the thread open and this gate red.
+
+```bash
+gh api graphql -f query='mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
+    comment { url }
+  }
+}' -f thread=<thread-id> -f body='<reply>'
+
+gh api graphql -f query='mutation($thread: ID!) {
+  resolveReviewThread(input: {threadId: $thread}) { thread { isResolved } }
+}' -f thread=<thread-id>
+```
+
+The two input field names differ, `pullRequestReviewThreadId` on the reply and `threadId` on the resolve, and swapping them is a schema error rather than a silent no-op. Read `thread.isResolved` back as proof, and re-run the paged query once at the end: zero unresolved threads is the only pass.
 
 This is where a review that landed after the issue run finished gets caught. That is by design: the run cannot wait indefinitely, so this gate is what makes a late review still count.
 

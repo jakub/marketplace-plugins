@@ -46,9 +46,8 @@ the allowance, and git-guard passes read-only `git log`.
 
 ### gate: unresolved-threads
 
-No host difference. Reading the threads is `gh pr view --json reviewThreads` or the comments
-API; resolving one is `gh api graphql` with the `resolveReviewThread` mutation, and posting a
-reply is `gh pr comment`.
+No host difference. The read and both mutations are `gh api graphql` calls, exactly as the
+stage writes them, and they all run under the `Bash(gh:*)` allowance.
 
 ### gate: escape-hatch-ack
 

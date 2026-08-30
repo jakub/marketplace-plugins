@@ -126,7 +126,7 @@ const HOST_CAPABILITY_TABLE = {
   },
   'implicit-skill-suppression': {
     claude: { supported: true, assurance: 'mechanism', note: 'Skill frontmatter disable-model-invocation keeps a skill out of automatic selection.' },
-    codex: { supported: true, assurance: 'contract', note: 'The 0.151.0 source reads allow_implicit_invocation out of agents/openai.yaml and acts on it, but no live loader probe has confirmed that yet.' },
+    codex: { supported: false, assurance: 'unverified', note: 'The 0.151.0 source honors allow_implicit_invocation, but nothing proves the plugin-loader path reaches that code. A live capture of a plugin-supplied agents/openai.yaml staying out of automatic selection flips this to true.' },
   },
   'structured-question': {
     claude: { supported: true, assurance: 'mechanism', note: 'The interactive ask tool returns the option the human picked.' },
