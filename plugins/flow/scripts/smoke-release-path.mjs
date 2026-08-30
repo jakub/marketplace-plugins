@@ -6,9 +6,12 @@
 //
 // The executor is a cooperative guardrail, not a security boundary: at one uid a model could
 // ignore it. What the cases below prove is that the ordinary and casually-injected paths get
-// caught - the executor pins every gh call to the repository the origin remote names, refuses a
-// merge queue or an armed auto-merge before mutating, reads back three honest terminal states,
-// and spends its single-use approval whatever happens.
+// caught - the executor pins every gh call to the host-qualified repository the origin remote
+// names, matches the sanction on host as well as owner and name, refuses a merge queue or an
+// armed auto-merge before mutating, and spends its single-use approval whatever happens. After
+// the merge it reads the pull request back and reports honest outcomes: our confirmed merge, a
+// foreign merge of the same number that it will not claim, an authoritative failure, or a
+// genuinely unknown result it tells the operator to verify by hand rather than retry.
 //
 // The executor is driven in process through its exported landMerge() with a fake gh injected as
 // a plain function across the module boundary. No environment variable selects the gh binary.
@@ -17,8 +20,10 @@
 // the real one.
 //
 // "managed" is a property of the repository: a committed .flow/managed marker enrols it, and a
-// deleted working-tree copy does not un-enrol it. Three git repositories cover that - marked,
-// marked-but-worktree-copy-deleted, and unmarked - plus one directory that is no repository.
+// deleted working-tree copy does not un-enrol it. The marker probe reads the committed tree, so a
+// repository with no HEAD yet cannot be probed and fails closed to managed. These repositories
+// cover that - marked, marked-but-worktree-copy-deleted, unmarked-with-a-commit, and
+// no-commit-yet - plus one directory that is no repository at all.
 //
 // Run: node plugins/flow/scripts/smoke-release-path.mjs
 
@@ -48,15 +53,18 @@ const check = (name, ok, detail = '') => {
 const tmp = mkdtempSync(join(tmpdir(), 'flow-release-path-'))
 const repo = join(tmp, 'repo')       // opts into flow: .flow/managed is committed and present
 const mdel = join(tmp, 'mdel')       // .flow/managed is committed but the worktree copy is gone
-const plain = join(tmp, 'plain')     // no marker, and no commits
+const plain = join(tmp, 'plain')     // no marker, one commit so HEAD is readable
+const nohead = join(tmp, 'nohead')   // a repository with no commit yet: the marker probe errors
+const ghe = join(tmp, 'ghe')         // origin on a GitHub Enterprise host, same owner/name slug
 const norepo = join(tmp, 'norepo')   // not a git repository at all
 const state = join(tmp, 'state')
 const bin = join(tmp, 'bin')
 const SANCTION = join(state, 'release-sanction.json')
-for (const dir of [repo, mdel, plain, norepo, state, bin]) mkdirSync(dir)
+for (const dir of [repo, mdel, plain, nohead, ghe, norepo, state, bin]) mkdirSync(dir)
 
 const SLUG = 'jakub/marketplace-plugins'
 const IDENTITY = 'github.com/jakub/marketplace-plugins'
+const GHE_HOST = 'ghe.example.com'
 const PR = 12
 const BRANCH = 'feat/thing'
 
@@ -98,9 +106,25 @@ mdelGit('add', '.flow/managed')
 mdelGit('commit', '-q', '-m', 'managed')
 rmSync(join(mdel, '.flow', 'managed'))
 
+// plain: no marker, but one commit, so `git ls-tree HEAD` reads back cleanly empty (unmanaged).
 const plainGit = gitIn(plain)
 plainGit('init', '-q', '-b', 'main')
 plainGit('remote', 'add', 'origin', 'git@github.com:someone/unmanaged.git')
+writeFileSync(join(plain, 'file.txt'), 'plain\n')
+plainGit('add', 'file.txt')
+plainGit('commit', '-q', '-m', 'first')
+
+// nohead: initialized with a remote but no commit, so HEAD is unborn and the marker probe
+// errors rather than answering. The guard must fail closed to managed on that error.
+const noheadGit = gitIn(nohead)
+noheadGit('init', '-q', '-b', 'main')
+noheadGit('remote', 'add', 'origin', 'git@github.com:someone/nohead.git')
+
+// ghe: same owner/name as the managed repo, but the origin is a GitHub Enterprise host. A
+// sanction that defaults to github.com must not authorize a merge here.
+const gheGit = gitIn(ghe)
+gheGit('init', '-q', '-b', 'main')
+gheGit('remote', 'add', 'origin', `git@${GHE_HOST}:${SLUG}.git`)
 
 // ---------------------------------------------------------- the fake gh, injected in process
 const freshState = (overrides = {}) => ({
@@ -114,6 +138,15 @@ const freshState = (overrides = {}) => ({
   mergeQueue: null,
   recheckBase: null,
   recheckHead: null,
+  // The confirming read after the merge, and the post-merge queue re-read. These default to
+  // matching the sanction (an honest, clean merge); a case that wants a foreign or armed outcome
+  // overrides them.
+  afterHead: null,
+  afterBase: null,
+  afterUrl: null,
+  afterAutoMerge: null,
+  afterGraphqlFails: false,
+  afterMergeQueue: undefined,
   calls: [],
   merges: [],
   ...overrides,
@@ -135,9 +168,15 @@ const makeRunGh = (st) => (args) => {
   if (args[0] === 'pr' && args[1] === 'view') {
     const ji = args.indexOf('--json')
     const fields = ji >= 0 ? args[ji + 1] : ''
-    if (fields === 'state') {
+    if (fields === 'state,headRefOid,baseRefName,url,autoMergeRequest') {
       if (st.confirmFails) return { code: 4, stdout: '', stderr: 'fake gh: view failed\n' }
-      return ok({ state: st.merged ? 'MERGED' : st.pr.state })
+      return ok({
+        state: st.merged ? 'MERGED' : st.pr.state,
+        headRefOid: st.afterHead ?? st.pr.headRefOid,
+        baseRefName: st.afterBase ?? st.pr.baseRefName,
+        url: st.afterUrl ?? st.pr.url,
+        autoMergeRequest: st.afterAutoMerge ?? null,
+      })
     }
     if (fields === 'baseRefName,headRefOid') {
       return ok({ baseRefName: st.recheckBase ?? st.pr.baseRefName, headRefOid: st.recheckHead ?? st.pr.headRefOid })
@@ -146,8 +185,13 @@ const makeRunGh = (st) => (args) => {
   }
   if (args[0] === 'repo' && args[1] === 'view') return ok({ defaultBranchRef: { name: st.defaultBranch } })
   if (args[0] === 'api' && args[1] === 'graphql') {
-    if (st.graphqlFails) return { code: 5, stdout: '', stderr: 'fake gh: graphql failed\n' }
-    return ok({ data: { repository: { mergeQueue: st.mergeQueue } } })
+    // The executor reads the merge queue twice: once before mutating, once after a non-MERGED
+    // outcome. st.merges records the merge attempt, so a call after it is the post-merge re-read
+    // and can carry its own failure or armed-queue answer.
+    const afterMerge = st.merges.length > 0
+    if (afterMerge ? st.afterGraphqlFails : st.graphqlFails) return { code: 5, stdout: '', stderr: 'fake gh: graphql failed\n' }
+    const q = afterMerge && st.afterMergeQueue !== undefined ? st.afterMergeQueue : st.mergeQueue
+    return ok({ data: { repository: { mergeQueue: q } } })
   }
   if (args[0] === 'pr' && args[1] === 'merge') {
     st.merges.push(args)
@@ -204,6 +248,7 @@ const sanction = (overrides = {}) => {
   const issued = Date.now()
   const body = {
     schema: 1,
+    host: 'github.com',
     repo: SLUG,
     branch: BRANCH,
     expectedBase: 'main',
@@ -292,6 +337,7 @@ denies(
 )
 denies('a subdirectory of the repo is still the repo', MERGE, EXECUTOR, { cwd: join(repo, 'src') })
 denies('a directory git cannot read fails closed', MERGE, EXECUTOR, { cwd: join(tmp, 'nowhere') })
+denies('a repo whose HEAD the marker probe cannot list fails closed', MERGE, EXECUTOR, { cwd: nohead })
 denies('a committed marker with a deleted worktree copy is still managed', MERGE, EXECUTOR, { cwd: mdel })
 allows('the executor itself is not denied', `node ${EXECUTOR} ${PR}`)
 allows('nor is it from another install path', `node /home/x/.claude/plugins/flow/scripts/land-merge.mjs ${PR}`)
@@ -386,6 +432,18 @@ const wrongUrl = runExecutor([String(PR)], { st: freshState({ pr: { url: 'https:
 check('it refuses on the mismatched url', wrongUrl.code === 1 && wrongUrl.stderr.includes('was redirected'), wrongUrl.stderr)
 check('and merged nothing', wrongUrl.merges.length === 0, JSON.stringify(wrongUrl.merges))
 
+console.log('\na github.com sanction is refused against a same-slug GitHub Enterprise remote')
+clearSanction()
+clearTombstones()
+sanction() // host defaults to github.com
+const gheRun = runExecutor([String(PR)], {
+  cwd: ghe,
+  st: freshState({ pr: { url: `https://${GHE_HOST}/${SLUG}/pull/${PR}` } }),
+})
+check('it refuses on the host mismatch', gheRun.code === 1 && gheRun.stderr.includes('is for host'), gheRun.stderr)
+check('and merged nothing', gheRun.merges.length === 0, JSON.stringify(gheRun.merges))
+check('the claim is spent', !existsSync(SANCTION) && tombstones('denied').length === 1, JSON.stringify(tombstones('denied')))
+
 console.log('\nthe executor refuses, and spends the sanction doing it')
 const executorDenies = (name, args, substring, { sanctionOverrides, st, env, cwd, merges = 0, verdict = 'denied' } = {}) => {
   clearTombstones()
@@ -471,14 +529,33 @@ executorDenies(
   [String(PR)], 'moved between the check and the merge', { st: freshState({ recheckHead: 'c'.repeat(40) }) },
 )
 
-// The merge ran and gh reported failure; the confirming read shows the pull request still open.
-executorDenies('a gh merge that fails and stays open is reported', [String(PR)], '`gh pr merge` failed', {
+// The merge ran, gh reported failure, and the confirming read shows a clean OPEN with nothing
+// armed. That is the one non-MERGED shape that is an authoritative failure rather than UNKNOWN.
+executorDenies('a gh merge that fails and stays cleanly open is a failure', [String(PR)], '`gh pr merge` failed', {
   st: freshState({ mergeExit: 1, mergeStderr: 'X Pull request #12 is not mergeable: the head commit has changed\n' }),
   merges: 1,
 })
-executorDenies('a merge that reports success but lands nothing is refused', [String(PR)], 'rather than MERGED', {
-  st: freshState({ mergeLandsNothing: true }),
-  merges: 1,
+
+// A MERGED read is our success only if the merged pull request is still the one we approved. A
+// foreign merge of the same number - a different head - is reported UNKNOWN, never claimed.
+executorDenies('a MERGED read whose head no longer matches is not claimed as our merge', [String(PR)], 'no longer matches', {
+  st: freshState({ afterHead: 'd'.repeat(40) }), merges: 1, verdict: 'unknown',
+})
+
+// A non-MERGED read after the merge call is not automatically a failure. An armed auto-merge, an
+// armed or unreadable merge queue, or gh reporting success while the pull request is still open
+// are all UNKNOWN: the merge may still land, so a blind retry would be wrong.
+executorDenies('an armed auto-merge after a non-MERGED read is UNKNOWN', [String(PR)], 'auto-merge armed', {
+  st: freshState({ mergeExit: 1, afterAutoMerge: { enabledBy: { login: 'bot' } } }), merges: 1, verdict: 'unknown',
+})
+executorDenies('a merge queue armed only after the merge call is UNKNOWN', [String(PR)], 'merge-queue status is armed', {
+  st: freshState({ mergeExit: 1, afterMergeQueue: { id: 'MQ_after' } }), merges: 1, verdict: 'unknown',
+})
+executorDenies('an unreadable merge queue after the merge call is UNKNOWN', [String(PR)], 'merge-queue status is unreadable', {
+  st: freshState({ mergeExit: 1, afterGraphqlFails: true }), merges: 1, verdict: 'unknown',
+})
+executorDenies('a merge that reports success but lands nothing is UNKNOWN, not a failure', [String(PR)], 'could not confirm', {
+  st: freshState({ mergeLandsNothing: true }), merges: 1, verdict: 'unknown',
 })
 
 // A lost confirming read is UNKNOWN, not denied: the merge may or may not have landed.
@@ -535,7 +612,7 @@ const state = JSON.parse(readFileSync(path, 'utf8'))
 const say = (v) => { process.stdout.write(JSON.stringify(v)); process.exit(0) }
 if (argv[0] === 'pr' && argv[1] === 'view') {
   const ji = argv.indexOf('--json'); const fields = ji >= 0 ? argv[ji + 1] : ''
-  if (fields === 'state') say({ state: state.merged ? 'MERGED' : state.pr.state })
+  if (fields === 'state,headRefOid,baseRefName,url,autoMergeRequest') say({ state: state.merged ? 'MERGED' : state.pr.state, headRefOid: state.pr.headRefOid, baseRefName: state.pr.baseRefName, url: state.pr.url, autoMergeRequest: null })
   if (fields === 'baseRefName,headRefOid') say({ baseRefName: state.pr.baseRefName, headRefOid: state.pr.headRefOid })
   say({ ...state.pr })
 }
@@ -580,7 +657,7 @@ console.log('\nthe policy on its own')
 const facts = {
   slug: SLUG, host: 'github.com', number: PR, branch: BRANCH, head, state: 'OPEN', isDraft: false, base: 'main', defaultBranch: 'main',
 }
-const good = { schema: 1, repo: SLUG, branch: BRANCH, expectedBase: 'main', head, prNumber: PR, operations: ['gh-pr-merge'] }
+const good = { schema: 1, host: 'github.com', repo: SLUG, branch: BRANCH, expectedBase: 'main', head, prNumber: PR, operations: ['gh-pr-merge'] }
 const timed = (body) => ({
   ...body,
   issuedAt: new Date(Date.now() - 60_000).toISOString(),
@@ -604,6 +681,12 @@ check('an unreadable default branch denies', verdict({}, { defaultBranch: null }
 check('an unreadable state denies', verdict({}, { state: null }).reason.includes('only an open pull request'))
 check('a missing expected base denies', verdict({ expectedBase: undefined }).reason.includes('no expected base branch'))
 check('an expected-base mismatch denies', verdict({ expectedBase: 'release/1.x' }).reason.includes('approved a merge onto'))
+// Host is matched, not decorative: a sanction for github.com/owner/name must not authorize a
+// merge on a GitHub Enterprise host that carries the same owner/name.
+check('a host mismatch denies', verdict({ host: 'github.com' }, { host: GHE_HOST }).reason.includes('is for host'), verdict({ host: 'github.com' }, { host: GHE_HOST }).reason)
+check('a missing sanction host denies', verdict({ host: undefined }).reason.includes('names no host'))
+check('an unreadable remote host denies', verdict({}, { host: null }).reason.includes('no readable remote host'))
+check('the host matches case-insensitively', verdict({ host: 'GitHub.com' }).allowed)
 
 // ------------------------------------------------------------------------------ the helper
 console.log('\nthe human helper')
@@ -625,12 +708,24 @@ check('approve succeeds', approved.code === 0, approved.stderr)
 check('the sanction is mode 0600', (statSync(SANCTION).mode & 0o777) === 0o600, (statSync(SANCTION).mode & 0o777).toString(8))
 check('it records the pull request number', JSON.parse(readFileSync(SANCTION, 'utf8')).prNumber === PR)
 check('it defaults the expected base to main', JSON.parse(readFileSync(SANCTION, 'utf8')).expectedBase === 'main')
+check('it defaults the host to github.com', JSON.parse(readFileSync(SANCTION, 'utf8')).host === 'github.com')
 const endToEnd = runExecutor([String(PR)])
 check('the executor honors what the helper wrote', endToEnd.code === 0, `${endToEnd.stdout}${endToEnd.stderr}`)
 check('and merged once', endToEnd.merges.length === 1, JSON.stringify(endToEnd.merges))
 
 const withBase = helper(approveArgs('--base', 'release/2.x'))
 check('an explicit --base is recorded', withBase.code === 0 && JSON.parse(readFileSync(SANCTION, 'utf8')).expectedBase === 'release/2.x', withBase.stderr)
+
+const withHost = helper(['approve', '--repo', `${GHE_HOST}/${SLUG}`, '--branch', BRANCH, '--head', head, '--pr', String(PR), '--op', 'gh-pr-merge'])
+check(
+  'a host-qualified --repo records the host and the slug separately',
+  withHost.code === 0 &&
+    JSON.parse(readFileSync(SANCTION, 'utf8')).host === GHE_HOST &&
+    JSON.parse(readFileSync(SANCTION, 'utf8')).repo === SLUG,
+  withHost.stderr,
+)
+const badRepo = helper(['approve', '--repo', 'a/b/c/d', '--branch', BRANCH, '--head', head, '--pr', String(PR), '--op', 'gh-pr-merge'])
+check('a --repo with more than three parts is refused', badRepo.code === 2 && badRepo.stderr.includes('owner/name'), badRepo.stderr)
 
 const noPr = helper(['approve', '--repo', SLUG, '--branch', BRANCH, '--head', head, '--op', 'gh-pr-merge'])
 check('approve without --pr is refused', noPr.code === 2 && noPr.stderr.includes('--pr <number> is required'), noPr.stderr)

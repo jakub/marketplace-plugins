@@ -31,7 +31,7 @@ const MAX_TTL_MINUTES = MAX_SANCTION_MS / 60_000
 
 const USAGE = `flow release sanction - your approval of one specific merge.
 
-  release-sanction.mjs approve --repo <owner/name> --branch <branch> --head <40-char sha>
+  release-sanction.mjs approve --repo <[host/]owner/name> --branch <branch> --head <40-char sha>
                                --pr <number> --op ${MERGE_OPERATION_ID}
                                [--base <branch>] [--ttl-minutes <1-${MAX_TTL_MINUTES}>]
   release-sanction.mjs revoke
@@ -94,10 +94,21 @@ for (let i = 1; i < argv.length; i += 2) {
   else opts[flag.slice(2)] = value
 }
 
-if (!/^[^\s/]+\/[^\s/]+$/.test(opts.repo || '')) die('--repo must be the owner/name slug, as `gh repo view` prints it.')
+// --repo is either owner/name, which defaults the host to github.com, or host/owner/name for a
+// GitHub Enterprise remote. The host is normalized to lowercase and recorded, because the
+// executor matches it against the host it reads out of the origin remote: a sanction for
+// github.com/acme/widget must not authorize a merge on a GHE host carrying the same slug.
+const repoParts = (opts.repo || '').split('/')
+if (!repoParts.every((part) => part !== '' && !/\s/.test(part)) || (repoParts.length !== 2 && repoParts.length !== 3)) {
+  die('--repo must be owner/name (host defaults to github.com) or host/owner/name for a GitHub Enterprise remote.')
+}
+const host = repoParts.length === 3 ? repoParts[0].toLowerCase() : 'github.com'
+const slug = repoParts.slice(-2).join('/')
 if (!opts.branch) die('--branch is required: a sanction approves one branch.')
 // The base the merge lands on. Flow lands on main across this whole system - the land stage
-// refuses any other base - so main is the default and --base is only for a repo that renamed it.
+// switches to main and retargets stacked children onto main - so main is the default here, and
+// the stage assumes main throughout. A repository that renamed its default branch is out of
+// scope for this stage.
 const base = opts.base || 'main'
 if (!/^[0-9a-f]{40}$/.test(opts.head || '')) die('--head must be the full 40-character lowercase SHA, as `git rev-parse HEAD` prints it.')
 if (opts.op.length === 0) die('at least one --op is required: a sanction approves named operations, not publication in general.')
@@ -126,7 +137,8 @@ if (!Number.isFinite(ttl) || ttl < 1 || ttl > MAX_TTL_MINUTES) die(`--ttl-minute
 const issued = new Date()
 const sanction = {
   schema: SANCTION_SCHEMA_VERSION,
-  repo: opts.repo,
+  host,
+  repo: slug,
   branch: opts.branch,
   expectedBase: base,
   head: opts.head,
@@ -145,7 +157,7 @@ chmodSync(temp, 0o600)
 renameSync(temp, path)
 
 process.stdout.write(
-  `approved ${sanction.operations.join(', ')}${pr === null ? '' : ` of #${pr}`} on ${sanction.repo} ` +
+  `approved ${sanction.operations.join(', ')}${pr === null ? '' : ` of #${pr}`} on ${sanction.host}/${sanction.repo} ` +
   `${sanction.branch} onto ${sanction.expectedBase} at ${sanction.head.slice(0, 12)}\n` +
   `  sanction: ${path}\n` +
   `  expires:  ${sanction.expiresAt} (${ttl} minutes)\n` +

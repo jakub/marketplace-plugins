@@ -88,9 +88,13 @@ const git = (root, args) => execFileSync('git', ['-C', root, ...args], {
  *
  * The opt-in lives in git, not in the working tree. A worktree copy of `.flow/managed` is the
  * fast answer, but the marker being committed at HEAD is what actually enrolls the repository,
- * so a deleted or never-checked-out worktree copy does not un-enroll it. `git cat-file -e`
- * exits 0 when the object exists and nonzero when it does not; a clean nonzero is a real "not
- * committed", while an error finding the repository at all falls through to the managed default.
+ * so a deleted or never-checked-out worktree copy does not un-enroll it. `git ls-tree` lists the
+ * path when it is committed at HEAD and prints nothing when it is not, both on a clean exit 0.
+ * Empty output is a real "not committed" and leaves the repository unmanaged; non-empty output
+ * is managed. Any nonzero exit or error from the probe - a repository with no HEAD yet, a broken
+ * object store - is treated as managed, because failing closed here costs a denial the human can
+ * resolve while failing open costs an unreviewed merge. `git cat-file -e` could not tell an
+ * absent path from an operational failure: both exit nonzero, so it failed open on the second.
  */
 const isManagedRepo = (cwd) => {
   let root
@@ -102,10 +106,9 @@ const isManagedRepo = (cwd) => {
   if (root === '') return true
   if (existsSync(join(root, MANAGED_MARKER))) return true
   try {
-    git(root, ['cat-file', '-e', 'HEAD:.flow/managed'])
-    return true
+    return git(root, ['ls-tree', '--name-only', 'HEAD', '--', '.flow/managed']).trim() !== ''
   } catch {
-    return false
+    return true
   }
 }
 

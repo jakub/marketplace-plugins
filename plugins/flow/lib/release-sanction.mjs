@@ -48,10 +48,10 @@ import { join } from 'node:path'
 import { isRegistryOperation } from './hook-policy.mjs'
 
 /**
- * Bumped whenever the file's meaning changes. A sanction written for another version is
- * refused, never guessed at. `expectedBase` was added within schema 1: it is a new required
- * field, which is safe because a sanction lives at most 30 minutes and is single-use, so no
- * old file survives to be read by a newer verifier.
+ * Bumped whenever the file's meaning changes. `expectedBase` and `host` were added within
+ * schema 1: each is a new required field, which is safe because a sanction lives at most 30
+ * minutes and is single-use, so no old file survives to be read by a newer verifier. A sanction
+ * written for another version is refused, never guessed at.
  */
 export const SANCTION_SCHEMA_VERSION = 1
 
@@ -102,7 +102,7 @@ const millis = (v) => {
  * @param {object|null} args.sanction the parsed sanction file, or null when absent or unreadable
  * @param {object} args.pr live facts, read from GitHub rather than from the session
  * @param {string|null} args.pr.slug owner/name derived from the origin remote
- * @param {string|null} [args.pr.host] the remote host derived from the origin remote, for the reason string
+ * @param {string|null} args.pr.host the remote host derived from the origin remote; matched, not decorative
  * @param {number|null} args.pr.number the pull request the caller was asked to merge
  * @param {string|null} args.pr.branch headRefName
  * @param {string|null} args.pr.head headRefOid
@@ -138,6 +138,15 @@ export function releaseVerdict({ operations, sanction, pr, nowMs } = {}) {
 
   if (!pr || typeof pr !== 'object') return deny('no pull request facts were gathered to check the sanction against')
 
+  // Host, owner and name must all match. Matching only owner/name would let a sanction for
+  // github.com/acme/widget authorize a merge on a GitHub Enterprise host that happens to carry
+  // an acme/widget too. Host is compared case-insensitively, the way sameIdentity in the
+  // executor compares the two hostnames it reads.
+  if (!isText(pr.host)) return deny('this directory has no readable remote host, so the sanction cannot be matched to it')
+  if (!isText(sanction.host)) return deny(`the sanction names no host (found ${show(sanction.host)}); approve with --repo host/owner/name, or owner/name for github.com`)
+  if (sanction.host.toLowerCase() !== pr.host.toLowerCase()) {
+    return deny(`the sanction is for host ${show(sanction.host)} and this remote is on ${show(pr.host)}`)
+  }
   if (!isText(pr.slug)) return deny('this directory has no readable owner/name slug, so the sanction cannot be matched to it')
   if (!isText(sanction.repo)) return deny(`the sanction names no repository (found ${show(sanction.repo)})`)
   if (sanction.repo !== pr.slug) return deny(`the sanction is for repository ${show(sanction.repo)} and this is ${show(pr.slug)}`)

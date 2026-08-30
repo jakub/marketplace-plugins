@@ -91,7 +91,9 @@ landing it changes. They approve it in their own terminal:
 node <plugin-root>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> --base <branch> --head <sha> --pr <number> --op gh-pr-merge
 ```
 
-`--base` defaults to `main`, so leave it off unless the repository renamed its default branch.
+`--base` defaults to `main`, and this stage assumes `main` throughout: it switches to `main` and
+retargets stacked children onto `main`. A repository that renamed its default branch is out of
+scope for this stage, so leave `--base` off.
 Never run that command yourself. The guard denies it, and an approval the session can write
 approves nothing. A missing sanction is a stop, not a prompt to create one. Once the human says
 they have written it, run the executor.
@@ -107,12 +109,15 @@ immediate squash-merge and will not leave an armed future merge behind. Then it 
 `--squash` and `--match-head-commit <sanctioned head>`, GitHub's own re-check that the branch
 did not move, and re-reads the pull request.
 
-Its exit code is the gate, and it reports three distinct outcomes. Exit 0 means the re-read
-confirmed `MERGED`. Exit 1 with `refused` on stderr means a check failed or the re-read showed
-the pull request still open, and nothing landed. Exit 1 that says it could not confirm means
-the merge outcome is genuinely unknown: the merge may or may not have landed, so look at the
-pull request yourself before doing anything else, and do not report it as either merged or
-failed.
+Its exit code is the gate. Exit 0 means the re-read confirmed the pull request merged and is
+still the head, base and host-qualified repository the sanction named: your merge, landed. Exit 1
+with `refused` on stderr means a check failed before anything ran, or gh gave a clean rejection
+with the pull request still open, and nothing landed. Read the reason and fix what it names. Any
+other exit 1 is neither a clean success nor a clean failure, and it is not for you to guess: a
+lost confirming read, a pull request that reads `MERGED` but no longer matches what you approved
+(someone else may have merged the same number), or an armed auto-merge or merge queue that may
+still land it later. Look at the pull request yourself before doing anything else, do not re-run
+the executor blindly, and do not report it as either merged or failed.
 
 One attempt is all a sanction buys, whatever the outcome. The claim happens before any check,
 so a refusal spends the approval too. Read the reason, fix what it names, then ask for a new

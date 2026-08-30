@@ -59,7 +59,7 @@ events, and recovery. A Codex App Server worker is the Phase 1 backend. See
 | Flow Bash guards | `PreToolUse` on `Bash` | `PreToolUse` on `Bash` | Existing no-backlog and Git guards; publication policy in `lib/hook-policy.mjs` |
 | Flow protected files | `file_path` from Edit/Write input | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
 | Flow registry publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
-| Flow pull request merge | Ask-gated `gh pr merge --squash` in the session | Coarse guardrail: a repo with a committed `.flow/managed` marker denies hand merges and routes them to `scripts/land-merge.mjs`, which merges against a human-written release sanction | `releaseVerdict()` in `lib/release-sanction.mjs`; `mergeShapes()` classifies the denied commands |
+| Flow pull request merge | Pre-approved `gh pr merge --squash`, no per-command prompt. The human's explicit `/flow:land` invocation, then the stage's CI-green and unresolved-thread checks, are the gate | Coarse guardrail: a repo with a committed `.flow/managed` marker denies hand merges and routes them to `scripts/land-merge.mjs`, which merges against a human-written release sanction | `releaseVerdict()` in `lib/release-sanction.mjs`; `mergeShapes()` classifies the denied commands |
 | Flow land stage | `/flow:land` is an alias that reads `skills/land-stage/profiles/claude.md`, then the skill | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |
@@ -82,9 +82,13 @@ review. This is a capability difference, not a policy fork.
 
 ### The Codex merge path is a cooperative guardrail, not a boundary
 
-Claude ask-gates `gh pr merge` in the session. Codex cannot ask, so the merge runs through
-`scripts/land-merge.mjs` against a human-written release sanction, and the Codex publish guard
-denies hand merges in a repo carrying a committed `.flow/managed` marker.
+Claude does not prompt per command. The `gh pr merge --squash` runs pre-approved under the
+session's `Bash(gh:*)` allowance, and the Claude publish guard asks only about package-registry
+publishes, not this merge. The gate is upstream of the command: the land stage runs only when the
+human invokes `/flow:land`, and its own CI-green and unresolved-thread checks decide whether the
+merge is warranted. Codex cannot rely on a human turn at the moment a command runs, so its merge
+runs through `scripts/land-merge.mjs` against a human-written release sanction, and the Codex
+publish guard denies hand merges in a repo carrying a committed `.flow/managed` marker.
 
 None of this is a security boundary. Everything runs as one uid, where a determined model could
 substitute its own gh, call the GitHub API with the token, or curl the merge endpoint, and no

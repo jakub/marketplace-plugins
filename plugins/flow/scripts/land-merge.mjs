@@ -266,12 +266,15 @@ export function landMerge({ argv, env, cwd, runGh, nowMs }) {
     ? String(mergeResult.stderr || mergeResult.stdout || `exit ${mergeResult.code}`).trim().split('\n')[0].slice(0, 200)
     : null
 
-  // Always re-read, even on a nonzero exit: a lost response does not prove the merge failed.
-  // Three terminal states come out of this read, and they are not the same claim about the
-  // world. Confirmed MERGED consumes the sanction. Confirmed still-open, or any other readable
-  // state, is a denial. An unreadable read is UNKNOWN - the merge may or may not have landed,
-  // and saying "denied" there would be a lie.
-  const after = ghJson(['pr', 'view', String(prNumber), '--repo', identity.full, '--json', 'state'], READ_TIMEOUT_MS)
+  // Always re-read, even on a nonzero exit: a lost response does not prove the merge failed. This
+  // read pulls the same identity-bearing fields as the first one, because "MERGED" alone does not
+  // prove we merged what we approved - a concurrent foreign merge of the same number is also
+  // MERGED. An unreadable read is UNKNOWN; saying "denied" there would be a lie.
+  const after = ghJson(
+    ['pr', 'view', String(prNumber), '--repo', identity.full,
+      '--json', 'state,headRefOid,baseRefName,url,autoMergeRequest'],
+    READ_TIMEOUT_MS,
+  )
   if (after === null || typeof after.state !== 'string') {
     tombstone('unknown')
     return {
@@ -282,20 +285,77 @@ export function landMerge({ argv, env, cwd, runGh, nowMs }) {
         'The sanction is spent either way, so a fresh one is needed to try again.\n',
     }
   }
+
+  // A MERGED pull request is our success only if it is still the merge the sanction approved:
+  // same host-qualified repository, same head, same base. If any of those moved, someone else
+  // merged this number while we were working, and claiming it as our merge would be wrong.
   if (after.state === 'MERGED') {
-    tombstone('consumed')
+    const ours = sameIdentity(identityOfPrUrl(after.url), identity) &&
+      after.headRefOid === sanction.head &&
+      after.baseRefName === sanction.expectedBase
+    if (ours) {
+      tombstone('consumed')
+      return {
+        code: 0,
+        stdout: `land-merge: merged #${prNumber} on ${identity.full} as a squash of ${String(sanction.head).slice(0, 12)}\n`,
+        stderr: '',
+      }
+    }
+    tombstone('unknown')
     return {
-      code: 0,
-      stdout: `land-merge: merged #${prNumber} on ${identity.full} as a squash of ${String(sanction.head).slice(0, 12)}\n`,
-      stderr: '',
+      code: 1, stdout: '',
+      stderr: `land-merge: #${prNumber} reads back MERGED, but its repository, head or base no longer matches the ` +
+        `sanctioned merge (url ${JSON.stringify(after.url ?? null)}, head ${JSON.stringify(after.headRefOid ?? null)}, ` +
+        `base ${JSON.stringify(after.baseRefName ?? null)}). Someone else may have merged this number - look at the ` +
+        'pull request before doing anything else, and do not treat this as your merge.\n',
     }
   }
-  return refuse(
-    mergeFailure !== null
-      ? `\`gh pr merge\` failed: ${mergeFailure}`
-      : `\`gh pr merge\` reported success but #${prNumber} reads back as ${JSON.stringify(after.state)} ` +
-        'rather than MERGED. The merge may still have landed - look at the pull request before doing anything else',
+
+  // Not MERGED. A readable non-MERGED state after the merge call is not automatically a clean
+  // failure: the call may have armed an auto-merge or enqueued the pull request, or its response
+  // may have been lost. Re-read the arm-able state. An armed auto-merge, an armed or unreadable
+  // merge queue, or any other inconsistency is UNKNOWN, because the merge may still land and a
+  // blind retry would be wrong. Only a clean OPEN with nothing armed and an authoritative
+  // rejection from gh is a failure.
+  const verifyByHand = 'Look at the pull request before doing anything else, and do not re-run this blindly. ' +
+    'The sanction is spent, so a fresh one is needed to try again.'
+  if (after.autoMergeRequest != null) {
+    tombstone('unknown')
+    return {
+      code: 1, stdout: '',
+      stderr: `land-merge: #${prNumber} is not merged, but it now has auto-merge armed` +
+        (mergeFailure ? ` (\`gh pr merge\` said: ${mergeFailure})` : '') +
+        `. It may still land on its own. ${verifyByHand}\n`,
+    }
+  }
+  const queueAfter = ghJson(
+    ['api', 'graphql', '--hostname', identity.host,
+      '-f', `query=${MERGE_QUEUE_QUERY}`, '-f', `owner=${identity.owner}`, '-f', `name=${identity.repo}`,
+      '-f', `base=${after.baseRefName ?? sanction.expectedBase}`],
+    READ_TIMEOUT_MS,
   )
+  if (queueAfter === null || queueAfter?.data?.repository?.mergeQueue != null) {
+    tombstone('unknown')
+    return {
+      code: 1, stdout: '',
+      stderr: `land-merge: #${prNumber} is not merged, and its base branch's merge-queue status is ` +
+        `${queueAfter === null ? 'unreadable' : 'armed'}` +
+        (mergeFailure ? ` (\`gh pr merge\` said: ${mergeFailure})` : '') +
+        `. The merge may be queued to land later. ${verifyByHand}\n`,
+    }
+  }
+  if (after.state === 'OPEN' && mergeFailure !== null) {
+    return refuse(`\`gh pr merge\` failed: ${mergeFailure}`)
+  }
+  // Nothing armed, yet the pull request is not MERGED and gh either reported success or left it in
+  // a state other than a clean OPEN. That is inconsistent, not an authoritative rejection.
+  tombstone('unknown')
+  return {
+    code: 1, stdout: '',
+    stderr: `land-merge: could not confirm the merge of #${prNumber}: \`gh pr merge\` ` +
+      (mergeFailure ? `said: ${mergeFailure}` : 'reported success') +
+      `, but the pull request reads back as ${JSON.stringify(after.state)} rather than MERGED. ${verifyByHand}\n`,
+  }
 }
 
 // ------------------------------------------------------------------------------- CLI entry
