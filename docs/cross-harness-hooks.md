@@ -161,7 +161,7 @@ every registered command target. Plugin smoke tests cover
 both positive and negative wire cases with throwaway state, including the captured Codex
 failure payload that deliberately remains unclassified. The stage conformance lint compares
 the skill's gate ids against each profile's sections in both directions, and runs the same
-checker over a broken fixture pair so a green run also shows the check can still fail.
+checker over the per-case broken fixtures so a green run also shows the check can still fail.
 
 These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
 definitions until the user reviews them. Claude plugin installs still pull from the pinned
