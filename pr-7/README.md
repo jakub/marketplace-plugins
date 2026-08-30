@@ -18,6 +18,14 @@ flow 0.25.0 at 7bd7e88 (branch-pinned marketplace install,
 - `capture-guard-unmanaged.txt` - control: in an unenrolled repo the same merge
   command is not flow-denied (it runs and hits the sandbox's network wall).
 
-The two land-run captures (full Codex land run, full Claude land run) are the
-remaining criteria and land here as `pr-7/land-run-*.txt`. The release sanction was
-retired at 3f32cfc, so those runs need no human-terminal approval step.
+- `land-run-codex.txt` - the full Codex land of flow-land-scratch#1 at flow 0.26.0:
+  every gate reported, the executor merged --match-head-commit-pinned head 9030c4a as
+  e9835a1, independent MERGED confirmation, remote+local branch cleanup, and a survey
+  that correctly flagged the sibling PR as newly conflicting.
+- `land-run-claude.txt` - the full Claude `/flow:land 2` via the installed alias:
+  gates, pinned squash-merge verified as 7b9d43b, cleanup, plus two honest catches by
+  the stage itself (a CI context green that was a rate-limit skip, and the ask tool
+  being absent in -p mode - griped, not worked around).
+
+Both land runs post-date the sanction retirement (3f32cfc): no human-terminal
+approval step exists, the authorization is the explicit request to land.

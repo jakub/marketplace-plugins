@@ -1,0 +1,1153 @@
+Reading additional input from stdin...
+OpenAI Codex v0.151.0
+--------
+workdir: /tmp/flow-land-scratch
+model: gpt-5.6-sol
+provider: openai
+approval: on-request
+sandbox: workspace-write [workdir, /tmp, $TMPDIR] (network access enabled)
+reasoning effort: medium
+reasoning summaries: detailed
+session id: 01a050ed-0b01-7e10-9d88-c5a1f2460afe
+--------
+user
+Please land pull request #1 of this repository using flow's land-stage. Run the stage's gates honestly and report each gate's outcome as you pass it. If anything is off, stop and say so rather than working around it.
+warning: Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /home/jakub/.codex/config.toml.
+warning: clamping SessionEnd hook timeout to 3s in /home/jakub/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Failed
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+**Planning flow skill inspection**
+codex
+I’m using the `flow` skill because this is an explicit land-stage request. I’ll follow its merge gates in order, report each outcome as it completes, and stop at the first failed or unclear gate. I’ll also apply the injected writing rules to the final merge report.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "sed -n '1,240p' /home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/skills/flow/SKILL.md && rg -n \"flow-land-scratch|land-stage|/flow:land|pull request #1|PR #1\" /home/jakub/.codex/memories/MEMORY.md" in /tmp/flow-land-scratch
+ succeeded in 0ms:
+---
+name: flow
+description: The flow development framework - project setup, the documentation stack, drift audits, and the label contract for the prep → issue → land pipeline. Use when setting up a new project's docs, auditing a project for drift, validating ready-for-agent issues, or answering a "how do we work" question the charter doesn't settle.
+---
+
+# flow - the development framework
+
+The charter is in your context already; it says how we build and delegate. The command bodies (`prep.md` and `issue.md`) say what each command does, and the `land-stage` skill holds the land steps that `land.md` now only aliases. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, and the machinery running in the background. Don't restate the charter here - if something is true in every session, it belongs there.
+
+Files in this directory:
+
+| File | Contents |
+|---|---|
+| `label-contract.md` | Label state machine, the `ready-for-agent` contract, and its lint. |
+| `drift-audit.md` | The procedure `drift` runs. |
+| `templates/` | Seed files for `setup`: workspace CLAUDE.md, repo AGENTS.md, crate AGENTS.md, and the systemd units under `templates/systemd/`. |
+| `cron/` | Standing instructions for the scheduled jobs (`lint.md`, `doc-sweep.md`); `scripts/flow-cron.mjs` runs them. |
+
+## Subcommands
+
+A bare subcommand (e.g. `/flow drift`) runs the matching action:
+
+| Subcommand | Action |
+|---|---|
+| `setup` | Deploy the doc stack to a project. Read **The documentation stack** and `templates/`, then follow **Setup**. |
+| `drift` | Audit the current project (or the whole workspace, from `~/code`) against the framework. Read and execute `drift-audit.md`. |
+| `labels` | Reconcile the repo's GitHub labels with `label-contract.md` and lint every `ready-for-agent` issue against the contract. |
+| `charter` | Print the installed charter (`${CLAUDE_PLUGIN_ROOT}/charter/charter.md`) so the user can review what every session is told. |
+| `cron` | The scheduled jobs. Bare `cron` runs `scripts/install-cron.sh status`; `cron install`, `cron run <lint\|doc-sweep>`, and `cron uninstall` pass through. Show the output; don't paraphrase it. |
+
+## Setup
+
+Deploy flow to a project, in this order. Every step is idempotent: skip what already exists and conforms, report what you created.
+
+1. **Preconditions**: a git repo (stop if not), `gh` authenticated, origin remote resolvable.
+2. **Workspace layer**, once per machine: `~/code/CLAUDE.md` from `templates/workspace-claude.md` - the project registry. Add or refresh this repo's one-liner.
+2b. **Machine layer**, once per machine: `bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-cron.sh status`; if the launcher is missing, run `install`. This arms the nightly lint and the weekly doc sweep (see **Ambient machinery**). Skip on a machine without systemd user sessions and say so.
+3. **Repo layer**: `AGENTS.md` from `templates/repo-agents.md`, then `ln -s AGENTS.md CLAUDE.md`. Keep the file lean (≤ ~40 lines); it points at further reading (context.md, docs/adr/) rather than containing it. Its `## Contexts` section is the context map, which is why no `context-map.md` exists - fold a legacy one into that section and delete it.
+4. **Domain layer**, a judgment call - propose, don't blanket: for each crate or module with real domain depth, `crates/<x>/AGENTS.md` from `templates/crate-agents.md` plus the `CLAUDE.md` symlink, and a `context.md` slice if the vocabulary is crate-local. Every slice gets a line in the root `## Contexts`. Always committed - gitignored guidance never materializes in worktrees.
+5. **Decision records**: `docs/adr/` with a `0000-template.md`.
+6. **Labels**: run the `labels` subcommand.
+7. **Known flakes**: create `.github/known-flakes.txt` (empty). `/flow:land` reads it - one entry per line, either a bare CI check name or `check-name:test_name` for a single flaky test (the `land-stage` skill documents both forms), naming what the repo consciously merges through. Lore lives in the repo, not in command prompts.
+8. **Report**: what was created, what already conformed, what needs a human decision (e.g. which crates deserve domain files). A checklist, not an essay.
+
+## Drift
+
+`drift` re-checks the framework's invariants against reality; `drift-audit.md` is the procedure. Run it on a schedule (the nightly/weekly crons), after large merges, or when the docs feel stale. It reports and doesn't fix unless asked. Delegate the scanning to scoped cheap agents and return a reconciled report with a judgment pass on top.
+
+## The documentation stack
+
+Four layers, each answering one question:
+
+| layer | file | question |
+|---|---|---|
+| operator | `~/.claude/CLAUDE.md` + the charter | who the user is / how we build |
+| workspace | `~/code/CLAUDE.md` | what exists (project registry) |
+| repo | `AGENTS.md` ⟵ `CLAUDE.md` symlink | how to operate here (lean; points at context.md, docs/adr/) |
+| domain | `crates/<x>/AGENTS.md` + symlink, `context.md` slices | crate-local depth |
+
+One source, both model families: codex merges AGENTS.md hierarchically, Claude loads CLAUDE.md, and the symlink keeps them identical by construction. Root `context.md` holds cross-cutting ontology; crate-local vocabulary lives in slices next to the code.
+
+Deliberately not used: `context-map.md`-style index files (AGENTS.md points at further reading directly) and `CLAUDE.local.md` (gitignored, so a cold implementer in a worktree never sees it).
+
+## Ambient machinery
+
+- **no-backlog guard** (PreToolUse hook): blocks unsanctioned `gh issue create`.
+- **git guard** (PreToolUse hook): blocks the hook-bypass flag, commit trailers, bare force-push, `checkout .`/`restore .`, and `git clean -f`; `FLOW_SANCTION=git` for a foreign commit that already carries a trailer. The destructive set is deliberately narrow - `reset --hard` and `branch -D` are excluded because the reflog returns them. Rules match against the command with quoted strings and heredoc bodies stripped, so writing about a rule is not breaking it. Hooks fire on subagent tool calls, so these rules hold in every seat even though the charter itself doesn't reach them.
+- **protect-files guard** (PreToolUse on Edit/Write/NotebookEdit): refuses writes to `.env` and friends (`.env.example` and other templates exempt), to resolver-generated lockfiles, and into build output directories. It reads `file_path`, so a heredoc through Bash is not caught - a guardrail, not a boundary.
+- **publish guard** (PreToolUse hook): asks before `cargo publish`, `npm publish`, `twine upload` and their siblings, because those registries have no usable unpublish. `--dry-run` passes. `docker push` and `gh release create` are deliberately absent: a retag and a release deletion both cost nothing.
+- **escalation pings**: valves push to the phone via PushNotification from the conductor.
+- **nightly lint** (systemd user timer, 03:30, sonnet): drift-audit §3-4 across every repo in the workspace - label contract, worktrees, branches, known flakes - plus §5 for the marketplace repo. Standing permissions, and nothing else: worktree removal and stale-branch deletion, both ONLY through `scripts/lint-actions.mjs` (a deterministic executor that re-derives every safety condition from a fresh fetch and refuses otherwise - the model proposes, the code decides), plus the label moves the contract prescribes (each with a comment). Report-only otherwise.
+- **weekly doc sweep** (systemd user timer, Sunday 04:00, sonnet): drift-audit §1-2 across the workspace, report-only, findings carry the fix as a pasteable diff.
+- Both run `claude -p --permission-mode dontAsk` with a per-job tool allowlist in `scripts/flow-cron.mjs`; the allowlist is the job's whole write authority, the prompt in `skills/flow/cron/` can't widen it. Hooks fire under `-p`, so the job has the charter and both guards - and the git guard's cron mode makes git read-only for the session (deny-by-default subcommands, sanctions ignored) whenever `FLOW_CRON_JOB` is in the env, which the model cannot change. Reports land in `~/.local/state/flow/reports/`, the newest 30 per job, with a desktop notification carrying the headline; a failed or timed-out session exits non-zero so `systemctl --user status flow-lint` shows it. `scripts/install-cron.sh` writes a stable launcher at `~/.local/libexec/flow-cron` that resolves the installed plugin on each run, so a plugin upgrade changes the jobs without touching the units. The desktop app's own scheduler is deliberately not used: as of 2026-08 it strips hooks and only runs while the app is open.
+- **recovery**: `/flow:issue` has no runId; a fresh session reconstructs the run from the issue's event journal plus the worktree diff.
+816:- rollout_summaries/2026-08-19T05-11-09-kMY6-issue_116_rfc3164_nearest_arrival_rollover.md (cwd=/home/jakub/.codex/worktrees/5de6/trawl, rollout_path=/home/jakub/.codex/archived_sessions/rollout-2026-08-18T22-11-09-01a0186e-2ffd-7021-95b6-a420c4b3309e.jsonl, updated_at=2026-08-19T06:35:18+00:00, thread_id=01a0186e-2ffd-7021-95b6-a420c4b3309e, PR #126 open, clean, approved, and unmerged)
+846:## Task 1: Fix `f!=a,b` and deliver unmerged PR #127, completed
+850:- rollout_summaries/2026-08-19T05-10-55-Ex6R-issue_91_negated_list_pr_127.md (cwd=/home/jakub/.codex/worktrees/3109/trawl, rollout_path=/home/jakub/.codex/archived_sessions/rollout-2026-08-18T22-10-55-01a0186d-f93e-7861-a450-60797da400cd.jsonl, updated_at=2026-08-19T06:17:01+00:00, thread_id=01a0186d-f93e-7861-a450-60797da400cd, PR #127 open, clean, approved, and unmerged)
+883:- rollout_summaries/2026-08-19T05-11-09-uCDL-issue_94_telemetry_accounting_pr_128.md (cwd=/home/jakub/.codex/worktrees/f5ad/trawl, rollout_path=/home/jakub/.codex/archived_sessions/rollout-2026-08-18T22-11-09-01a0186e-2fcc-7022-9ee4-e4c96e86fd19.jsonl, updated_at=2026-08-19T06:37:05+00:00, thread_id=01a0186e-2fcc-7022-9ee4-e4c96e86fd19, PR #128 open, clean, approved, and unmerged)
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Locating land-stage skill path**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "find /home/jakub/.codex/plugins/cache/jakub/flow/0.26.0 -path '*/land-stage/SKILL.md' -o -name 'land.md' | sort" in /tmp/flow-land-scratch
+ succeeded in 0ms:
+/home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/commands/land.md
+/home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/skills/land-stage/SKILL.md
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+codex
+The `flow` entry point confirms that the detailed procedure lives in its `land-stage` skill. I’m loading that procedure now before touching the repository or PR.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "sed -n '1,320p' /home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/skills/land-stage/SKILL.md && sed -n '1,160p' /home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/commands/land.md" in /tmp/flow-land-scratch
+ succeeded in 0ms:
+---
+name: land-stage
+description: Land one named pull request through the flow gates - the CI and unresolved-thread checks, the escape-hatch ack, the squash-merge, explicit issue closure, worktree retirement, and a survey of what to do next. The only merge path. MUST only run when the operator explicitly asks to land a specific PR; never start it from adjacent work, a finished review, or a green build.
+disable-model-invocation: true
+---
+
+# land-stage - the human gate
+
+This stage is the back of the prep → issue → land process. The issue run stopped at an open PR and left it there; once the human is happy with it, this stage runs the closing ritual - the gates, the merge, the cleanup, and a survey of what to do next.
+
+First, before the argument step or anything else: read the profile for the active host from `profiles/` next to this file, and adopt its bindings for every `[[gate:]]` below. If no profile there matches the session's host, stop and say so before taking any action.
+
+Every gate below carries a `[[gate:<id>]]` marker. The profile you just read has one section per marker and says what that gate binds to here. Where a step needs a decision from the human, the profile's human-choice binding says how to put the choice in front of them and how the answer comes back.
+
+## Core principles
+
+1) You are the gate, not another autonomous stage. A merge is the hardest thing in this pipeline to reverse, so anything that looks off gets presented to the human instead of resolved by you.
+2) A check that errored, went stale, or is still pending is UNKNOWN - never a pass. Read the rollup yourself.
+3) Prove outcomes, don't infer them. The merge and every issue closure get confirmed by re-reading state afterwards, because a failed command and a silent no-op both look like success from here.
+4) Nothing external is lost. An unresolved reviewer thread blocks the merge even when it arrived after the run had already finished.
+5) Housekeeping never blocks the land, and the survey at the end takes NO action - it is a menu, not a plan.
+
+## 1. Resolve [[gate:resolve-pr]]
+
+The argument is a PR number, or nothing at all: with no argument, resolve the PR from the current branch (`gh pr view --json number`). Abort with usage if neither resolves. Three origins authorize the number: the argument, the entry point the human invoked resolving the current branch, or the human naming the PR in words. Anything else is a stop. This stage never picks its own PR out of a survey, a green build, or whatever work sits next to it.
+
+```bash
+gh pr view $PR --json number,title,body,state,headRefName,headRefOid,baseRefName,url,isDraft,isCrossRepository,mergeable,mergeStateStatus,autoMergeRequest,closingIssuesReferences,statusCheckRollup,comments
+```
+
+Abort if the PR is not OPEN, or if it is a draft. Record `HEAD_REF`, `HEAD_SHA` (the `headRefOid` - every gate below inspects THIS commit, and the merge in step 6 is pinned to it), `BASE_REF`, and `LINKED_ISSUES`. The `body` and `comments` come along in the same read because steps 1 and 5 parse them.
+
+[[gate:linked-issue-recovery]] An empty `closingIssuesReferences` does NOT mean there are no linked issues - it means GitHub parsed no link. A mangled `Closes #N`, or a squash parenthetical like `(#N)`, links nothing. Two recoveries carry enough intent to act on: the issue number in `HEAD_REF` (`feat|fix|chore/issue-N-*`), and an explicit closing phrase in the PR title or body (`close[sd]?`/`fix(es|ed)?`/`resolve[sd]?` directly before `#N`). A bare `#N` anywhere else is a mention, not a link - "Part of #6" or "follow-up in #42" must never close anything - so bare references only become candidates in the human ask. When recovery turns up actual candidates but no clear answer, ask through the human-choice binding with the candidates and an explicit "close none": closing nothing is the silent failure mode here, and closing a bystander issue is the loud one. When recovery finds nothing at all - no linked issue, no branch number, no closing phrase, no bare mention - there is nothing to decide: note "no linked issues" in the land report and continue. A quick fix that never had an issue is normal, not a question.
+
+## 2. Stacked-chain guard [[gate:stacked-chain]]
+
+If `BASE_REF` is not main, do not merge. This PR is stacked on another one - land the parent first or retarget this PR, and stop either way.
+
+If other open PRs are based on THIS branch, retarget them to main FIRST (`gh pr edit <child> --base main`), surface the rebase sequence they will need, then continue.
+
+## 3. CI gate [[gate:ci-rollup]]
+
+Partition `statusCheckRollup` by conclusion.
+
+The JSON rollup mixes CheckRuns with commit statuses, which is how external reviewers like CodeRabbit report. A commit status can surface as an entry with a null name and null conclusion, so before writing one off as UNKNOWN, cross-read `gh pr checks $PR` - that renders both kinds.
+
+- **All SUCCESS / NEUTRAL / SKIPPED**: proceed.
+- **Anything pending**: wait briefly and re-read. Still pending → report it and stop.
+- [[gate:flake-allowance]] **A failure listed in the repo's `.github/known-flakes.txt`**: note it and merge through. Read the allowlist from the base branch, never from the PR: `git fetch origin $BASE_REF && git show origin/$BASE_REF:.github/known-flakes.txt`. The PR's own copy is part of what is being reviewed, and a branch that adds its failing check to the allowlist must not get to wave itself through - an entry that exists only on the PR side is a diff to flag, not an allowance. Entries are one per line in two forms - a bare check name means the whole check is flaky, while `check-name:test_name` means one flaky test inside a suite check, and merging through then requires the job log to show THAT test as the sole failure.
+- **Anything else**, including an errored or stale check: abort and show it. The one exception is the valve below.
+
+[[gate:rerun-once]] **The rerun-once valve** covers a suite check failing on a single test. All three of these have to hold: the failing test predates this PR (`git log origin/$BASE_REF..HEAD -S <test_name>` finds no commit - the range matters, because an unbounded `git log -S` walks all of history and finds the commit that originally introduced the test on main, which proves nothing about this PR), its file and paths don't overlap the PR diff, and the failure is timing-shaped - a timeout, an elapsed-time assertion, pool starvation - rather than an assertion on values. Then rerun the failed job ONCE (`gh run rerun <id> --failed`), re-read the rollup, and note the rerun in the land report.
+
+Red twice on identical code is real: abort. Never rerun an assertion failure - that one is telling you the truth.
+
+## 4. External-threads gate [[gate:unresolved-threads]]
+
+Threads are not reachable through `gh pr view --json`. That field list rejects `reviewThreads` with "Unknown JSON field" (gh 2.98.0, checked 2026-08-29), so read them over GraphQL:
+
+```bash
+gh api graphql -f query='
+query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(last: 20) { nodes { author { login } body path url } }
+        }
+      }
+    }
+  }
+}' -f owner=<owner> -f repo=<repo> -F pr=$PR
+```
+
+A thread is unresolved when `isResolved` is false. Keep paging with `-f cursor=<endCursor>` while `pageInfo.hasNextPage` is true; 100 covers one round on a normal PR, and a truncated read looks exactly like a clean one. The comments use `last: 20`, not `first`, so a long back-and-forth shows its newest messages - the reviewer's latest reply is what decides whether the thread still stands, and the opening comment on a thread past 20 messages would tell you nothing about where it landed. Each node's `id` is the thread id the two mutations below take. The REST comments endpoint (`gh api repos/{owner}/{repo}/pulls/$PR/comments`) has no thread id and no resolved flag, so it can show you a comment but cannot settle its thread.
+
+Unresolved threads from external reviewers block the merge.
+
+Each one ends in exactly one of three states: it was fixed (resolve the thread, note the commit), it was answered and the run's reply stands (resolve it), or it is genuinely open - which means fixing it now in a quick pass on the branch, or sending the PR back through a fix round.
+
+Replying and resolving are two separate mutations, and `gh pr comment` is neither: it posts a fresh top-level comment on the PR, which leaves the thread open and this gate red.
+
+```bash
+gh api graphql -f query='mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
+    comment { url }
+  }
+}' -f thread=<thread-id> -f body='<reply>'
+
+gh api graphql -f query='mutation($thread: ID!) {
+  resolveReviewThread(input: {threadId: $thread}) { thread { isResolved } }
+}' -f thread=<thread-id>
+```
+
+The two input field names differ, `pullRequestReviewThreadId` on the reply and `threadId` on the resolve, and swapping them is a schema error rather than a silent no-op. Read `thread.isResolved` back as proof, and re-run the paged query once at the end: zero unresolved threads is the only pass.
+
+This is where a review that landed after the issue run finished gets caught. That is by design: the run cannot wait indefinitely, so this gate is what makes a late review still count.
+
+## 5. Escape-hatch ack [[gate:escape-hatch-ack]]
+
+If the PR carries a `## follow-up draft` comment - cross-crate-scale findings the run deferred rather than filing - present it to the human through the human-choice binding and ask. The place to look is the `comments` array from the step-1 read: the draft is a top-level PR comment, so it never appears in the review threads the previous gate walked.
+
+[[gate:sanctioned-issue-create]] On ack, file it: `FLOW_SANCTION=land gh issue create --title … --body … --label needs-triage`. The sanction is what gets it past the no-backlog hook, the body links this PR, and the new issue still enters through `/flow:prep` before any agent touches it.
+
+On decline, reply to the draft comment saying it was consciously dropped, so the next reader knows it was decided rather than missed.
+
+## 6. Merge and close
+
+1) [[gate:squash-merge]] First, two arming checks: if the step-1 read showed `autoMergeRequest` set, stop - someone armed an auto-merge that will land this PR out of sight, and that gets surfaced to the human, not merged over. If the base branch uses a merge queue, stop the same way: this stage performs an immediate merge, and a command that quietly enqueues instead leaves an armed future merge behind the moment your gate observations go stale.
+
+Then `gh pr merge $PR --squash --match-head-commit $HEAD_SHA`, deliberately WITHOUT `--delete-branch`. The issue run's worktree still holds the local branch, so the local delete fails - and a non-zero exit would mask a merge that actually succeeded. `--match-head-commit` is GitHub's own re-check that the head is still the commit every gate above inspected; a push that raced the gates fails the merge instead of landing unreviewed, and the answer to that failure is to re-run the gates, never to re-issue the merge with a fresh SHA.
+
+Confirm with `gh pr view $PR --json state,mergeCommit,autoMergeRequest` that `state == MERGED`. If it isn't, do not treat that as a clean failure yet: `autoMergeRequest` now set means the merge call armed a deferred merge rather than performing one, and that is an ARMED state to report to the human verbatim. Either way, report and stop; never retry blindly.
+
+2) [[gate:remote-branch-delete]] Delete the remote branch: `git push origin --delete $HEAD_REF` - but only when the step-1 read showed `isCrossRepository: false`. On a fork PR, `origin` is the base repo and `HEAD_REF` is a name in someone else's repo; the same spelling would delete an unrelated base-repo branch that happens to share the name. A fork's branch is theirs to clean up - skip and say so. Otherwise best effort - the repo's auto-delete may have raced you, and "remote ref does not exist" is a fine outcome. The LOCAL branch waits for step 7, after the worktree is gone.
+
+3) [[gate:issue-closure]] For every issue in `LINKED_ISSUES`, including any the step-1 fallback recovered: `gh issue view <N> --json state`. A squash-ref with a parenthetical `(#N)` auto-closes nothing. Still OPEN → `gh issue close <N> --comment "Landed via PR #$PR (<url>)."`. Report the final state of every linked issue, closed or not.
+
+## 7. Local cleanup
+
+1) Get main current - from the checkout that owns it. `git worktree list` names the canonical checkout (the first entry, or wherever `main` is checked out); call it `$MAIN_WT`. A plain `git switch main` run from the issue worktree fails, because main is already checked out over there, and the `&&`-chained cleanup behind it silently never runs. So: `git -C $MAIN_WT pull --ff-only` (switch first with `git -C $MAIN_WT switch main` only if that checkout is parked elsewhere).
+
+2) [[gate:worktree-retirement]] Retire the worktree from OUTSIDE it: `git -C $MAIN_WT worktree remove <path>` - git refuses to remove the worktree the command is standing in, so run it from the canonical checkout, and if the session's own shell sits inside the doomed worktree, use absolute paths from here on. Then delete the local branch. `git branch -d` will refuse: a squash-merged branch is no ancestor of main, so once its upstream ref is pruned git can't see that it landed. You proved `state == MERGED` back in step 6, so `git branch -D <branch>` is the correct call. Finish with `git fetch --prune`, so stale remote-tracking refs don't survey as live branches.
+
+3) [[gate:evidence-preservation]] Evidence branch: the ledger may have committed captures to `flow-evidence` (or the repo's own convention) under a `pr-$PR/` path. **Nothing about that branch gets deleted, force-pushed, or rewritten - not now, not later.** The ledger embeds those captures as SHA-pinned raw urls, which resolve only while the commit object survives; deleting the branch or rewriting its history makes every one of them GC-eligible, and GitHub's grace period for dangling commits is a courtesy, not a contract. Pruning the directory in a fresh commit is safe but buys nothing - the blobs stay in history either way.
+
+What DOES get cleaned up is a stray worktree or checkout the evidence commit went through. `git worktree list` after step 2 shows anything the ledger left behind; `git fetch --prune` won't touch it.
+
+Then confirm the evidence held. Take one committed capture out of the ledger comment and check the object still resolves at its pinned SHA: `gh api repos/{owner}/{repo}/contents/<path>?ref=<sha> --jq .sha`. A ledger row pointing at a dead url is worse than a row that admits a gap, and this is the last moment anyone is looking at it.
+
+4) [[gate:repo-teardown]] Repo-specific teardown: if the repo's `AGENTS.md` documents per-worktree resources - isolated test databases, containers - run the documented teardown, best effort. Never block the land on housekeeping, and never touch the canonical or shared instance.
+
+5) [[gate:memory-stamp]] Memory stamp: if a project memory note tracks this work, update it to MERGED with its issues CLOSED, so it doesn't get re-suggested later. Light touch; skip if the project keeps no such notes.
+
+## 8. Survey [[gate:survey]]
+
+Close with what is available to do next: open PRs with a one-word status each (green / red / draft / stacked / needs-*), open issues bucketed by lifecycle label, and any stale worktrees or branches left lying around.
+
+Synthesize that into a ranked 3-6 line menu. Lead with the highest-leverage move, call out anything blocked on the human, and leave closed / `wontfix` / `deferred` work buried.
+
+**Take no action on any of it.** You just finished a merge and a cleanup sequence, and the pull to keep going is strongest right here. The survey is a menu for the human to pick from.
+---
+description: Land a PR - CI + unresolved-thread gates, escape-hatch ack, squash-merge, close issues explicitly, retire worktree, survey next moves. The only merge path.
+argument-hint: <pr-number | empty for current branch>
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(docker:*), Bash(ls:*), Read, Edit, AskUserQuestion
+---
+
+# /flow:land - the human gate
+
+The stage itself lives in the `land-stage` skill, so every host runs the same gates. Read `${CLAUDE_PLUGIN_ROOT}/skills/land-stage/profiles/claude.md` first, then `${CLAUDE_PLUGIN_ROOT}/skills/land-stage/SKILL.md`. Execute the stage against `$ARGUMENTS` under the bindings that profile declares for each gate.
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Adjusting profile read order**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "find /home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/skills/land-stage/profiles -maxdepth 1 -type f -print -exec sh -c 'printf \"\\n\"; sed -n \"1,260p\" \""'$1"'"' sh {} \\;" in /tmp/flow-land-scratch
+ succeeded in 0ms:
+/home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/skills/land-stage/profiles/claude.md
+
+# land-stage host profile: Claude Code
+
+Read this with `SKILL.md`. The stage is host-neutral prose; this file says what each of its
+`[[gate:<id>]]` markers binds to in a Claude Code session. Where a gate has nothing
+host-specific about it, the section says so rather than inventing a difference.
+
+Tool allowance for the stage, and the one `/flow:land` declares in its frontmatter:
+
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(docker:*), Bash(ls:*), Read, Edit, AskUserQuestion
+
+The human-choice binding is the AskUserQuestion tool: up to 4 questions per call, each with
+selectable options, and the answer comes back inside the same turn. Never replace it with a
+prose question the human has to answer in an essay.
+
+## Gates
+
+### gate: resolve-pr
+
+`$ARGUMENTS` from the `/flow:land` invocation is the PR number. Empty means resolve from the
+current branch. The stage runs because the human typed the command, which is the explicit
+request; nothing else in the session authorizes it, and a green build in the transcript is
+not a request to land.
+
+### gate: linked-issue-recovery
+
+The recovery parsing is plain `gh` and shell work, no host difference. The ambiguity exit
+goes through AskUserQuestion, one question listing the candidate issue numbers with "close
+none" as an explicit option.
+
+### gate: stacked-chain
+
+No host difference. `gh pr edit <child> --base main` runs under the `Bash(gh:*)` allowance.
+
+### gate: ci-rollup
+
+No host difference. Both `gh pr view --json statusCheckRollup` and `gh pr checks` run under
+`Bash(gh:*)`.
+
+### gate: flake-allowance
+
+No host difference. The allowlist read is `git show origin/$BASE_REF:.github/known-flakes.txt`
+after a fetch, under `Bash(git:*)` - the base branch's copy, as the stage requires, never the
+PR's worktree copy. Reading a job log is `gh run view --log-failed`.
+
+### gate: rerun-once
+
+No host difference. `git log origin/$BASE_REF..HEAD -S <test_name>` and
+`gh run rerun <id> --failed` are both inside the allowance, and git-guard passes read-only
+`git log`.
+
+### gate: unresolved-threads
+
+No host difference. The read and both mutations are `gh api graphql` calls, exactly as the
+stage writes them, and they all run under the `Bash(gh:*)` allowance.
+
+### gate: escape-hatch-ack
+
+AskUserQuestion, one question, options for file it and drop it with the consequence on each.
+The turn continues with the answer, so the ack and the filing happen in one run.
+
+### gate: sanctioned-issue-create
+
+`FLOW_SANCTION=land gh issue create …`, inline on the command. The no-backlog PreToolUse hook
+reads the command string and denies `gh issue create` without that prefix, so the sanction
+has to be part of the same Bash call, not exported earlier.
+
+### gate: squash-merge
+
+`gh pr merge $PR --squash --match-head-commit $HEAD_SHA`, with no confirmation prompt in
+front of it. The command runs pre-approved under the `Bash(gh:*)` allowance, and the publish
+guard in the PreToolUse chain asks only about package-registry publishes, so nothing stops
+this call to check with the human. The gate is upstream of the command. `/flow:land` is the
+human's own invocation, and the stage's CI and unresolved-thread gates decide whether the
+merge is warranted. `--match-head-commit` pins the merge to the head those gates inspected;
+the arming checks and the armed-state re-read the stage describes all run under `Bash(gh:*)`.
+Issue the merge exactly once, after those gates pass, and never bundle it into a batch of
+other work.
+
+### gate: issue-closure
+
+No host difference. `gh issue view`, then `gh issue close --comment` for anything still open.
+
+### gate: remote-branch-delete
+
+No host difference. `git push origin --delete $HEAD_REF` is a delete of a remote ref that
+just merged, so git-guard lets it through; a non-zero exit here is expected and ignored.
+
+### gate: evidence-preservation
+
+No host difference. The re-resolve check is `gh api …/contents/<path>?ref=<sha> --jq .sha`.
+
+### gate: worktree-retirement
+
+No host difference in the commands. `git worktree remove` and `git branch -D` are both
+deliberately absent from git-guard's deny list, because the reflog returns them and blocking
+`branch -D` would break exactly this step.
+
+### gate: repo-teardown
+
+`Bash(docker:*)` and `Bash(ls:*)` exist in the allowance for this gate and nothing else. The
+teardown is whatever the repo's `AGENTS.md` documents; if the file documents none, skip.
+
+### gate: memory-stamp
+
+The project note lives under the session's memory directory
+(`~/.claude/projects/<slug>/memory/`), and the edit is the Edit tool on that file. Skip when
+the project keeps no note.
+
+### gate: survey
+
+No host difference. Read-only `gh pr list`, `gh issue list`, `git worktree list`, then a
+ranked menu in the final message.
+/home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/skills/land-stage/profiles/codex.md
+
+# land-stage host profile: Codex
+
+Read this with `SKILL.md`. The stage is host-neutral prose; this file says what each of its
+`[[gate:<id>]]` markers binds to in a Codex session. Where a gate has nothing host-specific
+about it, the section says so rather than inventing a difference.
+
+There is no in-turn question tool here, and a PreToolUse hook cannot ask for confirmation:
+as of Codex CLI 0.151.0 an `ask` result reads as a hook failure and the command runs anyway.
+So the human-choice binding is the suspended turn. Write the question, list up to 4 numbered
+options with a one-line consequence each, then end the turn. The human's next message is the
+answer. Do not guess an answer to keep the run moving, and do not stack two questions into
+one suspension.
+
+## Gates
+
+### gate: resolve-pr
+
+There is no slash-command argument. The PR number comes out of the human's message asking to
+land it. `agents/openai.yaml` sets `allow_implicit_invocation: false` as the intended way to
+keep this stage out of automatic selection, but that suppression is unverified on Codex's
+plugin-loader path (the capability inventory in `src/delegation/contracts.mjs` marks it
+`supported: false`), so do not lean on it. The actual gate is the human: this stage runs only
+when they name the plugin-namespaced `land-stage` skill or ask for the land in words, and a PR
+that merely looks ready is never an invocation.
+
+### gate: linked-issue-recovery
+
+The recovery parsing is plain `gh` and shell work, no host difference. The ambiguity exit
+suspends the turn with the candidate issue numbers as options, plus "close none".
+
+### gate: stacked-chain
+
+No host difference. `gh pr edit <child> --base main`.
+
+### gate: ci-rollup
+
+No host difference. Read the rollup JSON, then cross-read `gh pr checks $PR`.
+
+### gate: flake-allowance
+
+No host difference. The allowlist read is `git show origin/$BASE_REF:.github/known-flakes.txt`
+after a fetch - the base branch's copy, as the stage requires, never the PR's. A job log is
+`gh run view --log-failed`.
+
+### gate: rerun-once
+
+No host difference. `git log origin/$BASE_REF..HEAD -S <test_name>` is read-only, and
+`gh run rerun <id> --failed` runs once.
+
+### gate: unresolved-threads
+
+No host difference. The read and both mutations are `gh api graphql` calls, exactly as the
+stage writes them. If a thread turns out to need a decision rather than a fix, that decision
+goes through the suspended turn like any other.
+
+### gate: escape-hatch-ack
+
+Suspend the turn. Two options is the usual shape: file the follow-up issue, or drop it and
+reply on the draft comment. Say in one line what each choice costs. The filing happens in the
+next turn, after the human answers.
+
+### gate: sanctioned-issue-create
+
+`FLOW_SANCTION=land gh issue create …`, inline on the command, same as everywhere else. The
+no-backlog hook reads the command string on PreToolUse and denies `gh issue create` without
+it, so an exported variable does not count.
+
+### gate: squash-merge
+
+You do not write the merge command. In a repository that carries a committed `.flow/managed`
+file, the publish guard denies every raw merge spelling it recognizes and points at flow's
+executor, which is how the merge runs on this host:
+
+```bash
+node <plugin-root>/scripts/land-merge.mjs <pr>
+```
+
+The authorization is the same one every host uses: the human asked to land this pull request
+(the resolve-pr gate's origin rules), and the stage's gates passed. There is no approval
+ceremony beyond that. What the executor adds over a raw `gh pr merge` is that nothing about
+the merge is taken from the conversation: it takes the pull request number and nothing else,
+derives the host, owner and repository from the origin remote, pins every gh call to that
+repository, reads the head SHA, state, draft flag and base branch from GitHub, and refuses a
+closed or draft pull request, a base that is not the default branch, an armed auto-merge, or
+a merge queue on the base - it only ever performs an immediate squash-merge and will not
+leave an armed future merge behind. Then it merges with `--squash` and `--match-head-commit`
+pinned to the head it just verified, GitHub's own re-check that the branch did not move, and
+re-reads the pull request. Do not route around a guard denial with another spelling; the
+denial means take the executor path.
+
+Its exit code is the gate. Exit 0 means the re-read confirmed the pull request merged and is
+still the head, base and host-qualified repository the run verified: your merge, landed. Exit 1
+with `refused` on stderr means a check failed before anything ran, or gh gave a clean rejection
+with the pull request still open, and nothing landed. Read the reason and fix what it names. Any
+other exit 1 is neither a clean success nor a clean failure, and it is not for you to guess: a
+lost confirming read, a pull request that reads `MERGED` but no longer matches what was verified
+(someone else may have merged the same number), or an armed auto-merge or merge queue that may
+still land it later. Look at the pull request yourself before doing anything else, do not re-run
+the executor blindly, and do not report it as either merged or failed.
+
+Everything else in the step is unchanged: no `--delete-branch`.
+
+### gate: issue-closure
+
+No host difference. `gh issue view`, then `gh issue close --comment` for anything still open.
+
+### gate: remote-branch-delete
+
+No host difference. `git push origin --delete $HEAD_REF`, best effort, non-zero exit ignored.
+
+### gate: evidence-preservation
+
+No host difference. The re-resolve check is `gh api …/contents/<path>?ref=<sha> --jq .sha`.
+
+### gate: worktree-retirement
+
+No host difference. `git worktree remove`, then `git branch -D <branch>`; git-guard allows
+both, and the reflog is the undo.
+
+### gate: repo-teardown
+
+The teardown is whatever the repo's `AGENTS.md` documents, run as ordinary shell commands.
+There is no per-tool allowance to widen here, so the only limits are the sandbox and approval
+policy the session already runs under. Skip when the file documents none.
+
+### gate: memory-stamp
+
+Edit the project's note with `apply_patch`, the same way any other file gets edited. Skip when
+the project keeps no such note, and never invent one to have something to stamp.
+
+### gate: survey
+
+No host difference. Read-only `gh pr list`, `gh issue list`, `git worktree list`, then a
+ranked menu in the final message.
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Inspecting git status and remotes**
+codex
+Host-profile gate: passed. The installed land stage has a Codex profile, so this host has bindings for every gate. I’m starting the repository and PR resolution checks for the user-named PR `#1`.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "git status --short --branch
+git remote -v
+git worktree list --porcelain
+printf '%s\\n' '--- AGENTS.md ---'
+sed -n '1,240p' AGENTS.md
+printf '%s\\n' '--- flow marker ---'
+ls -la .flow 2>/dev/null || true
+printf '%s\\n' '--- repository ---'
+gh repo view --json nameWithOwner,defaultBranchRef,url
+printf '%s\\n' '--- PR 1 ---'
+gh pr view 1 --json number,title,body,state,headRefName,headRefOid,baseRefName,url,isDraft,isCrossRepository,mergeable,mergeStateStatus,autoMergeRequest,closingIssuesReferences,statusCheckRollup,comments" in /tmp/flow-land-scratch
+ succeeded in 1089ms:
+{"defaultBranchRef":{"name":"main"},"nameWithOwner":"jakub/flow-land-scratch","url":"https://github.com/jakub/flow-land-scratch"}
+--- PR 1 ---
+{"autoMergeRequest":null,"baseRefName":"main","body":"Micro-fix for the Codex land capture.\n\n<!-- This is an auto-generated comment: release notes by coderabbit.ai -->\n\n## Summary by CodeRabbit\n\n* **Documentation**\n  * Corrected typos in the land-stage description and the following sentence.\n\n<!-- end of auto-generated comment: release notes by coderabbit.ai -->","closingIssuesReferences":[],"comments":[{"id":"IC_kwDOUIgnfc8AAAABRdcYXw","author":{"login":"coderabbitai"},"authorAssociation":"NONE","body":"<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- review_stack_entry_start -->\n\n[![Review Change Stack](https://storage.googleapis.com/coderabbit_public_assets/review-stack-in-coderabbit-ui.svg)](https://app.coderabbit.ai/change-stack/jakub/flow-land-scratch/pull/1)\n\n<!-- review_stack_entry_end -->\n<!-- recent_review_start -->\n\nNo actionable comments were generated in the recent review. 🎉\n\n<details>\n<summary>ℹ️ Recent review info</summary>\n\n<details>\n<summary>⚙️ Run configuration</summary>\n\n**Configuration used**: Organization UI\n\n**Review profile**: ASSERTIVE\n\n**Plan**: Pro\n\n**Run ID**: `9dd17fc1-a576-4b73-b687-54b761bde6cd`\n\n</details>\n\n<details>\n<summary>📥 Commits</summary>\n\nReviewing files that changed from the base of the PR and between a799f8cc36ec9cb5b7e487e7f7c541f41101e2e3 and 9030c4a8796784962249b694b92c9bb9c3e245d8.\n\n</details>\n\n<details>\n<summary>📒 Files selected for processing (1)</summary>\n\n* `README.md`\n\n</details>\n\n**Included review availability:** 0 reviews are currently available. Your included PR review attempts over the past 7 days set your current allowance at 4 reviews per hour.\n\n</details>\n\n---\n\n\n\n<!-- recent_review_end -->\n<!-- walkthrough_start -->\n\n## Walkthrough\n\nThe README land-stage description contains a typo correction. No exported or public entities changed.\n\n### Changes\n\n**Documentation update**\n\n|Layer / File(s)|Summary|\n|---|---|\n|**Correct README wording** <br> `README.md`|The land-stage sentence changes “Teh” to “The”.|\n\n**Estimated code review effort:** 1 (Trivial) | ~2 minutes\n\n<!-- final_review_risk_start -->\n**Merge Risk:** _⚪ Minimal_ · up to `9030c`\n\nThis is a localized README typo correction with no actionable merge-blocking risk remaining; it is merge-ready after normal checks and review.\n<!-- final_review_risk_end -->\n\n<!-- walkthrough_end -->\n<!-- pre_merge_checks_walkthrough_start -->\n\n<details>\n<summary>🚥 Pre-merge checks | ✅ 5</summary>\n\n<details>\n<summary>✅ Passed checks (5 passed)</summary>\n\n|         Check name         | Status   | Explanation                                                                                                                                                                                               |\n| :------------------------: | :------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n|      Description Check     | ✅ Passed | Check skipped - CodeRabbit’s high-level summary is enabled.                                                                                                                                               |\n|         Title check        | ✅ Passed | The title clearly and concisely identifies the main change: correcting the \"Teh\" typo in README.md.                                                                                                       |\n|     Docstring Coverage     | ✅ Passed | No functions found in the changed files to evaluate docstring coverage. Skipping docstring coverage check. Docstring coverage is scoped to functions touched by this diff. Analyzed 0 functions across 0… |\n|     Linked Issues check    | ✅ Passed | Check skipped because no linked issues were found for this pull request.                                                                                                                                  |\n| Out of Scope Changes check | ✅ Passed | Check skipped because no linked issues were found for this pull request.                                                                                                                                  |\n\n</details>\n\n<details>\n<summary>Full details: Docstring Coverage</summary>\n\n**Explanation**\n\nNo functions found in the changed files to evaluate docstring coverage. Skipping docstring coverage check. Docstring coverage is scoped to functions touched by this diff. Analyzed 0 functions across 0 files. (1 skipped: 1 unsupported.)\n\n</details>\n\n</details>\n\n<!-- pre_merge_checks_walkthrough_end -->\n<!-- tips_start -->\n\n---\n\n\n\n\n<sub>Comment `@coderabbitai help` to get the list of available commands.</sub>\n\n<!-- tips_end -->","createdAt":"2026-08-30T04:26:54Z","includesCreatedEdit":true,"isMinimized":false,"minimizedReason":"","reactionGroups":[],"url":"https://github.com/jakub/flow-land-scratch/pull/1#issuecomment-5466691679","viewerDidAuthor":false}],"headRefName":"fix/typo-teh","headRefOid":"9030c4a8796784962249b694b92c9bb9c3e245d8","isCrossRepository":false,"isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","number":1,"state":"OPEN","statusCheckRollup":[{"__typename":"StatusContext","context":"CodeRabbit","startedAt":"2026-08-30T04:27:26Z","state":"SUCCESS","targetUrl":""},{"__typename":"CheckRun","completedAt":"2026-08-30T04:26:55Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/jakub/flow-land-scratch/pull/1/checks?check_run_id=99206483938","name":"Macroscope - Correctness Check","startedAt":"2026-08-30T04:26:41Z","status":"COMPLETED","workflowName":""}],"title":"fix: correct 'Teh' typo in README","url":"https://github.com/jakub/flow-land-scratch/pull/1"}
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Verifying absence of agents in repo**
+codex
+Resolve-PR gate: passed. PR #1 is open, not a draft, mergeable, and targets `main`. The inspected head is `9030c4a8796784962249b694b92c9bb9c3e245d8`; all later gates are pinned to that commit.
+
+Linked-issue recovery gate: passed. GitHub reports no linked issue, the branch name has no issue number, and the title/body contain no closing phrase or bare issue mention. The land report will record “no linked issues.”
+
+The repository has no `AGENTS.md`. That does not fail a land gate; it means there is no repository-specific teardown procedure to run in cleanup. I will report that gate as skipped rather than inventing one.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "printf '%s\\n' '--- child PRs based on fix/typo-teh ---'
+gh pr list --state open --base fix/typo-teh --json number,title,headRefName,baseRefName,url
+printf '%s\\n' '--- check rollup ---'
+gh pr checks 1
+printf '%s\\n' '--- base flake allowlist ---'
+git fetch origin main
+git show origin/main:.github/known-flakes.txt 2>&1 || true" in /tmp/flow-land-scratch
+ succeeded in 1516ms:
+[]
+--- check rollup ---
+CodeRabbit	pass	0		Review completed
+Macroscope - Correctness Check	pass	14s	https://github.com/jakub/flow-land-scratch/pull/1/checks?check_run_id=99206483938	
+--- base flake allowlist ---
+error: cannot open '.git/FETCH_HEAD': Read-only file system
+fatal: path '.github/known-flakes.txt' does not exist in 'origin/main'
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Requesting permission escalation**
+codex
+Stacked-chain gate: passed. The PR targets `main`, and no open PR is based on `fix/typo-teh`.
+
+CI cross-read: both reported checks pass. The required base-branch refresh was blocked by the workspace sandbox because `.git/FETCH_HEAD` is read-only. That is a local execution restriction, not a repository result, so I’m requesting the normal elevated read/update needed to perform the prescribed `git fetch`. I will not mark the CI gate passed until that succeeds.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c 'git fetch origin main
+git show origin/main:.github/known-flakes.txt 2>&1 || true' in /tmp/flow-land-scratch
+ succeeded in 610ms:
+From https://github.com/jakub/flow-land-scratch
+ * branch            main       -> FETCH_HEAD
+fatal: path '.github/known-flakes.txt' does not exist in 'origin/main'
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Planning threads GraphQL pagination**
+codex
+CI gate: passed. `gh pr checks` and the PR rollup agree: CodeRabbit and Macroscope both passed. `origin/main` refreshed successfully. The base branch has no `.github/known-flakes.txt`; no allowance is needed because there are no failing checks.
+
+I’m checking review threads through GitHub’s paginated GraphQL endpoint now. A clean top-level review comment is not enough for this gate; the resolved flag on every thread is what counts.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "gh api graphql -f query='
+query("'$owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(last: 20) { nodes { author { login } body path url } }
+        }
+      }
+    }
+  }
+}'"' -f owner=jakub -f repo=flow-land-scratch -F pr=1" in /tmp/flow-land-scratch
+ succeeded in 355ms:
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Investigating GitHub merge queue checks via API**
+**Verifying merge queue endpoint and script existence**
+codex
+Unresolved-threads gate: passed. The full first page contained zero threads and `hasNextPage` is false.
+
+Escape-hatch gate: passed. The top-level PR comments contain no `## follow-up draft`, so no human acknowledgement or follow-up issue is required.
+
+Next I’m doing the two arming checks: auto-merge must still be unset, and `main` must not use a merge queue. I’ll also re-read the head SHA before invoking Flow’s managed merge executor exactly once.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "printf '%s\\n' '--- branch rules ---'
+gh api repos/jakub/flow-land-scratch/rules/branches/main
+printf '%s\\n' '--- pre-merge PR state ---'
+gh pr view 1 --json state,isDraft,headRefOid,baseRefName,autoMergeRequest,mergeable,mergeStateStatus" in /tmp/flow-land-scratch
+ succeeded in 1092ms:
+[]--- pre-merge PR state ---
+{"autoMergeRequest":null,"baseRefName":"main","headRefOid":"9030c4a8796784962249b694b92c9bb9c3e245d8","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Planning safe git merge execution**
+codex
+Squash-merge arming gate: passed. GitHub reports no active rules on `main`, so there is no merge queue. Auto-merge remains unset, the PR remains open and mergeable, and the head is still the gated SHA `9030c4a8796784962249b694b92c9bb9c3e245d8`.
+
+I’m invoking Flow’s managed merge executor now. This is the single merge attempt. Its own final read must confirm an immediate squash merge.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c 'node /home/jakub/.codex/plugins/cache/jakub/flow/0.26.0/scripts/land-merge.mjs 1' in /tmp/flow-land-scratch
+ succeeded in 5533ms:
+land-merge: merged #1 on github.com/jakub/flow-land-scratch as a squash of 9030c4a87967
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Confirming remote branch deletion**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c 'gh pr view 1 --json state,mergeCommit,autoMergeRequest,headRefOid,baseRefName,url' in /tmp/flow-land-scratch
+ succeeded in 351ms:
+{"autoMergeRequest":null,"baseRefName":"main","headRefOid":"9030c4a8796784962249b694b92c9bb9c3e245d8","mergeCommit":{"oid":"e9835a1fe5b823d3c5cb190c4939a9a43dbd84a0"},"state":"MERGED","url":"https://github.com/jakub/flow-land-scratch/pull/1"}
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Planning git permission escalation for push**
+**Verifying remote branch deletion with GitHub API**
+codex
+Squash-merge gate: passed. Flow’s executor returned success, and an independent GitHub read confirms PR #1 is `MERGED` with squash commit `e9835a1fe5b823d3c5cb190c4939a9a43dbd84a0`. Auto-merge is still unset.
+
+Issue-closure gate: passed with no action. This PR has no linked or recovered issues.
+
+I’m deleting the merged remote topic branch next. Because this updates a remote ref and the local Git metadata, it needs the same elevated repository access used for the base refresh.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c 'git push origin --delete fix/typo-teh' in /tmp/flow-land-scratch
+ succeeded in 1147ms:
+To https://github.com/jakub/flow-land-scratch.git
+ - [deleted]         fix/typo-teh
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Failed
+hook: PostToolUse Failed
+hook: PostToolUse Failed
+hook: PostToolUse Failed
+hook: PostToolUse Failed
+**Planning main branch cleanup and pull**
+codex
+Remote-branch-delete gate: passed. GitHub’s remote topic branch `fix/typo-teh` was deleted.
+
+Local cleanup has a different shape here: this checkout is already the sole canonical `main` worktree, and there is no separate PR worktree to retire. I’m fast-forwarding this checkout to the confirmed squash commit, then I’ll prove that no topic worktree or local topic branch remains.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c 'git pull --ff-only' in /tmp/flow-land-scratch
+ succeeded in 779ms:
+From https://github.com/jakub/flow-land-scratch
+   a799f8c..e9835a1  main       -> origin/main
+Updating a799f8c..e9835a1
+Fast-forward
+ README.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Fetching git repository status and branches**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c 'git fetch --prune
+git status --short --branch
+git worktree list --porcelain
+git branch --list fix/typo-teh
+git ls-remote --heads origin refs/heads/fix/typo-teh' in /tmp/flow-land-scratch
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+ succeeded in 1284ms:
+## main...origin/main
+worktree /tmp/flow-land-scratch
+HEAD e9835a1fe5b823d3c5cb190c4939a9a43dbd84a0
+branch refs/heads/main
+
+  fix/typo-teh
+
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Deleting local branch after squash merge**
+**Confirming no relevant memory evidence**
+codex
+Main-update gate: passed. The canonical checkout fast-forwarded to `e9835a1fe5b823d3c5cb190c4939a9a43dbd84a0` and is clean against `origin/main`.
+
+Worktree-retirement check found no PR worktree, but it did find a local `fix/typo-teh` branch. Since GitHub has confirmed the squash merge, Flow requires deleting that local branch with `git branch -D`. I’m doing that now, then I’ll recheck the local and remote branch state.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c 'git branch -D fix/typo-teh' in /tmp/flow-land-scratch
+ succeeded in 0ms:
+Deleted branch fix/typo-teh (was 9030c4a).
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Listing remote branches and comments**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "printf '%s\\n' '--- local cleanup proof ---'
+git status --short --branch
+git worktree list --porcelain
+git branch --list fix/typo-teh
+git ls-remote --heads origin refs/heads/fix/typo-teh
+printf '%s\\n' '--- evidence branches ---'
+git ls-remote --heads origin 'refs/heads/*evidence*'
+printf '%s\\n' '--- PR comments containing evidence markers ---'
+gh pr view 1 --json comments --jq '.comments[] | select((.body | ascii_downcase | contains(\"ledger\")) or (.body | contains(\"flow-evidence\")) or (.body | contains(\"raw.githubusercontent.com\"))) | {url, body}'" in /tmp/flow-land-scratch
+ succeeded in 1863ms:
+--- evidence branches ---
+--- PR comments containing evidence markers ---
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Planning repository cleanup and PR survey**
+codex
+Worktree-retirement gate: passed. The only worktree is the canonical `main` checkout; the local topic branch is deleted; the remote topic branch is absent; and `main` is clean at the squash commit.
+
+Evidence-preservation gate: passed with no evidence artifact to check. PR #1 has no ledger comment, no SHA-pinned capture URL, and the repository has no evidence branch. Nothing was deleted or rewritten.
+
+Repository-teardown gate: skipped. This repository has no `AGENTS.md`, so it documents no per-worktree resources.
+
+Memory-stamp gate: skipped. This temporary project has no matching project memory note; I did not create one.
+
+I’m at the final read-only survey now. I’ll list remaining PRs, lifecycle-labeled issues, and stale branches or worktrees, without taking action on any of them.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c "printf '%s\\n' '--- final PR proof ---'
+gh pr view 1 --json number,state,mergeCommit,headRefOid,baseRefName,autoMergeRequest,url
+printf '%s\\n' '--- open PRs ---'
+gh pr list --state open --limit 100 --json number,title,isDraft,headRefName,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,url
+printf '%s\\n' '--- open issues ---'
+gh issue list --state open --limit 100 --json number,title,labels,url
+printf '%s\\n' '--- worktrees ---'
+git worktree list --porcelain
+printf '%s\\n' '--- local branches ---'
+git branch -vv
+printf '%s\\n' '--- remote branches ---'
+git branch -r" in /tmp/flow-land-scratch
+ succeeded in 1753ms:
+{"autoMergeRequest":null,"baseRefName":"main","headRefOid":"9030c4a8796784962249b694b92c9bb9c3e245d8","mergeCommit":{"oid":"e9835a1fe5b823d3c5cb190c4939a9a43dbd84a0"},"number":1,"state":"MERGED","url":"https://github.com/jakub/flow-land-scratch/pull/1"}
+--- open PRs ---
+[{"baseRefName":"main","headRefName":"fix/typo-secnod","isDraft":false,"mergeStateStatus":"UNKNOWN","mergeable":"UNKNOWN","number":2,"statusCheckRollup":[{"__typename":"StatusContext","context":"CodeRabbit","startedAt":"2026-08-30T04:26:52Z","state":"SUCCESS","targetUrl":""},{"__typename":"CheckRun","completedAt":"2026-08-30T04:26:56Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/jakub/flow-land-scratch/pull/2/checks?check_run_id=99206487512","name":"Macroscope - Correctness Check","startedAt":"2026-08-30T04:26:44Z","status":"COMPLETED","workflowName":""}],"title":"fix: correct 'secnod' typo in README","url":"https://github.com/jakub/flow-land-scratch/pull/2"}]
+--- open issues ---
+[]
+--- worktrees ---
+worktree /tmp/flow-land-scratch
+HEAD e9835a1fe5b823d3c5cb190c4939a9a43dbd84a0
+branch refs/heads/main
+
+--- local branches ---
+  fix/typo-secnod f9a7126 [origin/fix/typo-secnod] fix: correct 'secnod' typo in README
+* main            e9835a1 [origin/main] fix: correct 'Teh' typo in README (#1)
+--- remote branches ---
+  origin/HEAD -> origin/main
+  origin/fix/typo-secnod
+  origin/main
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Classifying PR2 status as needs-mergeability due UNKNOWN**
+**Retrieving detailed PR2 view fields**
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/usr/bin/bash -c 'gh pr view 2 --json number,state,isDraft,baseRefName,headRefName,mergeable,mergeStateStatus,statusCheckRollup,url' in /tmp/flow-land-scratch
+ succeeded in 466ms:
+{"baseRefName":"main","headRefName":"fix/typo-secnod","isDraft":false,"mergeStateStatus":"DIRTY","mergeable":"CONFLICTING","number":2,"state":"OPEN","statusCheckRollup":[{"__typename":"StatusContext","context":"CodeRabbit","startedAt":"2026-08-30T04:26:52Z","state":"SUCCESS","targetUrl":""},{"__typename":"CheckRun","completedAt":"2026-08-30T04:26:56Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/jakub/flow-land-scratch/pull/2/checks?check_run_id=99206487512","name":"Macroscope - Correctness Check","startedAt":"2026-08-30T04:26:44Z","status":"COMPLETED","workflowName":""}],"url":"https://github.com/jakub/flow-land-scratch/pull/2"}
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+**Compiling detailed gate outcome report**
+**Confirming gate compliance despite missing AGENTS**
+**Summarizing PR2 conflict and sandbox success**
+codex
+Landed [pull request #1](https://github.com/jakub/flow-land-scratch/pull/1) through Flow’s land stage.
+
+| Gate | Outcome |
+|---|---|
+| Host profile | Passed. The installed Flow plugin has a Codex land-stage profile. |
+| Resolve PR | Passed. PR #1 was open, not a draft, mergeable, and based on `main`. |
+| Head pin | Passed. Every pre-merge gate inspected commit `9030c4a8796784962249b694b92c9bb9c3e245d8`. The head did not change before the merge. |
+| Linked-issue recovery | Passed. GitHub linked no issues, and the branch, title, and body contained no issue number or closing phrase. No issues needed closure. |
+| Stacked-chain guard | Passed. The PR targeted `main`, and no open child PR used `fix/typo-teh` as its base. |
+| CI rollup | Passed. `CodeRabbit` and `Macroscope - Correctness Check` both reported success in the PR rollup and `gh pr checks`. |
+| Known-flake handling | Not needed. No check failed. The refreshed base branch has no `.github/known-flakes.txt`, so no allowance was applied. |
+| Rerun-once valve | Not used. There were no failed or pending checks. |
+| Unresolved review threads | Passed. The complete GraphQL result contained zero threads and reported no additional pages. |
+| Follow-up draft | Passed. No `## follow-up draft` comment was present. No acknowledgement or sanctioned issue creation was needed. |
+| Auto-merge check | Passed. Auto-merge was unset before and after the merge. |
+| Merge-queue check | Passed. GitHub reported no active branch rules on `main`; the merge was immediate rather than queued. |
+| Squash merge | Passed. Flow’s managed executor ran once and merged the pinned head. An independent read confirmed `state: MERGED`. |
+| Merge commit | `e9835a1fe5b823d3c5cb190c4939a9a43dbd84a0` |
+| Remote branch cleanup | Passed. `origin/fix/typo-teh` was deleted and independently confirmed absent. |
+| Issue closure | Passed with no action. There were no linked or recovered issues. |
+| Main checkout update | Passed. The canonical checkout fast-forwarded to the confirmed squash commit and is clean against `origin/main`. |
+| Worktree retirement | Passed. There was no separate PR worktree. The remaining local `fix/typo-teh` branch was deleted after the merge was confirmed. |
+| Evidence preservation | Passed with no action. There was no evidence branch, ledger comment, or SHA-pinned capture associated with this PR. |
+| Repository teardown | Skipped. The repository has no `AGENTS.md` and therefore documents no per-worktree teardown resources. |
+| Memory stamp | Skipped. This temporary repository has no matching project memory note. |
+| Final verification | Passed. PR #1 remains merged, auto-merge remains unset, `main` is clean at the squash commit, and the topic branch is absent locally and remotely. |
+
+Final survey, with no further action taken:
+
+1. PR [#2](https://github.com/jakub/flow-land-scratch/pull/2): **red**. Its checks pass, but GitHub reports `CONFLICTING` / `DIRTY` after PR #1 changed the same area. It needs a rebase or conflict resolution before it can enter land-stage.
+2. Open issues: none.
+3. Cleanup: no stale worktrees or stale branches. The remaining `fix/typo-secnod` branch belongs to open PR #2.
+hook: Stop
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Blocked
+hook: Stop Failed
+**Deciding output formatting approach**
+codex
+
+hook: Stop
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+hook: Stop Failed
+tokens used
+114,304
+

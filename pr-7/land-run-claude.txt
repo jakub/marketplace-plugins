@@ -1,0 +1,30 @@
+PR #2 landed.
+
+**gates**
+- resolve: `#2` from the command argument, OPEN, not draft, base `main`, head `399e9f3`, `CLEAN`/`MERGEABLE`.
+- linked issues: none. `closingIssuesReferences` empty, branch `fix/typo-secnod` carries no issue number, no closing phrase in title or body, no bare mentions. Nothing to recover, so nothing to ask.
+- stacked chain: base is `main`, and #2 was the only open PR, so no children to retarget.
+- CI: both green. Macroscope correctness check passed in 14s against `399e9f3`; CodeRabbit status context SUCCESS. Cross-read with `gh pr checks` agreed. No flake allowance or rerun valve needed.
+- threads: zero review threads, `hasNextPage` false. Nothing to reply to or resolve.
+- escape hatch: no `## follow-up draft` comment.
+
+**merge**
+- Arming clear: `autoMergeRequest` null, no branch protection, no rulesets, no merge queue.
+- `gh pr merge 2 --squash --match-head-commit 399e9f36...` → verified `state: MERGED`, squash commit `7b9d43b`, `autoMergeRequest` still null.
+
+**cleanup**
+- Remote `fix/typo-secnod` deleted.
+- Main fast-forwarded `e9835a1..7b9d43b` in `/tmp/flow-land-scratch`. Single checkout, no issue worktree existed to retire.
+- Local `fix/typo-secnod` deleted with `-D` (was `399e9f3`), then `fetch --prune`.
+- Evidence: origin has only `refs/heads/main`, so no `flow-evidence` branch and nothing SHA-pinned to verify.
+- No `AGENTS.md`, so no repo teardown. Project memory dir is empty, so no stamp.
+
+**two things worth your attention**
+
+CodeRabbit reported SUCCESS while its own PR comment says it never ran the review. Rate limit, all 4 included reviews spent, next one due ~05:02Z. So the green light is a bot declining to block, not a bot that looked. Macroscope did actually read `399e9f3`. For a one-word README typo I called that fine; on real code I'd want to know a self-reported-green reviewer had skipped.
+
+`AskUserQuestion` is not available in this session at all, despite the profile declaring it as the human-choice binding for `linked-issue-recovery` and `escape-hatch-ack` and listing it in `allowed-tools`. This PR tripped neither gate so the stage ran clean, but a PR with ambiguous issue candidates or a follow-up draft would have hit a gate with no way to execute it. Griped.
+
+**survey**
+
+Nothing. Zero open PRs, zero open issues, one worktree on current main, no stale branches. The scratch repo is empty of work. Next move is whatever you want to feed `/flow:prep`.
