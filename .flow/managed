@@ -1,0 +1,2 @@
+This file opts the repository into flow's managed-repo enforcement: flow's guards treat merges here as theirs to gate.
+Concretely, the Codex publish guard denies any command that looks like a pull request merge, and plugins/flow/scripts/land-merge.mjs is the only path that lands one.

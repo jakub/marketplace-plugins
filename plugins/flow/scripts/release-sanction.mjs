@@ -4,10 +4,10 @@
 //
 // A Codex session cannot be asked to confirm a merge from a hook, so it asks you instead:
 // repository, branch, head SHA, and which pull request it wants to land. You look at what is
-// about to ship, run `approve` here in your own terminal, and the session's publish guard
-// lets exactly that merge through, once, for the next few minutes and only while the head
-// still matches. Anything else, including the same merge after one more commit, is denied
-// and comes back to you.
+// about to ship and run `approve` here in your own terminal. The session then runs
+// scripts/land-merge.mjs, which claims what you wrote, checks it against the pull request as
+// GitHub reports it, and merges once if every fact still matches. Anything else, including
+// the same merge after one more commit, is refused and comes back to you.
 //
 // Merging is all this approves. There is no --op that lets a session push to crates.io, npm,
 // PyPI or RubyGems, because none of those can be taken back afterwards.
@@ -37,8 +37,8 @@ const USAGE = `flow release sanction - your approval of one specific merge.
   release-sanction.mjs revoke
 
 Operation ids you can approve: ${SANCTIONABLE_OPERATION_IDS.join(', ')}
---pr is required for ${MERGE_OPERATION_ID}: the guard checks the merge command names that
-pull request and no other, passes --squash, and passes --match-head-commit <the sha above>.
+--pr is required for ${MERGE_OPERATION_ID}: the approval covers one pull request, and
+land-merge.mjs refuses to merge any other number with it.
 
 Run this yourself, in your own terminal, outside the agent session. The session's publish
 guard denies any command that writes the sanction file or runs this helper, because a model
@@ -46,10 +46,10 @@ that can approve its own release is not being gated at all.
 
 The sanction file, which FLOW_STATE moves:
   ${sanctionPath(process.env)}
-It is readable only by you and expires after ${MAX_TTL_MINUTES} minutes at the latest. The
-guard claims the file before it checks anything, so an attempt spends the approval whether
-it passes or fails - a merge that gets denied does not leave a sanction behind, and you
-approve again once you have seen why it failed.`
+It is readable only by you and expires after ${MAX_TTL_MINUTES} minutes at the latest.
+land-merge.mjs claims the file before it checks anything, so an attempt spends the approval
+whether it passes or fails - a merge that gets refused does not leave a sanction behind, and
+you approve again once you have seen why it failed.`
 
 const die = (message) => {
   process.stderr.write(`${message}\n\n${USAGE}\n`)
@@ -145,6 +145,6 @@ process.stdout.write(
   `${sanction.branch} at ${sanction.head.slice(0, 12)}\n` +
   `  sanction: ${path}\n` +
   `  expires:  ${sanction.expiresAt} (${ttl} minutes)\n` +
-  '  one attempt, and only while the head still matches. A denied attempt spends it too.\n' +
-  (pr === null ? '' : `  the session's command must be: gh pr merge ${pr} --squash --match-head-commit ${sanction.head}\n`),
+  '  one attempt, and only while the head still matches. A refused attempt spends it too.\n' +
+  (pr === null ? '' : `  the session's command is: node <flow>/scripts/land-merge.mjs ${pr}\n`),
 )

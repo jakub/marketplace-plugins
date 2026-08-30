@@ -58,7 +58,8 @@ events, and recovery. A Codex App Server worker is the Phase 1 backend. See
 | Flow charter | Two `SessionStart` commands, split below Claude's output cap | One ordered `SessionStart` command with a 5,000-token inline limit | Hand-authored `charter/charter.md` |
 | Flow Bash guards | `PreToolUse` on `Bash` | `PreToolUse` on `Bash` | Existing no-backlog and Git guards; publication policy in `lib/hook-policy.mjs` |
 | Flow protected files | `file_path` from Edit/Write input | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
-| Flow publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
+| Flow registry publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
+| Flow pull request merge | Ask-gated `gh pr merge --squash` in the session | Denied in a repo with a committed `.flow/managed` marker; `scripts/land-merge.mjs` performs the merge against a human-written release sanction | `releaseVerdict()` in `lib/release-sanction.mjs`; `mergeShapes()` classifies the denied commands |
 | Flow land stage | `/flow:land` is an alias that reads `skills/land-stage/profiles/claude.md`, then the skill | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |

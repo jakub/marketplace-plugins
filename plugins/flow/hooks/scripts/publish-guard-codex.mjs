@@ -1,43 +1,49 @@
 #!/usr/bin/env node
-// Codex publish guard. Two jobs, and they are not the same job.
+// Codex publish guard. Three jobs, and they are not the same job.
 //
-// 1. Codex cannot turn a PreToolUse hook result into an approval prompt: as of Codex CLI
-//    0.149.1 an unsupported `ask` reads as a hook failure and the command runs anyway. So
-//    publication fails closed here instead of asking.
-// 2. A gate with no way through means a Codex session can never land anything, so there
-//    is exactly one way through, and it is narrow. A human writes a release sanction
-//    outside the session with scripts/release-sanction.mjs, naming a repository, a branch,
-//    a head SHA, and the pull request they approve merging. This guard re-derives those
-//    facts from git at the moment of the call, hands them to lib/release-sanction.mjs, and
-//    lets exactly that merge past exactly once. This is the cron pattern: the model
-//    proposes, deterministic code re-derives the conditions and decides.
+// 1. Registry publication. crates.io, npm, PyPI and RubyGems have no real undo, and Codex
+//    cannot turn a PreToolUse hook result into an approval prompt: as of Codex CLI 0.149.1 an
+//    unsupported `ask` reads as a hook failure and the command runs anyway. So publication
+//    fails closed here instead of asking, everywhere, with no way through from inside a
+//    session. The human types it in their own terminal.
 //
-// Publishing to a public registry is not on that path at all. crates.io, npm, PyPI and
-// RubyGems have no real undo, so they stay a command the human types themselves, and a
-// sanction file that claims to cover one is refused rather than honored.
+// 2. Pull request merges, in a repository that opts in. A repository opts in by committing
+//    a `.flow/managed` file, which is how flow tells "a repo whose merges I am responsible
+//    for" from "some clone the session happens to be sitting in". In an opted-in repository
+//    every merge command this guard can recognize is denied and the denial names
+//    scripts/land-merge.mjs, the executor that performs the merge after re-deriving every
+//    fact from GitHub. In any other repository this guard does no merge gating at all.
+//
+// 3. The model may not write its own approval. The commands that would obviously produce a
+//    release sanction are denied here, and the file itself is protected from the editor tools
+//    by the protected-file rule.
+//
+// What changed, and why the classifier below is allowed to be crude. This guard used to
+// authorize merges: it parsed `gh pr merge` out of the command, matched its flags against the
+// sanction, and let one exact spelling through. That put a shell-text parser on the trust
+// boundary, where one spelling read differently from bash is a merge nobody approved. Now the
+// classification is a tripwire, not a gate. Over-matching costs a human one rephrase. The
+// executor is what actually decides, and it takes a pull request number and nothing else, so
+// no amount of clever quoting turns a denial into a merge.
 //
 // Trust posture, stated plainly rather than implied. Everything here runs as one uid, so a
-// model with a shell can in principle produce the sanction file through some path this
-// guard does not pattern-match. The commands that obviously write it are denied, the file
-// is protected from the editor tools, and the sanction is spent on use, which is a
-// guardrail against the unattended mistake and the injected instruction. It is not a
-// sandbox, and a credential-owning service on a single-uid homelab would be theater.
+// model with a shell can in principle move a merge past this classifier. That is why the
+// merge itself no longer trusts anything this file concluded. What the deny buys is that the
+// ordinary path runs through the executor, where the approval is claimed once and checked
+// against live state. It is not a sandbox, and a credential-owning service on a single-uid
+// homelab would be theater.
 //
-// Two limits worth knowing before you trust a pass. The facts come from the session's cwd,
-// so a publication command that changes directory first is still checked against the
-// session's repository - the sanction's repo binding is as good as the session being in the
-// repository it names. And equality is checked against the head as it stands now, not
-// against the head's history.
-//
-// Ordinary work must not notice this file. Commands that publish nothing take one regex
-// pass and no git calls; only a publication command pays for the four git reads.
+// Ordinary work must not notice this file. Commands that publish nothing take a few passes
+// over their own text and start no subprocess; only a merge-shaped command pays for the one
+// `git rev-parse`.
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, renameSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-import { publishOperationsStrict, registryReason } from '../../lib/hook-policy.mjs'
-import { releaseVerdict, sanctionPath } from '../../lib/release-sanction.mjs'
+import { mergeShapes, publishOperationsStrict, registryReason } from '../../lib/hook-policy.mjs'
+import { sanctionPath } from '../../lib/release-sanction.mjs'
 import { preToolDeny } from './wire.mjs'
 
 const REGISTRY_TAIL =
@@ -46,15 +52,12 @@ const REGISTRY_TAIL =
 const REGISTRY_MANUAL =
   'A release sanction does not cover this and never will: registry publication stays manual. ' +
   'Ask the human to run it in their own terminal.'
-const MERGE_HEADLINE =
-  'This merges a pull request on GitHub, which moves the branch everyone else builds on. ' +
-  'Confirm the head SHA and the merge method are what you mean to land.'
-const MERGE_TAIL =
-  'Codex PreToolUse hooks cannot request confirmation, so the merge is blocked here. ' +
-  'Land it yourself, or ask for a release sanction covering this exact head.'
+
+const PLUGIN_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
+const EXECUTOR = join(PLUGIN_ROOT, 'scripts', 'land-merge.mjs')
+const MANAGED_MARKER = join('.flow', 'managed')
 
 const SANCTION = sanctionPath(process.env)
-const stamp = () => new Date().toISOString().replace(/[:.]/g, '-')
 
 // The model may not write its own approval. These are the spellings that would do it
 // through a shell: touching the sanction file by resolved path or by name, and running
@@ -67,67 +70,38 @@ const selfApproval = (command) => {
   return null
 }
 
-// The four facts a sanction is checked against, read from the session's repository. Every
-// git read is bounded twice over. This hook runs before each Bash call, so one hung git
-// would stall the session; and hooks.json gives the whole hook 10 seconds, after which a
-// timed-out hook is a hook that decided nothing. Four reads at two seconds fit inside that
-// with room to spare, and a git that cannot answer in two seconds returns null, which denies.
-const repoFacts = (cwd) => {
-  const git = (...args) => {
-    try {
-      return execFileSync('git', ['-C', cwd, ...args], {
-        encoding: 'utf8',
-        timeout: 2000,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }).trim()
-    } catch {
-      return null
-    }
-  }
-  const originUrl = git('remote', 'get-url', 'origin')
-  const status = git('status', '--porcelain')
-  return {
-    slug: originUrl ? (originUrl.replace(/\.git$/, '').match(/[:/]([^/:]+\/[^/]+)$/)?.[1] ?? null) : null,
-    branch: git('symbolic-ref', '--quiet', '--short', 'HEAD'),
-    head: git('rev-parse', 'HEAD'),
-    dirty: status === null ? null : status !== '',
-  }
-}
-
 /**
- * Claim the sanction, then check it. The obvious order is the wrong one: verify first and
- * rename afterwards, and two Bash calls can read the same file, both pass, and both be
- * allowed before either rename lands. Renaming first makes the rename the lock, because
- * exactly one process can move a file. Whoever gets it holds the only copy and checks that
- * copy; everyone else is denied on the spot.
+ * Does this session's repository opt into flow's merge enforcement?
  *
- * The cost is that a claim is spent whatever the verdict says. A merge that fails a
- * predicate does not put the approval back, and the human writes a fresh one. That is the
- * safe direction to fail: the alternative is an approval that survives being wrong.
+ * One bounded `git rev-parse`, and only for a command that already looks like a merge. The
+ * hook runs before every Bash call and hooks.json gives the whole hook 10 seconds, so a git
+ * that cannot answer in two seconds is treated as an answer of "managed": failing closed here
+ * costs a denial the human can resolve, and failing open costs an unreviewed merge.
  */
-const spendSanction = ({ command, operations, cwd }) => {
-  const claim = `${SANCTION}.claim.${process.pid}.${stamp()}`
+const isManagedRepo = (cwd) => {
   try {
-    renameSync(SANCTION, claim)
-  } catch (error) {
-    return error?.code === 'ENOENT'
-      ? 'no release sanction is on file (the human writes one with scripts/release-sanction.mjs), or another command claimed it first'
-      : `the sanction could not be claimed (${String(error?.code || error?.message || error).slice(0, 80)}), and an approval that cannot be spent is not honored`
+    const root = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+    return root === '' ? true : existsSync(join(root, MANAGED_MARKER))
+  } catch {
+    return true
   }
-
-  const tombstone = (verdict) => {
-    // Bookkeeping, not enforcement: the claim path is already outside the path this guard
-    // reads, so the approval is spent either way. The rename just says how it went.
-    try { renameSync(claim, join(dirname(SANCTION), `release-sanction.${verdict}.${stamp()}`)) } catch {}
-  }
-
-  let sanction = null
-  try { sanction = JSON.parse(readFileSync(claim, 'utf8')) } catch { sanction = null }
-
-  const verdict = releaseVerdict({ operations, command, sanction, repo: repoFacts(cwd), nowMs: Date.now() })
-  tombstone(verdict.allowed ? 'consumed' : 'denied')
-  return verdict.allowed ? null : `${verdict.reason}. That attempt spent the sanction, so this needs a fresh one`
 }
+
+const mergeDenial = (shapes) =>
+  `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
+  'merge enforcement with a committed .flow/managed file. Merging by hand is denied here whatever the ' +
+  'command spells, because nothing on this host can put a confirmation prompt in front of the human at the ' +
+  `moment the command runs.\nThe merge runs through the executor instead: \`node ${EXECUTOR} <pr-number>\`. ` +
+  'It takes the pull request number and nothing else, and re-derives the repository, the head SHA, the ' +
+  'state, the draft flag and the base branch from GitHub before it merges anything.\nThe executor needs a ' +
+  "release sanction, which is the human's approval of one specific head. Tell them the repository slug, the " +
+  'branch, the full 40-character head SHA and the pull request number, and ask them to run ' +
+  '`node <flow>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> --head <sha> ' +
+  '--pr <number> --op gh-pr-merge` in their own terminal. Relay what you need; do not run it yourself.'
 
 const decide = (input) => {
   const command = input?.tool_input?.command
@@ -143,31 +117,25 @@ const decide = (input) => {
       'branch, head SHA, pull request number, and operation you need approved.'
   }
 
-  const operations = publishOperationsStrict(command)
-  if (operations.length === 0) return null
-
-  // A registry publication keeps the exact wording this guard has always used, and it does
-  // not reach the sanction path at all - no claim, no file read, nothing to spend.
-  const registry = registryReason(operations)
+  // Registry publication is denied everywhere, opted-in repository or not. This is the wording
+  // the guard has always used, and it reaches no state and no subprocess.
+  const registry = registryReason(publishOperationsStrict(command))
   if (registry) return `${registry} ${REGISTRY_TAIL}\n${REGISTRY_MANUAL}`
 
-  const refuse = (why) =>
-    `${MERGE_HEADLINE} ${MERGE_TAIL}\nRelease sanction: ${why}. The human approves a merge by running ` +
-    '`node <flow>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> ' +
-    '--head <sha> --pr <number> --op gh-pr-merge` in their own terminal; relay what you need, ' +
-    'do not run it yourself.'
+  const shapes = mergeShapes(command)
+  if (shapes.length === 0) return null
 
-  // Scheduled jobs read untrusted text and nobody is watching them, so the release path
-  // is simply off there. An injected instruction cannot set this variable, the same
-  // reasoning git-guard's cron mode rests on. Checked before the claim: an unattended job
-  // must not be able to burn a sanction the human wrote for their own session.
+  // Scheduled jobs read untrusted text and nobody is watching them, so merging is simply off
+  // there, opted-in repository or not. This is the rule the guard has always applied to
+  // unattended jobs, and the executor refuses under the same variable.
   if (process.env.FLOW_CRON_JOB) {
-    return refuse('scheduled jobs cannot publish at all, and a sanction does not change that')
+    return `flow: this looks like a pull request merge (${shapes.join('; ')}), and scheduled jobs do not ` +
+      'merge anything. FLOW_CRON_JOB is set, which means nobody is watching this run. Leave the pull ' +
+      'request for a human session to land.'
   }
 
   const cwd = typeof input?.cwd === 'string' && input.cwd !== '' ? input.cwd : process.cwd()
-  const denial = spendSanction({ command, operations, cwd })
-  return denial === null ? null : refuse(denial)
+  return isManagedRepo(cwd) ? mergeDenial(shapes) : null
 }
 
 let raw = ''

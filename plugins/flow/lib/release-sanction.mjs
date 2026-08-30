@@ -1,26 +1,33 @@
 // Release sanction policy: the deterministic half of flow's SHA-bound release path.
 //
 // A human approves ONE merge - this repository, this branch, this head SHA, this pull
-// request number - by writing a sanction file with scripts/release-sanction.mjs. When a
-// Codex session then runs the merge command, its publish guard re-derives the same facts
-// from git and asks this module whether they still match. They usually do not, and that is
-// the point: any movement of the branch retires the approval.
+// request number - by writing a sanction file with scripts/release-sanction.mjs. The only
+// thing that can spend it is scripts/land-merge.mjs, which claims the file, reads the pull
+// request's live state out of GitHub, and asks this module whether the approval still
+// describes what is about to land. It usually does not, and that is the point: one more
+// commit on the branch retires the approval.
+//
+// This module never reads the command that asked for the merge. It used to, and matching a
+// human-written approval against a shell string was the weakest link in the whole path: the
+// guard had to out-parse every spelling a shell accepts, forever, and one miss was a merge
+// nobody approved. Now the caller performs the merge itself with an argv array, so there is
+// no command text to be fooled by, and the facts below come from GitHub rather than from
+// whatever the session typed.
 //
 // A merge is the only thing a sanction can authorize. Publishing to crates.io, npm, PyPI or
 // RubyGems is refused here whatever the file says, because there is no undo to fall back on
 // when the approval turns out to have been for something else.
 //
-// Nothing here reads a file, runs git, or looks at the clock. The caller gathers the facts
-// and passes them in, so the policy has one exit shape and can be tested without a
-// repository. Parsing the command it was handed is the one exception, and it is still pure:
-// the same string in gives the same verdict out.
+// Nothing here reads a file, runs a command, or looks at the clock. The caller gathers the
+// facts and passes them in, so the policy is pure and can be tested without a repository, a
+// network, or a GitHub account.
 //
-// What an allow proves, stated so nobody reads more into it. Current-head equality means
-// the head matches the approved SHA at the moment of the call. It does not prove the
+// What an allow proves, stated so nobody reads more into it. Head equality means the pull
+// request's head matches the approved SHA at the moment of the call. It does not prove the
 // branch never moved in between: a head rewritten and restored verifies exactly like an
-// untouched one. What it does buy is that ordinary movement - one more commit, a rebase,
-// a switch to another branch, a dirty tree - invalidates the approval and forces a fresh
-// human look at what is about to ship.
+// untouched one. What it does buy is that ordinary movement - one more commit, a rebase, a
+// retargeted base, a converted draft - invalidates the approval and forces a fresh human
+// look at what is about to ship.
 //
 // Deny by default. Every predicate must hold, and anything absent, malformed, or of the
 // wrong type is a denial that names the predicate which failed.
@@ -28,7 +35,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { isRegistryOperation, mergeCommandFacts } from './hook-policy.mjs'
+import { isRegistryOperation } from './hook-policy.mjs'
 
 /** Bumped whenever the file's meaning changes. A sanction written for another version is refused, never guessed at. */
 export const SANCTION_SCHEMA_VERSION = 1
@@ -71,81 +78,26 @@ const millis = (v) => {
   return Number.isFinite(ms) ? ms : null
 }
 
-// Does the command merge the pull request the sanction names, and only that one?
-//
-// A sanction used to authorize "a merge, on this branch, at this head", which is weaker than
-// it reads: one approval, one head, but any pull request the session cared to name, in any
-// repository `gh` could be pointed at. So the binding is spelled out here. One publication
-// operation, one `gh pr merge`, one target, and that target is the sanctioned number. The
-// command must pass `--squash` and `--match-head-commit <sanctioned head>`, which makes
-// GitHub itself refuse the merge if the branch moved between approval and call. That is a
-// second check on top of the head comparison in this file, and it is the one that runs on
-// GitHub's side, after this guard has already said yes. Anything that redirects the merge
-// somewhere else, or hands it powers the approval did not, denies.
-//
-// Returns the reason it does not bind, or null when it binds.
-function mergeBinding({ command, operations, sanction }) {
-  if (operations.length !== 1) {
-    return `the command performs ${operations.length} publication operations (${operations.join(', ')}) and a merge is approved on its own`
-  }
-  if (!Number.isInteger(sanction.prNumber) || sanction.prNumber <= 0) {
-    return `the sanction names no pull request number (found ${show(sanction.prNumber)}); approve with --pr <number>`
-  }
-  if (!isText(command)) return 'the merge command could not be read back, so it cannot be matched to the sanction'
-
-  const { invocations, disqualifiers } = mergeCommandFacts(command)
-  if (disqualifiers.length > 0) {
-    return `the merge command uses ${disqualifiers.join(', ')}, and a sanctioned merge takes none of those - they change which pull request lands or what the merge is allowed to override`
-  }
-  if (invocations.length !== 1) {
-    return invocations.length === 0
-      ? 'the command was classified as a merge but no `gh pr merge` could be parsed out of it'
-      : `the command runs ${invocations.length} merges, and a sanction approves exactly one`
-  }
-
-  const [merge] = invocations
-  if (merge.targets.length !== 1) {
-    return merge.targets.length === 0
-      ? `the merge names no pull request, so it would take whatever the current branch resolves to; name #${sanction.prNumber} explicitly`
-      : `the merge names ${merge.targets.length} targets (${merge.targets.map(show).join(', ')}) and the sanction covers #${sanction.prNumber}`
-  }
-  const target = merge.targets[0]
-  const url = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/.exec(target)
-  const targetNumber = url ? Number(url[2]) : (/^#?\d+$/.test(target) ? Number(target.replace('#', '')) : null)
-  if (url && url[1] !== sanction.repo) {
-    return `the merge points at ${show(url[1])} and the sanction is for ${show(sanction.repo)}`
-  }
-  if (targetNumber === null) {
-    return `the merge target ${show(target)} is not a pull request number, and a sanction is bound to #${sanction.prNumber}`
-  }
-  if (targetNumber !== sanction.prNumber) {
-    return `the merge is for #${targetNumber} and the sanction covers #${sanction.prNumber}`
-  }
-
-  if (!merge.squash) return 'the merge does not pass --squash, and the sanctioned merge method is a squash'
-  if (!isSha(merge.matchHead)) {
-    return `the merge passes no readable --match-head-commit (found ${show(merge.matchHead)}); it takes the full 40-character sanctioned SHA`
-  }
-  if (merge.matchHead !== sanction.head) {
-    return `the merge passes --match-head-commit ${merge.matchHead.slice(0, 12)} and the sanction approved ${sanction.head.slice(0, 12)}`
-  }
-  return null
-}
-
 /**
- * Decide whether a sanction authorizes this publication right now.
+ * Decide whether a sanction authorizes merging this pull request right now.
  *
  * @param {object} args
- * @param {string[]} args.operations op ids the command performs, from publishOperationsStrict()
- * @param {string} args.command the command as the guard received it, parsed here to check that
- *        the merge it runs is the merge the sanction names
+ * @param {string[]} args.operations op ids the caller is about to perform. The executor passes
+ *        exactly [MERGE_OPERATION_ID]; anything else is checked and refused here.
  * @param {object|null} args.sanction the parsed sanction file, or null when absent or unreadable
- * @param {{slug: string|null, branch: string|null, head: string|null, dirty: boolean|null}} args.repo
- *        facts read from git at the moment of the call; null for anything git could not answer
+ * @param {object} args.pr live facts, read from GitHub rather than from the session
+ * @param {string|null} args.pr.slug owner/name derived from the origin remote
+ * @param {number|null} args.pr.number the pull request the caller was asked to merge
+ * @param {string|null} args.pr.branch headRefName
+ * @param {string|null} args.pr.head headRefOid
+ * @param {string|null} args.pr.state OPEN, CLOSED or MERGED
+ * @param {boolean|null} args.pr.isDraft isDraft
+ * @param {string|null} args.pr.base baseRefName
+ * @param {string|null} args.pr.defaultBranch the repository's default branch
  * @param {number} args.nowMs wall clock at verification time
  * @returns {{allowed: boolean, reason: string}} reason names the failed predicate on a denial
  */
-export function releaseVerdict({ operations, command, sanction, repo, nowMs } = {}) {
+export function releaseVerdict({ operations, sanction, pr, nowMs } = {}) {
   const deny = (reason) => ({ allowed: false, reason })
 
   if (!Array.isArray(operations) || operations.length === 0) {
@@ -162,39 +114,66 @@ export function releaseVerdict({ operations, command, sanction, repo, nowMs } = 
   }
 
   if (!sanction || typeof sanction !== 'object' || Array.isArray(sanction)) {
-    return deny('no release sanction is on file (the human writes one with scripts/release-sanction.mjs)')
+    return deny('the release sanction could not be read as an object')
   }
   if (sanction.schema !== SANCTION_SCHEMA_VERSION) {
-    return deny(`the sanction declares schema ${show(sanction.schema)} and this guard reads schema ${SANCTION_SCHEMA_VERSION}`)
+    return deny(`the sanction declares schema ${show(sanction.schema)} and this reader is schema ${SANCTION_SCHEMA_VERSION}`)
   }
 
-  if (!repo || typeof repo !== 'object') return deny('no repository facts were gathered to check the sanction against')
-  if (!isText(repo.slug)) return deny('the current repository has no readable owner/name slug, so the sanction cannot be matched to it')
-  if (!isText(sanction.repo)) return deny(`the sanction names no repository (found ${show(sanction.repo)})`)
-  if (sanction.repo !== repo.slug) return deny(`the sanction is for repository ${show(sanction.repo)} and this is ${show(repo.slug)}`)
+  if (!pr || typeof pr !== 'object') return deny('no pull request facts were gathered to check the sanction against')
 
-  if (!isText(repo.branch)) return deny('HEAD is not on a branch here, and a sanction approves a named branch')
+  if (!isText(pr.slug)) return deny('this directory has no readable owner/name slug, so the sanction cannot be matched to it')
+  if (!isText(sanction.repo)) return deny(`the sanction names no repository (found ${show(sanction.repo)})`)
+  if (sanction.repo !== pr.slug) return deny(`the sanction is for repository ${show(sanction.repo)} and this is ${show(pr.slug)}`)
+
+  if (!Number.isInteger(pr.number) || pr.number <= 0) {
+    return deny(`${show(pr.number)} is not a pull request number`)
+  }
+  if (!Number.isInteger(sanction.prNumber) || sanction.prNumber <= 0) {
+    return deny(`the sanction names no pull request number (found ${show(sanction.prNumber)}); approve with --pr <number>`)
+  }
+  if (sanction.prNumber !== pr.number) {
+    return deny(`the sanction covers #${sanction.prNumber} and this run was asked to merge #${pr.number}`)
+  }
+
+  if (!isText(pr.branch)) return deny(`#${pr.number} has no readable head branch name`)
   if (!isText(sanction.branch)) return deny(`the sanction names no branch (found ${show(sanction.branch)})`)
-  if (sanction.branch !== repo.branch) return deny(`the sanction is for branch ${show(sanction.branch)} and this is ${show(repo.branch)}`)
+  if (sanction.branch !== pr.branch) {
+    return deny(`the sanction is for branch ${show(sanction.branch)} and #${pr.number} is from ${show(pr.branch)}`)
+  }
 
   if (!isSha(sanction.head)) return deny(`the sanction head ${show(sanction.head)} is not a 40-character lowercase SHA`)
-  if (!isSha(repo.head)) return deny('the current head could not be read as a 40-character lowercase SHA')
-  if (sanction.head !== repo.head) {
-    return deny(`the head has moved: the sanction approved ${sanction.head.slice(0, 12)} and this tree is at ${repo.head.slice(0, 12)}`)
+  if (!isSha(pr.head)) return deny(`the head of #${pr.number} did not read back as a 40-character lowercase SHA (found ${show(pr.head)})`)
+  if (sanction.head !== pr.head) {
+    return deny(`the head has moved: the sanction approved ${sanction.head.slice(0, 12)} and #${pr.number} is now at ${pr.head.slice(0, 12)}`)
   }
 
-  if (repo.dirty !== false) {
-    return deny(repo.dirty === true
-      ? 'the working tree is dirty, so what would ship is not what was approved'
-      : 'the working tree state could not be read, so it cannot be shown clean')
+  // Three facts about the pull request itself, none of which a session can talk this module
+  // out of. A closed or already merged one has nothing to land, a draft is by definition not
+  // finished, and a base other than the default branch means the merge would land somewhere
+  // the human was not shown when they approved it.
+  if (pr.state !== 'OPEN') return deny(`#${pr.number} is ${show(pr.state)} on GitHub, and only an open pull request can be merged`)
+  if (pr.isDraft !== false) {
+    return deny(pr.isDraft === true
+      ? `#${pr.number} is a draft; mark it ready for review before it lands`
+      : `the draft status of #${pr.number} could not be read, so it cannot be shown ready`)
+  }
+  if (!isText(pr.defaultBranch)) return deny('the repository default branch could not be read, so the merge target cannot be checked')
+  if (!isText(pr.base)) return deny(`the base branch of #${pr.number} could not be read`)
+  if (pr.base !== pr.defaultBranch) {
+    return deny(`#${pr.number} targets ${show(pr.base)} and the default branch is ${show(pr.defaultBranch)}; a sanctioned merge lands on the default branch`)
   }
 
-  if (!Array.isArray(sanction.operations) || !sanction.operations.every(isText)) {
+  if (!Array.isArray(sanction.operations) || sanction.operations.length === 0 || !sanction.operations.every(isText)) {
     return deny('the sanction lists no operations, so it authorizes nothing')
   }
   const sanctionedRegistry = sanction.operations.filter(isRegistryOperation)
   if (sanctionedRegistry.length > 0) {
     return deny(`the sanction claims to cover ${sanctionedRegistry.map(show).join(', ')}, and no sanction covers registry publication`)
+  }
+  const beyondMerge = sanction.operations.filter((op) => op !== MERGE_OPERATION_ID)
+  if (beyondMerge.length > 0) {
+    return deny(`the sanction also covers ${beyondMerge.map(show).join(', ')}, and a merge is approved on its own`)
   }
   const missing = operations.filter((op) => !sanction.operations.includes(op))
   if (missing.length > 0) {
@@ -221,13 +200,8 @@ export function releaseVerdict({ operations, command, sanction, repo, nowMs } = 
     return deny(`the sanction covers ${show(sanction.issuedAt)} to ${show(sanction.expiresAt)}, more than 30 minutes; approval is good for one short window, not a standing permission`)
   }
 
-  if (operations.includes(MERGE_OPERATION_ID)) {
-    const bound = mergeBinding({ command, operations, sanction })
-    if (bound) return deny(bound)
-  }
-
   return {
     allowed: true,
-    reason: `sanction covers ${operations.join(', ')} on ${repo.slug} ${repo.branch} at ${repo.head.slice(0, 12)}`,
+    reason: `sanction covers ${operations.join(', ')} of #${pr.number} on ${pr.slug} ${pr.branch} at ${pr.head.slice(0, 12)}`,
   }
 }

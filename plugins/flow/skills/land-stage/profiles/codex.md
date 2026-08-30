@@ -61,31 +61,39 @@ it, so an exported variable does not count.
 
 ### gate: squash-merge
 
-The merge is release-sanction-gated, because nothing on this host can put a confirmation
-prompt in front of the human at the moment the command runs. The required command form is
-exactly this, on its own, with the literal 40-character SHA written out:
+You do not write the merge command. In a repository that carries a committed `.flow/managed`
+file, the publish guard denies every merge spelling it recognizes, because nothing on this
+host can put a confirmation prompt in front of the human at the moment a command runs. The
+merge runs through flow's executor instead:
 
 ```bash
-gh pr merge <pr> --squash --match-head-commit <sanctioned-head-sha>
+node <plugin-root>/scripts/land-merge.mjs <pr>
 ```
 
-`--match-head-commit` makes the merge fail if the branch head moved after the sanction was
-written, so the thing that merges is the thing the human sanctioned. The sanction is a file
-the human writes and the publish guard verifies; the model never writes, edits, or generates
-that file, and a missing sanction is a stop, not a prompt to create one.
+The ceremony, in order. Suspend the turn and give the human the repository slug, the branch,
+the full 40-character head SHA, the pull request number, and one line on what landing it
+changes. They approve it in their own terminal:
 
-Ask for the sanction by telling the human the repository slug, the branch, the full head SHA,
-and the PR number, so they can run `release-sanction.mjs approve --repo … --branch … --head …
---pr <number> --op gh-pr-merge`. The guard binds all four: a merge that names a different PR,
-drops `--squash`, drops or mismatches `--match-head-commit`, adds `-R`/`--repo`, `--admin`,
-`--auto` or `--delete-branch`, or runs a second publication in the same command, is denied.
-So is wrapping the merge in `bash -lc`, `eval`, or any other form that hides it in a string:
-the guard reads inside those and refuses what it finds there.
+```bash
+node <plugin-root>/scripts/release-sanction.mjs approve --repo <owner/name> --branch <branch> --head <sha> --pr <number> --op gh-pr-merge
+```
 
-One attempt is all a sanction buys. The guard claims the file before it checks anything, so a
-denied attempt spends the approval too - read the denial, fix the command, then ask for a new
-sanction. Everything else in the step is unchanged: no `--delete-branch`, and confirm
-`state == MERGED` by re-reading the PR afterwards.
+Never run that yourself. The guard denies it, and an approval the session can write approves
+nothing. A missing sanction is a stop, not a prompt to create one. Once the human says they
+have written it, run the executor.
+
+The executor takes the pull request number and nothing else, so there is no command form to
+get right. It claims the sanction first, then re-derives the repository slug from the origin
+remote and reads the head SHA, state, draft flag and base branch from GitHub. It refuses
+unless all of those match the approval and the pull request is open, ready for review, and
+targeting the default branch. Then it merges with `--squash` and `--match-head-commit
+<sanctioned head>`, which is GitHub's own re-check that the branch did not move, and re-reads
+the pull request to confirm `MERGED`. Its exit code is the gate: 0 with the merge confirmed,
+or 1 with one line on stderr naming what failed.
+
+One attempt is all a sanction buys, whatever the outcome. The claim happens before any check,
+so a refusal spends the approval too. Read the reason, fix what it names, then ask for a new
+sanction. Everything else in the step is unchanged: no `--delete-branch`.
 
 ### gate: issue-closure
 

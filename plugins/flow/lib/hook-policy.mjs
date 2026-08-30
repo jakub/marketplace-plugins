@@ -17,9 +17,10 @@ const BUILD_DIR = /(^|\/)(target|node_modules|dist|build|out|\.next|\.nuxt|\.ven
 // the wire format they are. The file name below is shared with lib/release-sanction.mjs.
 //
 // `kind` splits the two consumers. `registry` is the irreversible-publication set the
-// Claude ask-gate has always covered. `github` is the merge classification, which only
-// the Codex release path consumes - publishReason ignores it, so adding merge here does
-// not change what the Claude guard asks about.
+// Claude ask-gate has always covered. `github` names the merge so a release sanction has a
+// stable id to carry and the sanction helper has something to validate `--op` against.
+// publishReason ignores it, and the Codex merge deny reads mergeShapes() at the bottom of
+// this file rather than this table, so adding merge here changed no guard's answer.
 const PUBLISH = [
   { op: 'cargo-publish', kind: 'registry', re: /\bcargo\s+publish\b/, registry: 'crates.io', why: 'crates.io has no unpublish at all' },
   { op: 'npm-publish', kind: 'registry', re: /\bnpm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
@@ -54,8 +55,8 @@ export function protectedFileReason(file) {
 
   if (base === SANCTION_FILE) {
     return `flow: ${base} is human-written approval state. It records that a person looked at one ` +
-      'specific head SHA and said yes to publishing exactly that, and the release guard trusts ' +
-      'it on that basis. A model that can write this file can approve its own release, so it is ' +
+      'specific head SHA and said yes to publishing exactly that, and scripts/land-merge.mjs ' +
+      'merges on that basis. A model that can write this file can approve its own release, so it is ' +
       'only ever written by scripts/release-sanction.mjs, run by the human in their own terminal.'
   }
 
@@ -137,9 +138,9 @@ export function publishReason(command) {
 //
 // Everything above treats a quoted string as inert text, which is right for prose and wrong
 // for `bash -lc 'gh pr merge 12'`. There the quotes hold a command the shell will run, so
-// stripping them classifies a real merge as nothing at all. The rest of this file is the
-// release path's reader: when the command names a form that executes a string, the payload
-// of every quoted string is read as a command too.
+// stripping them classifies a real merge as nothing at all. The rest of this file reads
+// through that wrapper: when the command names a form that executes a string, the payload
+// of every quoted string is classified too.
 //
 // This is deliberately one-sided. Prose that sits inside an exec form classifies as
 // publication and gets denied, which costs a human one rephrase; the opposite mistake lands
@@ -152,19 +153,32 @@ const quotedPayloads = (text) =>
   [...String(text).matchAll(/'([^']*)'|"((?:\\.|[^"])*)"/g)].map((match) => match[1] ?? match[2] ?? '')
 
 /**
- * Every publication operation the command performs, including the ones hidden in a quoted
- * payload that a shell-execution form will run. Recursion terminates because a payload is
- * always shorter than the text it came out of.
+ * Run `classify` over the command, and over every quoted payload a shell-execution form would
+ * hand to a shell. Results are deduped in the order they are reached, so a classifier that
+ * returns op ids and one that returns English reasons both work. Recursion terminates because
+ * a payload is always shorter than the text it came out of.
+ *
+ * @param {string} command
+ * @param {(text: string) => string[]} classify
+ * @returns {string[]}
  */
-export function publishOperationsStrict(command) {
-  const ops = publishOperations(command)
-  if (EXEC_FORM.test(String(command))) {
-    for (const payload of quotedPayloads(command)) {
-      for (const op of publishOperationsStrict(payload)) if (!ops.includes(op)) ops.push(op)
-    }
+export function scanThroughShell(command, classify) {
+  const found = []
+  const add = (items) => {
+    for (const item of items) if (!found.includes(item)) found.push(item)
   }
-  return ops
+  add(classify(String(command)))
+  if (EXEC_FORM.test(String(command))) {
+    for (const payload of quotedPayloads(command)) add(scanThroughShell(payload, classify))
+  }
+  return found
 }
+
+/**
+ * Every publication operation the command performs, including the ones hidden in a quoted
+ * payload that a shell-execution form will run.
+ */
+export const publishOperationsStrict = (command) => scanThroughShell(command, publishOperations)
 
 // liveSegments destroys quoting, which is what its callers want and the opposite of what a
 // word-level parse needs. This splits on the same separators while leaving quoted text
@@ -203,74 +217,59 @@ function shellWords(segment) {
   return words
 }
 
-function releaseSegments(command) {
-  const segments = rawSegments(command)
-  if (EXEC_FORM.test(String(command))) {
-    for (const payload of quotedPayloads(command)) segments.push(...releaseSegments(payload))
+// --------------------------------------------------------------------- the merge tripwire
+//
+// This used to be an authorization boundary. The Codex guard parsed the merge command word
+// by word, matched every flag against a human-written sanction, and let the one approved
+// spelling through. Reading shell text well enough to authorize on it is not a fight this
+// code can win, and losing it once lands a merge nobody approved.
+//
+// So the merge no longer happens through a command the model writes. In a repo that opts in
+// with a committed `.flow/managed` file, the Codex guard denies every merge shape it can
+// recognize, and scripts/land-merge.mjs performs the merge after re-deriving the repository,
+// the pull request, its head, its state and its base from GitHub itself. That makes the
+// functions below a coarse tripwire whose job is to catch the ordinary spellings and say
+// where the executor is.
+//
+// Over-matching is the cheap mistake here: a false positive costs one rephrase. The one thing
+// these must never match is the executor's own invocation, which names no merge surface at
+// all, because a tripwire that fires on the way out is a gate with nothing behind it.
+
+const isGh = (word) => String(word).split('/').pop() === 'gh'
+
+// One rendering of one command. `gh` has to be a word, and the merge has to be in its
+// arguments, so `git commit -m "gh pr merge later"` is the prose it is.
+function mergeShapesIn(text) {
+  const found = []
+  const add = (reason) => { if (!found.includes(reason)) found.push(reason) }
+  for (const segment of rawSegments(text)) {
+    const words = shellWords(segment)
+    const at = words.findIndex(isGh)
+    if (at === -1) continue
+    const args = words.slice(at + 1)
+    if (args.some((word, i) => word === 'pr' && args[i + 1] === 'merge')) add('it runs `gh pr merge`')
+    if (args.includes('api')) {
+      // The REST merge endpoint is `PUT /repos/{owner}/{repo}/pulls/{n}/merge`, and the
+      // branch-merge endpoint next to it ends in `/merges`. Both count.
+      if (args.some((word) => word.includes('/merge'))) add('it calls a GitHub merge endpoint through `gh api`')
+      if (/mergePullRequest/.test(segment)) add('it sends a mergePullRequest GraphQL mutation')
+    }
   }
-  return segments
-}
-
-// `gh pr merge` flags that take their value as the next word. Consuming them is what keeps
-// `--body 12` from reading as the pull request number.
-const MERGE_VALUE_FLAGS = new Set([
-  '-R', '--repo', '-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email',
-  '--match-head-commit',
-])
-
-// Flags that change which pull request merges, or how much authority the merge carries. A
-// sanction names one repository, one branch, one head and one pull request, so a merge that
-// carries any of these is not the merge that was approved.
-const DISQUALIFYING = [
-  { name: '--repo', test: (word) => word === '--repo' || word.startsWith('--repo=') || /^-R.*$/.test(word) },
-  { name: '--admin', test: (word) => word === '--admin' },
-  { name: '--auto', test: (word) => word === '--auto' },
-  { name: '--delete-branch', test: (word) => word === '-d' || word === '--delete-branch' },
-]
-
-function parseMerge(words, start) {
-  const targets = []
-  let squash = false
-  let matchHead = null
-  for (let i = start; i < words.length; i++) {
-    const word = words[i]
-    if (word === '--') { targets.push(...words.slice(i + 1).filter((rest) => rest !== '')); break }
-    if (!word.startsWith('-')) { targets.push(word); continue }
-    const equals = word.indexOf('=')
-    const flag = equals === -1 ? word : word.slice(0, equals)
-    const inline = equals === -1 ? null : word.slice(equals + 1)
-    if (flag === '--squash' || flag === '-s') squash = true
-    else if (flag === '--match-head-commit') matchHead = inline === null ? (words[++i] ?? null) : inline
-    else if (inline === null && MERGE_VALUE_FLAGS.has(flag)) i++
-  }
-  return { targets, squash, matchHead }
+  return found
 }
 
 /**
- * Every `gh pr merge` the command runs, parsed into the facts a release sanction is checked
- * against, plus the flags anywhere in a merge segment that disqualify the whole command.
- * Quoted payloads under an exec form are parsed too, so `bash -lc 'gh pr merge 12'` is read
- * as the merge it is.
+ * Reasons this command looks like it merges a pull request, or `[]` when nothing in it does.
+ *
+ * Each command is read twice. Once with quoted text intact, because that is the text a shell
+ * would act on and it is where a quoted API path or GraphQL body lives. Once with quoted
+ * literals removed, the same rendering the publication table sees, because a quote that never
+ * closes parses differently in the two passes and only one of them has to notice.
  */
-export function mergeCommandFacts(command) {
-  const invocations = []
-  const disqualifiers = new Set()
-  for (const segment of releaseSegments(command)) {
-    const words = shellWords(segment)
-    // An environment assignment redirects `gh` as effectively as a flag does, and it is the
-    // one form that does not look like a flag at all.
-    for (const word of words) {
-      const env = /^(GH_REPO|GH_HOST)=/.exec(word)
-      if (env) disqualifiers.add(`a ${env[1]} assignment`)
-    }
-    const at = words.findIndex((word, i) =>
-      String(word).split('/').pop() === 'gh' && words[i + 1] === 'pr' && words[i + 2] === 'merge')
-    if (at === -1) continue
-    for (const word of words) {
-      for (const rule of DISQUALIFYING) if (rule.test(word)) disqualifiers.add(rule.name)
-    }
-    invocations.push(parseMerge(words, at + 3))
-  }
-  return { invocations, disqualifiers: [...disqualifiers] }
+export function mergeShapes(command) {
+  return scanThroughShell(command, (text) => [
+    ...mergeShapesIn(text),
+    ...mergeShapesIn(String(text).replace(/'[^']*'/g, ' ').replace(/"[^"]*"/g, ' ')),
+  ])
 }
 
