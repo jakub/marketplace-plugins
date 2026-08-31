@@ -56761,18 +56761,44 @@ ${body}${separator}</flow-profile>
 }
 
 // lib/seat-contract.mjs
+var CONTRACT_SECTIONS = [
+  "Containment",
+  "Synchronous execution",
+  "Scope and completion",
+  "Reporting"
+];
+var ATX = /^ {0,3}(#{1,6})(?:[ \t](.*))?$/;
+var SETEXT_UNDERLINE = /^ {0,3}(=+|-+)\s*$/;
+var atxText = (rest) => (rest ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim();
+function renderedHeadings(text) {
+  const lines = text.split("\n");
+  const found = [];
+  for (const [at2, line] of lines.entries()) {
+    const atx = ATX.exec(line);
+    if (atx) {
+      found.push({ at: at2, level: atx[1].length, text: atxText(atx[2]), line, form: line.startsWith("#") ? "ATX" : "indented ATX" });
+      continue;
+    }
+    const underline = SETEXT_UNDERLINE.exec(line);
+    const above = lines[at2 - 1];
+    if (!underline || above === void 0 || above.trim() === "") continue;
+    if (ATX.test(above) || SETEXT_UNDERLINE.test(above)) continue;
+    found.push({ at: at2 - 1, level: underline[1].startsWith("=") ? 1 : 2, text: above.trim(), line: above, form: "setext" });
+  }
+  return found.map((heading) => ({
+    ...heading,
+    canonical: heading.level === 2 && CONTRACT_SECTIONS.some((name) => heading.line === `## ${name}`)
+  }));
+}
+var isBoundary = (heading) => heading.level <= 2;
 function contractSection(text, heading) {
   const lines = text.split("\n");
   const start = lines.indexOf(`## ${heading}`);
   if (start === -1) return null;
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (lines[i].startsWith("## ")) {
-      end = i;
-      break;
-    }
-  }
-  return lines.slice(start, end).join("\n");
+  const next = renderedHeadings(text).find((found) => isBoundary(found) && found.at > start);
+  if (!next) return lines.slice(start).join("\n");
+  return `${lines.slice(start, next.at).join("\n")}
+`;
 }
 function universalContainment(text) {
   return contractSection(text, "Containment");

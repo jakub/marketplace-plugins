@@ -29,25 +29,87 @@ export const CONTRACT_SECTIONS = [
 
 const CONTEXT = 40
 
+// The heading grammar, mirrored from ATX_HEADING and SETEXT_UNDERLINE in
+// scripts/lib/conformance.mjs, which owns the same problem for stage bindings. Two spellings
+// render as a heading and a scan for `## ` at column one sees neither. An ATX heading may sit
+// up to three spaces in from the margin and may separate its # run from the text with a tab. A
+// setext heading is a line of text with nothing but - or = under it, also up to three spaces in,
+// and it carries no # at all.
+//
+// One deliberate difference from the source: the ATX pattern also accepts a bare `##` line with
+// nothing after it, which CommonMark renders as an empty level-2 heading. The stage engine only
+// asks where a section ends and can skip it. Here an unrecognized rendered heading is the whole
+// bug, so the grammar has to be at least as wide as the renderer.
+const ATX = /^ {0,3}(#{1,6})(?:[ \t](.*))?$/
+const SETEXT_UNDERLINE = /^ {0,3}(=+|-+)\s*$/
+
+// A trailing run of hashes closes an ATX heading and is not part of its text: `## Foo ##` is Foo.
+const atxText = (rest) => (rest ?? '').replace(/[ \t]+#+[ \t]*$/, '').trim()
+
+/**
+ * Every heading a markdown renderer would find, in file order.
+ *
+ * Each entry carries the line index it starts on, the heading level, the heading text, the raw
+ * line, and whether it is written in the one canonical form this contract allows, which is a
+ * level-2 ATX heading at column one with a single space and one of the four section names.
+ *
+ * A setext heading reports the index of its text line, not its underline, because that is where
+ * the section starts.
+ *
+ * The setext rule is why a contract may not carry frontmatter, and mirrorProblems() rejects that
+ * separately: the closing `---` of a frontmatter block sits under a non-blank line, so this scan
+ * would read the last frontmatter key as a level-2 heading.
+ */
+export function renderedHeadings(text) {
+  const lines = text.split('\n')
+  const found = []
+  for (const [at, line] of lines.entries()) {
+    const atx = ATX.exec(line)
+    if (atx) {
+      found.push({ at, level: atx[1].length, text: atxText(atx[2]), line, form: line.startsWith('#') ? 'ATX' : 'indented ATX' })
+      continue
+    }
+    const underline = SETEXT_UNDERLINE.exec(line)
+    const above = lines[at - 1]
+    // An underline only makes a heading out of a paragraph line. Under a blank line it is a
+    // thematic break, and under another heading it is a break too, so neither counts.
+    if (!underline || above === undefined || above.trim() === '') continue
+    if (ATX.test(above) || SETEXT_UNDERLINE.test(above)) continue
+    found.push({ at: at - 1, level: underline[1].startsWith('=') ? 1 : 2, text: above.trim(), line: above, form: 'setext' })
+  }
+  return found.map((heading) => ({
+    ...heading,
+    canonical: heading.level === 2 && CONTRACT_SECTIONS.some((name) => heading.line === `## ${name}`),
+  }))
+}
+
+// Where a section can start: a rendered heading at level 1 or 2. Deeper ATX headings are
+// subsections and belong to the body of the section above them.
+const isBoundary = (heading) => heading.level <= 2
+
 /**
  * One `## <heading>` section of a contract: the heading line plus its body, up to the next
- * `## ` line or the end of the file, or `null` when the heading is not there.
+ * rendered level-1 or level-2 heading or the end of the file, or `null` when the heading is
+ * not there.
  *
- * The trailing newline is kept, so a caller can compare or concatenate sections without
- * guessing where the boundary went.
+ * The section still has to start at a canonical `## <heading>` line, but it ends at any heading
+ * a renderer would draw. Extraction and the closure check read the same grammar on purpose. If
+ * extraction stopped only at column-zero `## `, an indented or setext heading could sit in a
+ * contract that passes the closure and split what the two readers of this file believe.
+ *
+ * A section runs to the character before the next heading, blank separator line included, so
+ * the four sections and the preamble concatenate back into the whole file. Joining the lines
+ * alone drops one newline per boundary, because a blank separator line contributes only the
+ * newline that ends the line above it, and four sections that do not add back up to the file
+ * are four sections with a byte of the contract missing from all of them.
  */
 export function contractSection(text, heading) {
   const lines = text.split('\n')
   const start = lines.indexOf(`## ${heading}`)
   if (start === -1) return null
-  let end = lines.length
-  for (let i = start + 1; i < lines.length; i++) {
-    if (lines[i].startsWith('## ')) {
-      end = i
-      break
-    }
-  }
-  return lines.slice(start, end).join('\n')
+  const next = renderedHeadings(text).find((found) => isBoundary(found) && found.at > start)
+  if (!next) return lines.slice(start).join('\n')
+  return `${lines.slice(start, next.at).join('\n')}\n`
 }
 
 /** The Containment section, the part every host binds a seat to without changing a word. */
@@ -67,31 +129,33 @@ const firstDifference = (a, b) => {
   return limit
 }
 
-// Every `## ` heading in file order, the heading text alone. A `### ` line does not match,
-// because its third character is not the space contractSection() stops on.
-const headingsOf = (text) => text.split('\n').filter((line) => line.startsWith('## ')).map((line) => line.slice(3))
-
-// The contract's four sections have to be the whole set, each written once.
+// The contract's four sections have to be the whole set, each written once, in the one spelling
+// the extractor can find.
 //
-// Two readers see this file differently and that is the whole hazard. A native seat gets the
-// tail pasted in whole, so it reads every section the file has. A delegated seat is handed one
-// section at a time, and contractSection() returns the first heading that matches and stops at
-// the next one. So a second `## Containment` after Reporting rides into the native seat and
-// never reaches the delegated one, and the byte check stays green the entire time, because the
-// mirror copied the duplicate faithfully. A fifth section splits the two readers the same way.
-// Both seats run the same rules only if the set is closed and each heading appears once.
+// Two readers see this file differently and that is the whole hazard. A seat that gets the tail
+// pasted in whole reads every section a renderer would draw. A seat handed one section at a time
+// gets what contractSection() returns, which starts at a canonical `## <name>` line. So a second
+// `## Containment` after Reporting reaches the first seat and never the second, and the byte
+// check stays green the entire time, because the mirror copied the duplicate faithfully.
+//
+// Spelling is the same hazard wearing a different hat. `   ## Hidden policy`, three spaces in,
+// renders as a heading and starts a section for a reader, while the extractor cannot start
+// there, so that section's rules reach one seat and not the other. A setext heading, a line of
+// text underlined with hyphens, does the same with no # at all. So the closure runs on the
+// rendered heading list and rejects every level-1 and level-2 heading that is not one of the
+// four canonical lines, whatever spelling it arrived in.
 const sectionShapeProblems = (contractText) => {
-  const found = headingsOf(contractText)
+  const found = renderedHeadings(contractText).filter(isBoundary)
   const problems = []
   for (const want of CONTRACT_SECTIONS) {
-    const count = found.filter((heading) => heading === want).length
+    const count = found.filter((heading) => heading.canonical && heading.text === want).length
     if (count === 1) continue
     problems.push(count === 0
       ? `the contract has no "## ${want}" section, and a seat handed that section alone would get nothing`
       : `the contract writes "## ${want}" ${count} times, and a seat handed that section alone would read only the first`)
   }
-  for (const extra of new Set(found.filter((heading) => !CONTRACT_SECTIONS.includes(heading)))) {
-    problems.push(`the contract has a "## ${extra}" section, which is not one of the four, so it would ride the tail into a seat that reads the whole file and reach no seat handed one section`)
+  for (const heading of found.filter((candidate) => !candidate.canonical)) {
+    problems.push(`the contract renders "${heading.text}" as a level-${heading.level} ${heading.form} heading on line ${heading.at + 1}, and only the four canonical "## " lines at column one may start a section, so this one reaches a seat that reads the whole tail and no seat handed one section`)
   }
   return problems
 }
