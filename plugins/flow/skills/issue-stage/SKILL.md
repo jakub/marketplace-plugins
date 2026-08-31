@@ -30,6 +30,8 @@ There is no fixed pipeline here and no stage list. You are the conductor, in the
 
 Read the issue. If it is closed, or the `ready-for-agent` label is missing, stop and route the human back through the prep stage. The label contract is the safety case, so don't run cold on a spec nobody validated.
 
+A blocking label sitting next to `ready-for-agent` is a stop too. `needs-human`, `needs-info`, or `needs-rebase` on an issue that still reads `ready-for-agent` means the ready label is stale, not that the issue is ready twice over. Both get there honestly: a failed preflight leaves `ready-for-agent` alone and adds `needs-human`, and a re-prep can add `needs-info` beside it. Route the human to the blocker instead of around it. A blocking label is a human's unfinished decision, and the human is the only one who clears it.
+
 [[gate:workspace-boundary]] The worktree this run will write in has to sit inside the workspace boundary the host enforces for this session. The profile says what that boundary is here and how to read it. A worktree outside it is a stop, not a thing to work around: every containment claim the preflight is about to make is scoped to that boundary, and a path outside it makes those claims false before a single seat spawns.
 
 All work happens in a worktree, on branch `feat|fix|chore/issue-$N-<slug>`, based at the head the claim verified rather than at whatever this clone last fetched. The claim protocol in §3 is what puts it there.
@@ -59,7 +61,9 @@ A passed preflight leaves the charter's latitude exactly as ratified. Minor inli
 
 Assigning the issue and re-reading it is not a claim, and calling it atomic does not make it one. Two runs under one account both see a green re-read of the assignment and the label, so the re-read proves only that somebody's claim landed, not whose. The mutual exclusion is a tag push, decided server-side.
 
-Before acquiring anything, scan for a run that is already live: worktrees, `issue-N-*` branches, and open PRs naming the issue, all three. If any of them turns up a live run, surface it and stop rather than double-running.
+Before acquiring anything, scan for a run that is already live: local worktrees, the issue's branches on the remote, and open PRs naming the issue, all three. If any of them turns up a live run, surface it and stop rather than double-running.
+
+Ask the server for those branches. `git ls-remote origin 'refs/heads/feat/issue-$N-*' 'refs/heads/fix/issue-$N-*' 'refs/heads/chore/issue-$N-*'`, never `git branch` and never the remote-tracking refs. Once a run releases its tag, that remote branch is the only marker a second run can see until a PR exists, and a clone's refs are only as fresh as its last fetch. A stale clone that asks itself misses the very branch whose appearance released the tag.
 
 That scan is not redundancy behind the tag, it is what catches the ordinary case. A run releases its tag the moment its work branch is visible on the remote, so from then on there is no tag to contend for and a second invocation acquires a fresh one uncontested. The tag closes exactly one window, from this scan to the first appearance of the work branch on the remote. A run already past that window is caught here or it is not caught at all.
 
