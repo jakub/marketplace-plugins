@@ -42,17 +42,22 @@ The second way takes two proofs and both are required: the path's `git rev-parse
 because a `.git` file is caller-writable and any directory can claim to belong to an approved
 repository, which is why a forged one fails. A path with neither proof fails closed with
 `OUTSIDE_ROOTS`. So `../<repo>-issue-N-<slug>`, the sibling worktree this stage creates beside
-the repository, is inside the boundary even though it sits outside every root.
+the repository, is a `cwd` a delegation job may run in even though it sits outside every root.
+That is what the rule decides and nothing more. It speaks for bridge jobs, so a worktree it
+accepts still has to be a place this session and its native seats may write.
 
 Two checks exist, at different times, and this gate is the first. It runs at preflight, before
-the worktree exists, so it applies to the path the run INTENDS to create. Test that prospective
-path: the parent directory it will live in, and the repository's common git directory, have to
-satisfy one of the two rules above. Do not reach for `git worktree list` here. It cannot name a
-worktree nobody has created yet, and a gate that waits for the listing has already let the
-mutations start. The second check is mechanical and runs later. Every delegation call re-derives
-the canonical workspace from the real path and refuses the job with `OUTSIDE_ROOTS` if it does
-not hold. A prospective path you cannot place inside the boundary is a stop before the first
-mutation, not something to route around with a longer path.
+the worktree exists, so it applies to the path the run INTENDS to create. Two things to check on
+that prospective path: the parent directory it will live in is a place this run may write, and
+the repository's common git directory resolves inside the boundary. The two-proof rule cannot be
+applied here at all, because nothing has registered a worktree that does not exist. Creating it
+completes the second proof: `git worktree add` writes the registration that
+`git worktree list --porcelain` reports. Do not reach for that listing at this gate. It cannot
+name a worktree nobody has created yet, and a gate that waits for it has already let the
+mutations start. From creation onward the two-proof rule is the mechanical check, bridge-scoped,
+which every delegation call runs against the real path and which refuses the job with
+`OUTSIDE_ROOTS` if it does not hold. A prospective path you cannot place inside the boundary is a
+stop before the first mutation, not something to route around with a longer path.
 
 ### gate: write-seat-preflight
 
