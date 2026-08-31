@@ -24,7 +24,7 @@ per lane, and the descriptions below are verbatim.
 | `needs-triage` | intake | `fbca04` | Untriaged intake; exits only through /flow:prep | human / tooling / lint | /flow:prep |
 | `agent-found` | intake | `fbca04` | Scheduled-hunter quarantine: verified + deduped, not human-reviewed | hunters (`FLOW_SANCTION=hunter`) | /flow:prep |
 | `ready-for-agent` | staging | `0e8a16` | Design-hardened per the label contract; eligible for /flow:issue | /flow:prep only | claim step of /flow:issue |
-| `in-progress` | active | `1d76db` | Atomically claimed by a /flow:issue run | /flow:issue claim | /flow:land or escalation |
+| `in-progress` | active | `1d76db` | Claimed by a /flow:issue run: assignee + this label + the claim tag | /flow:issue claim | /flow:land or escalation |
 | `needs-info` | blocked | `b60205` | Blocked on an answer only the human has | prep or run escalation | human answer + re-prep |
 | `needs-human` | blocked | `b60205` | Run escalated: adjudicated-real blockers survived the fix loop | /flow:issue | human review |
 | `needs-rebase` | blocked | `b60205` | Worktree conflicts with moved main | /flow:issue | human/agent rebase |
@@ -43,6 +43,8 @@ Rules:
   from every issue repo-wide with no undo; that is a human's call).
 - No agent creates issues outside `FLOW_SANCTION` lanes (enforced by the no-backlog hook).
 - Nothing self-promotes: `agent-found → ready-for-agent` requires a /flow:prep pass.
+- A claim is three things together - the assignee, `in-progress`, and the claim tag. Keeping two
+  runs off one issue is the tag's job, and the issue stage is where that check is described.
 - `agent-found` is reserved ahead of need: no scheduled hunters exist yet, and nothing
   else may file into that lane.
 

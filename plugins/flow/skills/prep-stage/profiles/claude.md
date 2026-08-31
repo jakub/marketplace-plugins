@@ -19,9 +19,9 @@ turn. Never replace it with a prose question the human has to answer in an essay
 `$ARGUMENTS` from the `/flow:prep` invocation is the subject. A bare integer or `#N` is
 issue mode; anything else is free text. The invocation is the authorization: this stage
 never picks a subject out of adjacent conversation, a discovered defect, or a "what next"
-survey. The re-prep question (an issue already `ready-for-agent`) and the buried-work exit
-(a closed, `wontfix`, or `deferred` match the human may override) both go through
-AskUserQuestion.
+survey. The re-prep question (an issue already `ready-for-agent`), the offer to adopt an open
+duplicate the dedupe turned up, and the buried-work exit (a closed, `wontfix`, or `deferred`
+match the human may override) all go through AskUserQuestion.
 
 ### gate: scout-fanout
 
