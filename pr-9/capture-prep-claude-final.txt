@@ -1,0 +1,3 @@
+The `cat`/`echo` counts were deliberate batching, not friction — collapsing independent reads into single Bash calls to keep round trips down. Nothing to file there.
+
+Prep is done and nothing is pending: issue #3 is `ready-for-agent` with the journal comment attached, and the working tree is still clean against the entry snapshot. Next step is yours — `/flow:issue 3` when you want it built, though I'd re-read trust fork A first, since that one's my call and not yours.

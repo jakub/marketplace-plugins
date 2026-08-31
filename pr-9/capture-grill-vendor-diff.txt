@@ -1,0 +1,70 @@
+grill vendor proof - upstream + patches 0001..0005 == plugins/grill/skills
+run: 2026-08-30, issue #6 slice 3, worktree /home/jakub/code/marketplace-plugins-issue-6-prep
+
+--- 1. pinned upstream ---
+$ git init && git remote add origin https://github.com/mattpocock/skills
+$ git fetch --depth 1 origin 5b15a47f2d7150f545fbcacbfe381787fc0230dc && git checkout FETCH_HEAD
+$ git -C upstream rev-parse HEAD
+5b15a47f2d7150f545fbcacbfe381787fc0230dc
+$ find skills/{engineering/grill-with-docs,productivity/grilling,engineering/domain-modeling} -type f | sort
+skills/engineering/domain-modeling/ADR-FORMAT.md
+skills/engineering/domain-modeling/agents/openai.yaml
+skills/engineering/domain-modeling/CONTEXT-FORMAT.md
+skills/engineering/domain-modeling/SKILL.md
+skills/engineering/grill-with-docs/agents/openai.yaml
+skills/engineering/grill-with-docs/SKILL.md
+skills/productivity/grilling/agents/openai.yaml
+skills/productivity/grilling/SKILL.md
+
+--- 2. patch series under test ---
+$ command ls -1 plugins/grill/patches
+0001-lowercase-doc-filenames.patch
+0002-askuserquestion-rounds.patch
+0003-drop-context-map.patch
+0004-enable-model-invocation.patch
+0005-capability-conditional-delivery.patch
+
+--- 3. generation tree: upstream -> 0001..0004 -> the three 0005 edits ---
+$ git -C gen log --oneline
+984ffae upstream
+$ git -C gen apply patches/0001-lowercase-doc-filenames.patch
+$ git -C gen apply patches/0002-askuserquestion-rounds.patch
+$ git -C gen apply patches/0003-drop-context-map.patch
+$ git -C gen apply patches/0004-enable-model-invocation.patch
+$ diff -r gen/plugins/grill/skills $WT/plugins/grill/skills   # HEAD~0004 state vs worktree = the 0005 delta
+diff -r /tmp/issue-6-s3/gen/plugins/grill/skills/grilling/SKILL.md /home/jakub/code/marketplace-plugins-issue-6-prep/plugins/grill/skills/grilling/SKILL.md
+10c10
+< Deliver every round through the AskUserQuestion tool, up to 4 questions per call, splitting a wider frontier across back-to-back calls. Give each question 2-4 concrete options the user can select, put your recommendation first and label it `(Recommended)`, and keep option descriptions short enough to read on a phone.
+---
+> Deliver every round through the AskUserQuestion tool when it is in your tool list: up to 4 questions per call, splitting a wider frontier across back-to-back calls, 2-4 concrete options per question with your recommendation first and labelled `(Recommended)`, and option descriptions short enough to read on a phone. Without that tool, ask one question per turn: the highest-leverage question on the frontier, up to 4 numbered options with a one-line consequence each, the recommended option first, then end the turn and take the user's next message as the answer.
+12c12
+< Never write a round out as prose. A numbered list of questions makes the user compose an essay to answer it, which is the failure this format exists to prevent. Prose is the fallback for the rare decision no option set can capture, and then it is one question, not a list.
+---
+> Never write a whole round out as a prose list. A numbered list of questions makes the user compose an essay to answer it, which is the failure this format exists to prevent. Prose is the fallback for the rare decision no option set can capture, and then it is one question, not a list.
+diff -r /tmp/issue-6-s3/gen/plugins/grill/skills/grill-with-docs/agents/openai.yaml /home/jakub/code/marketplace-plugins-issue-6-prep/plugins/grill/skills/grill-with-docs/agents/openai.yaml
+5c5
+<   allow_implicit_invocation: false
+---
+>   allow_implicit_invocation: true
+diff -r /tmp/issue-6-s3/gen/plugins/grill/skills/grill-with-docs/SKILL.md /home/jakub/code/marketplace-plugins-issue-6-prep/plugins/grill/skills/grill-with-docs/SKILL.md
+6c6
+< Call the Skill tool twice, for "grilling" and "domain-modeling".
+---
+> Call the Skill tool twice, for "grilling" and "domain-modeling". Without a Skill tool, read the sibling skills at `../grilling/SKILL.md` and `../domain-modeling/SKILL.md`, relative to this file, and follow both as written.
+
+$ git -C gen apply patches/0005-capability-conditional-delivery.patch
+$ git -C gen diff -M --stat   # the committed 0005 reproduces the edits it was generated from
+ plugins/grill/skills/grill-with-docs/SKILL.md           | 2 +-
+ plugins/grill/skills/grill-with-docs/agents/openai.yaml | 2 +-
+ plugins/grill/skills/grilling/SKILL.md                  | 4 ++--
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+--- 4. verification tree: a second fresh upstream copy, 0001..0005 in order ---
+$ git -C verify apply patches/0001-lowercase-doc-filenames.patch
+$ git -C verify apply patches/0002-askuserquestion-rounds.patch
+$ git -C verify apply patches/0003-drop-context-map.patch
+$ git -C verify apply patches/0004-enable-model-invocation.patch
+$ git -C verify apply patches/0005-capability-conditional-delivery.patch
+
+$ diff -r verify/plugins/grill/skills $WT/plugins/grill/skills
+PROOF: diff empty - vendored tree equals upstream 5b15a47 plus patches 0001..0005

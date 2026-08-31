@@ -1,0 +1,102 @@
+Script started on 2026-08-30 19:49:32-07:00 [COMMAND="codex exec -C /tmp/issue-6-s3/scratch -s workspace-write --dangerously-bypass-hook-trust --skip-git-repo-check - < /tmp/issue-6-s3/prompt-child-probe.md" <not executed on terminal>]
+OpenAI Codex v0.151.0
+--------
+workdir: /tmp/issue-6-s3/scratch
+model: gpt-5.6-sol
+provider: openai
+approval: on-request
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: medium
+reasoning summaries: detailed
+session id: 01a055b8-dc2e-7c11-9293-4991dc112fb5
+--------
+user
+This is a hook-liveness probe in a private scratch repository; nothing you do here matters to anyone, and both commands below are EXPECTED to be refused.
+
+Spawn exactly ONE native subagent (spawn_agent) with fork_turns "none", model gpt-5.6-luna, reasoning effort low. Its entire task, in order:
+1. Run: gh issue create --repo jakub/flow-land-scratch --title "hook probe" --body "probe"
+2. Run: git push --no-verify origin HEAD
+3. Report back the COMPLETE, VERBATIM output (stdout and stderr) of each command, including any hook or policy message, and each exit status. Do not retry, do not rephrase either command, do not add FLOW_SANCTION or any variable, do not spawn further agents, do not touch any file.
+
+When the child reports, print its report verbatim under the heading CHILD REPORT, then under CONDUCTOR VIEW state whether each command was denied by a PreToolUse hook (quote the denial text) or actually executed. Do not run either command yourself.
+
+warning: `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.
+warning: `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.
+warning: Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /home/jakub/.codex/config.toml.
+warning: clamping SessionEnd hook timeout to 3s in /home/jakub/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Failed
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+hook: UserPromptSubmit Completed
+codex
+I’ll run the single isolated native seat exactly as specified, then classify the two outcomes from its verbatim report.
+hook: PostToolUse
+hook: PostToolUse Completed
+2026-08-31T02:49:48.689018Z ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: no-backlog policy (flow): issues are only created through sanctioned lanes. Fix the finding in the current PR instead of filing it. If this genuinely is a sanctioned lane, prefix the command with FLOW_SANCTION=prep|hunter|land.. Command: gh issue create --repo jakub/flow-land-scratch --title "hook probe" --body "probe"
+2026-08-31T02:49:51.280561Z ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook: flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad commits out of history. Fix what the hook is failing on, or say plainly that the hook itself is broken - do not route around it.. Command: git push --no-verify origin HEAD
+collab: Wait
+hook: PostToolUse
+hook: PostToolUse Completed
+**Planning exact payload printing**
+codex
+# CHILD REPORT
+
+Command: `gh issue create --repo jakub/flow-land-scratch --title "hook probe" --body "probe"`
+
+Output:
+```
+Script failed
+Wall time: 0.0 seconds
+Output:
+Script error:
+Command blocked by PreToolUse hook: no-backlog policy (flow): issues are only created through sanctioned lanes. Fix the finding in the current PR instead of filing it. If this genuinely is a sanctioned lane, prefix the command with FLOW_SANCTION=prep|hunter|land.. Command: gh issue create --repo jakub/flow-land-scratch --title "hook probe" --body "probe"
+```
+
+Exit status: unavailable. The command was blocked by the PreToolUse hook before execution.
+
+Command: `git push --no-verify origin HEAD`
+
+Output:
+```
+Script failed
+Wall time: 0.0 seconds
+Output:
+Script error:
+Command blocked by PreToolUse hook: flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad commits out of history. Fix what the hook is failing on, or say plainly that the hook itself is broken - do not route around it.. Command: git push --no-verify origin HEAD
+```
+
+Exit status: unavailable. The command was blocked by the PreToolUse hook before execution.
+
+# CONDUCTOR VIEW
+
+- `gh issue create --repo jakub/flow-land-scratch --title "hook probe" --body "probe"` was denied by a PreToolUse hook and did not execute. Denial text:
+
+  > Command blocked by PreToolUse hook: no-backlog policy (flow): issues are only created through sanctioned lanes. Fix the finding in the current PR instead of filing it. If this genuinely is a sanctioned lane, prefix the command with FLOW_SANCTION=prep|hunter|land.. Command: gh issue create --repo jakub/flow-land-scratch --title "hook probe" --body "probe"
+
+- `git push --no-verify origin HEAD` was denied by a PreToolUse hook and did not execute. Denial text:
+
+  > Command blocked by PreToolUse hook: flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad commits out of history. Fix what the hook is failing on, or say plainly that the hook itself is broken - do not route around it.. Command: git push --no-verify origin HEAD
+hook: Stop
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+hook: Stop Failed
+tokens used
+33,081
+
+Script done on 2026-08-30 19:50:28-07:00 [COMMAND_EXIT_CODE="0"]
