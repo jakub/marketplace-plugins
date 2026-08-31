@@ -32,7 +32,7 @@ Read the issue. If it is closed, or the `ready-for-agent` label is missing, stop
 
 [[gate:workspace-boundary]] The worktree this run will write in has to sit inside the workspace boundary the host enforces for this session. The profile says what that boundary is here and how to read it. A worktree outside it is a stop, not a thing to work around: every containment claim the preflight is about to make is scoped to that boundary, and a path outside it makes those claims false before a single seat spawns.
 
-All work happens in a worktree off origin/main, on branch `feat|fix|chore/issue-$N-<slug>`. The claim protocol in §3 is what puts it there.
+All work happens in a worktree, on branch `feat|fix|chore/issue-$N-<slug>`, based at the head the claim verified rather than at whatever this clone last fetched. The claim protocol in §3 is what puts it there.
 
 **Out**: an open PR, pushed, reviewed, evidenced, and `Closes #N`-linked. Or a clean escalation: `needs-info`, `needs-human`, or `needs-rebase`, labeled, with a comment saying what is blocking, and the escalation notice of §9. A run that never got past the preflight leaves through that same door and leaves nothing else behind it (§2). Never merge.
 
@@ -69,7 +69,11 @@ Acquire through `scripts/issue-claim.mjs`. It pushes `refs/tags/flow-claim-issue
 - `held` means another run has this issue. Surface that run and stop, having mutated nothing.
 - `unknown` is an operational failure, not a loss. Report it and stop. A run that reads `unknown` as "somebody else has it" hides a broken remote.
 
-On `acquired`, in this order: assign the issue and apply `in-progress`; snapshot `## Acceptance Criteria`, where the digest is the sha256 of the exact bytes of that section; post the launch journal comment, opening with the claim ledger of §4; create the work branch off origin/main and push it; then release the tag through the same helper. The helper verifies the remote branch is at the head it expects before deleting the tag, and refuses if it isn't - the tag is what keeps a second run out during the window where the branch does not yet exist remotely, so it comes down only once that window has closed.
+On `acquired`, in this order: assign the issue, remove `ready-for-agent`, and apply `in-progress`, which is one lifecycle transition rather than two labels sitting on one issue; snapshot `## Acceptance Criteria`, where the digest is the sha256 of the exact bytes of that section; post the launch journal comment, opening with the claim ledger of §4; create the work branch and push it; then release the tag through the same helper. The helper verifies the remote branch is at the head it expects before deleting the tag, and refuses if it isn't - the tag is what keeps a second run out during the window where the branch does not yet exist remotely, so it comes down only once that window has closed.
+
+The label move is one transition and the claim step owns it. `label-contract.md` gives `ready-for-agent` to prep and has the claim step clear it, and every open issue carries exactly one lifecycle label. An issue left holding both reads as two states at once, and the nightly lint has to guess which one is true.
+
+The acquire verdict carries the base. Create the branch at the SHA the acquire result reports, never from the local `origin/main` ref. The helper read that object off the remote and verified it, so it is origin's current main and it is the object the claim tag pins. A remote-tracking ref is only as fresh as the last fetch this clone happened to run, and the helper deliberately leaves it alone. A stale clone that claims successfully and then branches from its own `origin/main` runs every immutable-base review against an old base, and each of those reviews comes back clean about a diff nobody is going to merge.
 
 A stale claim tag found at entry is surfaced to the human with the branch and PR state it guards. It is NEVER deleted or force-replaced by an agent. An agent that can break its own locks does not have a lock, and a crashed run's tag is exactly the case where the guess is most expensive.
 
