@@ -42,15 +42,15 @@ Three commands in order:
 
 `/flow:land` is the human gate and the only merge path. We run CI and review-thread checks, rebase, squash merge, cleanup, and then perform a survey of what tasks are up next.
 
-`prep` and `land` run on Codex too. Each one is a host-neutral stage skill plus a binding profile per host, so both hosts run the same gates and the slash command is only an alias to it. `issue` is still Claude-only.
+All three run on Codex too. Each one is a host-neutral stage skill plus a binding profile per host, so both hosts run the same gates and the slash command is only an alias to it.
 
 Two timers run in the background once `/flow setup` has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly report-only doc sweep that raises bug fix issues.
 
 | Path | What's there |
 |---|---|
 | `plugins/flow/charter/charter.md` | The engineering charter. |
-| `plugins/flow/commands/` | `issue.md`, which holds its own steps, plus `prep.md` and `land.md`, which only alias their stage. |
-| `plugins/flow/skills/prep-stage/`, `skills/land-stage/` | The prep and land steps, written once for both hosts, with `profiles/claude.md` and `profiles/codex.md` binding each gate to a mechanism. |
+| `plugins/flow/commands/` | `prep.md`, `issue.md` and `land.md`, each only an alias to its stage. |
+| `plugins/flow/skills/prep-stage/`, `skills/issue-stage/`, `skills/land-stage/` | The steps of all three stages, written once for both hosts, with `profiles/claude.md` and `profiles/codex.md` binding each gate to a mechanism. |
 | `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool and a fixed schema output), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
 | `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`, `/flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
