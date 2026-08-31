@@ -7,7 +7,7 @@ color: green
 
 - One mechanism claim, and then the contract verbatim.
 
-<!-- seat-contract: agents/seat-contract.md - byte-equal tail, edit the contract, not this copy -->
+<!-- seat-contract: plugins/flow/seat-contract.md - byte-equal tail, edit the contract, not this copy -->
 You are one leaf of a fan-out. The rules below are mechanical, not advisory.
 
 ## Containment

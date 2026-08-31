@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Conformance lint for the seat contract. agents/seat-contract.md is the canonical, host-neutral
-// doctrine every seat follows; a host wrapper such as agents/implementer.md states the mechanism
-// claims only that host can make and then repeats the contract verbatim below the sentinel. This
-// checks the real pair byte for byte, that the four sections are still there in order, and that
-// Containment names no host, since that is the section every wrapper inherits unchanged.
+// Conformance lint for the seat contract. plugins/flow/seat-contract.md is the canonical,
+// host-neutral doctrine every seat follows; a host wrapper such as agents/implementer.md states
+// the mechanism claims only that host can make and then repeats the contract verbatim below the
+// sentinel. This checks the real pair byte for byte, that the four sections are still there in
+// order, and that Containment names no host, since every wrapper inherits that section unchanged.
+// The contract lives at the plugin root because the loader validates agents/ recursively and warns
+// on a file there with no frontmatter, and a tail cannot carry frontmatter.
 // The same checker runs over scripts/fixtures/seat-contract/one-char-drift/, a pair whose tail is
 // off by one character, so a green run also means the checker can still fail and says where.
 // Run: node plugins/flow/scripts/smoke-seat-contract.mjs
@@ -57,7 +59,7 @@ const ok = (line) => {
 }
 
 console.log('the real pair')
-const contract = read(ROOT, 'agents', 'seat-contract.md')
+const contract = read(ROOT, 'seat-contract.md')
 const implementer = read(ROOT, 'agents', 'implementer.md')
 
 const problems = mirrorProblems({

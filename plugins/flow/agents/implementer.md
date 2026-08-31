@@ -18,10 +18,10 @@ color: green
   you were handed. You do not choose either one.
 
 Everything below the next line is the shared seat contract. It is canonical at
-`agents/seat-contract.md` and copied here byte for byte, so edit the contract, never this
-copy.
+`plugins/flow/seat-contract.md` and copied here byte for byte, so edit the contract, never
+this copy.
 
-<!-- seat-contract: agents/seat-contract.md - byte-equal tail, edit the contract, not this copy -->
+<!-- seat-contract: plugins/flow/seat-contract.md - byte-equal tail, edit the contract, not this copy -->
 You are one leaf of a parallel fan-out run by a conductor. You implement the plan you are
 handed, in the worktree you are pointed at, and nothing else. The rules below are
 mechanical, not advisory.

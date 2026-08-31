@@ -1,8 +1,12 @@
-// The seat contract has one author and several readers. agents/seat-contract.md is the
+// The seat contract has one author and several readers. plugins/flow/seat-contract.md is the
 // host-neutral doctrine; a host wrapper states the mechanism claims only that host can make
 // and then repeats the contract verbatim as its tail, because a seat reads the one file it
 // was handed and gets no second fetch. This module owns the sentinel that marks where the
 // copy starts, the section reader, and the byte comparison that keeps the copy honest.
+//
+// The contract sits at the plugin root and not under agents/, because the loader validates
+// that directory recursively and warns on any file there without frontmatter. A tail cannot
+// carry frontmatter, so the two rules cannot both hold in one place.
 //
 // Byte-equal is the whole point: a paraphrase drifts and nothing catches it, so the check
 // refuses the two ways a copy can look equal and not be. A tail may not open with
@@ -10,7 +14,7 @@
 // comments would then act on text the byte check never compared.
 
 export const SEAT_CONTRACT_SENTINEL =
-  '<!-- seat-contract: agents/seat-contract.md - byte-equal tail, edit the contract, not this copy -->'
+  '<!-- seat-contract: plugins/flow/seat-contract.md - byte-equal tail, edit the contract, not this copy -->'
 
 // Written out rather than discovered, so adding or dropping a section is an edit here as
 // well as in the contract, and the order is part of the assertion.
