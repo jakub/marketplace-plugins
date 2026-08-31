@@ -150,20 +150,20 @@ const HOST_CAPABILITY_TABLE = {
     codex: { supported: false, assurance: 'unverified', note: 'No per-seat tool allowlist found.' },
   },
   'agent-depth-limit': {
-    claude: { supported: true, assurance: 'mechanism', note: 'a leaf seat\'s agent def omits the Agent tool (flow:implementer, Explore), so nesting is impossible rather than discouraged' },
-    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'agents.max_depth is V1-only and ignored by multi-agent V2 (codex-rs/core/src/config/mod.rs:882); the V2 spawn path (agent/control/spawn.rs) has no depth check, so a descendant-spawn prohibition is prompt contract only' },
+    claude: { supported: true, assurance: 'mechanism', note: 'A leaf seat\'s agent def omits the Agent tool (flow:implementer, Explore), so nesting is impossible rather than discouraged.' },
+    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'agents.max_depth is V1-only and ignored by multi-agent V2 (codex-rs/core/src/config/mod.rs:882); the V2 spawn path (agent/control/spawn.rs) has no depth check, so a descendant-spawn prohibition is prompt contract only.' },
   },
   'per-seat-authority-narrowing': {
-    claude: { supported: true, assurance: 'mechanism', note: 'an agent def\'s tools list narrows each seat below the session (Explore has no Edit/Write/Agent; flow:implementer has no Agent); neither host has a per-seat filesystem sandbox' },
-    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'V2 spawn_agent accepts only model, reasoning_effort and fork_turns (tools/handlers/multi_agents_spec.rs); a child inherits the parent\'s cwd, approval policy and sandbox' },
+    claude: { supported: true, assurance: 'mechanism', note: 'An agent def\'s tools list narrows each seat below the session (Explore has no Edit/Write/Agent; flow:implementer has no Agent); neither host has a per-seat filesystem sandbox.' },
+    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'V2 spawn_agent accepts only model, reasoning_effort and fork_turns (tools/handlers/multi_agents_spec.rs); a child inherits the parent\'s cwd, approval policy and sandbox.' },
   },
   'skill-composition': {
-    claude: { supported: true, assurance: 'mechanism', note: 'the Skill tool loads a named skill mid-turn' },
-    codex: { supported: false, assurance: 'unverified', verifiedAt: '2026-08-30', note: 'no Skill-call tool; a skill composes by reading sibling SKILL.md files - unverified on the installed-plugin path until the slice 3 capture' },
+    claude: { supported: true, assurance: 'mechanism', note: 'The Skill tool loads a named skill mid-turn.' },
+    codex: { supported: false, assurance: 'unverified', verifiedAt: '2026-08-30', note: 'No Skill-call tool; a skill composes by reading sibling SKILL.md files. Unverified on the installed-plugin path until the slice 3 capture.' },
   },
   'hooks-in-native-children': {
-    claude: { supported: true, assurance: 'mechanism', note: 'a subagent\'s tool calls run the session\'s PreToolUse hooks' },
-    codex: { supported: false, assurance: 'unverified', verifiedAt: '2026-08-30', note: 'a V2 child receives a Config derived from the parent\'s turn (agent/control/spawn.rs), so plugin hooks should fire inside it; unverified until the slice 3 child probe' },
+    claude: { supported: true, assurance: 'mechanism', note: 'A subagent\'s tool calls run the session\'s PreToolUse hooks.' },
+    codex: { supported: false, assurance: 'unverified', verifiedAt: '2026-08-30', note: 'A V2 child receives a Config derived from the parent\'s turn (agent/control/spawn.rs), so plugin hooks should fire inside it. Unverified until the slice 3 child probe.' },
   },
 }
 
