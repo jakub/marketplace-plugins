@@ -1,0 +1,5 @@
+interface:
+  display_name: "Prep Stage"
+  short_description: "Design-harden one issue or idea into ready-for-agent"
+policy:
+  allow_implicit_invocation: false
