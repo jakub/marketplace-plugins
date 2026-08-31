@@ -1443,9 +1443,14 @@ try {
   // A verifiedAgainst cross-copied between hosts, a codex-cli string sitting in the Claude row,
   // would otherwise re-anchor the whole rule: it would start admitting codex clients on the Claude
   // route while the profile rejects the real Claude client. Host in, allowed names out.
+  //
+  // codex-mcp-client is the literal name the 0.151.0 MCP client sends in its initialize handshake
+  // (codex-rs rust-v0.151.0, rmcp_client.rs), so it is the identity a real Codex preflight reads,
+  // and the issue-stage codex profile accepts it. Without it every production Codex session would
+  // read as drifted while this smoke passed on names no client actually sends.
   const HOST_PRODUCT_NAMES = {
     claude: new Set(['claude', 'claude-code']),
-    codex: new Set(['codex', 'codex-cli']),
+    codex: new Set(['codex', 'codex-cli', 'codex-mcp-client']),
   }
 
   // The drift decision the issue-stage preflight makes, written out here so the shapes it stands
@@ -1520,7 +1525,24 @@ try {
     for (const otherName of HOST_PRODUCT_NAMES[otherHost]) {
       assert.equal(driftedAgainst(inventoryHost, { name: otherName, version }, record).drifted, true, `${inventoryHost} accepted ${otherName}, a ${otherHost} name`)
     }
+    // Every name the host answers to has to pass on the record's own version, so a name added to
+    // the set later is exercised without waiting for someone to write it a case.
+    for (const name of allowed) {
+      assert.equal(driftedAgainst(inventoryHost, { name, version }, record).drifted, false, `${inventoryHost} rejected its own name ${name} on version ${version}`)
+    }
   }
+
+  // The real Codex client, spelled out on both hosts rather than left to the loops above, because
+  // this is the identity a production preflight reads and the one a synthetic flow-smoke fixture
+  // could never have caught.
+  const codexRecord = capabilitiesForHost('codex').verifiedAgainst
+  const claudeRecord = capabilitiesForHost('claude').verifiedAgainst
+  const codexMcpOnCodex = driftedAgainst('codex', { name: 'codex-mcp-client', version: codexRecord.split(' ')[1] }, codexRecord)
+  assert.equal(codexMcpOnCodex.drifted, false, `the codex host rejected its own MCP client: ${codexMcpOnCodex.reason}`)
+  const codexMcpOnClaude = driftedAgainst('claude', { name: 'codex-mcp-client', version: claudeRecord.split(' ')[1] }, claudeRecord)
+  assert.equal(codexMcpOnClaude.drifted, true, 'the claude host accepted codex-mcp-client, another product')
+  assert.equal(driftedAgainst('claude', { name: 'codex-mcp-client', version: codexRecord.split(' ')[1] }, claudeRecord).drifted, true, 'the claude host accepted codex-mcp-client on a Codex version')
+
   assert.equal(driftedAgainst('gemini', { name: 'gemini', version: '1.0.0' }, 'gemini 1.0.0').drifted, true, 'a host with no written-down names read as current')
   // The decision itself, over the result this doctor call just returned. flow-smoke 1.0.0 is not
   // the host the inventory was verified against, so a preflight running this rule stops here.
