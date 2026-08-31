@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,7 +20,7 @@ const CODEX_EVENTS = new Set([
 
 assert.match(marketplace.metadata.version, /^\d+\.\d+\.\d+$/, 'catalog version is semver')
 assert.ok(marketplace.plugins.length > 0, 'marketplace lists plugins')
-let codexPlugins = 0
+const codexPlugins = []
 
 for (const listed of marketplace.plugins) {
   const { name } = listed
@@ -34,13 +34,33 @@ for (const listed of marketplace.plugins) {
     const codexDelegation = readJson(join(pluginRoot, '.mcp.json')).flow_delegate
     assert.deepEqual(codexDelegation?.args?.slice(-2), ['--host', 'codex'], 'flow Codex MCP pins its host')
     assert.equal(codexDelegation?.tool_timeout_sec, 7_500, 'flow Codex MCP timeout outlives the maximum job budget')
+    // Codex hands a stdio MCP server a curated environment (HOME, PATH, TERM and a few more), and
+    // systemd-run --user needs the runtime dir to find the user bus. Without the first two, every
+    // provider scope fails with CONTAINMENT_UNAVAILABLE and the Codex host cannot delegate at all.
+    // PWD is the shell's cwd when the human launched codex, and it is the only host-derived
+    // workspace signal Codex 0.151 gives a plugin MCP server: the client advertises no roots
+    // capability and Codex sets no project-dir variable, so without PWD every tool call fails
+    // with NO_ROOTS.
+    assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'PWD'], 'flow Codex MCP passes the user-bus environment and the launch cwd through')
   }
 
   const codexManifest = join(pluginRoot, '.codex-plugin', 'plugin.json')
   if (!existsSync(codexManifest)) continue
-  codexPlugins++
+  codexPlugins.push(name)
   const codex = readJson(codexManifest)
   assert.equal(codex.version, listed.version, `${name} Codex version matches marketplace`)
+
+  // Codex finds skills/*/SKILL.md on its own, so a skills-only plugin registers no hooks
+  // and needs no key for them. What it must not be is empty: a Codex manifest that
+  // registers nothing and ships no skill contributes nothing, and is a typo.
+  if (codex.hooks === undefined) {
+    const skillsRoot = join(pluginRoot, 'skills')
+    const skills = existsSync(skillsRoot)
+      ? readdirSync(skillsRoot).filter((dir) => existsSync(join(skillsRoot, dir, 'SKILL.md')))
+      : []
+    assert.ok(skills.length > 0, `${name} Codex manifest without hooks ships at least one skill`)
+    continue
+  }
 
   const hooksPath = join(pluginRoot, codex.hooks)
   assert.ok(existsSync(hooksPath), `${name} Codex hooks path`)
@@ -60,7 +80,8 @@ for (const listed of marketplace.plugins) {
 
 // The dual-harness set shrinking to zero would mean the Codex manifests moved or were
 // renamed without this test noticing; that is a failure, not an empty success.
-assert.ok(codexPlugins >= 3, `expected at least 3 Codex-capable plugins, found ${codexPlugins}`)
+assert.ok(codexPlugins.length >= 4, `expected at least 4 Codex-capable plugins, found ${codexPlugins.length}`)
+assert.ok(codexPlugins.includes('grill'), 'grill carries a Codex manifest')
 
 // The catalog version must move whenever the plugin set or a listed version moves.
 // Parity alone cannot prove that, so compare against main's committed manifest when

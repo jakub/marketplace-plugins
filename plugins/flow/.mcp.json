@@ -8,6 +8,11 @@
       "codex"
     ],
     "cwd": ".",
-    "tool_timeout_sec": 7500
+    "tool_timeout_sec": 7500,
+    "env_vars": [
+      "XDG_RUNTIME_DIR",
+      "DBUS_SESSION_BUS_ADDRESS",
+      "PWD"
+    ]
   }
 }

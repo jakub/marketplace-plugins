@@ -543,6 +543,32 @@ try {
   assert.throws(() => { hostInventories.codex.verifiedAgainst = 'forged' }, TypeError)
   assert.equal(capabilitiesForHost('claude').capabilities['hook-ask'].supported, true)
 
+  // The slice 3 rows were probed a day after the table default, so every Codex cell in them
+  // carries its own verifiedAt. Their Claude cells fall back to the table date, and so does an
+  // untouched older row, which is what proves the override lands per entry instead of re-dating
+  // the whole table.
+  const tableDefaultDate = hostInventories.codex.capabilities['hook-deny'].verifiedAt
+  assert.equal(tableDefaultDate, '2026-08-29', 'table default date')
+  const sliceThreeRows = {
+    'agent-depth-limit': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
+    'per-seat-authority-narrowing': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
+    'skill-composition': { claude: [true, 'mechanism'], codex: [true, 'contract'] },
+    'hooks-in-native-children': { claude: [true, 'mechanism'], codex: [true, 'mechanism'] },
+    'mcp-client-roots': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
+  }
+  for (const [id, expected] of Object.entries(sliceThreeRows)) {
+    for (const [host, [supported, assurance]] of Object.entries(expected)) {
+      const entry = hostInventories[host].capabilities[id]
+      assert.ok(entry, `${host}/${id} is in the inventory`)
+      assert.equal(entry.supported, supported, `${host}/${id} supported`)
+      assert.equal(entry.assurance, assurance, `${host}/${id} assurance`)
+    }
+    assert.equal(hostInventories.codex.capabilities[id].verifiedAt, '2026-08-30', `codex/${id} verifiedAt`)
+    assert.equal(hostInventories.claude.capabilities[id].verifiedAt, tableDefaultDate, `claude/${id} verifiedAt`)
+  }
+  assert.throws(() => { hostInventories.codex.capabilities['agent-depth-limit'].verifiedAt = '1999-01-01' }, TypeError)
+  assert.throws(() => { hostInventories.claude.capabilities['skill-composition'].supported = false }, TypeError)
+
   console.log('route and nesting guards')
   assert.throws(
     () => assertRoute({ host: 'codex', target: 'codex', depth: 0 }),
@@ -1359,6 +1385,9 @@ try {
   assert.equal(doctorResult.structuredContent.ok, true)
   await client.close()
 
+  // PWD is set here on purpose. The Claude host has real roots and CLAUDE_PROJECT_DIR, so it must
+  // never fall back to the launch shell's cwd; the same environment that gives a Codex host a
+  // workspace below still has to fail NO_ROOTS on this one.
   const noRootsClient = new McpStdioClient({
     command: process.execPath,
     args: [bundle, 'mcp', '--host', 'claude', '--state-dir', state('mcp-no-roots')],
@@ -1367,6 +1396,7 @@ try {
       ...process.env,
       CODEX_PROJECT_DIR: '',
       CLAUDE_PROJECT_DIR: '',
+      PWD: repo,
       FLOW_DELEGATION_CODEX_BIN: fake,
       FLOW_FAKE_MODE: 'happy',
     },
@@ -1382,6 +1412,50 @@ try {
   assert.equal(noRootsList.isError, true)
   assert.equal(noRootsList.structuredContent.error.kind, 'NO_ROOTS')
   await noRootsClient.close()
+
+  // Codex 0.151.0 advertises no roots capability and sets no project-dir variable, which is
+  // exactly this client: no roots, both project-dir variables empty. The launch shell's PWD is
+  // the only workspace signal left, so the Codex host takes it and the same call that fails on
+  // the Claude host above succeeds here.
+  const codexPwdClient = new McpStdioClient({
+    command: process.execPath,
+    args: [bundle, 'mcp', '--host', 'codex', '--state-dir', state('mcp-codex-pwd')],
+    cwd: repo,
+    env: {
+      ...process.env,
+      CODEX_PROJECT_DIR: '',
+      CLAUDE_PROJECT_DIR: '',
+      PWD: repo,
+      FLOW_DELEGATION_CODEX_BIN: fake,
+      FLOW_FAKE_MODE: 'happy',
+    },
+    roots: [],
+  })
+  await codexPwdClient.start()
+  const codexPwdList = await codexPwdClient.callTool('delegation_list', {}, { timeout: 30_000 })
+  assert.equal(codexPwdList.isError, undefined, 'the Codex host resolves a workspace from PWD')
+  assert.ok(Array.isArray(codexPwdList.structuredContent.jobs), 'PWD-rooted list returns jobs')
+  await codexPwdClient.close()
+
+  const codexNoPwdClient = new McpStdioClient({
+    command: process.execPath,
+    args: [bundle, 'mcp', '--host', 'codex', '--state-dir', state('mcp-codex-no-pwd')],
+    cwd: repo,
+    env: {
+      ...process.env,
+      CODEX_PROJECT_DIR: '',
+      CLAUDE_PROJECT_DIR: '',
+      PWD: '',
+      FLOW_DELEGATION_CODEX_BIN: fake,
+      FLOW_FAKE_MODE: 'happy',
+    },
+    roots: [],
+  })
+  await codexNoPwdClient.start()
+  const codexNoPwdList = await codexNoPwdClient.callTool('delegation_list', {}, { timeout: 30_000 })
+  assert.equal(codexNoPwdList.isError, true)
+  assert.equal(codexNoPwdList.structuredContent.error.kind, 'NO_ROOTS')
+  await codexNoPwdClient.close()
 
   const missingMcpHost = spawnSync(process.execPath, [bundle, 'mcp'], {
     cwd: repo,
