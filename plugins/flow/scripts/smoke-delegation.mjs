@@ -1435,13 +1435,28 @@ try {
   const cliDoctor = cli(['doctor', '--cwd', repo], { stateDir: state('cli-doctor') })
   assert.deepEqual(cliDoctor.client, { name: null, version: null })
 
+  // Spellings that mean the same product. A record reads "codex-cli 0.151.0" while that host's MCP
+  // client introduces itself as "codex", and neither spelling is wrong. Written out as sets rather
+  // than guessed from substrings, because "is flow-smoke a kind of codex-cli" has no clever answer
+  // and a wrong guess here green-lights a foreign client. The issue-stage profiles carry the same
+  // two sets, so a new host is an edit in both places.
+  const PRODUCT_ALIASES = [
+    new Set(['codex', 'codex-cli']),
+    new Set(['claude', 'claude-code']),
+  ]
+  const sameProduct = (name, product) => {
+    const spellings = PRODUCT_ALIASES.find((set) => set.has(product))
+    return spellings ? spellings.has(name) : name === product
+  }
+
   // The drift decision the issue-stage preflight makes, written out here so the shapes it stands
   // on are under test. The normative text is skills/issue-stage/profiles/<host>.md; this is a copy
   // of that rule, not a second authority. Split verifiedAgainst on its one space into a product
-  // and a version. The host has drifted unless the doctor's client.version is that version
-  // exactly, string for string. A client.name that names a plainly different product corroborates
-  // the verdict; it never decides it. No client, no version, or a record that will not split is
-  // drift as well, because a preflight that cannot read its own record has verified nothing.
+  // and a version. A client.name that names another product is drift on its own, whatever version
+  // it reports, so that check runs first: flow-smoke reporting 0.151.0 tells you nothing about
+  // codex-cli 0.151.0. With the product agreed, or with no name to judge, the version decides, and
+  // it has to match string for string. No client, no version, or a record that will not split is
+  // drift too, because a preflight that cannot read its own record has verified nothing.
   const driftedAgainst = (observed, verifiedAgainst) => {
     const parts = String(verifiedAgainst ?? '').split(' ')
     if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -1449,18 +1464,14 @@ try {
     }
     const [product, version] = parts
     if (!observed) return { drifted: true, reason: 'the doctor result carries no client identity' }
+    if (observed.name && !sameProduct(observed.name, product)) {
+      return { drifted: true, reason: `the client calls itself ${observed.name}, and the record was verified against ${product}` }
+    }
     if (!observed.version) return { drifted: true, reason: 'the client reported no version' }
     if (observed.version === version) {
       return { drifted: false, reason: `the client reports ${version}, the version the record was verified against` }
     }
-    // Substring either way, so codex against codex-cli is the same product and flow-smoke is not.
-    const otherProduct = Boolean(observed.name) && !product.includes(observed.name) && !observed.name.includes(product)
-    return {
-      drifted: true,
-      reason: otherProduct
-        ? `the client reports ${observed.name} ${observed.version}, and the record was verified against ${product} ${version}`
-        : `the client reports version ${observed.version}, and the record was verified against ${version}`,
-    }
+    return { drifted: true, reason: `the client reports version ${observed.version}, and the record was verified against ${version}` }
   }
 
   // Both real records, because the bug this replaces was a shape mismatch: the rule compared a
@@ -1472,11 +1483,20 @@ try {
     const fields = record.split(' ')
     assert.equal(fields.length, 2, `${inventoryHost} verifiedAgainst ${JSON.stringify(record)} is not "<product> <version>"`)
     const [product, version] = fields
+    // Both real records are product-qualified, so each one has a shorter spelling in its alias set.
+    const spellings = PRODUCT_ALIASES.find((set) => set.has(product)) ?? new Set([product])
+    const shortName = [...spellings].find((one) => one !== product) ?? product
+    assert.notEqual(shortName, product, `${inventoryHost}: ${product} has no second spelling to test with`)
     const cases = [
       { label: 'the version the record names', client: { name: product, version }, drifted: false },
+      { label: 'the same host under its short name', client: { name: shortName, version }, drifted: false },
       { label: 'an upgraded host', client: { name: product, version: '9.9.9' }, drifted: true },
       { label: 'the whole record passed as a version', client: { name: product, version: record }, drifted: true },
       { label: 'a null version', client: { name: product, version: null }, drifted: true },
+      { label: 'another product on the matching version', client: { name: 'flow-smoke', version }, drifted: true },
+      { label: 'another product with no version', client: { name: 'flow-smoke', version: null }, drifted: true },
+      { label: 'no name, matching version', client: { name: null, version }, drifted: false },
+      { label: 'no name, wrong version', client: { name: null, version: '9.9.9' }, drifted: true },
       { label: 'no client at all', client: null, drifted: true },
       { label: 'a record that will not split', client: { name: product, version }, record: product, drifted: true },
     ]
@@ -1484,10 +1504,10 @@ try {
       const verdict = driftedAgainst(one.client, one.record ?? record)
       assert.equal(verdict.drifted, one.drifted, `${inventoryHost}, ${one.label}: ${verdict.reason}`)
     }
-    // The name is corroboration and shows up in the reason, while the version alone decides.
-    const foreign = driftedAgainst({ name: 'flow-smoke', version: '1.0.0' }, record)
-    assert.equal(foreign.drifted, true)
-    assert.match(foreign.reason, /flow-smoke 1\.0\.0/, `${inventoryHost}: a foreign product does not corroborate the verdict`)
+    // A foreign name decides on its own, so the reason names the product and never reaches version
+    // talk. This is the case the earlier substring test got wrong.
+    const foreign = driftedAgainst({ name: 'flow-smoke', version }, record)
+    assert.match(foreign.reason, /^the client calls itself flow-smoke, and the record was verified against /, `${inventoryHost}: ${foreign.reason}`)
   }
   // The decision itself, over the result this doctor call just returned. flow-smoke 1.0.0 is not
   // the host the inventory was verified against, so a preflight running this rule stops here.
