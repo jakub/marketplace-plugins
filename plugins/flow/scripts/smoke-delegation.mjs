@@ -552,7 +552,7 @@ try {
   const sliceThreeRows = {
     'agent-depth-limit': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
     'per-seat-authority-narrowing': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
-    'skill-composition': { claude: [true, 'mechanism'], codex: [false, 'unverified'] },
+    'skill-composition': { claude: [true, 'mechanism'], codex: [true, 'contract'] },
     'hooks-in-native-children': { claude: [true, 'mechanism'], codex: [true, 'mechanism'] },
     'mcp-client-roots': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
   }

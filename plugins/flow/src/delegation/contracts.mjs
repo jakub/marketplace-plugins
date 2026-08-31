@@ -159,7 +159,7 @@ const HOST_CAPABILITY_TABLE = {
   },
   'skill-composition': {
     claude: { supported: true, assurance: 'mechanism', note: 'The Skill tool loads a named skill mid-turn.' },
-    codex: { supported: false, assurance: 'unverified', verifiedAt: '2026-08-30', note: 'No Skill-call tool; a skill composes by reading sibling SKILL.md files. Unverified on the installed-plugin path until the slice 3 capture.' },
+    codex: { supported: true, assurance: 'contract', verifiedAt: '2026-08-30', note: 'No Skill-call tool; a skill composes by reading its sibling SKILL.md files as its own text instructs. Verified on the installed-plugin path by the slice 3 Codex prep capture (flow-evidence pr-9/capture-prep-codex.txt): grill-with-docs loaded ../grilling/SKILL.md and ../domain-modeling/SKILL.md and ran the grill under them.' },
   },
   'mcp-client-roots': {
     claude: { supported: true, assurance: 'mechanism', note: 'The MCP client advertises the roots capability and answers roots/list with the session workspace.' },
