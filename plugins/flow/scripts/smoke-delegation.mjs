@@ -10,6 +10,7 @@ import { AppServerClient } from '../src/delegation/app-server.mjs'
 import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
 import { assertRoute, capabilitiesForHost, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
+import { universalContainment } from '../lib/seat-contract.mjs'
 
 assert.equal(process.platform, 'linux', 'smoke-delegation requires the Linux Codex host and systemd-scope contract')
 
@@ -163,6 +164,7 @@ const repo = join(temp, 'repo')
 const nestedDir = join(repo, 'nested')
 const fake = join(temp, 'fake-codex.mjs')
 const opener = join(temp, 'open-store.mjs')
+const instructionsOut = join(temp, 'developer-instructions.txt')
 
 // The migration race is a cross-process one: several Node processes opening the same fresh
 // database, not several promises inside one. Node startup jitter alone spreads the children
@@ -176,7 +178,7 @@ new JobStore(process.argv[2]).close()
 
 writeFileSync(fake, `#!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { realpathSync } from 'node:fs'
+import { realpathSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 if (process.argv[2] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0) }
 const mode = process.env.FLOW_FAKE_MODE || 'happy'
@@ -271,6 +273,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     // A Codex-target job must carry the Codex binding profile, once, between the charter
     // and the seat block. The host attribute is the family this worker runs in.
     const instructions = message.params.developerInstructions || ''
+    // capture-instructions dumps what the bundle actually sent, so the smoke can assert on the
+    // built payload instead of re-rendering it from src, where no esbuild define applies.
+    if (mode === 'capture-instructions' && !doctorProbe) writeFileSync(${JSON.stringify(instructionsOut)}, instructions)
     const profileOk = (instructions.match(/<flow-profile /g) || []).length === 1
       && instructions.includes('<flow-profile host="codex" bindings="bound">')
       && instructions.indexOf('</flow-charter>') < instructions.indexOf('<flow-profile ')
@@ -499,6 +504,30 @@ try {
   const profile = cli([...runArgs, '--profile', 'defensive-security'], { input: 'Profile test', mode: 'profile', stateDir: state('profile') })
   assert.equal(profile.status, 'succeeded')
 
+  console.log('seat contract rides the delegated payload')
+  const contractJob = cli([...runArgs, '--access', 'workspace-write'], {
+    input: 'Seat contract', mode: 'capture-instructions', stateDir: state('seat-contract'),
+  })
+  assert.equal(contractJob.status, 'succeeded', JSON.stringify(contractJob))
+  const payload = readFileSync(instructionsOut, 'utf8')
+  const openTag = '<seat-contract scope="containment">'
+  assert.equal((payload.match(/<seat-contract /g) || []).length, 1, 'expected exactly one seat-contract block')
+  assert.ok(payload.includes(openTag), 'the seat-contract block is not scoped to containment')
+  assert.ok(payload.indexOf('</delegated-seat>') < payload.indexOf(openTag), 'the seat-contract block precedes the delegated-seat block')
+  const blockStart = payload.indexOf(openTag) + openTag.length
+  const blockEnd = payload.indexOf('</seat-contract>')
+  assert.ok(blockEnd > blockStart, 'the seat-contract block never closes')
+  const contractBlock = payload.slice(blockStart, blockEnd)
+  // A byte-identical rebuild proves the bundle matches src and nothing more. Reading the canonical
+  // contract here is what proves the bundle was built with __FLOW_SEAT_CONTRACT__ pointing at it.
+  const containment = universalContainment(readFileSync(join(root, 'seat-contract.md'), 'utf8')).trim()
+  assert.ok(contractBlock.includes(containment), 'the delegated payload lost the canonical Containment section')
+  // Containment and nothing else. The other three sections are doctrine for a seat working an
+  // issue; a caller that wants them pastes them into its own task text.
+  for (const heading of ['Synchronous execution', 'Scope and completion', 'Reporting']) {
+    assert.ok(!contractBlock.includes(`## ${heading}`), `the seat-contract block carries ${heading}, which must never ride a delegated payload`)
+  }
+
   console.log('immutable structured review')
   const reviewState = state('review')
   const review = cli([...runArgs, '--mode', 'adversarial-review', '--base', 'HEAD~1'], { mode: 'review', stateDir: reviewState })
@@ -568,6 +597,18 @@ try {
   }
   assert.throws(() => { hostInventories.codex.capabilities['agent-depth-limit'].verifiedAt = '1999-01-01' }, TypeError)
   assert.throws(() => { hostInventories.claude.capabilities['skill-composition'].supported = false }, TypeError)
+
+  // The issue-stage profiles cite these ids by name, in prose no test parses. Renaming a row in
+  // HOST_CAPABILITY_TABLE has to fail here rather than leave a profile naming an id nobody has.
+  const citedCapabilities = {
+    claude: ['per-seat-tool-allowlist', 'agent-depth-limit'],
+    codex: ['per-seat-authority-narrowing', 'agent-depth-limit', 'hooks-in-native-children', 'mcp-client-roots'],
+  }
+  for (const [host, ids] of Object.entries(citedCapabilities)) {
+    for (const id of ids) {
+      assert.ok(hostInventories[host].capabilities[id], `the ${host} issue-stage profile cites capability ${id}, which the inventory no longer has`)
+    }
+  }
 
   console.log('route and nesting guards')
   assert.throws(

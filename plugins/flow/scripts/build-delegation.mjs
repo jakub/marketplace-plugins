@@ -11,6 +11,7 @@ const dependencies = JSON.parse(await readFile(join(root, 'deps', 'package.json'
 const charter = await readFile(join(root, 'charter', 'charter.md'), 'utf8')
 const claudeProfile = await readFile(join(root, 'charter', 'profiles', 'claude.md'), 'utf8')
 const codexProfile = await readFile(join(root, 'charter', 'profiles', 'codex.md'), 'utf8')
+const seatContract = await readFile(join(root, 'seat-contract.md'), 'utf8')
 
 await build({
   // esbuild writes each module's path into the bundle relative to its working directory, so
@@ -30,6 +31,7 @@ await build({
     __FLOW_CHARTER__: JSON.stringify(charter),
     __FLOW_PROFILE_CLAUDE__: JSON.stringify(claudeProfile),
     __FLOW_PROFILE_CODEX__: JSON.stringify(codexProfile),
+    __FLOW_SEAT_CONTRACT__: JSON.stringify(seatContract),
   },
   banner: { js: '#!/usr/bin/env node' },
   sourcemap: false,
