@@ -17,12 +17,13 @@ closure. Upstream ships 36 skills; the rest are deliberately not carried here.
 LOCAL MODIFICATIONS
 -------------------
 
-These files are NOT verbatim. Four patches apply on top of upstream, in order:
+These files are NOT verbatim. Five patches apply on top of upstream, in order:
 
     patches/0001-lowercase-doc-filenames.patch
     patches/0002-askuserquestion-rounds.patch
     patches/0003-drop-context-map.patch
     patches/0004-enable-model-invocation.patch
+    patches/0005-capability-conditional-delivery.patch
 
 0001 lowercases the doc-artifact names this repo standardises on - CONTEXT.md ->
 context.md, CONTEXT-MAP.md -> context-map.md - and renames the skill's own
@@ -56,6 +57,19 @@ slash command. It touches `grill-with-docs/SKILL.md` only, and is the only patch
 that touches that skill; the body stays verbatim. SKILL.md keeps its uppercase
 name - the skill loader discovers skills by that exact filename.
 
+0005 makes the two host-specific mechanisms conditional, so the skills still work
+where those mechanisms do not exist. Codex has no AskUserQuestion tool and no Skill
+tool, and a human can invoke either skill directly on either host. `grilling` now
+says to use AskUserQuestion when it is in the tool list and, without it, to ask one
+question per turn with numbered options and end the turn - the round-per-turn rhythm
+survives, and neither host gets the numbered essay 0002 exists to prevent. Upstream's
+one-line `grill-with-docs` body gains a second sentence: without a Skill tool, read
+the two sibling SKILL.md files and follow both. The third hunk flips
+`allow_implicit_invocation` in `grill-with-docs/agents/openai.yaml` from false to
+true. Upstream ships that flag paired with the `disable-model-invocation: true` that
+0004 removes, so this is the same decision on the Codex side; without it the model
+can invoke the skill on Claude and not on Codex.
+
 RE-SYNCING
 ----------
 
@@ -64,7 +78,8 @@ RE-SYNCING
     3. git apply patches/0002-askuserquestion-rounds.patch
     4. git apply patches/0003-drop-context-map.patch
     5. git apply patches/0004-enable-model-invocation.patch
-    6. Update the commit SHA above; regenerate any patch that stops applying
+    6. git apply patches/0005-capability-conditional-delivery.patch
+    7. Update the commit SHA above; regenerate any patch that stops applying
 
 To regenerate: commit the upstream-verbatim state, redo the change on top of it,
 and `git diff -M` the two commits. Verify by applying every patch to a fresh copy

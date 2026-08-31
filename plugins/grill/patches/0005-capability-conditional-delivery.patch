@@ -1,0 +1,36 @@
+diff --git a/plugins/grill/skills/grill-with-docs/SKILL.md b/plugins/grill/skills/grill-with-docs/SKILL.md
+index 04fe7e6..40013d2 100644
+--- a/plugins/grill/skills/grill-with-docs/SKILL.md
++++ b/plugins/grill/skills/grill-with-docs/SKILL.md
+@@ -3,4 +3,4 @@ name: grill-with-docs
+ description: A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go.
+ ---
+ 
+-Call the Skill tool twice, for "grilling" and "domain-modeling".
++Call the Skill tool twice, for "grilling" and "domain-modeling". Without a Skill tool, read the sibling `grilling/SKILL.md` and `domain-modeling/SKILL.md` beside this skill and follow both as written.
+diff --git a/plugins/grill/skills/grill-with-docs/agents/openai.yaml b/plugins/grill/skills/grill-with-docs/agents/openai.yaml
+index 5dbe278..693c1d8 100644
+--- a/plugins/grill/skills/grill-with-docs/agents/openai.yaml
++++ b/plugins/grill/skills/grill-with-docs/agents/openai.yaml
+@@ -2,4 +2,4 @@ interface:
+   display_name: "Grill with Docs"
+   short_description: "Grill a design and write its docs"
+ policy:
+-  allow_implicit_invocation: false
++  allow_implicit_invocation: true
+diff --git a/plugins/grill/skills/grilling/SKILL.md b/plugins/grill/skills/grilling/SKILL.md
+index a3c49bc..b034b10 100644
+--- a/plugins/grill/skills/grilling/SKILL.md
++++ b/plugins/grill/skills/grilling/SKILL.md
+@@ -7,9 +7,9 @@ Interview the user relentlessly until you reach a shared understanding. Map this
+ 
+ Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round, then wait for the user's answers before the next round.
+ 
+-Deliver every round through the AskUserQuestion tool, up to 4 questions per call, splitting a wider frontier across back-to-back calls. Give each question 2-4 concrete options the user can select, put your recommendation first and label it `(Recommended)`, and keep option descriptions short enough to read on a phone.
++Deliver every round through the AskUserQuestion tool when it is in your tool list: up to 4 questions per call, splitting a wider frontier across back-to-back calls, 2-4 concrete options per question with your recommendation first and labelled `(Recommended)`, and option descriptions short enough to read on a phone. Without that tool, ask one question per turn: the highest-leverage question on the frontier, up to 4 numbered options with a one-line consequence each, the recommended option first, then end the turn and take the user's next message as the answer.
+ 
+-Never write a round out as prose. A numbered list of questions makes the user compose an essay to answer it, which is the failure this format exists to prevent. Prose is the fallback for the rare decision no option set can capture, and then it is one question, not a list.
++Never write a whole round out as a prose list. A numbered list of questions makes the user compose an essay to answer it, which is the failure this format exists to prevent. Prose is the fallback for the rare decision no option set can capture, and then it is one question, not a list.
+ 
+ Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
+ 
