@@ -108,6 +108,19 @@ ok(`the preamble and the four sections rebuild all ${contract.length} characters
 assert.ok(!contract.includes(SEAT_CONTRACT_SENTINEL), 'the contract itself carries the sentinel, which belongs to mirrors alone')
 ok('the sentinel lives in the mirror and not in the contract')
 
+// The clean run above already says the real contract holds no fence. This says the fence rule is
+// live against the real text and not only against a fixture, and that a rule quoting `git add -A`
+// in an inline span is still legal, since the contract does that and passes.
+const fenced = `${contract}\n${'`'.repeat(3)}\nan example block\n${'`'.repeat(3)}\n`
+const fenceProblems = mirrorProblems({
+  contractText: fenced,
+  mirrorText: implementer.replace(contract, fenced),
+  mirrorName: 'agents/implementer.md',
+})
+assert.equal(fenceProblems.length, 2, `a fenced block in the real contract reported ${fenceProblems.length} problems, expected one per fence line: ${fenceProblems.join('; ')}`)
+assert.ok(fenceProblems.every((problem) => /writes a code fence/.test(problem)), `a fenced block failed for some other reason: ${fenceProblems.join('; ')}`)
+ok('a fenced block added to the real contract is rejected, one problem per fence line, while its inline code spans stay legal')
+
 console.log('the checker can still fail')
 // One directory per way a pair goes wrong, each valid except for the one defect, so a case that
 // reports two problems is a fixture that drifted rather than a checker that got stricter.
@@ -140,6 +153,16 @@ const CASES = [
     dir: 'setext-heading',
     match: /renders "Hidden policy" as a level-2 setext heading on line \d+/,
     count: 1,
+  },
+  {
+    // The contract's whole Containment section sits inside a fenced example, so a renderer draws
+    // it as a code sample where the doctrine should be, while every scan in the library reads the
+    // heading line and calls the set complete. Extraction drags the closing fence marker into the
+    // delegated payload on top of that. The defect is one fence, and a fence is two lines, so both
+    // get named.
+    dir: 'fenced-heading-masquerade',
+    match: /writes a code fence "```" on line \d+/,
+    count: 2,
   },
 ]
 for (const { dir, match, count } of CASES) {

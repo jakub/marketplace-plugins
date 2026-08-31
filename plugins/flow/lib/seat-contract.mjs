@@ -9,11 +9,12 @@
 // carry frontmatter, so the two rules cannot both hold in one place.
 //
 // Byte-equal is the whole point: a paraphrase drifts and nothing catches it, so the check
-// refuses the ways a copy can look equal and not be. A tail may not open with frontmatter,
-// and the contract may not hold an HTML comment, because a reader that strips comments would
-// then act on text the byte check never compared. The section set is closed and each heading
-// is written once, because a byte-perfect mirror of a duplicated heading still splits the two
-// readers. See sectionShapeProblems() for how.
+// refuses the ways a copy can look equal and not be. A tail may not open with frontmatter. The
+// contract may hold neither an HTML comment nor a code fence, because a reader that strips
+// comments, or one that reads a fenced block as an example, acts on text the byte check
+// compared but read differently. The section set is closed and each heading is written once,
+// because a byte-perfect mirror of a duplicated heading still splits the two readers. See
+// sectionShapeProblems() and fenceProblems() for how each one splits them.
 
 export const SEAT_CONTRACT_SENTINEL =
   '<!-- seat-contract: plugins/flow/seat-contract.md - byte-equal tail, edit the contract, not this copy -->'
@@ -59,6 +60,10 @@ const atxText = (rest) => (rest ?? '').replace(/[ \t]+#+[ \t]*$/, '').trim()
  * The setext rule is why a contract may not carry frontmatter, and mirrorProblems() rejects that
  * separately: the closing `---` of a frontmatter block sits under a non-blank line, so this scan
  * would read the last frontmatter key as a level-2 heading.
+ *
+ * This reads physical lines and tracks no fence state, which is sound only because
+ * mirrorProblems() rejects a contract holding any fence at all. A `## Containment` line inside a
+ * fenced example is a code sample to a renderer and a heading to this scan.
  */
 export function renderedHeadings(text) {
   const lines = text.split('\n')
@@ -160,6 +165,29 @@ const sectionShapeProblems = (contractText) => {
   return problems
 }
 
+// A line that opens or closes a fenced code block: three or more backticks or tildes, at any
+// indentation. Inline code spans are untouched, so a rule can still quote `git add -A`.
+const FENCE = /^[ \t]*(`{3,}|~{3,})/
+
+// No fenced block anywhere in the contract, for the same reason it may hold no HTML comment: a
+// fence in the compared bytes would let renderers and extractors read different files.
+//
+// The scans in this module read physical lines and track no fence state, which is sound only
+// while there are no fences. Put the four canonical headings inside one and the file passes
+// every check while saying something else entirely. A renderer draws Containment as a code
+// sample rather than doctrine, so a seat reading the rendered tail is handed an example where
+// its rules should be, and contractSection() still extracts the line, dragging the closing fence
+// marker into the delegated payload where it opens a fence that never closes.
+//
+// Teaching every scan to track fences is the other repair, and it buys nothing here. This
+// contract is first-party prose that no one has ever needed a code block to write. Banning the
+// marker is one rule a person can check by eye; fence tracking is state that has to stay correct
+// in three places forever.
+const fenceProblems = (contractText) => contractText.split('\n')
+  .map((line, at) => ({ line, at, fence: FENCE.exec(line) }))
+  .filter(({ fence }) => fence !== null)
+  .map(({ at, fence }) => `the contract writes a code fence "${fence[1]}" on line ${at + 1}, and a fence in the compared bytes would let renderers and extractors read different files`)
+
 /**
  * Everything wrong with one mirror of the contract, as sentences. An empty array is clean.
  *
@@ -178,6 +206,7 @@ export function mirrorProblems({ contractText, mirrorText, mirrorName }) {
   if (contractText.includes('<!--')) {
     problems.push('the contract holds an HTML comment, so a reader that strips comments sees text the byte check never compared')
   }
+  problems.push(...fenceProblems(contractText))
   if (contractText.includes('\r')) {
     problems.push('the contract holds a carriage return, and the comparison is byte-exact')
   }
