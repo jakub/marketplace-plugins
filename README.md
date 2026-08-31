@@ -38,7 +38,7 @@ Three commands in order:
 
 `/flow:prep` is the front door, and turns an issue or a free-text idea into a `ready-for-agent` spec. Github issues can **only** be created here. `prep` uses the grilling skills, along with codebase analysis, to size the problem, create ADRs, define acceptance criteria for the issue -- and also specify the **evidence** required to satisfy the acceptance criteria. 
 
-`/flow:issue` is the automated part. The orchestrator again spins up subagents to do code design against the spec, an Anthropic implementer with an OpenAI reviewer at each commit, and most importantly - evidence production. The acceptance criteria can only be signed off if there's a specific test, Actions log entry, screenshot, or end-to-end Playwright test that confirms it.
+`/flow:issue` is the automated part. The orchestrator again spins up subagents to do code design against the spec, a write seat native to the conducting host's family or reached across the bridge, and most importantly - evidence production. Whichever family wrote a diff, a seat from the other one reviews it before it ships: a shadow reader triaging at milestone boundaries, then an adversarial pass over the finished diff before convergence. The pairing flips with the host, the ban on a family reviewing its own code doesn't. The acceptance criteria can only be signed off if there's a specific test, Actions log entry, screenshot, or end-to-end Playwright test that confirms it.
 
 `/flow:land` is the human gate and the only merge path. We run CI and review-thread checks, rebase, squash merge, cleanup, and then perform a survey of what tasks are up next.
 
