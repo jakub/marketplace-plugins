@@ -347,6 +347,13 @@ const PAIR_CASES = [
     dir: 'bad-headings',
     names: ['declares gate mini-open in more than one section', '### Gate: mini-close', 'not a canonical "### gate: <id>" heading'],
   },
+  {
+    // The stage's second marker sits inside an HTML comment, so it reaches no session, and both
+    // profile bindings are otherwise fine. A checker that reads markers before stripping comments
+    // still counts mini-close as marked and calls the pair complete.
+    dir: 'commented-marker',
+    names: ['declares gate mini-close, which the stage never marks'],
+  },
 ]
 for (const { dir, names } of PAIR_CASES) {
   const at = join(FIXTURE, dir)

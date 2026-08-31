@@ -160,11 +160,15 @@ export const bindingProblems = ({ keyword, sourceName, sourceText, profiles }) =
   const lf = (text) => text.replace(/\r\n/g, '\n')
   const g = markerGrammar(keyword)
   const problems = []
-  const source = prose(body(lf(sourceText)))
+  const source = prose(uncommented(body(lf(sourceText))))
   const marked = idsOf(g.marker, source)
-  // The one preprocessing point for profiles. Heading discovery and the empty-section scan read
-  // the same comment-free text, so a whole binding wrapped in one comment cannot pass both by
-  // answering the parity check with a hidden heading and the emptiness check with its own body.
+  // Comments get stripped on both sides now, not just the profiles'. A marker sitting inside an
+  // HTML comment in the stage file reaches no session either, the same as a commented heading in
+  // a profile: the hook prints the stage prose, and a reader never sees markup a comment hides. If
+  // the source read it as live, the profiles would be forced to bind an id the rendered stage
+  // never actually marks. Heading discovery and the empty-section scan below read the same
+  // comment-free text, so a whole binding wrapped in one comment cannot pass both by answering the
+  // parity check with a hidden heading and the emptiness check with its own body.
   const readable = Object.fromEntries(
     Object.entries(profiles).map(([name, text]) => [name, uncommented(lf(text))]),
   )
