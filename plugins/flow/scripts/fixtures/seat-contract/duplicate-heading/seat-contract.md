@@ -15,3 +15,7 @@ You are one leaf of a fan-out. The rules below are mechanical, not advisory.
 ## Reporting
 
 - List the commits you made (sha + subject), and nothing you did not author.
+
+## Containment
+
+- Stage the whole tree, and delegate anything you would rather not do yourself.

@@ -9,9 +9,11 @@
 // carry frontmatter, so the two rules cannot both hold in one place.
 //
 // Byte-equal is the whole point: a paraphrase drifts and nothing catches it, so the check
-// refuses the two ways a copy can look equal and not be. A tail may not open with
-// frontmatter, and the contract may not hold an HTML comment, because a reader that strips
-// comments would then act on text the byte check never compared.
+// refuses the ways a copy can look equal and not be. A tail may not open with frontmatter,
+// and the contract may not hold an HTML comment, because a reader that strips comments would
+// then act on text the byte check never compared. The section set is closed and each heading
+// is written once, because a byte-perfect mirror of a duplicated heading still splits the two
+// readers. See sectionShapeProblems() for how.
 
 export const SEAT_CONTRACT_SENTINEL =
   '<!-- seat-contract: plugins/flow/seat-contract.md - byte-equal tail, edit the contract, not this copy -->'
@@ -65,6 +67,35 @@ const firstDifference = (a, b) => {
   return limit
 }
 
+// Every `## ` heading in file order, the heading text alone. A `### ` line does not match,
+// because its third character is not the space contractSection() stops on.
+const headingsOf = (text) => text.split('\n').filter((line) => line.startsWith('## ')).map((line) => line.slice(3))
+
+// The contract's four sections have to be the whole set, each written once.
+//
+// Two readers see this file differently and that is the whole hazard. A native seat gets the
+// tail pasted in whole, so it reads every section the file has. A delegated seat is handed one
+// section at a time, and contractSection() returns the first heading that matches and stops at
+// the next one. So a second `## Containment` after Reporting rides into the native seat and
+// never reaches the delegated one, and the byte check stays green the entire time, because the
+// mirror copied the duplicate faithfully. A fifth section splits the two readers the same way.
+// Both seats run the same rules only if the set is closed and each heading appears once.
+const sectionShapeProblems = (contractText) => {
+  const found = headingsOf(contractText)
+  const problems = []
+  for (const want of CONTRACT_SECTIONS) {
+    const count = found.filter((heading) => heading === want).length
+    if (count === 1) continue
+    problems.push(count === 0
+      ? `the contract has no "## ${want}" section, and a seat handed that section alone would get nothing`
+      : `the contract writes "## ${want}" ${count} times, and a seat handed that section alone would read only the first`)
+  }
+  for (const extra of new Set(found.filter((heading) => !CONTRACT_SECTIONS.includes(heading)))) {
+    problems.push(`the contract has a "## ${extra}" section, which is not one of the four, so it would ride the tail into a seat that reads the whole file and reach no seat handed one section`)
+  }
+  return problems
+}
+
 /**
  * Everything wrong with one mirror of the contract, as sentences. An empty array is clean.
  *
@@ -89,6 +120,7 @@ export function mirrorProblems({ contractText, mirrorText, mirrorName }) {
   if (mirrorText.includes('\r')) {
     problems.push(`${name} holds a carriage return, and the comparison is byte-exact`)
   }
+  problems.push(...sectionShapeProblems(contractText))
   if (problems.length > 0) return problems
 
   const lines = mirrorText.split('\n')

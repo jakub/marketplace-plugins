@@ -70,13 +70,13 @@ const problems = mirrorProblems({
 assert.deepEqual(problems, [], problems.join('\n'))
 ok('agents/implementer.md carries the contract byte for byte below one sentinel line')
 
-const headings = CONTRACT_SECTIONS.map((heading) => ({ heading, at: contract.indexOf(`\n## ${heading}\n`) }))
-for (const { heading, at } of headings) {
-  assert.notEqual(at, -1, `the contract has no "## ${heading}" section`)
-}
-const order = headings.map(({ at }) => at)
-assert.deepEqual([...order].sort((a, b) => a - b), order, `the contract's sections run out of order: ${CONTRACT_SECTIONS.join(', ')}`)
-ok(`all ${CONTRACT_SECTIONS.length} sections are present in order: ${CONTRACT_SECTIONS.join('; ')}`)
+// One assertion for four properties, because the heading list in file order carries all of them:
+// every canonical section is present, in the canonical order, written once, and nothing else is a
+// section. mirrorProblems() enforces the last two on its own; this says which four and in what
+// order, which is the part a library that reads any contract cannot know.
+const headings = contract.split('\n').filter((line) => line.startsWith('## ')).map((line) => line.slice(3))
+assert.deepEqual(headings, CONTRACT_SECTIONS, `the contract's headings read ${headings.join('; ')}`)
+ok(`the contract's ${headings.length} headings are exactly the canonical set, in order, once each: ${headings.join('; ')}`)
 
 const containment = universalContainment(contract)
 assert.ok(containment && containment.trim().length > 0, 'universalContainment() read no Containment section')
@@ -96,15 +96,35 @@ assert.ok(!contract.includes(SEAT_CONTRACT_SENTINEL), 'the contract itself carri
 ok('the sentinel lives in the mirror and not in the contract')
 
 console.log('the checker can still fail')
-const at = join(FIXTURE, 'one-char-drift')
-const found = mirrorProblems({
-  contractText: read(at, 'seat-contract.md'),
-  mirrorText: read(at, 'implementer.md'),
-  mirrorName: 'one-char-drift/implementer.md',
-})
-assert.ok(found.length > 0, 'the checker passed one-char-drift, a pair built to fail')
-assert.equal(found.length, 1, `one-char-drift reported ${found.length} problems, expected 1: ${found.join('; ')}`)
-assert.match(found[0], /first difference at byte \d+/, `one-char-drift failed without naming the byte offset: ${found[0]}`)
-ok(`the checker fails one-char-drift and names the gap: ${found[0]}`)
+// One directory per way a pair goes wrong, each valid except for the one defect, so a case that
+// reports two problems is a fixture that drifted rather than a checker that got stricter.
+const CASES = [
+  {
+    dir: 'one-char-drift',
+    // The mirror's tail says "authov" where the contract says "author".
+    match: /first difference at byte \d+/,
+    count: 1,
+  },
+  {
+    // The mirror is byte-identical, so the byte check has nothing to say. A second
+    // "## Containment" after Reporting still reaches a seat that gets the whole tail and never
+    // reaches one handed the section, and contractSection() returns the first match either way.
+    dir: 'duplicate-heading',
+    match: /writes "## Containment" 2 times, and a seat handed that section alone would read only the first/,
+    count: 1,
+  },
+]
+for (const { dir, match, count } of CASES) {
+  const at = join(FIXTURE, dir)
+  const found = mirrorProblems({
+    contractText: read(at, 'seat-contract.md'),
+    mirrorText: read(at, 'implementer.md'),
+    mirrorName: `${dir}/implementer.md`,
+  })
+  assert.ok(found.length > 0, `the checker passed ${dir}, a pair built to fail`)
+  assert.equal(found.length, count, `${dir} reported ${found.length} problems, expected ${count}: ${found.join('; ')}`)
+  assert.ok(found.some((problem) => match.test(problem)), `${dir} failed without naming the defect: ${found.join('; ')}`)
+  ok(`the checker fails ${dir} and names the gap: ${found[0]}`)
+}
 
 console.log(`\nseat contract: ALL PASS (${checks} checks)`)
