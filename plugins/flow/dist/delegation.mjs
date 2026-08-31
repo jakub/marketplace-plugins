@@ -22879,6 +22879,10 @@ var HOST_CAPABILITY_TABLE = {
     claude: { supported: true, assurance: "mechanism", note: "The Skill tool loads a named skill mid-turn." },
     codex: { supported: false, assurance: "unverified", verifiedAt: "2026-08-30", note: "No Skill-call tool; a skill composes by reading sibling SKILL.md files. Unverified on the installed-plugin path until the slice 3 capture." }
   },
+  "mcp-client-roots": {
+    claude: { supported: true, assurance: "mechanism", note: "The MCP client advertises the roots capability and answers roots/list with the session workspace." },
+    codex: { supported: false, assurance: "mechanism", verifiedAt: "2026-08-30", note: "The Codex 0.151.0 MCP client advertises no roots capability and sets no project-dir variable; the delegation server takes the launch shell PWD as the workspace boundary on this host, so a session started with codex -C elsewhere fails closed with OUTSIDE_ROOTS." }
+  },
   "hooks-in-native-children": {
     claude: { supported: true, assurance: "mechanism", note: "A subagent's tool calls run the session's PreToolUse hooks." },
     codex: { supported: true, assurance: "mechanism", verifiedAt: "2026-08-30", note: "A V2 child receives a Config derived from the parent's turn (agent/control/spawn.rs) and the plugin PreToolUse hooks fire inside it: a spawn_agent child attempting an unsanctioned issue create and a git push --no-verify was denied by both flow guards (slice 3 capture, flow-evidence pr-9/capture-child-hooks.*)." }
@@ -59315,12 +59319,13 @@ if (mode === "mcp") {
     process.exitCode = 2;
   } else {
     const depth = Number(process.env.FLOW_DELEGATION_DEPTH || 0);
+    const projectDir = process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || (flags.host === "codex" ? process.env.PWD || null : null);
     await startMcp({
       host: flags.host,
       depth,
       stateDir: flags["state-dir"] || defaultStateDir(),
       entryPath,
-      projectDir: process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || null
+      projectDir
     });
   }
 } else if (mode === "worker") {

@@ -35,9 +35,13 @@ for (const listed of marketplace.plugins) {
     assert.deepEqual(codexDelegation?.args?.slice(-2), ['--host', 'codex'], 'flow Codex MCP pins its host')
     assert.equal(codexDelegation?.tool_timeout_sec, 7_500, 'flow Codex MCP timeout outlives the maximum job budget')
     // Codex hands a stdio MCP server a curated environment (HOME, PATH, TERM and a few more), and
-    // systemd-run --user needs the runtime dir to find the user bus. Without these two, every
+    // systemd-run --user needs the runtime dir to find the user bus. Without the first two, every
     // provider scope fails with CONTAINMENT_UNAVAILABLE and the Codex host cannot delegate at all.
-    assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'], 'flow Codex MCP passes the user-bus environment through')
+    // PWD is the shell's cwd when the human launched codex, and it is the only host-derived
+    // workspace signal Codex 0.151 gives a plugin MCP server: the client advertises no roots
+    // capability and Codex sets no project-dir variable, so without PWD every tool call fails
+    // with NO_ROOTS.
+    assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'PWD'], 'flow Codex MCP passes the user-bus environment and the launch cwd through')
   }
 
   const codexManifest = join(pluginRoot, '.codex-plugin', 'plugin.json')

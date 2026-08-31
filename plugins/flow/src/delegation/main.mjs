@@ -16,12 +16,21 @@ if (mode === 'mcp') {
     process.exitCode = 2
   } else {
     const depth = Number(process.env.FLOW_DELEGATION_DEPTH || 0)
+    // Codex 0.151.0 hands a plugin MCP server no workspace at all: its MCP client advertises no
+    // roots capability, and it sets no project-dir variable, so every tool call used to fail with
+    // NO_ROOTS. On that host the launch shell's PWD is the boundary, meaning the directory the
+    // human was standing in when they started codex. A session started with `codex -C <elsewhere>`
+    // then fails closed with OUTSIDE_ROOTS, which is the intended answer rather than a bug. The
+    // Claude host has real roots and CLAUDE_PROJECT_DIR, so it never reads PWD.
+    const projectDir = process.env.CODEX_PROJECT_DIR
+      || process.env.CLAUDE_PROJECT_DIR
+      || (flags.host === 'codex' ? process.env.PWD || null : null)
     await startMcp({
       host: flags.host,
       depth,
       stateDir: flags['state-dir'] || defaultStateDir(),
       entryPath,
-      projectDir: process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || null,
+      projectDir,
     })
   }
 } else if (mode === 'worker') {
