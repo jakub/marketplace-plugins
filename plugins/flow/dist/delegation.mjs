@@ -57496,6 +57496,9 @@ function validateStart(input, target) {
     throw new DelegationError("LIMIT_UNSUPPORTED", "Codex App Server does not provide hard turn or cost limits for a delegated turn.");
   }
 }
+function observedClient(client) {
+  return { name: client?.name ?? null, version: client?.version ?? null };
+}
 function terminal(job) {
   return TERMINAL_STATES.includes(job.status);
 }
@@ -57823,9 +57826,11 @@ var DelegationService = class {
       await client.stop();
     }
   }
-  async doctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
+  // handshakeClient, not client: the App Server connection a few lines down already owns that
+  // name inside this method, and two different clients under one identifier is a trap.
+  async doctor(cwd, { workspace = { ok: Boolean(cwd) }, client: handshakeClient = null } = {}) {
     const target = this.target();
-    if (target === "claude") return this.claudeDoctor(cwd, { workspace });
+    if (target === "claude") return this.claudeDoctor(cwd, { workspace, client: handshakeClient });
     const checks = {
       workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
@@ -57907,9 +57912,9 @@ var DelegationService = class {
         }
       }
     }
-    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), hostCapabilities: capabilitiesForHost(this.host), checks };
+    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), client: observedClient(handshakeClient), hostCapabilities: capabilitiesForHost(this.host), checks };
   }
-  async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
+  async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) }, client = null } = {}) {
     const checks = {
       workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
@@ -57940,6 +57945,7 @@ var DelegationService = class {
       ok: Object.values(checks).every((check) => check.ok),
       target: "claude",
       capabilities: this.capabilities(),
+      client: observedClient(client),
       hostCapabilities: capabilitiesForHost(this.host),
       checks
     };
@@ -58285,7 +58291,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     annotations: { readOnlyHint: true, openWorldHint: true }
   }, asTool(async ({ cwd }) => {
     const context = await doctorContext(cwd);
-    const result = await service.doctor(context.cwd, { workspace: context.workspace });
+    const result = await service.doctor(context.cwd, { workspace: context.workspace, client: context.mcp.client });
     return toolResult({ ...result, mcp: context.mcp });
   }));
   const transport = new StdioServerTransport();

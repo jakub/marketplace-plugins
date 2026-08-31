@@ -1419,11 +1419,21 @@ try {
   assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.profile, 'flow_delegation')
   assert.equal(doctorResult.structuredContent.mcp.client.name, 'flow-smoke')
   assert.equal(doctorResult.structuredContent.mcp.capabilities.roots.listChanged, true)
+  // The live operand for a version-drift check against hostCapabilities.verifiedAgainst. It is a
+  // top-level field, beside that record rather than buried under mcp, and it repeats what this
+  // client's initialize sent: name flow-smoke, version 1.0.0.
+  assert.deepEqual(doctorResult.structuredContent.client, { name: 'flow-smoke', version: '1.0.0' })
   const doctorHostCapabilities = doctorResult.structuredContent.hostCapabilities
   assert.equal(doctorHostCapabilities.schemaVersion, 1)
   assert.equal(doctorHostCapabilities.host, 'claude')
   assert.equal(doctorHostCapabilities.capabilities['hook-deny'].supported, true)
   assert.equal(doctorResult.structuredContent.checks.hostCapabilities, undefined, 'the inventory is a sibling of checks, not a check')
+  // No MCP session can arrive without clientInfo: the SDK's InitializeRequestParamsSchema makes it
+  // required, so an initialize that omits it is rejected and no session exists to run doctor over.
+  // The CLI doctor is the real no-handshake path, and it answers nulls instead of inventing a
+  // version for a caller it never saw.
+  const cliDoctor = cli(['doctor', '--cwd', repo], { stateDir: state('cli-doctor') })
+  assert.deepEqual(cliDoctor.client, { name: null, version: null })
   // Unsupported entries are inventory, not failures. Doctor stays ok while they are present.
   assert.ok(Object.values(doctorHostCapabilities.capabilities).some((entry) => entry.supported === false))
   assert.equal(doctorResult.structuredContent.ok, true)
