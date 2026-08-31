@@ -126,6 +126,18 @@ there. So paste the ENTIRE canonical contract, meaning `plugins/flow/seat-contra
 read it at preflight, into the delegation task text of any substantial bridge writer, the same
 way the other host's native spawns carry it.
 
+A bridge writer edits and cannot commit. The delegation permission profile keeps the exact Git
+metadata paths read-only even on a workspace-write job, and for a write job `.git`, `.agents` and
+`.codex` under the worktree stay read-only too, which `docs/DELEGATION.md` states in its
+paragraph on the `flow_delegation` profile. So `git add` and `git commit` fail in that seat by
+design, and network off rules out a push. The pasted contract still applies, with one adaptation
+you write into the task text above it: its scope and milestone discipline governs the seat's
+EDITS, and the commit and report obligations move to you. When the seat comes back, do invariant
+10's read yourself, `git -C <wt> status` and `git -C <wt> diff` against the milestone that seat
+was given, then stage ONLY that seat's files by explicit path and commit with the seat named in
+the message body. Never `git add -A` after a bridge seat: the worktree may be holding a sibling's
+work. None of this loosens anything for a native writer, which commits its own milestones.
+
 ### gate: design-pass-legs
 
 The native leg is `flow:code-architect` at `model: opus`, the charter's `opus-5`, effort high:
@@ -140,13 +152,25 @@ disagrees hard.
 
 ### gate: review-fabric
 
-A cross-family review seat is `delegate_to_codex` with `mode: "adversarial-review"`, an immutable
-`base`, and `access: "read-only"`; read the structured findings and do not parse the prose. Sol
-is flat-rate on the subscription here, so a wider fabric costs turnaround and not money: widen on
-a hunch and journal it. An extra native lens on top of the mandatory cross-family one is
-`flow:code-reviewer`, which holds Bash and Read and no writing tool. Security-flavored seats go
-to `gpt-daybreak-blue-latest` first. The retry for a null security seat is a seat of the other
-family, never a second Claude seat.
+The mandatory reviewer is the family opposite the one that WROTE the diff, not the family
+opposite the host. Read the writer's family off the seat that produced the code, then pick the
+reviewer from the other one. This host settles only the mechanism: a Claude-family seat is a
+native Agent call, and a Codex-family seat is `delegate_to_codex`.
+
+Two cases, and the second is the one a cold reader skips. A diff from `flow:implementer` is
+Claude-written, so its mandatory review is `delegate_to_codex` with `mode: "adversarial-review"`,
+an immutable `base` and `access: "read-only"`. That is the common case. A diff from a bridge
+writer, meaning `delegate_to_codex` at workspace-write, is Codex-written, so its mandatory review
+is a native Claude seat: `flow:code-reviewer` at `model: opus`, effort xhigh. Sending that diff
+back across the bridge is Codex reviewing Codex, and it slips through because the bridge call is
+the same one that reviews everything else. Track which seat wrote which file. A PR holding both
+native-written and bridge-written work needs one of each, judged per diff and not per run.
+
+Read the structured findings and do not parse the prose. Sol is flat-rate on the subscription
+here, so extra lenses cost turnaround and not money: widen on a hunch and journal it. A
+same-family lens is an extra on top of the mandatory opposite-family one and never a replacement
+for it. Security-flavored seats go to `gpt-daybreak-blue-latest` first. The retry for a null
+security seat is a seat of the other family.
 
 ### gate: fanout-medium
 

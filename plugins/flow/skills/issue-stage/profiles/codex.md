@@ -133,6 +133,18 @@ synchronous-execution, scope and reporting sections never reach that seat unless
 there. So paste the ENTIRE canonical contract into the delegation task text of any substantial
 bridge writer, exactly as a native spawn prompt carries it.
 
+A bridge writer edits and cannot commit. Its sandbox allows writes under the job's workspace key
+and nowhere else, and this stage works in a linked worktree whose object store, refs and logs sit
+in the parent repository's Git directory, outside that key, so `git commit` in that seat fails on
+the first object write. Network off rules out a push as well. The pasted contract still applies,
+with one adaptation you write into the task text above it: its scope and milestone discipline
+governs the seat's EDITS, and the commit and report obligations move to you. When the seat comes
+back, do invariant 10's read yourself, `git -C <wt> status` and `git -C <wt> diff` against the
+milestone that seat was given, then stage ONLY that seat's files by explicit path and commit with
+the seat named in the message body. Never `git add -A` after a bridge seat: the worktree may be
+holding a sibling's work. None of this loosens anything for a native writer, which runs under the
+plugin's guards and commits its own milestones.
+
 ### gate: design-pass-legs
 
 The native leg is a Codex-family seat: `spawn_agent` on `gpt-5.6-sol` at high effort,
@@ -149,14 +161,28 @@ the same direction every time. Widening to a taste leg also reaches through the 
 
 ### gate: review-fabric
 
-The cross-family reviewer is a Claude model reached with `delegate_to_claude`, in
-`mode: "adversarial-review"`, against an immutable `base`, at `access: "read-only"`; read the
-structured findings and do not parse the prose. The economics invert here. The outside family is
-metered on this host rather than flat-rate, so a wide fabric of lenses has a bill attached. The
-review is still mandatory. Decorrelation is not a budget line, and the thing to trim when the
-bill matters is the number of lenses on a quiet diff, never the one cross-family pass.
+The mandatory reviewer is the family opposite the one that WROTE the diff, not the family
+opposite the host. Read the writer's family off the seat that produced the code, then pick the
+reviewer from the other one. This host settles only the mechanism: a Codex-family seat is a
+native `spawn_agent`, and a Claude-family seat is `delegate_to_claude`.
+
+Two cases, and the second is the one a cold reader skips. A diff from a native `spawn_agent`
+writer is Codex-written, so its mandatory review is `delegate_to_claude` in
+`mode: "adversarial-review"`, against an immutable `base`, at `access: "read-only"`. That is the
+common case here. A diff from a bridge writer, meaning `delegate_to_claude` at workspace-write, is
+Claude-written, so its mandatory review is a native Codex seat on `gpt-5.6-sol` at high effort.
+Do not send that one across the bridge. A Claude model reading a Claude-written diff is the
+correlation failure the invariant names, and here you would pay metered budget for a review that
+proves nothing. Track which seat wrote which file. A PR holding both native-written and
+bridge-written work needs one of each, judged per diff and not per run.
+
+Read the structured findings and do not parse the prose. The economics invert here. The outside
+family is metered on this host rather than flat-rate, so a wide fabric of lenses has a bill
+attached. The review is still mandatory. Decorrelation is not a budget line, and the thing to
+trim when the bill matters is the number of optional lenses on a quiet diff, never the mandatory
+opposite-family pass. A same-family lens is an extra and never a replacement.
 Security-flavored seats still prefer `gpt-daybreak-blue-latest` natively, and the retry for a
-null security seat is a seat of the other family through the bridge.
+null security seat is a seat of the other family.
 
 ### gate: fanout-medium
 
