@@ -6,9 +6,9 @@
 // off, and commands/<stage>.md has to stay a thin alias that declares the same tool allowance as
 // the Claude profile. Discovery means a stage added later is linted without editing this file.
 // The checks run at two layers over scripts/fixtures/stage-conformance/: the binding engine over
-// the three broken skill-and-profile pairs, and the whole per-stage checker over four miniature
-// plugin roots, each valid except for one defect. So a green run also means the checker can
-// still fail and says why.
+// the three broken skill-and-profile pairs, and the whole per-stage checker over the miniature
+// plugin roots beside them, each valid except for one defect. So a green run also means the
+// checker can still fail and says why.
 // Run: node plugins/flow/scripts/smoke-stage-conformance.mjs
 
 import assert from 'node:assert/strict'
@@ -16,7 +16,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { bindingProblems, body, frontmatter } from './lib/conformance.mjs'
+import { bindingProblems, body, frontmatter, uncommented } from './lib/conformance.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const FIXTURE = join(ROOT, 'scripts', 'fixtures', 'stage-conformance')
@@ -65,6 +65,42 @@ const escaped = (word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const bannedHits = (text) => BANNED.flatMap((word) => [
   ...text.matchAll(new RegExp(`(?<![\\w$])${escaped(word)}(?![\\w$])`, 'gi')),
 ].map((hit) => hit[0]))
+
+// The sentence both shipped aliases carry, with the stage name substituted. Pointing at the two
+// files is the alias's whole job, so the lint wants the instruction that performs it and not the
+// two paths on their own: an alias whose only mention of them sits inside an HTML comment routes
+// nowhere, and a pair of substring searches called that a pass.
+const routeSentence = (name) => 'Read `${CLAUDE_PLUGIN_ROOT}/skills/' + name + '/profiles/claude.md` first, '
+  + 'then `${CLAUDE_PLUGIN_ROOT}/skills/' + name + '/SKILL.md`.'
+
+// agents/openai.yaml has a known two-level shape: the top-level keys "interface:" and "policy:",
+// each holding indented scalars. This reads the policy block alone and takes only the keys at its
+// own indentation, so text one level deeper cannot answer for it. The check this replaced matched
+// allow_implicit_invocation: false anywhere in the file, which a description written as a block
+// scalar can satisfy while "policy: allow_implicit_invocation: true" sits below it. A file that
+// does not fit the shape is a problem in its own right, never a pass.
+const indentOf = (line) => /^[ \t]*/.exec(line)[0].length
+const policyScalar = (text, key) => {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const start = lines.findIndex((line) => /^policy:[ \t]*$/.test(line))
+  if (start === -1) return { problem: 'has no top-level "policy:" block' }
+  const block = []
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() === '') continue
+    if (/^\S/.test(line)) break
+    block.push(line)
+  }
+  if (block.length === 0) return { problem: 'has an empty "policy:" block' }
+  const depth = indentOf(block[0])
+  if (block.some((line) => indentOf(line) < depth)) {
+    return { problem: 'has a "policy:" block whose keys do not line up' }
+  }
+  const scalar = new RegExp(`^[ \\t]*${key}:[ \\t]*(\\S*)[ \\t]*$`)
+  const hits = block.filter((line) => indentOf(line) === depth).map((line) => scalar.exec(line)).filter(Boolean)
+  if (hits.length === 0) return { problem: `sets no ${key} directly under "policy:"` }
+  if (hits.length > 1) return { problem: `sets ${key} ${hits.length} times under "policy:"` }
+  return { value: hits[0][1] }
+}
 
 const profilesIn = (dir) => Object.fromEntries(
   readdirSync(join(dir, 'profiles'))
@@ -123,8 +159,16 @@ const stageProblems = (root, name) => {
   const agent = readOrNull(at, 'agents', 'openai.yaml')
   if (agent === null) {
     problems.push(`skills/${name}/agents/openai.yaml does not exist`)
-  } else if (!/^\s*allow_implicit_invocation:\s*false\s*$/m.test(agent)) {
-    problems.push(`skills/${name}/agents/openai.yaml does not set allow_implicit_invocation: false`)
+  } else {
+    const { value, problem } = policyScalar(agent, 'allow_implicit_invocation')
+    if (problem) {
+      problems.push(`skills/${name}/agents/openai.yaml ${problem}`)
+    } else if (value !== 'false') {
+      problems.push(
+        `skills/${name}/agents/openai.yaml sets allow_implicit_invocation: ${value || '(nothing)'} `
+        + 'under policy:, not false, so the stage can start itself',
+      )
+    }
   }
 
   const alias = readOrNull(root, ...command.split('/'))
@@ -140,8 +184,11 @@ const stageProblems = (root, name) => {
   if (headings.length > 1) {
     problems.push(`${command} has ${headings.length} "##" headings; an alias needs at most one`)
   }
-  for (const target of [`skills/${name}/profiles/claude.md`, `skills/${name}/SKILL.md`]) {
-    if (!aliasBody.includes(target)) problems.push(`${command} never points at ${target}`)
+  // Comments come out before the sentence search, and a run of whitespace collapses to one space,
+  // so a wrapped line still reads as the same sentence and a commented-out one reads as nothing.
+  const routing = uncommented(aliasBody).replace(/\s+/g, ' ')
+  if (!routing.includes(routeSentence(name))) {
+    problems.push(`${command} never routes to the stage: an alias has to say "${routeSentence(name)}"`)
   }
   const aliasAllowance = ALLOWED_TOOLS.exec(frontmatter(alias)?.[1] ?? '')?.[0]
   const profileAllowance = ALLOWED_TOOLS.exec(profiles['claude.md'] ?? '')?.[0]
@@ -212,7 +259,21 @@ const ROOT_CASES = [
   { dir: 'missing-host-profile', names: ['skills/mini-stage/profiles has no codex.md'], count: 1 },
   {
     dir: 'implicit-invocation-enabled',
-    names: ['skills/mini-stage/agents/openai.yaml does not set allow_implicit_invocation: false'],
+    names: ['skills/mini-stage/agents/openai.yaml sets allow_implicit_invocation: true under policy:, not false'],
+    count: 1,
+  },
+  {
+    // The same defect, hidden: the true value sits under policy: while the string a whole-file
+    // scan looks for sits inside an interface description written as a block scalar.
+    dir: 'implicit-invocation-shadowed',
+    names: ['skills/mini-stage/agents/openai.yaml sets allow_implicit_invocation: true under policy:, not false'],
+    count: 1,
+  },
+  {
+    // Both paths appear in the alias, inside an HTML comment, so nothing tells the session to
+    // read them.
+    dir: 'alias-comment-only',
+    names: ['commands/mini.md never routes to the stage: an alias has to say "Read `${CLAUDE_PLUGIN_ROOT}/skills/mini-stage/profiles/claude.md` first, then `${CLAUDE_PLUGIN_ROOT}/skills/mini-stage/SKILL.md`."'],
     count: 1,
   },
 ]

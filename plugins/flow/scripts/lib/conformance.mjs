@@ -75,8 +75,10 @@ const badHeadings = (text, { headingLike, canonicalHeading }) => [...text.matchA
 // Where a binding section stops. An ATX heading ends it, and so does a setext one: a line of
 // text with nothing but = or - under it renders as a heading too, so a scan that only knows
 // about # would swallow the next section's title and its body and call the empty section above
-// it full. Both forms may sit up to three spaces in from the margin and still render.
-const ATX_HEADING = /^ {0,3}#{1,6} /
+// it full. Both forms may sit up to three spaces in from the margin and still render. The
+// separator after the # run is a space or a tab, because CommonMark accepts either, and a scan
+// that demands a space reads "##\tBindings" as prose and calls the empty section above it full.
+const ATX_HEADING = /^ {0,3}#{1,6}[ \t]/
 const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)\s*$/
 const endsSection = (rest, at) => ATX_HEADING.test(rest[at])
   || (rest[at].trim() !== '' && SETEXT_UNDERLINE.test(rest[at + 1] ?? ''))

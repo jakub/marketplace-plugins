@@ -5,6 +5,4 @@ allowed-tools: Bash(gh:*), Read
 
 # /flow:mini - the fixture alias
 
-The stage lives in the `mini-stage` skill. Read `${CLAUDE_PLUGIN_ROOT}/skills/mini-stage/profiles/claude.md`
-first, then `${CLAUDE_PLUGIN_ROOT}/skills/mini-stage/SKILL.md`, and run the stage under the bindings
-that profile declares for each gate.
+The stage itself lives in the `mini-stage` skill, so every host runs the same gates. Read `${CLAUDE_PLUGIN_ROOT}/skills/mini-stage/profiles/claude.md` first, then `${CLAUDE_PLUGIN_ROOT}/skills/mini-stage/SKILL.md`. Execute the stage against `$ARGUMENTS` under the bindings that profile declares for each gate.

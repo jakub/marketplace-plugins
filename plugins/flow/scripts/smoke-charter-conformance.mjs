@@ -291,6 +291,22 @@ const CASES = [
     count: 1,
   },
   {
+    // CommonMark ends a heading's # run with a space or a tab, so "##\tBindings" is a heading and
+    // the mini-seat section above it really is empty. The stage lint calls the same engine, so
+    // this one case covers a tab-masked empty gate section too.
+    label: 'tab-heading-masked-empty',
+    run: () => charterProblems('The charter marks [[role:mini-seat]].\n', { 'tabbed.md': [
+      '### role: mini-seat',
+      '',
+      '##\tBindings',
+      '',
+      'The seat that does the work.',
+      '',
+    ].join('\n') }).problems,
+    names: ['tabbed.md declares role mini-seat with an empty section'],
+    count: 1,
+  },
+  {
     // Three leading spaces still render as a heading. A scan anchored to column one misses it
     // in both directions: the extractor never counts the binding, and the near-miss tripwire
     // never reports it, so the profile appears to bind exactly the marked set while carrying
