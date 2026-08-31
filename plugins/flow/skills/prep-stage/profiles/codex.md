@@ -66,10 +66,12 @@ charter's "Sol is the decorrelated seat" is written from a Claude host.
 ### gate: mutual-critique
 
 `delegation_continue` on the bridge job id carries the native sheet to the Claude leg with
-its session intact (Claude continuation is supported; live steering is not). `send_input` to
-the native seat carries the bridge sheet back. Null, error, timeout, or `awaiting_approval`
-from either side is UNKNOWN: read `delegation_status` and `delegation_result` before any
-retry. Never average the two sheets.
+its session intact (Claude continuation is supported; live steering is not).
+`followup_task` on the native seat carries the bridge sheet back and starts its next turn;
+`send_message` alone only queues text for a completed seat, and `send_input` is the v1
+surface this host no longer uses. Null, error, timeout, or `awaiting_approval` from either
+side is UNKNOWN: read `delegation_status` and `delegation_result` before any retry. Never
+average the two sheets.
 
 ### gate: trust-fork-ask
 

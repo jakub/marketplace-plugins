@@ -38,7 +38,7 @@ The subject comes in with the invocation, and the profile says how this host car
 
 No issue is created yet - that happens at finalize, after the design survives the gates.
 
-Before any seat touches the tree, record `git status --porcelain`. §7 reconciles against that snapshot before it commits anything.
+Before any seat touches the tree, record the entry snapshot: `git status --porcelain=v2 --untracked-files=all`, which names every untracked file rather than its directory, and the content of whatever is already dirty - `git diff | sha256sum` and `git diff --cached | sha256sum`. §7 reconciles all three before it commits anything.
 
 ## 2. Scout
 
@@ -111,7 +111,7 @@ Artifact evidence publishes to the tailnet-private plans host, always - there is
 
 ## 7. Finalize
 
-1) **Persist doc artifacts to main, when the target repository keeps a design-record stack**: a `context.md`, a `docs/adr/`, or whatever its own instructions name as the standing record. On up-to-date main, stage ONLY the `context.md` or ADR changes the grill produced, one `docs(...)` commit, then push. A repository whose instructions say the issue is the only record it keeps gets no docs commit at all - say so in the journal instead of inventing a stack it deliberately doesn't have. Either way, reconcile the tree against the `git status --porcelain` snapshot taken at entry before any commit - anything outside the doc set stops the run. That is a detector for a misbehaving seat, not containment. That reconciliation is a detector for a seat that misbehaved, not containment.
+1) **Persist doc artifacts to main, when the target repository keeps a design-record stack**: a `context.md`, a `docs/adr/`, or whatever its own instructions name as the standing record. On up-to-date main, stage ONLY the `context.md` or ADR changes the grill produced, one `docs(...)` commit, then push. A repository whose instructions say the issue is the only record it keeps gets no docs commit at all - say so in the journal instead of inventing a stack it deliberately doesn't have. Either way, reconcile the tree against the entry snapshot before any commit - the porcelain list, both diff hashes, and the untracked-file list must all be unchanged, because a status list alone cannot see a rewrite of an already-dirty file or a new file under an already-untracked directory. Anything that moved outside the doc set stops the run. That is a detector for a misbehaving seat, not containment.
 2) **Issue body → hardened spec** (edit in place): Restate the goal/why, context, agreed approach, key decisions (ADR links), and the acceptance criteria. For free-text mode, create the issue now - `FLOW_SANCTION=prep gh issue create …` to pass the hook.
 3) **Journal comment**: The synthesized design and decisions trail.
 4) **Labels**: Validate the ready-for-agent contract (`flow` skill, `label-contract.md`), apply `ready-for-agent`, and clear `needs-triage`/`agent-found`/`needs-info` tags.
