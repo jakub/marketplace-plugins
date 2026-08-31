@@ -113,6 +113,17 @@ const opensUnclosedComment = (text) => {
   }
 }
 
+// A conservative reading of CommonMark's other code form: four or more literal leading spaces on
+// a line that is not blank. It is not a parser, on purpose. Telling indented code apart from an
+// indented continuation of a list item needs the list-continuation rules, and getting that
+// slightly wrong either misses a real one or flags a paragraph that just happens to be indented.
+// This never has to be exact, because the rule it feeds is a ban, not a strip: any line shaped
+// like indented code that also carries a comment delimiter is a problem regardless of which way
+// the shape call was right.
+const INDENTED_CODE_LINE = /^ {4,}\S.*$/gm
+const quotesCommentDelimiterInIndentedCode = (text) => [...text.matchAll(INDENTED_CODE_LINE)]
+  .some((line) => line[0].includes('<!--') || line[0].includes('-->'))
+
 export const repeats = (list) => [...new Set(list.filter((v, i) => list.indexOf(v) !== i))]
 
 const idsOf = (re, text) => [...text.matchAll(re)].map((m) => m[1])
@@ -186,13 +197,21 @@ export const bindingProblems = ({ keyword, sourceName, sourceText, profiles }) =
   //
   // prose() does not know CommonMark's other code form, the 4-space indented block: telling it
   // apart from an indented paragraph needs the list-continuation rules, which makes it a parser,
-  // not a strip. So a quoted "<!--" written that way survives to here anyway, and the same swallow
-  // the fence and span fix closed is open again through this one remaining shape. Rather than grow
-  // prose() into that parser, this checks the code-stripped text for a "<!--" with no matching
-  // "-->" before the end of it and says so by name, loudly, instead of silently losing every marker
-  // after it the way uncommented() would. First-party doctrine never legitimately opens a comment
-  // it doesn't close, so a false alarm here is not a real cost.
+  // not a strip. This lint is not going to become one, so a quoted "<!--" written that way reaches
+  // here live either way. Two rules cover it, and neither depends on getting the classification
+  // right. First, a structural ban: no line shaped like indented code may carry a comment
+  // delimiter at all, terminated or not, because a fenced block is already the sanctioned way to
+  // quote comment syntax and costs nothing extra to use. Second, a belt-and-suspenders check for
+  // any comment, indented or not, that opens and never closes: it reads the same code-stripped
+  // text for a "<!--" with no matching "-->" before the end of it. Either one says so by name,
+  // loudly, instead of silently losing every marker after the delimiter the way uncommented()
+  // would. First-party doctrine never legitimately quotes comment syntax outside a fence or opens
+  // a comment it doesn't close, so a false alarm from either rule is not a real cost.
   const codeStripped = prose(body(lf(sourceText)))
+  if (quotesCommentDelimiterInIndentedCode(codeStripped)) {
+    problems.push(`${sourceName} quotes an HTML comment delimiter in indented code, which this `
+      + 'lint cannot classify - use a fenced block')
+  }
   if (opensUnclosedComment(codeStripped)) {
     problems.push(`${sourceName} opens an HTML comment that never closes, so everything after it `
       + 'would be invisible to this lint')

@@ -377,6 +377,15 @@ const PAIR_CASES = [
     dir: 'indented-comment-opener',
     names: ['the stage opens an HTML comment that never closes, so everything after it would be invisible to this lint'],
   },
+  {
+    // The opener sits on one indented line and a real closer sits on a later indented line, so the
+    // comment terminates and the unterminated-comment rule alone would miss it. Everything between
+    // the two indented lines, including the second live marker, still reads as commented out. The
+    // structural ban catches this: a comment delimiter may not sit on an indented-code line at
+    // all, closed or not, because a fenced block is the sanctioned way to quote one.
+    dir: 'indented-terminated-comment',
+    names: ['the stage quotes an HTML comment delimiter in indented code, which this lint cannot classify - use a fenced block'],
+  },
 ]
 for (const { dir, names } of PAIR_CASES) {
   const at = join(FIXTURE, dir)
