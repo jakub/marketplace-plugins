@@ -63,8 +63,11 @@ refuses. Say that at preflight, name the directory to relaunch from, and stop. D
 issue first, and do not move the worktree inside the repository to get around it.
 
 So this gate's test is small, because the worktree does not exist yet: the session root is the
-directory holding the repository, the intended path sits inside that root, and the two roots have
-not diverged.
+directory holding the repository, the intended path sits inside that root, the repository's
+common git directory resolves inside that root, and the two roots have not diverged. The common
+directory earns its place in that list. A repository that is itself a linked worktree of
+something outside the root passes every other check here and then fails at creation, after the
+claim, because `git worktree add` writes the new registration into that out-of-bounds directory.
 
 The linked-worktree rule is a different check at a different time, and it is bridge-scoped.
 `canonicalWorkspace` in `src/delegation/workspace.mjs` decides which `cwd` a delegation job may
