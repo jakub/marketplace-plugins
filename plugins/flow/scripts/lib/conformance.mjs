@@ -99,6 +99,20 @@ export const prose = (text) => spanless(unfenced(text))
 // nobody closed is inside the comment too.
 export const uncommented = (text) => text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
 
+// Whether text holds a "<!--" with no matching "-->" anywhere after it. Walks opener to closer to
+// opener, the same pairing uncommented()'s regex does, so this agrees with what that function is
+// about to erase: a closed comment earlier in the text does not make a later, unclosed one safe.
+const opensUnclosedComment = (text) => {
+  let at = 0
+  for (;;) {
+    const open = text.indexOf('<!--', at)
+    if (open === -1) return false
+    const close = text.indexOf('-->', open)
+    if (close === -1) return true
+    at = close + 3
+  }
+}
+
 export const repeats = (list) => [...new Set(list.filter((v, i) => list.indexOf(v) !== i))]
 
 const idsOf = (re, text) => [...text.matchAll(re)].map((m) => m[1])
@@ -169,7 +183,21 @@ export const bindingProblems = ({ keyword, sourceName, sourceText, profiles }) =
   // later live marker down with it, before a single marker gets extracted. Stripping code first
   // removes the fence or span (and the quoted opener inside it) as a whole, so nothing it contains
   // can start a comment that reaches past it.
-  const source = uncommented(prose(body(lf(sourceText))))
+  //
+  // prose() does not know CommonMark's other code form, the 4-space indented block: telling it
+  // apart from an indented paragraph needs the list-continuation rules, which makes it a parser,
+  // not a strip. So a quoted "<!--" written that way survives to here anyway, and the same swallow
+  // the fence and span fix closed is open again through this one remaining shape. Rather than grow
+  // prose() into that parser, this checks the code-stripped text for a "<!--" with no matching
+  // "-->" before the end of it and says so by name, loudly, instead of silently losing every marker
+  // after it the way uncommented() would. First-party doctrine never legitimately opens a comment
+  // it doesn't close, so a false alarm here is not a real cost.
+  const codeStripped = prose(body(lf(sourceText)))
+  if (opensUnclosedComment(codeStripped)) {
+    problems.push(`${sourceName} opens an HTML comment that never closes, so everything after it `
+      + 'would be invisible to this lint')
+  }
+  const source = uncommented(codeStripped)
   const marked = idsOf(g.marker, source)
   // A marker sitting inside a real HTML comment in the stage file reaches no session either, the
   // same as a commented heading in a profile: the hook prints the stage prose, and a reader never

@@ -368,6 +368,15 @@ const PAIR_CASES = [
     dir: 'inline-comment-opener',
     names: ['mini.md has no "### gate: mini-close" section'],
   },
+  {
+    // The same opener, quoted inside a 4-space indented code block. prose() strips fenced and
+    // inline code but not this form, so the opener reaches the comment stripper live and swallows
+    // the second marker the same way the fenced and inline cases used to. Rather than teach the
+    // engine to classify indented code, it has to name the unterminated comment loudly instead of
+    // silently losing everything after it.
+    dir: 'indented-comment-opener',
+    names: ['the stage opens an HTML comment that never closes, so everything after it would be invisible to this lint'],
+  },
 ]
 for (const { dir, names } of PAIR_CASES) {
   const at = join(FIXTURE, dir)
