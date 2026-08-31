@@ -100,16 +100,41 @@ const live = (text) => prose(uncommented(text.replace(/\r\n/g, '\n')))
 // so the file says one thing to a human and another to the loader.
 const ALLOWANCE = /^allowed-tools:/
 const ALLOWANCE_LIKE = /^[ \t]{0,3}allowed-tools:/i
-const allowances = (text) => live(text).split('\n').filter((line) => ALLOWANCE.test(line))
 const allowanceNearMisses = (text) => live(text)
   .split('\n')
   .filter((line) => ALLOWANCE_LIKE.test(line) && !ALLOWANCE.test(line))
   .map((line) => line.replace(/\s+$/, ''))
 
-const allowanceCount = (what, lines) => {
-  if (lines.length === 0) return `${what} declares no live allowed-tools line`
-  if (lines.length > 1) return `${what} declares ${lines.length} live allowed-tools lines, and exactly one counts`
-  return null
+// The canonical allowance carries its whole value on the one line. A key with nothing after it, a
+// block or folded scalar ("allowed-tools: |"), or a value continued on an indented line below is
+// not that form, and two of them compare equal on the word "|" while the tools underneath differ.
+// Those lines come back separately, because a file that wrote one did declare an allowance and
+// saying it declared none would name the wrong defect.
+const readAllowances = (text) => {
+  const lines = live(text).split('\n')
+  const canonical = []
+  const malformed = []
+  for (const [at, raw] of lines.entries()) {
+    const line = raw.replace(/\s+$/, '')
+    if (!ALLOWANCE.test(line)) continue
+    const value = line.slice('allowed-tools:'.length).trim()
+    const continued = /^\s+\S/.test(lines[at + 1] ?? '')
+    if (value === '' || /^[|>]/.test(value) || continued) malformed.push(line)
+    else canonical.push(line)
+  }
+  return { canonical, malformed }
+}
+
+const allowanceProblems = (what, { canonical, malformed }) => {
+  if (malformed.length > 0) {
+    return malformed.map((line) => `${what} writes "${line}", and an allowance must be one canonical `
+      + 'line: the whole value sits on it, never a block scalar and never a continuation below')
+  }
+  if (canonical.length === 0) return [`${what} declares no live allowed-tools line`]
+  if (canonical.length > 1) {
+    return [`${what} declares ${canonical.length} live allowed-tools lines, and exactly one counts`]
+  }
+  return []
 }
 
 // agents/openai.yaml has a known two-level shape: the top-level keys "interface:" and "policy:",
@@ -222,23 +247,23 @@ const stageProblems = (root, name) => {
   }
 
   const claude = profiles['claude.md'] ?? ''
-  const aliasAllowances = allowances(frontmatter(alias)?.[1] ?? '')
-  const profileAllowances = allowances(claude)
+  const aliasAllowance = readAllowances(frontmatter(alias)?.[1] ?? '')
+  const profileAllowance = readAllowances(claude)
   for (const line of allowanceNearMisses(claude)) {
     problems.push(
       `skills/${name}/profiles/claude.md writes "${line}", which looks like an allowance line and `
       + 'is not one: the canonical form is lowercase "allowed-tools:" at column one',
     )
   }
-  const counts = [
-    allowanceCount(command, aliasAllowances),
-    allowanceCount(`skills/${name}/profiles/claude.md`, profileAllowances),
-  ].filter(Boolean)
-  for (const problem of counts) problems.push(problem)
-  if (counts.length === 0 && aliasAllowances[0] !== profileAllowances[0]) {
+  const gaps = [
+    ...allowanceProblems(command, aliasAllowance),
+    ...allowanceProblems(`skills/${name}/profiles/claude.md`, profileAllowance),
+  ]
+  for (const problem of gaps) problems.push(problem)
+  if (gaps.length === 0 && aliasAllowance.canonical[0] !== profileAllowance.canonical[0]) {
     problems.push(
       `${command} and skills/${name}/profiles/claude.md declare different allowed-tools lines: `
-      + `"${aliasAllowances[0]}" against "${profileAllowances[0]}"`,
+      + `"${aliasAllowance.canonical[0]}" against "${profileAllowance.canonical[0]}"`,
     )
   }
 
@@ -367,6 +392,25 @@ const ROOT_CASES = [
     // The only allowance in the profile is a fenced example of the line to copy. Quoting a line
     // grants nothing, so the profile declares no allowance at all.
     dir: 'allowed-tools-fenced',
+    names: ['skills/mini-stage/profiles/claude.md declares no live allowed-tools line'],
+    count: 1,
+  },
+  {
+    // Both sides write the key with the value on indented lines below. The old reader kept the
+    // key line and nothing else, so it compared "allowed-tools: |" against "allowed-tools: |" and
+    // called two different allowances equal. Two files write it, so two problems.
+    dir: 'allowed-tools-block-scalar',
+    names: [
+      'commands/mini.md writes "allowed-tools: |", and an allowance must be one canonical line',
+      'skills/mini-stage/profiles/claude.md writes "allowed-tools: |", and an allowance must be one canonical line',
+    ],
+    count: 2,
+  },
+  {
+    // The same quoted decoy as allowed-tools-fenced, fenced with tildes. CommonMark opens a fence
+    // on three or more backticks or tildes, and a scan that pairs triple backticks alone reads
+    // everything between the tildes as prose.
+    dir: 'allowed-tools-tilde-fenced',
     names: ['skills/mini-stage/profiles/claude.md declares no live allowed-tools line'],
     count: 1,
   },

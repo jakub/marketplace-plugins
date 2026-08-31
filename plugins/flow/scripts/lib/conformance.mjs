@@ -38,7 +38,32 @@ export const body = (text) => {
 // and heading grammar by writing it out (`[[gate:<id>]]`), and a scanner that reads those as real
 // markers fails the file for documenting itself. Vocabulary checks must not use this: a banned
 // word inside a code fence is still that word in the shared file.
-export const prose = (text) => text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '')
+//
+// The walk is line by line rather than one non-greedy regex over the whole text, because a fence
+// has more forms than ```...```. CommonMark opens one on three or more backticks or tildes, up to
+// three spaces in; it closes on a run of the same character at least as long with nothing after
+// it, or on end of file. A regex that only pairs triple backticks leaks the contents of a tilde
+// fence, of an unclosed fence, and of a longer fence that quotes a shorter run inside itself.
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
+export const prose = (text) => {
+  const kept = []
+  let open = null
+  for (const line of text.split('\n')) {
+    if (open === null) {
+      const fence = FENCE_OPEN.exec(line)
+      if (fence) {
+        open = fence[1]
+        continue
+      }
+      kept.push(line)
+      continue
+    }
+    const close = FENCE_CLOSE.exec(line)
+    if (close && close[1][0] === open[0] && close[1].length >= open.length) open = null
+  }
+  return kept.join('\n').replace(/`[^`\n]*`/g, '')
+}
 
 // An HTML comment reaches no session: the hook prints the profile verbatim and the model reads
 // it as markup, so "<!-- TODO -->" under a heading binds exactly as much as a blank line. A

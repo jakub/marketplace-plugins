@@ -3,14 +3,10 @@
 Read this with `SKILL.md`. Nothing loads either file at runtime; the conformance smoke reads
 them and expects one named defect in this plugin root.
 
-Tool allowance for the stage:
+The allowance hides under the key, so the line itself carries nothing to compare:
 
-allowed-tools: Bash(gh:*), Read
-
-Someone widened it later, one space in from the margin, so the loader never reads that line and
-the stage never gets Write:
-
- allowed-tools: Bash(gh:*), Read, Write
+allowed-tools: |
+  Bash(gh:*), Read
 
 ### gate: mini-open
 
