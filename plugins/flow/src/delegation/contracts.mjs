@@ -112,7 +112,8 @@ export const HOST_CAPABILITY_ASSURANCES = ['mechanism', 'contract', 'unverified'
 // assurance 'unverified', and a reader never mistakes silence for support. 'mechanism' means
 // a named feature was observed doing the thing. 'contract' means the behaviour rests on an
 // agreement both sides keep, with no platform receipt to check. Every id names both hosts, so
-// a gap is visible in this source rather than at the call site.
+// a gap is visible in this source rather than at the call site. A cell dated later than the
+// rest carries its own verifiedAt, so adding a row never re-dates the rows already there.
 const HOST_CAPABILITY_VERIFIED_AT = '2026-08-29'
 const HOST_VERIFIED_AGAINST = { claude: 'claude-code 2.1.251', codex: 'codex-cli 0.151.0' }
 const HOST_CAPABILITY_TABLE = {
@@ -148,6 +149,22 @@ const HOST_CAPABILITY_TABLE = {
     claude: { supported: true, assurance: 'mechanism', note: 'An agent definition\'s tools frontmatter fixes the tool list for that seat.' },
     codex: { supported: false, assurance: 'unverified', note: 'No per-seat tool allowlist found.' },
   },
+  'agent-depth-limit': {
+    claude: { supported: true, assurance: 'mechanism', note: 'a leaf seat\'s agent def omits the Agent tool (flow:implementer, Explore), so nesting is impossible rather than discouraged' },
+    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'agents.max_depth is V1-only and ignored by multi-agent V2 (codex-rs/core/src/config/mod.rs:882); the V2 spawn path (agent/control/spawn.rs) has no depth check, so a descendant-spawn prohibition is prompt contract only' },
+  },
+  'per-seat-authority-narrowing': {
+    claude: { supported: true, assurance: 'mechanism', note: 'an agent def\'s tools list narrows each seat below the session (Explore has no Edit/Write/Agent; flow:implementer has no Agent); neither host has a per-seat filesystem sandbox' },
+    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'V2 spawn_agent accepts only model, reasoning_effort and fork_turns (tools/handlers/multi_agents_spec.rs); a child inherits the parent\'s cwd, approval policy and sandbox' },
+  },
+  'skill-composition': {
+    claude: { supported: true, assurance: 'mechanism', note: 'the Skill tool loads a named skill mid-turn' },
+    codex: { supported: false, assurance: 'unverified', verifiedAt: '2026-08-30', note: 'no Skill-call tool; a skill composes by reading sibling SKILL.md files - unverified on the installed-plugin path until the slice 3 capture' },
+  },
+  'hooks-in-native-children': {
+    claude: { supported: true, assurance: 'mechanism', note: 'a subagent\'s tool calls run the session\'s PreToolUse hooks' },
+    codex: { supported: false, assurance: 'unverified', verifiedAt: '2026-08-30', note: 'a V2 child receives a Config derived from the parent\'s turn (agent/control/spawn.rs), so plugin hooks should fire inside it; unverified until the slice 3 child probe' },
+  },
 }
 
 function deepFreeze(value) {
@@ -163,7 +180,7 @@ const HOST_CAPABILITIES = deepFreeze(Object.fromEntries(HOSTS.map((host) => [hos
   verifiedAgainst: HOST_VERIFIED_AGAINST[host],
   capabilities: Object.fromEntries(Object.entries(HOST_CAPABILITY_TABLE).map(([id, hosts]) => [id, {
     supported: hosts[host].supported,
-    verifiedAt: HOST_CAPABILITY_VERIFIED_AT,
+    verifiedAt: hosts[host].verifiedAt ?? HOST_CAPABILITY_VERIFIED_AT,
     assurance: hosts[host].assurance,
     note: hosts[host].note,
   }])),

@@ -543,6 +543,31 @@ try {
   assert.throws(() => { hostInventories.codex.verifiedAgainst = 'forged' }, TypeError)
   assert.equal(capabilitiesForHost('claude').capabilities['hook-ask'].supported, true)
 
+  // The slice 3 rows were probed a day after the table default, so every Codex cell in them
+  // carries its own verifiedAt. Their Claude cells fall back to the table date, and so does an
+  // untouched older row, which is what proves the override lands per entry instead of re-dating
+  // the whole table.
+  const tableDefaultDate = hostInventories.codex.capabilities['hook-deny'].verifiedAt
+  assert.equal(tableDefaultDate, '2026-08-29', 'table default date')
+  const sliceThreeRows = {
+    'agent-depth-limit': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
+    'per-seat-authority-narrowing': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
+    'skill-composition': { claude: [true, 'mechanism'], codex: [false, 'unverified'] },
+    'hooks-in-native-children': { claude: [true, 'mechanism'], codex: [false, 'unverified'] },
+  }
+  for (const [id, expected] of Object.entries(sliceThreeRows)) {
+    for (const [host, [supported, assurance]] of Object.entries(expected)) {
+      const entry = hostInventories[host].capabilities[id]
+      assert.ok(entry, `${host}/${id} is in the inventory`)
+      assert.equal(entry.supported, supported, `${host}/${id} supported`)
+      assert.equal(entry.assurance, assurance, `${host}/${id} assurance`)
+    }
+    assert.equal(hostInventories.codex.capabilities[id].verifiedAt, '2026-08-30', `codex/${id} verifiedAt`)
+    assert.equal(hostInventories.claude.capabilities[id].verifiedAt, tableDefaultDate, `claude/${id} verifiedAt`)
+  }
+  assert.throws(() => { hostInventories.codex.capabilities['agent-depth-limit'].verifiedAt = '1999-01-01' }, TypeError)
+  assert.throws(() => { hostInventories.claude.capabilities['skill-composition'].supported = false }, TypeError)
+
   console.log('route and nesting guards')
   assert.throws(
     () => assertRoute({ host: 'codex', target: 'codex', depth: 0 }),
