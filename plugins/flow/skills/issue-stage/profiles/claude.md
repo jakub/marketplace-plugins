@@ -95,9 +95,10 @@ does support.
 
 The comparison is this. Split `verifiedAgainst` on its single space into a product part and a
 version part. Compare `client.version` against the version part for string equality. Equal is
-undrifted, anything else is drift. `client.name` is corroboration and not the comparison. If it
-is there and plainly names a different product than the record's product part and than this host,
-read drifted whatever the versions say; if it is null, let the version decide. A missing
+undrifted, anything else is drift. `client.name` is corroboration and not the comparison, and its
+equivalence is a fixed set and not a judgement call: on this host the names that count as this
+product are `claude` and `claude-code`. A non-null name outside that set is a different product
+and reads drifted whatever the version says. A null name lets the version decide. A missing
 `client`, a null `client.version`, or a `verifiedAgainst` that does not split into exactly two
 parts is drift as well. An operand you cannot read is never a pass.
 
