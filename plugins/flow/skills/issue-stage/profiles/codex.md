@@ -146,7 +146,10 @@ The comparison is this. Split `verifiedAgainst` on its single space into a produ
 version part. Compare `client.version` against the version part for string equality. Equal is
 undrifted, anything else is drift. `client.name` is corroboration and not the comparison, and its
 equivalence is a fixed set and not a judgement call: on this host the names that count as this
-product are `codex` and `codex-cli`. A non-null name outside that set is a different product and
+product are `codex`, `codex-cli` and `codex-mcp-client`. The third is the one that matters,
+because it is what the 0.151.0 MCP client actually sends in its initialize handshake, per
+codex-rs `rmcp_client.rs` at rust-v0.151.0, read 2026-08-31. Leave it out and every real run on
+this host drift-stops at preflight. A non-null name outside that set is a different product and
 reads drifted whatever the version says. A null name lets the version decide. A missing
 `client`, a null `client.version`, or a `verifiedAgainst` that does not split into exactly two
 parts is drift as well. An operand you cannot read is never a pass.
