@@ -13,8 +13,9 @@ questions into one suspension.
 
 There is no tool-allowance line on this host: a plugin skill carries no per-skill allowlist, and
 the session's sandbox and approval policy apply as they are. The same absence reaches the seats
-below. Nothing narrows a native child either, which is why two of its three dimensions read
-`contract` where the other host reads `mechanism`. State that in the ledger and work inside it.
+below: nothing narrows a native child, which is why two of its three dimensions read `contract`.
+The other host's native writer reads `contract` on descendants for its own reason, so do not
+expect this row to be the odd one out. State it in the ledger and compose inside it.
 
 ## Gates
 
@@ -74,13 +75,28 @@ Two write-seat classes exist on this host.
   job's workspace key and whose network allowlist is empty, so it is confined to the canonical
   worktree it was handed as `cwd`.
 - descendants: `mechanism`. Service policy rejects a delegation started from inside a job with
-  `NESTED_DELEGATION`, and the worker's command guard blocks a raw provider launch as well.
-- hooks: `mechanism`. The delegated worker runs flow's shared hook policy on every tool call.
+  `NESTED_DELEGATION`, and the delegated-worker policy denies a shell command that launches a
+  provider, including one hidden behind an interpreter or a second shell.
+- hooks: `mechanism`, and read the word narrowly. The plugin's own PreToolUse guards do not
+  travel: git-guard and the no-backlog guard do not run inside a delegated worker, and a ledger
+  line implying they do is claiming an enforcement nobody wrote. What holds instead is the
+  delegation permission profile plus the delegated-worker policy, both enforcement and not prompt
+  text. The sandbox allows writes on the job's workspace alone, denies reads of credential paths
+  and of the provider executables, and runs an empty network allowlist. The policy denies a tool
+  outside the job's access set, a read or a write outside the workspace, a protected-file write,
+  and a publication command. What that leaves open is local and destructive. A bridge writer can
+  run `git checkout .` or `git clean -f` in the worktree and throw away a sibling seat's
+  uncommitted work, which git-guard denies natively and nothing denies there. With network off
+  nothing leaves the machine, so the damage stops at the disk. Compose around it: do not point a
+  bridge writer at a worktree holding another seat's uncommitted work.
 
-Version drift is a string comparison, not a probe: take `verifiedAgainst` for this host out of
-the doctor read and compare it against the CLI version this session is running. If they differ,
-any capability the run depends on reads `unverified`, and `unverified` on a dimension a needed
-class depends on stops the run with `needs-human`, naming the capability id.
+Version drift is a string comparison against a live operand, not a probe. The doctor result
+carries `client`, the MCP client identity the service reads out of the initialize handshake, with
+a name and a version, and that version is the CLI this session is running under. Compare
+`client.version` against `verifiedAgainst` for this host. If they differ, or if `client` is
+missing or its version does not parse, the host reads drifted and every capability the run
+depends on reads `unverified`. An operand you cannot read is drift, never a pass. `unverified` on
+a dimension a needed class depends on stops the run with `needs-human`, naming the capability id.
 
 ### gate: write-seat
 
@@ -96,8 +112,14 @@ git-guard and the no-backlog guard deny there exactly as they deny here, and a s
 seat is a contract breach with nothing to stop it. Every pipeline seat gets `fork_turns: "none"`,
 so it starts from its own prompt and not from a copy of your turn. Seats that change nothing,
 meaning scouts, reviewers and transports, carry the read-only prohibitions instead and not this
-contract. Cross-family writes go through `delegate_to_claude` at `access: "workspace-write"` with
-the worktree as `cwd`.
+contract.
+
+A cross-family write goes through `delegate_to_claude` at `access: "workspace-write"` with the
+worktree as `cwd`, and it needs the same paste. The delegated payload carries the seat contract's
+Containment section and nothing else, which is a floor and not the contract: the
+synchronous-execution, scope and reporting sections never reach that seat unless you put them
+there. So paste the ENTIRE canonical contract into the delegation task text of any substantial
+bridge writer, exactly as a native spawn prompt carries it.
 
 ### gate: design-pass-legs
 

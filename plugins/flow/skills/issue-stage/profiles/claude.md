@@ -53,8 +53,15 @@ Two write-seat classes exist on this host.
   that mechanism fixes is the seat's TOOL LIST, not where its tools may write. Nothing confines
   an Edit path, and the seat keeps Bash and the session's permission mode. Staying inside the
   worktree is the seat contract plus the repository's git hooks, which is `contract`.
-- descendants: `mechanism`. `agent-depth-limit` is true with assurance `mechanism`: the
-  definition omits the Agent tool, so nesting is impossible rather than discouraged.
+- descendants: `contract`. `agent-depth-limit` is true with assurance `mechanism`, and what that
+  mechanism covers is narrower than the dimension. The definition omits the Agent tool, so a
+  native subagent call is impossible rather than discouraged. That much is mechanical. The seat
+  still holds Bash, this stage's own allowance pre-approves `Bash(node:*)`, and no native hook
+  denies a raw provider launch from a shell, so a writer that reached for `claude -p` or
+  `codex exec` would start a descendant nobody counted. The seat contract's no-delegation line is
+  the only thing in front of that, and told-but-unchecked is `contract`. The row reads the same
+  as the other host's native writer, which is what to expect: neither host confines a seat's
+  shell.
 - hooks: `mechanism`. `hooks-in-native-children` is true with assurance `mechanism`: a subagent's
   tool calls run the session's PreToolUse hooks, so git-guard and the no-backlog guard fire
   inside the seat.
@@ -65,25 +72,47 @@ Two write-seat classes exist on this host.
   nothing else, and it disables network, so the job is confined to the canonical worktree it was
   handed as `cwd`.
 - descendants: `mechanism`. Service policy rejects a delegation started from inside a job with
-  `NESTED_DELEGATION`, and the worker's command guard blocks a raw provider launch as well.
-- hooks: `mechanism`. The delegated worker runs flow's shared hook policy on every tool call.
+  `NESTED_DELEGATION`. A nested provider started from the job's own shell has no way to work
+  either: the permission profile never grants the provider's credential directory and network is
+  off, so the launch has no auth and nowhere to call.
+- hooks: `mechanism`, and read the word narrowly. The plugin's own guards do not travel. A
+  delegated Codex job runs with the plugin feature gate off, so git-guard and the no-backlog
+  guard load nowhere inside it. What holds instead is the delegation permission profile, which is
+  enforcement and not prompt text: minimal read, write on the job's workspace and nowhere else,
+  `.git`, `.agents` and `.codex` read-only, network disabled. What that leaves open is local and
+  destructive. A bridge writer can run `git checkout .` or `git clean -f` in the worktree and
+  throw away a sibling seat's uncommitted work, which git-guard denies natively and nothing
+  denies there. With network off nothing leaves the machine, so the damage stops at the disk, but
+  compose around it: do not point a bridge writer at a worktree holding another seat's
+  uncommitted work.
 
-Version drift is a string comparison, not a probe: take `verifiedAgainst` for this host out of the
-doctor read and compare it against the version this session is running. If they differ, any
-capability the run depends on reads `unverified`, and `unverified` on a dimension a needed class
-depends on stops the run with `needs-human`, naming the capability id.
+Version drift is a string comparison against a live operand, not a probe. The doctor result
+carries `client`, the MCP client identity the service reads out of the initialize handshake, with
+a name and a version, and that version is the harness this session is running under. Compare
+`client.version` against `verifiedAgainst` for this host. If they differ, or if `client` is
+missing or its version does not parse, the host reads drifted and every capability the run
+depends on reads `unverified`. An operand you cannot read is drift, never a pass. `unverified` on
+a dimension a needed class depends on stops the run with `needs-human`, naming the capability id.
 
 ### gate: write-seat
 
-Every substantial write seat is `flow:implementer`. Its toolset has no Agent tool, so
-sub-delegation is impossible rather than discouraged: there is nothing to route around and
-nothing for the prompt to forbid. A `general-purpose` seat holding Edit is a containment
-violation whatever its prompt says, and so is the conductor doing the writing after a failed
-preflight. The canonical contract rides the definition as its byte-equal tail, so the spawn
-prompt carries the worktree path and the milestones and no contract text at all. Seats that
-change nothing, meaning scouts, reviewers and transports, keep their own definitions and carry
-no contract. Cross-family writes go through `delegate_to_codex` with `access: "workspace-write"`
-and the worktree as `cwd`.
+Every substantial native write seat is `flow:implementer`. Its toolset has no Agent tool, so a
+native subagent call is impossible rather than discouraged. That is the whole of the mechanism:
+the seat keeps Bash, so a provider launched from its shell is still a way out, and the contract's
+no-delegation line is what stands in front of that. A `general-purpose` seat holding Edit is a
+containment violation whatever its prompt says, and so is the conductor doing the writing after a
+failed preflight. The canonical contract rides the definition as its byte-equal tail, so the
+spawn prompt carries the worktree path and the milestones and no contract text at all. Seats that
+change nothing, meaning scouts, reviewers and transports, keep their own definitions and carry no
+contract.
+
+A cross-family write goes through `delegate_to_codex` at `access: "workspace-write"` with the
+worktree as `cwd`, and there the contract does not ride anything. The delegated payload carries
+the seat contract's Containment section and nothing else, which is a floor and not the contract:
+the synchronous-execution, scope and reporting sections never reach that seat unless you put them
+there. So paste the ENTIRE canonical contract, meaning `plugins/flow/seat-contract.md` as you
+read it at preflight, into the delegation task text of any substantial bridge writer, the same
+way the other host's native spawns carry it.
 
 ### gate: design-pass-legs
 
@@ -149,8 +178,9 @@ escalation reads as a silent one.
 No host difference in the grammar: the ledger's host line, anchors line, and one line per
 write-seat class are the same shape everywhere. The three words come from the class mappings in
 the write-seat-preflight section above, so on an undrifted host `native-writer` reads
-`workspace: contract | descendants: mechanism | hooks: mechanism` and `bridge-writer` reads
+`workspace: contract | descendants: contract | hooks: mechanism` and `bridge-writer` reads
 `mechanism` on all three. State them and move on; the assurance is never a question to the human.
+Do not round a `contract` up to `mechanism` because the seat has never misbehaved.
 
 ## The seat ladder
 
