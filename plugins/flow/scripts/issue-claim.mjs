@@ -16,6 +16,15 @@
 // column is the verdict and the exit code is a second opinion. The `[new tag]` text on the same
 // line is human summary, not contract.
 //
+// The object under the tag has to be one this clone holds, because a push builds its pack here
+// before the remote decides anything. A clone that has not fetched since origin's main moved
+// does not hold it, and git stops at `fatal: bad object <sha>`. That looked exactly like a lost
+// race and left an ordinary stale checkout unable to ever take a claim. So acquire checks for
+// the object first and, only when it is missing, fetches refs/heads/main into a ref of its own
+// under refs/flow-claim/ and pushes what it fetched. That fetch is read-only remote traffic: no
+// local branch moves, refs/remotes/origin/* keeps whatever it had, FETCH_HEAD is not written,
+// no tags come down, and the worktree and index are untouched.
+//
 // The classifier is strict on purpose, because the two ways of being wrong do not cost the
 // same. Call a win a loss and you leave a tag nobody owns and a run that never starts: a human
 // breaks the tag and an hour is gone. Call a loss a win and you start a second autonomous run
@@ -83,6 +92,8 @@ import { fileURLToPath } from 'node:url'
 const LOCAL_GIT_TIMEOUT_MS = 5_000
 const REMOTE_GIT_TIMEOUT_MS = 30_000
 const PUSH_TIMEOUT_MS = 60_000
+// A stale clone's catch-up fetch carries real history, unlike every other remote call here.
+const FETCH_TIMEOUT_MS = 120_000
 
 const EXIT_OK = 0
 const EXIT_REFUSED = 2
@@ -246,6 +257,10 @@ const shaOfRef = (stdout, ref) => {
   return null
 }
 
+/** Whether this clone already holds a commit, so a push can build a pack that names it. */
+const hasObject = (cwd, sha) =>
+  runGit(['cat-file', '-e', `${sha}^{commit}`], cwd, LOCAL_GIT_TIMEOUT_MS).code === 0
+
 /**
  * Read one ref off origin. `--exit-code` gives 0 for present and 2 for absent, and anything
  * else (128 for an unreachable remote, 1 for a killed child) is an operational unknown rather
@@ -357,29 +372,77 @@ const acquire = ({ argv, cwd }) => {
   if (before.state === 'present') return held(before.sha, 'the tag was already there before this run pushed anything')
   if (before.state === 'unknown') return unknown(before.detail)
 
+  // A push builds its pack locally, so the object on the left of the refspec has to be one this
+  // clone holds. A clone that has not fetched since origin's main moved does not hold it, and
+  // git fails with `fatal: bad object <sha>` before the remote decides anything. That came back
+  // as a `!` line, which the classifier read as a loss and the re-read turned into unknown, so
+  // an ordinary stale checkout could never take a claim. Fetching the object first is the fix.
+  const tempRef = `refs/flow-claim/fetch-${issue}`
+  const dropTempRef = () => runGit(['update-ref', '-d', tempRef], cwd, LOCAL_GIT_TIMEOUT_MS)
+  let source = mainSha
+  let fetched = false
+  if (!hasObject(cwd, mainSha)) {
+    // Read-only remote traffic that lands in one ref of our own and nothing else. --refmap=
+    // switches off the opportunistic remote-tracking update, so refs/remotes/origin/main keeps
+    // whatever it had and `git status` says exactly what it said before this ran. --no-tags
+    // keeps other claim tags out of the local repository, and --no-write-fetch-head leaves
+    // FETCH_HEAD alone for whatever else shares this clone. No local branch, index or file in
+    // the worktree is touched either way.
+    dropTempRef()
+    const fetch = runGit(
+      ['fetch', '--no-tags', '--no-write-fetch-head', '--refmap=', 'origin', `${MAIN_REF}:${tempRef}`],
+      cwd, FETCH_TIMEOUT_MS,
+    )
+    if (fetch.code !== 0) {
+      dropTempRef()
+      return unknown(`\`git fetch origin ${MAIN_REF}\` failed, so this clone does not hold the object a claim would ` +
+        `hang on: ${firstLine(redact(fetch.stderr)) || `exit ${fetch.code}`}`)
+    }
+    const resolved = runGit(['rev-parse', '--verify', '--quiet', `${tempRef}^{commit}`], cwd, LOCAL_GIT_TIMEOUT_MS)
+    const got = resolved.code === 0 ? resolved.stdout.trim() : ''
+    if (!SHA.test(got)) {
+      dropTempRef()
+      return unknown(`${MAIN_REF} was fetched but did not resolve to a commit locally, so there is no object to hang a claim on`)
+    }
+    // The tag points at what this clone actually holds. If origin's main moved between the
+    // ls-remote above and this fetch, the fetched object is the newer one, and pushing the
+    // advertised SHA would fail the same way all over again. Every racer still resolves main,
+    // so the same-object case the classifier exists for is unchanged.
+    source = got
+    fetched = true
+  }
+
   // The compare-and-set. A plain create refspec: no leading +, no --force in any spelling. If
   // the tag appeared between the preflight and here, receive-pack refuses this and says so.
-  const push = runGit(['push', '--porcelain', 'origin', `${mainSha}:${ref}`], cwd, PUSH_TIMEOUT_MS)
+  const push = runGit(['push', '--porcelain', 'origin', `${source}:${ref}`], cwd, PUSH_TIMEOUT_MS)
   const status = pushStatus(push.stdout, ref)
 
   // The only win. `*` is git's documented flag for a ref it created, and a create of a tag ref
   // is what the remote serialises. Everything else, including the 0 exit of "up to date", falls
   // through to the re-read below.
-  if (push.code === 0 && status !== null && status.flag === '*') {
-    return line({ ...base, result: 'acquired', sha: mainSha }, EXIT_OK, '')
+  const outcome = () => {
+    if (push.code === 0 && status !== null && status.flag === '*') {
+      return line({ ...base, result: 'acquired', sha: source }, EXIT_OK, '')
+    }
+
+    // Not a win. It might be a rival's tag, it might be our own tag from a push whose response
+    // was lost, and from here those are indistinguishable, because both racers push the same
+    // object. Standing down on both is the safe direction.
+    const after = readRef(cwd, ref, redact)
+    const why = `the push did not create the ref (git said ${describeStatus(status, redact)}, exit ${push.code})`
+    if (after.state === 'present') return held(after.sha, why)
+    if (after.state === 'absent') {
+      return unknown(`${why}, and ${ref} is not on the remote either. ` +
+        `git's stderr was: ${firstLine(redact(push.stderr)) || '(empty)'}`)
+    }
+    return unknown(`${why}, and the re-read could not settle it: ${after.detail}`)
   }
 
-  // Not a win. It might be a rival's tag, it might be our own tag from a push whose response was
-  // lost, and from here those are indistinguishable, because both racers push the same object.
-  // Standing down on both is the safe direction.
-  const after = readRef(cwd, ref, redact)
-  const why = `the push did not create the ref (git said ${describeStatus(status, redact)}, exit ${push.code})`
-  if (after.state === 'present') return held(after.sha, why)
-  if (after.state === 'absent') {
-    return unknown(`${why}, and ${ref} is not on the remote either. ` +
-      `git's stderr was: ${firstLine(redact(push.stderr)) || '(empty)'}`)
-  }
-  return unknown(`${why}, and the re-read could not settle it: ${after.detail}`)
+  // The temp ref is what keeps the fetched object referenced across the push, so it goes only
+  // after the outcome is decided.
+  const result = outcome()
+  if (fetched) dropTempRef()
+  return result
 }
 
 // ------------------------------------------------------------------------------------ release

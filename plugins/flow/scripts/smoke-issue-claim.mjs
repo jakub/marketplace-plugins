@@ -23,6 +23,14 @@
 // invariant asserted is the one that matters either way, exactly one winner, and the run prints
 // which path the losers actually took.
 //
+// The stale clone gets a second bare repository of its own, because proving that case means
+// moving origin's main and every other assertion here is written against the first one's head.
+// Both clones come off it before the advance, so neither holds the object a claim now hangs on.
+// That is where a push fails locally, while building its pack, and looks exactly like a lost
+// race. The containment assertions are the other half: comparing the clone's whole `show-ref`
+// listing before and after is one check that catches a local branch, a remote-tracking ref, a
+// tag or a leftover temporary ref moving.
+//
 // Three more failures get their own repositories, because none of them is about the race.
 // Release has to reject a branch that is not the issue's own, or the head check authorizes
 // nothing and `release 8 main <head-of-main>` drops a live claim. Origin has to fetch from and
@@ -35,7 +43,7 @@
 // Run: node plugins/flow/scripts/smoke-issue-claim.mjs
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -203,6 +211,85 @@ check('a rejected push is reported held, not acquired', ambushedOther.json?.resu
   `exit ${ambushedOther.code} ${ambushedOther.stdout}${ambushedOther.stderr}`)
 check('it reports the rival\'s object, not the one it tried to push', ambushedOther.json?.sha === decoySha, ambushedOther.stdout)
 check('the rival claim still points at its original object', tagOnOrigin(62) === decoySha, String(tagOnOrigin(62)))
+
+// -------------------------------------------------------------------- a stale clone
+// Its own bare repository, because this case has to move origin's main and every assertion
+// elsewhere is written against the first one's head. Both clones are taken before the advance,
+// so neither holds the object a claim now hangs on. That is an ordinary checkout somebody left
+// open overnight, and before the catch-up fetch it could never take a claim: the push failed
+// locally with `fatal: bad object` while building its pack, which read as a lost race.
+console.log('\na clone that has not fetched since origin moved can still take a claim')
+
+const staleOrigin = join(tmp, 'stale-origin.git')
+const staleSeed = join(tmp, 'stale-seed')
+const stale = join(tmp, 'stale')
+const staleTwin = join(tmp, 'stale-twin')
+const advancer = join(tmp, 'advancer')
+
+execFileSync('git', ['init', '-q', '--bare', '-b', 'main', staleOrigin], { env: gitEnv })
+execFileSync('git', ['init', '-q', '-b', 'main', staleSeed], { env: gitEnv })
+writeFileSync(join(staleSeed, 'file.txt'), 'first\n')
+git(staleSeed, 'add', 'file.txt')
+git(staleSeed, 'commit', '-q', '-m', 'first')
+git(staleSeed, 'remote', 'add', 'origin', staleOrigin)
+git(staleSeed, 'push', '-q', 'origin', 'main')
+for (const dir of [stale, staleTwin, advancer]) execFileSync('git', ['clone', '-q', staleOrigin, dir], { env: gitEnv })
+
+writeFileSync(join(advancer, 'file.txt'), 'second\n')
+git(advancer, 'add', 'file.txt')
+git(advancer, 'commit', '-q', '-m', 'second')
+git(advancer, 'push', '-q', 'origin', 'main')
+const advancedSha = git(staleOrigin, 'rev-parse', 'refs/heads/main')
+
+const holdsObject = (dir, sha) => spawnSync('git', ['-C', dir, 'cat-file', '-e', `${sha}^{commit}`], { env: gitEnv }).status === 0
+const refsOf = (dir) => {
+  const r = spawnSync('git', ['-C', dir, 'show-ref'], { encoding: 'utf8', env: gitEnv })
+  return (r.stdout ?? '').split('\n').filter((l) => l !== '').sort().join('\n')
+}
+const branchStatus = (dir) => git(dir, 'status', '--porcelain=v1', '--branch')
+
+check('the fixture is genuinely stale: the clone lacks origin\'s current main object', !holdsObject(stale, advancedSha), 'the clone already had it')
+const refsBefore = refsOf(stale)
+const statusBefore = branchStatus(stale)
+
+const staleClaim = claim(stale, 'acquire', '13')
+check('the stale clone acquires the claim', staleClaim.json?.result === 'acquired' && staleClaim.code === 0,
+  `exit ${staleClaim.code} ${staleClaim.stdout}${staleClaim.stderr}`)
+check('the tag on the remote points at origin\'s current main head', tagIn(staleOrigin, 13) === advancedSha,
+  `${tagIn(staleOrigin, 13)} wanted ${advancedSha}`)
+check('and it reports that same object as the claim\'s', staleClaim.json?.sha === advancedSha, staleClaim.stdout)
+
+// The catch-up fetch is read-only as far as this clone is concerned. show-ref covers local
+// branches, remote-tracking refs, tags and the temporary ref together, so comparing the whole
+// listing before and after is one assertion that catches any of them moving.
+check('not one ref in the clone changed, including the temporary fetch ref', refsOf(stale) === refsBefore,
+  `before:\n${refsBefore}\nafter:\n${refsOf(stale)}`)
+check('no FETCH_HEAD was written', !existsSync(join(stale, '.git', 'FETCH_HEAD')), 'FETCH_HEAD exists')
+check('the branch is where it was, and still reads as behind', branchStatus(stale) === statusBefore, `${statusBefore} became ${branchStatus(stale)}`)
+check('the clone now holds the object it pushed', holdsObject(stale, advancedSha), 'the object is still missing')
+
+// One concurrent round between two stale clones, which is the only shape where both racers run
+// the fetch. Later rounds would prove less, because the first one leaves the object behind.
+const [staleFirst, staleSecond] = await Promise.all([
+  claimAsync(stale, 'acquire', '14'),
+  claimAsync(staleTwin, 'acquire', '14'),
+])
+const staleResults = [staleFirst, staleSecond].map((r) => r.json?.result ?? `unparseable(${r.code})`)
+const staleShown = `${staleFirst.code}:${staleFirst.stdout.trim()} | ${staleSecond.code}:${staleSecond.stdout.trim()}`
+check('two stale clones racing: exactly one acquires', staleResults.filter((r) => r === 'acquired').length === 1, staleShown)
+check('and the other is held, not unknown', staleResults.filter((r) => r === 'held').length === 1, staleShown)
+check('and the winner\'s tag is origin\'s current main head', tagIn(staleOrigin, 14) === advancedSha, String(tagIn(staleOrigin, 14)))
+
+// staleTwin fetches for the first time during that round, while origin already carries issue
+// 13's claim tag on the commit being fetched. Tag auto-following would drag other runs' claim
+// tags into a working clone, so this is the behavioural half of the --no-tags check.
+const localClaimTags = (dir) => {
+  const r = spawnSync('git', ['-C', dir, 'tag', '--list', 'flow-claim-issue-*'], { encoding: 'utf8', env: gitEnv })
+  return (r.stdout ?? '').split('\n').filter((l) => l.trim() !== '')
+}
+check('no claim tag was dragged into either clone by the fetch',
+  localClaimTags(stale).length === 0 && localClaimTags(staleTwin).length === 0,
+  JSON.stringify([...localClaimTags(stale), ...localClaimTags(staleTwin)]))
 
 // ------------------------------------------------------------------- a concurrent race
 console.log('\ntwo runs started together: exactly one wins, never both')
@@ -410,12 +497,21 @@ check('--help exits 0 with the usage text', help.code === 0 && help.stdout.inclu
 // Read from the source, not from behaviour: a force flag added later would make the one atomic
 // operation this program rests on into an overwrite, and no case above would necessarily fail.
 console.log('\nnothing in the source can force-push or break a tag')
-const source = readFileSync(SCRIPT, 'utf8')
-const argvTokens = [...source.matchAll(/'([^'\n]*)'/g)].map((m) => m[1])
+const sourceText = readFileSync(SCRIPT, 'utf8')
+const argvTokens = [...sourceText.matchAll(/'([^'\n]*)'/g)].map((m) => m[1])
 const forceTokens = argvTokens.filter((t) => /^(--force(-with-lease)?(=.*)?|-f|\+refs\/.*)$/.test(t))
 check('no --force, -f or + refspec appears as an argv token', forceTokens.length === 0, JSON.stringify(forceTokens))
-check('no force-with-lease anywhere in the file', !source.includes('force-with-lease'), 'found force-with-lease')
-check('the push refspecs are a plain create and a plain delete', /`\$\{mainSha\}:\$\{ref\}`/.test(source) && /`:\$\{ref\}`/.test(source), 'refspec shapes changed')
+check('no force-with-lease anywhere in the file', !sourceText.includes('force-with-lease'), 'found force-with-lease')
+check('the push refspecs are a plain create and a plain delete',
+  /`\$\{source\}:\$\{ref\}`/.test(sourceText) && /`:\$\{ref\}`/.test(sourceText), 'refspec shapes changed')
+// The catch-up fetch writes one ref, and it is ours. A + here, or a destination under
+// refs/heads or refs/remotes, would make a read-only catch-up into something that edits the
+// clone the human is working in.
+check('the fetch refspec is unforced and lands under refs/flow-claim',
+  /`\$\{MAIN_REF\}:\$\{tempRef\}`/.test(sourceText) && /const tempRef = `refs\/flow-claim\//.test(sourceText), 'fetch refspec shape changed')
+check('the fetch cannot move a remote-tracking ref or write FETCH_HEAD',
+  argvTokens.includes('--refmap=') && argvTokens.includes('--no-write-fetch-head') && argvTokens.includes('--no-tags'),
+  'a fetch containment flag went missing')
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(bad === 0 ? '\nissue claim: ALL PASS' : `\nissue claim: ${bad} FAILURE(S)`)
