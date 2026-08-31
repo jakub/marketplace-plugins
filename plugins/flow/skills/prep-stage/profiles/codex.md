@@ -30,7 +30,7 @@ question and the buried-work override each suspend the turn.
 Native subagents (`spawn_agent`) on `gpt-5.6-luna` at medium effort, one per lane - domain
 docs, code seams, prior art - each with `fork_turns: "none"` and a complete, self-contained
 prompt; the conductor synthesizes. The outside perspective is `delegate_to_claude` with
-`sonnet-5` at medium effort, `access: read-only`, the repository root as `cwd`. Every seat
+`claude-sonnet-5` at medium effort, `access: read-only`, the repository root as `cwd`. Every seat
 is told to return paths and seams, not file dumps.
 
 ### gate: scout-containment
@@ -56,9 +56,10 @@ trivial, continue to the dialectic; never slide into implementing.
 
 The native leg is a Codex-family seat: `spawn_agent` on `gpt-5.6-sol` at high effort,
 `fork_turns: "none"`, read-only by the contract above. The bridge leg is `delegate_to_claude`
-with `opus-5` at xhigh effort, or `fable-5` when the subject is user-facing UI or copy,
+with `claude-opus-5` at xhigh effort, or `claude-fable-5` when the subject is user-facing UI or copy,
 `access: read-only`, `delivery: attached`, `serviceTier: default`, the repository root as
-`cwd`. Launch the native leg first, then the bridge attached, so both sheets land in this
+`cwd` - the delegation tools take the provider's own model ids, not the charter table's short
+names. Launch the native leg first, then the bridge attached, so both sheets land in this
 turn. Neither sees the other. The outside opinion on this host is a Claude model; the
 charter's "Sol is the decorrelated seat" is written from a Claude host.
 
