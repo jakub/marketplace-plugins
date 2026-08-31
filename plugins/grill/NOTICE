@@ -53,22 +53,25 @@ matters.
 
 0004 drops `disable-model-invocation: true` from `grill-with-docs`'s frontmatter, so
 the model can invoke the skill itself instead of waiting for the user to type the
-slash command. It touches `grill-with-docs/SKILL.md` only, and is the only patch
-that touches that skill; the body stays verbatim. SKILL.md keeps its uppercase
-name - the skill loader discovers skills by that exact filename.
+slash command. It touches `grill-with-docs/SKILL.md` only, and within it only the
+frontmatter; the body it leaves verbatim, and 0005 is what later edits that body.
+SKILL.md keeps its uppercase name - the skill loader discovers skills by that exact
+filename.
 
 0005 makes the two host-specific mechanisms conditional, so the skills still work
 where those mechanisms do not exist. Codex has no AskUserQuestion tool and no Skill
 tool, and a human can invoke either skill directly on either host. `grilling` now
 says to use AskUserQuestion when it is in the tool list and, without it, to ask one
 question per turn with numbered options and end the turn - the round-per-turn rhythm
-survives, and neither host gets the numbered essay 0002 exists to prevent. Upstream's
-one-line `grill-with-docs` body gains a second sentence: without a Skill tool, read
-the two sibling SKILL.md files and follow both. The third hunk flips
-`allow_implicit_invocation` in `grill-with-docs/agents/openai.yaml` from false to
-true. Upstream ships that flag paired with the `disable-model-invocation: true` that
-0004 removes, so this is the same decision on the Codex side; without it the model
-can invoke the skill on Claude and not on Codex.
+survives, and neither host gets the numbered essay 0002 exists to prevent.
+Upstream's one-line `grill-with-docs` body gains a second sentence: without a Skill
+tool, read `../grilling/SKILL.md` and `../domain-modeling/SKILL.md` and follow both.
+Those paths are relative to the file that names them, which is why they climb a
+level. The third hunk flips `allow_implicit_invocation` in
+`grill-with-docs/agents/openai.yaml` from false to true. Upstream ships that flag
+paired with the `disable-model-invocation: true` that 0004 removes, so this is the
+same decision on the Codex side; without it the model can invoke the skill on Claude
+and not on Codex.
 
 RE-SYNCING
 ----------
