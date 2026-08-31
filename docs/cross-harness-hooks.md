@@ -8,7 +8,7 @@ Prompt text follows the same split. A stage that both harnesses run is one host-
 skill body plus one profile per harness, and the command file that used to hold the steps
 becomes an alias that reads its own profile first.
 
-This document describes the implemented contract as of 2026-08-25. Product behavior
+This document describes the implemented contract as of 2026-08-30. Product behavior
 that can change is based on the current Codex hooks documentation and must be rechecked
 before changing an adapter.
 
@@ -63,6 +63,7 @@ contract.
 | Flow protected files | `file_path` from Edit/Write input | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
 | Flow registry publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
 | Flow pull request merge | Pre-approved `gh pr merge --squash --match-head-commit`, no per-command prompt. The human's explicit `/flow:land` invocation, then the stage's CI-green and unresolved-thread checks, are the gate | Same gate (the human asked in words), same checks; a repo with a committed `.flow/managed` marker routes the merge through `scripts/land-merge.mjs`, which re-derives every fact from GitHub before merging | `mergeShapes()` classifies the routed commands; the executor holds the checks |
+| Flow prep stage | `/flow:prep` is an alias that reads `skills/prep-stage/profiles/claude.md`, then the skill | The plugin-namespaced `prep-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/prep-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Flow land stage | `/flow:land` is an alias that reads `skills/land-stage/profiles/claude.md`, then the skill | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |
@@ -198,9 +199,12 @@ that every `[[role:<id>]]` marker in the charter is bound in both host profiles,
 charter stays free of host names outside its three model-naming sections, and that both
 charter halves and each profile hold under their byte budgets; it runs the same checks over
 the per-case broken fixtures under `scripts/fixtures/charter-conformance/`. The stage
-conformance lint compares the skill's gate ids against each profile's sections in both
-directions, and runs the same checker over the per-case broken fixtures so a green run also
-shows the check can still fail.
+conformance lint finds every stage by structure, any directory under `skills/` holding a
+`profiles/` subdirectory, and per stage compares the skill's gate ids against each profile's
+sections in both directions, rejects a host name in the shared body, and holds the alias's
+tool allowance equal to the Claude profile's. It runs the same checks over the per-case
+broken fixtures, both the bare skill-and-profile pairs and the miniature plugin roots, so a
+green run also shows the check can still fail.
 
 These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
 definitions until the user reviews them. Claude plugin installs still pull from the pinned
