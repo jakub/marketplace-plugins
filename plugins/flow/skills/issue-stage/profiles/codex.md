@@ -195,9 +195,14 @@ correlation failure the invariant names, and here you would pay metered budget f
 proves nothing. Track which seat wrote which file. A PR holding both native-written and
 bridge-written work needs one of each, judged per diff and not per run.
 
-Read the structured findings and do not parse the prose. The economics invert here. The outside
-family is metered on this host rather than flat-rate, so a wide fabric of lenses has a bill
-attached. The review is still mandatory. Decorrelation is not a budget line, and the thing to
+Read the structured findings and do not parse the prose. When a bridge review comes back clean,
+its coverage list and verdict arrive through `delegation_continue` on that review's job id, as
+plain text in a second turn of the same job. The Claude target supports session continuation,
+which is the capability the charter's delegation paragraph already records, so the second turn
+keeps the reviewer's own session and costs no re-read of the diff. Read that text for coverage
+only. The findings array is still the only place a finding comes from. The economics invert here.
+The outside family is metered on this host rather than flat-rate, so a wide fabric of lenses has
+a bill attached. The review is still mandatory. Decorrelation is not a budget line, and the thing to
 trim when the bill matters is the number of optional lenses on a quiet diff, never the mandatory
 opposite-family pass. A same-family lens is an extra and never a replacement.
 Security-flavored seats still prefer `gpt-daybreak-blue-latest` natively, and the retry for a

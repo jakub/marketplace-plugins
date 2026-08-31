@@ -182,7 +182,10 @@ back across the bridge is Codex reviewing Codex, and it slips through because th
 the same one that reviews everything else. Track which seat wrote which file. A PR holding both
 native-written and bridge-written work needs one of each, judged per diff and not per run.
 
-Read the structured findings and do not parse the prose. Sol is flat-rate on the subscription
+Read the structured findings and do not parse the prose. When a bridge review comes back clean,
+its coverage list and verdict arrive through `delegation_continue` on that review's job id, as
+plain text in a second turn of the same job. Read that text for coverage only. The findings array
+is still the only place a finding comes from. Sol is flat-rate on the subscription
 here, so extra lenses cost turnaround and not money: widen on a hunch and journal it. A
 same-family lens is an extra on top of the mandatory opposite-family one and never a replacement
 for it. Security-flavored seats go to `gpt-daybreak-blue-latest` first. The retry for a null
