@@ -163,7 +163,7 @@ const HOST_CAPABILITY_TABLE = {
   },
   'hooks-in-native-children': {
     claude: { supported: true, assurance: 'mechanism', note: 'A subagent\'s tool calls run the session\'s PreToolUse hooks.' },
-    codex: { supported: false, assurance: 'unverified', verifiedAt: '2026-08-30', note: 'A V2 child receives a Config derived from the parent\'s turn (agent/control/spawn.rs), so plugin hooks should fire inside it. Unverified until the slice 3 child probe.' },
+    codex: { supported: true, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'A V2 child receives a Config derived from the parent\'s turn (agent/control/spawn.rs) and the plugin PreToolUse hooks fire inside it: a spawn_agent child attempting an unsanctioned issue create and a git push --no-verify was denied by both flow guards (slice 3 capture, flow-evidence pr-9/capture-child-hooks.*).' },
   },
 }
 

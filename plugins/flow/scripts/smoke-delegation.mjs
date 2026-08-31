@@ -553,7 +553,7 @@ try {
     'agent-depth-limit': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
     'per-seat-authority-narrowing': { claude: [true, 'mechanism'], codex: [false, 'mechanism'] },
     'skill-composition': { claude: [true, 'mechanism'], codex: [false, 'unverified'] },
-    'hooks-in-native-children': { claude: [true, 'mechanism'], codex: [false, 'unverified'] },
+    'hooks-in-native-children': { claude: [true, 'mechanism'], codex: [true, 'mechanism'] },
   }
   for (const [id, expected] of Object.entries(sliceThreeRows)) {
     for (const [host, [supported, assurance]] of Object.entries(expected)) {
