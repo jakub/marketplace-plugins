@@ -27,11 +27,39 @@
 //
 // Why release verifies the branch head before it deletes anything. The tag names an issue, not
 // an owner: it points at main's head, which says nothing about who pushed it. The only evidence
-// of ownership is the work, so release refuses to touch the tag until refs/heads/<branch> on
-// the remote reads back as exactly the head the caller says it pushed. Branch missing, branch
-// moved, remote unreadable: the tag stays in all three. A tag outliving an ambiguous state is
-// the recovery object. It is what keeps a second run from starting while a human works out what
-// happened.
+// of ownership is the work, so release demands two things of the caller's branch. It has to be
+// named for this issue, matching feat/issue-<N>-, fix/issue-<N>- or chore/issue-<N>-, because a
+// caller who can hand over any branch can release any claim: `release 8 main <head-of-main>`
+// would otherwise pass on every repository that has a main branch and drop issue 8's live claim.
+// And it has to read back on the remote at exactly the head the caller says it pushed. Branch
+// wrong for the issue, branch missing, branch moved, remote unreadable: the tag stays in all
+// four. A tag outliving an ambiguous state is the recovery object. It is what keeps a second run
+// from starting while a human works out what happened.
+//
+// Two limitations are accepted rather than fixed, and both end with a human. The first is a lost
+// push response, above: win the race, lose the answer, and the re-read cannot tell our own tag
+// from a rival's, so we stand down and the claim needs breaking by hand. The second is a
+// generation race between two releasers on one issue. Both can pass the branch check, both can
+// reach the delete, and a claim taken by a third run in between the two deletes is what the
+// second delete removes. That successor then believes it holds a claim that is gone. Every claim
+// on an issue points at the head of main, so its SHA cannot say which generation it belongs to,
+// and a delete that checked the object would be no safer. Deleting under a compare-and-set would
+// need a lease flag, which is a force flag, and this program has none. At this trust level the
+// cost is bounded, two runs on one issue, and the recovery is a human reading the issue.
+//
+// Reading the remote and writing to it have to be the same repository, so both subcommands
+// refuse when `git remote get-url origin` and `git remote get-url --push origin` disagree, or
+// when either names more than one URL. A pushurl set on origin would otherwise put the claim tag
+// somewhere no read of this program ever looks, which reads as an acquire that never holds.
+//
+// Nothing this program prints carries a credential. A remote URL can hold userinfo, as in
+// https://user:token@host/owner/repo, and the identity goes into JSON that the stage journals.
+// So the identity is always parsed down to host and path, never passed through, and a shape that
+// will not parse becomes the literal unparseable-origin rather than the bytes that came back.
+// Quoting git is the other half of that, and it needs more than a pattern, because git repeats
+// the remote it was handed word for word: `fatal: 'user@host' does not appear to be a git
+// repository`. So every message from git goes through a redactor built from the URLs configured
+// on origin, which swaps those exact strings for the safe identity before anything is printed.
 //
 // Nothing here force-pushes, in any spelling, and nothing here breaks a stale tag on its own.
 // Either one would turn the single atomic operation this program rests on into an overwrite,
@@ -67,6 +95,12 @@ const SHA = /^[0-9a-f]{40}$/
 const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/
 const MAIN_REF = 'refs/heads/main'
 
+/**
+ * The branch names that authorize releasing issue N's claim. The number is interpolated from a
+ * validated integer, so there is nothing in it that a regular expression reads as syntax.
+ */
+const branchForIssue = (issue) => new RegExp(`^(feat|fix|chore)/issue-${issue}-`)
+
 const USAGE = `issue-claim.mjs acquire <issue-number>
 issue-claim.mjs release <issue-number> <branch> <expected-head-sha>
 
@@ -75,9 +109,13 @@ the head of refs/heads/main. Creating a ref is atomic on the remote, so exactly 
 Exits 0 when it created the tag, 3 when someone already holds it, 4 when the outcome could not
 be established, 2 on a usage error or a refusal.
 
-release gives the claim back, but only after refs/heads/<branch> on origin reads back as
-exactly <expected-head-sha>. Anything else keeps the tag, because a tag outliving an ambiguous
-state is what stops a second run from starting. Nothing here force-pushes or breaks a stale tag.
+release gives the claim back. The branch has to be named for the issue being released, matching
+feat/issue-<N>-, fix/issue-<N>- or chore/issue-<N>-, and refs/heads/<branch> on origin has to
+read back at exactly <expected-head-sha>. Anything else keeps the tag, because a tag outliving
+an ambiguous state is what stops a second run from starting.
+
+Both subcommands refuse when origin's fetch and push URLs disagree. Nothing here force-pushes or
+breaks a stale tag, and nothing it prints carries a credential from a remote URL.
 `
 
 /** Run git and report its exit code, rather than swallowing failures into null. */
@@ -98,33 +136,101 @@ const runGit = (args, cwd, timeoutMs) => {
   }
 }
 
+// Userinfo in a URL, as in https://user:token@host/owner/repo. Git 2.55 redacts this from its own
+// error text, but that is behaviour rather than a promise, and every string below is on its way
+// into JSON the stage journals.
+const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi
+const scrubUserinfo = (text) => String(text || '').replace(USERINFO, '$1')
+
+/**
+ * Redact git's own words before quoting them. Pattern matching alone is not enough: git quotes
+ * the remote it was handed, verbatim, in messages like
+ * `fatal: 'user@host' does not appear to be a git repository`, and a shape it reads as a local
+ * path keeps whatever was in it. So the redactor is built from the URLs actually configured on
+ * origin and swaps those exact strings for the safe identity, which needs no guessing about
+ * which run of characters is a secret. The userinfo pattern stays behind it as a backstop for
+ * URLs that reach the output some other way.
+ */
+const makeRedactor = (rawUrls, identity) => (text) => {
+  let out = String(text || '')
+  for (const url of rawUrls) {
+    if (url !== '') out = out.split(url).join(identity)
+  }
+  return scrubUserinfo(out)
+}
+
 const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 200)
 
-// git@host:owner/repo, ssh://git@host/owner/repo, https://host/owner/repo - keep the host.
-// Same parser as scripts/land-merge.mjs.
-const identityOfRemote = (url) => {
-  if (typeof url !== 'string' || url.trim() === '') return null
-  const s = url.trim().replace(/\.git$/, '')
-  let m = s.match(/^[^@\s]+@([^:/\s]+):([^/\s]+)\/([^/\s]+)$/)
-  if (!m) m = s.match(/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/\s]+@)?([^/:\s]+)(?::\d+)?\/([^/\s]+)\/([^/\s]+)$/i)
-  if (!m) return null
-  const [, host, owner, repo] = m
-  return `${host}/${owner}/${repo}`
+/**
+ * A printable identity that cannot carry a credential, whatever the remote looks like. Unlike
+ * land-merge, an unparseable remote is not fatal here: nothing in this program calls GitHub, so
+ * the identity is for the reader and the log, and a local path remote (a bare repository on
+ * disk, which is what the smoke uses) is a legitimate origin. What is fatal is passing the raw
+ * URL through, so every branch below ends at a host and path, a bare local path, or a fixed
+ * placeholder. Nothing returns the input.
+ *
+ * This is stricter than land-merge's regular expressions, which keep whatever follows the repo
+ * name: they read https://host/owner/repo.git?redirect=1 as owner/repo.git?redirect=1. Handing
+ * a scheme to a real URL parser drops the userinfo, the query and the fragment by construction
+ * rather than by a character class, which is the property this needs.
+ */
+const safeIdentity = (remote) => {
+  const raw = String(remote ?? '').trim()
+  if (raw === '') return 'unparseable-origin'
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    try {
+      const url = new URL(raw)
+      const path = url.pathname.replace(/^\/+/, '')
+      // file:///srv/repo.git and friends: no host, so what is left is a filesystem path.
+      if (url.hostname === '') return path === '' ? 'unparseable-origin' : `/${path}`
+      const repo = path.replace(/\.git$/, '')
+      return repo === '' ? url.hostname : `${url.hostname}/${repo}`
+    } catch { return 'unparseable-origin' }
+  }
+
+  // scp-like, with or without a user in front: [user@]host:path.
+  const scp = raw.match(/^(?:[^@\s]+@)?([^@:/\s]+):(.+)$/)
+  if (scp !== null) return `${scp[1]}/${scp[2].replace(/^\/+/, '').replace(/\.git$/, '')}`
+
+  // A local filesystem path: no scheme, no scp colon, and no userinfo to strip.
+  if (!raw.includes('@')) return raw
+  return 'unparseable-origin'
 }
 
 /**
- * The repository this run works on, host-qualified when the remote is a host URL. Unlike
- * land-merge, an unparseable remote is not fatal here: nothing in this program calls GitHub, so
- * the identity is for the reader and the log, and a local path remote (a bare repository on
- * disk, which is what the smoke uses) is a legitimate origin. Only the absence of an origin
- * remote is a refusal.
+ * The repository this run reads from and writes to, which have to be the same one. Git reads
+ * from remote.origin.url and pushes to remote.origin.pushurl when that is set, so a divergent
+ * pushurl would put the claim tag in a repository no read here ever looks at. Both lists are
+ * read with --all, because either key can be multi-valued and a second push URL means the tag
+ * lands in two places.
+ *
+ * Returns the safe identity string, or a typed problem for the caller to refuse on.
  */
 const repoIdentity = (cwd) => {
-  const read = runGit(['remote', 'get-url', 'origin'], cwd, LOCAL_GIT_TIMEOUT_MS)
-  if (read.code !== 0) return null
-  const url = read.stdout.trim()
-  if (url === '') return null
-  return identityOfRemote(url) ?? url
+  const fetchRead = runGit(['remote', 'get-url', '--all', 'origin'], cwd, LOCAL_GIT_TIMEOUT_MS)
+  const pushRead = runGit(['remote', 'get-url', '--push', '--all', 'origin'], cwd, LOCAL_GIT_TIMEOUT_MS)
+  const urls = (read) => read.stdout.split('\n').map((s) => s.trim()).filter((s) => s !== '')
+  if (fetchRead.code !== 0 || pushRead.code !== 0) return { problem: 'no-origin' }
+  const fetchUrls = urls(fetchRead)
+  const pushUrls = urls(pushRead)
+  if (fetchUrls.length === 0) return { problem: 'no-origin' }
+  if (fetchUrls.length > 1 || pushUrls.length > 1) {
+    return {
+      problem: 'push-fetch-mismatch',
+      detail: `origin names ${fetchUrls.length} fetch URL(s) and ${pushUrls.length} push URL(s), and a claim can only be taken on one repository ` +
+        `(fetch ${fetchUrls.map((u) => safeIdentity(u)).join(', ')}; push ${pushUrls.map((u) => safeIdentity(u)).join(', ')})`,
+    }
+  }
+  if (fetchUrls[0] !== pushUrls[0]) {
+    return {
+      problem: 'push-fetch-mismatch',
+      detail: `origin fetches from ${safeIdentity(fetchUrls[0])} and pushes to ${safeIdentity(pushUrls[0])}, ` +
+        'so the claim tag would land where no read of this program looks',
+    }
+  }
+  const identity = safeIdentity(fetchUrls[0])
+  return { identity, redact: makeRedactor([...fetchUrls, ...pushUrls], identity) }
 }
 
 /**
@@ -145,7 +251,7 @@ const shaOfRef = (stdout, ref) => {
  * else (128 for an unreachable remote, 1 for a killed child) is an operational unknown rather
  * than an answer about who holds the claim.
  */
-const readRef = (cwd, ref) => {
+const readRef = (cwd, ref, redact) => {
   const read = runGit(['ls-remote', '--exit-code', 'origin', ref], cwd, REMOTE_GIT_TIMEOUT_MS)
   if (read.code === 0) {
     const sha = shaOfRef(read.stdout, ref)
@@ -154,7 +260,7 @@ const readRef = (cwd, ref) => {
       : { state: 'present', sha }
   }
   if (read.code === 2) return { state: 'absent' }
-  return { state: 'unknown', detail: `\`git ls-remote origin ${ref}\` failed: ${firstLine(read.stderr) || `exit ${read.code}`}` }
+  return { state: 'unknown', detail: `\`git ls-remote origin ${ref}\` failed: ${firstLine(redact(read.stderr)) || `exit ${read.code}`}` }
 }
 
 /**
@@ -182,14 +288,34 @@ const pushStatus = (stdout, ref) => {
   return seen === 1 ? found : null
 }
 
-const describeStatus = (status) =>
-  status === null ? 'no status line for that ref' : `${JSON.stringify(status.flag)} ${status.summary || '(no summary)'}`
+const describeStatus = (status, redact) =>
+  status === null ? 'no status line for that ref' : `${JSON.stringify(status.flag)} ${redact(status.summary) || '(no summary)'}`
 
 const line = (payload, code, human) => ({
   code,
   stdout: `${JSON.stringify(payload)}\n`,
   stderr: human ? `issue-claim: ${human}\n` : '',
 })
+
+/**
+ * The origin both subcommands need, or the refusal that stops the run before it touches the
+ * remote. Reading git's remote config is local, so a refusal here has pushed nothing and read
+ * nothing.
+ */
+const resolveOrigin = (command, cwd, facts) => {
+  const resolved = repoIdentity(cwd)
+  if (resolved.problem === 'no-origin') {
+    const detail = `this directory has no readable origin remote, so there is no remote to ${command} a claim on`
+    return { refusal: line({ command, result: 'refused', reason: 'no-origin', ...facts, detail }, EXIT_REFUSED, detail) }
+  }
+  if (resolved.problem === 'push-fetch-mismatch') {
+    return {
+      refusal: line({ command, result: 'refused', reason: 'push-fetch-mismatch', ...facts, detail: resolved.detail }, EXIT_REFUSED,
+        `${resolved.detail}. Nothing was read and nothing was pushed. Settle remote.origin.pushurl before claiming anything here.`),
+    }
+  }
+  return { repo: resolved.identity, redact: resolved.redact }
+}
 
 // ------------------------------------------------------------------------------------ acquire
 
@@ -201,11 +327,10 @@ const acquire = ({ argv, cwd }) => {
 
   const tag = `flow-claim-issue-${issue}`
   const ref = `refs/tags/${tag}`
-  const repo = repoIdentity(cwd)
-  if (repo === null) {
-    const detail = 'this directory has no readable origin remote, so there is no remote to claim on'
-    return line({ command: 'acquire', result: 'refused', reason: 'no-origin', issue, tag, ref, detail }, EXIT_REFUSED, detail)
-  }
+  const origin = resolveOrigin('acquire', cwd, { issue, tag, ref })
+  if (origin.refusal) return origin.refusal
+  const repo = origin.repo
+  const redact = origin.redact
   const base = { command: 'acquire', repo, issue, tag, ref }
   const held = (sha, detail) => line({ ...base, result: 'held', sha, detail }, EXIT_HELD,
     `issue #${issue} is already claimed on ${repo} (${ref} at ${sha.slice(0, 12)}). ${detail}. Leave it alone; the run that holds it releases it, or a human breaks the tag.`)
@@ -218,7 +343,7 @@ const acquire = ({ argv, cwd }) => {
   if (mainRead.code !== 0) {
     // The remote could not be read at all. Operationally unknown, not a lost race: nothing has
     // been learned about the tag, and nothing has been pushed.
-    return unknown(`\`git ls-remote origin ${MAIN_REF}\` failed: ${firstLine(mainRead.stderr) || `exit ${mainRead.code}`}`)
+    return unknown(`\`git ls-remote origin ${MAIN_REF}\` failed: ${firstLine(redact(mainRead.stderr)) || `exit ${mainRead.code}`}`)
   }
   const mainSha = shaOfRef(mainRead.stdout, MAIN_REF)
   if (mainSha === null) {
@@ -228,7 +353,7 @@ const acquire = ({ argv, cwd }) => {
 
   // Preflight. Cheap, and it keeps the common "someone claimed this an hour ago" case from
   // touching the remote's refs at all. It is not the lock: the lock is the push.
-  const before = readRef(cwd, ref)
+  const before = readRef(cwd, ref, redact)
   if (before.state === 'present') return held(before.sha, 'the tag was already there before this run pushed anything')
   if (before.state === 'unknown') return unknown(before.detail)
 
@@ -247,12 +372,12 @@ const acquire = ({ argv, cwd }) => {
   // Not a win. It might be a rival's tag, it might be our own tag from a push whose response was
   // lost, and from here those are indistinguishable, because both racers push the same object.
   // Standing down on both is the safe direction.
-  const after = readRef(cwd, ref)
-  const why = `the push did not create the ref (git said ${describeStatus(status)}, exit ${push.code})`
+  const after = readRef(cwd, ref, redact)
+  const why = `the push did not create the ref (git said ${describeStatus(status, redact)}, exit ${push.code})`
   if (after.state === 'present') return held(after.sha, why)
   if (after.state === 'absent') {
     return unknown(`${why}, and ${ref} is not on the remote either. ` +
-      `git's stderr was: ${firstLine(push.stderr) || '(empty)'}`)
+      `git's stderr was: ${firstLine(redact(push.stderr)) || '(empty)'}`)
   }
   return unknown(`${why}, and the re-read could not settle it: ${after.detail}`)
 }
@@ -272,11 +397,22 @@ const release = ({ argv, cwd }) => {
   const tag = `flow-claim-issue-${issue}`
   const ref = `refs/tags/${tag}`
   const branchRef = `refs/heads/${branch}`
-  const repo = repoIdentity(cwd)
-  if (repo === null) {
-    const detail = 'this directory has no readable origin remote, so there is no remote to release on'
-    return line({ command: 'release', result: 'refused', reason: 'no-origin', issue, tag, ref, detail }, EXIT_REFUSED, detail)
+
+  // The branch has to belong to this issue. Without it the head check alone authorizes nothing:
+  // any branch the caller can name and read the head of would do, and `release 8 main <head>`
+  // would drop issue 8's live claim on any repository with a main branch. This runs before any
+  // git call at all, so a caller who gets it wrong has touched nothing.
+  if (!branchForIssue(issue).test(branch)) {
+    const detail = `${JSON.stringify(branch)} is not a branch for issue #${issue}; releasing #${issue} needs a branch named ` +
+      `feat/issue-${issue}-, fix/issue-${issue}- or chore/issue-${issue}-`
+    return line({ command: 'release', result: 'refused', reason: 'branch-not-for-issue', issue, tag, ref, branch: branchRef, detail },
+      EXIT_REFUSED, `${detail}. The claim tag stays where it is.`)
   }
+
+  const origin = resolveOrigin('release', cwd, { issue, tag, ref, branch: branchRef })
+  if (origin.refusal) return origin.refusal
+  const repo = origin.repo
+  const redact = origin.redact
   const base = { command: 'release', repo, issue, tag, ref, branch: branchRef, expected }
   const keptTag = 'The claim tag stays where it is. Only a human breaks a claim, after looking at the issue.'
   const refuse = (reason, detail, extra = {}) => line({ ...base, ...extra, result: 'refused', reason, detail }, EXIT_REFUSED, `${detail}. ${keptTag}`)
@@ -289,7 +425,7 @@ const release = ({ argv, cwd }) => {
   const branchRead = runGit(['ls-remote', 'origin', branchRef], cwd, REMOTE_GIT_TIMEOUT_MS)
   if (branchRead.code !== 0) {
     return refuse('branch-unreadable',
-      `\`git ls-remote origin ${branchRef}\` failed, so the branch cannot be checked against ${expected.slice(0, 12)}: ${firstLine(branchRead.stderr) || `exit ${branchRead.code}`}`)
+      `\`git ls-remote origin ${branchRef}\` failed, so the branch cannot be checked against ${expected.slice(0, 12)}: ${firstLine(redact(branchRead.stderr)) || `exit ${branchRead.code}`}`)
   }
   const found = shaOfRef(branchRead.stdout, branchRef)
   if (found === null) {
@@ -306,14 +442,14 @@ const release = ({ argv, cwd }) => {
   // re-reading the remote rather than inferred from the push.
   const push = runGit(['push', '--porcelain', 'origin', `:${ref}`], cwd, PUSH_TIMEOUT_MS)
   const status = pushStatus(push.stdout, ref)
-  const after = readRef(cwd, ref)
+  const after = readRef(cwd, ref, redact)
   if (after.state === 'absent') {
     return line({ ...base, result: 'released', found }, EXIT_OK, '')
   }
   if (after.state === 'present') {
-    return unknown(`${ref} is still on ${repo} at ${after.sha.slice(0, 12)} after the delete (git said ${describeStatus(status)}, exit ${push.code})`, { found })
+    return unknown(`${ref} is still on ${repo} at ${after.sha.slice(0, 12)} after the delete (git said ${describeStatus(status, redact)}, exit ${push.code})`, { found })
   }
-  return unknown(`the delete ran (git said ${describeStatus(status)}, exit ${push.code}) but ${after.detail}`, { found })
+  return unknown(`the delete ran (git said ${describeStatus(status, redact)}, exit ${push.code}) but ${after.detail}`, { found })
 }
 
 /**

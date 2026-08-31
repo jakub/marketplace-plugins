@@ -23,6 +23,15 @@
 // invariant asserted is the one that matters either way, exactly one winner, and the run prints
 // which path the losers actually took.
 //
+// Three more failures get their own repositories, because none of them is about the race.
+// Release has to reject a branch that is not the issue's own, or the head check authorizes
+// nothing and `release 8 main <head-of-main>` drops a live claim. Origin has to fetch from and
+// push to one repository, so a clone with a pushurl aimed at a second bare repository is refused
+// and neither repository ends up with a tag. And an origin URL carrying a username and a token
+// has to leave both out of everything the program prints, which is checked against the whole of
+// stdout and stderr rather than the identity field alone. That last one caught a real leak: the
+// identity was clean, but git repeats the remote it was handed inside its own error text.
+//
 // Run: node plugins/flow/scripts/smoke-issue-claim.mjs
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
@@ -49,6 +58,9 @@ const b = join(tmp, 'b')                 // the run that loses
 const ambushSame = join(tmp, 'ambush-same')      // loses at the push, "up to date"
 const ambushOther = join(tmp, 'ambush-other')    // loses at the push, "rejected"
 const gone = join(tmp, 'gone')           // origin points at a path that is not there
+const elsewhere = join(tmp, 'elsewhere.git')     // the repository a divergent pushurl points at
+const diverged = join(tmp, 'diverged')   // reads from origin, pushes to elsewhere
+const creds = join(tmp, 'creds')         // origin URL carries a username and a token
 
 // Isolated from the developer's own git config, with an identity that needs none, and with
 // every proxy and credential helper stripped so the one host-shaped URL below fails fast on a
@@ -71,13 +83,13 @@ for (const key of ['http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTP
 }
 
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', env: gitEnv }).trim()
-const tryGitOrigin = (...args) => {
-  const r = spawnSync('git', ['-C', origin, ...args], { encoding: 'utf8', env: gitEnv })
+const tagRef = (issue) => `refs/tags/flow-claim-issue-${issue}`
+/** What a bare repository itself holds, read directly rather than through the program. */
+const tagIn = (dir, issue) => {
+  const r = spawnSync('git', ['-C', dir, 'rev-parse', '--verify', '--quiet', tagRef(issue)], { encoding: 'utf8', env: gitEnv })
   return r.status === 0 ? r.stdout.trim() : null
 }
-const tagRef = (issue) => `refs/tags/flow-claim-issue-${issue}`
-/** What the bare repository itself holds, read directly rather than through the program. */
-const tagOnOrigin = (issue) => tryGitOrigin('rev-parse', '--verify', '--quiet', tagRef(issue))
+const tagOnOrigin = (issue) => tagIn(origin, issue)
 const dropTag = (issue) => spawnSync('git', ['-C', origin, 'update-ref', '-d', tagRef(issue)], { encoding: 'utf8', env: gitEnv })
 
 execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin], { env: gitEnv })
@@ -94,10 +106,21 @@ const mainSha = git(seed, 'rev-parse', 'HEAD')
 const decoySha = git(seed, 'commit-tree', git(seed, 'rev-parse', 'HEAD^{tree}'), '-m', 'a rival run\'s object')
 git(seed, 'push', '-q', 'origin', `${decoySha}:refs/heads/decoy`)
 
-for (const dir of [a, b, ambushSame, ambushOther, gone]) {
+for (const dir of [a, b, ambushSame, ambushOther, gone, diverged, creds]) {
   execFileSync('git', ['clone', '-q', origin, dir], { env: gitEnv })
 }
 git(gone, 'remote', 'set-url', 'origin', join(tmp, 'no-such-repository.git'))
+
+// A real second repository, so a divergent pushurl is a place a tag could actually land rather
+// than a write that fails on its own.
+execFileSync('git', ['init', '-q', '--bare', '-b', 'main', elsewhere], { env: gitEnv })
+git(diverged, 'config', 'remote.origin.pushurl', elsewhere)
+
+// The credential is fake and the host is a refused port on the loopback, so nothing leaves this
+// machine. The string has to be distinctive enough to find anywhere in the program's output.
+const PAT = 's3cr3t-PAT-value'
+const PAT_USER = 'smokeuser'
+git(creds, 'remote', 'set-url', 'origin', `https://${PAT_USER}:${PAT}@127.0.0.1:1/jakub/marketplace-plugins.git`)
 
 const parseJson = (text) => { try { return JSON.parse(text) } catch { return null } }
 const claim = (cwd, ...args) => {
@@ -240,6 +263,39 @@ const badSha = claim(a, 'release', String(ISSUE_RELEASE), BRANCH, 'HEAD')
 check('release with something that is not a SHA is refused', badSha.json?.reason === 'usage' && badSha.code === 2, `exit ${badSha.code} ${badSha.stdout}`)
 check('and the claim tag survives that too', tagOnOrigin(ISSUE_RELEASE) === mainSha, String(tagOnOrigin(ISSUE_RELEASE)))
 
+// The head check alone authorizes nothing, because any branch whose head the caller can read
+// would satisfy it. main is the case that matters: it exists, its head is public, and passing
+// its real head would sail through a check that only compares SHAs.
+console.log('\nrelease only accepts the branch belonging to the issue it is releasing')
+
+const mainBypass = claim(a, 'release', String(ISSUE_RELEASE), 'main', mainSha)
+check('release of issue 8 against main, at main\'s real head, is refused', mainBypass.json?.result === 'refused' && mainBypass.code === 2,
+  `exit ${mainBypass.code} ${mainBypass.stdout}`)
+check('and the reason is that the branch is not the issue\'s', mainBypass.json?.reason === 'branch-not-for-issue', mainBypass.stdout)
+check('and issue 8\'s claim survives the bypass', tagOnOrigin(ISSUE_RELEASE) === mainSha, String(tagOnOrigin(ISSUE_RELEASE)))
+
+// A branch that exists on the remote, at exactly the head being passed, and still refused. Only
+// the issue number in its name is wrong, so nothing but the new rule can be stopping it.
+git(a, 'push', '-q', 'origin', `${workSha}:refs/heads/feat/issue-9-thing`)
+const wrongIssue = claim(a, 'release', String(ISSUE_RELEASE), 'feat/issue-9-thing', workSha)
+check('another issue\'s branch cannot release this issue\'s claim', wrongIssue.json?.reason === 'branch-not-for-issue' && wrongIssue.code === 2,
+  `exit ${wrongIssue.code} ${wrongIssue.stdout}`)
+check('and issue 8\'s claim survives that too', tagOnOrigin(ISSUE_RELEASE) === mainSha, String(tagOnOrigin(ISSUE_RELEASE)))
+
+const prefixCollision = claim(a, 'release', String(ISSUE_RELEASE), 'feat/issue-80-thing', workSha)
+check('issue 80\'s branch cannot release issue 8, despite the shared prefix', prefixCollision.json?.reason === 'branch-not-for-issue',
+  prefixCollision.stdout)
+check('and issue 8\'s claim survives that as well', tagOnOrigin(ISSUE_RELEASE) === mainSha, String(tagOnOrigin(ISSUE_RELEASE)))
+
+// The rule has to let the right branch through, or every case above passes for the wrong reason.
+// Issue 9 holds no claim, so this is the documented no-op, and what it proves is that fix/ and
+// the matching issue number are accepted.
+git(a, 'push', '-q', 'origin', `${workSha}:refs/heads/fix/issue-9-thing`)
+const rightBranchOtherIssue = claim(a, 'release', '9', 'fix/issue-9-thing', workSha)
+check('the issue\'s own branch is accepted, on any of feat, fix and chore', rightBranchOtherIssue.json?.result === 'released' && rightBranchOtherIssue.code === 0,
+  `exit ${rightBranchOtherIssue.code} ${rightBranchOtherIssue.stdout}`)
+check('and issue 8\'s claim is untouched by a release of issue 9', tagOnOrigin(ISSUE_RELEASE) === mainSha, String(tagOnOrigin(ISSUE_RELEASE)))
+
 console.log('\nrelease gives the claim back once the branch reads back as pushed')
 const released = claim(a, 'release', String(ISSUE_RELEASE), BRANCH, workSha)
 check('the claim is released', released.json?.result === 'released' && released.code === 0, `exit ${released.code} ${released.stdout}${released.stderr}`)
@@ -276,6 +332,58 @@ mkdirSync(noRemote)
 execFileSync('git', ['init', '-q', '-b', 'main', noRemote], { env: gitEnv })
 const remoteless = claim(noRemote, 'acquire', '6')
 check('a directory with no origin remote is refused', remoteless.json?.reason === 'no-origin' && remoteless.code === 2, `exit ${remoteless.code} ${remoteless.stdout}`)
+
+// ------------------------------------------------- reading and writing one repository
+console.log('\na remote that reads from one repository and pushes to another is refused')
+
+const ISSUE_DIVERGED = 11
+const divergedAcquire = claim(diverged, 'acquire', String(ISSUE_DIVERGED))
+check('acquire refuses a divergent pushurl', divergedAcquire.json?.result === 'refused' && divergedAcquire.code === 2,
+  `exit ${divergedAcquire.code} ${divergedAcquire.stdout}`)
+check('and names the mismatch', divergedAcquire.json?.reason === 'push-fetch-mismatch', divergedAcquire.stdout)
+check('nothing landed in the repository it reads from', tagOnOrigin(ISSUE_DIVERGED) === null, String(tagOnOrigin(ISSUE_DIVERGED)))
+check('and nothing landed in the one it would have pushed to', tagIn(elsewhere, ISSUE_DIVERGED) === null, String(tagIn(elsewhere, ISSUE_DIVERGED)))
+
+const divergedRelease = claim(diverged, 'release', String(ISSUE_DIVERGED), 'feat/issue-11-thing', workSha)
+check('release refuses a divergent pushurl too', divergedRelease.json?.reason === 'push-fetch-mismatch' && divergedRelease.code === 2,
+  `exit ${divergedRelease.code} ${divergedRelease.stdout}`)
+
+// A pushurl equal to the fetch URL is not a divergence, so the check has to let it through.
+git(diverged, 'config', 'remote.origin.pushurl', origin)
+const convergedAcquire = claim(diverged, 'acquire', String(ISSUE_DIVERGED))
+check('a pushurl equal to the fetch URL is not a mismatch', convergedAcquire.json?.result === 'acquired' && convergedAcquire.code === 0,
+  `exit ${convergedAcquire.code} ${convergedAcquire.stdout}`)
+dropTag(ISSUE_DIVERGED)
+
+// Two push URLs means the tag lands in two repositories, which is the same problem.
+git(diverged, 'config', '--add', 'remote.origin.pushurl', elsewhere)
+const twoPushUrls = claim(diverged, 'acquire', String(ISSUE_DIVERGED))
+check('two push URLs on origin is refused', twoPushUrls.json?.reason === 'push-fetch-mismatch' && twoPushUrls.code === 2,
+  `exit ${twoPushUrls.code} ${twoPushUrls.stdout}`)
+check('and still nothing landed anywhere', tagOnOrigin(ISSUE_DIVERGED) === null && tagIn(elsewhere, ISSUE_DIVERGED) === null, 'a tag landed')
+
+// ------------------------------------------------------------- credentials in a remote URL
+console.log('\nnothing it prints carries a credential out of the remote URL')
+
+const leaky = claim(creds, 'acquire', '12')
+const leakyOutput = leaky.stdout + leaky.stderr
+check('the identity is host and path, with the userinfo dropped', leaky.json?.repo === '127.0.0.1/jakub/marketplace-plugins', leaky.json?.repo)
+check('the token appears nowhere in stdout or stderr', !leakyOutput.includes(PAT), 'the token was printed')
+check('the username appears nowhere either', !leakyOutput.includes(PAT_USER), 'the username was printed')
+
+// The strict parser rejects this shape because of the query string, so the answer comes from the
+// sanitizing fallback instead. Same identity, same absence of the token.
+git(creds, 'remote', 'set-url', 'origin', `https://${PAT_USER}:${PAT}@127.0.0.1:1/jakub/marketplace-plugins.git?redirect=1`)
+const leakyOdd = claim(creds, 'acquire', '12')
+const leakyOddOutput = leakyOdd.stdout + leakyOdd.stderr
+check('a URL the strict parser rejects still reports host and path', leakyOdd.json?.repo === '127.0.0.1/jakub/marketplace-plugins', leakyOdd.json?.repo)
+check('and still prints no token', !leakyOddOutput.includes(PAT) && !leakyOddOutput.includes(PAT_USER), 'a credential was printed')
+
+// A shape nothing can parse becomes a fixed placeholder rather than the bytes that came back.
+git(creds, 'remote', 'set-url', 'origin', `${PAT_USER}@${PAT}`)
+const unparseable = claim(creds, 'acquire', '12')
+check('an unparseable origin reports the placeholder', unparseable.json?.repo === 'unparseable-origin', unparseable.json?.repo)
+check('and prints none of the raw value', !(unparseable.stdout + unparseable.stderr).includes(PAT), 'the raw value was printed')
 
 // -------------------------------------------------------------------------- usage
 console.log('\nthings it refuses before touching the remote')
