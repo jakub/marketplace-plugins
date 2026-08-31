@@ -601,8 +601,11 @@ try {
   // The issue-stage profiles cite these ids by name, in prose no test parses. Renaming a row in
   // HOST_CAPABILITY_TABLE has to fail here rather than leave a profile naming an id nobody has.
   const citedCapabilities = {
-    claude: ['per-seat-tool-allowlist', 'agent-depth-limit'],
-    codex: ['per-seat-authority-narrowing', 'agent-depth-limit', 'hooks-in-native-children', 'mcp-client-roots'],
+    claude: ['per-seat-tool-allowlist', 'agent-depth-limit', 'hooks-in-native-children', 'mcp-client-roots'],
+    codex: [
+      'per-seat-authority-narrowing', 'agent-depth-limit', 'hooks-in-native-children',
+      'mcp-client-roots', 'implicit-skill-suppression',
+    ],
   }
   for (const [host, ids] of Object.entries(citedCapabilities)) {
     for (const id of ids) {
