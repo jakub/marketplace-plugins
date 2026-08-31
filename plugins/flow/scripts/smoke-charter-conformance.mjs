@@ -153,8 +153,10 @@ const stageRoleClaims = (root) => {
 // Where a role section stops. An ATX heading ends it, and so does a setext one: a line of text
 // with nothing but = or - under it renders as a heading too, so a scan that only knows about #
 // would swallow the next section's title and its body and call the empty section above it full.
+// Both forms may sit up to three spaces in from the margin and still render as headings.
+const ATX_HEADING = /^ {0,3}#{1,6} /
 const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)\s*$/
-const endsSection = (rest, at) => /^#{1,6} /.test(rest[at])
+const endsSection = (rest, at) => ATX_HEADING.test(rest[at])
   || (rest[at].trim() !== '' && SETEXT_UNDERLINE.test(rest[at + 1] ?? ''))
 
 // A heading with nothing under it binds nothing, and the engine's set comparison cannot see it.
@@ -329,6 +331,43 @@ const CASES = [
       '',
     ].join('\n') }),
     names: ['setext.md declares role mini-seat with an empty section'],
+    count: 1,
+  },
+  {
+    // Three leading spaces still render as a heading. A scan anchored to column one misses it
+    // in both directions: the extractor never counts the binding, and the near-miss tripwire
+    // never reports it, so the profile appears to bind exactly the marked set while carrying
+    // a stray section.
+    label: 'indented-heading',
+    run: () => charterProblems(
+      'The charter marks [[role:mini-seat]].\n',
+      {
+        'indented.md': [
+          '### role: mini-seat',
+          'The seat that does the work.',
+          '',
+          '   ### role: mini-publish',
+          'A binding the margin hides.',
+          '',
+        ].join('\n'),
+      },
+    ).problems,
+    names: ['indented.md writes "   ### role: mini-publish"', 'not a canonical "### role: <id>" heading'],
+    count: 1,
+  },
+  {
+    // The same indent on the heading after an empty section. Without it the scan runs on into
+    // the next section and reads its body as mini-seat's binding.
+    label: 'indented-masked-empty',
+    run: () => emptyBindings({ 'indented.md': [
+      '### role: mini-seat',
+      '',
+      '   ## Bindings',
+      '',
+      'The seat that does the work.',
+      '',
+    ].join('\n') }),
+    names: ['indented.md declares role mini-seat with an empty section'],
     count: 1,
   },
   {

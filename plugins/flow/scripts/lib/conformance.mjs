@@ -15,10 +15,13 @@ export const markerGrammar = (keyword) => ({
   // the id comparison still comes back equal, so these run first and pre-empt it.
   // The near-miss opener ignores case and the spaces a human leaves around the keyword and the
   // colon, so "[[Gate:x]]", "[[ gate:x]]" and "[[gate : x]]" are all caught and reported rather
-  // than skipped in silence. The canonical grammar below is unchanged and stays exact.
+  // than skipped in silence. The heading scan also accepts up to three leading spaces, because
+  // CommonMark still renders "   ### gate: x" as a heading and a scan anchored to column one
+  // would let that binding hide from both it and the exact extractor. The canonical grammar
+  // below is unchanged and stays exact.
   markerLike: new RegExp(`\\[\\[\\s*${keyword}`, 'gi'),
   canonicalMarker: new RegExp(`\\[\\[${keyword}:[a-z][a-z0-9-]*\\]\\]`, 'y'),
-  headingLike: new RegExp(`^###\\s*${keyword}\\b.*$`, 'gim'),
+  headingLike: new RegExp(`^ {0,3}###\\s*${keyword}\\b.*$`, 'gim'),
   canonicalHeading: new RegExp(`^### ${keyword}: [a-z][a-z0-9-]*$`),
 })
 
