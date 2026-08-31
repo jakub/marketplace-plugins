@@ -121,11 +121,15 @@ const bundle = join(root, 'dist', 'delegation.mjs')
 const temp = mkdtempSync(join(tmpdir(), 'flow-claude-delegation-smoke-'))
 const repo = join(temp, 'repo')
 const fake = join(temp, 'fake-claude.mjs')
+// The SDK carries delegatedInstructions in the initialize control request, not in argv, and
+// the delegated process env is allowlisted. The capture path is baked into the fake instead.
+const appendOut = join(temp, 'append-system-prompt.txt')
 
 writeFileSync(fake, `#!/usr/bin/env node
 import { createInterface } from 'node:readline'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
 const args = process.argv.slice(2)
 if (args[0] === '--version') { console.log('2.1.test (Claude Code)'); process.exit(0) }
 if (args[0] === 'auth' && args[1] === 'status') {
@@ -198,6 +202,7 @@ const initFrame = () => say({
 createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line)
   if (message.type === 'control_request' && message.request?.subtype === 'initialize') {
+    if (mode === 'capture-instructions') writeFileSync(${JSON.stringify(appendOut)}, message.request.appendSystemPrompt || '')
     if (mode !== 'startup-slow') initialize(message)
   } else if (message.type === 'control_request' && message.request?.subtype === 'interrupt') {
     if (mode === 'interrupt-hangs') return
@@ -325,12 +330,20 @@ try {
   assert.equal(doctor.checks.account.authMethod, 'claude.ai')
   assert.equal(doctor.checks.agentSdk.bundled, true)
 
-  const happy = cli(runArgs, { input: 'Reply with OK', stateDir: state('happy') })
+  const happy = cli(runArgs, { input: 'Reply with OK', stateDir: state('happy'), mode: 'capture-instructions' })
   assert.equal(happy.status, 'succeeded')
   assert.equal(happy.host, 'codex')
   assert.equal(happy.target, 'claude')
   assert.equal(happy.output, 'OK from fake Claude')
   assert.ok(happy.threadId && happy.turnId)
+  // A Claude-target job must carry the charter and the Claude binding profile, once, with
+  // the profile between the charter and the seat block.
+  const appended = readFileSync(appendOut, 'utf8')
+  assert.ok(appended.includes('<flow-charter>'), 'delegated system prompt lost the charter')
+  assert.equal((appended.match(/<flow-profile /g) || []).length, 1, 'expected exactly one binding profile block')
+  assert.ok(appended.includes('<flow-profile host="claude" bindings="bound">'), 'binding profile is not the bound Claude profile')
+  assert.ok(appended.indexOf('</flow-charter>') < appended.indexOf('<flow-profile '), 'binding profile precedes the charter')
+  assert.ok(appended.indexOf('<flow-profile ') < appended.indexOf('<delegated-seat>'), 'binding profile follows the delegated-seat block')
   const wrongRoute = cli(['result', happy.jobId, '--host', 'claude'], { stateDir: state('happy') })
   assert.equal(wrongRoute.status, 'failed')
   assert.equal(wrongRoute.error.kind, 'ROUTE_DENIED')

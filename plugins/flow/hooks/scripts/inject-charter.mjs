@@ -7,9 +7,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CLAUDE_HOOK_CAP, CLAUDE_PART_BUDGET } from "../../lib/charter-payload.mjs";
 
-const CAP = 10_000;
-const WARN = 9_000;
+const CAP = CLAUDE_HOOK_CAP;
+const WARN = CLAUDE_PART_BUDGET;
 const part = process.argv[2];
 const root = process.env.CLAUDE_PLUGIN_ROOT || join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const text = readFileSync(join(root, "charter", "charter.md"), "utf8");

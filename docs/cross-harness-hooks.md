@@ -48,14 +48,17 @@ logic.
 
 Cross-family model calls use a related adapter shape, but they are not hooks. Flow's Claude
 manifest starts a local MCP server, while its shared job service owns route checks, state,
-events, and recovery. A Codex App Server worker is the Phase 1 backend. See
-[`plugins/flow/docs/DELEGATION.md`](../plugins/flow/docs/DELEGATION.md) for that contract.
+events, and recovery. A Codex App Server worker is the Phase 1 backend. The delegated seat's
+instructions carry the target host's binding profile between the charter and the
+`<delegated-seat>` block, built into the bundle rather than read from a hook at delegation
+time. See [`plugins/flow/docs/DELEGATION.md`](../plugins/flow/docs/DELEGATION.md) for that
+contract.
 
 ## Implemented mapping
 
 | Behavior | Claude Code | Codex | Shared core |
 | --- | --- | --- | --- |
-| Flow charter | Two `SessionStart` commands, split below Claude's output cap | One ordered `SessionStart` command with a 5,000-token inline limit | Hand-authored `charter/charter.md` |
+| Flow charter | Two `SessionStart` commands split below Claude's output cap, then a third that runs `inject-profile.mjs` and emits the `<flow-profile>` block | One ordered `SessionStart` command that emits the charter and the Codex profile in a single payload, under a 6,000-token inline limit | Host-neutral `charter/charter.md`, whose `[[role:<id>]]` markers each host's `charter/profiles/<host>.md` binds |
 | Flow Bash guards | `PreToolUse` on `Bash` | `PreToolUse` on `Bash` | Existing no-backlog and Git guards; publication policy in `lib/hook-policy.mjs` |
 | Flow protected files | `file_path` from Edit/Write input | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
 | Flow registry publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
@@ -166,9 +169,10 @@ to a nearby event with different meaning.
 - Flow enforcement adapters deny when the target cannot be inspected. Gripe and Unslop are
   advisory and exit quietly when their own input cannot be parsed.
 - Codex SessionStart context limits are sized above the current Flow and Unslop payloads so
-  both arrive inline. Flow's smoke test holds its English charter under a conservative
-  15,000-byte maintenance budget for the configured 5,000-token limit; Unslop retains
-  Claude's 10,000-byte output checks. Codex spills oversized output to a file and supplies a
+  both arrive inline. Flow's smoke test holds the charter under a conservative 15,000-byte
+  maintenance budget and the Codex profile under 3,000 bytes, an 18,000-byte combined
+  maintenance budget for the raised 6,000-token inline limit; Unslop retains Claude's
+  10,000-byte output checks. Codex spills oversized output to a file and supplies a
   preview, so spilling is a degraded fallback rather than silent loss.
 
 ## Testing without installation
@@ -179,6 +183,7 @@ The adapters are ordinary stdin/stdout programs and can be tested from a working
 node scripts/smoke-plugin-manifests.mjs
 node plugins/flow/scripts/smoke-delegation.mjs
 node plugins/flow/scripts/smoke-codex-hooks.mjs
+node plugins/flow/scripts/smoke-charter-conformance.mjs
 node plugins/flow/scripts/smoke-stage-conformance.mjs
 node plugins/gripe/scripts/smoke-hooks.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs
@@ -188,9 +193,14 @@ The manifest test derives each plugin's version from the marketplace manifest an
 Claude/Codex/marketplace parity, supported Codex event names, `${PLUGIN_ROOT}` use, and
 every registered command target. Plugin smoke tests cover
 both positive and negative wire cases with throwaway state, including the captured Codex
-failure payload that deliberately remains unclassified. The stage conformance lint compares
-the skill's gate ids against each profile's sections in both directions, and runs the same
-checker over the per-case broken fixtures so a green run also shows the check can still fail.
+failure payload that deliberately remains unclassified. The charter conformance lint checks
+that every `[[role:<id>]]` marker in the charter is bound in both host profiles, that the
+charter stays free of host names outside its three model-naming sections, and that both
+charter halves and each profile hold under their byte budgets; it runs the same checks over
+the per-case broken fixtures under `scripts/fixtures/charter-conformance/`. The stage
+conformance lint compares the skill's gate ids against each profile's sections in both
+directions, and runs the same checker over the per-case broken fixtures so a green run also
+shows the check can still fail.
 
 These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
 definitions until the user reviews them. Claude plugin installs still pull from the pinned

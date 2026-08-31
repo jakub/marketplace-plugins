@@ -268,6 +268,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     const expectedAccess = doctorProbe ? 'read' : process.env.FLOW_DELEGATION_ACCESS === 'workspace-write' ? 'write' : 'read'
     const workspaceKey = doctorProbe ? process.cwd() : process.env.FLOW_DELEGATION_WORKSPACE_KEY
     const filesystem = threadConfig?.permissions?.flow_delegation?.filesystem
+    // A Codex-target job must carry the Codex binding profile, once, between the charter
+    // and the seat block. The host attribute is the family this worker runs in.
+    const instructions = message.params.developerInstructions || ''
+    const profileOk = (instructions.match(/<flow-profile /g) || []).length === 1
+      && instructions.includes('<flow-profile host="codex" bindings="bound">')
+      && instructions.indexOf('</flow-charter>') < instructions.indexOf('<flow-profile ')
+      && instructions.indexOf('<flow-profile ') < instructions.indexOf('<delegated-seat>')
     if (mode === 'provider-error') {
       say({ id: message.id, error: { code: -32603, message: 'account test@example.invalid failed at /home/test/private/provider.json' } })
     } else if (!experimentalApi
@@ -284,6 +291,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       || (!doctorProbe && !message.params.developerInstructions?.includes('<flow-charter>'))
       || (!doctorProbe && !message.params.developerInstructions?.includes('Do not start subagents'))) {
       say({ id: message.id, error: { code: -32602, message: 'missing restricted Flow delegation profile' } })
+    } else if (!doctorProbe && !profileOk) {
+      say({ id: message.id, error: { code: -32602, message: 'missing or misplaced target host binding profile' } })
     } else if (mode === 'profile' && !message.params.developerInstructions.includes('authorized defensive research')) {
       say({ id: message.id, error: { code: -32602, message: 'missing defensive profile' } })
     } else answer({ thread: { id: 'thread-test' }, activePermissionProfile: { id: 'flow_delegation', extends: null } })
