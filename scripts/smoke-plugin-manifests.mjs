@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,7 +20,7 @@ const CODEX_EVENTS = new Set([
 
 assert.match(marketplace.metadata.version, /^\d+\.\d+\.\d+$/, 'catalog version is semver')
 assert.ok(marketplace.plugins.length > 0, 'marketplace lists plugins')
-let codexPlugins = 0
+const codexPlugins = []
 
 for (const listed of marketplace.plugins) {
   const { name } = listed
@@ -38,9 +38,21 @@ for (const listed of marketplace.plugins) {
 
   const codexManifest = join(pluginRoot, '.codex-plugin', 'plugin.json')
   if (!existsSync(codexManifest)) continue
-  codexPlugins++
+  codexPlugins.push(name)
   const codex = readJson(codexManifest)
   assert.equal(codex.version, listed.version, `${name} Codex version matches marketplace`)
+
+  // Codex finds skills/*/SKILL.md on its own, so a skills-only plugin registers no hooks
+  // and needs no key for them. What it must not be is empty: a Codex manifest that
+  // registers nothing and ships no skill contributes nothing, and is a typo.
+  if (codex.hooks === undefined) {
+    const skillsRoot = join(pluginRoot, 'skills')
+    const skills = existsSync(skillsRoot)
+      ? readdirSync(skillsRoot).filter((dir) => existsSync(join(skillsRoot, dir, 'SKILL.md')))
+      : []
+    assert.ok(skills.length > 0, `${name} Codex manifest without hooks ships at least one skill`)
+    continue
+  }
 
   const hooksPath = join(pluginRoot, codex.hooks)
   assert.ok(existsSync(hooksPath), `${name} Codex hooks path`)
@@ -60,7 +72,8 @@ for (const listed of marketplace.plugins) {
 
 // The dual-harness set shrinking to zero would mean the Codex manifests moved or were
 // renamed without this test noticing; that is a failure, not an empty success.
-assert.ok(codexPlugins >= 3, `expected at least 3 Codex-capable plugins, found ${codexPlugins}`)
+assert.ok(codexPlugins.length >= 4, `expected at least 4 Codex-capable plugins, found ${codexPlugins.length}`)
+assert.ok(codexPlugins.includes('grill'), 'grill carries a Codex manifest')
 
 // The catalog version must move whenever the plugin set or a listed version moves.
 // Parity alone cannot prove that, so compare against main's committed manifest when
