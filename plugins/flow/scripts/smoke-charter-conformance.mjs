@@ -68,27 +68,14 @@ const profilesIn = (dir) => Object.fromEntries(
     .map((f) => [f, read(dir, 'profiles', f)]),
 )
 
-// An HTML comment reaches no session: the hook prints the profile verbatim and the model reads
-// it as markup, so "<!-- TODO -->" under a heading binds exactly as much as a blank line. A
-// commented-out "### role: x" line is the same nothing, so it must not count as a binding
-// either. The unterminated alternative closes on end-of-body, because text after an opener
-// nobody closed is inside the comment too.
-const uncommented = (text) => text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
-
-// The one preprocessing point. Every profile check reads what comes out of here, so heading
-// discovery and the body checks work off the same comment-free text. Strip per-section instead
-// and a whole role block wrapped in one comment passes both: the hidden heading answers the
-// parity check, and its body minus the opening delimiter reads as prose.
-const readable = (profiles) => Object.fromEntries(
-  Object.entries(profiles).map(([name, text]) => [name, uncommented(lf(text))]),
-)
-
-// The shared engine, bound to the charter's vocabulary.
+// The shared engine, bound to the charter's vocabulary. It owns the comment stripping every
+// binding check needs: an HTML comment reaches no session, so a commented-out "### role: x"
+// heading binds nothing and a section whose whole body is a comment is empty.
 const charterProblems = (charter, profiles) => bindingProblems({
   keyword: 'role',
   sourceName: 'the charter',
   sourceText: charter,
-  profiles: readable(profiles),
+  profiles,
 })
 
 // Everything outside the allowlisted sections, with fences and inline code removed. Unlike the
@@ -150,32 +137,6 @@ const stageRoleClaims = (root) => {
   return problems
 }
 
-// Where a role section stops. An ATX heading ends it, and so does a setext one: a line of text
-// with nothing but = or - under it renders as a heading too, so a scan that only knows about #
-// would swallow the next section's title and its body and call the empty section above it full.
-// Both forms may sit up to three spaces in from the margin and still render as headings.
-const ATX_HEADING = /^ {0,3}#{1,6} /
-const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)\s*$/
-const endsSection = (rest, at) => ATX_HEADING.test(rest[at])
-  || (rest[at].trim() !== '' && SETEXT_UNDERLINE.test(rest[at + 1] ?? ''))
-
-// A heading with nothing under it binds nothing, and the engine's set comparison cannot see it.
-const emptyBindings = (profiles) => Object.entries(readable(profiles)).flatMap(([name, text]) => {
-  const lines = text.split('\n')
-  const problems = []
-  for (const [at, line] of lines.entries()) {
-    const heading = /^### role: ([a-z][a-z0-9-]*)$/.exec(line)
-    if (!heading) continue
-    const rest = lines.slice(at + 1)
-    const end = rest.findIndex((_, i) => endsSection(rest, i))
-    const section = end === -1 ? rest : rest.slice(0, end)
-    if (section.join('\n').trim() === '') {
-      problems.push(`${name} declares role ${heading[1]} with an empty section`)
-    }
-  }
-  return problems
-})
-
 const emit = (script, args, root) => execFileSync(
   process.execPath,
   [join(ROOT, 'hooks', 'scripts', script), ...args],
@@ -194,7 +155,7 @@ const profiles = profilesIn(CHARTER)
 assert.deepEqual(Object.keys(profiles).sort(), ['claude.md', 'codex.md'])
 const { ids: roles, problems } = charterProblems(charter, profiles)
 assert.deepEqual(problems, [], problems.join('\n'))
-ok(`${roles.size} roles, and both profiles bind exactly those: ${[...roles].join(', ')}`)
+ok(`${roles.size} roles, and both profiles bind exactly those, each under prose: ${[...roles].join(', ')}`)
 
 assert.deepEqual([...roles].sort(), [...ROLES].sort())
 ok('the marked roles are exactly the expected set')
@@ -212,10 +173,6 @@ ok('the charter names the <flow-profile> tag in its presence paragraph')
 const claims = stageRoleClaims(ROOT)
 assert.deepEqual(claims, [], claims.join('\n'))
 ok('no stage marks or rebinds a charter role')
-
-const empty = emptyBindings(profiles)
-assert.deepEqual(empty, [], empty.join('\n'))
-ok('every role section in both profiles carries prose')
 
 console.log('the real emitters')
 // The budgets are assertions about what the hooks actually print, not about the source files:
@@ -321,7 +278,7 @@ const CASES = [
     // Underlined text is a heading, so the mini-seat section really is empty. A scan that only
     // stops at # reads the next section's title and body as mini-seat's binding.
     label: 'setext-masked-empty',
-    run: () => emptyBindings({ 'setext.md': [
+    run: () => charterProblems('The charter marks [[role:mini-seat]].\n', { 'setext.md': [
       '### role: mini-seat',
       '',
       'Bindings',
@@ -329,7 +286,7 @@ const CASES = [
       '',
       'The seat that does the work.',
       '',
-    ].join('\n') }),
+    ].join('\n') }).problems,
     names: ['setext.md declares role mini-seat with an empty section'],
     count: 1,
   },
@@ -359,32 +316,35 @@ const CASES = [
     // The same indent on the heading after an empty section. Without it the scan runs on into
     // the next section and reads its body as mini-seat's binding.
     label: 'indented-masked-empty',
-    run: () => emptyBindings({ 'indented.md': [
+    run: () => charterProblems('The charter marks [[role:mini-seat]].\n', { 'indented.md': [
       '### role: mini-seat',
       '',
       '   ## Bindings',
       '',
       'The seat that does the work.',
       '',
-    ].join('\n') }),
+    ].join('\n') }).problems,
     names: ['indented.md declares role mini-seat with an empty section'],
     count: 1,
   },
   {
     label: 'commented-out-binding',
-    run: () => emptyBindings({ 'commented.md': [
-      '### role: mini-seat',
-      '<!-- TODO -->',
-      '',
-      '### role: mini-publish',
-      '<!-- TODO:',
-      'bind this once the CLI resolves here',
-      '-->',
-      '',
-      '### role: mini-search',
-      'A read-only seat.',
-      '',
-    ].join('\n') }),
+    run: () => charterProblems(
+      'The charter marks [[role:mini-seat]], [[role:mini-publish]] and [[role:mini-search]].\n',
+      { 'commented.md': [
+        '### role: mini-seat',
+        '<!-- TODO -->',
+        '',
+        '### role: mini-publish',
+        '<!-- TODO:',
+        'bind this once the CLI resolves here',
+        '-->',
+        '',
+        '### role: mini-search',
+        'A read-only seat.',
+        '',
+      ].join('\n') },
+    ).problems,
     names: [
       'commented.md declares role mini-seat with an empty section',
       'commented.md declares role mini-publish with an empty section',

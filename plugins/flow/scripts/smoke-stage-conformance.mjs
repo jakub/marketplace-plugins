@@ -1,28 +1,70 @@
 #!/usr/bin/env node
-// Conformance lint for the land stage: the host-neutral prose in skills/land-stage/SKILL.md
-// and the per-host profiles beside it have to name the same gates, the stage has to stay free
-// of host names, and commands/land.md has to stay a thin alias. The same checker runs over the
-// broken pairs under scripts/fixtures/stage-conformance/, one directory per way the pair can
-// go wrong, so a green run also means the checker can still fail and says why.
+// Conformance lint for every stage in the plugin. A stage is any directory under skills/ that
+// holds a profiles/ subdirectory: its host-neutral prose in SKILL.md and the per-host profiles
+// beside it have to name the same gates, the stage body has to stay free of host names and of
+// the tool literals only one host has, the Codex agent metadata has to keep implicit invocation
+// off, and commands/<stage>.md has to stay a thin alias that declares the same tool allowance as
+// the Claude profile. Discovery means a stage added later is linted without editing this file.
+// The checks run at two layers over scripts/fixtures/stage-conformance/: the binding engine over
+// the three broken skill-and-profile pairs, and the whole per-stage checker over four miniature
+// plugin roots, each valid except for one defect. So a green run also means the checker can
+// still fail and says why.
 // Run: node plugins/flow/scripts/smoke-stage-conformance.mjs
 
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { bindingProblems, body, frontmatter } from './lib/conformance.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const STAGE = join(ROOT, 'skills', 'land-stage')
 const FIXTURE = join(ROOT, 'scripts', 'fixtures', 'stage-conformance')
 const read = (...parts) => readFileSync(join(...parts), 'utf8')
+const readOrNull = (...parts) => {
+  try {
+    return read(...parts)
+  } catch {
+    return null
+  }
+}
+const isDir = (...parts) => {
+  try {
+    return statSync(join(...parts)).isDirectory()
+  } catch {
+    return false
+  }
+}
 
-// A host name in the stage body means a gate got bound in the one file both hosts share. This
-// check reads the raw body, never the engine's prose() view: a host name inside a code fence is
-// still a host name in the shared file.
-const BANNED = ['claude', 'codex', 'anthropic', 'openai', 'askuserquestion', 'apply_patch']
+// A host name in the stage body means a gate got bound in the one file both hosts share. The
+// list covers the two families, the tools and call literals only one of them has, and the
+// argument placeholder only one of them substitutes. This check reads the raw body and never the
+// engine's prose() view: a host name inside a code fence is still a host name in the shared file.
+const BANNED = [
+  'claude',
+  'codex',
+  'anthropic',
+  'openai',
+  'askuserquestion',
+  'apply_patch',
+  'explore',
+  'spawn_agent',
+  'delegate_to_codex',
+  'delegate_to_claude',
+  'fork_turns',
+  '$arguments',
+]
+const HOSTS = ['claude.md', 'codex.md']
 const ALLOWED_TOOLS = /^allowed-tools:.*$/m
+
+// Whole tokens, any casing. The boundaries are spelled out instead of \b because $ARGUMENTS
+// opens on a character \b does not treat as part of the word, and because a trailing dot or
+// hyphen has to still count: "claude.md" and "codex-cli" name a host as plainly as the bare
+// word does.
+const escaped = (word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const bannedHits = (text) => BANNED.flatMap((word) => [
+  ...text.matchAll(new RegExp(`(?<![\\w$])${escaped(word)}(?![\\w$])`, 'gi')),
+].map((hit) => hit[0]))
 
 const profilesIn = (dir) => Object.fromEntries(
   readdirSync(join(dir, 'profiles'))
@@ -30,14 +72,90 @@ const profilesIn = (dir) => Object.fromEntries(
     .map((f) => [f, read(dir, 'profiles', f)]),
 )
 
-// The shared engine, bound to this stage's vocabulary. Both the real stage and the fixtures go
-// through it, so a green run also means the checker can still fail and says why.
-const stageProblems = (skill, profiles) => bindingProblems({
+// The shared engine, bound to the stage vocabulary. The real stages, the plugin-shaped fixtures
+// and the bare fixture pairs all go through it.
+const stageBindings = (skill, profiles) => bindingProblems({
   keyword: 'gate',
   sourceName: 'the stage',
   sourceText: skill,
   profiles,
 })
+
+// Every stage in a plugin root, by directory name. The profiles/ directory is what makes a skill
+// a stage: skills/flow has no profiles and is not one.
+const discoverStages = (root) => readdirSync(join(root, 'skills'), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && isDir(root, 'skills', entry.name, 'profiles'))
+  .map((entry) => entry.name)
+  .sort()
+
+// One stage, every check, as a list of problems naming the stage and the defect. Nothing throws
+// on a missing file: a stage that is half there has to report that, not crash the lint.
+const stageProblems = (root, name) => {
+  const at = join(root, 'skills', name)
+  const problems = []
+  const command = `commands/${name.replace(/-stage$/, '')}.md`
+
+  if (!name.endsWith('-stage')) {
+    problems.push(`skills/${name} holds profiles/, so it is a stage, but its name does not end in "-stage"`)
+  }
+
+  const skill = readOrNull(at, 'SKILL.md')
+  if (skill === null) {
+    problems.push(`skills/${name} has profiles/ but no SKILL.md`)
+    return { ids: new Set(), problems }
+  }
+
+  const profiles = profilesIn(at)
+  for (const host of HOSTS) {
+    if (!(host in profiles)) problems.push(`skills/${name}/profiles has no ${host}`)
+  }
+  for (const extra of Object.keys(profiles).filter((f) => !HOSTS.includes(f))) {
+    problems.push(`skills/${name}/profiles holds ${extra}, which is neither claude.md nor codex.md`)
+  }
+
+  const { ids, problems: bindings } = stageBindings(skill, profiles)
+  for (const problem of bindings) problems.push(`skills/${name}: ${problem}`)
+
+  for (const hit of new Set(bannedHits(body(skill)))) {
+    problems.push(`skills/${name}/SKILL.md writes "${hit}"; the shared stage body names no host`)
+  }
+
+  const agent = readOrNull(at, 'agents', 'openai.yaml')
+  if (agent === null) {
+    problems.push(`skills/${name}/agents/openai.yaml does not exist`)
+  } else if (!/^\s*allow_implicit_invocation:\s*false\s*$/m.test(agent)) {
+    problems.push(`skills/${name}/agents/openai.yaml does not set allow_implicit_invocation: false`)
+  }
+
+  const alias = readOrNull(root, ...command.split('/'))
+  if (alias === null) {
+    problems.push(`${command} does not exist, so skills/${name} has no alias`)
+    return { ids, problems }
+  }
+  const aliasBody = body(alias)
+  if (aliasBody.includes('[[gate:')) {
+    problems.push(`${command} carries gate markers; the gates live in the skill`)
+  }
+  const headings = aliasBody.split('\n').filter((line) => /^##/.test(line))
+  if (headings.length > 1) {
+    problems.push(`${command} has ${headings.length} "##" headings; an alias needs at most one`)
+  }
+  for (const target of [`skills/${name}/profiles/claude.md`, `skills/${name}/SKILL.md`]) {
+    if (!aliasBody.includes(target)) problems.push(`${command} never points at ${target}`)
+  }
+  const aliasAllowance = ALLOWED_TOOLS.exec(frontmatter(alias)?.[1] ?? '')?.[0]
+  const profileAllowance = ALLOWED_TOOLS.exec(profiles['claude.md'] ?? '')?.[0]
+  if (!aliasAllowance) problems.push(`${command} declares no allowed-tools`)
+  if (!profileAllowance) problems.push(`skills/${name}/profiles/claude.md declares no allowed-tools`)
+  if (aliasAllowance && profileAllowance && aliasAllowance !== profileAllowance) {
+    problems.push(
+      `${command} and skills/${name}/profiles/claude.md declare different allowed-tools lines: `
+      + `"${aliasAllowance}" against "${profileAllowance}"`,
+    )
+  }
+
+  return { ids, problems }
+}
 
 let checks = 0
 const ok = (line) => {
@@ -45,45 +163,22 @@ const ok = (line) => {
   console.log(`  ok: ${line}`)
 }
 
-console.log('the real stage')
-const skill = read(STAGE, 'SKILL.md')
-const profiles = profilesIn(STAGE)
-assert.deepEqual(Object.keys(profiles).sort(), ['claude.md', 'codex.md'])
-const { ids: gates, problems } = stageProblems(skill, profiles)
-assert.deepEqual(problems, [], problems.join('\n'))
-ok(`${gates.size} gates, and both profiles bind exactly those: ${[...gates].join(', ')}`)
+console.log('the real stages')
+const stages = discoverStages(ROOT)
+assert.ok(stages.length > 0, 'no directory under skills/ holds a profiles/ subdirectory, so the lint checked nothing')
+ok(`discovery found ${stages.length} stage(s): ${stages.join(', ')}`)
 
-const stageBody = body(skill).toLowerCase()
-const leaked = BANNED.filter((word) => stageBody.includes(word))
-assert.deepEqual(leaked, [], `host names leaked into the stage body: ${leaked.join(', ')}`)
-ok('the stage body names no host')
+for (const name of stages) {
+  const { ids, problems } = stageProblems(ROOT, name)
+  assert.deepEqual(problems, [], problems.join('\n'))
+  ok(`skills/${name}: ${ids.size} gates bound by both profiles, a host-free body, and a matching alias`)
+}
 
-console.log('the alias command')
-const land = read(ROOT, 'commands', 'land.md')
-const landBody = body(land)
-assert.ok(!landBody.includes('[[gate:'), 'commands/land.md carries gate markers; the gates live in the skill')
-ok('commands/land.md carries no gate markers')
-
-const headings = landBody.split('\n').filter((line) => /^##/.test(line))
-assert.ok(headings.length <= 1, `commands/land.md has ${headings.length} "##" headings; an alias needs at most one`)
-ok(`commands/land.md has ${headings.length} "##" heading(s)`)
-
-const landAllowance = ALLOWED_TOOLS.exec(frontmatter(land)?.[1] ?? '')?.[0]
-const profileAllowance = ALLOWED_TOOLS.exec(profiles['claude.md'])?.[0]
-assert.ok(landAllowance, 'commands/land.md declares no allowed-tools')
-assert.ok(profileAllowance, 'profiles/claude.md declares no allowed-tools')
-assert.equal(landAllowance, profileAllowance)
-ok('the alias and the Claude profile declare the same allowed-tools line')
-
-console.log('the Codex agent metadata')
-const agent = read(STAGE, 'agents', 'openai.yaml')
-assert.match(agent, /^\s*allow_implicit_invocation:\s*false\s*$/m, 'agents/openai.yaml must disable implicit invocation')
-ok('agents/openai.yaml sets allow_implicit_invocation: false')
-
-console.log('the negative fixtures')
-// One directory per way the pair can be wrong. Each case names the substrings its failure
-// has to contain, so a checker that fails for some unrelated reason does not count as proof.
-const CASES = [
+console.log('the negative fixtures, at the engine')
+// One directory per way a skill-and-profile pair can be wrong, checked through the engine alone.
+// Each case names the substrings its failure has to contain, so a checker that fails for some
+// unrelated reason does not count as proof.
+const PAIR_CASES = [
   { dir: 'missing-binding', names: ['mini.md has no "### gate: mini-close" section'] },
   { dir: 'malformed-marker', names: ['[[gate:bad_id]]', 'not a canonical [[gate:<id>]] marker'] },
   {
@@ -91,17 +186,50 @@ const CASES = [
     names: ['declares gate mini-open in more than one section', '### Gate: mini-close', 'not a canonical "### gate: <id>" heading'],
   },
 ]
-for (const { dir, names } of CASES) {
+for (const { dir, names } of PAIR_CASES) {
   const at = join(FIXTURE, dir)
-  const fixture = stageProblems(read(at, 'SKILL.md'), profilesIn(at))
-  assert.ok(fixture.problems.length > 0, `the checker passed ${dir}, a fixture built to fail`)
+  const found = stageBindings(read(at, 'SKILL.md'), profilesIn(at)).problems
+  assert.ok(found.length > 0, `the checker passed ${dir}, a case built to fail`)
   for (const name of names) {
     assert.ok(
-      fixture.problems.some((p) => p.includes(name)),
-      `${dir} failed without naming "${name}": ${fixture.problems.join('; ')}`,
+      found.some((p) => p.includes(name)),
+      `${dir} failed without naming "${name}": ${found.join('; ')}`,
     )
   }
-  ok(`the checker fails ${dir} and names the gap: ${fixture.problems[0]}`)
+  ok(`the engine fails ${dir} and names the gap: ${found[0]}`)
 }
 
-console.log(`\nland stage conformance: ALL PASS (${checks} checks)`)
+console.log('the negative fixtures, at the plugin root')
+// One miniature plugin root per way the files around a stage can be wrong. Each is valid in
+// every other respect, so the count says the defect under test is the only thing reported.
+const ROOT_CASES = [
+  {
+    dir: 'alias-drift',
+    names: ['commands/mini.md and skills/mini-stage/profiles/claude.md declare different allowed-tools lines'],
+    count: 1,
+  },
+  { dir: 'host-leak', names: ['skills/mini-stage/SKILL.md writes "fork_turns"'], count: 1 },
+  { dir: 'missing-host-profile', names: ['skills/mini-stage/profiles has no codex.md'], count: 1 },
+  {
+    dir: 'implicit-invocation-enabled',
+    names: ['skills/mini-stage/agents/openai.yaml does not set allow_implicit_invocation: false'],
+    count: 1,
+  },
+]
+for (const { dir, names, count } of ROOT_CASES) {
+  const at = join(FIXTURE, dir)
+  const inside = discoverStages(at)
+  assert.deepEqual(inside, ['mini-stage'], `${dir} holds stages ${inside.join(', ')}, expected mini-stage alone`)
+  const found = inside.flatMap((name) => stageProblems(at, name).problems)
+  assert.ok(found.length > 0, `the checker passed ${dir}, a case built to fail`)
+  assert.equal(found.length, count, `${dir} reported ${found.length} problems, expected ${count}: ${found.join('; ')}`)
+  for (const name of names) {
+    assert.ok(
+      found.some((p) => p.includes(name)),
+      `${dir} failed without naming "${name}": ${found.join('; ')}`,
+    )
+  }
+  ok(`the checker fails ${dir} and names the gap: ${found[0]}`)
+}
+
+console.log(`\nstage conformance: ALL PASS (${checks} checks)`)
