@@ -46,7 +46,7 @@ export const body = (text) => {
 // fence, of an unclosed fence, and of a longer fence that quotes a shorter run inside itself.
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/
 const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
-export const prose = (text) => {
+const unfenced = (text) => {
   const kept = []
   let open = null
   for (const line of text.split('\n')) {
@@ -62,8 +62,35 @@ export const prose = (text) => {
     const close = FENCE_CLOSE.exec(line)
     if (close && close[1][0] === open[0] && close[1].length >= open.length) open = null
   }
-  return kept.join('\n').replace(/`[^`\n]*`/g, '')
+  return kept.join('\n')
 }
+
+// Inline code by delimiter run, the way CommonMark reads it: a run of N backticks opens a span
+// that ends at the next run of exactly N, and a run that never finds its match is literal text.
+// Writing an example with two backticks is how a document quotes something that itself contains a
+// backtick, so ``allowed-tools: `x` `` is one span. A scan that only pairs single backticks drops
+// the two delimiters and leaves the quoted line standing as prose, which is how a quoted example
+// came back as a live declaration.
+const spanless = (text) => {
+  const runs = [...text.matchAll(/`+/g)].map((hit) => ({ at: hit.index, len: hit[0].length }))
+  let kept = ''
+  let copied = 0
+  let i = 0
+  while (i < runs.length) {
+    const open = runs[i]
+    const close = runs.findIndex((run, j) => j > i && run.len === open.len)
+    if (close === -1) {
+      i++
+      continue
+    }
+    kept += text.slice(copied, open.at)
+    copied = runs[close].at + runs[close].len
+    i = close + 1
+  }
+  return kept + text.slice(copied)
+}
+
+export const prose = (text) => spanless(unfenced(text))
 
 // An HTML comment reaches no session: the hook prints the profile verbatim and the model reads
 // it as markup, so "<!-- TODO -->" under a heading binds exactly as much as a blank line. A

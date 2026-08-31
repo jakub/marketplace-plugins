@@ -98,38 +98,56 @@ const live = (text) => prose(uncommented(text.replace(/\r\n/g, '\n')))
 // The canonical allowance is lowercase and starts at column one. Anything else that reads as one
 // gets named rather than skipped: the extractor cannot see an indented line or a capitalized key,
 // so the file says one thing to a human and another to the loader.
-const ALLOWANCE = /^allowed-tools:/
-const ALLOWANCE_LIKE = /^[ \t]{0,3}allowed-tools:/i
-const allowanceNearMisses = (text) => live(text)
-  .split('\n')
-  .filter((line) => ALLOWANCE_LIKE.test(line) && !ALLOWANCE.test(line))
-  .map((line) => line.replace(/\s+$/, ''))
+// The one allowance form an alias and a profile may use, and deliberately not a YAML parser. Both
+// files are hand-written, both are compared as strings, and the loader wants one flat line of tool
+// patterns, so the accepted form is the key, a colon, exactly one space, and the value on that
+// same line. The value has to carry text; it may not open a YAML construct ("#" comment, "|" or
+// ">" scalar, "[" or "{" collection, or " and ' quoting), may not be the YAML nulls null and ~,
+// and may not trail an inline " #" comment. A value that needs any of those is rejected on
+// purpose: "allowed-tools: null" and "allowed-tools: # Bash(gh:*), Read" compare equal across two
+// files while the loader reads no allowance from either.
+const ALLOWANCE = /^allowed-tools: (.+)$/
+const ALLOWANCE_KEY = /^allowed-tools\b/
+const ALLOWANCE_LIKE = /^[ \t]{0,3}allowed-tools\b/i
+const REJECTED_OPENER = /^[#|>[{"']/
+const YAML_NULL = /^(?:null|~)$/
 
-// The canonical allowance carries its whole value on the one line. A key with nothing after it, a
-// block or folded scalar ("allowed-tools: |"), or a value continued on an indented line below is
-// not that form, and two of them compare equal on the word "|" while the tools underneath differ.
-// Those lines come back separately, because a file that wrote one did declare an allowance and
-// saying it declared none would name the wrong defect.
+const isCanonical = (line, next) => {
+  const written = ALLOWANCE.exec(line)
+  if (!written) return false
+  const value = written[1]
+  if (/^\s/.test(value)) return false
+  if (REJECTED_OPENER.test(value) || YAML_NULL.test(value) || value.includes(' #')) return false
+  // An indented line under the key is a continuation, so the value is not all on the one line.
+  return !/^\s+\S/.test(next)
+}
+
+// Three buckets, because the three defects want three sentences. A line that fails the grammar
+// still declared an allowance, so reporting that the file declared none would name the wrong
+// defect; a line that is indented or capitalized never reached the loader at all.
 const readAllowances = (text) => {
   const lines = live(text).split('\n')
   const canonical = []
   const malformed = []
+  const offMargin = []
   for (const [at, raw] of lines.entries()) {
     const line = raw.replace(/\s+$/, '')
-    if (!ALLOWANCE.test(line)) continue
-    const value = line.slice('allowed-tools:'.length).trim()
-    const continued = /^\s+\S/.test(lines[at + 1] ?? '')
-    if (value === '' || /^[|>]/.test(value) || continued) malformed.push(line)
-    else canonical.push(line)
+    if (!ALLOWANCE_LIKE.test(line)) continue
+    if (isCanonical(line, lines[at + 1] ?? '')) canonical.push(line)
+    else if (ALLOWANCE_KEY.test(line)) malformed.push(line)
+    else offMargin.push(line)
   }
-  return { canonical, malformed }
+  return { canonical, malformed, offMargin }
 }
 
-const allowanceProblems = (what, { canonical, malformed }) => {
-  if (malformed.length > 0) {
-    return malformed.map((line) => `${what} writes "${line}", and an allowance must be one canonical `
-      + 'line: the whole value sits on it, never a block scalar and never a continuation below')
-  }
+const allowanceProblems = (what, { canonical, malformed, offMargin }) => {
+  const named = [
+    ...malformed.map((line) => `${what} writes "${line}", and an allowance must be one canonical `
+      + 'line: the key, a colon, one space, and the whole value after it'),
+    ...offMargin.map((line) => `${what} writes "${line}", which looks like an allowance line and `
+      + 'is not one: the canonical form is lowercase "allowed-tools:" at column one'),
+  ]
+  if (named.length > 0) return named
   if (canonical.length === 0) return [`${what} declares no live allowed-tools line`]
   if (canonical.length > 1) {
     return [`${what} declares ${canonical.length} live allowed-tools lines, and exactly one counts`]
@@ -249,12 +267,6 @@ const stageProblems = (root, name) => {
   const claude = profiles['claude.md'] ?? ''
   const aliasAllowance = readAllowances(frontmatter(alias)?.[1] ?? '')
   const profileAllowance = readAllowances(claude)
-  for (const line of allowanceNearMisses(claude)) {
-    problems.push(
-      `skills/${name}/profiles/claude.md writes "${line}", which looks like an allowance line and `
-      + 'is not one: the canonical form is lowercase "allowed-tools:" at column one',
-    )
-  }
   const gaps = [
     ...allowanceProblems(command, aliasAllowance),
     ...allowanceProblems(`skills/${name}/profiles/claude.md`, profileAllowance),
@@ -405,6 +417,32 @@ const ROOT_CASES = [
       'skills/mini-stage/profiles/claude.md writes "allowed-tools: |", and an allowance must be one canonical line',
     ],
     count: 2,
+  },
+  {
+    // Two grammars that read as a declaration and hand the loader nothing. Neither side declares
+    // an allowance, and both sides say the same thing, so the string comparison called them equal.
+    // Each is its own fixture, one defect per root, and each names both files that wrote it.
+    dir: 'allowed-tools-no-space',
+    names: [
+      'commands/mini.md writes "allowed-tools:Bash(gh:*), Read", and an allowance must be one canonical line',
+      'skills/mini-stage/profiles/claude.md writes "allowed-tools:Bash(gh:*), Read", and an allowance must be one canonical line',
+    ],
+    count: 2,
+  },
+  {
+    dir: 'allowed-tools-comment-only',
+    names: [
+      'commands/mini.md writes "allowed-tools: # Bash(gh:*), Read", and an allowance must be one canonical line',
+      'skills/mini-stage/profiles/claude.md writes "allowed-tools: # Bash(gh:*), Read", and an allowance must be one canonical line',
+    ],
+    count: 2,
+  },
+  {
+    // The decoy quoted in a two-backtick span, which is how a document quotes text holding a
+    // backtick. A scan that pairs single backticks drops the delimiters and leaves the line.
+    dir: 'allowed-tools-double-backtick',
+    names: ['skills/mini-stage/profiles/claude.md declares no live allowed-tools line'],
+    count: 1,
   },
   {
     // The same quoted decoy as allowed-tools-fenced, fenced with tildes. CommonMark opens a fence
