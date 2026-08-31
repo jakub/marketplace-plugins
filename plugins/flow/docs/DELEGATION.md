@@ -22,7 +22,7 @@ The service must provide these properties:
 
 ## Route policy
 
-Each plugin manifest starts the MCP server with a trusted `--host` argument. Tool input cannot replace it. MCP mode refuses to start when the argument is missing or invalid. A worker adds `FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider process environment.
+Each plugin manifest starts the MCP server with a trusted `--host` argument. Tool input cannot replace it. The Codex manifest also names `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` in `env_vars`: Codex starts a stdio MCP server with a curated environment, and without those two `systemd-run --user` cannot reach the user bus, so every provider scope fails with `CONTAINMENT_UNAVAILABLE` (found live on Codex CLI 0.151.0, 2026-08-30). MCP mode refuses to start when the argument is missing or invalid. A worker adds `FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider process environment.
 
 | Host | Target | Depth | Result |
 |---|---|---:|---|
