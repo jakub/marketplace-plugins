@@ -31,6 +31,17 @@
 // listing before and after is one check that catches a local branch, a remote-tracking ref, a
 // tag or a leftover temporary ref moving.
 //
+// abandon is the one subcommand that deletes a tag, so it gets two independent guards and a case
+// for each. The receipt check reads the tag first, and the --force-with-lease makes the remote
+// recheck the same object at delete time. Removing either one is caught: an ambush that swaps the
+// tag between the read and the push is what the lease is for, and dropping the read is caught by
+// the lease answering `[rejected] (stale info)`.
+//
+// The replay walks the race a reviewer found end to end. B scans clean, stalls; A acquires,
+// publishes, releases; B's late push creates the tag fresh and reads as a clean acquire; B's
+// post-acquire recheck finds A's branch; B abandons. The assertions at the end are that the tag
+// is gone, A's branch is untouched at the head A pushed, and the issue carries nothing of B's.
+//
 // Three more failures get their own repositories, because none of them is about the race.
 // Release has to reject a branch that is not the issue's own, or the head check authorizes
 // nothing and `release 8 main <head-of-main>` drops a live claim. Origin has to fetch from and
@@ -145,11 +156,14 @@ const claimAsync = (cwd, ...args) => new Promise((resolve) => {
 })
 
 /**
- * Install the ambush on a clone: an upload-pack wrapper that creates `tag` at `sha` on the bare
- * repository immediately after its second invocation. The program's second read is the tag
- * preflight, so it sees an absent tag and then pushes into a tag that exists.
+ * Install the ambush on a clone: an upload-pack wrapper that points issue `issue`'s claim tag at
+ * `sha` on the bare repository immediately after its `after`th invocation, creating or moving it.
+ *
+ * acquire reads main and then preflights the tag, so `after` of 2 lands the rival claim between
+ * that preflight and the push. abandon reads the tag once, so `after` of 1 lands a swap between
+ * its receipt check and its delete, which is the window the lease exists to close.
  */
-const arm = (clone, issue, sha) => {
+const arm = (clone, issue, sha, after = 2) => {
   const counter = join(clone, 'invocations')
   const wrapper = join(clone, 'upload-pack-wrapper.sh')
   writeFileSync(wrapper, [
@@ -159,7 +173,7 @@ const arm = (clone, issue, sha) => {
     `printf '%s' "$n" > ${JSON.stringify(counter)}`,
     'git upload-pack "$@"',
     'status=$?',
-    `if [ "$n" = "2" ]; then git -C ${JSON.stringify(origin)} update-ref ${JSON.stringify(tagRef(issue))} ${JSON.stringify(sha)}; fi`,
+    `if [ "$n" = ${JSON.stringify(String(after))} ]; then git -C ${JSON.stringify(origin)} update-ref ${JSON.stringify(tagRef(issue))} ${JSON.stringify(sha)}; fi`,
     'exit $status',
     '',
   ].join('\n'))
@@ -395,6 +409,130 @@ check('and a release says nothing on stderr', released.stderr === '', released.s
 const again = claim(a, 'release', String(ISSUE_RELEASE), BRANCH, workSha)
 check('releasing an already-released claim is the same answer', again.json?.result === 'released' && again.code === 0, `exit ${again.code} ${again.stdout}`)
 
+// -------------------------------------------------------------------------- abandon
+// abandon is for the run that acquired a claim and then, rechecking while holding it, found a
+// live run already on the issue. It has published nothing, so it has no branch to prove anything
+// with, and the only evidence it has is the SHA its own acquire reported.
+console.log('\nabandon gives back a claim the caller just took, and nothing else')
+
+const ISSUE_ABANDON = 15
+const nothingToGiveBack = claim(a, 'abandon', String(ISSUE_ABANDON), mainSha)
+check('abandon with no tag on the remote is refused', nothingToGiveBack.json?.reason === 'tag-absent' && nothingToGiveBack.code === 2,
+  `exit ${nothingToGiveBack.code} ${nothingToGiveBack.stdout}`)
+
+const toAbandon = claim(a, 'acquire', String(ISSUE_ABANDON))
+check('the claim is taken', toAbandon.json?.result === 'acquired' && toAbandon.code === 0, `exit ${toAbandon.code} ${toAbandon.stdout}`)
+const receipt = String(toAbandon.json?.sha)
+
+// decoySha is a real commit on the remote, so this is a well-formed receipt for a different
+// object, not a malformed argument. It is the shape a stale abandon would arrive in.
+const wrongReceipt = claim(a, 'abandon', String(ISSUE_ABANDON), decoySha)
+check('abandon with a receipt that is not the tag\'s object is refused', wrongReceipt.json?.reason === 'receipt-mismatch' && wrongReceipt.code === 2,
+  `exit ${wrongReceipt.code} ${wrongReceipt.stdout}`)
+check('and it reports the object the tag actually holds', wrongReceipt.json?.found === receipt, wrongReceipt.stdout)
+check('and the claim survives the wrong receipt', tagOnOrigin(ISSUE_ABANDON) === receipt, String(tagOnOrigin(ISSUE_ABANDON)))
+check('and it says abandon is not a way to break someone else\'s claim', wrongReceipt.stderr.includes('not a way to break'), wrongReceipt.stderr)
+
+const badReceipt = claim(a, 'abandon', String(ISSUE_ABANDON), 'HEAD')
+check('abandon with something that is not a SHA is refused', badReceipt.json?.reason === 'usage' && badReceipt.code === 2,
+  `exit ${badReceipt.code} ${badReceipt.stdout}`)
+check('and the claim survives that too', tagOnOrigin(ISSUE_ABANDON) === receipt, String(tagOnOrigin(ISSUE_ABANDON)))
+
+const abandoned = claim(a, 'abandon', String(ISSUE_ABANDON), receipt)
+check('abandon with the acquire\'s own receipt succeeds', abandoned.json?.result === 'abandoned' && abandoned.code === 0,
+  `exit ${abandoned.code} ${abandoned.stdout}${abandoned.stderr}`)
+check('and the tag is gone from the remote', tagOnOrigin(ISSUE_ABANDON) === null, String(tagOnOrigin(ISSUE_ABANDON)))
+check('and a clean abandon says nothing on stderr', abandoned.stderr === '', abandoned.stderr)
+
+// Unlike release, abandon is not idempotent, and that is deliberate: the receipt has to match a
+// tag that is there, so a second call has nothing to give back and says so.
+const abandonTwice = claim(a, 'abandon', String(ISSUE_ABANDON), receipt)
+check('abandoning twice is refused, not a second success', abandonTwice.json?.reason === 'tag-absent' && abandonTwice.code === 2,
+  `exit ${abandonTwice.code} ${abandonTwice.stdout}`)
+
+// The read above is not the whole guard. Between the receipt check and the delete, the tag can
+// change, and the lease is what catches that: it names the receipt again so the remote rechecks
+// and answers `[rejected] (stale info)`. Without it, this case deletes a claim it never owned.
+const ISSUE_LEASE = 17
+const ambushAbandon = join(tmp, 'ambush-abandon')
+execFileSync('git', ['clone', '-q', origin, ambushAbandon], { env: gitEnv })
+const leaseClaim = claim(ambushAbandon, 'acquire', String(ISSUE_LEASE))
+check('a claim is taken for the lease case', leaseClaim.json?.result === 'acquired', leaseClaim.stdout)
+arm(ambushAbandon, ISSUE_LEASE, decoySha, 1)
+const leaseRefused = claim(ambushAbandon, 'abandon', String(ISSUE_LEASE), String(leaseClaim.json?.sha))
+check('a tag swapped after the receipt check is not deleted', tagOnOrigin(ISSUE_LEASE) === decoySha, String(tagOnOrigin(ISSUE_LEASE)))
+check('and the caller is told the outcome is unknown, not abandoned', leaseRefused.json?.result === 'unknown' && leaseRefused.code === 4,
+  `exit ${leaseRefused.code} ${leaseRefused.stdout}`)
+check('and it reports the object now sitting there', leaseRefused.json?.found === decoySha, leaseRefused.stdout)
+dropTag(ISSUE_LEASE)
+
+// ------------------------------------------------- the duplicate run the recheck closes
+// The race a reviewer walked through. B finishes its scan and finds the issue clear, then stalls
+// before its push. A takes the claim, publishes, and releases. B's delayed push now creates the
+// tag fresh and reads as a clean acquire, because there is nothing left on the remote to argue
+// with. Rechecking after the acquire is what catches it, and that recheck is race-free because B
+// holds the tag while it runs: every new contender is blocked, and any earlier winner released
+// only after its branch was visible. abandon is how B backs out.
+console.log('\nthe replay: a contender that scanned clean, acquired late, and backed out')
+
+const ISSUE_REPLAY = 16
+const REPLAY_BRANCH = `feat/issue-${ISSUE_REPLAY}-thing`
+const remoteRefsSeenBy = (dir) => {
+  const r = spawnSync('git', ['-C', dir, 'ls-remote', 'origin'], { encoding: 'utf8', env: gitEnv })
+  return (r.stdout ?? '').split('\n').map((l) => l.split('\t')[1]).filter((x) => x !== undefined && x !== '')
+}
+// What the stage's server-side scan for one issue sees: the claim tag, and any branch named for
+// the issue. Asking the server is the point; a stale clone's own refs would not do.
+const scanForIssue = (dir, issue) => remoteRefsSeenBy(dir)
+  .filter((ref) => ref === tagRef(issue) || new RegExp(`^refs/heads/(feat|fix|chore)/issue-${issue}-`).test(ref))
+const shaOfRemoteRef = (dir, ref) => {
+  const r = spawnSync('git', ['-C', dir, 'ls-remote', 'origin', ref], { encoding: 'utf8', env: gitEnv })
+  const match = (r.stdout ?? '').split('\n').map((l) => l.split('\t')).find((p) => p[1] === ref)
+  return match ? match[0] : null
+}
+
+// 1. B scans, and the issue is clear. B then stalls before its push.
+check('B\'s pre-acquire scan finds the issue clear', scanForIssue(b, ISSUE_REPLAY).length === 0, JSON.stringify(scanForIssue(b, ISSUE_REPLAY)))
+
+// 2. A runs the whole protocol while B is stalled: acquire, publish, release.
+const aAcquire = claim(a, 'acquire', String(ISSUE_REPLAY))
+check('A acquires the claim', aAcquire.json?.result === 'acquired' && aAcquire.code === 0, aAcquire.stdout)
+writeFileSync(join(a, 'replay.txt'), 'A did the work\n')
+git(a, 'add', 'replay.txt')
+git(a, 'commit', '-q', '-m', 'A did the work')
+const aBranchSha = git(a, 'rev-parse', 'HEAD')
+git(a, 'push', '-q', 'origin', `HEAD:refs/heads/${REPLAY_BRANCH}`)
+const aRelease = claim(a, 'release', String(ISSUE_REPLAY), REPLAY_BRANCH, aBranchSha)
+check('A publishes its branch and releases the claim', aRelease.json?.result === 'released' && aRelease.code === 0, aRelease.stdout)
+check('so the claim tag is gone before B\'s push lands', tagOnOrigin(ISSUE_REPLAY) === null, String(tagOnOrigin(ISSUE_REPLAY)))
+
+// 3. B's delayed push. Nothing is left to collide with, so B genuinely acquires. This is the
+//    duplicate run: on B's stale scan alone, it would now start work A already finished.
+const bAcquire = claim(b, 'acquire', String(ISSUE_REPLAY))
+check('B\'s delayed acquire succeeds, because the tag is absent again', bAcquire.json?.result === 'acquired' && bAcquire.code === 0, bAcquire.stdout)
+check('and B holds a fresh claim on the remote', tagOnOrigin(ISSUE_REPLAY) === bAcquire.json?.sha, String(tagOnOrigin(ISSUE_REPLAY)))
+
+// 4. The recheck B performs while holding the tag. It finds A's branch, which B's first scan
+//    could not have seen because A had not pushed it yet.
+const bRecheck = scanForIssue(b, ISSUE_REPLAY)
+check('B\'s post-acquire recheck finds A\'s branch', bRecheck.includes(`refs/heads/${REPLAY_BRANCH}`), JSON.stringify(bRecheck))
+check('and the only claim tag it sees is B\'s own', bRecheck.filter((r) => r === tagRef(ISSUE_REPLAY)).length === 1, JSON.stringify(bRecheck))
+
+// 5. B backs out with the receipt its own acquire handed it.
+const bAbandon = claim(b, 'abandon', String(ISSUE_REPLAY), String(bAcquire.json?.sha))
+check('B abandons the claim it just took', bAbandon.json?.result === 'abandoned' && bAbandon.code === 0,
+  `exit ${bAbandon.code} ${bAbandon.stdout}${bAbandon.stderr}`)
+check('the claim tag is gone', tagOnOrigin(ISSUE_REPLAY) === null, String(tagOnOrigin(ISSUE_REPLAY)))
+check('A\'s branch is untouched, at the head A pushed', shaOfRemoteRef(b, `refs/heads/${REPLAY_BRANCH}`) === aBranchSha,
+  String(shaOfRemoteRef(b, `refs/heads/${REPLAY_BRANCH}`)))
+
+// 6. B's whole remote footprint was the tag, and the tag is gone. B pushed no branch of its own,
+//    which is the local half of "B never assigned, labelled or commented": its sequence ended at
+//    abandon, so nothing downstream of the recheck ever ran.
+const afterReplay = scanForIssue(b, ISSUE_REPLAY)
+check('the issue is left holding A\'s branch and nothing of B\'s',
+  afterReplay.length === 1 && afterReplay[0] === `refs/heads/${REPLAY_BRANCH}`, JSON.stringify(afterReplay))
+
 // ---------------------------------------------------------- unreachable and unreadable
 console.log('\nan unreachable remote is unknown: never held, never acquired')
 
@@ -434,6 +572,9 @@ check('and nothing landed in the one it would have pushed to', tagIn(elsewhere, 
 const divergedRelease = claim(diverged, 'release', String(ISSUE_DIVERGED), 'feat/issue-11-thing', workSha)
 check('release refuses a divergent pushurl too', divergedRelease.json?.reason === 'push-fetch-mismatch' && divergedRelease.code === 2,
   `exit ${divergedRelease.code} ${divergedRelease.stdout}`)
+const divergedAbandon = claim(diverged, 'abandon', String(ISSUE_DIVERGED), workSha)
+check('abandon refuses a divergent pushurl as well', divergedAbandon.json?.reason === 'push-fetch-mismatch' && divergedAbandon.code === 2,
+  `exit ${divergedAbandon.code} ${divergedAbandon.stdout}`)
 
 // A pushurl equal to the fetch URL is not a divergence, so the check has to let it through.
 git(diverged, 'config', 'remote.origin.pushurl', origin)
@@ -494,14 +635,30 @@ check('a branch name that is not a branch name exits 2', badBranch.json?.reason 
 const help = claim(a, '--help')
 check('--help exits 0 with the usage text', help.code === 0 && help.stdout.includes('issue-claim.mjs acquire'), `exit ${help.code}`)
 
-// Read from the source, not from behaviour: a force flag added later would make the one atomic
-// operation this program rests on into an overwrite, and no case above would necessarily fail.
-console.log('\nnothing in the source can force-push or break a tag')
+// Read from the source, not from behaviour: a bare force flag added later would make the one
+// atomic operation this program rests on into an overwrite, and no case above would necessarily
+// fail. The comments discuss force flags on purpose, and one of them quotes git-guard's
+// `--force(?!-with-lease)` pattern, so these read code with the comments removed.
+console.log('\nnothing in the source overwrites a ref')
 const sourceText = readFileSync(SCRIPT, 'utf8')
-const argvTokens = [...sourceText.matchAll(/'([^'\n]*)'/g)].map((m) => m[1])
-const forceTokens = argvTokens.filter((t) => /^(--force(-with-lease)?(=.*)?|-f|\+refs\/.*)$/.test(t))
-check('no --force, -f or + refspec appears as an argv token', forceTokens.length === 0, JSON.stringify(forceTokens))
-check('no force-with-lease anywhere in the file', !sourceText.includes('force-with-lease'), 'found force-with-lease')
+const codeOnly = sourceText
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n')
+  .filter((l) => !/^\s*\/\//.test(l))
+  .join('\n')
+const argvTokens = [...codeOnly.matchAll(/'([^'\n]*)'/g)].map((m) => m[1])
+const bareForce = [...codeOnly.matchAll(/--force(?!-with-lease)/g)].map((m) => m[0])
+check('no bare --force anywhere in the code', bareForce.length === 0, JSON.stringify(bareForce))
+check('no -f argv token', !argvTokens.includes('-f'), "found '-f'")
+check('no + refspec anywhere in the code', !/[`']\+refs\//.test(codeOnly), 'found a + refspec')
+// The one lease is a compare-and-delete, not a force: it pins the delete to the tag ref and the
+// receipt the caller was handed. An unpinned lease, or one pinned to anything else, would turn
+// abandon into a stale-tag breaker, which is the thing its header says it must never become.
+// Anchored on the opening quote, so this counts argv tokens and not the usage text, which
+// describes the lease in a sentence.
+const leases = [...codeOnly.matchAll(/[`'](--force-with-lease[^`'\s]*)/g)].map((m) => m[1])
+check('the only lease is abandon\'s, pinned to the claim ref and the receipt',
+  leases.length === 1 && leases[0] === '--force-with-lease=${ref}:${receipt}', JSON.stringify(leases))
 check('the push refspecs are a plain create and a plain delete',
   /`\$\{source\}:\$\{ref\}`/.test(sourceText) && /`:\$\{ref\}`/.test(sourceText), 'refspec shapes changed')
 // The catch-up fetch writes one ref, and it is ours. A + here, or a destination under
@@ -509,6 +666,21 @@ check('the push refspecs are a plain create and a plain delete',
 // clone the human is working in.
 check('the fetch refspec is unforced and lands under refs/flow-claim',
   /`\$\{MAIN_REF\}:\$\{tempRef\}`/.test(sourceText) && /const tempRef = `refs\/flow-claim\//.test(sourceText), 'fetch refspec shape changed')
+// abandon's delete has to survive the hook layer as well as the remote. git-guard denies force
+// pushes by spelling, `--force(?!-with-lease)`, so the lease is allowed by design rather than by
+// luck. If that pattern is ever tightened to cover every force spelling, abandon breaks at the
+// hook and nothing else here would notice, so the guard is driven with the real command.
+const guardVerdict = (command) => {
+  const r = spawnSync(process.execPath, [join(ROOT, 'hooks', 'scripts', 'git-guard.mjs')], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }), encoding: 'utf8', env: gitEnv,
+  })
+  return /"permissionDecision"\s*:\s*"deny"/.test(r.stdout ?? '') ? 'deny' : 'allow'
+}
+const leaseCommand = `git push --porcelain --force-with-lease=${tagRef(15)}:${'a'.repeat(40)} origin :${tagRef(15)}`
+check('git-guard allows abandon\'s lease delete', guardVerdict(leaseCommand) === 'allow', guardVerdict(leaseCommand))
+check('and still denies a bare force-push, so that is not a permissive guard',
+  guardVerdict('git push --force origin main') === 'deny' && guardVerdict('git push -f origin main') === 'deny',
+  'git-guard stopped denying bare force')
 check('the fetch cannot move a remote-tracking ref or write FETCH_HEAD',
   argvTokens.includes('--refmap=') && argvTokens.includes('--no-write-fetch-head') && argvTokens.includes('--no-tags'),
   'a fetch containment flag went missing')

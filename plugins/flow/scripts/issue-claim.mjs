@@ -52,9 +52,28 @@
 // reach the delete, and a claim taken by a third run in between the two deletes is what the
 // second delete removes. That successor then believes it holds a claim that is gone. Every claim
 // on an issue points at the head of main, so its SHA cannot say which generation it belongs to,
-// and a delete that checked the object would be no safer. Deleting under a compare-and-set would
-// need a lease flag, which is a force flag, and this program has none. At this trust level the
-// cost is bounded, two runs on one issue, and the recovery is a human reading the issue.
+// and pinning the delete to an object would not separate them while main sits still. At this
+// trust level the cost is bounded, two runs on one issue, and the recovery is a human reading
+// the issue. Making claims tell their generations apart means giving each one its own object,
+// which would change what every racer pushes and with it the race this program is built on. That
+// is a bigger change than any round so far has asked for, and it is the one that would close it.
+//
+// abandon is the third subcommand, and the one that needs the most care, because it deletes a
+// tag. It exists for a run that acquired a claim and then, rechecking while holding it, found a
+// live run already on the issue: it has to put the claim back without having published anything.
+// Its authorization is a receipt. The caller passes the SHA its own acquire reported, and
+// abandon refuses unless the tag is on the remote at exactly that object. The delete then names
+// the same SHA again in a --force-with-lease, so the remote itself rechecks and rejects with
+// `[rejected] (stale info)` if the tag moved or vanished in between. A tag at any other object
+// stays put.
+//
+// What that receipt is worth, stated plainly so nobody later mistakes abandon for an ownership
+// proof: the SHA is public, and anyone can read it with ls-remote, so it is evidence and not a
+// secret. It rules out abandoning a claim taken against a different head of main, which is the
+// case that matters once main moves. It does not separate two claims taken seconds apart while
+// main sat still, so abandon inherits the same generation race as release, for the same reason.
+// abandon is not a stale-tag breaker and must never become one. A tag nobody can produce a
+// matching receipt for is a job for a human, who can read the issue first.
 //
 // Reading the remote and writing to it have to be the same repository, so both subcommands
 // refuse when `git remote get-url origin` and `git remote get-url --push origin` disagree, or
@@ -70,11 +89,17 @@
 // repository`. So every message from git goes through a redactor built from the URLs configured
 // on origin, which swaps those exact strings for the safe identity before anything is printed.
 //
-// Nothing here force-pushes, in any spelling, and nothing here breaks a stale tag on its own.
-// Either one would turn the single atomic operation this program rests on into an overwrite,
-// which is the same as having no claim at all. A tag left behind by a crashed run is a job for
-// a human running `git push origin :refs/tags/flow-claim-issue-<N>`, who can read the issue
-// first and decide.
+// Nothing here overwrites a ref, and nothing here breaks a stale tag on its own. There is no
+// bare --force in any spelling, no -f, and no + refspec, because each of those turns the single
+// atomic operation this program rests on into an overwrite, which is the same as having no claim
+// at all. The one --force-with-lease, in abandon, is the opposite of that: it names the exact
+// object the tag has to hold and the remote refuses the delete otherwise, which is a stricter
+// delete than the unpinned one release performs, not a weaker one. git-guard allows the lease by
+// spelling, `--force(?!-with-lease)`, and its denial message names it as the thing to use.
+// Release could take a receipt and a lease too, and does not, only because that would change its
+// arguments and its documented idempotency. That is an open item, not an oversight. A tag left
+// behind by a crashed run is still a job for a human running
+// `git push origin :refs/tags/flow-claim-issue-<N>`, who can read the issue first and decide.
 //
 // A cooperative guardrail, not a security boundary, the same as scripts/land-merge.mjs. At one
 // uid a model with a shell can push whatever it likes. What this buys is that the ordinary path
@@ -83,8 +108,8 @@
 // Every remote interaction is an argv array, never a shell string, so there is no quoting to
 // get wrong. stdout is always exactly one JSON object, one line, including for refusals; the
 // only exception is --help. stderr carries a sentence for a human whenever the result is not a
-// win. Exit codes: 0 acquired or released, 2 usage or refusal, 3 held by someone else,
-// 4 unknown.
+// win. Exit codes: 0 acquired, released or abandoned, 2 usage or refusal, 3 held by someone
+// else, 4 unknown.
 
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -114,6 +139,7 @@ const branchForIssue = (issue) => new RegExp(`^(feat|fix|chore)/issue-${issue}-`
 
 const USAGE = `issue-claim.mjs acquire <issue-number>
 issue-claim.mjs release <issue-number> <branch> <expected-head-sha>
+issue-claim.mjs abandon <issue-number> <acquired-sha>
 
 acquire takes the claim on an issue by creating refs/tags/flow-claim-issue-<N> on origin, at
 the head of refs/heads/main. Creating a ref is atomic on the remote, so exactly one racer wins.
@@ -125,7 +151,13 @@ feat/issue-<N>-, fix/issue-<N>- or chore/issue-<N>-, and refs/heads/<branch> on 
 read back at exactly <expected-head-sha>. Anything else keeps the tag, because a tag outliving
 an ambiguous state is what stops a second run from starting.
 
-Both subcommands refuse when origin's fetch and push URLs disagree. Nothing here force-pushes or
+abandon puts a claim back for a run that acquired it and then found a live run on the issue,
+before publishing anything of its own. It takes the SHA that acquire reported, refuses unless
+the tag is on origin at exactly that object, and deletes it under a --force-with-lease pinned to
+the same SHA, so the remote rechecks too. A tag at any other object stays: this is not a way to
+break a stale claim, and a claim nobody holds a receipt for is a job for a human.
+
+All three refuse when origin's fetch and push URLs disagree. Nothing here overwrites a ref or
 breaks a stale tag, and nothing it prints carries a credential from a remote URL.
 `
 
@@ -515,6 +547,67 @@ const release = ({ argv, cwd }) => {
   return unknown(`the delete ran (git said ${describeStatus(status, redact)}, exit ${push.code}) but ${after.detail}`, { found })
 }
 
+// ------------------------------------------------------------------------------------ abandon
+
+const abandon = ({ argv, cwd }) => {
+  const usage = (detail) => line({ command: 'abandon', result: 'refused', reason: 'usage', detail }, EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
+  if (argv.length !== 2) return usage('abandon expects two arguments: the issue number and the SHA your acquire reported')
+  const issue = Number(argv[0])
+  if (!Number.isInteger(issue) || issue <= 0) return usage(`${JSON.stringify(argv[0])} is not an issue number`)
+  const receipt = argv[1]
+  if (typeof receipt !== 'string' || !SHA.test(receipt)) return usage(`${JSON.stringify(receipt)} is not a 40-character lowercase SHA`)
+
+  const tag = `flow-claim-issue-${issue}`
+  const ref = `refs/tags/${tag}`
+  const origin = resolveOrigin('abandon', cwd, { issue, tag, ref })
+  if (origin.refusal) return origin.refusal
+  const repo = origin.repo
+  const redact = origin.redact
+  const base = { command: 'abandon', repo, issue, tag, ref, receipt }
+  const keptTag = 'The claim tag stays where it is. abandon gives back a claim this run just took, ' +
+    'and it is not a way to break someone else\'s; that is a human\'s call, after reading the issue.'
+  const refuse = (reason, detail, extra = {}) => line({ ...base, ...extra, result: 'refused', reason, detail }, EXIT_REFUSED, `${detail}. ${keptTag}`)
+  const unknown = (detail, extra = {}) => line({ ...base, ...extra, result: 'unknown', detail }, EXIT_UNKNOWN,
+    `${detail}. Look at ${ref} on ${repo} before doing anything else.`)
+
+  // The receipt check. A tag that is absent, or at any object other than the one this caller's
+  // acquire reported, is not this caller's to delete, and nothing is touched.
+  const before = readRef(cwd, ref, redact)
+  if (before.state === 'unknown') {
+    // Not knowing is not a refusal. The run is still holding a claim it could not give back,
+    // and that needs a human, not a caller that shrugs and moves on.
+    return unknown(`the state of ${ref} on ${repo} could not be read, so the receipt could not be checked: ${before.detail}`)
+  }
+  if (before.state === 'absent') {
+    return refuse('tag-absent', `${ref} is not on ${repo}, so there is no claim here to give back`, { found: null })
+  }
+  if (before.sha !== receipt) {
+    return refuse('receipt-mismatch',
+      `${ref} on ${repo} is at ${before.sha.slice(0, 12)} and the receipt says ${receipt.slice(0, 12)}, ` +
+      'so this claim is not the one this run took',
+      { found: before.sha })
+  }
+
+  // A compare-and-delete. --force-with-lease is the opposite of a force here: it names the object
+  // the tag has to hold, and the remote rejects with `[rejected] (stale info)` if the tag moved or
+  // vanished between the read above and this push. That closes the window the read alone leaves
+  // open, and it is why this delete is stricter than the unpinned one release performs.
+  const push = runGit(
+    ['push', '--porcelain', `--force-with-lease=${ref}:${receipt}`, 'origin', `:${ref}`],
+    cwd, PUSH_TIMEOUT_MS,
+  )
+  const status = pushStatus(push.stdout, ref)
+  const after = readRef(cwd, ref, redact)
+  if (after.state === 'absent') return line({ ...base, result: 'abandoned' }, EXIT_OK, '')
+  if (after.state === 'present') {
+    // The lease refused, or something put a tag back. Either way this run no longer knows whose
+    // claim is on the remote, and guessing would be how a live claim gets deleted.
+    return unknown(`${ref} is still on ${repo} at ${after.sha.slice(0, 12)} after the delete ` +
+      `(git said ${describeStatus(status, redact)}, exit ${push.code})`, { found: after.sha })
+  }
+  return unknown(`the delete ran (git said ${describeStatus(status, redact)}, exit ${push.code}) but ${after.detail}`)
+}
+
 /**
  * Decide and act. Takes the argument vector and a working directory and returns a
  * { code, stdout, stderr } result instead of exiting, so a caller can drive it in process.
@@ -531,9 +624,10 @@ export function issueClaim({ argv, cwd }) {
   const [subcommand, ...rest] = argv
   if (subcommand === 'acquire') return acquire({ argv: rest, cwd })
   if (subcommand === 'release') return release({ argv: rest, cwd })
+  if (subcommand === 'abandon') return abandon({ argv: rest, cwd })
   const detail = argv.length === 0
-    ? 'expected a subcommand, acquire or release'
-    : `${JSON.stringify(subcommand)} is not a subcommand; expected acquire or release`
+    ? 'expected a subcommand, one of acquire, release or abandon'
+    : `${JSON.stringify(subcommand)} is not a subcommand; expected acquire, release or abandon`
   return line({ command: null, result: 'refused', reason: 'usage', detail }, EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
 }
 
