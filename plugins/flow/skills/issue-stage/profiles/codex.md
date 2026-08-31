@@ -91,12 +91,23 @@ Two write-seat classes exist on this host.
   bridge writer at a worktree holding another seat's uncommitted work.
 
 Version drift is a string comparison against a live operand, not a probe. The doctor result
-carries `client`, the MCP client identity the service reads out of the initialize handshake, with
-a name and a version, and that version is the CLI this session is running under. Compare
-`client.version` against `verifiedAgainst` for this host. If they differ, or if `client` is
-missing or its version does not parse, the host reads drifted and every capability the run
-depends on reads `unverified`. An operand you cannot read is drift, never a pass. `unverified` on
-a dimension a needed class depends on stops the run with `needs-human`, naming the capability id.
+carries `client`, the MCP client identity observed in the initialize handshake, as a name and a
+version, with nulls where no handshake supplied one. That version is bare, `0.151.0`. The
+`verifiedAgainst` record beside it is product-qualified, `codex-cli 0.151.0`. Compare those two
+whole and they never match, so the run would stop at preflight on exactly the versions the table
+does support.
+
+The comparison is this. Split `verifiedAgainst` on its single space into a product part and a
+version part. Compare `client.version` against the version part for string equality. Equal is
+undrifted, anything else is drift. `client.name` is corroboration and not the comparison. If it
+is there and plainly names a different product than the record's product part and than this host,
+read drifted whatever the versions say; if it is null, let the version decide. A missing
+`client`, a null `client.version`, or a `verifiedAgainst` that does not split into exactly two
+parts is drift as well. An operand you cannot read is never a pass.
+
+Drift makes every capability the run depends on read `unverified`, and `unverified` on a
+dimension a needed write-seat class depends on stops the run with `needs-human`, naming the
+capability id.
 
 ### gate: write-seat
 
