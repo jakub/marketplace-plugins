@@ -1434,6 +1434,66 @@ try {
   // version for a caller it never saw.
   const cliDoctor = cli(['doctor', '--cwd', repo], { stateDir: state('cli-doctor') })
   assert.deepEqual(cliDoctor.client, { name: null, version: null })
+
+  // The drift decision the issue-stage preflight makes, written out here so the shapes it stands
+  // on are under test. The normative text is skills/issue-stage/profiles/<host>.md; this is a copy
+  // of that rule, not a second authority. Split verifiedAgainst on its one space into a product
+  // and a version. The host has drifted unless the doctor's client.version is that version
+  // exactly, string for string. A client.name that names a plainly different product corroborates
+  // the verdict; it never decides it. No client, no version, or a record that will not split is
+  // drift as well, because a preflight that cannot read its own record has verified nothing.
+  const driftedAgainst = (observed, verifiedAgainst) => {
+    const parts = String(verifiedAgainst ?? '').split(' ')
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return { drifted: true, reason: `the record ${JSON.stringify(verifiedAgainst)} is not one product and one version` }
+    }
+    const [product, version] = parts
+    if (!observed) return { drifted: true, reason: 'the doctor result carries no client identity' }
+    if (!observed.version) return { drifted: true, reason: 'the client reported no version' }
+    if (observed.version === version) {
+      return { drifted: false, reason: `the client reports ${version}, the version the record was verified against` }
+    }
+    // Substring either way, so codex against codex-cli is the same product and flow-smoke is not.
+    const otherProduct = Boolean(observed.name) && !product.includes(observed.name) && !observed.name.includes(product)
+    return {
+      drifted: true,
+      reason: otherProduct
+        ? `the client reports ${observed.name} ${observed.version}, and the record was verified against ${product} ${version}`
+        : `the client reports version ${observed.version}, and the record was verified against ${version}`,
+    }
+  }
+
+  // Both real records, because the bug this replaces was a shape mismatch: the rule compared a
+  // bare clientInfo.version against a product-qualified record and could never match. If a future
+  // verifiedAgainst stops being "<product> <version>", these cases fail here rather than turning
+  // every preflight into a silent pass.
+  for (const inventoryHost of ['claude', 'codex']) {
+    const record = capabilitiesForHost(inventoryHost).verifiedAgainst
+    const fields = record.split(' ')
+    assert.equal(fields.length, 2, `${inventoryHost} verifiedAgainst ${JSON.stringify(record)} is not "<product> <version>"`)
+    const [product, version] = fields
+    const cases = [
+      { label: 'the version the record names', client: { name: product, version }, drifted: false },
+      { label: 'an upgraded host', client: { name: product, version: '9.9.9' }, drifted: true },
+      { label: 'the whole record passed as a version', client: { name: product, version: record }, drifted: true },
+      { label: 'a null version', client: { name: product, version: null }, drifted: true },
+      { label: 'no client at all', client: null, drifted: true },
+      { label: 'a record that will not split', client: { name: product, version }, record: product, drifted: true },
+    ]
+    for (const one of cases) {
+      const verdict = driftedAgainst(one.client, one.record ?? record)
+      assert.equal(verdict.drifted, one.drifted, `${inventoryHost}, ${one.label}: ${verdict.reason}`)
+    }
+    // The name is corroboration and shows up in the reason, while the version alone decides.
+    const foreign = driftedAgainst({ name: 'flow-smoke', version: '1.0.0' }, record)
+    assert.equal(foreign.drifted, true)
+    assert.match(foreign.reason, /flow-smoke 1\.0\.0/, `${inventoryHost}: a foreign product does not corroborate the verdict`)
+  }
+  // The decision itself, over the result this doctor call just returned. flow-smoke 1.0.0 is not
+  // the host the inventory was verified against, so a preflight running this rule stops here.
+  const liveDrift = driftedAgainst(doctorResult.structuredContent.client, doctorHostCapabilities.verifiedAgainst)
+  assert.equal(liveDrift.drifted, true, `the live doctor result read as current: ${liveDrift.reason}`)
+  assert.equal(driftedAgainst(cliDoctor.client, doctorHostCapabilities.verifiedAgainst).drifted, true, 'a doctor result with no handshake read as current')
   // Unsupported entries are inventory, not failures. Doctor stays ok while they are present.
   assert.ok(Object.values(doctorHostCapabilities.capabilities).some((entry) => entry.supported === false))
   assert.equal(doctorResult.structuredContent.ok, true)
