@@ -33,32 +33,46 @@ a defect noticed on the way past, and a "what next" survey are none of them a re
 
 ### gate: workspace-boundary
 
-The boundary starts at the launch shell's PWD, and that is the only root here.
-`mcp-client-roots` reads `supported: false` with assurance `mechanism`: the Codex 0.151.0 MCP
-client advertises no roots capability and sets no project-dir variable, so the delegation server
-falls back to that PWD. A session started with `codex -C` somewhere other than the repository has
-moved the boundary out from under the run before it began, and that is a stop.
+Two different boundaries answer to this gate on this host. Treat them as one and a run passes
+preflight, claims the issue, and then dies at the first edit.
 
-The boundary is wider than "inside the PWD", and the difference is exactly the layout this
-pipeline uses. `canonicalWorkspace` in `src/delegation/workspace.mjs` accepts a path two ways.
-Either the path resolves inside the root, or an approved repository registered it as a linked
-worktree. The second way takes two proofs and both are required: the path's `git rev-parse
---git-common-dir` has to resolve inside the root, and that repository's own
-`git worktree list --porcelain` has to name this worktree. The pointer alone proves nothing,
-because a `.git` file is caller-writable and any directory can claim to belong to an approved
-repository, which is why a forged one fails. A path with neither proof fails closed with
-`OUTSIDE_ROOTS`. So `../<repo>-issue-N-<slug>`, the sibling worktree this stage creates beside
-the repository, is inside the boundary even though it sits outside the PWD.
+The session sandbox is the first, and it governs every byte you or a native seat writes. Its root
+is the launch shell's PWD, which `codex -C` sets, and a native `spawn_agent` child inherits that
+cwd and that sandbox unchanged. `mcp-client-roots` reads `supported: false` with assurance
+`mechanism`: the Codex 0.151.0 MCP client advertises no roots capability and sets no project-dir
+variable, so nothing widens this root while the session runs.
 
-Two checks exist, at different times, and this gate is the first. It runs at preflight, before
-the worktree exists, so it applies to the path the run INTENDS to create. Test that prospective
-path: the parent directory it will live in, and the repository's common git directory, have to
-satisfy one of the two rules above. Do not reach for `git worktree list` here. It cannot name a
-worktree nobody has created yet, and a gate that waits for the listing has already let the
-mutations start. The second check is mechanical and runs later. Every delegation call re-derives
-the canonical workspace from the real path and refuses the job with `OUTSIDE_ROOTS` if it does
-not hold. A prospective path you cannot place inside the boundary is a stop before the first
-mutation, not something to route around with a longer path.
+That gives this stage one operating requirement on this host. The issue worktree has to be
+writable by the session itself, and its path is `../<repo>-issue-N-<slug>`, a sibling of the
+repository. The repository and that sibling both sit inside PWD only when the operator launched
+the session from the directory HOLDING the repository rather than from the repository. Launched at
+the repository root, the run cannot create its worktree at all: `git worktree add` writes outside
+the sandbox and the sandbox refuses. Say that at preflight, name the directory to relaunch from,
+and stop there. Do not claim the issue first, and do not move the worktree inside the repository
+to get around it.
+
+The delegation boundary is the second, and it answers a different question.
+`canonicalWorkspace` in `src/delegation/workspace.mjs` decides which `cwd` a bridge job may run
+in, and it accepts a path two ways. Either the path resolves inside the root, or an approved
+repository registered it as a linked worktree. The second way takes two proofs and both are
+required: the path's `git rev-parse --git-common-dir` has to resolve inside the root, and that
+repository's own `git worktree list --porcelain` has to name this worktree. The pointer alone
+proves nothing, because a `.git` file is caller-writable and any directory can claim to belong to
+an approved repository, which is why a forged one fails. A path with neither proof fails closed
+with `OUTSIDE_ROOTS`.
+
+Passing that check is never proof of native write authority. It says a bridge job may run in the
+path. It says nothing about whether your own shell or a native child can write a byte there, and
+the two answers come apart exactly when the worktree sits outside PWD.
+
+Both tests run here, at preflight, against the path the run INTENDS to create, because this gate
+runs before the worktree exists. Check the intended path against PWD for the native writes, and
+check the same path against the two-proof rule for the bridge jobs that will run in it. Do not
+reach for `git worktree list`. It cannot name a worktree nobody has created yet, and a gate that
+waits for the listing has already let the mutations start. Every delegation call re-derives the
+canonical workspace from the real path afterwards and refuses the job with `OUTSIDE_ROOTS` if it
+does not hold, which is a mechanical backstop and not this gate. A prospective path that fails
+either test is a stop before the first mutation, not something to route around with a longer path.
 
 ### gate: write-seat-preflight
 
