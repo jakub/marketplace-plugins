@@ -160,15 +160,27 @@ export const bindingProblems = ({ keyword, sourceName, sourceText, profiles }) =
   const lf = (text) => text.replace(/\r\n/g, '\n')
   const g = markerGrammar(keyword)
   const problems = []
-  const source = prose(uncommented(body(lf(sourceText))))
+  // Code first, then comments, and the two must not run in the other order. prose() has to strip
+  // fenced blocks and inline spans before uncommented() ever sees the text, because a stage file
+  // documents its own grammar by writing an example, and "<!--" typed as data inside a fence or a
+  // span is not a comment opener, it is four characters the example quotes. Stripping comments
+  // first reads that quoted opener as real markup and, if the file never happens to write a
+  // closing "-->" after it, erases everything from the example to the end of the file, taking any
+  // later live marker down with it, before a single marker gets extracted. Stripping code first
+  // removes the fence or span (and the quoted opener inside it) as a whole, so nothing it contains
+  // can start a comment that reaches past it.
+  const source = uncommented(prose(body(lf(sourceText))))
   const marked = idsOf(g.marker, source)
-  // Comments get stripped on both sides now, not just the profiles'. A marker sitting inside an
-  // HTML comment in the stage file reaches no session either, the same as a commented heading in
-  // a profile: the hook prints the stage prose, and a reader never sees markup a comment hides. If
-  // the source read it as live, the profiles would be forced to bind an id the rendered stage
-  // never actually marks. Heading discovery and the empty-section scan below read the same
-  // comment-free text, so a whole binding wrapped in one comment cannot pass both by answering the
-  // parity check with a hidden heading and the emptiness check with its own body.
+  // A marker sitting inside a real HTML comment in the stage file reaches no session either, the
+  // same as a commented heading in a profile: the hook prints the stage prose, and a reader never
+  // sees markup a comment hides. If the source read it as live, the profiles would be forced to
+  // bind an id the rendered stage never actually marks.
+  //
+  // The profile order stays comments-then-code, unlike the source above: heading discovery and
+  // the empty-section scan below read the same comment-free, still-fenced text, so a whole binding
+  // wrapped in one comment cannot pass both by answering the parity check with a hidden heading and
+  // the emptiness check with its own body. That is a separate, already-documented tradeoff and this
+  // fix leaves it in place.
   const readable = Object.fromEntries(
     Object.entries(profiles).map(([name, text]) => [name, uncommented(lf(text))]),
   )

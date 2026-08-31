@@ -354,6 +354,20 @@ const PAIR_CASES = [
     dir: 'commented-marker',
     names: ['declares gate mini-close, which the stage never marks'],
   },
+  {
+    // A fenced example quotes the comment grammar's opener and never closes it. A checker that
+    // strips comments before it strips fenced code reads that quoted opener as real and erases
+    // everything after the fence, including the second live marker, before extraction runs. The
+    // fix is: strip code first. This must report the second gate as missing from the profile, not
+    // pass the pair by losing mini-close before the comparison even starts.
+    dir: 'fenced-comment-opener',
+    names: ['mini.md has no "### gate: mini-close" section'],
+  },
+  {
+    // The same quoted, unterminated opener, in an inline code span instead of a fenced block.
+    dir: 'inline-comment-opener',
+    names: ['mini.md has no "### gate: mini-close" section'],
+  },
 ]
 for (const { dir, names } of PAIR_CASES) {
   const at = join(FIXTURE, dir)
