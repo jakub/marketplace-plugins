@@ -12,5 +12,5 @@ The stage itself lives in the `mini-stage` skill, so every host runs the same ga
 the bindings that profile declares for each gate.
 -->
 
-Both paths are in this file and neither reaches a session, so a pair of substring searches calls
-this alias routed and nothing runs the stage.
+The template is in this file and none of it reaches a session, so an alias that looks routed to
+anyone reading the raw bytes routes nowhere at run time.
