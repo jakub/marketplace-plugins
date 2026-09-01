@@ -22751,6 +22751,7 @@ var TERMINAL_STATES = ["succeeded", "failed", "cancelled", "unknown", "awaiting_
 var QUARANTINE_STATES = ["quarantined"];
 var JOB_STATES = [...ACTIVE_STATES, ...QUARANTINE_STATES, ...TERMINAL_STATES];
 var MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
+var STALL_SECONDS = 420;
 var FINDINGS_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -58403,14 +58404,8 @@ async function safeRunCli(options) {
   }
 }
 
-// src/delegation/worker.mjs
-import { chmodSync as chmodSync2, mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync3 } from "node:fs";
-import { join as join7 } from "node:path";
-
 // src/delegation/claude-worker.mjs
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { spawnSync as spawnSync4 } from "node:child_process";
-var STALL_SECONDS = 420;
 var STARTUP_SECONDS = 30;
 var RESULT_FAILURE_MESSAGES = {
   RATE_LIMIT: "Claude rejected the turn because the current plan or API rate limit is exhausted.",
@@ -58465,26 +58460,11 @@ function resultFailure(result, { assistantError = null, rateLimitStatus = null }
   const message = RESULT_FAILURE_MESSAGES[kind] || "Claude did not complete the delegated turn.";
   return { kind, message, details: null };
 }
-async function runClaudeWorker({ jobId: jobId2, stateDir }) {
-  const store = new JobStore(stateDir);
-  let job;
-  try {
-    job = store.claim(jobId2, process.pid, processStartToken(process.pid));
-  } catch (error2) {
-    serviceLog(stateDir, `Claude worker could not claim job ${jobId2}: ${error2.message}`);
-    try {
-      store.failQueued(jobId2, publicError(error2));
-    } catch {
-    }
-    store.close();
-    process.exitCode = 1;
-    return;
-  }
+function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure }) {
+  const jobId2 = job.id;
   let active;
   let child;
   let childExited = Promise.resolve();
-  let heartbeat;
-  let controlTimer;
   let deadlineTimer;
   let forcedTimer;
   let stallTimer;
@@ -58501,9 +58481,6 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
   let previewChars = 0;
   let previewAt = 0;
   let stderrTail = "";
-  let controlBusy = false;
-  let activeControlPoll = Promise.resolve();
-  let signalStopping = false;
   const knownDescendants = /* @__PURE__ */ new Map();
   let releasePrompt;
   const promptReady = new Promise((resolve9) => {
@@ -58511,23 +58488,18 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
   });
   const sessionId = job.nativeThreadId || randomUUID4();
   const turnId = randomUUID4();
-  const signalHandlers = [];
   async function* input() {
     await promptReady;
     yield sdkPrompt(job.prompt || "", sessionId, turnId);
   }
-  const descendantRunning = () => {
-    return trackedDescendantRunning(knownDescendants);
-  };
   const childTreeRunning = () => {
     if (!child?.pid) return false;
-    if (process.platform === "win32") return child.exitCode === null && !child.signalCode;
     if (providerScopeRunning(child.flowProviderScope)) return true;
     try {
       process.kill(-child.pid, 0);
       return true;
     } catch (error2) {
-      return error2?.code === "EPERM" || descendantRunning();
+      return error2?.code === "EPERM" || trackedDescendantRunning(knownDescendants);
     }
   };
   const rememberProvider = () => {
@@ -58539,60 +58511,23 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     store.setProviderProcess(jobId2, {
       pid: child.pid,
       startToken,
-      processGroupId: process.platform === "win32" ? null : child.pid,
+      processGroupId: child.pid,
       scope: child.flowProviderScope,
       processes
     });
   };
-  const freezeLinuxDescendants = () => {
+  const freezeDescendants = () => {
     captureProcessDescendants(child?.pid, knownDescendants, { freeze: true });
   };
   const signalChildTree = (signal) => {
     if (!child?.pid) return;
     signalProviderScope(child.flowProviderScope, signal);
-    if (process.platform === "win32") {
-      try {
-        const args = ["/PID", String(child.pid), "/T"];
-        if (signal === "SIGKILL") args.push("/F");
-        spawnSync4("taskkill", args, { stdio: "ignore", windowsHide: true });
-      } catch {
-      }
-      return;
-    }
     signalTrackedProcessTree(child.pid, knownDescendants, signal);
   };
   const waitForChildTree = async (milliseconds) => {
     const deadline = Date.now() + milliseconds;
     while (childTreeRunning() && Date.now() < deadline) await delay(50);
     return !childTreeRunning();
-  };
-  const stopChild = async () => {
-    freezeLinuxDescendants();
-    rememberProvider();
-    try {
-      active?.close();
-    } catch {
-    }
-    if (!child?.pid || !childTreeRunning()) {
-      await Promise.race([childExited, delay(100)]);
-      return true;
-    }
-    signalChildTree(terminalResult ? "SIGKILL" : "SIGTERM");
-    if (await waitForChildTree(terminalResult ? 100 : 1e3)) return true;
-    signalChildTree("SIGKILL");
-    if (!await waitForChildTree(2e3)) {
-      freezeLinuxDescendants();
-      rememberProvider();
-      return false;
-    }
-    await Promise.race([childExited, delay(1e3)]);
-    return true;
-  };
-  const settle = async (status, result = {}) => {
-    if (!await stopChild()) {
-      return store.quarantine(jobId2, status, result);
-    }
-    return store.finish(jobId2, status, result);
   };
   const clearTurnTimers = () => {
     if (stallTimer) {
@@ -58606,13 +58541,6 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
     if (forcedTimer) {
       clearTimeout(forcedTimer);
       forcedTimer = null;
-    }
-  };
-  const recordBackgroundFailure = (error2) => {
-    try {
-      store.recordInternalError(jobId2, error2);
-    } catch {
-      serviceLog(stateDir, `Claude worker background operation failed for ${jobId2}.`);
     }
   };
   const interruptAndForce = async (reason) => {
@@ -58651,67 +58579,163 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       void interruptAndForce("stall").catch(recordBackgroundFailure);
     }, STALL_SECONDS * 1e3);
   };
-  try {
-    assertRoute({ host: job.host, target: job.target, depth: job.depth });
-    const preflightCancel = store.pendingControls(jobId2).find((control) => control.type === "cancel");
-    if (preflightCancel) {
-      store.handleControl(jobId2, preflightCancel.id, { result: "cancelled_before_start" });
-      store.finish(jobId2, "cancelled");
-      return;
-    }
-    heartbeat = setInterval(() => {
-      try {
-        store.heartbeat(jobId2);
-      } catch (error2) {
-        recordBackgroundFailure(error2);
-      }
-    }, 1e3);
-    const onSignal = async (signal) => {
-      if (signalStopping) return;
-      signalStopping = true;
-      try {
-        const current = store.getJob(jobId2);
-        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
-          const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
-          await settle(acceptedWrite && !terminalResult ? "unknown" : "failed", {
-            error: { kind: "INTERRUPTED", message: `The Claude delegation worker received ${signal}.`, details: null },
-            usage: resultUsage(terminalResult)
-          });
+  return {
+    provider: "Claude",
+    providerLabel: "Claude",
+    async start() {
+      assertRoute({ host: job.host, target: job.target, depth: job.depth });
+      const canUseTool = async (toolName) => {
+        approvalRequired ||= toolName || "unknown";
+        store.appendEvent(jobId2, "approval.denied", { toolName: toolName || "unknown" });
+        return {
+          behavior: "deny",
+          message: "Flow does not grant delegated approvals. The caller must change the job contract.",
+          interrupt: true,
+          decisionClassification: "user_reject"
+        };
+      };
+      active = createClaudeQuery(job, input(), {
+        sessionId,
+        canUseTool,
+        onSpawn: (spawned) => {
+          child = spawned;
+          childExited = new Promise((resolve9) => child.once("exit", resolve9));
+          rememberProvider();
+        },
+        onStderr: (chunk) => {
+          stderrTail = (stderrTail + String(chunk)).slice(-16384);
+        },
+        onPolicyDenied: ({ toolName, reason }) => {
+          store.appendEvent(jobId2, "policy.denied", { toolName, reason: String(reason).slice(0, 500) });
         }
-      } catch {
+      });
+      store.appendEvent(jobId2, "claude_sdk.ready", {});
+    },
+    async run() {
+      const initialized = await withStartupTimeout(active.initializationResult(), () => active.close());
+      if (!initialized || typeof initialized !== "object") {
+        throw new DelegationError("CLAUDE_PROTOCOL", "Claude returned no SDK initialization result.");
       }
+      if (cancelled) {
+        await settle("cancelled");
+        return;
+      }
+      const selectedModel = Array.isArray(initialized.models) ? initialized.models.find((entry) => entry.value === job.model) : null;
+      store.setRunning(jobId2, { threadId: sessionId });
+      store.appendEvent(jobId2, job.nativeThreadId ? "session.resumed" : "session.started", {
+        sessionId,
+        model: selectedModel?.resolvedModel || job.model,
+        apiProvider: initialized.account?.apiProvider || null,
+        subscriptionType: initialized.account?.subscriptionType || null
+      });
+      store.setNativeTurn(jobId2, turnId, { accepted: true });
+      store.appendEvent(jobId2, "turn.accepted", { turnId });
+      accepted = true;
+      releasePrompt();
+      deadlineTimer = setTimeout(() => {
+        void interruptAndForce("deadline").catch(recordBackgroundFailure);
+      }, job.timeBudgetSeconds * 1e3);
+      resetStall();
       try {
-        process.kill(-process.pid, "SIGKILL");
-      } catch {
-      }
-      process.exit(1);
-    };
-    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-      const handler = () => {
-        void onSignal(signal).catch((error2) => {
-          recordBackgroundFailure(error2);
-          signalChildTree("SIGKILL");
-          try {
-            process.kill(-process.pid, "SIGKILL");
-          } catch {
+        for await (const message of active) {
+          resetStall();
+          if (message.type === "system" && message.subtype === "init") {
+            if (message.session_id !== sessionId) {
+              throw new DelegationError("CLAUDE_PROTOCOL", "Claude returned a different session ID than Flow requested.");
+            }
+            store.appendEvent(jobId2, "session.initialized", {
+              sessionId,
+              model: message.model || job.model,
+              apiKeySource: message.apiKeySource || null,
+              capabilities: Array.isArray(message.capabilities) ? message.capabilities : []
+            });
+          } else if (message.type === "stream_event") {
+            const delta = message.event?.delta;
+            if (message.event?.type === "content_block_delta" && delta?.type === "text_delta") {
+              const text = delta.text || "";
+              previewChars += text.length;
+              latestPreview = (latestPreview + text).slice(-240);
+              if (previewChars - previewAt >= 400) {
+                previewAt = previewChars;
+                store.appendEvent(jobId2, "agent.progress", {
+                  characters: previewChars,
+                  preview: latestPreview
+                });
+              }
+            }
+          } else if (message.type === "assistant") {
+            assistantError ||= message.error || null;
+            for (const block of message.message?.content || []) {
+              if (block.type === "tool_use") {
+                store.appendEvent(jobId2, "tool.started", { toolName: block.name || "unknown" });
+              }
+            }
+          } else if (message.type === "user" && message.tool_use_result !== void 0) {
+            store.appendEvent(jobId2, "tool.completed", {});
+          } else if (message.type === "tool_progress") {
+            store.appendEvent(jobId2, "tool.progress", {
+              toolName: message.tool_name || "unknown",
+              elapsedSeconds: message.elapsed_time_seconds ?? null
+            });
+          } else if (message.type === "rate_limit_event") {
+            rateLimitStatus = message.rate_limit_info?.status || null;
+            store.appendEvent(jobId2, "rate_limit.updated", { status: rateLimitStatus });
+          } else if (message.type === "result") {
+            freezeDescendants();
+            terminalResult = message;
+            break;
           }
-          process.exit(1);
+        }
+      } catch (error2) {
+        if (!terminalResult) throw error2;
+        store.appendEvent(jobId2, "transport.error_after_result", {});
+      }
+      clearTurnTimers();
+      const usage = resultUsage(terminalResult);
+      if (approvalRequired) {
+        await settle("awaiting_approval", {
+          error: {
+            kind: "APPROVAL_REQUIRED",
+            message: "Claude requested an approval that Flow denied.",
+            details: { toolName: approvalRequired }
+          },
+          usage
         });
-      };
-      signalHandlers.push([signal, handler]);
-      process.on(signal, handler);
-    }
-    const canUseTool = async (toolName) => {
-      approvalRequired ||= toolName || "unknown";
-      store.appendEvent(jobId2, "approval.denied", { toolName: toolName || "unknown" });
-      return {
-        behavior: "deny",
-        message: "Flow does not grant delegated approvals. The caller must change the job contract.",
-        interrupt: true,
-        decisionClassification: "user_reject"
-      };
-    };
-    const runControl = async (control) => {
+      } else if (!terminalResult) {
+        const acceptedWrite = job.access === "workspace-write" && accepted;
+        const status = cancelled && !acceptedWrite ? "cancelled" : acceptedWrite ? "unknown" : "failed";
+        await settle(status, {
+          error: status === "cancelled" ? null : {
+            kind: stalled ? "STALL" : timedOut ? "TIMEOUT" : "CLAUDE_SDK",
+            message: acceptedWrite ? "Claude did not prove the accepted write turn reached a terminal state." : "Claude ended before the delegated turn reached a terminal state.",
+            details: null
+          },
+          usage
+        });
+      } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== "success")) {
+        await settle("cancelled", { usage });
+      } else if (timedOut || stalled) {
+        await settle("failed", {
+          error: {
+            kind: timedOut ? "TIMEOUT" : "STALL",
+            message: `Claude exceeded the ${timedOut ? "total time budget" : "quiet-period limit"}.`,
+            details: null
+          },
+          usage
+        });
+      } else if (terminalResult.subtype !== "success" || terminalResult.is_error) {
+        await settle("failed", { error: resultFailure(terminalResult, { assistantError, rateLimitStatus }), usage });
+      } else {
+        const output = String(terminalResult.result || "").trim();
+        if (!output) throw new DelegationError("EMPTY_OUTPUT", "Claude completed without a final result.");
+        if (job.outputSchema != null && terminalResult.structured_output === void 0) {
+          throw new DelegationError("SCHEMA_OUTPUT", "Claude completed without the requested structured output.");
+        }
+        const structured = job.outputSchema == null ? null : validateStructuredValue(job.outputSchema, terminalResult.structured_output, "Claude");
+        await settle("succeeded", { output, structured, usage, error: null });
+      }
+    },
+    async onControl(control) {
       try {
         if (control.type === "cancel") {
           cancelled = true;
@@ -58731,243 +58755,73 @@ async function runClaudeWorker({ jobId: jobId2, stateDir }) {
       } catch (error2) {
         store.handleControl(jobId2, control.id, { result: "failed", error: publicError(normalizeClaudeError(error2)) });
       }
-    };
-    const pollControls = () => {
-      if (controlBusy) return;
-      controlBusy = true;
-      activeControlPoll = (async () => {
-        for (const control of store.pendingControls(jobId2)) await runControl(control);
-      })().catch(recordBackgroundFailure).finally(() => {
-        controlBusy = false;
-      });
-    };
-    active = createClaudeQuery(job, input(), {
-      sessionId,
-      canUseTool,
-      onSpawn: (spawned) => {
-        child = spawned;
-        childExited = new Promise((resolve9) => child.once("exit", resolve9));
+    },
+    async stop() {
+      freezeDescendants();
+      rememberProvider();
+      try {
+        active?.close();
+      } catch {
+      }
+      if (!child?.pid || !childTreeRunning()) {
+        await Promise.race([childExited, delay(100)]);
+        return true;
+      }
+      signalChildTree(terminalResult ? "SIGKILL" : "SIGTERM");
+      if (await waitForChildTree(terminalResult ? 100 : 1e3)) return true;
+      signalChildTree("SIGKILL");
+      if (!await waitForChildTree(2e3)) {
+        freezeDescendants();
         rememberProvider();
-      },
-      onStderr: (chunk) => {
-        stderrTail = (stderrTail + String(chunk)).slice(-16384);
-      },
-      onPolicyDenied: ({ toolName, reason }) => {
-        store.appendEvent(jobId2, "policy.denied", { toolName, reason: String(reason).slice(0, 500) });
+        return false;
       }
-    });
-    store.appendEvent(jobId2, "claude_sdk.ready", {});
-    controlTimer = setInterval(pollControls, 250);
-    pollControls();
-    const initialized = await withStartupTimeout(active.initializationResult(), () => active.close());
-    if (!initialized || typeof initialized !== "object") {
-      throw new DelegationError("CLAUDE_PROTOCOL", "Claude returned no SDK initialization result.");
-    }
-    if (cancelled) {
-      await settle("cancelled");
-      return;
-    }
-    const selectedModel = Array.isArray(initialized.models) ? initialized.models.find((entry) => entry.value === job.model) : null;
-    store.setRunning(jobId2, { threadId: sessionId });
-    store.appendEvent(jobId2, job.nativeThreadId ? "session.resumed" : "session.started", {
-      sessionId,
-      model: selectedModel?.resolvedModel || job.model,
-      apiProvider: initialized.account?.apiProvider || null,
-      subscriptionType: initialized.account?.subscriptionType || null
-    });
-    store.setNativeTurn(jobId2, turnId, { accepted: true });
-    store.appendEvent(jobId2, "turn.accepted", { turnId });
-    accepted = true;
-    releasePrompt();
-    deadlineTimer = setTimeout(() => {
-      void interruptAndForce("deadline").catch(recordBackgroundFailure);
-    }, job.timeBudgetSeconds * 1e3);
-    resetStall();
-    try {
-      for await (const message of active) {
-        resetStall();
-        if (message.type === "system" && message.subtype === "init") {
-          if (message.session_id !== sessionId) {
-            throw new DelegationError("CLAUDE_PROTOCOL", "Claude returned a different session ID than Flow requested.");
-          }
-          store.appendEvent(jobId2, "session.initialized", {
-            sessionId,
-            model: message.model || job.model,
-            apiKeySource: message.apiKeySource || null,
-            capabilities: Array.isArray(message.capabilities) ? message.capabilities : []
-          });
-        } else if (message.type === "stream_event") {
-          const delta = message.event?.delta;
-          if (message.event?.type === "content_block_delta" && delta?.type === "text_delta") {
-            const text = delta.text || "";
-            previewChars += text.length;
-            latestPreview = (latestPreview + text).slice(-240);
-            if (previewChars - previewAt >= 400) {
-              previewAt = previewChars;
-              store.appendEvent(jobId2, "agent.progress", {
-                characters: previewChars,
-                preview: latestPreview
-              });
-            }
-          }
-        } else if (message.type === "assistant") {
-          assistantError ||= message.error || null;
-          for (const block of message.message?.content || []) {
-            if (block.type === "tool_use") {
-              store.appendEvent(jobId2, "tool.started", { toolName: block.name || "unknown" });
-            }
-          }
-        } else if (message.type === "user" && message.tool_use_result !== void 0) {
-          store.appendEvent(jobId2, "tool.completed", {});
-        } else if (message.type === "tool_progress") {
-          store.appendEvent(jobId2, "tool.progress", {
-            toolName: message.tool_name || "unknown",
-            elapsedSeconds: message.elapsed_time_seconds ?? null
-          });
-        } else if (message.type === "rate_limit_event") {
-          rateLimitStatus = message.rate_limit_info?.status || null;
-          store.appendEvent(jobId2, "rate_limit.updated", { status: rateLimitStatus });
-        } else if (message.type === "result") {
-          freezeLinuxDescendants();
-          terminalResult = message;
-          break;
-        }
+      await Promise.race([childExited, delay(1e3)]);
+      return true;
+    },
+    killProvider() {
+      signalChildTree("SIGKILL");
+    },
+    onHeartbeat() {
+    },
+    clearTimers() {
+      clearTurnTimers();
+    },
+    nativeTerminal() {
+      return Boolean(terminalResult);
+    },
+    usage() {
+      return resultUsage(terminalResult);
+    },
+    failureOutcome(error2, { acceptedWrite }) {
+      if (approvalRequired) {
+        return {
+          status: "awaiting_approval",
+          error: { kind: "APPROVAL_REQUIRED", message: "Claude requested an approval that Flow denied.", details: { toolName: approvalRequired } }
+        };
       }
-    } catch (error2) {
-      if (!terminalResult) throw error2;
-      store.appendEvent(jobId2, "transport.error_after_result", {});
+      if (cancelled && !acceptedWrite) return { status: "cancelled", error: null };
+      return {
+        status: acceptedWrite && !terminalResult ? "unknown" : "failed",
+        error: publicError(normalizeClaudeError(error2))
+      };
+    },
+    cleanup() {
+      if (stderrTail && !terminalResult) serviceLog(stateDir, `Claude stderr for ${jobId2}: ${stderrTail}`);
     }
-    clearTurnTimers();
-    const usage = resultUsage(terminalResult);
-    if (approvalRequired) {
-      await settle("awaiting_approval", {
-        error: {
-          kind: "APPROVAL_REQUIRED",
-          message: "Claude requested an approval that Flow denied.",
-          details: { toolName: approvalRequired }
-        },
-        usage
-      });
-    } else if (!terminalResult) {
-      const acceptedWrite = job.access === "workspace-write" && accepted;
-      const status = cancelled && !acceptedWrite ? "cancelled" : acceptedWrite ? "unknown" : "failed";
-      await settle(status, {
-        error: status === "cancelled" ? null : {
-          kind: stalled ? "STALL" : timedOut ? "TIMEOUT" : "CLAUDE_SDK",
-          message: acceptedWrite ? "Claude did not prove the accepted write turn reached a terminal state." : "Claude ended before the delegated turn reached a terminal state.",
-          details: null
-        },
-        usage
-      });
-    } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== "success")) {
-      await settle("cancelled", { usage });
-    } else if (timedOut || stalled) {
-      await settle("failed", {
-        error: {
-          kind: timedOut ? "TIMEOUT" : "STALL",
-          message: `Claude exceeded the ${timedOut ? "total time budget" : "quiet-period limit"}.`,
-          details: null
-        },
-        usage
-      });
-    } else if (terminalResult.subtype !== "success" || terminalResult.is_error) {
-      await settle("failed", { error: resultFailure(terminalResult, { assistantError, rateLimitStatus }), usage });
-    } else {
-      const output = String(terminalResult.result || "").trim();
-      if (!output) throw new DelegationError("EMPTY_OUTPUT", "Claude completed without a final result.");
-      if (job.outputSchema != null && terminalResult.structured_output === void 0) {
-        throw new DelegationError("SCHEMA_OUTPUT", "Claude completed without the requested structured output.");
-      }
-      const structured = job.outputSchema == null ? null : validateStructuredValue(job.outputSchema, terminalResult.structured_output, "Claude");
-      await settle("succeeded", { output, structured, usage, error: null });
-    }
-  } catch (error2) {
-    try {
-      if (!(error2 instanceof DelegationError)) store.recordInternalError(jobId2, error2);
-      const normalized = normalizeClaudeError(error2);
-      const current = store.getJob(jobId2);
-      if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
-        const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
-        const status = approvalRequired ? "awaiting_approval" : cancelled && !acceptedWrite ? "cancelled" : acceptedWrite && !terminalResult ? "unknown" : "failed";
-        await settle(status, {
-          error: status === "cancelled" ? null : approvalRequired ? { kind: "APPROVAL_REQUIRED", message: "Claude requested an approval that Flow denied.", details: { toolName: approvalRequired } } : publicError(normalized),
-          usage: resultUsage(terminalResult)
-        });
-      }
-    } catch (finishError) {
-      serviceLog(stateDir, `Claude worker could not finish job ${jobId2}: ${finishError?.stack || finishError}`);
-    }
-  } finally {
-    signalStopping = true;
-    if (heartbeat) clearInterval(heartbeat);
-    if (controlTimer) clearInterval(controlTimer);
-    clearTurnTimers();
-    await activeControlPoll.catch(() => {
-    });
-    try {
-      const stopped = await stopChild();
-      if (!stopped) {
-        const current = store.getJob(jobId2);
-        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
-          const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
-          store.quarantine(jobId2, acceptedWrite && !terminalResult ? "unknown" : "failed", {
-            error: { kind: "PROVIDER_QUARANTINED", message: "Claude survived repeated termination attempts.", details: null },
-            usage: resultUsage(terminalResult)
-          });
-        }
-      } else if (store.getJob(jobId2)?.status === "quarantined") {
-        store.resolveQuarantine(jobId2);
-      }
-    } catch (error2) {
-      serviceLog(stateDir, `Claude worker could not quarantine provider processes for ${jobId2}: ${error2?.stack || error2}`);
-    }
-    if (stderrTail && !terminalResult) serviceLog(stateDir, `Claude stderr for ${jobId2}: ${stderrTail}`);
-    for (const [signal, handler] of signalHandlers) process.off(signal, handler);
-    store.close();
-  }
+  };
 }
 
-// src/delegation/worker.mjs
-var STALL_SECONDS2 = 420;
+// src/delegation/codex-worker.mjs
+import { chmodSync as chmodSync2, mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync3 } from "node:fs";
+import { join as join7 } from "node:path";
 var textInput = (text) => [{ type: "text", text, text_elements: [] }];
-async function runWorker(options) {
-  const store = new JobStore(options.stateDir);
-  let target;
-  try {
-    target = store.requireJob(options.jobId).target;
-    if (!["claude", "codex"].includes(target)) {
-      const error2 = new DelegationError("ROUTE_DENIED", "The queued job names an unknown model family.");
-      store.failQueued(options.jobId, publicError(error2));
-      process.exitCode = 1;
-      return;
-    }
-  } finally {
-    store.close();
-  }
-  if (target === "claude") return runClaudeWorker(options);
-  return runCodexWorker(options);
-}
-async function runCodexWorker({ jobId: jobId2, stateDir }) {
-  const store = new JobStore(stateDir);
-  let job;
-  try {
-    job = store.claim(jobId2, process.pid, processStartToken(process.pid));
-  } catch (error2) {
-    serviceLog(stateDir, `worker could not claim job ${jobId2}: ${error2.message}`);
-    try {
-      store.failQueued(jobId2, publicError(error2));
-    } catch {
-    }
-    store.close();
-    process.exitCode = 1;
-    return;
-  }
+function runCodexJob({ job, store, settle }) {
+  const jobId2 = job.id;
   let client;
-  let heartbeat;
-  let controlTimer;
   let deadlineTimer;
   let forcedTimer;
   let stallTimer;
+  let threadId = null;
   let turnId = null;
   let latestMessage = "";
   let usage = null;
@@ -58983,220 +58837,211 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
   const terminal2 = new Promise((resolve9) => {
     terminalResolve = resolve9;
   });
-  let controlBusy = false;
-  let activeControlPoll = Promise.resolve();
   let previewAt = 0;
   let jobTempDir = null;
-  let quarantined = false;
-  let signalStopping = false;
-  const providerScope = process.platform === "linux" ? providerScopeName(job.id) : null;
-  const signalHandlers = [];
   const rememberProvider = ({ discover = false } = {}) => {
     const pid = client?.child?.pid;
     if (!Number.isInteger(pid) || pid <= 0) return;
     if (discover) client.captureDescendants();
-    const startToken = processStartToken(pid);
     store.setProviderProcess(jobId2, {
       pid,
-      startToken,
-      processGroupId: process.platform === "win32" ? null : pid,
+      startToken: processStartToken(pid),
+      processGroupId: pid,
       scope: client.scopeName,
       processes: client.trackedProcesses()
     });
   };
-  const stopProvider = async () => {
-    if (!client) return true;
-    const active = client;
-    rememberProvider();
-    await active.stop();
-    if (active.treeRunning()) {
-      rememberProvider();
-      return false;
-    }
-    client = null;
-    return true;
-  };
-  const settle = async (status, result = {}) => {
-    if (!await stopProvider()) {
-      quarantined = true;
-      return store.quarantine(jobId2, status, result);
-    }
-    return store.finish(jobId2, status, result);
-  };
   const resetStall = () => {
     if (!onStallFire || interruptReason) return;
     if (stallTimer) clearTimeout(stallTimer);
-    stallTimer = setTimeout(onStallFire, STALL_SECONDS2 * 1e3);
+    stallTimer = setTimeout(onStallFire, STALL_SECONDS * 1e3);
   };
-  try {
-    assertRoute({ host: job.host, target: job.target, depth: job.depth });
-    const host = codexHostSupport();
-    if (!host.ok) throw new DelegationError(host.kind, "Codex delegation requires a Linux host.");
-    const codex = codexVersion();
-    if (!codex.ok) throw new DelegationError(codex.kind, "Codex no longer meets the delegation version requirement.");
-    const preflightCancel = store.pendingControls(jobId2).find((control) => control.type === "cancel");
-    if (preflightCancel) {
-      store.handleControl(jobId2, preflightCancel.id, { result: "cancelled_before_start" });
-      store.finish(jobId2, "cancelled");
-      return;
-    }
-    const tempRoot = join7(stateDir, "tmp");
-    mkdirSync3(tempRoot, { recursive: true, mode: 448 });
-    jobTempDir = mkdtempSync(join7(tempRoot, `${job.id}-`));
-    chmodSync2(jobTempDir, 448);
-    const metadataPaths = await gitMetadataPaths(job.cwd);
-    heartbeat = setInterval(() => {
-      try {
-        store.heartbeat(jobId2);
-        rememberProvider({ discover: true });
-      } catch (error2) {
-        store.recordInternalError(jobId2, error2);
-      }
-    }, 1e3);
-    const onSignal = async (signal) => {
-      if (signalStopping) return;
-      signalStopping = true;
-      try {
-        const current = store.getJob(jobId2);
-        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
-          const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
-          await settle(acceptedWrite && !nativeTurnTerminal ? "unknown" : "failed", {
-            error: { kind: "INTERRUPTED", message: `The delegation worker received ${signal}.`, details: null },
-            usage
-          });
-        }
-      } catch {
-      }
-      if (!quarantined) try {
-        if (jobTempDir) rmSync3(jobTempDir, { recursive: true, force: true });
-      } catch {
-      }
-      try {
-        process.kill(-process.pid, "SIGKILL");
-      } catch {
-      }
-      process.exit(1);
-    };
-    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-      const handler = () => {
-        void onSignal(signal);
-      };
-      signalHandlers.push([signal, handler]);
-      process.on(signal, handler);
-    }
-    const onNotification = (method, params) => {
-      resetStall();
-      if (method === "turn/started") {
-        turnId = params.turn?.id || turnId;
-        if (turnId) store.setNativeTurn(jobId2, turnId, { accepted: true });
-        store.appendEvent(jobId2, "turn.started", { turnId });
-      } else if (method === "turn/completed") {
-        terminalResolve(params.turn);
-      } else if (method === "item/started") {
-        store.appendEvent(jobId2, "item.started", { itemType: params.item?.type || "unknown" });
-      } else if (method === "item/completed") {
-        const item = params.item || {};
-        if (item.type === "agentMessage" && item.text) latestMessage = item.text;
-        if (item.type === "commandExecution") {
-          store.appendEvent(jobId2, "command.completed", {
-            command: String(item.command || "").slice(0, 300),
-            exitCode: item.exitCode ?? null,
-            status: item.status || null
-          });
-        } else if (item.type === "fileChange") {
-          store.appendEvent(jobId2, "files.changed", {
-            paths: (item.changes || []).map((change) => change.path || change.filePath).filter(Boolean).slice(0, 100),
-            status: item.status || null
-          });
-        } else {
-          store.appendEvent(jobId2, "item.completed", { itemType: item.type || "unknown" });
-        }
-      } else if (method === "item/agentMessage/delta") {
-        latestMessage += params.delta || "";
-        if (latestMessage.length - previewAt >= 400) {
-          previewAt = latestMessage.length;
-          store.appendEvent(jobId2, "agent.progress", {
-            characters: latestMessage.length,
-            preview: latestMessage.slice(-240)
-          });
-        }
-      } else if (method === "thread/tokenUsage/updated") {
-        usage = params.tokenUsage || null;
-        store.appendEvent(jobId2, "usage.updated", { total: usage?.total || null });
-      }
-    };
-    const onServerRequest = (method) => {
-      if (isApprovalRequest(method)) {
-        approvalMethod = method;
-        store.appendEvent(jobId2, "approval.denied", { method });
+  const onNotification = (method, params) => {
+    resetStall();
+    if (method === "turn/started") {
+      turnId = params.turn?.id || turnId;
+      if (turnId) store.setNativeTurn(jobId2, turnId, { accepted: true });
+      store.appendEvent(jobId2, "turn.started", { turnId });
+    } else if (method === "turn/completed") {
+      terminalResolve(params.turn);
+    } else if (method === "item/started") {
+      store.appendEvent(jobId2, "item.started", { itemType: params.item?.type || "unknown" });
+    } else if (method === "item/completed") {
+      const item = params.item || {};
+      if (item.type === "agentMessage" && item.text) latestMessage = item.text;
+      if (item.type === "commandExecution") {
+        store.appendEvent(jobId2, "command.completed", {
+          command: String(item.command || "").slice(0, 300),
+          exitCode: item.exitCode ?? null,
+          status: item.status || null
+        });
+      } else if (item.type === "fileChange") {
+        store.appendEvent(jobId2, "files.changed", {
+          paths: (item.changes || []).map((change) => change.path || change.filePath).filter(Boolean).slice(0, 100),
+          status: item.status || null
+        });
       } else {
-        store.appendEvent(jobId2, "app_server.request_denied", { method });
+        store.appendEvent(jobId2, "item.completed", { itemType: item.type || "unknown" });
       }
-    };
-    client = new AppServerClient({
-      cwd: job.cwd,
-      env: {
-        FLOW_DELEGATION_DEPTH: String(job.depth + 1),
-        FLOW_DELEGATION_PARENT_JOB_ID: job.id,
-        FLOW_DELEGATION_ACCESS: job.access,
-        FLOW_DELEGATION_WORKSPACE_KEY: job.workspaceKey,
-        TMPDIR: jobTempDir
-      },
-      experimentalApi: true,
-      scopeName: providerScope,
-      onNotification,
-      onServerRequest,
-      onClose: (error2) => {
-        transportError = error2;
-        terminalResolve(null);
+    } else if (method === "item/agentMessage/delta") {
+      latestMessage += params.delta || "";
+      if (latestMessage.length - previewAt >= 400) {
+        previewAt = latestMessage.length;
+        store.appendEvent(jobId2, "agent.progress", {
+          characters: latestMessage.length,
+          preview: latestMessage.slice(-240)
+        });
       }
-    });
-    await client.start();
-    rememberProvider();
-    store.appendEvent(jobId2, "app_server.ready", {});
-    const config2 = {
-      ...await isolatedThreadConfig(client),
-      ...restrictedPermissionConfig(job, { gitMetadataPaths: metadataPaths, tempDir: jobTempDir })
-    };
-    store.appendEvent(jobId2, "mcp.isolation_configured", {
-      standaloneServers: Object.keys(config2.mcp_servers).length
-    });
-    const threadParams = {
-      model: job.model,
-      serviceTier: job.serviceTier,
-      cwd: job.cwd,
-      runtimeWorkspaceRoots: [job.workspaceKey],
-      approvalPolicy: "never",
-      approvalsReviewer: "user",
-      permissions: CODEX_PERMISSION_PROFILE,
-      developerInstructions: delegatedInstructions(job, "Codex"),
-      config: config2
-    };
-    const threadResponse = job.nativeThreadId ? await client.request("thread/resume", { threadId: job.nativeThreadId, ...threadParams }, 3e4) : await client.request("thread/start", { ...threadParams, ephemeral: false, serviceName: "flow-delegation" }, 3e4);
-    const threadId = threadResponse.thread?.id;
-    if (!threadId) throw new DelegationError("APP_SERVER_PROTOCOL", "Codex did not return a thread ID.");
-    assertRestrictedPermissionProfile(threadResponse);
-    const isolation = await assertThreadMcpIsolated(client, threadId);
-    store.appendEvent(jobId2, "mcp.isolation_verified", isolation);
-    store.setRunning(jobId2, { threadId });
-    store.appendEvent(jobId2, job.nativeThreadId ? "thread.resumed" : "thread.started", { threadId });
-    const turnResponse = await client.request("turn/start", {
-      threadId,
-      input: textInput(job.prompt || ""),
-      cwd: job.cwd,
-      approvalPolicy: "never",
-      approvalsReviewer: "user",
-      model: job.model,
-      serviceTier: job.serviceTier,
-      effort: job.effort,
-      summary: "detailed",
-      outputSchema: providerOutputSchema(job.outputSchema)
-    }, 3e4);
-    turnId = turnResponse.turn?.id || turnId;
-    if (!turnId) throw new DelegationError("APP_SERVER_PROTOCOL", "Codex did not return a turn ID.");
-    store.setRunning(jobId2, { threadId, turnId, accepted: true });
-    store.appendEvent(jobId2, "turn.accepted", { turnId });
-    const runControl = async (control) => {
+    } else if (method === "thread/tokenUsage/updated") {
+      usage = params.tokenUsage || null;
+      store.appendEvent(jobId2, "usage.updated", { total: usage?.total || null });
+    }
+  };
+  const onServerRequest = (method) => {
+    if (isApprovalRequest(method)) {
+      approvalMethod = method;
+      store.appendEvent(jobId2, "approval.denied", { method });
+    } else {
+      store.appendEvent(jobId2, "app_server.request_denied", { method });
+    }
+  };
+  const interruptAndForce = async (reason) => {
+    if (interruptReason) return;
+    interruptReason = reason;
+    if (stallTimer) {
+      clearTimeout(stallTimer);
+      stallTimer = null;
+    }
+    if (deadlineTimer) {
+      clearTimeout(deadlineTimer);
+      deadlineTimer = null;
+    }
+    if (reason === "deadline") {
+      timedOut = true;
+      store.appendEvent(jobId2, "turn.timeout", { seconds: job.timeBudgetSeconds });
+    } else {
+      stalled = true;
+      store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS });
+    }
+    try {
+      await client.request("turn/interrupt", { threadId, turnId }, 1e4);
+    } catch {
+    }
+    if (!forcedTimer) forcedTimer = setTimeout(() => terminalResolve(null), 5e3);
+  };
+  return {
+    provider: "Codex",
+    providerLabel: "Codex App Server",
+    async start() {
+      assertRoute({ host: job.host, target: job.target, depth: job.depth });
+      const host = codexHostSupport();
+      if (!host.ok) throw new DelegationError(host.kind, "Codex delegation requires a Linux host.");
+      const codex = codexVersion();
+      if (!codex.ok) throw new DelegationError(codex.kind, "Codex no longer meets the delegation version requirement.");
+      const tempRoot = join7(store.stateDir, "tmp");
+      mkdirSync3(tempRoot, { recursive: true, mode: 448 });
+      jobTempDir = mkdtempSync(join7(tempRoot, `${job.id}-`));
+      chmodSync2(jobTempDir, 448);
+      const metadataPaths = await gitMetadataPaths(job.cwd);
+      client = new AppServerClient({
+        cwd: job.cwd,
+        env: {
+          FLOW_DELEGATION_DEPTH: String(job.depth + 1),
+          FLOW_DELEGATION_PARENT_JOB_ID: job.id,
+          FLOW_DELEGATION_ACCESS: job.access,
+          FLOW_DELEGATION_WORKSPACE_KEY: job.workspaceKey,
+          TMPDIR: jobTempDir
+        },
+        experimentalApi: true,
+        // Named after the job, so a scope outliving its worker can still be found by hand.
+        scopeName: providerScopeName(job.id),
+        onNotification,
+        onServerRequest,
+        onClose: (error2) => {
+          transportError = error2;
+          terminalResolve(null);
+        }
+      });
+      await client.start();
+      rememberProvider();
+      store.appendEvent(jobId2, "app_server.ready", {});
+      const config2 = {
+        ...await isolatedThreadConfig(client),
+        ...restrictedPermissionConfig(job, { gitMetadataPaths: metadataPaths, tempDir: jobTempDir })
+      };
+      store.appendEvent(jobId2, "mcp.isolation_configured", {
+        standaloneServers: Object.keys(config2.mcp_servers).length
+      });
+      const threadParams = {
+        model: job.model,
+        serviceTier: job.serviceTier,
+        cwd: job.cwd,
+        runtimeWorkspaceRoots: [job.workspaceKey],
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        permissions: CODEX_PERMISSION_PROFILE,
+        developerInstructions: delegatedInstructions(job, "Codex"),
+        config: config2
+      };
+      const threadResponse = job.nativeThreadId ? await client.request("thread/resume", { threadId: job.nativeThreadId, ...threadParams }, 3e4) : await client.request("thread/start", { ...threadParams, ephemeral: false, serviceName: "flow-delegation" }, 3e4);
+      threadId = threadResponse.thread?.id;
+      if (!threadId) throw new DelegationError("APP_SERVER_PROTOCOL", "Codex did not return a thread ID.");
+      assertRestrictedPermissionProfile(threadResponse);
+      const isolation = await assertThreadMcpIsolated(client, threadId);
+      store.appendEvent(jobId2, "mcp.isolation_verified", isolation);
+      store.setRunning(jobId2, { threadId });
+      store.appendEvent(jobId2, job.nativeThreadId ? "thread.resumed" : "thread.started", { threadId });
+      const turnResponse = await client.request("turn/start", {
+        threadId,
+        input: textInput(job.prompt || ""),
+        cwd: job.cwd,
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        model: job.model,
+        serviceTier: job.serviceTier,
+        effort: job.effort,
+        summary: "detailed",
+        outputSchema: providerOutputSchema(job.outputSchema)
+      }, 3e4);
+      turnId = turnResponse.turn?.id || turnId;
+      if (!turnId) throw new DelegationError("APP_SERVER_PROTOCOL", "Codex did not return a turn ID.");
+      store.setRunning(jobId2, { threadId, turnId, accepted: true });
+      store.appendEvent(jobId2, "turn.accepted", { turnId });
+    },
+    async run() {
+      deadlineTimer = setTimeout(() => {
+        void interruptAndForce("deadline");
+      }, job.timeBudgetSeconds * 1e3);
+      onStallFire = () => {
+        void interruptAndForce("stall");
+      };
+      resetStall();
+      const turn = await terminal2;
+      nativeTurnTerminal = Boolean(turn && turn.status !== "inProgress");
+      if (approvalMethod) {
+        await settle("awaiting_approval", {
+          error: { kind: "APPROVAL_REQUIRED", message: "Codex requested an approval that Flow denied.", details: { method: approvalMethod } },
+          usage
+        });
+        return;
+      }
+      const outcome = foldTurnOutcome(turn, {
+        cancelRequested: cancelled,
+        deadlineFired: timedOut,
+        stallFired: stalled,
+        acceptedWrite: job.access === "workspace-write",
+        latestMessage,
+        transportError
+      });
+      if (outcome.internalError) store.recordInternalError(jobId2, outcome.internalError);
+      if (outcome.status === "succeeded") {
+        const structured = job.outputSchema != null ? validateStructured(job.outputSchema, outcome.output) : null;
+        await settle("succeeded", { output: outcome.output, structured, usage, error: null });
+      } else {
+        await settle(outcome.status, { error: outcome.error, usage });
+      }
+    },
+    async onControl(control) {
       try {
         if (control.type === "cancel") {
           cancelled = true;
@@ -59213,105 +59058,225 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
       } catch (error2) {
         store.handleControl(jobId2, control.id, { result: "failed", error: publicError(error2) });
       }
-    };
-    const pollControls = () => {
-      if (controlBusy) return;
-      controlBusy = true;
-      activeControlPoll = (async () => {
-        for (const control of store.pendingControls(jobId2)) await runControl(control);
-      })().finally(() => {
-        controlBusy = false;
-      });
-    };
-    controlTimer = setInterval(pollControls, 250);
-    const interruptAndForce = async (reason) => {
-      if (interruptReason) return;
-      interruptReason = reason;
-      if (stallTimer) {
-        clearTimeout(stallTimer);
-        stallTimer = null;
+    },
+    async stop() {
+      if (!client) return true;
+      const active = client;
+      rememberProvider();
+      await active.stop();
+      if (active.treeRunning()) {
+        rememberProvider();
+        return false;
       }
+      client = null;
+      return true;
+    },
+    killProvider() {
+      client?.signalTree("SIGKILL");
+    },
+    onHeartbeat() {
+      rememberProvider({ discover: true });
+    },
+    clearTimers() {
       if (deadlineTimer) {
         clearTimeout(deadlineTimer);
         deadlineTimer = null;
       }
-      if (reason === "deadline") {
-        timedOut = true;
-        store.appendEvent(jobId2, "turn.timeout", { seconds: job.timeBudgetSeconds });
-      } else {
-        stalled = true;
-        store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS2 });
+      if (forcedTimer) {
+        clearTimeout(forcedTimer);
+        forcedTimer = null;
       }
+      if (stallTimer) {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      }
+    },
+    nativeTerminal() {
+      return nativeTurnTerminal;
+    },
+    usage() {
+      return usage;
+    },
+    failureOutcome(error2, { acceptedWrite }) {
+      if (approvalMethod) {
+        return {
+          status: "awaiting_approval",
+          error: { kind: "APPROVAL_REQUIRED", message: "Codex requested an approval that Flow denied.", details: { method: approvalMethod } }
+        };
+      }
+      return {
+        status: acceptedWrite && !nativeTurnTerminal ? "unknown" : "failed",
+        error: publicError(error2)
+      };
+    },
+    cleanup({ quarantined }) {
+      if (!jobTempDir || quarantined) return;
       try {
-        await client.request("turn/interrupt", { threadId, turnId }, 1e4);
+        rmSync3(jobTempDir, { recursive: true, force: true });
       } catch {
       }
-      if (!forcedTimer) forcedTimer = setTimeout(() => terminalResolve(null), 5e3);
-    };
-    deadlineTimer = setTimeout(() => {
-      void interruptAndForce("deadline");
-    }, job.timeBudgetSeconds * 1e3);
-    onStallFire = () => {
-      void interruptAndForce("stall");
-    };
-    resetStall();
-    const turn = await terminal2;
-    nativeTurnTerminal = Boolean(turn && turn.status !== "inProgress");
-    if (approvalMethod) {
-      await settle("awaiting_approval", {
-        error: { kind: "APPROVAL_REQUIRED", message: "Codex requested an approval that Flow denied.", details: { method: approvalMethod } },
-        usage
-      });
-    } else {
-      const outcome = foldTurnOutcome(turn, {
-        cancelRequested: cancelled,
-        deadlineFired: timedOut,
-        stallFired: stalled,
-        acceptedWrite: job.access === "workspace-write",
-        latestMessage,
-        transportError
-      });
-      if (outcome.internalError) store.recordInternalError(jobId2, outcome.internalError);
-      if (outcome.status === "succeeded") {
-        const structured = job.outputSchema != null ? validateStructured(job.outputSchema, outcome.output) : null;
-        await settle("succeeded", { output: outcome.output, structured, usage, error: null });
-      } else {
-        await settle(outcome.status, { error: outcome.error, usage });
-      }
     }
+  };
+}
+
+// src/delegation/worker.mjs
+async function runWorker(options) {
+  const store = new JobStore(options.stateDir);
+  let target;
+  try {
+    target = store.requireJob(options.jobId).target;
+    if (!["claude", "codex"].includes(target)) {
+      const error2 = new DelegationError("ROUTE_DENIED", "The queued job names an unknown model family.");
+      store.failQueued(options.jobId, publicError(error2));
+      process.exitCode = 1;
+      return;
+    }
+  } finally {
+    store.close();
+  }
+  return runProviderJob({ ...options, createAdapter: target === "claude" ? runClaudeJob : runCodexJob });
+}
+async function runProviderJob({ jobId: jobId2, stateDir, createAdapter }) {
+  const store = new JobStore(stateDir);
+  let job;
+  try {
+    job = store.claim(jobId2, process.pid, processStartToken(process.pid));
+  } catch (error2) {
+    serviceLog(stateDir, `worker could not claim job ${jobId2}: ${error2.message}`);
+    try {
+      store.failQueued(jobId2, publicError(error2));
+    } catch {
+    }
+    store.close();
+    process.exitCode = 1;
+    return;
+  }
+  let heartbeat;
+  let controlTimer;
+  let controlBusy = false;
+  let activeControlPoll = Promise.resolve();
+  let signalStopping = false;
+  let quarantined = false;
+  const signalHandlers = [];
+  const recordBackgroundFailure = (error2) => {
+    try {
+      store.recordInternalError(jobId2, error2);
+    } catch {
+      serviceLog(stateDir, `delegation worker background operation failed for ${jobId2}.`);
+    }
+  };
+  let adapter;
+  const settle = async (status, result = {}) => {
+    if (await adapter.stop()) return store.finish(jobId2, status, result);
+    quarantined = true;
+    return store.quarantine(jobId2, status, result);
+  };
+  const live = () => {
+    const current = store.getJob(jobId2);
+    if (!current || TERMINAL_STATES.includes(current.status) || current.status === "quarantined") return null;
+    return current;
+  };
+  const acceptedWriteOn = (current) => current.access === "workspace-write" && Boolean(current.turnAcceptedAt);
+  adapter = createAdapter({ job, store, stateDir, settle, recordBackgroundFailure });
+  try {
+    const preflightCancel = store.pendingControls(jobId2).find((control) => control.type === "cancel");
+    if (preflightCancel) {
+      store.handleControl(jobId2, preflightCancel.id, { result: "cancelled_before_start" });
+      store.finish(jobId2, "cancelled");
+      return;
+    }
+    heartbeat = setInterval(() => {
+      try {
+        store.heartbeat(jobId2);
+        adapter.onHeartbeat();
+      } catch (error2) {
+        recordBackgroundFailure(error2);
+      }
+    }, 1e3);
+    const onSignal = async (signal) => {
+      if (signalStopping) return;
+      signalStopping = true;
+      try {
+        const current = live();
+        if (current) {
+          const unproven = acceptedWriteOn(current) && !adapter.nativeTerminal();
+          await settle(unproven ? "unknown" : "failed", {
+            error: { kind: "INTERRUPTED", message: `The ${adapter.provider} delegation worker received ${signal}.`, details: null },
+            usage: adapter.usage()
+          });
+        }
+      } catch {
+      }
+      try {
+        adapter.cleanup({ quarantined });
+      } catch {
+      }
+      try {
+        process.kill(-process.pid, "SIGKILL");
+      } catch {
+      }
+      process.exit(1);
+    };
+    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+      const handler = () => {
+        void onSignal(signal).catch((error2) => {
+          recordBackgroundFailure(error2);
+          adapter.killProvider();
+          try {
+            process.kill(-process.pid, "SIGKILL");
+          } catch {
+          }
+          process.exit(1);
+        });
+      };
+      signalHandlers.push([signal, handler]);
+      process.on(signal, handler);
+    }
+    const pollControls = () => {
+      if (controlBusy) return;
+      controlBusy = true;
+      activeControlPoll = (async () => {
+        for (const control of store.pendingControls(jobId2)) await adapter.onControl(control);
+      })().catch(recordBackgroundFailure).finally(() => {
+        controlBusy = false;
+      });
+    };
+    await adapter.start();
+    controlTimer = setInterval(pollControls, 250);
+    pollControls();
+    await adapter.run();
   } catch (error2) {
     try {
       if (!(error2 instanceof DelegationError)) store.recordInternalError(jobId2, error2);
-      const current = store.getJob(jobId2);
-      if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
-        const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
-        const status = approvalMethod ? "awaiting_approval" : acceptedWrite && !nativeTurnTerminal ? "unknown" : "failed";
-        await settle(status, {
-          error: approvalMethod ? { kind: "APPROVAL_REQUIRED", message: "Codex requested an approval that Flow denied.", details: { method: approvalMethod } } : publicError(error2),
-          usage
-        });
+      const current = live();
+      if (current) {
+        const outcome = adapter.failureOutcome(error2, { acceptedWrite: acceptedWriteOn(current) });
+        await settle(outcome.status, { error: outcome.error, usage: adapter.usage() });
       }
-    } catch {
+    } catch (settleError) {
+      serviceLog(stateDir, `${adapter.provider} worker could not finish job ${jobId2}: ${settleError?.stack || settleError}`);
     }
   } finally {
     signalStopping = true;
     if (heartbeat) clearInterval(heartbeat);
     if (controlTimer) clearInterval(controlTimer);
-    if (deadlineTimer) clearTimeout(deadlineTimer);
-    if (forcedTimer) clearTimeout(forcedTimer);
-    if (stallTimer) clearTimeout(stallTimer);
+    adapter.clearTimers();
     await activeControlPoll.catch(() => {
     });
     try {
-      const stopped = !client || await stopProvider();
+      const stopped = await adapter.stop();
       if (!stopped) {
-        const current = store.getJob(jobId2);
-        if (current && !TERMINAL_STATES.includes(current.status) && current.status !== "quarantined") {
+        const current = live();
+        if (current) {
           quarantined = true;
-          const acceptedWrite = current.access === "workspace-write" && current.turnAcceptedAt;
-          store.quarantine(jobId2, acceptedWrite && !nativeTurnTerminal ? "unknown" : "failed", {
-            error: { kind: "PROVIDER_QUARANTINED", message: "Codex App Server survived repeated termination attempts.", details: null },
-            usage
+          const unproven = acceptedWriteOn(current) && !adapter.nativeTerminal();
+          store.quarantine(jobId2, unproven ? "unknown" : "failed", {
+            error: {
+              kind: "PROVIDER_QUARANTINED",
+              message: `${adapter.providerLabel} survived repeated termination attempts.`,
+              details: null
+            },
+            usage: adapter.usage()
           });
         }
       } else if (store.getJob(jobId2)?.status === "quarantined") {
@@ -59319,11 +59284,12 @@ async function runCodexWorker({ jobId: jobId2, stateDir }) {
         quarantined = false;
       }
     } catch (error2) {
-      serviceLog(stateDir, `Codex worker could not quarantine provider processes for ${jobId2}: ${error2?.stack || error2}`);
+      serviceLog(stateDir, `${adapter.provider} worker could not quarantine provider processes for ${jobId2}: ${error2?.stack || error2}`);
     }
-    if (jobTempDir && !quarantined) try {
-      rmSync3(jobTempDir, { recursive: true, force: true });
-    } catch {
+    try {
+      adapter.cleanup({ quarantined });
+    } catch (error2) {
+      recordBackgroundFailure(error2);
     }
     for (const [signal, handler] of signalHandlers) process.off(signal, handler);
     store.close();

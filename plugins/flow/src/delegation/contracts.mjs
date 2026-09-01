@@ -15,6 +15,10 @@ export const TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'unknown', '
 export const QUARANTINE_STATES = ['quarantined']
 export const JOB_STATES = [...ACTIVE_STATES, ...QUARANTINE_STATES, ...TERMINAL_STATES]
 export const MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
+// The total budget alone cannot catch a wedged provider: a half-dead socket sends no
+// notifications while the worker keeps heartbeating as healthy. This is the quiet-period
+// ceiling both workers enforce, inherited from the shell transport they replaced.
+export const STALL_SECONDS = 420
 
 export const FINDINGS_SCHEMA = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
