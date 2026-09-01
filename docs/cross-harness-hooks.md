@@ -245,11 +245,14 @@ the captured Codex failure payload that deliberately remains unclassified. The l
 a document work the same way and keep no fixture tree on disk: each one carries its broken
 examples as inline strings, runs its own checker over them, and asserts the defect it names,
 so a green run also shows the check can still fail. The charter conformance lint checks that
-every `[[role:<id>]]` marker in the charter is bound in both host profiles, that the charter
-stays free of host names outside its model-naming sections, and that the charter halves and
-each profile hold under their byte budgets. The stage conformance lint finds every stage by
-structure and holds it to the one-file shape: a body that names no host, a `## Host mechanics`
-section carrying one subsection per host, and a command alias that reads the skill.
+the charter's six `[[role:<id>]]` markers are bound in both host profiles and nowhere else,
+that the charter names no host outside its three allowlisted sections, and that both charter
+halves and each profile hold under their byte budgets. The stage conformance lint finds every
+stage by structure and holds it to the one-file shape: no host named above the line, exactly
+one `## Host mechanics` heading as the last section, a `### Claude Code` and a `### Codex`
+subsection under it in that order with prose in each, implicit invocation off, and an alias
+that is one heading plus one routing sentence naming the stage file, under its own
+`allowed-tools` line.
 
 `smoke-shim.mjs` builds synthetic Claude and Codex plugin caches under one temporary directory
 and drives the resolver against them: version skew across the two caches, a directory name that
