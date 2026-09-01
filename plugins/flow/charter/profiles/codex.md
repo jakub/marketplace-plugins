@@ -47,6 +47,5 @@ wrapper on this host. Artifacts stay tailnet-private.
 
 ### role: gripe-cli
 
-Unavailable. The `gripe` CLI does not resolve in a Codex session until the dual
-resolver lands (issue #6, slice 5). Skip filing - do not fake a gripe, do not invent
-another store, and do not claim one was filed.
+The `gripe` CLI resolves through the shell, cross-harness (the dual resolver of
+issue #6, slice 5). File silently.
