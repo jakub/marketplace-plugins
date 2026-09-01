@@ -19,17 +19,22 @@ async function main() {
   for await (const chunk of process.stdin) raw += chunk
   let input
   try { input = JSON.parse(raw) } catch { return }
-  if (!input.session_id || !input.tool_name) return
+  if (!input.tool_name) return
 
   const { safeId } = await import('../../lib/context.mjs')
+  // Both ids land in a gate filename, so anything outside the safe alphabet counts as
+  // absent rather than becoming a path. Without the session id there is nothing to key
+  // the repeat gate on, so the event is dropped.
+  const sessionId = safeId(input.session_id)
   const actor = safeId(input.agent_id) ?? 'main'
+  if (!sessionId) return
   const aimedAt = target(input.tool_name, input.tool_input)
   // Search patterns can carry secrets the agent was hunting for. They stay in the
   // fingerprint, which lives in a short-lived local state file, but never in the durable
   // body; paths and command prefixes are low-risk and diagnostic, so those do.
   const storedTarget = input.tool_input?.pattern ? null : aimedAt
 
-  const gate = loadGate(input.session_id, actor)
+  const gate = loadGate(sessionId, actor)
   const fp = fingerprint(`deny:${input.tool_name}`, `${input.reason ?? ''} ${aimedAt ?? ''}`)
   const rec = gate.fingerprints[fp] ?? { count: 0 }
   rec.count++
@@ -37,7 +42,7 @@ async function main() {
   const file = rec.count >= DENIAL_THRESHOLD && !rec.filedAt
   if (file) rec.filedAt = Date.now()
   gate.fingerprints[fp] = rec
-  saveGate(input.session_id, actor, gate)
+  saveGate(sessionId, actor, gate)
   if (!file) return
 
   try {
@@ -54,7 +59,7 @@ async function main() {
           `. The agent kept trying and kept being stopped, which points at a policy it does not understand or a policy that is wrong.`,
         elicitation: 'observed',
         ...captureContext(),
-        session_id: input.session_id,
+        session_id: sessionId,
         prompt_id: safeId(input.prompt_id),
         agent_id: actor === 'main' ? null : actor,
         agent_type: safeId(input.agent_type),

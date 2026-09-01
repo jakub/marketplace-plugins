@@ -121,11 +121,12 @@ async function main() {
   )
   if (pending) return
 
-  const sessionId = input.session_id
   // SubagentStop delivers agent_transcript_path instead of transcript_path, and an
   // agent_id that scopes the state: subagents share their parent's session id, so the
-  // actor is the only thing keeping their scans apart. The id lands in a filename, so
-  // anything outside a safe alphabet is treated as absent rather than becoming a path.
+  // actor is the only thing keeping their scans apart. Both ids land in a filename, so
+  // either one outside the safe alphabet is treated as absent rather than becoming a
+  // path. An absent session id leaves nothing to key the checkpoint on, so the hook stops.
+  const sessionId = safeId(input.session_id)
   const transcript = input.transcript_path || input.agent_transcript_path
   const actor = safeId(input.agent_id) ?? 'main'
   if (!sessionId || !transcript) return

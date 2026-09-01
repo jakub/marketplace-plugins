@@ -21,14 +21,20 @@ async function main() {
 
   // An interrupt is the user pressing escape, not the tooling fighting the agent.
   if (input.is_interrupt) return
-  if (!input.session_id || !input.tool_name) return
+  if (!input.tool_name) return
+
+  // The session id keys the shared gate state and lands in its filename, so an id outside
+  // the safe alphabet counts as absent and the event is dropped rather than written to a
+  // path of its own choosing.
+  const sessionId = safeId(input.session_id)
+  if (!sessionId) return
 
   const cmd = typeof input.tool_input?.command === 'string' ? input.tool_input.command : ''
   if (NOISY_PREFIXES.some((p) => cmd.startsWith(p))) return
 
   const actor = safeId(input.agent_id) ?? 'main'
   const note = recordRepeatedFailure({
-    sessionId: input.session_id,
+    sessionId,
     actor,
     toolName: input.tool_name,
     error: input.error ?? '',

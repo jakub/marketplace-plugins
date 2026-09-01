@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +26,14 @@ function run(name, input) {
   const output = result.stdout.trim()
   return output ? JSON.parse(output) : null
 }
+
+// Every file the hooks have written so far, so a test can assert that a hostile id wrote
+// nothing anywhere rather than guessing where it would have landed.
+const filesUnder = (dir) =>
+  readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath ?? entry.path, entry.name))
+    .sort()
 
 function runAsync(name, input) {
   return new Promise((resolve, reject) => {
@@ -188,6 +196,23 @@ try {
   })
   assert.equal(subagentCheckpoint?.hookSpecificOutput?.hookEventName, 'SubagentStop')
   assert.match(subagentCheckpoint.hookSpecificOutput.additionalContext, /--agent agent-1/)
+
+  // The harness picks the session id and gripe puts it in a gate filename. Before the
+  // Claude adapters validated it, "../../x" wrote <state home>/x-main.json, two directories
+  // above the gate. An id outside the safe alphabet now counts as absent, so the event is
+  // dropped and nothing is written at all.
+  const beforeTraversal = filesUnder(stateHome)
+  const hostileId = '../../x'
+  assert.equal(run('permission-denied.mjs', {
+    session_id: hostileId, tool_name: 'Bash', tool_input: { command: 'ls' }, reason: 'nope',
+  }), null)
+  assert.equal(run('post-tool-use-failure.mjs', {
+    session_id: hostileId, tool_name: 'Bash', tool_input: { command: 'ls' }, error: 'boom',
+  }), null)
+  assert.equal(run('stop-checkpoint.mjs', {
+    session_id: hostileId, transcript_path: transcript, hook_event_name: 'Stop',
+  }), null)
+  assert.deepEqual(filesUnder(stateHome), beforeTraversal, 'an unsafe session id wrote a file')
 
   console.log('gripe cross-harness hooks: ALL PASS')
 } finally {
