@@ -15,7 +15,8 @@
 //
 // PreToolUse protocol: read tool call JSON on stdin, deny via hookSpecificOutput JSON.
 // Same posture as git-guard: a guardrail against the unattended mistake, not a security
-// boundary. It reads tool_input.file_path, so a heredoc through Bash is not caught.
+// boundary. It reads the path the tool names - `file_path` for Edit and Write,
+// `notebook_path` for NotebookEdit - so a heredoc through Bash is not caught.
 
 import { protectedFileReason } from '../../lib/hook-policy.mjs'
 import { preToolDeny } from './wire.mjs'
@@ -30,7 +31,10 @@ process.stdin.on('data', (c) => (raw += c))
 process.stdin.on('end', () => {
   let file = ''
   try {
-    file = JSON.parse(raw)?.tool_input?.file_path || ''
+    // hooks.json matches Edit|Write|NotebookEdit, and NotebookEdit names its target
+    // `notebook_path`. Reading file_path alone let every notebook write through.
+    const toolInput = JSON.parse(raw)?.tool_input
+    file = toolInput?.file_path || toolInput?.notebook_path || ''
   } catch {
     process.exit(0) // unparseable input is the harness's problem, not a policy breach
   }
