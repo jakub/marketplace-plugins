@@ -101,7 +101,7 @@ Quiet runs have exactly two comments. Eventful runs show their history.
 
 The launch comment OPENS with the claim ledger, and the ledger has a fixed grammar so a reader can grep it out of a long thread. A host line first: the host, the versions it reports, and a one-line summary of the sandbox posture. Then the anchors line: the AC snapshot digest and the base sha. Then one line per write-seat CLASS:
 
-```
+```text
 seat-class: <name> | workspace: <answer> | descendants: <answer> | hooks: <answer>
 ```
 
@@ -204,6 +204,10 @@ Whether you ask at all depends on the host. Where the human-choice binding answe
 Unanswered, the run does not continue. Take the conservative posture (confine, refuse, least reach), label `needs-human`, write the durable journal entry, and STOP. There is no provisionally-decided-and-continued path out of a trust fork on any host: a run that ships a trust posture nobody ratified has spent its whole review budget agreeing with itself.
 
 **The suspension protocol**, where the human-choice binding ends the turn. Finish every mutation first: commit, push, the journal event, the label, the escalation notice. THEN read the anchors - the AC snapshot digest, the head sha, the issue's `updatedAt` - immediately before asking. Reading them earlier lets your own checkpoint expire your own question. Ask one question, up to four numbered options, the recommendation first, each option carrying its consequence in a line.
+
+One fork changes that order, and it is the fork whose subject is the tree itself. When what you are asking is whether this content may be pushed or published at all - material that turned up mid-run and might be secret, bytes whose right to leave the machine is the question - then pushing first answers the question yourself, in the direction nobody ratified, and no answer afterwards can unsend them. So the checkpoint omits the push. Commit locally, journal the event, apply the label, fire the notice, and suspend. The durable escalation lands, the human sees it, and the contested bytes stay on this machine until a ratifying answer arrives over live anchors. Only then does the push happen.
+
+Every other trust fork keeps the full checkpoint including the push, and that is safe for a plain reason: a work-in-progress push to this run's own private feature branch settles nothing about who may reach what, or about what some unattended tool will read later. Those questions are still entirely open after the push. The carve-out is narrow on purpose, because a run that skips its checkpoint on every fork loses the recovery trail that makes suspending survivable.
 
 An answer that arrives over moved anchors is expired. Journal `stale-answer-rejected`, keep `needs-human`, re-read the moved state, and ask fresh against it. `needs-human` clears only after that revalidation, never on the arrival of an answer alone.
 
