@@ -154,6 +154,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from a model nobody asked for' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'answer from a model nobody asked for' })
     }
+    if (mode === 'refusal-hang') {
+      // A refusal with no result frame, waiting for whoever cancels it.
+      say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
+      return
+    }
     if (mode === 'refusal-swap-hang') {
       // Refusal banner, then a frame from the fallback model, then nothing: the worker's own
       // interrupt gets no answer and the CLI never sends a result frame.
@@ -412,6 +417,14 @@ try {
   await waitForActive(startup.jobId, startupState)
   await cancelJob(startup.jobId, { stateDir: startupState })
   await waitFor(startup.jobId, startupState, 'cancelled')
+  const refusedHangState = state('refusal-hang')
+  const refusedHang = await startJob({ prompt: 'refused, then cancelled' , delivery: 'detached' }, { mode: 'refusal-hang', stateDir: refusedHangState })
+  await waitForRunning(refusedHang.jobId, refusedHangState)
+  await delay(300)
+  await cancelJob(refusedHang.jobId, { stateDir: refusedHangState })
+  const refusedThenCancelled = await waitFor(refusedHang.jobId, refusedHangState, 'failed')
+  assert.equal(refusedThenCancelled.error.kind, 'REFUSAL', 'a cancel that races a refusal does not hide the refusal')
+  assert.equal(refusedThenCancelled.error.details.category, 'cyber')
   const noResultState = state('cancel-no-result')
   const noResult = await startJob({ prompt: 'cancel without result', delivery: 'detached' }, { mode: 'cancel-no-result', stateDir: noResultState })
   await waitForRunning(noResult.jobId, noResultState)

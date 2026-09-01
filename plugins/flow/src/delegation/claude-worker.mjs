@@ -355,7 +355,10 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
         })
       } else if (!terminalResult) {
         const acceptedWrite = job.access === 'workspace-write' && accepted
-        const status = cancelled && !acceptedWrite ? 'cancelled' : acceptedWrite ? 'unknown' : 'failed'
+        // A refusal or a swap that was already seen outranks a cancel that raced it: the
+        // caller asked to stop, but what it needs to know is why the turn was already lost.
+        const diagnosed = refusal || mismatch
+        const status = cancelled && !acceptedWrite && !diagnosed ? 'cancelled' : acceptedWrite ? 'unknown' : 'failed'
         // A known refusal outranks every other reason for the missing terminal frame: the
         // interrupt that followed it is this worker's own doing.
         if (refusal && mismatch) refusal.fallbackModel ||= mismatch.served
@@ -375,7 +378,7 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
           },
           usage,
         })
-      } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== 'success')) {
+      } else if (cancelled && !refusal && !mismatch && (terminalResult.is_error || terminalResult.subtype !== 'success')) {
         await settle('cancelled', { usage })
       } else if (refusal) {
         // A served model that differs from the requested one is the fallback, whichever lane

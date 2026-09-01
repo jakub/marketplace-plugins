@@ -58304,7 +58304,8 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
         });
       } else if (!terminalResult) {
         const acceptedWrite = job.access === "workspace-write" && accepted;
-        const status = cancelled && !acceptedWrite ? "cancelled" : acceptedWrite ? "unknown" : "failed";
+        const diagnosed = refusal || mismatch;
+        const status = cancelled && !acceptedWrite && !diagnosed ? "cancelled" : acceptedWrite ? "unknown" : "failed";
         if (refusal && mismatch) refusal.fallbackModel ||= mismatch.served;
         await settle(status, {
           error: status === "cancelled" ? null : refusal ? {
@@ -58318,7 +58319,7 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
           },
           usage
         });
-      } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== "success")) {
+      } else if (cancelled && !refusal && !mismatch && (terminalResult.is_error || terminalResult.subtype !== "success")) {
         await settle("cancelled", { usage });
       } else if (refusal) {
         if (mismatch) refusal.fallbackModel ||= mismatch.served;
