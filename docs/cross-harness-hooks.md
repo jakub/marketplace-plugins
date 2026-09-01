@@ -197,6 +197,23 @@ harness still registered on 0.2.x overwrites the newer shim at every session sta
 fix is re-registering both harnesses, which is why the README says to upgrade them in one
 sitting.
 
+Known limits. Three residuals are accepted as shipped. Each one is reachable only by a process
+that can already write the user's own home on a single-user machine, the real harm is low or
+zero, and the security-relevant direction stays fail-closed.
+
+- The published shim at `~/.local/bin/gripe` is written through a same-directory temp file and a
+  rename. A process that can already write that directory could unlink the temp and re-point it
+  at a symlink between the create and the rename. Writing that directory is already full control
+  of the user's PATH, so this buys the attacker nothing they did not have.
+- The resolver checks that the resolved binary sits under its cache root and spawns that binary's
+  canonical path, but an external process could retarget a cache symlink between the check and the
+  spawn. The design accepts this check-to-spawn race.
+- The Codex `config.toml` is read by a strict line recognizer, not a full TOML parser (decision
+  38, no TOML dependency). A malformed config that Codex itself would reject can read as an
+  enabled registration rather than as absence, and then run the user's own installed gripe. The
+  security-relevant direction is fail-closed: reaching an attacker-chosen install on top of this
+  also requires planting a cache directory, which is again write access to the user's own home.
+
 ### Unsupported observed signals stay unsupported
 
 Claude's `PermissionDenied` event records a human denial after it happened. Codex's
