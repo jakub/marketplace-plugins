@@ -80,16 +80,13 @@ export function sensitiveReadPaths(cwd = process.cwd()) {
 
 export function resolveExecutablePaths(executables) {
   const paths = new Set()
-  const suffixes = process.platform === 'win32'
-    ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
-    : ['']
   for (const executable of executables) {
     const candidates = isAbsolute(executable) || executable.includes(sep)
       ? [resolve(executable)]
       : (process.env.PATH || '').split(delimiter).flatMap((directory) =>
           // POSIX treats an empty PATH entry as the current directory. Flow deliberately
           // skips it so an untrusted worktree cannot replace a provider executable.
-          directory ? suffixes.map((suffix) => resolve(directory, `${executable}${suffix}`)) : [])
+          directory ? [resolve(directory, executable)] : [])
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue
       paths.add(candidate)

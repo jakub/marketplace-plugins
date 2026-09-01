@@ -11,152 +11,15 @@ import { captureProcessDescendants, providerScopeName, providerScopeRunning, sco
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
 import { assertRoute, capabilitiesForHost, capabilityDrift, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
 import { universalContainment } from '../lib/seat-contract.mjs'
+import { McpStdioClient } from './mcp-stdio-client.mjs'
 
 assert.equal(process.platform, 'linux', 'smoke-delegation requires the Linux Codex host and systemd-scope contract')
 
 // deps/node_modules is gitignored, so a clone and every installed copy of the plugin lack
 // the MCP SDK. This client speaks the stdio transport directly instead: newline-delimited
 // JSON-RPC 2.0 on the server's stdin and stdout. It covers only what the smoke drives -
-// initialize, tools/list, tools/call with progress, and a roots/list answer.
-const PROTOCOL_VERSION = '2025-06-18'
-
-class McpStdioClient {
-  constructor({ command, args, cwd, env, roots }) {
-    this.command = command
-    this.args = args
-    this.cwd = cwd
-    this.env = env
-    this.roots = roots
-    this.child = null
-    this.exited = null
-    this.pending = new Map()
-    this.progress = new Map()
-    this.buffer = ''
-    this.stderr = ''
-    this.nextId = 1
-    this.nextToken = 1
-  }
-
-  async start() {
-    this.child = spawn(this.command, this.args, { cwd: this.cwd, env: this.env, stdio: ['pipe', 'pipe', 'pipe'] })
-    this.child.stdout.setEncoding('utf8')
-    this.child.stdout.on('data', (chunk) => this.receive(chunk))
-    // Drain stderr so a chatty server cannot fill the pipe and stall, and keep the tail
-    // for the failure message when the server dies mid-request.
-    this.child.stderr.setEncoding('utf8')
-    this.child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + chunk).slice(-4000) })
-    this.exited = new Promise((resolve) => this.child.on('exit', (code, signal) => {
-      const reason = new Error(`MCP server exited early (code ${code}, signal ${signal})\n${this.stderr}`)
-      for (const entry of this.pending.values()) entry.fail(reason)
-      this.pending.clear()
-      resolve()
-    }))
-    this.child.on('error', (error) => {
-      for (const entry of this.pending.values()) entry.fail(error)
-      this.pending.clear()
-    })
-
-    await this.request('initialize', {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: { roots: { listChanged: true } },
-      clientInfo: { name: 'flow-smoke', version: '1.0.0' },
-    })
-    this.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
-  }
-
-  send(message) {
-    this.child.stdin.write(JSON.stringify(message) + '\n')
-  }
-
-  receive(chunk) {
-    this.buffer += chunk
-    let newline = this.buffer.indexOf('\n')
-    while (newline >= 0) {
-      const line = this.buffer.slice(0, newline).trim()
-      this.buffer = this.buffer.slice(newline + 1)
-      if (line) this.dispatch(JSON.parse(line))
-      newline = this.buffer.indexOf('\n')
-    }
-  }
-
-  dispatch(message) {
-    if (message.method && message.id !== undefined) return this.answer(message)
-    if (message.method) return this.notified(message)
-    const entry = this.pending.get(message.id)
-    if (!entry) return
-    this.pending.delete(message.id)
-    if (message.error) entry.fail(new Error(`${entry.method} failed: ${message.error.code} ${message.error.message}`))
-    else entry.succeed(message.result)
-  }
-
-  answer(message) {
-    if (message.method === 'roots/list') {
-      this.send({ jsonrpc: '2.0', id: message.id, result: { roots: this.roots } })
-    } else if (message.method === 'ping') {
-      this.send({ jsonrpc: '2.0', id: message.id, result: {} })
-    } else {
-      this.send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `unhandled request ${message.method}` } })
-    }
-  }
-
-  notified(message) {
-    if (message.method !== 'notifications/progress') return
-    const entry = this.progress.get(message.params?.progressToken)
-    if (!entry) return
-    entry.onprogress(message.params)
-    entry.extend()
-  }
-
-  request(method, params, { timeout = 60_000, onprogress = null } = {}) {
-    const id = this.nextId++
-    const body = { ...params }
-    let token = null
-    if (onprogress) {
-      token = `progress-${this.nextToken++}`
-      body._meta = { ...body._meta, progressToken: token }
-    }
-    return new Promise((resolve, reject) => {
-      let timer = null
-      const clear = () => {
-        if (timer) clearTimeout(timer)
-        if (token !== null) this.progress.delete(token)
-      }
-      const arm = () => {
-        if (timer) clearTimeout(timer)
-        timer = setTimeout(() => {
-          this.pending.delete(id)
-          clear()
-          reject(new Error(`${method} timed out after ${timeout}ms\n${this.stderr}`))
-        }, timeout)
-      }
-      this.pending.set(id, {
-        method,
-        succeed: (result) => { clear(); resolve(result) },
-        fail: (error) => { clear(); reject(error) },
-      })
-      if (token !== null) this.progress.set(token, { onprogress, extend: arm })
-      arm()
-      this.send({ jsonrpc: '2.0', id, method, params: body })
-    })
-  }
-
-  listTools() {
-    return this.request('tools/list', {})
-  }
-
-  callTool(name, args, options = {}) {
-    return this.request('tools/call', { name, arguments: args }, options)
-  }
-
-  async close() {
-    if (!this.child) return
-    this.child.stdin.end()
-    const kill = setTimeout(() => this.child.kill('SIGKILL'), 5_000)
-    await this.exited
-    clearTimeout(kill)
-  }
-}
-
+// initialize, tools/list, tools/call with progress, and a roots/list answer. Every call in
+// this file goes through it, because the MCP server is the only way into the service.
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const bundle = join(root, 'dist', 'delegation.mjs')
 const temp = mkdtempSync(join(tmpdir(), 'flow-delegation-smoke-'))
@@ -298,8 +161,6 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       say({ id: message.id, error: { code: -32602, message: 'missing restricted Flow delegation profile' } })
     } else if (!doctorProbe && !profileOk) {
       say({ id: message.id, error: { code: -32602, message: 'missing or misplaced target host binding profile' } })
-    } else if (mode === 'profile' && !message.params.developerInstructions.includes('authorized defensive research')) {
-      say({ id: message.id, error: { code: -32602, message: 'missing defensive profile' } })
     } else answer({ thread: { id: 'thread-test' }, activePermissionProfile: { id: 'flow_delegation', extends: null } })
   }
   else if (message.method === 'thread/resume') {
@@ -371,32 +232,49 @@ mkdirSync(nestedDir)
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const state = (name) => join(temp, `state-${name}`)
-const cli = (args, { input = '', mode = 'happy', stateDir = state('default'), extraEnv = {}, host = 'claude' } = {}) => {
-  // Every CLI command requires --host: the caller's own family decides the route, so there is
-  // no default. Callers that need a different host pass it in args and keep it; host: null
-  // leaves the flag off so the missing-host rejection itself can be tested.
-  const hosted = host === null || args.includes('--host') ? args : [...args, '--host', host]
-  const output = execFileSync(process.execPath, [bundle, 'cli', ...hosted, '--state-dir', stateDir], {
+const SETTLED = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval', 'quarantined']
+
+// MCP is the only entry mode, so the smoke calls the tools a host calls. One server process
+// per call, the way the deleted CLI mode was one process per call; a test that polls opens one
+// session and keeps it. Roots come from the client, which is where a real host's come from.
+const session = async (options, body) => {
+  const { host = 'claude', stateDir = state('default'), mode = 'happy', roots = [repo], extraEnv = {} } = options
+  const client = new McpStdioClient({
+    command: process.execPath,
+    args: [bundle, 'mcp', '--host', host, '--state-dir', stateDir],
     cwd: repo,
-    input,
-    encoding: 'utf8',
-    timeout: 30_000,
     env: { ...process.env, FLOW_DELEGATION_CODEX_BIN: fake, FLOW_FAKE_MODE: mode, ...extraEnv },
+    roots: roots.map((path) => ({ uri: pathToFileURL(path).href, name: 'root' })),
   })
-  return JSON.parse(output)
+  await client.start()
+  try { return await body(client) } finally { await client.close() }
 }
-const runArgs = ['run', '--host', 'claude', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low', '--time-budget-seconds', '30']
-const waitFor = async (jobId, stateDir, wanted = null) => {
+// A tool either answers with a job envelope or with a rejection. Both shapes reduce to the
+// envelope the assertions read, so a rejected request reads as a failed job with its kind.
+const envelope = (result) => result.structuredContent?.job ?? { status: 'failed', error: result.structuredContent?.error ?? null }
+const call = (name, args, options = {}) => session(options, (client) =>
+  client.callTool(name, args, { timeout: options.timeout ?? 60_000, onprogress: options.onprogress ?? null }))
+const startJob = async (input = {}, options = {}) => envelope(await call(`delegate_to_${options.target || 'codex'}`, {
+  mode: 'task', cwd: repo, model: 'gpt-5.6-luna', effort: 'low', access: 'read-only',
+  delivery: 'attached', timeBudgetSeconds: 30, prompt: 'x', ...input,
+}, options))
+const statusOf = async (jobId, options = {}) => envelope(await call('delegation_status', { jobId }, options))
+const resultOf = async (jobId, options = {}) => envelope(await call('delegation_result', { jobId }, options))
+const eventsOf = async (jobId, args = {}, options = {}) => (await call('delegation_events', { jobId, ...args }, options)).structuredContent.events
+const cancelJob = async (jobId, options = {}) => envelope(await call('delegation_cancel', { jobId }, options))
+const steerJob = async (jobId, text, options = {}) => envelope(await call('delegation_steer', { jobId, text }, options))
+const continueJob = async (jobId, input = {}, options = {}) => envelope(await call('delegation_continue', { jobId, delivery: 'attached', ...input }, options))
+const waitFor = (jobId, stateDir, wanted = null) => session({ stateDir }, async (client) => {
   for (let i = 0; i < 80; i++) {
-    const result = cli(['result', jobId], { stateDir })
-    if (['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval', 'quarantined'].includes(result.status)) {
-      if (wanted) assert.equal(result.status, wanted)
+    const result = envelope(await client.callTool('delegation_result', { jobId }, { timeout: 30_000 }))
+    if (SETTLED.includes(result.status)) {
+      if (wanted) assert.equal(result.status, wanted, JSON.stringify(result))
       return result
     }
     await delay(100)
   }
   assert.fail(`job ${jobId} did not finish`)
-}
+})
 const jobCount = (stateDir) => {
   const store = new JobStore(stateDir)
   try { return store.db.prepare('SELECT COUNT(*) AS jobs FROM jobs').get().jobs } finally { store.close() }
@@ -411,102 +289,74 @@ const openStoreInChild = (stateDir, startAt) => new Promise((resolve) => {
 
 try {
   console.log('task and typed output')
-  const happy = cli(runArgs, { input: 'Reply with OK', stateDir: state('happy') })
+  const happy = await startJob({ prompt: 'Reply with OK' }, { stateDir: state('happy') })
   assert.equal(happy.status, 'succeeded', JSON.stringify(happy))
   assert.equal(happy.output, 'OK from fake Codex')
   assert.equal(happy.model, 'gpt-5.6-luna')
-  assert.equal(happy.serviceTier, 'default')
   assert.ok(happy.threadId && happy.turnId)
   assert.equal(happy.commandFailures, 0)
-  const happyEvents = cli(['events', happy.jobId, '--after', '0', '--limit', '1000'], { stateDir: state('happy') })
+  const happyEvents = await eventsOf(happy.jobId, { after: 0, limit: 1000 }, { stateDir: state('happy') })
   assert.deepEqual(happyEvents.map((event) => event.seq), happyEvents.map((_, index) => index + 1))
   const happyDb = new DatabaseSync(join(state('happy'), 'jobs.sqlite3'), { readOnly: true })
   assert.equal(happyDb.prepare('SELECT prompt FROM jobs WHERE id=?').get(happy.jobId).prompt, null)
   happyDb.close()
   // A succeeded turn whose commands failed must say so in the envelope: this is the only
   // signal separating a real green from a provider answering with a broken shell.
-  const brokenShell = cli(runArgs, { input: 'Run commands', mode: 'command-failure', stateDir: state('command-failure') })
+  const brokenShell = await startJob({ prompt: 'Run commands' }, { mode: 'command-failure', stateDir: state('command-failure') })
   assert.equal(brokenShell.status, 'succeeded')
   assert.equal(brokenShell.commandFailures, 2, JSON.stringify(brokenShell))
-  const initializeError = cli(runArgs, {
-    input: 'Initialization failure', mode: 'initialize-error', stateDir: state('initialize-error'),
+  const initializeError = await startJob({ prompt: 'Initialization failure' }, {
+    mode: 'initialize-error', stateDir: state('initialize-error'),
   })
   assert.equal(initializeError.status, 'failed')
   assert.equal(initializeError.error.kind, 'APP_SERVER_ERROR')
   assert.equal(providerScopeRunning(providerScopeName(initializeError.jobId)), false)
 
-  const schemaFile = join(temp, 'schema.json')
-  writeFileSync(schemaFile, JSON.stringify({ type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }))
-  const good = cli([...runArgs, '--schema-file', schemaFile], { input: 'Return JSON', mode: 'good-schema', stateDir: state('schema-good') })
+  const answerSchema = { type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }
+  const good = await startJob({ prompt: 'Return JSON', outputSchema: answerSchema }, { mode: 'good-schema', stateDir: state('schema-good') })
   assert.equal(good.status, 'succeeded')
   assert.deepEqual(good.structured, { answer: 'yes' })
-  const bad = cli([...runArgs, '--schema-file', schemaFile], { input: 'Return JSON', mode: 'bad-schema', stateDir: state('schema-bad') })
+  const bad = await startJob({ prompt: 'Return JSON', outputSchema: answerSchema }, { mode: 'bad-schema', stateDir: state('schema-bad') })
   assert.equal(bad.status, 'failed')
   assert.equal(bad.error.kind, 'SCHEMA_OUTPUT')
-  const badWrite = cli([...runArgs, '--access', 'workspace-write', '--schema-file', schemaFile], { input: 'Return JSON', mode: 'bad-schema', stateDir: state('schema-bad-write') })
+  const badWrite = await startJob({ prompt: 'Return JSON', access: 'workspace-write', outputSchema: answerSchema }, { mode: 'bad-schema', stateDir: state('schema-bad-write') })
   assert.equal(badWrite.status, 'failed')
   assert.equal(badWrite.error.kind, 'SCHEMA_OUTPUT')
-  const falseSchemaFile = join(temp, 'false-schema.json')
-  writeFileSync(falseSchemaFile, 'false')
-  const rejectedByBooleanSchema = cli([...runArgs, '--schema-file', falseSchemaFile], { input: 'Return anything', stateDir: state('schema-false') })
+  const rejectedByBooleanSchema = await startJob({ prompt: 'Return anything', outputSchema: false }, { stateDir: state('schema-false') })
   assert.equal(rejectedByBooleanSchema.status, 'failed')
   assert.equal(rejectedByBooleanSchema.error.kind, 'BAD_SCHEMA')
   assert.equal(jobCount(state('schema-false')), 0)
-  const incompleteSchemaFile = join(temp, 'incomplete-schema.json')
-  writeFileSync(incompleteSchemaFile, JSON.stringify({ type: 'object', properties: { answer: { const: 'yes' } } }))
-  const incompleteSchema = cli([...runArgs, '--schema-file', incompleteSchemaFile], { input: 'Return JSON', stateDir: state('schema-incomplete') })
-  assert.equal(incompleteSchema.status, 'failed')
-  assert.equal(incompleteSchema.error.kind, 'BAD_SCHEMA')
-  assert.match(incompleteSchema.error.message, /additionalProperties/)
-  assert.equal(jobCount(state('schema-incomplete')), 0)
-  const untypedSchemaFile = join(temp, 'untyped-schema.json')
-  writeFileSync(untypedSchemaFile, JSON.stringify({
-    type: 'object', additionalProperties: false, required: ['answer'],
-    properties: { answer: { const: 'yes' } },
-  }))
-  const untypedSchema = cli([...runArgs, '--schema-file', untypedSchemaFile], { input: 'Return JSON', stateDir: state('schema-untyped') })
-  assert.equal(untypedSchema.status, 'failed')
-  assert.equal(untypedSchema.error.kind, 'BAD_SCHEMA')
-  assert.match(untypedSchema.error.message, /explicit type/)
-  assert.equal(jobCount(state('schema-untyped')), 0)
-  const constrainedRefSchemaFile = join(temp, 'constrained-ref-schema.json')
-  writeFileSync(constrainedRefSchemaFile, JSON.stringify({
-    type: 'object', additionalProperties: false, required: ['answer'],
-    properties: { answer: { $ref: '#/$defs/answer', minLength: 1 } },
-    $defs: { answer: { type: 'string' } },
-  }))
-  const constrainedRefSchema = cli([...runArgs, '--schema-file', constrainedRefSchemaFile], { input: 'Return JSON', stateDir: state('schema-constrained-ref') })
-  assert.equal(constrainedRefSchema.status, 'failed')
-  assert.equal(constrainedRefSchema.error.kind, 'BAD_SCHEMA')
-  assert.match(constrainedRefSchema.error.message, /explicit type/)
-  assert.equal(jobCount(state('schema-constrained-ref')), 0)
-  const constrainedAnyOfSchemaFile = join(temp, 'constrained-any-of-schema.json')
-  writeFileSync(constrainedAnyOfSchemaFile, JSON.stringify({
-    type: 'object', additionalProperties: false, required: ['answer'],
-    properties: { answer: { anyOf: [{ type: 'string' }, { type: 'null' }], minLength: 1 } },
-  }))
-  const constrainedAnyOfSchema = cli([...runArgs, '--schema-file', constrainedAnyOfSchemaFile], { input: 'Return JSON', stateDir: state('schema-constrained-any-of') })
-  assert.equal(constrainedAnyOfSchema.status, 'failed')
-  assert.equal(constrainedAnyOfSchema.error.kind, 'BAD_SCHEMA')
-  assert.match(constrainedAnyOfSchema.error.message, /explicit type/)
-  assert.equal(jobCount(state('schema-constrained-any-of')), 0)
-  const unsupportedApplicatorSchemaFile = join(temp, 'unsupported-applicator-schema.json')
-  writeFileSync(unsupportedApplicatorSchemaFile, JSON.stringify({
-    type: 'object', additionalProperties: false, required: ['answer'],
-    properties: { answer: { oneOf: [{ type: 'string' }, { type: 'null' }] } },
-  }))
-  const unsupportedApplicatorSchema = cli([...runArgs, '--schema-file', unsupportedApplicatorSchemaFile], { input: 'Return JSON', stateDir: state('schema-unsupported-applicator') })
-  assert.equal(unsupportedApplicatorSchema.status, 'failed')
-  assert.equal(unsupportedApplicatorSchema.error.kind, 'BAD_SCHEMA')
-  assert.match(unsupportedApplicatorSchema.error.message, /unsupported oneOf/)
-  assert.equal(jobCount(state('schema-unsupported-applicator')), 0)
-
-  const profile = cli([...runArgs, '--profile', 'defensive-security'], { input: 'Profile test', mode: 'profile', stateDir: state('profile') })
-  assert.equal(profile.status, 'succeeded')
+  // Every schema below is valid JSON Schema and invalid for Codex structured output, which is
+  // the whole point: the provider would accept the request and answer against constraints
+  // nobody checked, so Flow rejects it before a job row exists.
+  const rejectedSchemas = [
+    ['schema-incomplete', { type: 'object', properties: { answer: { const: 'yes' } } }, /additionalProperties/],
+    ['schema-untyped', { type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { const: 'yes' } } }, /explicit type/],
+    ['schema-constrained-ref', {
+      type: 'object', additionalProperties: false, required: ['answer'],
+      properties: { answer: { $ref: '#/$defs/answer', minLength: 1 } },
+      $defs: { answer: { type: 'string' } },
+    }, /explicit type/],
+    ['schema-constrained-any-of', {
+      type: 'object', additionalProperties: false, required: ['answer'],
+      properties: { answer: { anyOf: [{ type: 'string' }, { type: 'null' }], minLength: 1 } },
+    }, /explicit type/],
+    ['schema-unsupported-applicator', {
+      type: 'object', additionalProperties: false, required: ['answer'],
+      properties: { answer: { oneOf: [{ type: 'string' }, { type: 'null' }] } },
+    }, /unsupported oneOf/],
+  ]
+  for (const [name, outputSchema, message] of rejectedSchemas) {
+    const rejected = await startJob({ prompt: 'Return JSON', outputSchema }, { stateDir: state(name) })
+    assert.equal(rejected.status, 'failed', name)
+    assert.equal(rejected.error.kind, 'BAD_SCHEMA', name)
+    assert.match(rejected.error.message, message, name)
+    assert.equal(jobCount(state(name)), 0, name)
+  }
 
   console.log('seat contract rides the delegated payload')
-  const contractJob = cli([...runArgs, '--access', 'workspace-write'], {
-    input: 'Seat contract', mode: 'capture-instructions', stateDir: state('seat-contract'),
+  const contractJob = await startJob({ prompt: 'Seat contract', access: 'workspace-write' }, {
+    mode: 'capture-instructions', stateDir: state('seat-contract'),
   })
   assert.equal(contractJob.status, 'succeeded', JSON.stringify(contractJob))
   const payload = readFileSync(instructionsOut, 'utf8')
@@ -535,7 +385,7 @@ try {
 
   console.log('immutable structured review')
   const reviewState = state('review')
-  const review = cli([...runArgs, '--mode', 'adversarial-review', '--base', 'HEAD~1'], { mode: 'review', stateDir: reviewState })
+  const review = await startJob({ mode: 'adversarial-review', base: 'HEAD~1', prompt: '' }, { mode: 'review', stateDir: reviewState })
   assert.equal(review.status, 'succeeded')
   assert.equal(review.findings[0].title, 'Race')
   const db = new DatabaseSync(join(reviewState, 'jobs.sqlite3'), { readOnly: true })
@@ -645,15 +495,15 @@ try {
     () => assertRoute({ host: 'codex', target: 'codex', depth: 0 }),
     (error) => error.kind === 'SAME_FAMILY',
   )
-  const nested = cli(runArgs, { input: 'x', stateDir: state('nested'), extraEnv: { FLOW_DELEGATION_DEPTH: '1' } })
+  const nested = await startJob({}, { stateDir: state('nested'), extraEnv: { FLOW_DELEGATION_DEPTH: '1' } })
   assert.equal(nested.status, 'failed')
   assert.equal(nested.error.kind, 'NESTED_DELEGATION')
   const invalidTargetState = state('invalid-target')
   const invalidTargetStore = new JobStore(invalidTargetState)
   const invalidTarget = invalidTargetStore.createJob({
     traceId: 'invalid-target', host: 'claude', target: 'other', depth: 0, mode: 'task', access: 'read-only',
-    cwd: repo, workspaceKey: repo, model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default',
-    profile: 'standard', timeBudgetSeconds: 30, prompt: 'never start', outputSchema: null,
+    cwd: repo, workspaceKey: repo, model: 'gpt-5.6-luna', effort: 'low',
+    timeBudgetSeconds: 30, prompt: 'never start', outputSchema: null,
   })
   invalidTargetStore.close()
   const invalidWorker = spawnSync(process.execPath, [bundle, 'worker', '--job', invalidTarget.id, '--state-dir', invalidTargetState], {
@@ -666,10 +516,12 @@ try {
   failedTargetStore.close()
   const escape = join(repo, 'escape')
   symlinkSync(temp, escape, 'dir')
-  const nestedRead = cli([...runArgs, '--cwd', nestedDir], { input: 'nested read', stateDir: state('nested-read') })
+  // A root inside the repository does not widen into the repository. The job's cwd is the root
+  // itself, so it passes the cwd check and dies on the worktree root, which sits above it.
+  const nestedRead = await startJob({ prompt: 'nested read', cwd: nestedDir }, { stateDir: state('nested-read'), roots: [nestedDir] })
   assert.equal(nestedRead.status, 'failed')
   assert.equal(nestedRead.error.kind, 'OUTSIDE_ROOTS')
-  const widenedWrite = cli([...runArgs, '--cwd', nestedDir, '--access', 'workspace-write'], { input: 'nested write', stateDir: state('nested-write') })
+  const widenedWrite = await startJob({ prompt: 'nested write', cwd: nestedDir, access: 'workspace-write' }, { stateDir: state('nested-write'), roots: [nestedDir] })
   assert.equal(widenedWrite.status, 'failed')
   assert.equal(widenedWrite.error.kind, 'OUTSIDE_ROOTS')
 
@@ -677,19 +529,19 @@ try {
   const redactStore = new JobStore(state('redact'))
   const redactJob = redactStore.createJob({
     traceId: 't', host: 'claude', target: 'codex', depth: 0, mode: 'task', access: 'read-only',
-    cwd: repo, workspaceKey: repo, model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default',
-    profile: 'default', timeBudgetSeconds: 30, prompt: 'x', outputSchema: null,
+    cwd: repo, workspaceKey: repo, model: 'gpt-5.6-luna', effort: 'low',
+    timeBudgetSeconds: 30, prompt: 'x', outputSchema: null,
   })
   redactStore.recordInternalError(redactJob.id, new TypeError('stack detail stays in the journal'))
   assert.deepEqual(redactStore.events(redactJob.id).find((event) => event.type === 'internal.error').payload, { redacted: true })
   redactStore.close()
-  const providerError = cli(runArgs, { input: 'fail before start', mode: 'provider-error', stateDir: state('provider-error') })
+  const providerError = await startJob({ prompt: 'fail before start' }, { mode: 'provider-error', stateDir: state('provider-error') })
   assert.equal(providerError.status, 'failed')
   assert.equal(providerError.error.kind, 'APP_SERVER_ERROR')
   assert.equal(providerError.error.message, 'Codex App Server rejected a request.')
   assert.equal(providerError.error.details.code, -32603)
   assert.doesNotMatch(JSON.stringify(providerError), /test@example\.invalid|\/home\/test\/private/)
-  const failedTurn = cli(runArgs, { input: 'fail in turn', mode: 'failed-turn', stateDir: state('failed-turn') })
+  const failedTurn = await startJob({ prompt: 'fail in turn' }, { mode: 'failed-turn', stateDir: state('failed-turn') })
   assert.equal(failedTurn.status, 'failed')
   assert.equal(failedTurn.error.kind, 'BAD_MODEL')
   assert.equal(failedTurn.error.message, 'Codex rejected the requested model.')
@@ -698,63 +550,55 @@ try {
   const failedTurnJournal = failedTurnDb.prepare("SELECT payload_json FROM events WHERE job_id=? AND type='internal.error'").get(failedTurn.jobId)
   failedTurnDb.close()
   assert.match(failedTurnJournal.payload_json, /test@example\.invalid|\/home\/test\/private|gpt-private/)
-  assert.deepEqual(cli(['events', failedTurn.jobId], { stateDir: state('failed-turn') })
+  assert.deepEqual((await eventsOf(failedTurn.jobId, {}, { stateDir: state('failed-turn') }))
     .find((event) => event.type === 'internal.error').payload, { redacted: true })
 
   console.log('rejected requests never reach the job table')
+  // The tool schema is the only door into the service now, so a missing model is refused
+  // before a request exists: no job row, no worker, no provider. The service repeats the
+  // check for a caller that is not the MCP layer, and today there is no such caller.
   const noModelState = state('no-model')
-  const noModel = cli(['run', '--cwd', repo, '--effort', 'low', '--time-budget-seconds', '30'], { input: 'x', stateDir: noModelState })
-  assert.equal(noModel.status, 'failed')
-  assert.equal(noModel.error.kind, 'BAD_REQUEST')
-  assert.match(noModel.error.message, /model/)
+  const noModel = await call('delegate_to_codex', {
+    mode: 'task', prompt: 'x', cwd: repo, access: 'read-only', effort: 'low',
+    delivery: 'attached', timeBudgetSeconds: 30,
+  }, { stateDir: noModelState })
+  assert.equal(noModel.isError, true)
+  assert.match(noModel.content[0].text, /Invalid arguments.*model/s)
   assert.equal(jobCount(noModelState), 0)
-  const noHostState = state('no-host')
-  const noHost = cli(['run', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low', '--time-budget-seconds', '30'], {
-    input: 'x', stateDir: noHostState, host: null,
-  })
-  assert.equal(noHost.status, 'failed')
-  assert.equal(noHost.error.kind, 'BAD_REQUEST')
-  assert.match(noHost.error.message, /--host/)
-  assert.equal(jobCount(noHostState), 0)
-  const unsupportedLimitState = state('unsupported-limit')
-  const unsupportedLimit = cli([...runArgs, '--max-turns', '2'], {
-    input: 'x', stateDir: unsupportedLimitState,
-  })
-  assert.equal(unsupportedLimit.status, 'failed')
-  assert.equal(unsupportedLimit.error.kind, 'LIMIT_UNSUPPORTED')
-  assert.equal(jobCount(unsupportedLimitState), 0)
-  const unknownHostState = state('unknown-host')
-  const unknownHost = cli(['run', '--host', 'gemini', '--cwd', repo, '--model', 'gpt-5.6-luna', '--effort', 'low'], {
-    input: 'x', stateDir: unknownHostState,
-  })
-  assert.equal(unknownHost.status, 'failed')
-  assert.equal(unknownHost.error.kind, 'BAD_REQUEST')
-  assert.equal(jobCount(unknownHostState), 0)
+  // The host is the server's own argument and never tool input, so an unknown one is refused
+  // before a session exists at all.
+  for (const host of [null, 'gemini']) {
+    const refused = spawnSync(process.execPath, [bundle, 'mcp', ...(host ? ['--host', host] : [])], {
+      cwd: repo, encoding: 'utf8', timeout: 10_000,
+    })
+    assert.equal(refused.status, 2, String(host))
+    assert.match(refused.stderr, /--host is required/, String(host))
+  }
 
   console.log('writer lease, cancel, steer, and continuation')
   const leaseState = state('lease')
-  const first = cli([...runArgs, '--access', 'workspace-write', '--detach'], { input: 'slow write', mode: 'slow', stateDir: leaseState })
+  const first = await startJob({ prompt: 'slow write', access: 'workspace-write', delivery: 'detached' }, { mode: 'slow', stateDir: leaseState })
   await delay(300)
-  const activeContinuation = cli(['continue', first.jobId], { input: 'too early', stateDir: leaseState })
+  const activeContinuation = await continueJob(first.jobId, { prompt: 'too early' }, { stateDir: leaseState })
   assert.equal(activeContinuation.status, 'failed')
   assert.equal(activeContinuation.error.kind, 'JOB_STATE')
-  const second = cli([...runArgs, '--access', 'workspace-write', '--detach'], { input: 'second write', mode: 'slow', stateDir: leaseState })
+  const second = await startJob({ prompt: 'second write', access: 'workspace-write', delivery: 'detached' }, { mode: 'slow', stateDir: leaseState })
   const blocked = await waitFor(second.jobId, leaseState, 'failed')
   assert.equal(blocked.error.kind, 'WORKSPACE_BUSY')
   await waitFor(first.jobId, leaseState, 'succeeded')
 
   const cancelState = state('cancel')
-  const cancellable = cli([...runArgs, '--detach'], { input: 'wait', mode: 'slow', stateDir: cancelState })
+  const cancellable = await startJob({ prompt: 'wait', delivery: 'detached' }, { mode: 'slow', stateDir: cancelState })
   await delay(300)
-  cli(['cancel', cancellable.jobId], { stateDir: cancelState })
+  await cancelJob(cancellable.jobId, { stateDir: cancelState })
   await waitFor(cancellable.jobId, cancelState, 'cancelled')
 
   const queuedState = state('queued-cancel')
   const queuedStore = new JobStore(queuedState)
   const queued = queuedStore.createJob({
     traceId: 'queued-cancel', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
-    mode: 'task', access: 'read-only', delivery: 'detached', cwd: repo, workspaceKey: repo,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low',
     timeBudgetSeconds: 30, prompt: 'never start', outputSchema: null, baseSha: null, headSha: null,
   })
   const cancelledQueued = queuedStore.requestCancel(queued.id)
@@ -763,16 +607,16 @@ try {
 
   const missingIdentity = queuedStore.createJob({
     traceId: 'missing-identity', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
-    mode: 'task', access: 'read-only', delivery: 'detached', cwd: repo, workspaceKey: repo,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low',
     timeBudgetSeconds: 30, prompt: 'never start', outputSchema: null, baseSha: null, headSha: null,
   })
   assert.throws(() => queuedStore.claim(missingIdentity.id, process.pid, null), (error) => error.kind === 'WORKER_IDENTITY')
 
   const terminalRace = queuedStore.createJob({
     traceId: 'terminal-race', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
-    mode: 'task', access: 'read-only', delivery: 'detached', cwd: repo, workspaceKey: repo,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low',
     timeBudgetSeconds: 30, prompt: 'finish first', outputSchema: null, baseSha: null, headSha: null,
   })
   const claimedRace = queuedStore.claim(terminalRace.id, process.pid, processStartToken(process.pid))
@@ -813,26 +657,26 @@ try {
   }
 
   const steerState = state('steer')
-  const steerable = cli([...runArgs, '--detach'], { input: 'wait', mode: 'steer', stateDir: steerState })
+  const steerable = await startJob({ prompt: 'wait', delivery: 'detached' }, { mode: 'steer', stateDir: steerState })
   await delay(300)
-  cli(['steer', steerable.jobId], { input: 'new direction', stateDir: steerState })
+  await steerJob(steerable.jobId, 'new direction', { stateDir: steerState })
   const steered = await waitFor(steerable.jobId, steerState, 'succeeded')
   assert.equal(steered.output, 'STEERED: new direction')
   const steerDb = new DatabaseSync(join(steerState, 'jobs.sqlite3'), { readOnly: true })
   assert.equal(steerDb.prepare(`SELECT payload_json FROM controls WHERE job_id=? AND type='steer'`).get(steerable.jobId).payload_json, '{}')
   steerDb.close()
 
-  const continued = cli(['continue', happy.jobId, '--host', 'claude'], { input: 'Continue', stateDir: state('happy') })
+  const continued = await continueJob(happy.jobId, { prompt: 'Continue' }, { stateDir: state('happy') })
   assert.equal(continued.status, 'succeeded')
   assert.equal(continued.threadId, happy.threadId)
 
   console.log('duplicate worker claim')
   const duplicateState = state('duplicate-worker')
-  const owned = cli([...runArgs, '--access', 'workspace-write', '--detach'], { input: 'slow write', mode: 'slow', stateDir: duplicateState })
-  let beforeDuplicate = cli(['status', owned.jobId], { stateDir: duplicateState })
+  const owned = await startJob({ prompt: 'slow write', access: 'workspace-write', delivery: 'detached' }, { mode: 'slow', stateDir: duplicateState })
+  let beforeDuplicate = await statusOf(owned.jobId, { stateDir: duplicateState })
   for (let i = 0; i < 40 && beforeDuplicate.status !== 'running'; i++) {
     await delay(50)
-    beforeDuplicate = cli(['status', owned.jobId], { stateDir: duplicateState })
+    beforeDuplicate = await statusOf(owned.jobId, { stateDir: duplicateState })
   }
   assert.equal(beforeDuplicate.status, 'running')
   const duplicateWorker = spawnSync(process.execPath, [bundle, 'worker', '--job', owned.jobId, '--state-dir', duplicateState], {
@@ -842,7 +686,7 @@ try {
     env: { ...process.env, FLOW_DELEGATION_CODEX_BIN: fake, FLOW_FAKE_MODE: 'slow' },
   })
   assert.equal(duplicateWorker.status, 1)
-  const afterDuplicate = cli(['status', owned.jobId], { stateDir: duplicateState })
+  const afterDuplicate = await statusOf(owned.jobId, { stateDir: duplicateState })
   assert.equal(afterDuplicate.status, beforeDuplicate.status)
   assert.equal(afterDuplicate.error, null)
   const duplicateDb = new DatabaseSync(join(duplicateState, 'jobs.sqlite3'), { readOnly: true })
@@ -857,7 +701,7 @@ try {
   const quarantinedJob = quarantineStore.createJob({
     traceId: 'quarantined', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
     mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    model: 'gpt-5.6-luna', effort: 'low',
     timeBudgetSeconds: 30, prompt: 'quarantine', outputSchema: null,
   })
   quarantineStore.claim(quarantinedJob.id, process.pid, processStartToken(process.pid))
@@ -886,7 +730,7 @@ try {
   const blockedJob = quarantineStore.createJob({
     traceId: 'quarantine-blocked', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
     mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    model: 'gpt-5.6-luna', effort: 'low',
     timeBudgetSeconds: 30, prompt: 'blocked', outputSchema: null,
   })
   assert.throws(
@@ -894,16 +738,16 @@ try {
     (error) => error.kind === 'WORKSPACE_BUSY',
   )
   quarantineStore.close()
-  const quarantined = cli(['status', quarantinedJob.id], { stateDir: quarantineState })
+  const quarantined = await statusOf(quarantinedJob.id, { stateDir: quarantineState })
   assert.equal(quarantined.status, 'quarantined')
   assert.equal(quarantined.quarantine.resumeStatus, 'unknown')
   assert.equal(quarantined.quarantine.trackedProcesses, 1)
-  const quarantineCancel = cli(['cancel', quarantinedJob.id], { stateDir: quarantineState })
+  const quarantineCancel = await cancelJob(quarantinedJob.id, { stateDir: quarantineState })
   assert.equal(quarantineCancel.status, 'failed')
   assert.equal(quarantineCancel.error.kind, 'JOB_QUARANTINED')
   provider.kill('SIGKILL')
   await new Promise((resolve) => provider.once('exit', resolve))
-  const released = cli(['status', quarantinedJob.id], { stateDir: quarantineState })
+  const released = await statusOf(quarantinedJob.id, { stateDir: quarantineState })
   assert.equal(released.status, 'unknown')
   assert.equal(released.quarantine, null)
   const releasedStore = new JobStore(quarantineState)
@@ -918,7 +762,7 @@ try {
   const crashedJob = crashQuarantineStore.createJob({
     traceId: 'crash-quarantine', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
     mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    model: 'gpt-5.6-luna', effort: 'low',
     timeBudgetSeconds: 30, prompt: 'recover after provider exit', outputSchema: null,
   })
   crashQuarantineStore.claim(crashedJob.id, process.pid, processStartToken(process.pid))
@@ -944,7 +788,7 @@ try {
   })
   crashQuarantineStore.db.prepare('UPDATE jobs SET worker_pid=99999999, heartbeat_at=0 WHERE id=?').run(crashedJob.id)
   crashQuarantineStore.close()
-  const crashQuarantined = cli(['status', crashedJob.id], { stateDir: crashQuarantineState })
+  const crashQuarantined = await statusOf(crashedJob.id, { stateDir: crashQuarantineState })
   assert.equal(crashQuarantined.status, 'quarantined')
   assert.equal(crashQuarantined.quarantine.resumeStatus, 'reconciling')
   if (orphanedScope) {
@@ -957,7 +801,7 @@ try {
   if (orphanedScope) signalProviderScope(orphanedScope, 'SIGKILL')
   else orphanedProvider.kill('SIGKILL')
   await new Promise((resolve) => orphanedProvider.once('exit', resolve))
-  const crashRecovered = cli(['status', crashedJob.id], { stateDir: crashQuarantineState })
+  const crashRecovered = await statusOf(crashedJob.id, { stateDir: crashQuarantineState })
   assert.equal(crashRecovered.status, 'succeeded')
   assert.equal(crashRecovered.output, 'RECOVERED')
   const crashReleasedDb = new DatabaseSync(join(crashQuarantineState, 'jobs.sqlite3'), { readOnly: true })
@@ -965,28 +809,28 @@ try {
   crashReleasedDb.close()
 
   console.log('unexpected approval and stale-job recovery')
-  const approval = cli(runArgs, { input: 'Ask for approval', mode: 'approval', stateDir: state('approval') })
+  const approval = await startJob({ prompt: 'Ask for approval' }, { mode: 'approval', stateDir: state('approval') })
   assert.equal(approval.status, 'awaiting_approval')
   assert.equal(approval.error.kind, 'APPROVAL_REQUIRED')
-  const permissionsApproval = cli(runArgs, { input: 'Ask for permissions', mode: 'permissions-approval', stateDir: state('permissions-approval') })
+  const permissionsApproval = await startJob({ prompt: 'Ask for permissions' }, { mode: 'permissions-approval', stateDir: state('permissions-approval') })
   assert.equal(permissionsApproval.status, 'awaiting_approval')
   assert.equal(permissionsApproval.error.kind, 'APPROVAL_REQUIRED')
   assert.ok(permissionsApproval.usage?.total)
 
-  const missingCodex = cli(runArgs, {
-    input: 'cannot start', stateDir: state('missing-codex'),
+  const missingCodex = await startJob({ prompt: 'cannot start' }, {
+    stateDir: state('missing-codex'),
     extraEnv: { FLOW_DELEGATION_CODEX_BIN: join(temp, 'codex-does-not-exist') },
   })
   assert.equal(missingCodex.status, 'failed')
   assert.equal(missingCodex.error.kind, 'CODEX_NOT_INSTALLED')
 
-  const leakedMcp = cli(runArgs, { input: 'must not run', mode: 'mcp-leak', stateDir: state('mcp-leak') })
+  const leakedMcp = await startJob({ prompt: 'must not run' }, { mode: 'mcp-leak', stateDir: state('mcp-leak') })
   assert.equal(leakedMcp.status, 'failed')
   assert.equal(leakedMcp.error.kind, 'MCP_ISOLATION')
   assert.equal(leakedMcp.threadId, null)
 
-  const malformedProtocol = cli(runArgs, {
-    input: 'must not run', mode: 'malformed-protocol', stateDir: state('malformed-protocol'),
+  const malformedProtocol = await startJob({ prompt: 'must not run' }, {
+    mode: 'malformed-protocol', stateDir: state('malformed-protocol'),
   })
   assert.equal(malformedProtocol.status, 'failed')
   assert.equal(malformedProtocol.error.kind, 'APP_SERVER_PROTOCOL')
@@ -1014,8 +858,8 @@ try {
   }
 
   const acceptedCrashState = state('accepted-crash')
-  const acceptedCrash = cli([...runArgs, '--access', 'workspace-write'], {
-    input: 'accepted before transport loss', mode: 'accepted-crash', stateDir: acceptedCrashState,
+  const acceptedCrash = await startJob({ prompt: 'accepted before transport loss', access: 'workspace-write' }, {
+    mode: 'accepted-crash', stateDir: acceptedCrashState,
   })
   assert.equal(acceptedCrash.status, 'unknown')
   const acceptedCrashDb = new DatabaseSync(join(acceptedCrashState, 'jobs.sqlite3'), { readOnly: true })
@@ -1025,34 +869,32 @@ try {
   assert.ok(acceptedCrashRow.turn_accepted_at)
   assert.equal(acceptedCrashRow.prompt, null)
 
-  const midturnRead = cli(runArgs, { input: 'crash after acceptance', mode: 'midturn-crash', stateDir: state('midturn-read') })
+  const midturnRead = await startJob({ prompt: 'crash after acceptance' }, { mode: 'midturn-crash', stateDir: state('midturn-read') })
   assert.equal(midturnRead.status, 'failed')
   assert.equal(midturnRead.error.kind, 'APP_SERVER_EXIT')
-  const midturnWrite = cli([...runArgs, '--access', 'workspace-write'], { input: 'crash after write acceptance', mode: 'midturn-crash', stateDir: state('midturn-write') })
+  const midturnWrite = await startJob({ prompt: 'crash after write acceptance', access: 'workspace-write' }, { mode: 'midturn-crash', stateDir: state('midturn-write') })
   assert.equal(midturnWrite.status, 'unknown')
   assert.equal(midturnWrite.error.kind, 'APP_SERVER_EXIT')
 
-  if (process.platform === 'linux') {
-    const detachedCommand = cli(runArgs, {
-      input: 'start a detached command', mode: 'detached-command', stateDir: state('detached-command'),
-    })
-    assert.equal(detachedCommand.status, 'succeeded')
-    await delay(1_200)
-    assert.equal(existsSync(join(repo, 'codex-detached-survivor')), false)
-  }
+  const detachedCommand = await startJob({ prompt: 'start a detached command' }, {
+    mode: 'detached-command', stateDir: state('detached-command'),
+  })
+  assert.equal(detachedCommand.status, 'succeeded')
+  await delay(1_200)
+  assert.equal(existsSync(join(repo, 'codex-detached-survivor')), false)
 
   const recoveryState = state('recovery')
-  const recoverable = cli(runArgs, { input: 'complete', stateDir: recoveryState })
+  const recoverable = await startJob({ prompt: 'complete' }, { stateDir: recoveryState })
   const recoveryDb = new DatabaseSync(join(recoveryState, 'jobs.sqlite3'))
   recoveryDb.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
     heartbeat_at=0, worker_pid=99999999, native_turn_id='recovered' WHERE id=?`).run(recoverable.jobId)
   recoveryDb.close()
-  const recovered = cli(['status', recoverable.jobId], { stateDir: recoveryState })
+  const recovered = await statusOf(recoverable.jobId, { stateDir: recoveryState })
   assert.equal(recovered.status, 'succeeded')
   assert.equal(recovered.output, 'RECOVERED')
 
   const reusedPidState = state('recovery-pid-reuse')
-  const reusedPid = cli(runArgs, { input: 'complete', stateDir: reusedPidState })
+  const reusedPid = await startJob({ prompt: 'complete' }, { stateDir: reusedPidState })
   const reusedPidDb = new DatabaseSync(join(reusedPidState, 'jobs.sqlite3'))
   reusedPidDb.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
     heartbeat_at=0, worker_pid=?, native_turn_id='recovered' WHERE id=?`).run(process.pid, reusedPid.jobId)
@@ -1061,37 +903,37 @@ try {
     reusedPid.jobId, nextSeq, JSON.stringify({ pid: process.pid, startToken: 'reused-process-token' }), Date.now(),
   )
   reusedPidDb.close()
-  const recoveredFromReusedPid = cli(['status', reusedPid.jobId], { stateDir: reusedPidState })
+  const recoveredFromReusedPid = await statusOf(reusedPid.jobId, { stateDir: reusedPidState })
   assert.equal(recoveredFromReusedPid.status, 'succeeded')
   assert.equal(recoveredFromReusedPid.output, 'RECOVERED')
 
   const unknownState = state('recovery-unknown')
-  const unknownWrite = cli([...runArgs, '--access', 'workspace-write'], { input: 'complete', stateDir: unknownState })
+  const unknownWrite = await startJob({ prompt: 'complete', access: 'workspace-write' }, { stateDir: unknownState })
   const unknownDb = new DatabaseSync(join(unknownState, 'jobs.sqlite3'))
   unknownDb.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
     heartbeat_at=0, worker_pid=99999999, native_turn_id='recovered', turn_accepted_at=1 WHERE id=?`).run(unknownWrite.jobId)
   unknownDb.close()
-  const unknown = cli(['status', unknownWrite.jobId], { stateDir: unknownState, mode: 'recovery-in-progress' })
+  const unknown = await statusOf(unknownWrite.jobId, { stateDir: unknownState, mode: 'recovery-in-progress' })
   assert.equal(unknown.status, 'unknown')
   assert.equal(unknown.error.kind, 'RECOVERY_UNKNOWN')
 
   const missingTurnState = state('recovery-missing-turn')
-  const missingTurn = cli(runArgs, { input: 'complete', stateDir: missingTurnState })
+  const missingTurn = await startJob({ prompt: 'complete' }, { stateDir: missingTurnState })
   const missingTurnDb = new DatabaseSync(join(missingTurnState, 'jobs.sqlite3'))
   missingTurnDb.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
     heartbeat_at=0, worker_pid=99999999, native_turn_id=NULL, turn_accepted_at=NULL WHERE id=?`).run(missingTurn.jobId)
   missingTurnDb.close()
-  const notMisattributed = cli(['status', missingTurn.jobId], { stateDir: missingTurnState })
+  const notMisattributed = await statusOf(missingTurn.jobId, { stateDir: missingTurnState })
   assert.equal(notMisattributed.status, 'unknown')
   assert.equal(notMisattributed.error.kind, 'RECOVERY_UNKNOWN')
-  const unknownContinuation = cli(['continue', missingTurn.jobId], { input: 'unsafe continuation', stateDir: missingTurnState })
+  const unknownContinuation = await continueJob(missingTurn.jobId, { prompt: 'unsafe continuation' }, { stateDir: missingTurnState })
   assert.equal(unknownContinuation.status, 'failed')
   assert.equal(unknownContinuation.error.kind, 'UNKNOWN_JOB')
 
   console.log('recovered turn classification')
-  const recoveredOutcome = (name, mode, { cancelRequested = false } = {}) => {
+  const recoveredOutcome = async (name, mode, { cancelRequested = false } = {}) => {
     const stateDir = state(name)
-    const job = cli(runArgs, { input: 'complete', stateDir })
+    const job = await startJob({ prompt: 'complete' }, { stateDir })
     const db = new DatabaseSync(join(stateDir, 'jobs.sqlite3'))
     db.prepare(`UPDATE jobs SET status='running', output=NULL, structured_json=NULL, error_json=NULL,
       heartbeat_at=0, worker_pid=99999999, native_turn_id='recovered' WHERE id=?`).run(job.jobId)
@@ -1100,22 +942,22 @@ try {
         .run(job.jobId, Date.now())
     }
     db.close()
-    return cli(['status', job.jobId], { stateDir, mode })
+    return statusOf(job.jobId, { stateDir, mode })
   }
-  const interruptedRecovery = recoveredOutcome('recovery-interrupted', 'recovery-interrupted')
+  const interruptedRecovery = await recoveredOutcome('recovery-interrupted', 'recovery-interrupted')
   assert.equal(interruptedRecovery.status, 'failed')
   assert.equal(interruptedRecovery.error.kind, 'INTERRUPTED')
-  const cancelledRecovery = recoveredOutcome('recovery-cancelled', 'recovery-interrupted', { cancelRequested: true })
+  const cancelledRecovery = await recoveredOutcome('recovery-cancelled', 'recovery-interrupted', { cancelRequested: true })
   assert.equal(cancelledRecovery.status, 'cancelled')
   assert.equal(cancelledRecovery.error, null)
-  const emptyRecovery = recoveredOutcome('recovery-empty', 'recovery-empty')
+  const emptyRecovery = await recoveredOutcome('recovery-empty', 'recovery-empty')
   assert.equal(emptyRecovery.status, 'failed')
   assert.equal(emptyRecovery.error.kind, 'EMPTY_OUTPUT')
-  const oddRecovery = recoveredOutcome('recovery-odd', 'recovery-odd')
+  const oddRecovery = await recoveredOutcome('recovery-odd', 'recovery-odd')
   assert.equal(oddRecovery.status, 'unknown')
   assert.equal(oddRecovery.error.kind, 'UNKNOWN_TURN')
 
-  console.log('concurrent opens, retention, and the v1 upgrade')
+  console.log('concurrent opens, retention, and the schema reset')
   const raceState = state('migration-race')
   const raceStartAt = Date.now() + 1_500
   const raced = await Promise.all(Array.from({ length: 8 }, () => openStoreInChild(raceState, raceStartAt)))
@@ -1126,7 +968,7 @@ try {
   const seedJob = (traceId, extra = {}) => retentionStore.createJob({
     traceId, parentJobId: null, host: 'claude', target: 'codex', depth: 0,
     mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+    model: 'gpt-5.6-luna', effort: 'low',
     timeBudgetSeconds: 30, prompt: 'retention', outputSchema: null, baseSha: null, headSha: null,
     ...extra,
   })
@@ -1163,9 +1005,11 @@ try {
   rmSync(activeTemp, { recursive: true, force: true })
   pruned.close()
 
-  // A v1 database from before the schema shed jobs.delivery and leases.heartbeat_at. The rows
-  // are what matters: an upgrade that loses a job or its journal is worse than one that fails.
-  const legacyState = state('legacy-v1')
+  // An older schema. The job cache is 14 days of operational history and never an archive, so
+  // the store drops it and recreates the current schema rather than carrying a migration
+  // ladder for rows nobody is going to read. What has to survive is the store: it opens, it
+  // reports the current version, and the next job works.
+  const legacyState = state('legacy')
   mkdirSync(legacyState, { recursive: true })
   const legacyDb = new DatabaseSync(join(legacyState, 'jobs.sqlite3'))
   legacyDb.exec(`
@@ -1187,18 +1031,7 @@ try {
       profile TEXT NOT NULL,
       time_budget_seconds INTEGER NOT NULL,
       prompt TEXT,
-      output_schema_json TEXT,
-      base_sha TEXT,
-      head_sha TEXT,
-      native_thread_id TEXT,
-      native_turn_id TEXT,
-      turn_accepted_at INTEGER,
-      status TEXT NOT NULL CHECK (status IN ('queued','starting','running','reconciling','succeeded','failed','cancelled','unknown','awaiting_approval')),
-      worker_pid INTEGER,
-      output TEXT,
-      structured_json TEXT,
-      usage_json TEXT,
-      error_json TEXT,
+      status TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       heartbeat_at INTEGER NOT NULL
@@ -1224,8 +1057,6 @@ try {
       job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
       heartbeat_at INTEGER NOT NULL
     );
-    CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
-    CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
     PRAGMA user_version=1;
   `)
   const legacyAt = Date.now()
@@ -1236,57 +1067,39 @@ try {
   ) VALUES ('legacy-job', 'legacy-trace', NULL, 'claude', 'codex', 0, 'task', 'workspace-write', 'detached',
     ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, 'legacy prompt', 'running', ?, ?, ?)`)
     .run(repo, repo, legacyAt, legacyAt, legacyAt)
-  legacyDb.prepare(`INSERT INTO jobs (
-    id, trace_id, parent_job_id, host, target, depth, mode, access, delivery,
-    cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
-    prompt, status, created_at, updated_at, heartbeat_at
-  ) VALUES ('legacy-child', 'legacy-trace', 'legacy-job', 'claude', 'codex', 0, 'task', 'read-only', 'attached',
-    ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, NULL, 'succeeded', ?, ?, ?)`)
-    .run(repo, repo, legacyAt, legacyAt, legacyAt)
-  legacyDb.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at)
-    VALUES ('legacy-job', 1, 'job.queued', '{"status":"queued"}', ?)`).run(legacyAt)
   legacyDb.prepare(`INSERT INTO leases (workspace_key, job_id, heartbeat_at) VALUES (?, 'legacy-job', ?)`)
     .run(repo, legacyAt)
   legacyDb.close()
   const upgraded = new JobStore(legacyState)
   const columnsOf = (table) => upgraded.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
-  assert.equal(upgraded.userVersion(), 5)
-  assert.ok(!columnsOf('jobs').includes('delivery'))
-  assert.ok(columnsOf('jobs').includes('max_turns'))
-  assert.ok(columnsOf('jobs').includes('provider_processes_json'))
-  assert.ok(columnsOf('jobs').includes('provider_scope'))
+  assert.equal(upgraded.userVersion(), 6)
+  assert.equal(upgraded.getJob('legacy-job'), null)
+  assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases, 0)
+  for (const dead of ['delivery', 'service_tier', 'profile']) {
+    assert.ok(!columnsOf('jobs').includes(dead), dead)
+  }
+  for (const live of ['max_turns', 'provider_processes_json', 'provider_scope']) {
+    assert.ok(columnsOf('jobs').includes(live), live)
+  }
   assert.ok(!columnsOf('leases').includes('heartbeat_at'))
-  const legacyJob = upgraded.getJob('legacy-job')
-  assert.equal(legacyJob.status, 'running')
-  assert.equal(legacyJob.model, 'gpt-5.6-luna')
-  assert.equal(legacyJob.workspaceKey, repo)
-  assert.equal(upgraded.getJob('legacy-child').parentJobId, 'legacy-job')
-  assert.equal(upgraded.events('legacy-job').length, 1)
-  assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases, 1)
-  assert.deepEqual(upgraded.db.prepare('PRAGMA foreign_key_check').all(), [])
   assert.ok(upgraded.db.prepare('PRAGMA index_list(jobs)').all()
     .some((index) => index.name === 'jobs_route_created_idx'))
+  const afterReset = upgraded.createJob({
+    traceId: 'after-reset', host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low', timeBudgetSeconds: 30, prompt: 'after reset', outputSchema: null,
+  })
+  assert.equal(upgraded.getJob(afterReset.id).status, 'queued')
   upgraded.close()
 
-  const v3State = state('legacy-v3')
-  const v3Seed = new JobStore(v3State)
-  const v3Job = v3Seed.createJob({
-    traceId: 'v3-job', parentJobId: null, host: 'claude', target: 'codex', depth: 0,
-    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
-    model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
-    timeBudgetSeconds: 30, prompt: 'v3', outputSchema: null,
-  })
-  v3Seed.close()
-  const v3Db = new DatabaseSync(join(v3State, 'jobs.sqlite3'))
-  v3Db.exec('DROP INDEX jobs_route_created_idx; ALTER TABLE jobs DROP COLUMN provider_scope; PRAGMA user_version=3;')
-  v3Db.close()
-  const v3Upgraded = new JobStore(v3State)
-  assert.equal(v3Upgraded.userVersion(), 5)
-  assert.ok(v3Upgraded.db.prepare('PRAGMA table_info(jobs)').all().some((column) => column.name === 'provider_scope'))
-  assert.ok(v3Upgraded.db.prepare('PRAGMA index_list(jobs)').all()
-    .some((index) => index.name === 'jobs_route_created_idx'))
-  assert.equal(v3Upgraded.getJob(v3Job.id).traceId, 'v3-job')
-  v3Upgraded.close()
+  // A NEWER schema is refused rather than reset. That database belongs to a Flow version this
+  // one cannot read, and its jobs may still be running.
+  const newerState = state('schema-newer')
+  new JobStore(newerState).close()
+  const newerDb = new DatabaseSync(join(newerState, 'jobs.sqlite3'))
+  newerDb.exec('PRAGMA user_version=99;')
+  newerDb.close()
+  assert.throws(() => new JobStore(newerState), (error) => error.kind === 'DATABASE_NEWER')
 
   console.log('MCP registration, roots, progress, and attached result')
   const mcpState = state('mcp')
@@ -1394,14 +1207,14 @@ try {
     hiddenStore.createJob({
       traceId: `hidden-list-job-${index}`, host: 'claude', target: 'codex', depth: 0,
       mode: 'task', access: 'read-only', cwd: hiddenCwd, workspaceKey: hiddenCwd,
-      model: 'gpt-5.6-luna', effort: 'low', serviceTier: 'default', profile: 'standard',
+      model: 'gpt-5.6-luna', effort: 'low',
       timeBudgetSeconds: 30, prompt: 'hidden', outputSchema: null,
     })
   }
   hiddenStore.createJob({
     traceId: 'other-route-list-job', host: 'codex', target: 'claude', depth: 0,
     mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
-    model: 'sonnet', effort: 'low', serviceTier: 'default', profile: 'standard',
+    model: 'sonnet', effort: 'low',
     timeBudgetSeconds: 30, prompt: 'other route', outputSchema: null,
   })
   hiddenStore.close()
@@ -1553,14 +1366,6 @@ try {
   assert.equal(codexNoPwdList.isError, true)
   assert.equal(codexNoPwdList.structuredContent.error.kind, 'NO_ROOTS')
   await codexNoPwdClient.close()
-
-  const missingMcpHost = spawnSync(process.execPath, [bundle, 'mcp'], {
-    cwd: repo,
-    encoding: 'utf8',
-    timeout: 10_000,
-  })
-  assert.equal(missingMcpHost.status, 2)
-  assert.match(missingMcpHost.stderr, /--host is required/)
 
   for (const entry of readdirSync(temp, { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith('state-')) continue

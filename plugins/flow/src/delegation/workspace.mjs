@@ -114,9 +114,6 @@ export async function immutableReview({ cwd, mode, base = null, head = 'HEAD', p
   const baseSha = await git(cwd, ['rev-parse', '--verify', `${base}^{commit}`], 'The review base does not resolve to a commit.')
   const headSha = await git(cwd, ['rev-parse', '--verify', `${head}^{commit}`], 'The review head does not resolve to a commit.')
   const focus = prompt.trim() ? `\nAdditional focus from the caller:\n${prompt.trim()}\n` : ''
-  const reviewKind = mode === 'adversarial-review'
-    ? 'Act as an adversarial code reviewer. Hunt for reachable correctness, security, concurrency, and trust-boundary defects.'
-    : 'Act as a code reviewer. Report real defects that should block or change this patch.'
-  const built = `${reviewKind}\n\nReview only the changes in git diff ${baseSha}...${headSha}. Read surrounding code and tests when needed. Do not edit files. Do not report style or formatting. Cite a repository-relative file and the first affected line in the new code. Use the output schema. A clean review has an empty findings array.${focus}`
+  const built = `Act as an adversarial code reviewer. Hunt for reachable correctness, security, concurrency, and trust-boundary defects.\n\nReview only the changes in git diff ${baseSha}...${headSha}. Read surrounding code and tests when needed. Do not edit files. Do not report style or formatting. Cite a repository-relative file and the first affected line in the new code. Use the output schema. A clean review has an empty findings array.${focus}`
   return { prompt: built, baseSha, headSha, outputSchema: FINDINGS_SCHEMA }
 }

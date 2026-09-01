@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod/v4'
 import { DelegationService } from './service.mjs'
-import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, effortsForTarget, JOB_STATES, jobSummary, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, EFFORTS, JOB_STATES, jobSummary, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { serviceLog } from './store.mjs'
 import { VERSION } from './version.mjs'
 import { canonicalRoots, canonicalWorkspace } from './workspace.mjs'
@@ -23,7 +23,7 @@ function toolResult(value, isError = false) {
 export async function startMcp({ host, depth, stateDir, entryPath, projectDir }) {
   const target = targetForHost(host)
   const targetTitle = target[0].toUpperCase() + target.slice(1)
-  const effort = z.enum([...effortsForTarget(target)])
+  const effort = z.enum([...EFFORTS])
   const capabilities = capabilitiesForTarget(target)
   const providerLimits = target === 'claude' ? {
     maxTurns: z.number().int().min(1).max(1000).optional().describe('Hard Claude conversation-turn limit for this job'),
@@ -119,8 +119,6 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       access: access.default('read-only'),
       model,
       effort,
-      serviceTier: z.literal('default').default('default'),
-      profile: z.enum(['standard', 'defensive-security']).default('standard'),
       delivery: delivery.default('attached'),
       timeBudgetSeconds: z.number().int().min(30).max(7200).default(900),
       ...providerLimits,
@@ -221,7 +219,6 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       access: access.optional(),
       model: model.optional(),
       effort: effort.optional(),
-      profile: z.enum(['standard', 'defensive-security']).optional(),
       delivery: delivery.default('attached'),
       timeBudgetSeconds: z.number().int().min(30).max(7200).optional(),
       ...providerLimits,

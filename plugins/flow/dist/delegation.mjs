@@ -410,11 +410,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n2;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants4) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants5);
+          this.rhs = optimizeExpr(this.rhs, names, constants4);
         return this;
       }
       get names() {
@@ -431,10 +431,10 @@ var require_codegen = __commonJS({
       render({ _n: _n2 }) {
         return `${this.lhs} = ${this.rhs};` + _n2;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants4) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants5);
+        this.rhs = optimizeExpr(this.rhs, names, constants4);
         return this;
       }
       get names() {
@@ -495,8 +495,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants5) {
-        this.code = optimizeExpr(this.code, names, constants5);
+      optimizeNames(names, constants4) {
+        this.code = optimizeExpr(this.code, names, constants4);
         return this;
       }
       get names() {
@@ -525,12 +525,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants4) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants5))
+          if (n.optimizeNames(names, constants4))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -583,12 +583,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants4) {
         var _a4;
-        this.else = (_a4 = this.else) === null || _a4 === void 0 ? void 0 : _a4.optimizeNames(names, constants5);
-        if (!(super.optimizeNames(names, constants5) || this.else))
+        this.else = (_a4 = this.else) === null || _a4 === void 0 ? void 0 : _a4.optimizeNames(names, constants4);
+        if (!(super.optimizeNames(names, constants4) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants5);
+        this.condition = optimizeExpr(this.condition, names, constants4);
         return this;
       }
       get names() {
@@ -611,10 +611,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants5) {
-        if (!super.optimizeNames(names, constants5))
+      optimizeNames(names, constants4) {
+        if (!super.optimizeNames(names, constants4))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants5);
+        this.iteration = optimizeExpr(this.iteration, names, constants4);
         return this;
       }
       get names() {
@@ -650,10 +650,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants5) {
-        if (!super.optimizeNames(names, constants5))
+      optimizeNames(names, constants4) {
+        if (!super.optimizeNames(names, constants4))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants5);
+        this.iterable = optimizeExpr(this.iterable, names, constants4);
         return this;
       }
       get names() {
@@ -695,11 +695,11 @@ var require_codegen = __commonJS({
         (_b2 = this.finally) === null || _b2 === void 0 ? void 0 : _b2.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants5) {
+      optimizeNames(names, constants4) {
         var _a4, _b2;
-        super.optimizeNames(names, constants5);
-        (_a4 = this.catch) === null || _a4 === void 0 ? void 0 : _a4.optimizeNames(names, constants5);
-        (_b2 = this.finally) === null || _b2 === void 0 ? void 0 : _b2.optimizeNames(names, constants5);
+        super.optimizeNames(names, constants4);
+        (_a4 = this.catch) === null || _a4 === void 0 ? void 0 : _a4.optimizeNames(names, constants4);
+        (_b2 = this.finally) === null || _b2 === void 0 ? void 0 : _b2.optimizeNames(names, constants4);
         return this;
       }
       get names() {
@@ -1000,7 +1000,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants5) {
+    function optimizeExpr(expr, names, constants4) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1015,14 +1015,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants5[n.str];
+        const c = constants4[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants5[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants4[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -2984,7 +2984,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve9.call(this, root, ref);
+      let _sch = resolve8.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a4 = root.localRefs) === null || _a4 === void 0 ? void 0 : _a4[ref];
         const { schemaId } = this.opts;
@@ -3011,7 +3011,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve9(root, ref) {
+    function resolve8(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3638,11 +3638,11 @@ var require_fast_uri = __commonJS({
         normalizeString(uri, options);
       } else if (typeof uri === "object") {
         uri = /** @type {T} */
-        parse7(serialize(uri, options), options);
+        parse6(serialize(uri, options), options);
       }
       return uri;
     }
-    function resolve9(baseURI, relativeURI, options) {
+    function resolve8(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
       const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
@@ -3656,8 +3656,8 @@ var require_fast_uri = __commonJS({
     function resolveComponent(base, relative4, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
-        base = parse7(serialize(base, options), options);
-        relative4 = parse7(serialize(relative4, options), options);
+        base = parse6(serialize(base, options), options);
+        relative4 = parse6(serialize(relative4, options), options);
       }
       options = options || {};
       if (!options.tolerant && relative4.scheme) {
@@ -3901,7 +3901,7 @@ var require_fast_uri = __commonJS({
       }
       return { parsed, malformedAuthorityOrPort };
     }
-    function parse7(uri, opts) {
+    function parse6(uri, opts) {
       return parseWithStatus(uri, opts).parsed;
     }
     function normalizeString(uri, opts) {
@@ -3926,11 +3926,11 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve9,
+      resolve: resolve8,
       resolveComponent,
       equal,
       serialize,
-      parse: parse7
+      parse: parse6
     };
     module.exports = fastUri;
     module.exports.default = fastUri;
@@ -3988,7 +3988,7 @@ var require_core = __commonJS({
     var util_1 = require_util();
     var $dataRefSchema = require_data();
     var uri_1 = require_uri();
-    var defaultRegExp = (str, flags) => new RegExp(str, flags);
+    var defaultRegExp = (str, flags2) => new RegExp(str, flags2);
     defaultRegExp.code = "new RegExp";
     var META_IGNORE_OPTIONS = ["removeAdditional", "useDefaults", "coerceTypes"];
     var EXT_SCOPE_NAMES = /* @__PURE__ */ new Set([
@@ -19359,13 +19359,13 @@ function stringifyRegExpWithFlags(regex, refs) {
   if (!refs.applyRegexFlags || !regex.flags) {
     return regex.source;
   }
-  const flags = {
+  const flags2 = {
     i: regex.flags.includes("i"),
     m: regex.flags.includes("m"),
     s: regex.flags.includes("s")
     // `.` matches newlines
   };
-  const source = flags.i ? regex.source.toLowerCase() : regex.source;
+  const source = flags2.i ? regex.source.toLowerCase() : regex.source;
   let pattern = "";
   let isEscaped = false;
   let inCharGroup = false;
@@ -19376,7 +19376,7 @@ function stringifyRegExpWithFlags(regex, refs) {
       isEscaped = false;
       continue;
     }
-    if (flags.i) {
+    if (flags2.i) {
       if (inCharGroup) {
         if (source[i].match(/[a-z]/)) {
           if (inCharRange) {
@@ -19396,7 +19396,7 @@ function stringifyRegExpWithFlags(regex, refs) {
         continue;
       }
     }
-    if (flags.m) {
+    if (flags2.m) {
       if (source[i] === "^") {
         pattern += `(^|(?<=[\r
 ]))`;
@@ -19407,7 +19407,7 @@ function stringifyRegExpWithFlags(regex, refs) {
         continue;
       }
     }
-    if (flags.s && source[i] === ".") {
+    if (flags2.s && source[i] === ".") {
       pattern += inCharGroup ? `${source[i]}\r
 ` : `[${source[i]}\r
 ]`;
@@ -20606,7 +20606,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve9) => setTimeout(resolve9, pollInterval));
+        await new Promise((resolve8) => setTimeout(resolve8, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -20623,7 +20623,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve9, reject) => {
+    return new Promise((resolve8, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -20701,7 +20701,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve9(parseResult.data);
+            resolve8(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -20962,12 +20962,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve9, reject) => {
+    return new Promise((resolve8, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve9, interval);
+      const timeoutId = setTimeout(resolve8, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -22058,7 +22058,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve9) => setTimeout(resolve9, pollInterval));
+      await new Promise((resolve8) => setTimeout(resolve8, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -22722,12 +22722,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve9) => {
+    return new Promise((resolve8) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve9();
+        resolve8();
       } else {
-        this._stdout.once("drain", resolve9);
+        this._stdout.once("drain", resolve8);
       }
     });
   }
@@ -22740,12 +22740,10 @@ import { spawn as spawn4 } from "node:child_process";
 import { readFileSync } from "node:fs";
 var HOSTS = ["claude", "codex"];
 var TARGETS = ["claude", "codex"];
-var MODES = ["task", "review", "adversarial-review"];
+var MODES = ["task", "adversarial-review"];
 var ACCESS_MODES = ["read-only", "workspace-write"];
 var DELIVERIES = ["attached", "detached"];
-var CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-var CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-var SERVICE_TIERS = ["default"];
+var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 var ACTIVE_STATES = ["queued", "starting", "running", "reconciling"];
 var TERMINAL_STATES = ["succeeded", "failed", "cancelled", "unknown", "awaiting_approval"];
 var QUARANTINE_STATES = ["quarantined"];
@@ -22810,11 +22808,6 @@ function targetForHost(host) {
     throw new DelegationError("ROUTE_DENIED", "The delegation host names an unknown model family.");
   }
   return host === "claude" ? "codex" : "claude";
-}
-function effortsForTarget(target) {
-  if (target === "codex") return CODEX_EFFORTS;
-  if (target === "claude") return CLAUDE_EFFORTS;
-  throw new DelegationError("ROUTE_DENIED", "The delegation target names an unknown model family.");
 }
 function capabilitiesForTarget(target) {
   if (!TARGETS.includes(target)) {
@@ -22911,7 +22904,6 @@ function resultEnvelope(job) {
     access: job.access,
     model: job.model,
     effort: job.effort,
-    serviceTier: job.serviceTier,
     limits: {
       timeBudgetSeconds: job.timeBudgetSeconds,
       maxTurns: job.maxTurns,
@@ -23110,12 +23102,11 @@ function sensitiveReadPaths(cwd = process.cwd()) {
 }
 function resolveExecutablePaths(executables) {
   const paths = /* @__PURE__ */ new Set();
-  const suffixes = process.platform === "win32" ? (process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
   for (const executable of executables) {
     const candidates = isAbsolute(executable) || executable.includes(sep) ? [resolve(executable)] : (process.env.PATH || "").split(delimiter).flatMap((directory) => (
       // POSIX treats an empty PATH entry as the current directory. Flow deliberately
       // skips it so an untrusted worktree cannot replace a provider executable.
-      directory ? suffixes.map((suffix) => resolve(directory, `${executable}${suffix}`)) : []
+      directory ? [resolve(directory, executable)] : []
     ));
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue;
@@ -23337,39 +23328,26 @@ function claudePolicyHook(job, { onDenied = () => {
 
 // src/delegation/containment.mjs
 import { randomUUID as randomUUID2 } from "node:crypto";
-import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync as readdirSync2, readFileSync as readFileSync3 } from "node:fs";
 
 // src/delegation/store.mjs
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync as readFileSync2, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { dirname as dirname2, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-var SCHEMA_VERSION = 5;
+var SCHEMA_VERSION = 6;
 var RETENTION_DAYS = 14;
 var now = () => Date.now();
 var json = (value) => value == null ? null : JSON.stringify(value);
 var parse3 = (value) => value == null ? null : JSON.parse(value);
 function processStartToken(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  if (process.platform === "linux") {
-    try {
-      const stat2 = readFileSync2(`/proc/${pid}/stat`, "utf8");
-      const fields = stat2.slice(stat2.lastIndexOf(")") + 1).trim().split(/\s+/);
-      return fields[19] ? `linux:${fields[19]}` : null;
-    } catch {
-      return null;
-    }
-  }
   try {
-    const started = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5e3
-    }).trim();
-    return started ? `${process.platform}:${started}` : null;
+    const stat2 = readFileSync2(`/proc/${pid}/stat`, "utf8");
+    const fields = stat2.slice(stat2.lastIndexOf(")") + 1).trim().split(/\s+/);
+    return fields[19] ? `linux:${fields[19]}` : null;
   } catch {
     return null;
   }
@@ -23379,8 +23357,8 @@ function defaultStateDir() {
   const base = process.env.XDG_STATE_HOME || join(homedir2(), ".local", "state");
   return join(base, "flow", "delegation");
 }
-var jobsSchema = (name = "jobs") => `
-  CREATE TABLE ${name} (
+var SCHEMA = `
+  CREATE TABLE jobs (
     id TEXT PRIMARY KEY,
     trace_id TEXT NOT NULL,
     parent_job_id TEXT REFERENCES jobs(id),
@@ -23393,8 +23371,6 @@ var jobsSchema = (name = "jobs") => `
     workspace_key TEXT NOT NULL,
     model TEXT NOT NULL,
     effort TEXT NOT NULL,
-    service_tier TEXT NOT NULL,
-    profile TEXT NOT NULL,
     time_budget_seconds INTEGER NOT NULL,
     max_turns INTEGER,
     max_budget_usd REAL,
@@ -23420,9 +23396,7 @@ var jobsSchema = (name = "jobs") => `
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     heartbeat_at INTEGER NOT NULL
-  );`;
-var SCHEMA = `
-  ${jobsSchema()}
+  );
   CREATE TABLE events (
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
@@ -23480,8 +23454,6 @@ function decode3(row) {
     workspaceKey: row.workspace_key,
     model: row.model,
     effort: row.effort,
-    serviceTier: row.service_tier,
-    profile: row.profile,
     timeBudgetSeconds: row.time_budget_seconds,
     maxTurns: row.max_turns,
     maxBudgetUsd: row.max_budget_usd,
@@ -23544,33 +23516,25 @@ var JobStore = class {
   userVersion() {
     return Number(this.db.prepare("PRAGMA user_version").get().user_version);
   }
+  // The job cache holds 14 days of operational history and is never an archive, so an older
+  // schema is dropped and recreated rather than carried forward through a ladder of
+  // migrations nobody can test against real rows. A NEWER schema is still refused: that
+  // database belongs to a Flow version this one cannot read, and resetting it would destroy
+  // live jobs the other version owns.
   migrate() {
-    for (; ; ) {
-      const version2 = this.userVersion();
-      if (version2 === SCHEMA_VERSION) return;
-      if (version2 > SCHEMA_VERSION) throw new DelegationError("DATABASE_NEWER", "The delegation database was created by a newer Flow version.");
-      if (version2 === 2) {
-        this.migrateFromV2();
-        continue;
-      }
-      if (version2 === 3) {
-        this.migrateFromV3();
-        continue;
-      }
-      if (version2 === 4) {
-        this.migrateFromV4();
-        continue;
-      }
+    const version2 = this.userVersion();
+    if (version2 === SCHEMA_VERSION) return;
+    if (version2 > SCHEMA_VERSION) throw new DelegationError("DATABASE_NEWER", "The delegation database was created by a newer Flow version.");
+    this.db.exec("PRAGMA foreign_keys=OFF");
+    try {
       this.db.exec("BEGIN IMMEDIATE");
       try {
-        const lockedVersion = this.userVersion();
-        if (lockedVersion > SCHEMA_VERSION) throw new DelegationError("DATABASE_NEWER", "The delegation database was created by a newer Flow version.");
-        if (lockedVersion < 1) {
+        const locked = this.userVersion();
+        if (locked > SCHEMA_VERSION) throw new DelegationError("DATABASE_NEWER", "The delegation database was created by a newer Flow version.");
+        if (locked !== SCHEMA_VERSION) {
+          this.db.exec("DROP TABLE IF EXISTS leases; DROP TABLE IF EXISTS controls; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS jobs;");
           this.db.exec(SCHEMA);
           this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
-        } else if (lockedVersion === 1) {
-          this.db.exec("ALTER TABLE jobs DROP COLUMN delivery; ALTER TABLE leases DROP COLUMN heartbeat_at;");
-          this.db.exec("PRAGMA user_version=2");
         }
         this.db.exec("COMMIT");
       } catch (error2) {
@@ -23580,86 +23544,8 @@ var JobStore = class {
         }
         throw error2;
       }
-    }
-  }
-  migrateFromV2() {
-    this.db.exec("PRAGMA foreign_keys=OFF");
-    try {
-      this.db.exec("BEGIN IMMEDIATE");
-      const version2 = this.userVersion();
-      if (version2 !== 2) {
-        this.db.exec("COMMIT");
-        return;
-      }
-      this.db.exec(`
-        ${jobsSchema("jobs_v3")}
-        INSERT INTO jobs_v3 (
-          id, trace_id, parent_job_id, host, target, depth, mode, access, cwd, workspace_key,
-          model, effort, service_tier, profile, time_budget_seconds, prompt,
-          output_schema_json, base_sha, head_sha, native_thread_id, native_turn_id,
-          turn_accepted_at, status, worker_pid, output, structured_json, usage_json,
-          error_json, created_at, updated_at, heartbeat_at
-        ) SELECT
-          id, trace_id, parent_job_id, host, target, depth, mode, access, cwd, workspace_key,
-          model, effort, service_tier, profile, time_budget_seconds, prompt,
-          output_schema_json, base_sha, head_sha, native_thread_id, native_turn_id,
-          turn_accepted_at, status, worker_pid, output, structured_json, usage_json,
-          error_json, created_at, updated_at, heartbeat_at
-        FROM jobs;
-        DROP INDEX jobs_status_idx;
-        DROP TABLE jobs;
-        ALTER TABLE jobs_v3 RENAME TO jobs;
-        CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
-        PRAGMA user_version=4;
-      `);
-      const violation = this.db.prepare("PRAGMA foreign_key_check").get();
-      if (violation) {
-        throw new DelegationError("DATABASE_MIGRATION", "The delegation database migration failed its foreign-key check.");
-      }
-      this.db.exec("COMMIT");
-    } catch (error2) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      throw error2;
     } finally {
       this.db.exec("PRAGMA foreign_keys=ON");
-    }
-  }
-  migrateFromV3() {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const version2 = this.userVersion();
-      if (version2 === 3) {
-        this.db.exec("ALTER TABLE jobs ADD COLUMN provider_scope TEXT; PRAGMA user_version=4;");
-      }
-      this.db.exec("COMMIT");
-    } catch (error2) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      throw error2;
-    }
-  }
-  migrateFromV4() {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const version2 = this.userVersion();
-      if (version2 === 4) {
-        this.db.exec(`
-          CREATE INDEX IF NOT EXISTS jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
-          PRAGMA user_version=5;
-        `);
-      }
-      this.db.exec("COMMIT");
-    } catch (error2) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-      }
-      throw error2;
     }
   }
   // Terminal jobs are pruned on open. updated_at is the terminal timestamp: finish() and
@@ -23720,11 +23606,11 @@ var JobStore = class {
     const at2 = now();
     this.db.prepare(`INSERT INTO jobs (
       id, trace_id, parent_job_id, host, target, depth, mode, access,
-      cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+      cwd, workspace_key, model, effort, time_budget_seconds,
       max_turns, max_budget_usd,
       prompt, output_schema_json, base_sha, head_sha, native_thread_id,
       status, created_at, updated_at, heartbeat_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
       id2,
       request.traceId || randomUUID(),
       request.parentJobId || null,
@@ -23737,8 +23623,6 @@ var JobStore = class {
       request.workspaceKey,
       request.model,
       request.effort,
-      request.serviceTier,
-      request.profile,
       request.timeBudgetSeconds,
       request.maxTurns ?? null,
       request.maxBudgetUsd ?? null,
@@ -24099,25 +23983,24 @@ function probeProviderContainment() {
 }
 function providerContainmentSupport({ fresh = false } = {}) {
   if (process.platform !== "linux") {
-    return { ok: true, kind: null, mode: "process-tree" };
+    return { ok: false, kind: "UNSUPPORTED_HOST", mode: null, platform: process.platform, required: "linux" };
   }
   if (!fresh && cachedContainmentSupport) return cachedContainmentSupport;
   cachedContainmentSupport = probeProviderContainment();
   return cachedContainmentSupport;
 }
 function scopedProviderCommand(command, args, scopeName) {
-  if (process.platform !== "linux") return { command, args };
   return {
     command: "systemd-run",
     args: [...scopeOptions(scopeName), "--", command, ...args]
   };
 }
 function scopeControlGroup(scopeName) {
-  if (process.platform !== "linux" || !scopeName) return null;
+  if (!scopeName) return null;
   const cached2 = controlGroupCache.get(scopeName);
   if (cached2) return cached2;
   try {
-    const value = execFileSync2("systemctl", [
+    const value = execFileSync("systemctl", [
       "--user",
       "show",
       scopeName,
@@ -24142,9 +24025,9 @@ function providerScopeRunning(scopeName) {
   }
 }
 function signalProviderScope(scopeName, signal) {
-  if (process.platform !== "linux" || !scopeName) return;
+  if (!scopeName) return;
   try {
-    execFileSync2("systemctl", [
+    execFileSync("systemctl", [
       "--user",
       "kill",
       `--signal=${signal}`,
@@ -24162,7 +24045,7 @@ function trackedDescendantRunning(knownDescendants) {
   return false;
 }
 function captureProcessDescendants(rootPid, knownDescendants, { freeze = false } = {}) {
-  if (process.platform !== "linux" || !Number.isInteger(rootPid) || rootPid <= 0) return;
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return;
   if (freeze) try {
     process.kill(-rootPid, "SIGSTOP");
   } catch {
@@ -24265,7 +24148,7 @@ var AppServerClient = class {
     this.onNotification = onNotification;
     this.onServerRequest = onServerRequest;
     this.onClose = onClose;
-    this.scopeName = process.platform === "linux" ? scopeName || providerScopeName() : null;
+    this.scopeName = scopeName || providerScopeName();
     this.child = null;
     this.nextId = 1;
     this.pending = /* @__PURE__ */ new Map();
@@ -24273,8 +24156,8 @@ var AppServerClient = class {
     this.transportError = null;
     this.closeInfo = null;
     this.knownDescendants = /* @__PURE__ */ new Map();
-    this.closePromise = new Promise((resolve9) => {
-      this.resolveClose = resolve9;
+    this.closePromise = new Promise((resolve8) => {
+      this.resolveClose = resolve8;
     });
   }
   async start() {
@@ -24287,7 +24170,7 @@ var AppServerClient = class {
         stdio: ["pipe", "pipe", "pipe"],
         // A separate POSIX process group lets Flow prove that App Server and every ordinary
         // descendant stopped before it releases a workspace-write lease.
-        detached: process.platform !== "win32"
+        detached: true
       });
     } catch (cause) {
       throw new DelegationError("CODEX_NOT_INSTALLED", "Codex could not be started.");
@@ -24399,7 +24282,7 @@ var AppServerClient = class {
   }
   request(method, params = {}, timeoutMs = 3e4) {
     const id2 = this.nextId++;
-    return new Promise((resolve9, reject) => {
+    return new Promise((resolve8, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(id2)) return;
         reject(new DelegationError("APP_SERVER_TIMEOUT", `Codex App Server did not answer ${method}.`));
@@ -24408,7 +24291,7 @@ var AppServerClient = class {
         method,
         resolve: (value) => {
           clearTimeout(timer);
-          resolve9(value);
+          resolve8(value);
         },
         reject: (error2) => {
           clearTimeout(timer);
@@ -24441,14 +24324,13 @@ var AppServerClient = class {
     let timer;
     return Promise.race([
       this.closePromise.then(() => true),
-      new Promise((resolve9) => {
-        timer = setTimeout(() => resolve9(false), ms2);
+      new Promise((resolve8) => {
+        timer = setTimeout(() => resolve8(false), ms2);
       })
     ]).finally(() => clearTimeout(timer));
   }
   treeRunning() {
     if (!this.child?.pid) return false;
-    if (process.platform === "win32") return this.child.exitCode === null && !this.child.signalCode;
     if (providerScopeRunning(this.scopeName)) return true;
     let groupRunning = false;
     try {
@@ -24480,17 +24362,12 @@ var AppServerClient = class {
   signalTree(signal) {
     if (!this.child?.pid) return;
     signalProviderScope(this.scopeName, signal);
-    if (process.platform === "win32") {
-      try {
-        this.child.kill(signal);
-      } catch {
-      }
-    } else signalTrackedProcessTree(this.child.pid, this.knownDescendants, signal);
+    signalTrackedProcessTree(this.child.pid, this.knownDescendants, signal);
   }
   async waitTree(ms2) {
     const deadline = Date.now() + ms2;
     while (this.treeRunning() && Date.now() < deadline) {
-      await new Promise((resolve9) => setTimeout(resolve9, 50));
+      await new Promise((resolve8) => setTimeout(resolve8, 50));
     }
     return !this.treeRunning();
   }
@@ -56675,34 +56552,8 @@ function $Q(e, t) {
 
 // src/delegation/claude-sdk.mjs
 import { spawn as spawn3, spawnSync as spawnSync3 } from "node:child_process";
-import { accessSync as accessSync2, constants as constants4, realpathSync as realpathSync5 } from "node:fs";
-import { delimiter as delimiter3, isAbsolute as isAbsolute5, resolve as resolve7, sep as sep7 } from "node:path";
-
-// src/delegation/claude-launch.mjs
 import { accessSync, constants as constants3, realpathSync as realpathSync4 } from "node:fs";
-import { dirname as dirname6, resolve as resolve6 } from "node:path";
-function claudeSpawnCommand(command, args, {
-  platform = process.platform,
-  nodeExecutable = process.execPath
-} = {}) {
-  if (platform !== "win32" || !/\.(?:cmd|bat)$/i.test(command)) return { command, args };
-  const directory = dirname6(command);
-  const candidates = [
-    resolve6(directory, "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
-    resolve6(directory, "..", "@anthropic-ai", "claude-code", "cli.js")
-  ];
-  for (const candidate of candidates) {
-    try {
-      accessSync(candidate, constants3.R_OK);
-      return { command: nodeExecutable, args: [realpathSync4(candidate), ...args] };
-    } catch {
-    }
-  }
-  throw new DelegationError(
-    "CLAUDE_STARTUP",
-    "Claude Code's Windows batch launcher could not be resolved without a shell. Install the native Claude Code executable."
-  );
-}
+import { delimiter as delimiter3, isAbsolute as isAbsolute5, resolve as resolve6, sep as sep7 } from "node:path";
 
 // src/delegation/claude-errors.mjs
 function normalizeClaudeError(error2) {
@@ -56769,7 +56620,6 @@ function profileForTarget(target) {
 // src/delegation/instructions.mjs
 function delegatedInstructions(job, provider) {
   const access3 = job.access === "workspace-write" ? "You may edit only the assigned Git worktree. Do not publish, push, or modify another checkout." : "This is a read-only job. Do not edit files or mutate the repository.";
-  const profile = job.profile === "defensive-security" ? "\nThe caller selected the defensive-security profile for authorized defensive research." : "";
   const host = String(job.target || "").toLowerCase();
   const bindings = profileBlock({ host, text: profileForTarget(host) });
   const containment = universalContainment(FLOW_SEAT_CONTRACT).trim();
@@ -56777,7 +56627,7 @@ function delegatedInstructions(job, provider) {
 
 ${bindings}
 <delegated-seat>
-You are a delegated ${provider} worker. Complete the caller task directly. Do not start subagents, invoke Claude or Codex through the shell, or start another cross-family delegation. ${access3} Stay within the assigned workspace and access mode. Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.${profile}
+You are a delegated ${provider} worker. Complete the caller task directly. Do not start subagents, invoke Claude or Codex through the shell, or start another cross-family delegation. ${access3} Stay within the assigned workspace and access mode. Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.
 </delegated-seat>
 
 <seat-contract scope="containment">
@@ -57028,22 +56878,19 @@ function executablePath(name) {
   const candidate = name || "claude";
   if (isAbsolute5(candidate) || candidate.includes(sep7)) {
     try {
-      accessSync2(candidate, constants4.X_OK);
-      return realpathSync5(candidate);
+      accessSync(candidate, constants3.X_OK);
+      return realpathSync4(candidate);
     } catch {
       return null;
     }
   }
-  const suffixes = process.platform === "win32" ? (process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
   for (const directory of (process.env.PATH || "").split(delimiter3)) {
     if (!directory) continue;
-    for (const suffix of suffixes) {
-      const path = resolve7(directory, `${candidate}${suffix}`);
-      try {
-        accessSync2(path, constants4.X_OK);
-        return realpathSync5(path);
-      } catch {
-      }
+    const path = resolve6(directory, candidate);
+    try {
+      accessSync(path, constants3.X_OK);
+      return realpathSync4(path);
+    } catch {
     }
   }
   return null;
@@ -57060,13 +56907,7 @@ function claudeVersion() {
   } catch {
     return { ok: false, kind: "CLAUDE_NOT_INSTALLED", version: null };
   }
-  let launch;
-  try {
-    launch = claudeSpawnCommand(bin, ["--version"]);
-  } catch (error2) {
-    return { ok: false, kind: error2.kind || "CLAUDE_STARTUP", version: null };
-  }
-  const result = spawnSync3(launch.command, launch.args, { encoding: "utf8", timeout: 1e4 });
+  const result = spawnSync3(bin, ["--version"], { encoding: "utf8", timeout: 1e4 });
   if (result.error?.code === "ENOENT") return { ok: false, kind: "CLAUDE_NOT_INSTALLED", version: null };
   if (result.status !== 0) return { ok: false, kind: "CLAUDE_VERSION", version: null };
   return { ok: true, kind: null, version: result.stdout.trim() };
@@ -57078,13 +56919,7 @@ function claudeAuthStatus() {
   } catch {
     return { ok: false, kind: "CLAUDE_NOT_INSTALLED" };
   }
-  let launch;
-  try {
-    launch = claudeSpawnCommand(bin, ["auth", "status", "--json"]);
-  } catch (error2) {
-    return { ok: false, kind: error2.kind || "CLAUDE_STARTUP" };
-  }
-  const result = spawnSync3(launch.command, launch.args, { encoding: "utf8", timeout: 1e4 });
+  const result = spawnSync3(bin, ["auth", "status", "--json"], { encoding: "utf8", timeout: 1e4 });
   if (result.error?.code === "ENOENT") return { ok: false, kind: "CLAUDE_NOT_INSTALLED" };
   if (result.error) return { ok: false, kind: "CLAUDE_STARTUP" };
   if (result.status !== 0) return { ok: false, kind: "CLAUDE_AUTH" };
@@ -57146,7 +56981,7 @@ function createClaudeQuery(job, prompt, {
   canUseTool
 } = {}) {
   const tools = claudeTools(job.access, { structured: job.outputSchema != null });
-  const scopeName = process.platform === "linux" ? providerScopeName(job.id) : null;
+  const scopeName = providerScopeName(job.id);
   return SVt({
     prompt,
     options: {
@@ -57191,16 +57026,14 @@ function createClaudeQuery(job, prompt, {
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
-        const direct = claudeSpawnCommand(command, args);
-        const launch = scopedProviderCommand(direct.command, direct.args, scopeName);
+        const launch = scopedProviderCommand(command, args, scopeName);
         const child = spawn3(launch.command, launch.args, {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
-          windowsHide: true,
-          // A separate POSIX process group lets the worker stop the CLI and every command it
+          // A separate process group lets the worker stop the CLI and every command it
           // started before releasing a workspace-write lease.
-          detached: process.platform !== "win32"
+          detached: true
         });
         child.flowProviderScope = scopeName;
         child.stderr?.setEncoding("utf8");
@@ -57312,9 +57145,9 @@ function foldTurnOutcome(turn, {
 
 // src/delegation/workspace.mjs
 import { execFile } from "node:child_process";
-import { realpathSync as realpathSync6, statSync as statSync3 } from "node:fs";
+import { realpathSync as realpathSync5, statSync as statSync3 } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { isAbsolute as isAbsolute6, relative as relative3, resolve as resolve8, sep as sep8 } from "node:path";
+import { isAbsolute as isAbsolute6, relative as relative3, resolve as resolve7, sep as sep8 } from "node:path";
 import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
 var isInside = (root, path) => {
@@ -57335,7 +57168,7 @@ function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd = null }
   const roots = [];
   for (const candidate of candidates) {
     try {
-      const path = realpathSync6(candidate);
+      const path = realpathSync5(candidate);
       if (statSync3(path).isDirectory() && !roots.includes(path)) roots.push(path);
     } catch {
     }
@@ -57344,14 +57177,14 @@ function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd = null }
 }
 async function sharedGitDirInsideRoots(path, roots) {
   try {
-    const commonDir = realpathSync6(await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree."));
+    const commonDir = realpathSync5(await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree."));
     if (!roots.some((root) => isInside(root, commonDir))) return false;
-    const top = realpathSync6(await git(path, ["rev-parse", "--show-toplevel"], "not a git worktree."));
+    const top = realpathSync5(await git(path, ["rev-parse", "--show-toplevel"], "not a git worktree."));
     const listed = await git(path, ["--git-dir", commonDir, "worktree", "list", "--porcelain"], "the worktree list is unavailable.");
     return listed.split("\n").some((line) => {
       if (!line.startsWith("worktree ")) return false;
       try {
-        return realpathSync6(line.slice("worktree ".length)) === top;
+        return realpathSync5(line.slice("worktree ".length)) === top;
       } catch {
         return false;
       }
@@ -57366,7 +57199,7 @@ async function canonicalWorkspace(cwd, roots) {
   }
   let canonical;
   try {
-    canonical = realpathSync6(cwd);
+    canonical = realpathSync5(cwd);
     if (!statSync3(canonical).isDirectory()) throw new Error("not a directory");
   } catch {
     throw new DelegationError("BAD_WORKSPACE", "cwd does not name an existing directory.");
@@ -57391,7 +57224,7 @@ async function git(cwd, args, message) {
 }
 async function worktreeKey(cwd) {
   try {
-    return realpathSync6(await git(cwd, ["rev-parse", "--show-toplevel"], "cwd is not a Git worktree."));
+    return realpathSync5(await git(cwd, ["rev-parse", "--show-toplevel"], "cwd is not a Git worktree."));
   } catch (error2) {
     if (error2 instanceof DelegationError) return cwd;
     throw error2;
@@ -57404,7 +57237,7 @@ async function gitMetadataPaths(cwd) {
     ["rev-parse", "--path-format=absolute", "--git-common-dir"]
   ]) {
     try {
-      paths.add(realpathSync6(await git(cwd, args, "Git metadata is unavailable.")));
+      paths.add(realpathSync5(await git(cwd, args, "Git metadata is unavailable.")));
     } catch {
     }
   }
@@ -57425,33 +57258,26 @@ async function immutableReview({ cwd, mode: mode2, base = null, head = "HEAD", p
 Additional focus from the caller:
 ${prompt.trim()}
 ` : "";
-  const reviewKind = mode2 === "adversarial-review" ? "Act as an adversarial code reviewer. Hunt for reachable correctness, security, concurrency, and trust-boundary defects." : "Act as a code reviewer. Report real defects that should block or change this patch.";
-  const built = `${reviewKind}
+  const built = `Act as an adversarial code reviewer. Hunt for reachable correctness, security, concurrency, and trust-boundary defects.
 
 Review only the changes in git diff ${baseSha}...${headSha}. Read surrounding code and tests when needed. Do not edit files. Do not report style or formatting. Cite a repository-relative file and the first affected line in the new code. Use the output schema. A clean review has an empty findings array.${focus}`;
   return { prompt: built, baseSha, headSha, outputSchema: FINDINGS_SCHEMA };
 }
 
 // src/delegation/service.mjs
-var sleep = (ms2) => new Promise((resolve9) => setTimeout(resolve9, ms2));
+var sleep = (ms2) => new Promise((resolve8) => setTimeout(resolve8, ms2));
 var LIST_SCAN_LIMIT = 1e3;
 var LIST_VISIBILITY_PROBE_LIMIT = 32;
 function validateStart(input, target) {
   if (!MODES.includes(input.mode)) throw new DelegationError("BAD_REQUEST", "mode is invalid.");
   if (!ACCESS_MODES.includes(input.access)) throw new DelegationError("BAD_REQUEST", "access is invalid.");
   if (!DELIVERIES.includes(input.delivery)) throw new DelegationError("BAD_REQUEST", "delivery is invalid.");
-  if (!effortsForTarget(target).includes(input.effort)) {
-    throw new DelegationError("BAD_REQUEST", `effort is invalid for ${target}.`);
-  }
-  if (!SERVICE_TIERS.includes(input.serviceTier)) throw new DelegationError("BAD_REQUEST", "Only the default service tier is allowed.");
+  if (!EFFORTS.includes(input.effort)) throw new DelegationError("BAD_REQUEST", "effort is invalid.");
   if (typeof input.model !== "string" || !MODEL_PATTERN.test(input.model)) {
     throw new DelegationError("BAD_REQUEST", "model is required and must match the model name shape.");
   }
   if (typeof input.cwd !== "string" || !input.cwd.trim()) {
     throw new DelegationError("BAD_REQUEST", "cwd is required and must be an absolute directory path.");
-  }
-  if (typeof input.profile !== "string" || !input.profile.trim()) {
-    throw new DelegationError("BAD_REQUEST", "profile is invalid.");
   }
   if (typeof input.prompt !== "string" || !input.prompt.trim() && input.mode === "task") {
     throw new DelegationError("BAD_REQUEST", "Task mode requires a non-empty prompt.");
@@ -57483,7 +57309,7 @@ function settled(job) {
   return terminal(job) || job.status === "quarantined";
 }
 function processGroupRunning(processGroupId) {
-  if (process.platform === "win32" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
+  if (!Number.isInteger(processGroupId) || processGroupId <= 0) return false;
   try {
     process.kill(-processGroupId, 0);
     return true;
@@ -57572,8 +57398,6 @@ var DelegationService = class {
       delivery: input.delivery || "attached",
       effort: input.effort,
       model: input.model,
-      serviceTier: input.serviceTier || "default",
-      profile: input.profile || "standard",
       prompt: input.prompt || "",
       cwd: input.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || 900,
@@ -57590,7 +57414,7 @@ var DelegationService = class {
     assertRoute({ host: this.host, target, depth: this.depth });
     const containment = providerContainmentSupport();
     if (!containment.ok) {
-      throw new DelegationError(containment.kind, "Linux delegation requires a working systemd user scope for provider containment.");
+      throw new DelegationError(containment.kind, "Delegation requires Linux with a working systemd user scope for provider containment.");
     }
     if (target === "codex") {
       const host = codexHostSupport();
@@ -57743,7 +57567,7 @@ var DelegationService = class {
             lastScanned = job;
             before = { createdAt: job.createdAt, id: job.id };
             if (!isVisible) continue;
-            visible.push(this.requireRoute(job));
+            visible.push(job);
             if (visible.length > limit) break scan;
           }
           if (candidates.length < chunkLimit) break;
@@ -57789,8 +57613,6 @@ var DelegationService = class {
       delivery: input.delivery || "attached",
       effort: input.effort || previous.effort,
       model: input.model || previous.model,
-      serviceTier: "default",
-      profile: input.profile || previous.profile,
       prompt: input.prompt,
       cwd: previous.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || previous.timeBudgetSeconds,
@@ -58061,7 +57883,7 @@ function toolResult(value, isError = false) {
 async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectDir }) {
   const target = targetForHost(host);
   const targetTitle = target[0].toUpperCase() + target.slice(1);
-  const effort = _enum([...effortsForTarget(target)]);
+  const effort = _enum([...EFFORTS]);
   const capabilities = capabilitiesForTarget(target);
   const providerLimits = target === "claude" ? {
     maxTurns: number2().int().min(1).max(1e3).optional().describe("Hard Claude conversation-turn limit for this job"),
@@ -58160,8 +57982,6 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       access: access2.default("read-only"),
       model,
       effort,
-      serviceTier: literal("default").default("default"),
-      profile: _enum(["standard", "defensive-security"]).default("standard"),
       delivery: delivery.default("attached"),
       timeBudgetSeconds: number2().int().min(30).max(7200).default(900),
       ...providerLimits,
@@ -58253,7 +58073,6 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       access: access2.optional(),
       model: model.optional(),
       effort: effort.optional(),
-      profile: _enum(["standard", "defensive-security"]).optional(),
       delivery: delivery.default("attached"),
       timeBudgetSeconds: number2().int().min(30).max(7200).optional(),
       ...providerLimits,
@@ -58290,120 +58109,6 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
   await server.connect(transport);
 }
 
-// src/delegation/cli.mjs
-import { readFileSync as readFileSync5 } from "node:fs";
-async function stdin() {
-  if (process.stdin.isTTY) return "";
-  process.stdin.setEncoding("utf8");
-  let value = "";
-  for await (const chunk of process.stdin) value += chunk;
-  return value;
-}
-function parse6(argv2) {
-  const out = { command: argv2[0], flags: {}, positionals: [] };
-  for (let i = 1; i < argv2.length; i++) {
-    const arg = argv2[i];
-    if (!arg.startsWith("--")) {
-      out.positionals.push(arg);
-      continue;
-    }
-    const name = arg.slice(2);
-    if (name === "detach") {
-      out.flags.detach = true;
-      continue;
-    }
-    i++;
-    if (i >= argv2.length) throw new Error(`--${name} requires a value`);
-    out.flags[name] = argv2[i];
-  }
-  return out;
-}
-var number3 = (value, fallback) => value == null ? fallback : Number(value);
-async function runCli({ argv: argv2, entryPath: entryPath2 }) {
-  const { command, flags, positionals } = parse6(argv2);
-  if (!HOSTS.includes(flags.host)) {
-    throw new DelegationError("BAD_REQUEST", `--host is required and must be one of: ${HOSTS.join(", ")}.`);
-  }
-  const depth = Number(process.env.FLOW_DELEGATION_DEPTH || 0);
-  const service = new DelegationService({
-    host: flags.host,
-    depth,
-    stateDir: flags["state-dir"],
-    entryPath: entryPath2,
-    projectDir: flags.cwd || process.cwd()
-  });
-  let value;
-  if (command === "run") {
-    const prompt = await stdin();
-    const outputSchema = flags["schema-file"] ? JSON.parse(readFileSync5(flags["schema-file"], "utf8")) : null;
-    const job = await service.start({
-      mode: flags.mode || "task",
-      prompt,
-      cwd: flags.cwd || process.cwd(),
-      access: flags.access || "read-only",
-      model: flags.model,
-      effort: flags.effort,
-      serviceTier: "default",
-      profile: flags.profile || "standard",
-      delivery: flags.detach ? "detached" : "attached",
-      timeBudgetSeconds: number3(flags["time-budget-seconds"], 900),
-      maxTurns: number3(flags["max-turns"], null),
-      maxBudgetUsd: number3(flags["max-budget-usd"], null),
-      outputSchema,
-      base: flags.base || null,
-      head: flags.head || "HEAD"
-    }, { fallbackCwd: flags.cwd || process.cwd() });
-    value = flags.detach ? resultEnvelope(job) : resultEnvelope(await service.wait(job.id));
-  } else if (command === "status") {
-    value = resultEnvelope(await service.reconcile(positionals[0]));
-  } else if (command === "result") {
-    value = service.result(positionals[0]);
-  } else if (command === "events") {
-    value = service.events(positionals[0], { after: number3(flags.after, 0), limit: number3(flags.limit, 200) });
-  } else if (command === "cancel") {
-    value = resultEnvelope(service.cancel(positionals[0]));
-  } else if (command === "steer") {
-    value = resultEnvelope(service.steer(positionals[0], await stdin()));
-  } else if (command === "continue") {
-    const prior = service.get(positionals[0]);
-    const job = await service.continue(positionals[0], {
-      prompt: await stdin(),
-      access: flags.access,
-      model: flags.model,
-      effort: flags.effort,
-      delivery: flags.detach ? "detached" : "attached",
-      timeBudgetSeconds: number3(flags["time-budget-seconds"], void 0),
-      maxTurns: number3(flags["max-turns"], void 0),
-      maxBudgetUsd: number3(flags["max-budget-usd"], void 0)
-    }, { fallbackCwd: prior.cwd });
-    value = flags.detach ? resultEnvelope(job) : resultEnvelope(await service.wait(job.id));
-  } else if (command === "models") {
-    value = await service.models(flags.cwd || process.cwd());
-  } else if (command === "doctor") {
-    value = await service.doctor(flags.cwd || process.cwd());
-  } else {
-    throw new Error("usage: delegation.mjs cli run|status|result|events|cancel|steer|continue|models|doctor");
-  }
-  process.stdout.write(`${JSON.stringify(value)}
-`);
-}
-async function safeRunCli(options) {
-  try {
-    await runCli(options);
-  } catch (error2) {
-    if (!(error2 instanceof DelegationError)) {
-      let stateDir = defaultStateDir();
-      try {
-        stateDir = parse6(options.argv).flags["state-dir"] || stateDir;
-      } catch {
-      }
-      serviceLog(stateDir, `cli failed: ${error2?.stack || error2?.message || error2}`);
-    }
-    process.stdout.write(`${JSON.stringify({ status: "failed", error: publicError(error2, "Delegation CLI failed") })}
-`);
-  }
-}
-
 // src/delegation/claude-worker.mjs
 import { randomUUID as randomUUID4 } from "node:crypto";
 var STARTUP_SECONDS = 30;
@@ -58417,7 +58122,7 @@ var RESULT_FAILURE_MESSAGES = {
   OVERLOADED: "Claude is overloaded and rejected the turn.",
   SCHEMA_OUTPUT: "Claude could not produce output that matches the requested schema."
 };
-var delay = (ms2) => new Promise((resolve9) => setTimeout(resolve9, ms2));
+var delay = (ms2) => new Promise((resolve8) => setTimeout(resolve8, ms2));
 async function withStartupTimeout(promise, onTimeout, seconds = STARTUP_SECONDS) {
   let timer;
   try {
@@ -58483,8 +58188,8 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
   let stderrTail = "";
   const knownDescendants = /* @__PURE__ */ new Map();
   let releasePrompt;
-  const promptReady = new Promise((resolve9) => {
-    releasePrompt = resolve9;
+  const promptReady = new Promise((resolve8) => {
+    releasePrompt = resolve8;
   });
   const sessionId = job.nativeThreadId || randomUUID4();
   const turnId = randomUUID4();
@@ -58599,7 +58304,7 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
         canUseTool,
         onSpawn: (spawned) => {
           child = spawned;
-          childExited = new Promise((resolve9) => child.once("exit", resolve9));
+          childExited = new Promise((resolve8) => child.once("exit", resolve8));
           rememberProvider();
         },
         onStderr: (chunk) => {
@@ -58735,22 +58440,17 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
         await settle("succeeded", { output, structured, usage, error: null });
       }
     },
+    // Cancel is the only control this route can queue: the service refuses a steer for a
+    // Claude job before it reaches the controls table.
     async onControl(control) {
       try {
-        if (control.type === "cancel") {
-          cancelled = true;
-          if (accepted) {
-            await interruptAndForce("cancel");
-            store.handleControl(jobId2, control.id, { result: "interrupt_sent" });
-          } else {
-            active.close();
-            store.handleControl(jobId2, control.id, { result: "cancelled_before_turn" });
-          }
+        cancelled = true;
+        if (accepted) {
+          await interruptAndForce("cancel");
+          store.handleControl(jobId2, control.id, { result: "interrupt_sent" });
         } else {
-          store.handleControl(jobId2, control.id, {
-            result: "unsupported",
-            error: { kind: "CONTROL_UNSUPPORTED", message: "Claude does not support live turn steering.", details: null }
-          });
+          active.close();
+          store.handleControl(jobId2, control.id, { result: "cancelled_before_turn" });
         }
       } catch (error2) {
         store.handleControl(jobId2, control.id, { result: "failed", error: publicError(normalizeClaudeError(error2)) });
@@ -58834,8 +58534,8 @@ function runCodexJob({ job, store, settle }) {
   let nativeTurnTerminal = false;
   let onStallFire = null;
   let terminalResolve;
-  const terminal2 = new Promise((resolve9) => {
-    terminalResolve = resolve9;
+  const terminal2 = new Promise((resolve8) => {
+    terminalResolve = resolve8;
   });
   let previewAt = 0;
   let jobTempDir = null;
@@ -58974,7 +58674,9 @@ function runCodexJob({ job, store, settle }) {
       });
       const threadParams = {
         model: job.model,
-        serviceTier: job.serviceTier,
+        // Flow never asks for another tier. It is still sent explicitly, because a turn that
+        // states its tier cannot be re-pointed by an account default changing underneath it.
+        serviceTier: "default",
         cwd: job.cwd,
         runtimeWorkspaceRoots: [job.workspaceKey],
         approvalPolicy: "never",
@@ -58998,7 +58700,7 @@ function runCodexJob({ job, store, settle }) {
         approvalPolicy: "never",
         approvalsReviewer: "user",
         model: job.model,
-        serviceTier: job.serviceTier,
+        serviceTier: "default",
         effort: job.effort,
         summary: "detailed",
         outputSchema: providerOutputSchema(job.outputSchema)
@@ -59300,8 +59002,11 @@ async function runProviderJob({ jobId: jobId2, stateDir, createAdapter }) {
 var argv = process.argv.slice(2);
 var mode = argv[0];
 var entryPath = fileURLToPath2(import.meta.url);
+var flags = {};
+for (let index = 1; index < argv.length; index += 2) {
+  if (argv[index]?.startsWith("--")) flags[argv[index].slice(2)] = argv[index + 1];
+}
 if (mode === "mcp") {
-  const { flags } = parse6(argv);
   if (!HOSTS.includes(flags.host)) {
     process.stderr.write(`--host is required for MCP mode and must be one of: ${HOSTS.join(", ")}.
 `);
@@ -59318,14 +59023,11 @@ if (mode === "mcp") {
     });
   }
 } else if (mode === "worker") {
-  const { flags } = parse6(argv);
   await runWorker({
     jobId: flags.job || null,
     stateDir: flags["state-dir"] || defaultStateDir()
   });
-} else if (mode === "cli") {
-  await safeRunCli({ argv: argv.slice(1), entryPath });
 } else {
-  process.stderr.write("usage: delegation.mjs mcp|worker|cli\n");
+  process.stderr.write("usage: delegation.mjs mcp|worker\n");
   process.exitCode = 2;
 }

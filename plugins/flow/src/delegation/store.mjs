@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { ACTIVE_STATES, DelegationError, TERMINAL_STATES } from './contracts.mjs'
 
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 6
 // Terminal jobs are operational history, not an archive. Fourteen days outlives any
 // investigation of a run, including an `unknown` one.
 const RETENTION_DAYS = 14
@@ -15,20 +14,14 @@ const now = () => Date.now()
 const json = (value) => value == null ? null : JSON.stringify(value)
 const parse = (value) => value == null ? null : JSON.parse(value)
 
+// Field 22 of /proc/<pid>/stat is the process start time in clock ticks since boot. Paired
+// with the pid it is a stable identity: a recycled pid gets a different token.
 export function processStartToken(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null
-  if (process.platform === 'linux') {
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-      const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)
-      return fields[19] ? `linux:${fields[19]}` : null
-    } catch { return null }
-  }
   try {
-    const started = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000,
-    }).trim()
-    return started ? `${process.platform}:${started}` : null
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)
+    return fields[19] ? `linux:${fields[19]}` : null
   } catch { return null }
 }
 
@@ -38,8 +31,8 @@ export function defaultStateDir() {
   return join(base, 'flow', 'delegation')
 }
 
-const jobsSchema = (name = 'jobs') => `
-  CREATE TABLE ${name} (
+const SCHEMA = `
+  CREATE TABLE jobs (
     id TEXT PRIMARY KEY,
     trace_id TEXT NOT NULL,
     parent_job_id TEXT REFERENCES jobs(id),
@@ -52,8 +45,6 @@ const jobsSchema = (name = 'jobs') => `
     workspace_key TEXT NOT NULL,
     model TEXT NOT NULL,
     effort TEXT NOT NULL,
-    service_tier TEXT NOT NULL,
-    profile TEXT NOT NULL,
     time_budget_seconds INTEGER NOT NULL,
     max_turns INTEGER,
     max_budget_usd REAL,
@@ -79,10 +70,7 @@ const jobsSchema = (name = 'jobs') => `
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     heartbeat_at INTEGER NOT NULL
-  );`
-
-const SCHEMA = `
-  ${jobsSchema()}
+  );
   CREATE TABLE events (
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
@@ -143,8 +131,6 @@ function decode(row) {
     workspaceKey: row.workspace_key,
     model: row.model,
     effort: row.effort,
-    serviceTier: row.service_tier,
-    profile: row.profile,
     timeBudgetSeconds: row.time_budget_seconds,
     maxTurns: row.max_turns,
     maxBudgetUsd: row.max_budget_usd,
@@ -203,119 +189,37 @@ export class JobStore {
 
   userVersion() { return Number(this.db.prepare('PRAGMA user_version').get().user_version) }
 
+  // The job cache holds 14 days of operational history and is never an archive, so an older
+  // schema is dropped and recreated rather than carried forward through a ladder of
+  // migrations nobody can test against real rows. A NEWER schema is still refused: that
+  // database belongs to a Flow version this one cannot read, and resetting it would destroy
+  // live jobs the other version owns.
   migrate() {
-    for (;;) {
-      const version = this.userVersion()
-      if (version === SCHEMA_VERSION) return
-      if (version > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
-      if (version === 2) {
-        this.migrateFromV2()
-        continue
-      }
-      if (version === 3) {
-        this.migrateFromV3()
-        continue
-      }
-      if (version === 4) {
-        this.migrateFromV4()
-        continue
-      }
-      // Two processes can race a fresh state dir, so the version is re-read inside the write
-      // lock: the loser sees the winner's tables and returns instead of re-running the DDL.
+    const version = this.userVersion()
+    if (version === SCHEMA_VERSION) return
+    if (version > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
+    // Foreign keys off before the transaction: jobs.parent_job_id points into jobs itself, so
+    // an implicit row-by-row delete could raise a violation while the table is on its way out.
+    this.db.exec('PRAGMA foreign_keys=OFF')
+    try {
       this.db.exec('BEGIN IMMEDIATE')
       try {
-        const lockedVersion = this.userVersion()
-        if (lockedVersion > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
-        if (lockedVersion < 1) {
+        // Two processes can race a fresh state dir, so the version is re-read inside the write
+        // lock: the loser sees the winner's tables and returns instead of re-running the DDL.
+        const locked = this.userVersion()
+        if (locked > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
+        if (locked !== SCHEMA_VERSION) {
+          this.db.exec('DROP TABLE IF EXISTS leases; DROP TABLE IF EXISTS controls; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS jobs;')
           this.db.exec(SCHEMA)
           this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
-        } else if (lockedVersion === 1) {
-          this.db.exec('ALTER TABLE jobs DROP COLUMN delivery; ALTER TABLE leases DROP COLUMN heartbeat_at;')
-          this.db.exec('PRAGMA user_version=2')
         }
         this.db.exec('COMMIT')
       } catch (error) {
         try { this.db.exec('ROLLBACK') } catch {}
         throw error
       }
-    }
-  }
-
-  migrateFromV2() {
-    // Changing the status CHECK requires rebuilding jobs. Foreign keys must be disabled before
-    // the transaction so dropping the old parent table cannot cascade-delete journals or leases.
-    this.db.exec('PRAGMA foreign_keys=OFF')
-    try {
-      this.db.exec('BEGIN IMMEDIATE')
-      const version = this.userVersion()
-      if (version !== 2) {
-        this.db.exec('COMMIT')
-        return
-      }
-      // jobsSchema() is the current schema, so this rebuild reaches v4 directly and already
-      // includes provider_scope. Existing v3 databases add only that column below.
-      this.db.exec(`
-        ${jobsSchema('jobs_v3')}
-        INSERT INTO jobs_v3 (
-          id, trace_id, parent_job_id, host, target, depth, mode, access, cwd, workspace_key,
-          model, effort, service_tier, profile, time_budget_seconds, prompt,
-          output_schema_json, base_sha, head_sha, native_thread_id, native_turn_id,
-          turn_accepted_at, status, worker_pid, output, structured_json, usage_json,
-          error_json, created_at, updated_at, heartbeat_at
-        ) SELECT
-          id, trace_id, parent_job_id, host, target, depth, mode, access, cwd, workspace_key,
-          model, effort, service_tier, profile, time_budget_seconds, prompt,
-          output_schema_json, base_sha, head_sha, native_thread_id, native_turn_id,
-          turn_accepted_at, status, worker_pid, output, structured_json, usage_json,
-          error_json, created_at, updated_at, heartbeat_at
-        FROM jobs;
-        DROP INDEX jobs_status_idx;
-        DROP TABLE jobs;
-        ALTER TABLE jobs_v3 RENAME TO jobs;
-        CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
-        PRAGMA user_version=4;
-      `)
-      const violation = this.db.prepare('PRAGMA foreign_key_check').get()
-      if (violation) {
-        throw new DelegationError('DATABASE_MIGRATION', 'The delegation database migration failed its foreign-key check.')
-      }
-      this.db.exec('COMMIT')
-    } catch (error) {
-      try { this.db.exec('ROLLBACK') } catch {}
-      throw error
     } finally {
       this.db.exec('PRAGMA foreign_keys=ON')
-    }
-  }
-
-  migrateFromV3() {
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      const version = this.userVersion()
-      if (version === 3) {
-        this.db.exec('ALTER TABLE jobs ADD COLUMN provider_scope TEXT; PRAGMA user_version=4;')
-      }
-      this.db.exec('COMMIT')
-    } catch (error) {
-      try { this.db.exec('ROLLBACK') } catch {}
-      throw error
-    }
-  }
-
-  migrateFromV4() {
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      const version = this.userVersion()
-      if (version === 4) {
-        this.db.exec(`
-          CREATE INDEX IF NOT EXISTS jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
-          PRAGMA user_version=5;
-        `)
-      }
-      this.db.exec('COMMIT')
-    } catch (error) {
-      try { this.db.exec('ROLLBACK') } catch {}
-      throw error
     }
   }
 
@@ -372,15 +276,15 @@ export class JobStore {
     const at = now()
     this.db.prepare(`INSERT INTO jobs (
       id, trace_id, parent_job_id, host, target, depth, mode, access,
-      cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+      cwd, workspace_key, model, effort, time_budget_seconds,
       max_turns, max_budget_usd,
       prompt, output_schema_json, base_sha, head_sha, native_thread_id,
       status, created_at, updated_at, heartbeat_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
       .run(id, request.traceId || randomUUID(), request.parentJobId || null,
         request.host, request.target, request.depth, request.mode, request.access,
         request.cwd, request.workspaceKey, request.model, request.effort,
-        request.serviceTier, request.profile, request.timeBudgetSeconds,
+        request.timeBudgetSeconds,
         request.maxTurns ?? null, request.maxBudgetUsd ?? null, request.prompt,
         json(request.outputSchema), request.baseSha || null, request.headSha || null,
         request.nativeThreadId || null, at, at, at)

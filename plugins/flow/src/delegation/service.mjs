@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, effortsForTarget, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, EFFORTS, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, restrictedPermissionConfig } from './app-server.mjs'
 import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
 import { providerContainmentSupport, providerScopeRunning } from './containment.mjs'
@@ -19,18 +19,12 @@ function validateStart(input, target) {
   if (!MODES.includes(input.mode)) throw new DelegationError('BAD_REQUEST', 'mode is invalid.')
   if (!ACCESS_MODES.includes(input.access)) throw new DelegationError('BAD_REQUEST', 'access is invalid.')
   if (!DELIVERIES.includes(input.delivery)) throw new DelegationError('BAD_REQUEST', 'delivery is invalid.')
-  if (!effortsForTarget(target).includes(input.effort)) {
-    throw new DelegationError('BAD_REQUEST', `effort is invalid for ${target}.`)
-  }
-  if (!SERVICE_TIERS.includes(input.serviceTier)) throw new DelegationError('BAD_REQUEST', 'Only the default service tier is allowed.')
+  if (!EFFORTS.includes(input.effort)) throw new DelegationError('BAD_REQUEST', 'effort is invalid.')
   if (typeof input.model !== 'string' || !MODEL_PATTERN.test(input.model)) {
     throw new DelegationError('BAD_REQUEST', 'model is required and must match the model name shape.')
   }
   if (typeof input.cwd !== 'string' || !input.cwd.trim()) {
     throw new DelegationError('BAD_REQUEST', 'cwd is required and must be an absolute directory path.')
-  }
-  if (typeof input.profile !== 'string' || !input.profile.trim()) {
-    throw new DelegationError('BAD_REQUEST', 'profile is invalid.')
   }
   if (typeof input.prompt !== 'string' || (!input.prompt.trim() && input.mode === 'task')) {
     throw new DelegationError('BAD_REQUEST', 'Task mode requires a non-empty prompt.')
@@ -71,7 +65,7 @@ function terminal(job) { return TERMINAL_STATES.includes(job.status) }
 function settled(job) { return terminal(job) || job.status === 'quarantined' }
 
 function processGroupRunning(processGroupId) {
-  if (process.platform === 'win32' || !Number.isInteger(processGroupId) || processGroupId <= 0) return false
+  if (!Number.isInteger(processGroupId) || processGroupId <= 0) return false
   try {
     process.kill(-processGroupId, 0)
     return true
@@ -165,8 +159,6 @@ export class DelegationService {
       delivery: input.delivery || 'attached',
       effort: input.effort,
       model: input.model,
-      serviceTier: input.serviceTier || 'default',
-      profile: input.profile || 'standard',
       prompt: input.prompt || '',
       cwd: input.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || 900,
@@ -183,7 +175,7 @@ export class DelegationService {
     assertRoute({ host: this.host, target, depth: this.depth })
     const containment = providerContainmentSupport()
     if (!containment.ok) {
-      throw new DelegationError(containment.kind, 'Linux delegation requires a working systemd user scope for provider containment.')
+      throw new DelegationError(containment.kind, 'Delegation requires Linux with a working systemd user scope for provider containment.')
     }
     if (target === 'codex') {
       const host = codexHostSupport()
@@ -337,7 +329,7 @@ export class DelegationService {
           lastScanned = job
           before = { createdAt: job.createdAt, id: job.id }
           if (!isVisible) continue
-          visible.push(this.requireRoute(job))
+          visible.push(job)
           if (visible.length > limit) break scan
         }
         if (candidates.length < chunkLimit) break
@@ -384,8 +376,6 @@ export class DelegationService {
       delivery: input.delivery || 'attached',
       effort: input.effort || previous.effort,
       model: input.model || previous.model,
-      serviceTier: 'default',
-      profile: input.profile || previous.profile,
       prompt: input.prompt,
       cwd: previous.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || previous.timeBudgetSeconds,

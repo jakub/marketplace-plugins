@@ -176,7 +176,9 @@ export function runCodexJob({ job, store, settle }) {
 
       const threadParams = {
         model: job.model,
-        serviceTier: job.serviceTier,
+        // Flow never asks for another tier. It is still sent explicitly, because a turn that
+        // states its tier cannot be re-pointed by an account default changing underneath it.
+        serviceTier: 'default',
         cwd: job.cwd,
         runtimeWorkspaceRoots: [job.workspaceKey],
         approvalPolicy: 'never',
@@ -203,7 +205,7 @@ export function runCodexJob({ job, store, settle }) {
         approvalPolicy: 'never',
         approvalsReviewer: 'user',
         model: job.model,
-        serviceTier: job.serviceTier,
+        serviceTier: 'default',
         effort: job.effort,
         summary: 'detailed',
         outputSchema: providerOutputSchema(job.outputSchema),

@@ -2,14 +2,13 @@ import { readFileSync } from 'node:fs'
 
 export const HOSTS = ['claude', 'codex']
 export const TARGETS = ['claude', 'codex']
-export const MODES = ['task', 'review', 'adversarial-review']
+export const MODES = ['task', 'adversarial-review']
 export const ACCESS_MODES = ['read-only', 'workspace-write']
 export const DELIVERIES = ['attached', 'detached']
 // Codex's live model catalog starts every model at 'low'; a 'minimal' request reaches the
 // provider and dies late as BAD_MODEL, blaming the wrong parameter. Reject it at the edge.
-export const CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-export const SERVICE_TIERS = ['default']
+// Both families take the same five, so there is one list and no per-target lookup.
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const ACTIVE_STATES = ['queued', 'starting', 'running', 'reconciling']
 export const TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval']
 export const QUARANTINE_STATES = ['quarantined']
@@ -82,12 +81,6 @@ export function targetForHost(host) {
     throw new DelegationError('ROUTE_DENIED', 'The delegation host names an unknown model family.')
   }
   return host === 'claude' ? 'codex' : 'claude'
-}
-
-export function effortsForTarget(target) {
-  if (target === 'codex') return CODEX_EFFORTS
-  if (target === 'claude') return CLAUDE_EFFORTS
-  throw new DelegationError('ROUTE_DENIED', 'The delegation target names an unknown model family.')
 }
 
 export function capabilitiesForTarget(target) {
@@ -225,7 +218,6 @@ export function resultEnvelope(job) {
     access: job.access,
     model: job.model,
     effort: job.effort,
-    serviceTier: job.serviceTier,
     limits: {
       timeBudgetSeconds: job.timeBudgetSeconds,
       maxTurns: job.maxTurns,

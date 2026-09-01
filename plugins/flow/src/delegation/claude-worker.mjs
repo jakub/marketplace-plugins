@@ -351,22 +351,17 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       }
     },
 
+    // Cancel is the only control this route can queue: the service refuses a steer for a
+    // Claude job before it reaches the controls table.
     async onControl(control) {
       try {
-        if (control.type === 'cancel') {
-          cancelled = true
-          if (accepted) {
-            await interruptAndForce('cancel')
-            store.handleControl(jobId, control.id, { result: 'interrupt_sent' })
-          } else {
-            active.close()
-            store.handleControl(jobId, control.id, { result: 'cancelled_before_turn' })
-          }
+        cancelled = true
+        if (accepted) {
+          await interruptAndForce('cancel')
+          store.handleControl(jobId, control.id, { result: 'interrupt_sent' })
         } else {
-          store.handleControl(jobId, control.id, {
-            result: 'unsupported',
-            error: { kind: 'CONTROL_UNSUPPORTED', message: 'Claude does not support live turn steering.', details: null },
-          })
+          active.close()
+          store.handleControl(jobId, control.id, { result: 'cancelled_before_turn' })
         }
       } catch (error) {
         store.handleControl(jobId, control.id, { result: 'failed', error: publicError(normalizeClaudeError(error)) })

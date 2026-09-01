@@ -2,7 +2,6 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import { spawn, spawnSync } from 'node:child_process'
 import { accessSync, constants, realpathSync } from 'node:fs'
 import { delimiter, isAbsolute, resolve, sep } from 'node:path'
-import { claudeSpawnCommand } from './claude-launch.mjs'
 import { providerScopeName, scopedProviderCommand } from './containment.mjs'
 import { DelegationError } from './contracts.mjs'
 import { normalizeClaudeError } from './claude-errors.mjs'
@@ -82,17 +81,12 @@ function executablePath(name) {
   if (isAbsolute(candidate) || candidate.includes(sep)) {
     try { accessSync(candidate, constants.X_OK); return realpathSync(candidate) } catch { return null }
   }
-  const suffixes = process.platform === 'win32'
-    ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
-    : ['']
   for (const directory of (process.env.PATH || '').split(delimiter)) {
     // Do not honor POSIX's implicit current-directory entry here. A provider executable
     // must come from a named PATH directory or an explicit absolute override.
     if (!directory) continue
-    for (const suffix of suffixes) {
-      const path = resolve(directory, `${candidate}${suffix}`)
-      try { accessSync(path, constants.X_OK); return realpathSync(path) } catch {}
-    }
+    const path = resolve(directory, candidate)
+    try { accessSync(path, constants.X_OK); return realpathSync(path) } catch {}
   }
   return null
 }
@@ -108,11 +102,7 @@ export function claudeVersion() {
   try { bin = claudeExecutable() } catch {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED', version: null }
   }
-  let launch
-  try { launch = claudeSpawnCommand(bin, ['--version']) } catch (error) {
-    return { ok: false, kind: error.kind || 'CLAUDE_STARTUP', version: null }
-  }
-  const result = spawnSync(launch.command, launch.args, { encoding: 'utf8', timeout: 10_000 })
+  const result = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10_000 })
   if (result.error?.code === 'ENOENT') return { ok: false, kind: 'CLAUDE_NOT_INSTALLED', version: null }
   if (result.status !== 0) return { ok: false, kind: 'CLAUDE_VERSION', version: null }
   return { ok: true, kind: null, version: result.stdout.trim() }
@@ -123,11 +113,7 @@ export function claudeAuthStatus() {
   try { bin = claudeExecutable() } catch {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
   }
-  let launch
-  try { launch = claudeSpawnCommand(bin, ['auth', 'status', '--json']) } catch (error) {
-    return { ok: false, kind: error.kind || 'CLAUDE_STARTUP' }
-  }
-  const result = spawnSync(launch.command, launch.args, { encoding: 'utf8', timeout: 10_000 })
+  const result = spawnSync(bin, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 10_000 })
   if (result.error?.code === 'ENOENT') return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
   if (result.error) return { ok: false, kind: 'CLAUDE_STARTUP' }
   if (result.status !== 0) return { ok: false, kind: 'CLAUDE_AUTH' }
@@ -187,7 +173,7 @@ export function createClaudeQuery(job, prompt, {
   canUseTool,
 } = {}) {
   const tools = claudeTools(job.access, { structured: job.outputSchema != null })
-  const scopeName = process.platform === 'linux' ? providerScopeName(job.id) : null
+  const scopeName = providerScopeName(job.id)
   return query({
     prompt,
     options: {
@@ -234,18 +220,14 @@ export function createClaudeQuery(job, prompt, {
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
-        // npm's Windows shim cannot run without cmd.exe. Resolve its installed JavaScript
-        // entrypoint instead, so schemas and every other SDK argument bypass shell parsing.
-        const direct = claudeSpawnCommand(command, args)
-        const launch = scopedProviderCommand(direct.command, direct.args, scopeName)
+        const launch = scopedProviderCommand(command, args, scopeName)
         const child = spawn(launch.command, launch.args, {
           cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
-          windowsHide: true,
-          // A separate POSIX process group lets the worker stop the CLI and every command it
+          // A separate process group lets the worker stop the CLI and every command it
           // started before releasing a workspace-write lease.
-          detached: process.platform !== 'win32',
+          detached: true,
         })
         child.flowProviderScope = scopeName
         child.stderr?.setEncoding('utf8')
