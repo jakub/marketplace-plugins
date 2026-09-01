@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "jakub's Claude Code marketplace - plugins and skill bundles.",
-    "version": "0.39.0"
+    "version": "0.40.0"
   },
   "plugins": [
     {
@@ -20,7 +20,7 @@
     {
       "name": "flow",
       "description": "The prep \u2192 issue \u2192 land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
-      "version": "0.28.0",
+      "version": "0.29.0",
       "author": {
         "name": "jakub"
       },

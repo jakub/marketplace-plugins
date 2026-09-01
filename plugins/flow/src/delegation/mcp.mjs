@@ -52,6 +52,8 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   const requireVisibleJob = async (jobId) => service.requireVisible(jobId, await rootOptions())
   const doctorContext = async (requestedCwd) => {
     const clientCapabilities = server.server.getClientCapabilities() || {}
+    // What the initialize handshake reported, untouched. The SDK keeps the clientInfo object from
+    // that one request, so this is the conducting host's own account of its name and version.
     const client = server.server.getClientVersion() || null
     const supportsRoots = Boolean(clientCapabilities.roots)
     let rootUris = []
@@ -251,7 +253,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, asTool(async ({ cwd }) => {
     const context = await doctorContext(cwd)
-    const result = await service.doctor(context.cwd, { workspace: context.workspace })
+    const result = await service.doctor(context.cwd, { workspace: context.workspace, client: context.mcp.client })
     return toolResult({ ...result, mcp: context.mcp })
   }))
 

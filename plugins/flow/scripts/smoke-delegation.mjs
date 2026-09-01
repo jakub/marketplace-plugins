@@ -10,6 +10,7 @@ import { AppServerClient } from '../src/delegation/app-server.mjs'
 import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
 import { assertRoute, capabilitiesForHost, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
+import { universalContainment } from '../lib/seat-contract.mjs'
 
 assert.equal(process.platform, 'linux', 'smoke-delegation requires the Linux Codex host and systemd-scope contract')
 
@@ -163,6 +164,7 @@ const repo = join(temp, 'repo')
 const nestedDir = join(repo, 'nested')
 const fake = join(temp, 'fake-codex.mjs')
 const opener = join(temp, 'open-store.mjs')
+const instructionsOut = join(temp, 'developer-instructions.txt')
 
 // The migration race is a cross-process one: several Node processes opening the same fresh
 // database, not several promises inside one. Node startup jitter alone spreads the children
@@ -176,7 +178,7 @@ new JobStore(process.argv[2]).close()
 
 writeFileSync(fake, `#!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { realpathSync } from 'node:fs'
+import { realpathSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 if (process.argv[2] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0) }
 const mode = process.env.FLOW_FAKE_MODE || 'happy'
@@ -271,6 +273,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     // A Codex-target job must carry the Codex binding profile, once, between the charter
     // and the seat block. The host attribute is the family this worker runs in.
     const instructions = message.params.developerInstructions || ''
+    // capture-instructions dumps what the bundle actually sent, so the smoke can assert on the
+    // built payload instead of re-rendering it from src, where no esbuild define applies.
+    if (mode === 'capture-instructions' && !doctorProbe) writeFileSync(${JSON.stringify(instructionsOut)}, instructions)
     const profileOk = (instructions.match(/<flow-profile /g) || []).length === 1
       && instructions.includes('<flow-profile host="codex" bindings="bound">')
       && instructions.indexOf('</flow-charter>') < instructions.indexOf('<flow-profile ')
@@ -499,6 +504,35 @@ try {
   const profile = cli([...runArgs, '--profile', 'defensive-security'], { input: 'Profile test', mode: 'profile', stateDir: state('profile') })
   assert.equal(profile.status, 'succeeded')
 
+  console.log('seat contract rides the delegated payload')
+  const contractJob = cli([...runArgs, '--access', 'workspace-write'], {
+    input: 'Seat contract', mode: 'capture-instructions', stateDir: state('seat-contract'),
+  })
+  assert.equal(contractJob.status, 'succeeded', JSON.stringify(contractJob))
+  const payload = readFileSync(instructionsOut, 'utf8')
+  const openTag = '<seat-contract scope="containment">'
+  assert.equal((payload.match(/<seat-contract /g) || []).length, 1, 'expected exactly one seat-contract block')
+  assert.ok(payload.includes(openTag), 'the seat-contract block is not scoped to containment')
+  // Both halves of the ordering check, separately. indexOf returns -1 for a tag that is not there,
+  // and -1 is lower than every real index, so a payload that lost </delegated-seat> altogether
+  // would satisfy the comparison below while proving nothing.
+  const seatBlockEnd = payload.indexOf('</delegated-seat>')
+  assert.ok(seatBlockEnd >= 0, 'the delegated payload has no </delegated-seat> to order against')
+  assert.ok(seatBlockEnd < payload.indexOf(openTag), 'the seat-contract block must sit after the delegated-seat block, and it does not')
+  const blockStart = payload.indexOf(openTag) + openTag.length
+  const blockEnd = payload.indexOf('</seat-contract>')
+  assert.ok(blockEnd > blockStart, 'the seat-contract block never closes')
+  const contractBlock = payload.slice(blockStart, blockEnd)
+  // A byte-identical rebuild proves the bundle matches src and nothing more. Reading the canonical
+  // contract here is what proves the bundle was built with __FLOW_SEAT_CONTRACT__ pointing at it.
+  const containment = universalContainment(readFileSync(join(root, 'seat-contract.md'), 'utf8')).trim()
+  assert.ok(contractBlock.includes(containment), 'the delegated payload lost the canonical Containment section')
+  // Containment and nothing else. The other three sections are doctrine for a seat working an
+  // issue; a caller that wants them pastes them into its own task text.
+  for (const heading of ['Synchronous execution', 'Scope and completion', 'Reporting']) {
+    assert.ok(!contractBlock.includes(`## ${heading}`), `the seat-contract block carries ${heading}, which must never ride a delegated payload`)
+  }
+
   console.log('immutable structured review')
   const reviewState = state('review')
   const review = cli([...runArgs, '--mode', 'adversarial-review', '--base', 'HEAD~1'], { mode: 'review', stateDir: reviewState })
@@ -544,9 +578,10 @@ try {
   assert.equal(capabilitiesForHost('claude').capabilities['hook-ask'].supported, true)
 
   // The slice 3 rows were probed a day after the table default, so every Codex cell in them
-  // carries its own verifiedAt. Their Claude cells fall back to the table date, and so does an
-  // untouched older row, which is what proves the override lands per entry instead of re-dating
-  // the whole table.
+  // carries its own verifiedAt, and four of the Claude cells carry the 2026-08-31 re-verification
+  // date. skill-composition is the one Claude cell in this group that run did not exercise, so it
+  // still reads the table default, which is what proves a date lands per entry rather than
+  // re-dating the whole table.
   const tableDefaultDate = hostInventories.codex.capabilities['hook-deny'].verifiedAt
   assert.equal(tableDefaultDate, '2026-08-29', 'table default date')
   const sliceThreeRows = {
@@ -564,10 +599,38 @@ try {
       assert.equal(entry.assurance, assurance, `${host}/${id} assurance`)
     }
     assert.equal(hostInventories.codex.capabilities[id].verifiedAt, '2026-08-30', `codex/${id} verifiedAt`)
-    assert.equal(hostInventories.claude.capabilities[id].verifiedAt, tableDefaultDate, `claude/${id} verifiedAt`)
+    const claudeDate = id === 'skill-composition' ? tableDefaultDate : '2026-08-31'
+    assert.equal(hostInventories.claude.capabilities[id].verifiedAt, claudeDate, `claude/${id} verifiedAt`)
   }
   assert.throws(() => { hostInventories.codex.capabilities['agent-depth-limit'].verifiedAt = '1999-01-01' }, TypeError)
   assert.throws(() => { hostInventories.claude.capabilities['skill-composition'].supported = false }, TypeError)
+
+  // The 2026-08-31 Claude re-verification. The machine had moved to claude-code 2.1.252 while the
+  // record still said 2.1.251, the drift gate caught it, and these five rows were re-dated because
+  // the slice 4 run used every one of them: seat tool lists held, leaf defs with no Agent tool
+  // could not spawn, the PreToolUse guards fired inside seats, and the session still advertised
+  // roots. Watched at work, not re-probed, so no supported or assurance value moved with the date.
+  assert.equal(hostInventories.claude.verifiedAgainst, 'claude-code 2.1.252', 'the claude record names the version those rows were re-verified under')
+  for (const id of ['per-seat-tool-allowlist', 'agent-depth-limit', 'per-seat-authority-narrowing', 'hooks-in-native-children', 'mcp-client-roots']) {
+    assert.equal(hostInventories.claude.capabilities[id].verifiedAt, '2026-08-31', `claude/${id} verifiedAt`)
+    assert.equal(hostInventories.claude.capabilities[id].supported, true, `claude/${id} supported`)
+    assert.equal(hostInventories.claude.capabilities[id].assurance, 'mechanism', `claude/${id} assurance`)
+  }
+
+  // The issue-stage profiles cite these ids by name, in prose no test parses. Renaming a row in
+  // HOST_CAPABILITY_TABLE has to fail here rather than leave a profile naming an id nobody has.
+  const citedCapabilities = {
+    claude: ['per-seat-tool-allowlist', 'agent-depth-limit', 'hooks-in-native-children', 'mcp-client-roots'],
+    codex: [
+      'per-seat-authority-narrowing', 'agent-depth-limit', 'hooks-in-native-children',
+      'mcp-client-roots', 'implicit-skill-suppression',
+    ],
+  }
+  for (const [host, ids] of Object.entries(citedCapabilities)) {
+    for (const id of ids) {
+      assert.ok(hostInventories[host].capabilities[id], `the ${host} issue-stage profile cites capability ${id}, which the inventory no longer has`)
+    }
+  }
 
   console.log('route and nesting guards')
   assert.throws(
@@ -1375,11 +1438,136 @@ try {
   assert.equal(doctorResult.structuredContent.checks.restrictedPermissions.profile, 'flow_delegation')
   assert.equal(doctorResult.structuredContent.mcp.client.name, 'flow-smoke')
   assert.equal(doctorResult.structuredContent.mcp.capabilities.roots.listChanged, true)
+  // The live operand for a version-drift check against hostCapabilities.verifiedAgainst. It is a
+  // top-level field, beside that record rather than buried under mcp, and it repeats what this
+  // client's initialize sent: name flow-smoke, version 1.0.0.
+  assert.deepEqual(doctorResult.structuredContent.client, { name: 'flow-smoke', version: '1.0.0' })
   const doctorHostCapabilities = doctorResult.structuredContent.hostCapabilities
   assert.equal(doctorHostCapabilities.schemaVersion, 1)
   assert.equal(doctorHostCapabilities.host, 'claude')
   assert.equal(doctorHostCapabilities.capabilities['hook-deny'].supported, true)
   assert.equal(doctorResult.structuredContent.checks.hostCapabilities, undefined, 'the inventory is a sibling of checks, not a check')
+  // No MCP session can arrive without clientInfo: the SDK's InitializeRequestParamsSchema makes it
+  // required, so an initialize that omits it is rejected and no session exists to run doctor over.
+  // The CLI doctor is the real no-handshake path, and it answers nulls instead of inventing a
+  // version for a caller it never saw.
+  const cliDoctor = cli(['doctor', '--cwd', repo], { stateDir: state('cli-doctor') })
+  assert.deepEqual(cliDoctor.client, { name: null, version: null })
+
+  // The names a host is allowed to introduce itself by. A Claude record reads "claude-code 2.1.252"
+  // while the client says "claude", and neither spelling is wrong. Keyed by host and fixed, exactly
+  // as the issue-stage profiles write them, so a new host is an edit in both places.
+  //
+  // Keyed by host and not derived from the record, because the record is the thing under suspicion.
+  // A verifiedAgainst cross-copied between hosts, a codex-cli string sitting in the Claude row,
+  // would otherwise re-anchor the whole rule: it would start admitting codex clients on the Claude
+  // route while the profile rejects the real Claude client. Host in, allowed names out.
+  //
+  // codex-mcp-client is the literal name the 0.151.0 MCP client sends in its initialize handshake
+  // (codex-rs rust-v0.151.0, rmcp_client.rs), so it is the identity a real Codex preflight reads,
+  // and the issue-stage codex profile accepts it. Without it every production Codex session would
+  // read as drifted while this smoke passed on names no client actually sends.
+  const HOST_PRODUCT_NAMES = {
+    claude: new Set(['claude', 'claude-code']),
+    codex: new Set(['codex', 'codex-cli', 'codex-mcp-client']),
+  }
+
+  // The drift decision the issue-stage preflight makes, written out here so the shapes it stands
+  // on are under test. The normative text is skills/issue-stage/profiles/<host>.md; this is a copy
+  // of that rule, not a second authority. Split verifiedAgainst on its one space into a product and
+  // a version. A client.name outside the host's set is drift on its own, whatever version it
+  // reports, so that check runs first: flow-smoke reporting 0.151.0 tells you nothing about
+  // codex-cli 0.151.0. There is no fallback for a name nobody listed, because the profiles have no
+  // such rule and inventing one here would be the smoke disagreeing with the normative text. With
+  // the name accepted, or with no name to judge, the version decides and has to match string for
+  // string. No client, no version, an unlisted host, or a record that will not split is drift too,
+  // because a preflight that cannot read its own record has verified nothing.
+  const driftedAgainst = (host, observed, verifiedAgainst) => {
+    const allowed = HOST_PRODUCT_NAMES[host]
+    if (!allowed) return { drifted: true, reason: `no product names are written down for host ${JSON.stringify(host)}` }
+    const parts = String(verifiedAgainst ?? '').split(' ')
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return { drifted: true, reason: `the record ${JSON.stringify(verifiedAgainst)} is not one product and one version` }
+    }
+    const version = parts[1]
+    if (!observed) return { drifted: true, reason: 'the doctor result carries no client identity' }
+    if (observed.name && !allowed.has(observed.name)) {
+      return { drifted: true, reason: `the client calls itself ${observed.name}, which is not a name the ${host} host answers to` }
+    }
+    if (!observed.version) return { drifted: true, reason: 'the client reported no version' }
+    if (observed.version === version) {
+      return { drifted: false, reason: `the client reports ${version}, the version the record was verified against` }
+    }
+    return { drifted: true, reason: `the client reports version ${observed.version}, and the record was verified against ${version}` }
+  }
+
+  // Both real records, because the bug this replaces was a shape mismatch: the rule compared a
+  // bare clientInfo.version against a product-qualified record and could never match. If a future
+  // verifiedAgainst stops being "<product> <version>", these cases fail here rather than turning
+  // every preflight into a silent pass.
+  for (const inventoryHost of ['claude', 'codex']) {
+    const record = capabilitiesForHost(inventoryHost).verifiedAgainst
+    const fields = record.split(' ')
+    assert.equal(fields.length, 2, `${inventoryHost} verifiedAgainst ${JSON.stringify(record)} is not "<product> <version>"`)
+    const [product, version] = fields
+    const allowed = HOST_PRODUCT_NAMES[inventoryHost]
+    // The record and the host must agree before any case below means anything. A verifiedAgainst
+    // copied from the other host fails right here, instead of quietly re-pointing the cases at the
+    // wrong product and passing.
+    assert.ok(allowed.has(product), `the ${inventoryHost} record names product ${product}, which is not a ${inventoryHost} name: expected one of ${[...allowed].join(', ')}`)
+    // Every record is product-qualified, so the host's other spelling is the short one.
+    const shortName = [...allowed].find((one) => one !== product)
+    assert.ok(shortName, `${inventoryHost}: ${product} has no second spelling to test with`)
+    const cases = [
+      { label: 'the version the record names', client: { name: product, version }, drifted: false },
+      { label: 'the same host under its short name', client: { name: shortName, version }, drifted: false },
+      { label: 'an upgraded host', client: { name: product, version: '9.9.9' }, drifted: true },
+      { label: 'the whole record passed as a version', client: { name: product, version: record }, drifted: true },
+      { label: 'a null version', client: { name: product, version: null }, drifted: true },
+      { label: 'another product on the matching version', client: { name: 'flow-smoke', version }, drifted: true },
+      { label: 'another product with no version', client: { name: 'flow-smoke', version: null }, drifted: true },
+      { label: 'no name, matching version', client: { name: null, version }, drifted: false },
+      { label: 'no name, wrong version', client: { name: null, version: '9.9.9' }, drifted: true },
+      { label: 'no client at all', client: null, drifted: true },
+      { label: 'a record that will not split', client: { name: product, version }, record: product, drifted: true },
+    ]
+    for (const one of cases) {
+      const verdict = driftedAgainst(inventoryHost, one.client, one.record ?? record)
+      assert.equal(verdict.drifted, one.drifted, `${inventoryHost}, ${one.label}: ${verdict.reason}`)
+    }
+    // A name outside the host's set decides on its own, so the reason names the host and never
+    // reaches version talk. The other host's own name is foreign here too, which is the case that
+    // a record-derived alias set would have got wrong.
+    const foreign = driftedAgainst(inventoryHost, { name: 'flow-smoke', version }, record)
+    assert.match(foreign.reason, new RegExp(`^the client calls itself flow-smoke, which is not a name the ${inventoryHost} host answers to$`), `${inventoryHost}: ${foreign.reason}`)
+    const otherHost = inventoryHost === 'claude' ? 'codex' : 'claude'
+    for (const otherName of HOST_PRODUCT_NAMES[otherHost]) {
+      assert.equal(driftedAgainst(inventoryHost, { name: otherName, version }, record).drifted, true, `${inventoryHost} accepted ${otherName}, a ${otherHost} name`)
+    }
+    // Every name the host answers to has to pass on the record's own version, so a name added to
+    // the set later is exercised without waiting for someone to write it a case.
+    for (const name of allowed) {
+      assert.equal(driftedAgainst(inventoryHost, { name, version }, record).drifted, false, `${inventoryHost} rejected its own name ${name} on version ${version}`)
+    }
+  }
+
+  // The real Codex client, spelled out on both hosts rather than left to the loops above, because
+  // this is the identity a production preflight reads and the one a synthetic flow-smoke fixture
+  // could never have caught.
+  const codexRecord = capabilitiesForHost('codex').verifiedAgainst
+  const claudeRecord = capabilitiesForHost('claude').verifiedAgainst
+  const codexMcpOnCodex = driftedAgainst('codex', { name: 'codex-mcp-client', version: codexRecord.split(' ')[1] }, codexRecord)
+  assert.equal(codexMcpOnCodex.drifted, false, `the codex host rejected its own MCP client: ${codexMcpOnCodex.reason}`)
+  const codexMcpOnClaude = driftedAgainst('claude', { name: 'codex-mcp-client', version: claudeRecord.split(' ')[1] }, claudeRecord)
+  assert.equal(codexMcpOnClaude.drifted, true, 'the claude host accepted codex-mcp-client, another product')
+  assert.equal(driftedAgainst('claude', { name: 'codex-mcp-client', version: codexRecord.split(' ')[1] }, claudeRecord).drifted, true, 'the claude host accepted codex-mcp-client on a Codex version')
+
+  assert.equal(driftedAgainst('gemini', { name: 'gemini', version: '1.0.0' }, 'gemini 1.0.0').drifted, true, 'a host with no written-down names read as current')
+  // The decision itself, over the result this doctor call just returned. flow-smoke 1.0.0 is not
+  // the host the inventory was verified against, so a preflight running this rule stops here.
+  const liveDrift = driftedAgainst(doctorHostCapabilities.host, doctorResult.structuredContent.client, doctorHostCapabilities.verifiedAgainst)
+  assert.equal(liveDrift.drifted, true, `the live doctor result read as current: ${liveDrift.reason}`)
+  assert.equal(driftedAgainst(doctorHostCapabilities.host, cliDoctor.client, doctorHostCapabilities.verifiedAgainst).drifted, true, 'a doctor result with no handshake read as current')
   // Unsupported entries are inventory, not failures. Doctor stays ok while they are present.
   assert.ok(Object.values(doctorHostCapabilities.capabilities).some((entry) => entry.supported === false))
   assert.equal(doctorResult.structuredContent.ok, true)

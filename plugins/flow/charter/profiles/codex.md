@@ -33,13 +33,11 @@ the search itself needs judgment.
 
 ### role: pipeline-entry
 
-No slash commands - this host ignores a plugin's commands directory. Prep and land run
-here: the human names the plugin's `prep-stage` or `land-stage` skill, or asks for that
-stage in words. A discovered defect, adjacent discussion, or a PR that merely looks ready
-is never an invocation. Issue is NOT yet runnable on this host (issue #6, slice 4): a prep
-that finishes here hands off to `/flow:issue N` in a Claude-hosted session. Do not improvise
-the issue stage from the charter's summary, and do not slide into implementing inline after
-the triviality gate declined it - a stage without its body skips the claim rules and the
+No slash commands - this host ignores a plugin's commands directory. All three stages run
+here: the human names the plugin's `prep-stage`, `issue-stage` or `land-stage` skill, or
+asks for that stage in words. A discovered defect, adjacent discussion, or a PR that merely
+looks ready is never an invocation. Do not slide into implementing inline after the
+triviality gate declined it - a stage without its body skips the claim rules and the
 containment that make it safe.
 
 ### role: artifact-publish

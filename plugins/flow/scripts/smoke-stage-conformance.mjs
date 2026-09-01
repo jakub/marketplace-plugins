@@ -347,6 +347,55 @@ const PAIR_CASES = [
     dir: 'bad-headings',
     names: ['declares gate mini-open in more than one section', '### Gate: mini-close', 'not a canonical "### gate: <id>" heading'],
   },
+  {
+    // The stage's second marker sits inside an HTML comment, so it reaches no session, and both
+    // profile bindings are otherwise fine. A checker that reads markers before stripping comments
+    // still counts mini-close as marked and calls the pair complete.
+    dir: 'commented-marker',
+    names: ['declares gate mini-close, which the stage never marks'],
+  },
+  {
+    // A fenced example quotes the comment grammar's opener and never closes it. A checker that
+    // strips comments before it strips fenced code reads that quoted opener as real and erases
+    // everything after the fence, including the second live marker, before extraction runs. The
+    // fix is: strip code first. This must report the second gate as missing from the profile, not
+    // pass the pair by losing mini-close before the comparison even starts.
+    dir: 'fenced-comment-opener',
+    names: ['mini.md has no "### gate: mini-close" section'],
+  },
+  {
+    // The same quoted, unterminated opener, in an inline code span instead of a fenced block.
+    dir: 'inline-comment-opener',
+    names: ['mini.md has no "### gate: mini-close" section'],
+  },
+  {
+    // The same opener, quoted inside a 4-space indented code block. prose() strips fenced and
+    // inline code but not this form, so the opener reaches the comment stripper live and swallows
+    // the second marker the same way the fenced and inline cases used to. Rather than teach the
+    // engine to classify indented code, it has to name the unterminated comment loudly instead of
+    // silently losing everything after it.
+    dir: 'indented-comment-opener',
+    names: ['the stage opens an HTML comment that never closes, so everything after it would be invisible to this lint'],
+  },
+  {
+    // The opener sits on one indented line and a real closer sits on a later indented line, so the
+    // comment terminates and the unterminated-comment rule alone would miss it. Everything between
+    // the two indented lines, including the second live marker, still reads as commented out. The
+    // structural ban catches this: a comment delimiter may not sit on an indented-code line at
+    // all, closed or not, because a fenced block is the sanctioned way to quote one.
+    dir: 'indented-terminated-comment',
+    names: ['the stage quotes an HTML comment delimiter in indented code, which this lint cannot classify - use a fenced block'],
+  },
+  {
+    // A bare "<!-->" in ordinary prose. Its own trailing dashes read as a "-->" to a closer search
+    // that starts at the opener's position instead of past it, so the unterminated-comment rule
+    // used to see this spelling as closed while uncommented() erased to end of file anyway. This
+    // only closes that index-math gap in the loud rule; "<!-->" and kin are not canonical HTML
+    // comment syntax to begin with, and that wider grammar divergence is a ratified residual, not
+    // a defect this fix is trying to close.
+    dir: 'invalid-comment-spelling',
+    names: ['the stage opens an HTML comment that never closes, so everything after it would be invisible to this lint'],
+  },
 ]
 for (const { dir, names } of PAIR_CASES) {
   const at = join(FIXTURE, dir)

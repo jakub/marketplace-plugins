@@ -50,6 +50,15 @@ function validateStart(input, target) {
   }
 }
 
+// The MCP initialize handshake is the only live report of who is calling this service. A reader
+// checking whether hostCapabilities.verifiedAgainst still describes the host it runs on needs
+// that observed value as the second operand, or it compares the static record against itself and
+// learns nothing. Doctor repeats clientInfo exactly as the handshake gave it, and answers nulls
+// when there was no handshake to read: never a guess, never this service's own version.
+function observedClient(client) {
+  return { name: client?.name ?? null, version: client?.version ?? null }
+}
+
 function terminal(job) { return TERMINAL_STATES.includes(job.status) }
 function settled(job) { return terminal(job) || job.status === 'quarantined' }
 
@@ -381,9 +390,11 @@ export class DelegationService {
     } finally { await client.stop() }
   }
 
-  async doctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
+  // handshakeClient, not client: the App Server connection a few lines down already owns that
+  // name inside this method, and two different clients under one identifier is a trap.
+  async doctor(cwd, { workspace = { ok: Boolean(cwd) }, client: handshakeClient = null } = {}) {
     const target = this.target()
-    if (target === 'claude') return this.claudeDoctor(cwd, { workspace })
+    if (target === 'claude') return this.claudeDoctor(cwd, { workspace, client: handshakeClient })
     const checks = {
       workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
@@ -466,10 +477,10 @@ export class DelegationService {
     // hostCapabilities sits beside checks, never inside it. It is a declarative inventory of
     // what this harness can do, so a false entry is a fact about the harness and must not pull
     // doctor's ok down the way a failed probe does.
-    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), hostCapabilities: capabilitiesForHost(this.host), checks }
+    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), client: observedClient(handshakeClient), hostCapabilities: capabilitiesForHost(this.host), checks }
   }
 
-  async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) } } = {}) {
+  async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) }, client = null } = {}) {
     const checks = {
       workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
@@ -498,6 +509,7 @@ export class DelegationService {
       ok: Object.values(checks).every((check) => check.ok),
       target: 'claude',
       capabilities: this.capabilities(),
+      client: observedClient(client),
       hostCapabilities: capabilitiesForHost(this.host),
       checks,
     }

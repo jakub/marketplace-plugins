@@ -1,0 +1,5 @@
+interface:
+  display_name: "Issue Stage"
+  short_description: "Drive one ready-for-agent issue to a pushed, reviewed, evidenced PR"
+policy:
+  allow_implicit_invocation: false

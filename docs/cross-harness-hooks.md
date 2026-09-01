@@ -8,7 +8,7 @@ Prompt text follows the same split. A stage that both harnesses run is one host-
 skill body plus one profile per harness, and the command file that used to hold the steps
 becomes an alias that reads its own profile first.
 
-This document describes the implemented contract as of 2026-08-30. Product behavior
+This document describes the implemented contract as of 2026-08-31. Product behavior
 that can change is based on the current Codex hooks documentation and must be rechecked
 before changing an adapter.
 
@@ -64,6 +64,7 @@ contract.
 | Flow registry publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
 | Flow pull request merge | Pre-approved `gh pr merge --squash --match-head-commit`, no per-command prompt. The human's explicit `/flow:land` invocation, then the stage's CI-green and unresolved-thread checks, are the gate | Same gate (the human asked in words), same checks; a repo with a committed `.flow/managed` marker routes the merge through `scripts/land-merge.mjs`, which re-derives every fact from GitHub before merging | `mergeShapes()` classifies the routed commands; the executor holds the checks |
 | Flow prep stage | `/flow:prep` is an alias that reads `skills/prep-stage/profiles/claude.md`, then the skill | The plugin-namespaced `prep-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/prep-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
+| Flow issue stage | `/flow:issue` is an alias that reads `skills/issue-stage/profiles/claude.md`, then the skill | The plugin-namespaced `issue-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/issue-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Flow land stage | `/flow:land` is an alias that reads `skills/land-stage/profiles/claude.md`, then the skill | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |

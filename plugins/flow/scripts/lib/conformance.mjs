@@ -99,6 +99,38 @@ export const prose = (text) => spanless(unfenced(text))
 // nobody closed is inside the comment too.
 export const uncommented = (text) => text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
 
+// Whether text holds a "<!--" with no matching "-->" anywhere after it. Walks opener to closer to
+// opener, the same pairing uncommented()'s regex does, so this agrees with what that function is
+// about to erase: a closed comment earlier in the text does not make a later, unclosed one safe.
+// The closer search starts at open + 4, past the opener's own four characters, for the same
+// reason uncommented()'s regex only starts looking for "-->" after "<!--" matches: "<!-->" and
+// "<!--->" both have a "-->" sitting inside the opener itself, borrowing its trailing dashes.
+// Searching from open, not open + 4, reads that borrowed "-->" as a real closer and calls the
+// comment closed, while uncommented() still finds no "-->" after the opener and erases to end of
+// file. A helper that disagrees with the function it is supposed to be watching stays silent on
+// exactly the spellings it exists to catch.
+const opensUnclosedComment = (text) => {
+  let at = 0
+  for (;;) {
+    const open = text.indexOf('<!--', at)
+    if (open === -1) return false
+    const close = text.indexOf('-->', open + 4)
+    if (close === -1) return true
+    at = close + 3
+  }
+}
+
+// A conservative reading of CommonMark's other code form: four or more literal leading spaces on
+// a line that is not blank. It is not a parser, on purpose. Telling indented code apart from an
+// indented continuation of a list item needs the list-continuation rules, and getting that
+// slightly wrong either misses a real one or flags a paragraph that just happens to be indented.
+// This never has to be exact, because the rule it feeds is a ban, not a strip: any line shaped
+// like indented code that also carries a comment delimiter is a problem regardless of which way
+// the shape call was right.
+const INDENTED_CODE_LINE = /^ {4,}\S.*$/gm
+const quotesCommentDelimiterInIndentedCode = (text) => [...text.matchAll(INDENTED_CODE_LINE)]
+  .some((line) => line[0].includes('<!--') || line[0].includes('-->'))
+
 export const repeats = (list) => [...new Set(list.filter((v, i) => list.indexOf(v) !== i))]
 
 const idsOf = (re, text) => [...text.matchAll(re)].map((m) => m[1])
@@ -160,11 +192,49 @@ export const bindingProblems = ({ keyword, sourceName, sourceText, profiles }) =
   const lf = (text) => text.replace(/\r\n/g, '\n')
   const g = markerGrammar(keyword)
   const problems = []
-  const source = prose(body(lf(sourceText)))
+  // Code first, then comments, and the two must not run in the other order. prose() has to strip
+  // fenced blocks and inline spans before uncommented() ever sees the text, because a stage file
+  // documents its own grammar by writing an example, and "<!--" typed as data inside a fence or a
+  // span is not a comment opener, it is four characters the example quotes. Stripping comments
+  // first reads that quoted opener as real markup and, if the file never happens to write a
+  // closing "-->" after it, erases everything from the example to the end of the file, taking any
+  // later live marker down with it, before a single marker gets extracted. Stripping code first
+  // removes the fence or span (and the quoted opener inside it) as a whole, so nothing it contains
+  // can start a comment that reaches past it.
+  //
+  // prose() does not know CommonMark's other code form, the 4-space indented block: telling it
+  // apart from an indented paragraph needs the list-continuation rules, which makes it a parser,
+  // not a strip. This lint is not going to become one, so a quoted "<!--" written that way reaches
+  // here live either way. Two rules cover it, and neither depends on getting the classification
+  // right. First, a structural ban: no line shaped like indented code may carry a comment
+  // delimiter at all, terminated or not, because a fenced block is already the sanctioned way to
+  // quote comment syntax and costs nothing extra to use. Second, a belt-and-suspenders check for
+  // any comment, indented or not, that opens and never closes: it reads the same code-stripped
+  // text for a "<!--" with no matching "-->" before the end of it. Either one says so by name,
+  // loudly, instead of silently losing every marker after the delimiter the way uncommented()
+  // would. First-party doctrine never legitimately quotes comment syntax outside a fence or opens
+  // a comment it doesn't close, so a false alarm from either rule is not a real cost.
+  const codeStripped = prose(body(lf(sourceText)))
+  if (quotesCommentDelimiterInIndentedCode(codeStripped)) {
+    problems.push(`${sourceName} quotes an HTML comment delimiter in indented code, which this `
+      + 'lint cannot classify - use a fenced block')
+  }
+  if (opensUnclosedComment(codeStripped)) {
+    problems.push(`${sourceName} opens an HTML comment that never closes, so everything after it `
+      + 'would be invisible to this lint')
+  }
+  const source = uncommented(codeStripped)
   const marked = idsOf(g.marker, source)
-  // The one preprocessing point for profiles. Heading discovery and the empty-section scan read
-  // the same comment-free text, so a whole binding wrapped in one comment cannot pass both by
-  // answering the parity check with a hidden heading and the emptiness check with its own body.
+  // A marker sitting inside a real HTML comment in the stage file reaches no session either, the
+  // same as a commented heading in a profile: the hook prints the stage prose, and a reader never
+  // sees markup a comment hides. If the source read it as live, the profiles would be forced to
+  // bind an id the rendered stage never actually marks.
+  //
+  // The profile order stays comments-then-code, unlike the source above: heading discovery and
+  // the empty-section scan below read the same comment-free, still-fenced text, so a whole binding
+  // wrapped in one comment cannot pass both by answering the parity check with a hidden heading and
+  // the emptiness check with its own body. That is a separate, already-documented tradeoff and this
+  // fix leaves it in place.
   const readable = Object.fromEntries(
     Object.entries(profiles).map(([name, text]) => [name, uncommented(lf(text))]),
   )

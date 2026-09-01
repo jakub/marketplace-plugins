@@ -23,7 +23,8 @@ they name the plugin's `prep-stage` skill or ask in words to prep, create, or re
 issue. A bare integer or `#N` is issue mode; anything else is free text; a message that
 mentions `#N` while describing something else suspends the turn to ask which. A discovered
 defect, adjacent discussion, or a bare "what next" never selects this stage. The re-prep
-question and the buried-work override each suspend the turn.
+question, the offer to adopt an open duplicate, and the buried-work override each suspend the
+turn.
 
 ### gate: scout-fanout
 
@@ -95,7 +96,7 @@ frontier takes four turns; that is the cost of this host, not a reason to stack.
 
 ### gate: handoff
 
-One line: `#N design-hardened → ready-for-agent → issue stage unavailable on this host; run
-/flow:issue N in Claude Code`. Two prohibitions stated in the same message: do not improvise
-the issue stage from the charter's summary, and do not fall into implementing inline after
-the triviality gate declined it.
+One line: `#N design-hardened → ready-for-agent → issue-stage N` (or done-now / split /
+needs-info), naming the decisions made and any doc touched. The plugin's `issue-stage` skill is
+the next stage on this host, and naming a stage is not invoking it - the human's next message is
+the authorization. Do not fall into implementing inline after the triviality gate declined it.
