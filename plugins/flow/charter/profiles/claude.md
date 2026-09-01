@@ -5,11 +5,6 @@ host's mechanism; the charter says what a role is for, this file says what it is
 
 ## Bindings
 
-### role: orchestrator-model
-
-The session model the human launched conducts - on this host that's usually Fable. The
-model table governs every other seat.
-
 ### role: sub-seat
 
 The Agent tool. Read-only seats use the built-in agent types; write-capable pipeline
@@ -26,6 +21,12 @@ type starts from harness defaults, so carry the non-negotiables in the prompt.
 `Explore` agents at `model: sonnet`. Escalate the model when the search itself needs
 judgment.
 
+### role: human-choice
+
+The AskUserQuestion tool: up to 4 questions per call, each with selectable options and
+the recommendation first. The answer comes back inside the same turn, so asking does not
+end a run. Never replace it with a prose question the human has to answer in an essay.
+
 ### role: pipeline-entry
 
 The slash commands: `/flow:prep` → `/flow:issue` → `/flow:land`, typed by the human.
@@ -35,7 +36,3 @@ The invocation is the authorization.
 
 The `/artifacts` skill (plans client). PR evidence publishes with `--keep`; artifacts
 stay tailnet-private.
-
-### role: gripe-cli
-
-The `gripe` CLI resolves through the shell. File silently.
