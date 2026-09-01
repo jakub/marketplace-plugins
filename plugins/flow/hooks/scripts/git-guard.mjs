@@ -133,28 +133,24 @@ const isGitToken = (t) => /(^|[/=])git$/.test(t)
 // a backslash outside quotes; a backtick, $(, <(, >(, parentheses or braces anywhere outside
 // single quotes; a lone '&'; a quote glued to a word except after --opt=; a redirection that is
 // not to /dev/null or a descriptor; a command word that is quoted, holds '$', is an assignment,
-// or is a shell, interpreter, exec-wrapper or shell keyword; a pipe into anything but a fixed set
-// of read-only filters; a heredoc whose unquoted body interpolates. Two exceptions carry the
-// jobs' real commands: bash or sh may run a script under the plugin root, and node may run a
-// script (never -e, -p, --eval, --print, --input-type, --require, --import). Quoted argument
+// or is not on the short allowlist of commands a job runs; a '$' anywhere outside single quotes,
+// since a one-shot cron call has no variables worth keeping and "$GH_TOKEN" in a comment body
+// is an exfiltration; a pipe into anything but a fixed set of read-only filters. Two shapes
+// carry the jobs' real commands: bash or sh may run a script under the plugin root and nothing
+// else, and node may run a .mjs or .js script path and nothing else (never -e, -p, --eval,
+// --print, --input-type, --require, --import, and never a script on stdin). Quoted argument
 // words then drop out before the git classifier below reads the command words, so an issue
 // body that mentions a git write is prose again.
-const CRON_COMMAND_DENY = new Set([
-  'sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'eval', 'exec', 'source', '.', 'command',
-  'builtin', 'xargs', 'env', 'nohup', 'time', 'timeout', 'nice', 'ionice', 'setsid', 'sudo',
-  'doas', 'script', 'find', 'awk', 'gawk', 'mawk', 'sed', 'perl', 'python', 'python3', 'ruby',
-  'php', 'lua', 'make', 'watch', 'expect', 'screen', 'tmux', 'trap', 'if', 'then', 'else',
-  'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'in', 'function',
-  'select', 'coproc', 'export', 'declare', 'typeset', 'local', 'readonly', 'let', 'set',
-  'unset', 'shopt', 'alias', 'unalias', 'read', 'mapfile', 'readarray',
-])
+// The command words a cron job may run at all. Anything else in command position is refused,
+// so `git log; rm -rf ~` and `git log; curl ...` die on the word and not on a guess about
+// what it does. Pipe targets have their own, narrower set below.
+const CRON_COMMANDS = new Set(['git', 'gh', 'node', 'bash', 'sh', 'claude', 'gripe', 'echo', 'true', 'ls', 'cat', 'pwd', 'date', 'test', '['])
 const CRON_FILTERS = new Set([
   'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'wc', 'cut', 'tr', 'jq', 'cat',
   'column', 'paste', 'rev', 'nl', 'fold', 'fmt', 'tac',
 ])
 const NODE_EVAL = /^(-e|-p|-r|-i|--eval|--print|--require|--import|--input-type|--loader|--experimental-loader)(=|$)/
 const PLAIN_COMMAND_WORD = /^[A-Za-z0-9_./+-]+$/
-const INTERPOLATES = /\$\(|`/
 const pluginRoot = () =>
   process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -195,7 +191,7 @@ const cronScanTarget = (cmd) => {
     const next = cmd[i + 1]
     if (ch === '\\') return stop('a backslash escape outside quotes')
     if (ch === '`') return stop('a backtick substitution')
-    if (ch === '$' && next === '(') return stop('a $( ) substitution')
+    if (ch === '$') return stop('a $ outside single quotes (no substitution, no variable, no exfiltration)')
     if ((ch === '<' || ch === '>') && next === '(') return stop('a process substitution')
     if (ch === '(' || ch === ')' || ch === '{' || ch === '}') return stop(`a shell grouping character (${ch})`)
     if (ch === "'" || ch === '"') {
@@ -204,7 +200,7 @@ const cronScanTarget = (cmd) => {
       const read = readQuoted(i, ch)
       if (!read) return stop('an unterminated quote')
       const [content, after] = read
-      if (ch === '"' && INTERPOLATES.test(content)) return stop('a substitution inside double quotes')
+      if (ch === '"' && /[$`]/.test(content)) return stop('a $ or backtick inside double quotes')
       const tail = cmd[after]
       if (tail !== undefined && !/[\s;|&]/.test(tail)) return stop('a quote glued to a word')
       openWord()
@@ -249,7 +245,7 @@ const cronScanTarget = (cmd) => {
         const endRe = new RegExp('^\\s*' + h.delimiter.replace(/-/g, '\\-') + '\\s*$', 'm')
         const em = endRe.exec(rest)
         const body = em ? rest.slice(0, em.index) : rest
-        if (!h.quoted && (INTERPOLATES.test(body) || /\$\{/.test(body))) return stop('an interpolating heredoc body')
+        if (!h.quoted && /[$`]/.test(body)) return stop('a $ or backtick in an unquoted heredoc body')
         i += em ? em.index + em[0].length : rest.length
       }
       pendingHeredocs = []
@@ -272,14 +268,19 @@ const cronScanTarget = (cmd) => {
     if (!PLAIN_COMMAND_WORD.test(head.text)) return stop(`a command word the grammar cannot vouch for (${head.text.slice(0, 30)})`)
     const base = head.text.replace(/^.*\//, '')
     if (seg.piped && !CRON_FILTERS.has(base)) return stop(`a pipe into ${base}, which is not a read-only filter`)
-    if (CRON_COMMAND_DENY.has(base)) {
+    if (!seg.piped && !CRON_COMMANDS.has(base)) return stop(`${base} is not a command a cron job runs`)
+    if (base === 'bash' || base === 'sh') {
       const script = args[0]
-      const runsPluginScript = (base === 'bash' || base === 'sh') && script && !script.quoted
-        && /\.sh$/.test(script.text) && resolve(script.text).startsWith(root + '/')
+      const runsPluginScript = script && !script.quoted && /\.sh$/.test(script.text)
+        && resolve(script.text).startsWith(root + '/')
         && !args.slice(1).some((a) => !a.quoted && a.text.startsWith('-'))
-      if (!runsPluginScript) return stop(`${base} in command position`)
+      if (!runsPluginScript) return stop(`${base} may only run a script under the plugin root`)
     }
-    if (base === 'node' && args.some((a) => !a.quoted && NODE_EVAL.test(a.text))) return stop('node evaluating inline code')
+    if (base === 'node') {
+      const script = args[0]
+      if (!script || script.quoted || !/\.(mjs|js)$/.test(script.text)) return stop('node may only run a .mjs or .js script path')
+      if (args.some((a) => !a.quoted && NODE_EVAL.test(a.text))) return stop('node evaluating inline code')
+    }
     if (isGitToken(head.text) && seg.words.some((w) => /::|:\/\//.test(w.text))) return stop('a git command naming a URL or transport')
     // A refspec hidden in quotes would pass the classifier below as an opaque word.
     if (isGitToken(head.text) && seg.words.some((w) => w.quoted && /^\+|refs\//.test(w.text))) return stop('a quoted refspec')
@@ -298,7 +299,7 @@ const cronVerdict = (cmd, job) => {
     while (j < tokens.length && tokens[j].startsWith('-')) {
       // -c writes config for one call, and config runs code (core.pager, alias.*, credential.helper);
       // --exec-path swaps the git binaries. Neither has a read-only use here.
-      if (/^(-c|--config-env|--exec-path)(=|$)/.test(tokens[j])) {
+      if (/^-c/.test(tokens[j]) || /^(--config-env|--exec-path)(=|$)/.test(tokens[j])) {
         return `flow cron guard (${job}): git ${tokens[j]} is outside this job's permissions - it can run code. Cron git is read-only; report the need instead of working around this.`
       }
       if (valueOpts.has(tokens[j])) j += 2
