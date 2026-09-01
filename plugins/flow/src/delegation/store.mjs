@@ -9,6 +9,11 @@ const SCHEMA_VERSION = 6
 // Terminal jobs are operational history, not an archive. Fourteen days outlives any
 // investigation of a run, including an `unknown` one.
 const RETENTION_DAYS = 14
+// Statuses that stop an older database from being reset. The four ACTIVE_STATES are the
+// obvious ones. `quarantined` is a job Flow could not prove dead. `awaiting_approval` is
+// terminal in this version, but a row in an older schema was written by code whose meaning of
+// that word is gone, and the word says parked rather than finished, so it counts as live here.
+const LIVE_ON_UPGRADE = [...ACTIVE_STATES, 'awaiting_approval', 'quarantined']
 
 const now = () => Date.now()
 const json = (value) => value == null ? null : JSON.stringify(value)
@@ -188,11 +193,34 @@ export class JobStore {
 
   userVersion() { return Number(this.db.prepare('PRAGMA user_version').get().user_version) }
 
+  // How many jobs in an older database are still live, and so must not be dropped by the
+  // reset below. `status` is the one column every earlier schema has, so this reads that and
+  // nothing else: no other column name is safe to name across six versions.
+  //
+  // A jobs table that cannot be read this way is outside every schema Flow ever wrote. The
+  // query throws, the migration rolls back, and the constructor turns it into INTERNAL with
+  // the sqlite message in the service log. That is the right answer: the file survives, and a
+  // store that cannot prove it holds no live jobs must not destroy them.
+  liveJobsInLegacySchema() {
+    const present = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").get()
+    if (!present) return 0
+    const marks = LIVE_ON_UPGRADE.map(() => '?').join(',')
+    return Number(this.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE status IN (${marks})`)
+      .get(...LIVE_ON_UPGRADE).count)
+  }
+
   // The job cache holds 14 days of operational history and is never an archive, so an older
   // schema is dropped and recreated rather than carried forward through a ladder of
   // migrations nobody can test against real rows. A NEWER schema is still refused: that
   // database belongs to a Flow version this one cannot read, and resetting it would destroy
   // live jobs the other version owns.
+  //
+  // An OLDER schema is refused too while any of its jobs is still live. A job row is not only
+  // history: a workspace-write job holds a lease on its worktree, and a worker or a provider
+  // process can outlive the MCP process that started it, so an upgrade can land mid-run.
+  // Dropping that row drops its lease without proving the provider dead, and the next job can
+  // then claim a worktree something else is still writing to. Terminal rows have no such
+  // claim, so a legacy database that holds only those resets as before.
   migrate() {
     const version = this.userVersion()
     if (version === SCHEMA_VERSION) return
@@ -208,6 +236,16 @@ export class JobStore {
         const locked = this.userVersion()
         if (locked > SCHEMA_VERSION) throw new DelegationError('DATABASE_NEWER', 'The delegation database was created by a newer Flow version.')
         if (locked !== SCHEMA_VERSION) {
+          // Inside the write lock, so no other process can start a job between this count and
+          // the DROP that follows it.
+          const live = this.liveJobsInLegacySchema()
+          if (live > 0) {
+            throw new DelegationError('STORE_UPGRADE_BLOCKED',
+              `The delegation database was written by an older Flow version and still holds ` +
+              `${live === 1 ? '1 unfinished job' : `${live} unfinished jobs`}. Upgrading resets the database, ` +
+              'which would drop those jobs and the worktree write leases they hold without proving their ' +
+              'providers dead. Let them finish, or cancel them with the previous Flow version, then upgrade.')
+          }
           this.db.exec('DROP TABLE IF EXISTS leases; DROP TABLE IF EXISTS controls; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS jobs;')
           this.db.exec(SCHEMA)
           this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)

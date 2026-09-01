@@ -343,7 +343,12 @@ export class DelegationService {
     try {
       const quarantined = this.withStore((store) => store.quarantinedCount())
       checks.database = { ok: true, path: this.stateDir, quarantined }
-    } catch { checks.database = { ok: false, kind: 'DATABASE' } }
+    } catch (error) {
+      // The kind survives, because one of these is actionable and the rest are not. A store
+      // that refuses to reset an older database while jobs are still live answers
+      // STORE_UPGRADE_BLOCKED, and doctor is where an operator finds out why nothing starts.
+      checks.database = { ok: false, kind: error instanceof DelegationError ? error.kind : 'DATABASE' }
+    }
     // Each probe reports itself. Sharing one catch made an account failure read as a dead App
     // Server, which is the opposite of what doctor is for.
     if (checks.host.ok && checks.codex.ok && checks.containment.ok) {
@@ -426,7 +431,12 @@ export class DelegationService {
     try {
       const quarantined = this.withStore((store) => store.quarantinedCount())
       checks.database = { ok: true, path: this.stateDir, quarantined }
-    } catch { checks.database = { ok: false, kind: 'DATABASE' } }
+    } catch (error) {
+      // The kind survives, because one of these is actionable and the rest are not. A store
+      // that refuses to reset an older database while jobs are still live answers
+      // STORE_UPGRADE_BLOCKED, and doctor is where an operator finds out why nothing starts.
+      checks.database = { ok: false, kind: error instanceof DelegationError ? error.kind : 'DATABASE' }
+    }
     if (!cwd) {
       checks.models = { ok: false, kind: 'NO_WORKSPACE' }
     } else if (checks.claude.ok && checks.account.ok && checks.containment.ok) {

@@ -1044,14 +1044,12 @@ try {
   rmSync(activeTemp, { recursive: true, force: true })
   pruned.close()
 
-  // An older schema. The job cache is 14 days of operational history and never an archive, so
-  // the store drops it and recreates the current schema rather than carrying a migration
-  // ladder for rows nobody is going to read. What has to survive is the store: it opens, it
-  // reports the current version, and the next job works.
-  const legacyState = state('legacy')
-  mkdirSync(legacyState, { recursive: true })
-  const legacyDb = new DatabaseSync(join(legacyState, 'jobs.sqlite3'))
-  legacyDb.exec(`
+  // An older schema, and the legacy database that a reset is safe on: every row in it is
+  // terminal. The job cache is 14 days of operational history and never an archive, so the
+  // store drops it and recreates the current schema rather than carrying a migration ladder
+  // for rows nobody is going to read. What has to survive is the store: it opens, it reports
+  // the current version, and the next job works.
+  const LEGACY_SCHEMA = `
     CREATE TABLE jobs (
       id TEXT PRIMARY KEY,
       trace_id TEXT NOT NULL,
@@ -1097,22 +1095,39 @@ try {
       heartbeat_at INTEGER NOT NULL
     );
     PRAGMA user_version=1;
-  `)
-  const legacyAt = Date.now()
-  legacyDb.prepare(`INSERT INTO jobs (
-    id, trace_id, parent_job_id, host, target, depth, mode, access, delivery,
-    cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
-    prompt, status, created_at, updated_at, heartbeat_at
-  ) VALUES ('legacy-job', 'legacy-trace', NULL, 'claude', 'codex', 0, 'task', 'workspace-write', 'detached',
-    ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, 'legacy prompt', 'running', ?, ?, ?)`)
-    .run(repo, repo, legacyAt, legacyAt, legacyAt)
-  legacyDb.prepare(`INSERT INTO leases (workspace_key, job_id, heartbeat_at) VALUES (?, 'legacy-job', ?)`)
-    .run(repo, legacyAt)
-  legacyDb.close()
+  `
+  // A version-1 database with the rows a case needs. `lease` gives the job the write lease on
+  // the repository, which is the thing a reset would silently hand to somebody else.
+  const writeLegacyStore = (dir, rows) => {
+    mkdirSync(dir, { recursive: true })
+    const db = new DatabaseSync(join(dir, 'jobs.sqlite3'))
+    db.exec(LEGACY_SCHEMA)
+    const at = Date.now()
+    const insertJob = db.prepare(`INSERT INTO jobs (
+      id, trace_id, parent_job_id, host, target, depth, mode, access, delivery,
+      cwd, workspace_key, model, effort, service_tier, profile, time_budget_seconds,
+      prompt, status, created_at, updated_at, heartbeat_at
+    ) VALUES (?, 'legacy-trace', NULL, 'claude', 'codex', 0, 'task', 'workspace-write', 'detached',
+      ?, ?, 'gpt-5.6-luna', 'low', 'default', 'standard', 900, 'legacy prompt', ?, ?, ?, ?)`)
+    const insertLease = db.prepare('INSERT INTO leases (workspace_key, job_id, heartbeat_at) VALUES (?, ?, ?)')
+    for (const row of rows) {
+      insertJob.run(row.id, repo, repo, row.status, at, at, at)
+      if (row.lease) insertLease.run(repo, row.id, at)
+    }
+    db.close()
+  }
+  const legacyState = state('legacy')
+  writeLegacyStore(legacyState, [
+    { id: 'legacy-done', status: 'succeeded' },
+    { id: 'legacy-failed', status: 'failed' },
+    { id: 'legacy-cancelled', status: 'cancelled' },
+    { id: 'legacy-unknown', status: 'unknown', lease: true },
+  ])
   const upgraded = new JobStore(legacyState)
   const columnsOf = (table) => upgraded.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
   assert.equal(upgraded.userVersion(), 6)
-  assert.equal(upgraded.getJob('legacy-job'), null)
+  assert.equal(upgraded.getJob('legacy-done'), null)
+  assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS jobs FROM jobs').get().jobs, 0)
   assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases, 0)
   for (const dead of ['delivery', 'service_tier', 'profile']) {
     assert.ok(!columnsOf('jobs').includes(dead), dead)
@@ -1132,6 +1147,39 @@ try {
   })
   assert.equal(upgraded.getJob(afterReset.id).status, 'queued')
   upgraded.close()
+
+  // The same reset, refused. A detached worker or a provider process outlives the MCP process
+  // that started it, so an upgrade can land while a workspace-write job is still running. That
+  // job's row carries its lease on the worktree, and dropping the row hands the worktree to the
+  // next job without anyone proving the old provider dead. Nothing here can prove that, so the
+  // store refuses to open and says what to do about it.
+  for (const status of ['running', 'queued', 'starting', 'reconciling', 'awaiting_approval', 'quarantined']) {
+    const blockedState = state(`legacy-live-${status}`)
+    writeLegacyStore(blockedState, [{ id: 'legacy-live', status, lease: true }])
+    assert.throws(() => new JobStore(blockedState), (error) => {
+      assert.equal(error.kind, 'STORE_UPGRADE_BLOCKED')
+      assert.match(error.message, /1 unfinished job\b/)
+      assert.match(error.message, /cancel them with the previous Flow version/)
+      return true
+    }, status)
+    // Refused means untouched: same schema version, same rows, same lease. A partial reset
+    // that dropped the lease and then threw would be worse than either outcome.
+    const survivor = new DatabaseSync(join(blockedState, 'jobs.sqlite3'))
+    assert.equal(Number(survivor.prepare('PRAGMA user_version').get().user_version), 1)
+    assert.equal(survivor.prepare('SELECT status FROM jobs WHERE id=?').get('legacy-live').status, status)
+    assert.equal(Number(survivor.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases), 1)
+    assert.ok(survivor.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").get())
+    survivor.close()
+  }
+  // One live job among terminal ones is still one live job, and the count says so.
+  const mixedState = state('legacy-mixed')
+  writeLegacyStore(mixedState, [
+    { id: 'legacy-done', status: 'succeeded' },
+    { id: 'legacy-live-a', status: 'running', lease: true },
+    { id: 'legacy-live-b', status: 'quarantined' },
+  ])
+  assert.throws(() => new JobStore(mixedState), (error) =>
+    error.kind === 'STORE_UPGRADE_BLOCKED' && /2 unfinished jobs\b/.test(error.message))
 
   // A NEWER schema is refused rather than reset. That database belongs to a Flow version this
   // one cannot read, and its jobs may still be running.
