@@ -172,9 +172,11 @@ the confirmed tier produced no candidate at all. A Codex config that reads clean
 gripe is not installed here blocks the Codex cache scan and cannot veto Claude's fallback when
 the Claude registry is missing or corrupt.
 
-Candidates from both harnesses rank in one list: highest stable `major.minor.patch` first,
-compared numerically so 0.10.0 beats 0.9.0; then a manager-supplied root over a cache-derived
-one; then Claude over Codex; then path order, purely so the answer is deterministic.
+Candidates from both harnesses rank in one list: confirmed candidates before fallback ones (the
+comparator is defensive here, though the tiers never coexist, since fallback scans only when the
+confirmed tier found nothing); then the highest stable `major.minor.patch`, compared numerically
+so 0.10.0 beats 0.9.0; then a manager-supplied root over a cache-derived one; then Claude over
+Codex; then path order, purely so the answer is deterministic.
 Prereleases and malformed directory names never enter a cache scan. When nothing resolves at
 all, the shim prints one bounded line naming the surfaces it checked, the override path, both
 manifests, and both cache roots, never the versions under them.
