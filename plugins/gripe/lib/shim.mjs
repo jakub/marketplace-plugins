@@ -38,7 +38,7 @@ export function shimEpoch(text) {
   return Number.isSafeInteger(epoch) && epoch >= 0 ? epoch : null
 }
 
-function readCapped(path, cap) {
+export function readCapped(path, cap) {
   let fd
   try {
     // Non-blocking, so a FIFO or other special file planted at the shim path can never hang

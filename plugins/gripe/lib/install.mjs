@@ -9,22 +9,34 @@
 // Deliberately not part of the health verdict. Version skew between the two installs is a
 // fact for the human to read, not a condition for this code to rule on.
 
-import { readFileSync } from 'node:fs'
 import { dirname, join, normalize, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { readCapped } from './shim.mjs'
+
 const VERSION_RE = /^\d+\.\d+\.\d+$/
 const MANIFESTS = ['.claude-plugin', '.codex-plugin']
+// A plugin.json is a few hundred bytes. This bound is generous, and its real job is to keep
+// the read capped rather than to filter by size.
+const MANIFEST_CAP = 64 * 1024
 
 const stable = (value) => (typeof value === 'string' && VERSION_RE.test(value) ? value : null)
 
+// Read each manifest through the same capped, non-blocking, regular-file-only helper the shim
+// uses. A blocking readFileSync on a FIFO or other special file planted at a manifest path hangs
+// forever, and it would hang here inside installFacts, before doctor can report identity or
+// health, where the surrounding try/catch cannot catch a read that never returns. readCapped
+// opens non-blocking and fstat rejects anything that is not a regular file, so a special or
+// unreadable manifest reads as null and falls through to the next candidate.
 function manifestVersion(root) {
   for (const directory of MANIFESTS) {
+    const bytes = readCapped(join(root, directory, 'plugin.json'), MANIFEST_CAP)
+    if (bytes === null) continue
     try {
-      const version = stable(JSON.parse(readFileSync(join(root, directory, 'plugin.json'), 'utf8'))?.version)
+      const version = stable(JSON.parse(bytes.toString('utf8'))?.version)
       if (version !== null) return version
     } catch {
-      // A missing or malformed manifest is not an error here, it is the next candidate.
+      // A malformed manifest is not an error here, it is the next candidate.
     }
   }
   return null

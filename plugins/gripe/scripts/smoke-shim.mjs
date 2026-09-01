@@ -38,6 +38,14 @@ if (process.env.GRIPE_SHIM_RATCHET_CHILD) {
   process.exit(0)
 }
 
+// Forked back into by the fifo-manifest installFacts case. installFacts runs in-process
+// everywhere else here; this case runs it in a child under a timeout so a regression to a
+// blocking manifest read shows as a SIGTERM kill rather than hanging the whole suite.
+if (process.env.GRIPE_FACTS_CHILD) {
+  process.stdout.write(JSON.stringify(installFacts(process.env.GRIPE_FACTS_CHILD)))
+  process.exit(0)
+}
+
 let checks = 0
 let failures = 0
 function check(name, ok, detail) {
@@ -1209,6 +1217,28 @@ try {
     const bare = facts(neither)
     check('installFacts: with neither, the version is null and the root is still reported',
       bare.plugin_version === null && bare.plugin_root === normalizeRoot(neither), bare.plugin_root)
+
+    // A fifo (or other special file) at a manifest path used to hang installFacts on a blocking
+    // readFileSync, before doctor could report identity or health, and the surrounding try/catch
+    // could not catch a read that never returns. The capped non-blocking read rejects a
+    // non-regular manifest, so the version falls through to null and the call returns promptly.
+    // Run in a child under a timeout: a hang shows as SIGTERM, the fix as a prompt null.
+    const fifoRoot = join(TMP, 'facts', 'fifo-manifest')
+    mkdirSync(join(fifoRoot, 'bin'), { recursive: true })
+    mkdirSync(join(fifoRoot, '.claude-plugin'), { recursive: true })
+    const madeFactsFifo = mkfifo(join(fifoRoot, '.claude-plugin', 'plugin.json'))
+    const factsChild = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
+      env: { ...process.env, GRIPE_FACTS_CHILD: pathToFileURL(join(fifoRoot, 'bin', 'gripe')).href },
+      encoding: 'utf8', timeout: 8000,
+    })
+    let factsOut = {}
+    try {
+      factsOut = JSON.parse(factsChild.stdout)
+    } catch { /* the check below reports the raw output */ }
+    check('installFacts: a fifo manifest reads unreadable without hanging, version null',
+      madeFactsFifo && factsChild.signal !== 'SIGTERM'
+      && factsOut.plugin_version === null && factsOut.plugin_root === normalizeRoot(fifoRoot),
+      `${factsChild.stdout.trim()} ${factsChild.signal ?? ''}`)
   }
 
   {
