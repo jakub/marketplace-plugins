@@ -57680,6 +57680,17 @@ var DelegationService = class {
         FLOW_DELEGATION_PARENT_JOB_ID: jobId2
       }
     });
+    child.on("error", (cause) => {
+      try {
+        serviceLog(this.stateDir, `worker spawn failed for job ${jobId2}: ${cause?.code || ""} ${cause?.message || cause}`);
+      } catch {
+      }
+      const error2 = publicError(new DelegationError("WORKER_SPAWN_FAILED", "The delegation worker process could not be started."));
+      try {
+        this.withStore((store) => store.failQueued(jobId2, error2));
+      } catch {
+      }
+    });
     child.unref();
   }
   // One store for the whole poll loop: reopening the database every 250ms bought nothing.
