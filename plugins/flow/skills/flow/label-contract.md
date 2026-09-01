@@ -7,7 +7,7 @@
  ──────               ───────                ──────          ────────
  needs-triage  ──►    ready-for-agent  ──►   in-progress ──► closed (landed)
  agent-found   ─┘          │  ▲                  │
-                 (via /flow:prep only)           │
+                 (via the prep stage only)       │
                                                  ▼
                  blocked lane (wait on human, ping phone):
                  needs-info · needs-human · needs-rebase
@@ -15,19 +15,21 @@
                  terminal-buried: wontfix · deferred  (never resurrected by agents)
 ```
 
-The tuple (name, color, description) is the contract - `/flow labels` reconciles all three,
+The tuple (name, color, description) is the contract - the label lint reconciles all three,
 so a label with the right name but a drifted color or description is still drift. One color
-per lane, and the descriptions below are verbatim.
+per lane, and the descriptions below are verbatim. They are also read off this file into
+GitHub label metadata, where no host's command spellings belong, so a description names a
+stage and never a slash command; `smoke-label-contract.mjs` holds that line.
 
 | label | lane | color | description (verbatim) | set by | cleared by |
 |---|---|---|---|---|---|
-| `needs-triage` | intake | `fbca04` | Untriaged intake; exits only through /flow:prep | human / tooling / lint | /flow:prep |
-| `agent-found` | intake | `fbca04` | Scheduled-hunter quarantine: verified + deduped, not human-reviewed | hunters (`FLOW_SANCTION=hunter`) | /flow:prep |
-| `ready-for-agent` | staging | `0e8a16` | Design-hardened per the label contract; eligible for /flow:issue | /flow:prep only | claim step of /flow:issue |
-| `in-progress` | active | `1d76db` | Claimed by a /flow:issue run: assignee + this label | /flow:issue claim | /flow:land or escalation |
+| `needs-triage` | intake | `fbca04` | Untriaged intake; exits only through the prep stage | human, tooling, lint | the prep stage |
+| `agent-found` | intake | `fbca04` | Scheduled-hunter quarantine: verified + deduped, not human-reviewed | hunters (`FLOW_SANCTION=hunter`) | the prep stage |
+| `ready-for-agent` | staging | `0e8a16` | Design-hardened per the label contract; eligible for the issue stage | the prep stage only | claim step of the issue stage |
+| `in-progress` | active | `1d76db` | Claimed by an issue stage run: assignee + this label | the issue stage claim step | the land stage or escalation |
 | `needs-info` | blocked | `b60205` | Blocked on an answer only the human has | prep or run escalation | human answer + re-prep |
-| `needs-human` | blocked | `b60205` | Run escalated: adjudicated-real blockers survived the fix loop | /flow:issue | human review |
-| `needs-rebase` | blocked | `b60205` | Worktree conflicts with moved main | /flow:issue | human/agent rebase |
+| `needs-human` | blocked | `b60205` | Run escalated: adjudicated-real blockers survived the fix loop | the issue stage | human review |
+| `needs-rebase` | blocked | `b60205` | Worktree conflicts with moved main | the issue stage | human or agent rebase |
 | `wontfix` | buried | `6e6e6e` | Buried by human decision; agents never resurrect | human | human |
 | `deferred` | buried | `6e6e6e` | Consciously parked; agents never resurrect | human | human |
 
@@ -42,7 +44,7 @@ Rules:
   other label is drift - the lint reports it and never deletes it (deletion strips the label
   from every issue repo-wide with no undo; that is a human's call).
 - No agent creates issues outside `FLOW_SANCTION` lanes (enforced by the no-backlog hook).
-- Nothing self-promotes: `agent-found → ready-for-agent` requires a /flow:prep pass.
+- Nothing self-promotes: `agent-found → ready-for-agent` requires a prep stage pass.
 - A claim is the assignee plus `in-progress`. The claim tag is a TRANSIENT acquisition lock: it
   covers the window from the existing-run scan to the first push of the work branch, and the
   issue stage releases it there. After that the branch, worktree, and PR are what mark the run
@@ -89,7 +91,7 @@ auto-implementation; keep it strict.
 5. **Bounded scope**: one repo, one PR, no "and also refactor X across crates".
 6. **Prior art checked**: related closed/`wontfix` work is linked, not re-proposed.
 
-## Lint procedure (`/flow labels`)
+## Lint procedure (the label lint)
 
 1. `gh label list` → reconcile the full tuple: create missing taxonomy labels, repaint
    drifted colors, rewrite drifted descriptions. Delete nothing; labels outside the closed
@@ -104,5 +106,5 @@ auto-implementation; keep it strict.
 
 The nightly cron runs a narrower version: its allowlist has `gh label list` only, so step 1
 is report-only there (tuple drift is a finding, not a fix), and it performs only the label
-moves its standing permissions name - steps 2-4. Full reconciliation is this subcommand's
-job, run interactively.
+moves its standing permissions name - steps 2-4. Full reconciliation is the interactive
+label lint's job.

@@ -12,7 +12,54 @@ claude plugin install flow@jakub
 (`@jakub` is the marketplace name from `.claude-plugin/marketplace.json`, it's not a repo name.)
 
 
-Hooks arm at the next session start. Installs pull from the pinned GitHub clone, so after editing this repo: push, then reinstall the plugin. Codex hook definitions also require an explicit trust review before they run.
+Hooks arm at the next session start. Installs pull from the pinned GitHub clone, so after editing this repo: push, then reinstall the plugin. Codex hook definitions also require an explicit trust review before they run. On Codex the commands are different and there is no update verb, so see the lanes below.
+
+## Installing and updating
+
+The two harnesses have different plugin CLIs, so they get separate lanes. The spellings below come from the help output of the versions named, not from memory. One exception. I did not capture the arguments the `marketplace` subcommands take on either side, so read their `--help` rather than trusting a copy here. Re-check the rest when you upgrade either CLI.
+
+### Claude Code
+
+Verified against Claude Code 2.1.252, 2026-09-01.
+
+```bash
+claude plugin marketplace add jakub/marketplace-plugins
+claude plugin install flow@jakub
+claude plugin update flow@jakub
+claude plugin list
+```
+
+`claude plugin install` defaults to `--scope user`. Take the default, because user scope is the only registry flow's cron launcher reads. `claude plugin update` says "restart required to apply", so quit and reopen Claude Code afterwards. Uninstall is `claude plugin uninstall flow@jakub`, and uninstall-then-install is the blunt version of an update when you want a clean re-registration.
+
+### Codex
+
+Verified against codex-cli 0.151.0, 2026-09-01.
+
+Register the marketplace once with `codex plugin marketplace add`, which adds a local or Git marketplace to the configured sources. Then:
+
+```bash
+codex plugin add flow@jakub
+codex plugin list
+codex plugin list --available --json
+```
+
+Codex 0.151.0 has no update verb. `codex plugin --help` lists `add`, `list`, `marketplace`, `remove`, and `help`, and `codex plugin update` answers `error: unrecognized subcommand 'update'`. Updating is therefore two moves, refresh the snapshot and re-register the plugin:
+
+```bash
+codex plugin marketplace upgrade
+codex plugin remove flow@jakub
+codex plugin add flow@jakub
+```
+
+`codex plugin marketplace upgrade` refreshes the configured Git marketplace snapshots, and `codex plugin marketplace upgrade --help` says whether it wants a marketplace name. Refreshing updates the bytes Codex could install; it does not touch a registration you already made. Until `codex plugin remove` and `codex plugin add` run, the installed plugin stays on the version it was added at, and every session keeps loading that version's hooks. Start a new Codex thread after re-adding. A thread already running read the old registration at its own session start and will not notice a newer one.
+
+### Upgrade both harnesses in one sitting
+
+If you have flow or gripe registered in both Claude Code and Codex, update both before you go back to work.
+
+Gripe's `~/.local/bin/gripe` shim carries a protocol epoch marker, and the SessionStart hook that maintains it replaces a shim whose marker is missing, lower, or unparseable, repairs one whose marker matches but whose bytes have drifted, and leaves a strictly higher one alone. That ratchet lives in the shim's own code, so a harness still registered on gripe 0.2.x has no ratchet at all. Its SessionStart hook overwrites whatever it finds, including the newer shim you just installed, and you end up with a shim that flips back and forth depending on which harness you last opened.
+
+The same reasoning is why the shim resolving the newest install across both harnesses is mitigation and not a guarantee. Hooks import their own install's storage code directly and never run through the shim, so an old hook can still open the database whatever the shim decides. The durable guarantee sits underneath. Schema migrations are numbered and additive only, and code older than the database refuses to touch it and exits 0 with one stderr line rather than corrupting it.
 
 ## Plugins
 
@@ -73,6 +120,8 @@ The one rule is that filing has to be free. `gripe add` never exits non-zero and
 
 Gripes are stored in `$XDG_STATE_HOME/gripe/gripe.db`, falling back to `~/.local/state/gripe/gripe.db` if unset.
 
+One database, one command, both harnesses. The `gripe` on PATH reads Claude's plugin registry and Codex's `config.toml` on every run and hands off to the newest install either of them reports, so a host with gripe registered in both still has one CLI and one log. `GRIPE_HOME` overrides that for development work, and a `GRIPE_HOME` that points nowhere usable stops with one stderr line instead of quietly filing into the live database through the installed copy.
+
 ---
 
 Gripes arrive in two ways:
@@ -86,6 +135,7 @@ The `/gripe` skill is unneeded day-to-day, but tells the agent how to read the d
 
 | Path | What's there |
 |---|---|
-| `plugins/gripe/bin/gripe` | The CLI, also a shim that resolves the installed plugin at exec time so it survives reinstalls and version bumps. |
+| `plugins/gripe/bin/gripe` | The CLI. `add`, `dump`, `seen`, `search`, and `doctor` all live here. |
+| `plugins/gripe/bin/shim.mjs` | The resolver. A copy of it sits on PATH at `~/.local/bin/gripe`, picks an install at exec time, and hands off to that install's `bin/gripe`, so reinstalls and version bumps don't strand it. |
 | `plugins/gripe/hooks/` | Claude and Codex registrations plus thin wire adapters for advertisements, harness-specific observations, and checkpoints. |
 | `plugins/gripe/skills/gripe/` | How to read the gripe database. For doing analysis, not for normal work. |

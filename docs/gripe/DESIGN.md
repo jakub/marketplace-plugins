@@ -68,8 +68,9 @@ design decisions rather than among them.
 9. **Delivery is a plugin in the jakub marketplace.** Flow gets a one-way soft dependency: its
    journal stages mention gripe when installed and work fine when it is not. Nothing in gripe
    knows about flow.
-10. **Invocation is a `gripe` shim on PATH** at `~/.local/bin/gripe`, resolving the plugin at
-    exec time. See the shim section, which has a sharp edge.
+10. **Invocation is a `gripe` shim on PATH** at `~/.local/bin/gripe`, resolving at exec time to
+    the newest install either harness reports. See the shim section for the tiers, the failure
+    rules, and the epoch ratchet that keeps an older harness from downgrading it.
 
 ## Storage
 
@@ -233,8 +234,8 @@ about, or one fingerprint buys two interruptions in one session.
 ### SessionStart
 
 Prints one line advertising the command to the main agent. Writes the one-row session mark
-that gives decision 6 its denominator. Re-points the PATH shim if missing. Sweeps state files
-older than a few days on the way past.
+that gives decision 6 its denominator. Re-points the PATH shim through the epoch ratchet in the
+shim section. Sweeps state files older than a few days on the way past.
 
 **Reaches the main agent only.** Measured: a spawned subagent reported no flow charter in its
 context, and the charter is injected by exactly this kind of hook.
@@ -379,21 +380,106 @@ FileChanged.
 
 ## The shim
 
-Installed plugins live at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, and old
+Installed plugins live under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` on
+Claude and `~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/` on Codex, and old
 versions are never pruned. Measured: flow has every release since 0.3.1 on disk.
 
 A shim symlinked to `gripe/0.1.0/bin/gripe` therefore does not break after an upgrade, which
 would at least be visible. It keeps working, running 0.1.0 code against a 0.5.0 database
-indefinitely, and invariant 1 means that failure has no symptom at all. **The shim resolves
-the plugin at exec time**: `$GRIPE_HOME` first, then whatever version the plugin manager says
-is installed, read from `installed_plugins.json` the way flow's cron timers already do. A
-semver-aware scan of the cache directory is the fallback when the registry is unreadable, and
-it compares numerically, because a lexical sort ships 0.9.0 forever once 0.10.0 exists. It is
-never a symlink to a versioned path.
+indefinitely, and invariant 1 means that failure has no symptom at all. So `~/.local/bin/gripe`
+is a copy of `bin/shim.mjs` rather than a symlink to a versioned path, and **it resolves the
+plugin at exec time**, every time.
 
-SessionStart skips re-pointing when `$GRIPE_HOME` is set. Without the override, SessionStart
-would clobber a working-tree symlink every session and silently send development traffic to
-the stale installed copy.
+`bin/shim.mjs` imports node builtins and nothing else. It runs before any plugin root is known,
+so it cannot import one. A shared helper under `lib/` would only move the resolution problem
+into an import statement.
+
+### Which install wins
+
+Registered in both harnesses is the normal case here, and the versions drift. Measured
+2026-08-31: the Claude registry pointed at gripe 0.2.0 while the Codex cache held 0.2.1. So the
+shim reads both, ranks everything it found, and runs one winner.
+
+`$GRIPE_HOME` is the override, judged by key presence and not by value. Present and holding a
+readable `bin/gripe`, it is the only candidate. Present and broken, meaning empty, missing, or
+without that file, the shim stops with one stderr line naming `GRIPE_HOME` and reads nothing
+else. The earlier design let a broken override fall through to installed code, so a typo in a
+development export filed into the live database with no sign anything was wrong.
+
+Then the confirmed tier, which reads both harnesses on every run, independently:
+
+- Claude: `installed_plugins.json`, keys matched exactly against `gripe@<marketplace>`, one
+  candidate per entry whose `installPath` holds a readable `bin/gripe`. The version comes from
+  the entry field, then the path basename, then nothing. A candidate with no parseable version
+  sorts below every candidate that has one and stays usable.
+- Codex: `${CODEX_HOME:-~/.codex}/config.toml`, read by a line scanner rather than a TOML
+  parser, since the shim carries no dependencies. It recognizes exactly one
+  `[plugins."gripe@<marketplace>"]` table. A bare table with no `enabled` key is enabled,
+  because the table is the registration and the key is the toggle. Every live table observed
+  2026-08-31 under codex-cli 0.151.0 carried an explicit boolean, so that rule is dead code
+  today, and the other reading (bare means absent) would silently drop filings the day a Codex
+  release starts omitting the default. Two tables, a non-boolean `enabled`, or bytes the
+  scanner cannot trust are absence rather than a guess. An enabled table looks for candidates
+  only under
+  `<codex home>/plugins/cache/<marketplace>/gripe/<version>/`.
+
+A manifest that reads cleanly is authoritative for its own harness and for no other. The
+fallback tier is a bare cache-root scan, permitted only for a harness whose own manifest was
+unreadable, and only when the confirmed tier came up empty. That asymmetry is the point. "Gripe
+is not installed on Codex" is a true statement about Codex and says nothing about a Claude
+registry that failed to parse, so it must not veto Claude's outage fallback.
+
+Ranking is one order over every candidate. Highest stable `major.minor.patch` first, compared
+numerically, because a lexical sort ships 0.9.0 forever once 0.10.0 exists. Then a
+manager-supplied root ahead of a cache-derived one. Then Claude ahead of Codex. Then path order,
+purely so the answer never depends on directory iteration. Prereleases, `latest`, and malformed
+names never enter a cache scan.
+
+Nothing resolved means one stderr line naming the surfaces checked: the override, both
+manifests, both cache roots, and never the versions underneath them. The line is bounded,
+because a diagnostic that pastes a hundred cache directories into an agent's context is its own
+kind of failure.
+
+### What each exit code promises
+
+Invariant 1 is about filing, not about every command. `gripe add`, and a bare `gripe`, exit 0
+whatever happened: nothing resolved, a broken override, a spawn ENOENT, a child killed by a
+signal. `doctor`, `dump`, `search`, and `seen` are honest instead. They pass a real child status
+through unchanged and exit 1 when the shim never got as far as running a child. Someone asking
+whether the write path works deserves a real answer; an agent mid-task does not deserve a failed
+command.
+
+The shim never reads stdin. A synchronous read on an inherited pipe can block forever, and `add`
+costing the caller nothing is the whole invariant. A shim-authored failure is one line with
+control characters flattened and no stack trace. A numeric child status carries no shim line at
+all, because the child already owns stderr.
+
+`doctor` reports `plugin_root` and `plugin_version`, which `bin/gripe` derives from its own
+module path and manifest with no cooperation from the shim. That is how you find out which
+install won, instead of inferring it from a command that printed nothing. `healthy` still
+answers for storage alone and never rules on version skew. Report the skew, don't judge it.
+
+### The epoch ratchet
+
+SessionStart maintains `~/.local/bin/gripe`, and the naive version of that is last writer wins.
+On a host with two harnesses at different versions, the older one reverts the newer shim every
+session, so a fix to this file becomes a fix that keeps disappearing.
+
+The shim therefore carries one `// gripe-shim-epoch: <n>` line and `pointShim` is upgrade-only.
+It rewrites the destination when that file is missing, carries a lower or unparseable marker, or
+carries an equal marker over bytes that no longer match the source. Identical bytes are left
+alone, and so is a destination whose marker parses as strictly higher. Corruption repairs itself
+and a newer shim survives an older harness. Writes go through a same-directory temp file opened with `wx` and a rename
+over the target, which replaces the directory entry rather than writing through a symlink
+somebody left there. Contention is accepted, since the loser's next SessionStart writes again.
+
+The epoch counts shim protocol changes, never releases. It also fixes nothing retroactively.
+Gripe 0.2.x has no marker logic at all, so the release that introduces the ratchet needs both
+harnesses re-registered in one sitting, and the README says so.
+
+SessionStart skips re-pointing entirely when `$GRIPE_HOME` is set. Without that skip it would
+clobber a working-tree copy every session and silently send development traffic to the stale
+installed one.
 
 ## Development and packaging
 

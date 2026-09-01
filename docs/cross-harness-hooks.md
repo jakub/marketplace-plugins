@@ -70,6 +70,7 @@ contract.
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |
 | Gripe checkpoint | Claude transcript folded incrementally at `Stop` and `SubagentStop` | `PostToolUse` folds counters, parent `Stop` evaluates them | `lib/checkpoint.mjs` |
 | Gripe denial and turn-failure observations | `PermissionDenied`, `StopFailure` | Not registered; Codex has no equivalent after-the-fact events | Existing Claude-only observed-row code |
+| Gripe CLI resolution | `~/.claude/plugins/installed_plugins.json`, and a scan of the Claude cache root only when that file is unreadable | One `[plugins."gripe@<marketplace>"]` table in `${CODEX_HOME:-~/.codex}/config.toml` plus its cache directory, and a scan of the Codex cache root only when that file is unreadable | `bin/shim.mjs` reads both every run, ranks the candidates as one list, and execs the winner's `bin/gripe` |
 | Unslop rules | `SessionStart`, `SubagentStart` | Same events | `lib/rules.mjs` and `lib/agent-selection.mjs` |
 
 ## Deliberate non-equivalences
@@ -136,17 +137,87 @@ evidence is therefore aggregated for the parent session and evaluated only on th
 `Stop`. A Codex `SubagentStop` checkpoint is intentionally absent. False attribution would
 be worse than reduced coverage.
 
-Known limit: the advertised `gripe` CLI resolves the installed plugin through Claude's
-`installed_plugins.json`, so on a Codex-only host every advertised filing quietly drops.
-The hooks still run; the shim needs a Codex resolution path before a Codex-only install
-can file anything.
-
 Codex `PostToolUse` runs after a non-zero Bash exit, but its `tool_response` is tool-specific
 model-facing output rather than stable result metadata. In a 2026-08-26 capture from Codex CLI
 0.149.1, `sh -c "exit 7"` produced `tool_response: ""`; no exit status reached the hook. Gripe
 does not infer failure from prose or guessed object fields. The Codex adapter folds only tool
 and target repetition into checkpoint state, while the repeated-failure nudge remains
 Claude-only. The captured shape is retained as a smoke-test fixture.
+
+### The gripe CLI resolves both harnesses
+
+`~/.local/bin/gripe` is a copy of `plugins/gripe/bin/shim.mjs`, never a symlink to a versioned
+path, and it decides which install to run on every invocation. It imports node builtins only,
+because it runs before any plugin root is known.
+
+`GRIPE_HOME` comes first, judged by key presence rather than by value. Set and holding a
+readable `bin/gripe`, it is the only candidate considered. Set but empty or broken, the shim
+stops with one stderr line naming `GRIPE_HOME` and reads no registry and no cache. A typo in a
+development override must not file into the live database through installed code.
+
+Otherwise the confirmed tier reads both harnesses, every run, independently. Claude's side is
+`~/.claude/plugins/installed_plugins.json`, with keys matched exactly against
+`gripe@<marketplace>`, and every entry whose `installPath` holds a readable `bin/gripe`
+contributing one candidate. Codex's side is `${CODEX_HOME:-~/.codex}/config.toml`, scanned line
+by line rather than parsed as TOML, looking for exactly one `[plugins."gripe@<marketplace>"]`
+table. A bare table counts as enabled, because the table is the registration and `enabled` is
+the toggle; `enabled = false`, two tables, or bytes the scanner cannot trust all count as
+absence. An enabled table contributes candidates from
+`<codex home>/plugins/cache/<marketplace>/gripe/<version>/` and nowhere else.
+
+Authority is per harness, and that is the part worth stating plainly. A manifest that reads
+cleanly is authoritative for its own harness and for no other. The fallback tier, a bare scan of
+a harness's cache root, runs only for a harness whose own manifest was unreadable, and only when
+the confirmed tier produced no candidate at all. A Codex config that reads cleanly and says
+gripe is not installed here blocks the Codex cache scan and cannot veto Claude's fallback when
+the Claude registry is missing or corrupt.
+
+Candidates from both harnesses rank in one list: confirmed candidates before fallback ones (the
+comparator is defensive here, though the tiers never coexist, since fallback scans only when the
+confirmed tier found nothing); then the highest stable `major.minor.patch`, compared numerically
+so 0.10.0 beats 0.9.0; then a manager-supplied root over a cache-derived one; then Claude over
+Codex; then path order, purely so the answer is deterministic.
+Prereleases and malformed directory names never enter a cache scan. When nothing resolves at
+all, the shim prints one bounded line naming the surfaces it checked, the override path, both
+manifests, and both cache roots, never the versions under them.
+
+Failure honesty splits by command, because filing has to stay free. `gripe add`, and a bare
+`gripe` with no arguments, exit 0 whatever went wrong: nothing resolved, a broken override, a
+spawn error, a child killed by a signal. Every other subcommand is honest, passing a numeric
+child status straight through and exiting 1 when there was no resolution or the child died on a
+signal. The shim writes at most one bounded stderr line of its own and never reads stdin, since
+a synchronous read on an inherited pipe can block forever.
+
+The shim carries one `// gripe-shim-epoch: <n>` marker line, and the SessionStart hook that
+maintains `~/.local/bin/gripe` is an upgrade-only ratchet. It writes through a same-directory
+temp file and an atomic rename unless the on-disk file's marker parses as strictly higher. A
+missing, lower, or unparseable marker gets rewritten, and so does an equal marker over bytes
+that no longer match the source, so byte drift and corruption repair themselves, and a newer
+shim survives a sequential write from an older harness. Two caveats and one accepted race. The
+epoch counts shim protocol changes, not releases. Gripe 0.2.x has no marker logic at all, so a
+host with one harness still registered on 0.2.x overwrites the newer shim at every session start
+there. And the ratchet re-reads the on-disk marker just before the rename but does not hold a
+lock, so two SessionStart writers racing can let an older writer's rename land after that
+recheck and overwrite a newer shim; this is a narrow accepted downgrade that a later session
+repairs. The fix for the 0.2.x case is re-registering both harnesses, which is why the README says to upgrade them in one
+sitting.
+
+Known limits. Three residuals are accepted as shipped. Each one is reachable only by a process
+that can already write the user's own home on a single-user machine, the real harm is low or
+zero, and the security-relevant direction stays fail-closed.
+
+- The published shim at `~/.local/bin/gripe` is written through a same-directory temp file and a
+  rename. A process that can already write that directory could unlink the temp and re-point it
+  at a symlink between the create and the rename. Writing that directory is already full control
+  of the user's PATH, so this buys the attacker nothing they did not have.
+- The resolver checks that the resolved binary sits under its cache root and spawns that binary's
+  canonical path, but an external process could retarget a cache symlink between the check and the
+  spawn. The design accepts this check-to-spawn race.
+- The Codex `config.toml` is read by a strict line recognizer, not a full TOML parser (decision
+  38, no TOML dependency). A malformed config that Codex itself would reject can read as an
+  enabled registration rather than as absence, and then run the user's own installed gripe. The
+  security-relevant direction is fail-closed: reaching an attacker-chosen install on top of this
+  also requires planting a cache directory, which is again write access to the user's own home.
 
 ### Unsupported observed signals stay unsupported
 
@@ -187,7 +258,9 @@ node plugins/flow/scripts/smoke-delegation.mjs
 node plugins/flow/scripts/smoke-codex-hooks.mjs
 node plugins/flow/scripts/smoke-charter-conformance.mjs
 node plugins/flow/scripts/smoke-stage-conformance.mjs
+node plugins/flow/scripts/smoke-label-contract.mjs
 node plugins/gripe/scripts/smoke-hooks.mjs
+node plugins/gripe/scripts/smoke-shim.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs
 ```
 
@@ -206,6 +279,16 @@ sections in both directions, rejects a host name in the shared body, and holds t
 tool allowance equal to the Claude profile's. It runs the same checks over the per-case
 broken fixtures, both the bare skill-and-profile pairs and the miniature plugin roots, so a
 green run also shows the check can still fail.
+
+`smoke-shim.mjs` builds synthetic Claude and Codex homes under one temporary directory and
+drives the resolver against them: version skew across harnesses, an unreadable manifest on
+either side, hostile `config.toml` bytes, the `GRIPE_HOME` override, the exit split between
+`gripe add` and every other subcommand, and the epoch ratchet. `smoke-label-contract.mjs`
+parses the taxonomy table out of `plugins/flow/skills/flow/label-contract.md` and holds the
+tuple to its rules, unique names, six-hex colors, one color per lane, and descriptions that
+stay short and carry no slash-command spelling, because those strings are copied into GitHub
+metadata in other repositories. Both check their rules against fixtures that are valid but for
+one named defect.
 
 These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
 definitions until the user reviews them. Claude plugin installs still pull from the pinned

@@ -2,6 +2,8 @@
 # Install (or refresh) flow's scheduled jobs as systemd user timers. Idempotent:
 # re-running overwrites the launcher and units with the plugin's current templates
 # and re-enables the timers. `status` prints what is installed and when it next runs.
+# `install` writes nothing at all until a candidate launcher has proved it resolves the
+# installed plugin, so a failed install leaves a working one alone.
 #
 #   install-cron.sh install    write launcher + units, daemon-reload, enable --now
 #   install-cron.sh status     timers, last result per job, newest report per job
@@ -20,10 +22,73 @@ jobs="lint doc-sweep"
 
 case "${1:-status}" in
 install)
+  # Every check that does not need a launcher runs before the first write, so a machine
+  # that fails one is left exactly as it was found.
   systemctl --user show-environment >/dev/null 2>&1 || { echo "no running systemd user manager; these timers need one - skipping install" >&2; exit 1; }
-  command -v claude >/dev/null || { echo "claude is not on PATH; install Claude Code first" >&2; exit 1; }
   command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
-  mkdir -p "$(dirname "$launcher")" "$units_dir" "$state/reports" "$HOME/.config/flow"
+  need=("$tpl/flow-cron.launcher" "$root/scripts/flow-cron.mjs")
+  for j in $jobs; do need+=("$tpl/flow-$j.service" "$tpl/flow-$j.timer" "$root/skills/flow/cron/$j.md"); done
+  for f in "${need[@]}"; do [ -r "$f" ] || { echo "missing or unreadable: $f; $root is not a complete flow install" >&2; exit 1; }; done
+
+  # Check claude under the SAME PATH the installed launcher will run with, not the
+  # installer's ambient PATH. The launcher hardcodes its runtime PATH, so a claude that is
+  # only elsewhere on the installer's PATH passes an ambient check here and then hits ENOENT
+  # at the first timer fire. Read the PATH straight from the launcher template so the two
+  # never drift, expand $HOME, and probe in a subshell so the installer's own PATH is intact.
+  launcher_path=$(sed -n 's/^[[:space:]]*export PATH="\(.*\)"[[:space:]]*$/\1/p' "$tpl/flow-cron.launcher" | tail -n1)
+  [ -n "$launcher_path" ] || { echo "could not read the launcher's runtime PATH from $tpl/flow-cron.launcher; $root is not a complete flow install" >&2; exit 1; }
+  launcher_path=${launcher_path//\$HOME/$HOME}
+  ( PATH="$launcher_path"; command -v claude >/dev/null 2>&1 ) || { echo "claude is not on the launcher's runtime PATH ($launcher_path); the jobs run as headless Claude sessions and the launcher fires under this PATH, not your shell's - install Claude Code so its binary lands there (e.g. \$HOME/.local/bin)" >&2; exit 1; }
+
+  # The launcher is the only thing that can prove the plugin resolves, and proving it
+  # means running it. So write a CANDIDATE beside the final path, dry-run both jobs
+  # through the candidate, and promote it with a rename only once both pass: a failure
+  # here arms nothing and leaves a launcher that already worked untouched. The trap
+  # removes the candidate on the failure exit below and on an interrupt mid-dry-run.
+  mkdir -p "$(dirname "$launcher")"
+  candidate="$launcher.candidate.$$"
+  trap 'rm -f "$candidate"' EXIT
+  install -m 0755 "$tpl/flow-cron.launcher" "$candidate"
+  # Nothing is armed before this passes: a persistent timer that is overdue fires the
+  # moment it is enabled.
+  for j in $jobs; do
+    "$candidate" "$j" --dry-run >/dev/null || {
+      printf '%s\n' \
+        "launcher dry-run failed for $j; nothing was installed - the candidate launcher is deleted, no units, no env file, no timer enabled, and a launcher that was already there is untouched." \
+        "The jobs are Claude-hosted (each one is a headless claude -p session), so flow@jakub has to be installed at Claude USER scope no matter which host you conduct the pipeline from: the launcher reads $HOME/.claude/plugins/installed_plugins.json for a user-scope entry and nothing else." \
+        "Fix: claude plugin install flow@jakub --scope user   (then re-run this installer)" >&2
+      exit 1
+    }
+  done
+  # Promote with no-target-directory semantics. Plain `mv -f candidate launcher`
+  # treats a directory (or a symlink to one) already sitting at the launcher path as
+  # a container: the candidate lands INSIDE it, the launcher path is never replaced,
+  # mv still exits 0, and the timers below would name a directory in ExecStart. `mv -T`
+  # refuses to overwrite a directory and replaces a symlink entry rather than following
+  # it, so a directory at the launcher path makes mv exit non-zero and the fatal branch
+  # below catches it; the shape check afterward only guards a rename that itself succeeded.
+  # A non-zero mv is fatal, never swallowed. If it were swallowed, a pre-existing old
+  # executable already sitting at the launcher path would satisfy the shape check below and
+  # the installer would arm timers on a launcher it never promoted (only the candidate was
+  # dry-run proven). So on failure: delete the candidate, say so once, and exit having
+  # enabled nothing - a launcher that already worked is left byte-for-byte.
+  mv -fT "$candidate" "$launcher" 2>/dev/null || {
+    rm -f "$candidate"
+    echo "cron launcher promotion failed: could not rename $candidate onto $launcher; nothing was installed - the candidate is deleted, no units, no env file, no timer enabled, and any launcher already at that path is untouched." >&2
+    exit 1
+  }
+  # Prove the promotion landed a real launcher before writing or enabling anything:
+  # a regular, executable file at the exact path, not a directory and not a dangling
+  # or surviving symlink. On failure the trap deletes the candidate and no unit, env
+  # file, or timer is written, so a launcher that already worked is left untouched.
+  if [ -L "$launcher" ] || [ ! -f "$launcher" ] || [ ! -x "$launcher" ]; then
+    printf '%s\n' \
+      "cron launcher was not promoted: $launcher is not a regular executable file (a directory or symlink is in the way); nothing was installed - the candidate launcher is deleted, no units, no env file, no timer enabled." \
+      "Remove whatever occupies $launcher, then re-run this installer." >&2
+    exit 1
+  fi
+
+  mkdir -p "$units_dir" "$state/reports" "$HOME/.config/flow"
   # Persist the config the units need: systemctl does not carry the installer's env.
   env_file="$HOME/.config/flow/cron.env"
   {
@@ -33,10 +98,6 @@ install)
     echo "FLOW_CRON_TIMEOUT_MIN=${FLOW_CRON_TIMEOUT_MIN:-40}"
   } > "$env_file"
   chmod 0600 "$env_file"
-  install -m 0755 "$tpl/flow-cron.launcher" "$launcher"
-  # Prove the launcher resolves the installed plugin BEFORE arming anything: a
-  # persistent timer that is overdue fires the moment it is enabled.
-  for j in $jobs; do "$launcher" "$j" --dry-run >/dev/null || { echo "launcher dry-run failed for $j; not enabling timers" >&2; exit 1; }; done
   for j in $jobs; do
     install -m 0644 "$tpl/flow-$j.service" "$units_dir/flow-$j.service"
     install -m 0644 "$tpl/flow-$j.timer" "$units_dir/flow-$j.timer"
