@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { ACTIVE_STATES, DelegationError, TERMINAL_STATES } from './contracts.mjs'
 

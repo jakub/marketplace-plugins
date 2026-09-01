@@ -23290,7 +23290,7 @@ import { readdirSync as readdirSync2, readFileSync as readFileSync3 } from "node
 import { randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync as readFileSync2, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname2, join } from "node:path";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 var SCHEMA_VERSION = 6;
 var RETENTION_DAYS = 14;
