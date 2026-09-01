@@ -5,7 +5,7 @@ import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } f
 import { providerContainmentSupport, providerScopeRunning } from './containment.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
 import { validateOutputSchema } from './schema.mjs'
-import { JobStore, defaultStateDir, processStartToken } from './store.mjs'
+import { JobStore, defaultStateDir, processStartToken, serviceLog } from './store.mjs'
 import { canonicalRoots, canonicalWorkspace, gitMetadataPaths, immutableReview, validatedWorktreeKey, worktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -217,6 +217,16 @@ export class DelegationService {
         FLOW_DELEGATION_DEPTH: String(this.depth + 1),
         FLOW_DELEGATION_PARENT_JOB_ID: jobId,
       },
+    })
+    // spawn reports EAGAIN and EMFILE asynchronously. With no 'error' listener node raises
+    // that failure on the process itself, which would take the MCP server down and with it
+    // every other in-flight job. The job is still queued when this fires - nothing claimed
+    // it and now nothing will - so failQueued is the honest report. The cause goes to the
+    // owner-only service log; the caller sees a kind and a fixed message with no path in it.
+    child.on('error', (cause) => {
+      try { serviceLog(this.stateDir, `worker spawn failed for job ${jobId}: ${cause?.code || ''} ${cause?.message || cause}`) } catch {}
+      const error = publicError(new DelegationError('WORKER_SPAWN_FAILED', 'The delegation worker process could not be started.'))
+      try { this.withStore((store) => store.failQueued(jobId, error)) } catch {}
     })
     child.unref()
   }

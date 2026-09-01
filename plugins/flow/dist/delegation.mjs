@@ -22833,7 +22833,7 @@ function capabilitiesForTarget(target) {
 }
 var HOST_CAPABILITIES_SCHEMA_VERSION = 1;
 var HOST_CAPABILITY_VERIFIED_AT = "2026-08-29";
-var HOST_VERIFIED_AGAINST = { claude: "claude-code 2.1.252", codex: "codex-cli 0.151.0" };
+var HOST_VERIFIED_AGAINST = { claude: "claude-code 2.1.257", codex: "codex-cli 0.152.0" };
 var HOST_CAPABILITY_TABLE = {
   "plugin-skill-contribution": {
     claude: { supported: true, assurance: "mechanism", note: "A plugin ships skills under skills/ and the loader registers them." },
@@ -24259,7 +24259,7 @@ function signalTrackedProcessTree(rootPid, knownDescendants, signal) {
 }
 
 // src/delegation/version.mjs
-var VERSION = true ? "0.30.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
+var VERSION = true ? "0.31.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
 
 // src/delegation/app-server.mjs
 var APPROVAL_METHODS = /* @__PURE__ */ new Set([
@@ -57678,6 +57678,17 @@ var DelegationService = class {
         FLOW_DELEGATION_STATE_DIR: this.stateDir,
         FLOW_DELEGATION_DEPTH: String(this.depth + 1),
         FLOW_DELEGATION_PARENT_JOB_ID: jobId2
+      }
+    });
+    child.on("error", (cause) => {
+      try {
+        serviceLog(this.stateDir, `worker spawn failed for job ${jobId2}: ${cause?.code || ""} ${cause?.message || cause}`);
+      } catch {
+      }
+      const error2 = publicError(new DelegationError("WORKER_SPAWN_FAILED", "The delegation worker process could not be started."));
+      try {
+        this.withStore((store) => store.failQueued(jobId2, error2));
+      } catch {
       }
     });
     child.unref();

@@ -137,8 +137,8 @@ Two write-seat classes exist on this host.
 
 Version drift is a string comparison against a live operand, not a probe. The doctor result
 carries `client`, the MCP client identity observed in the initialize handshake, as a name and a
-version, with nulls where no handshake supplied one. That version is bare, `0.151.0`. The
-`verifiedAgainst` record beside it is product-qualified, `codex-cli 0.151.0`. Compare those two
+version, with nulls where no handshake supplied one. That version is bare, `0.152.0`. The
+`verifiedAgainst` record beside it is product-qualified, `codex-cli 0.152.0`. Compare those two
 whole and they never match, so the run would stop at preflight on exactly the versions the table
 does support.
 
@@ -268,7 +268,9 @@ naming the alternative you rejected and why, and keep going.
 ### gate: trust-fork-ask
 
 Mandatory, and the suspended turn is what it costs. Finish every mutation first: commit, push,
-the journal event, the label, the escalation notice. THEN read the anchors, meaning the AC
+the journal event, the label, the escalation notice. One exception, and the shared body sets it:
+when the question is whether these bytes may be pushed or published at all, commit locally,
+journal, label, notify, and suspend WITHOUT pushing. THEN read the anchors, meaning the AC
 snapshot digest, the head sha and the issue's `updatedAt`, immediately before asking. Reading
 them earlier lets your own work expire your own question. Ask one question, up to four numbered
 options, the recommendation first, each option carrying its consequence in a line, then end the

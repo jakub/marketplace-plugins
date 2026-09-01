@@ -20,7 +20,7 @@ The two harnesses have different plugin CLIs, so they get separate lanes. The sp
 
 ### Claude Code
 
-Verified against Claude Code 2.1.252, 2026-09-01.
+Verified against Claude Code 2.1.257, 2026-09-01.
 
 ```bash
 claude plugin marketplace add jakub/marketplace-plugins
@@ -33,7 +33,7 @@ claude plugin list
 
 ### Codex
 
-Verified against codex-cli 0.151.0, 2026-09-01.
+Verified against codex-cli 0.152.0, 2026-09-01.
 
 Register the marketplace once with `codex plugin marketplace add`, which adds a local or Git marketplace to the configured sources. Then:
 
@@ -43,7 +43,7 @@ codex plugin list
 codex plugin list --available --json
 ```
 
-Codex 0.151.0 has no update verb. `codex plugin --help` lists `add`, `list`, `marketplace`, `remove`, and `help`, and `codex plugin update` answers `error: unrecognized subcommand 'update'`. Updating is therefore two moves, refresh the snapshot and re-register the plugin:
+Codex 0.152.0 has no update verb. `codex plugin --help` lists `add`, `list`, `marketplace`, `remove`, and `help`, and `codex plugin update` answers `error: unrecognized subcommand 'update'`. Updating is therefore two moves, refresh the snapshot and re-register the plugin:
 
 ```bash
 codex plugin marketplace upgrade
