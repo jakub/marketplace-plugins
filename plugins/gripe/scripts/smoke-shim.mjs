@@ -776,6 +776,29 @@ try {
       bare.plugin_version === null && bare.plugin_root === normalizeRoot(neither), bare.plugin_root)
   }
 
+  {
+    const stateHome = join(TMP, 'doctor-state')
+    mkdirSync(stateHome, { recursive: true })
+    const result = spawnSync(process.execPath, [join(PLUGIN, 'bin', 'gripe'), 'doctor'], {
+      encoding: 'utf8',
+      env: { ...process.env, XDG_STATE_HOME: stateHome },
+    })
+    let report = {}
+    try {
+      report = JSON.parse(result.stdout)
+    } catch { /* the check below reports the raw output */ }
+    // Read by key, never by position: doctor's report is a JSON object and a capture that
+    // depends on field order is a capture that breaks on the next field added.
+    const declared = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8')).version
+    check('gripe doctor names the running install and keeps its health verdict',
+      result.status === 0
+      && report.plugin_root === PLUGIN
+      && report.plugin_version === declared
+      && /^\d+\.\d+\.\d+$/.test(declared)
+      && report.healthy === true,
+      `${report.plugin_root} @ ${report.plugin_version}`)
+  }
+
   console.log(`\ngripe shim: ${failures === 0 ? 'ALL PASS' : `${failures} FAILED`} (${checks} checks)`)
 } finally {
   rmSync(TMP, { recursive: true, force: true })

@@ -51,7 +51,9 @@ Run `gripe doctor` first, every time. Invariant 1 makes write failures silent by
 so a quiet month and a broken write path look identical from the dump alone. If doctor
 reports unhealthy, or the newest row is implausibly old for how much agent work happened,
 say that first; an analysis of a partial log is worth less than knowing the log is
-partial.
+partial. Doctor also names the install that answered, `plugin_root` and `plugin_version`:
+report a version behind the one the user installed as a fact and leave it there, because
+`healthy` deliberately never rules on skew.
 
 Then `gripe dump`. It emits one JSON object per row after a preamble, floored at the
 cursor (what the user hasn't seen yet). `gripe dump --since <date>` or `--repo <name>` gives
