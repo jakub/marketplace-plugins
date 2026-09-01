@@ -3,7 +3,9 @@
 // wrong is invisible from a green `gripe add`: the wrong version, a development override
 // silently ignored, a published shim quietly downgraded. So this covers ranking across the
 // two plugin caches, the GRIPE_HOME override, what each exit code promises, the epoch
-// ratchet, and that importing the shim does not run it.
+// ratchet, and that importing the shim does not run it. Two of those wrong picks are narrow
+// and were live bugs: a plugin named gripe in some other marketplace, and a version Claude
+// Code has already orphaned but not yet deleted.
 //
 // Every synthetic home lives under one throwaway directory. Nothing here reads the real
 // ~/.claude or ~/.codex, and nothing writes outside the temp tree.
@@ -47,9 +49,12 @@ const cacheRoot = (home, harness) =>
 // The stub stands in for a real bin/gripe: it records the arguments it was handed and prints
 // the root it ran from, so a case can prove which install ran and, more importantly, that a
 // refused resolution ran nothing at all.
-function plantInstall(home, harness, version, { bin = true, marketplace = 'jakub' } = {}) {
+function plantInstall(home, harness, version, { bin = true, marketplace = 'jakub', orphaned = false } = {}) {
   const root = join(cacheRoot(home, harness), marketplace, 'gripe', version)
   mkdirSync(bin ? join(root, 'bin') : root, { recursive: true })
+  // Claude Code's own marker for a version it has uninstalled or superseded: one file holding
+  // a millisecond timestamp, dropped in the version directory before the files go.
+  if (orphaned) writeFileSync(join(root, '.orphaned_at'), '1787531315877')
   if (bin) {
     writeFileSync(join(root, 'bin', 'gripe'), [
       '#!/usr/bin/env node',
@@ -92,6 +97,30 @@ console.log('ranking across the two caches')
 }
 {
   const home = makeHome()
+  plantInstall(home, 'claude', '0.3.0')
+  const newest = plantInstall(home, 'claude', '0.4.0')
+  check('with nothing orphaned the newest version still wins', resolved(home) === newest, resolved(home))
+}
+{
+  const home = makeHome()
+  const ours = plantInstall(home, 'claude', '0.3.0')
+  plantInstall(home, 'claude', '0.4.0', { orphaned: true })
+  check('a higher version carrying .orphaned_at is ignored', resolved(home) === ours, resolved(home))
+}
+{
+  const home = makeHome()
+  const ours = plantInstall(home, 'codex', '0.3.0')
+  plantInstall(home, 'claude', '9.9.9', { marketplace: 'someone-else' })
+  check('a higher version under another marketplace is ignored', resolved(home) === ours, resolved(home))
+}
+{
+  const home = makeHome()
+  plantInstall(home, 'codex', '9.9.9', { marketplace: 'someone-else' })
+  const { bin, error } = resolveGripeBin({ home, env: {} })
+  check('another marketplace alone resolves nothing', bin === null && error !== null, bin)
+}
+{
+  const home = makeHome()
   const real = plantInstall(home, 'claude', '0.1.0')
   plantInstall(home, 'claude', 'latest')
   plantInstall(home, 'claude', '0.4.0-rc1')
@@ -124,8 +153,9 @@ console.log('ranking across the two caches')
   const home = makeHome()
   const { bin, error } = resolveGripeBin({ home, env: {} })
   check('nothing installed resolves nothing', bin === null && error !== null)
-  check('the miss names both cache roots',
-    error.includes(cacheRoot(home, 'claude')) && error.includes(cacheRoot(home, 'codex')))
+  check('the miss names the directory scanned under both caches',
+    error.includes(join(cacheRoot(home, 'claude'), 'jakub', 'gripe'))
+      && error.includes(join(cacheRoot(home, 'codex'), 'jakub', 'gripe')))
 }
 
 // ------------------------------------------------------------------------- GRIPE_HOME

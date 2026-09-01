@@ -7,7 +7,7 @@
 // what each exit code promises, is in docs/gripe/DESIGN.md.
 
 import { spawnSync } from 'node:child_process'
-import { readdirSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,12 @@ import { fileURLToPath } from 'node:url'
 // A cache directory is named for its version, so dotted integers and nothing else. `latest`,
 // `0.4.0-rc1`, and a hash-named checkout are not versions and never become candidates.
 const VERSION_RE = /^\d+(?:\.\d+)*$/
+// The install string for every plugin in this repo is `<plugin>@jakub` (see the repo root
+// AGENTS.md), so our own gripe is always under `cache/jakub/gripe/<version>` on either harness.
+// Scanning every marketplace directory would let a higher-numbered plugin that merely shares
+// the name gripe, from a marketplace we never published to, win the sort and run against our
+// database. A second marketplace here would be a deliberate rename, not a discovery.
+const MARKETPLACES = ['jakub']
 const DIAGNOSTIC_CAP = 2000
 
 const listDir = (dir) => { try { return readdirSync(dir) } catch { return [] } }
@@ -40,14 +46,20 @@ function byNewest(a, b) {
   return a.bin < b.bin ? -1 : a.bin > b.bin ? 1 : 0
 }
 
-/** Every `<cache>/<marketplace>/gripe/<version>/bin/gripe` under one plugin cache root. */
+/** Our own `<cache>/jakub/gripe/<version>/bin/gripe` under one plugin cache root. */
 function scanCache(cacheRoot) {
   const found = []
-  for (const marketplace of listDir(cacheRoot)) {
+  for (const marketplace of MARKETPLACES) {
     const dir = join(cacheRoot, marketplace, 'gripe')
     for (const name of listDir(dir)) {
       if (!VERSION_RE.test(name)) continue
-      const bin = binOf(join(dir, name))
+      const root = join(dir, name)
+      // Claude Code stamps `.orphaned_at` into a version directory when it uninstalls that
+      // version or supersedes it, then leaves the files there until a later sweep. Without
+      // this skip, a rollback keeps running the version it rolled back from. Codex writes no
+      // such marker, so there the stale directory has to be deleted; see docs/gripe/DESIGN.md.
+      if (existsSync(join(root, '.orphaned_at'))) continue
+      const bin = binOf(root)
       if (bin !== null) found.push({ version: name.split('.').map(Number), bin })
     }
   }
@@ -77,11 +89,12 @@ export function resolveGripeBin({ env = process.env, home = homedir() } = {}) {
   ]
   const candidates = caches.flatMap(scanCache).sort(byNewest)
   if (candidates.length > 0) return { bin: candidates[0].bin, error: null }
-  // Name the cache roots and never the versions under them: a diagnostic that pastes a
-  // hundred directory names into an agent's context is its own kind of failure.
+  // Name the directories scanned and never the versions under them: a diagnostic that pastes
+  // a hundred directory names into an agent's context is its own kind of failure.
+  const scanned = caches.flatMap((root) => MARKETPLACES.map((m) => join(root, m, 'gripe')))
   return {
     bin: null,
-    error: `no installation found (set GRIPE_HOME or install gripe@jakub); checked: ${caches.join(', ')}`,
+    error: `no installation found (set GRIPE_HOME or install gripe@jakub); checked: ${scanned.join(', ')}`,
   }
 }
 

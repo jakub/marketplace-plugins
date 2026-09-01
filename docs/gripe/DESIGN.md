@@ -410,15 +410,38 @@ Registered in both harnesses is the normal case here, and the versions drift. Me
 2026-08-31: Claude was on gripe 0.2.0 while the Codex cache held 0.2.1. One shim serves both,
 they share one database, so the shim has to pick.
 
-The whole rule is a glob and a sort. Take `<cache>/*/gripe/*/bin/gripe` under both cache roots,
-`~/.claude/plugins/cache` and `${CODEX_HOME:-~/.codex}/plugins/cache`. Read each version
+The whole rule is a glob and a sort. Take `<cache>/jakub/gripe/*/bin/gripe` under both cache
+roots, `~/.claude/plugins/cache` and `${CODEX_HOME:-~/.codex}/plugins/cache`. Read each version
 directory's name as dotted integers, skip the ones that do not parse, so `latest` and
-`0.4.0-rc1` never become candidates. Keep the ones whose `bin/gripe` is a regular file. Sort
-highest version first, comparing component by component so 0.10.0 beats 0.9.0, with the path as
-the tie-break so two installs of the same version always resolve the same way. Run the first.
-Nothing resolved prints one bounded line naming the two cache roots and never the versions
-under them, because a diagnostic that pastes a hundred directory names into an agent's context
-is its own kind of failure.
+`0.4.0-rc1` never become candidates. Skip a version directory holding `.orphaned_at`. Keep the
+ones whose `bin/gripe` is a regular file. Sort highest version first, comparing component by
+component so 0.10.0 beats 0.9.0, with the path as the tie-break so two installs of the same
+version always resolve the same way. Run the first. Nothing resolved prints one bounded line
+naming the directory scanned under each cache root and never the versions under it, because a
+diagnostic that pastes a hundred directory names into an agent's context is its own kind of
+failure.
+
+The marketplace segment is the constant `jakub`, not a wildcard. Every plugin in this repo
+installs as `<plugin>@jakub`, so our own copy is always at `cache/jakub/gripe/<version>` on
+either harness. A wildcard there let any plugin merely named gripe, from a
+marketplace we never published to, join the sort and win it with a higher number. Both cache
+roots already hold other marketplaces, `claude-plugins-official` under Claude and five OpenAI
+ones under Codex, so the collision needs no imagination. Renaming the marketplace means editing
+the `MARKETPLACES` constant in `bin/shim.mjs`, which is the right amount of friction for a
+change that decides whose code runs against the database.
+
+The `.orphaned_at` skip is the rollback fix. Claude Code writes that file, one millisecond
+timestamp, into a version directory when it uninstalls or supersedes that version, then leaves
+the directory in place until a later sweep. Without the skip, uninstalling 0.4.0 and going back
+to 0.3.0 changes nothing: 0.4.0 is still the highest number on disk with a readable `bin/gripe`,
+so it keeps running, and invariant 1 means the rollback that did not happen has no symptom.
+Measured 2026-09-01, of the five gripe directories under
+`~/.claude/plugins/cache/jakub/gripe` every one but the installed 0.3.0 carried the marker.
+
+Codex writes no such marker, so on Codex a removed but still cached newer version keeps winning
+until its directory is gone. Rolling back there is two steps: `codex plugin remove` and then
+delete `${CODEX_HOME:-~/.codex}/plugins/cache/jakub/gripe/<version>`. The shim honours the
+marker under either cache root, so if Codex ever starts writing one the skip already covers it.
 
 `$GRIPE_HOME` is the override, judged by key presence and not by value. Present and holding a
 readable `bin/gripe`, it is the only candidate and no cache is scanned. Present and broken,
@@ -428,10 +451,11 @@ in a development export filed into the live database with no sign anything was w
 
 Both plugin managers write a registry, and the shim reads neither. It used to read both, and
 that cost 275 lines of hand-written TOML scanning to answer two questions: is gripe registered
-under this harness, and under which marketplace. The glob answers both, better, because the
-cache directory name is the version the plugin manager itself wrote there. The registry can add
-exactly one fact the directory cannot, "installed here but disabled", and a disabled plugin
-whose files are still on disk is not a reason to refuse the only gripe on the machine. The one
+under this harness, and under which marketplace. The marketplace is ours to pin, and the glob
+answers the rest better, because the cache directory name is the version the plugin manager
+itself wrote there. The registry can add exactly one fact the directory cannot, "installed here
+but disabled", and a disabled plugin whose files are still on disk is not a reason to refuse the
+only gripe on the machine. The one
 skew ever measured is the 0.2.0-against-0.2.1 case above, and newest-wins is precisely the rule
 that handles it. Worse, a registry read has a failure the glob cannot have: a registry that
 parses cleanly and describes an install that is no longer there. Surviving that took a
