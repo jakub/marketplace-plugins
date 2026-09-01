@@ -122,26 +122,104 @@ const isGitToken = (t) => /(^|[/=])git$/.test(t)
 
 // What cron mode classifies. Text about a git write is not a git write: an issue body
 // quoted into `gh issue comment --body "... run git worktree remove /tmp/wt"` used to deny
-// the whole call, and a lint that cannot report what it found is worse than no lint. So the
-// literals come off first, the same way the interactive rules below strip them.
+// the whole call, and a lint that cannot report what it found is worse than no lint. So
+// quoted text in ARGUMENT position is blanked before classification.
 //
-// Two carve-outs keep the untrusted-input mode from losing what it used to catch. A command
-// that runs its own argument (`bash -c "git push"`, `sh -c '...'`, `eval`, `xargs`) is
-// classified raw, because there the quoted text IS the command. And a double-quoted or
-// heredoc body holding `$(...)` or a backtick keeps its content, because both interpolate in
-// that position and the substitution really runs. Single quotes never interpolate in any
-// shell, so they always come off.
-const RUNS_ITS_ARGUMENT = /\b(?:ba|z|k|da|a|c)?sh\b[^;&|]*\s-c(?:\s|$)|\beval\b|\bxargs\b/
+// Argument position is the whole rule, and a small scanner tracks it rather than a regex,
+// because the shell decides what runs by position and not by quoting. A quoted word at
+// command position (`'git' push`) is an executable word and stays visible to the tokenizer
+// below. A shell, interpreter or exec-wrapper at command position hands its arguments, its
+// stdin or a file to something that runs them: as the first command the allowlist already
+// judged it and the whole string is classified raw; behind a separator it is denied, since
+// a cron job never needs `git log | bash` or `; nohup 'git' push` and no scan can see
+// through either. A variable at command position (`$X push`) cannot be classified and is
+// denied. A quoted argument or heredoc body holding `$(` or a backtick keeps its content,
+// because the substitution really runs. Everything else quoted is prose.
+const SHELL_WORDS = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'eval', 'exec', 'source', '.',
+  'xargs', 'env', 'nohup', 'time', 'command', 'timeout', 'nice', 'ionice', 'setsid',
+  'sudo', 'doas', 'script', 'node', 'python', 'python3', 'perl', 'ruby',
+])
+const isShellWord = (w) => SHELL_WORDS.has(w.replace(/^.*\//, ''))
 const INTERPOLATES = /\$\(|`/
-const cronScanTarget = (cmd) =>
-  RUNS_ITS_ARGUMENT.test(cmd)
-    ? cmd
-    : cmd
-        .replace(/<<-?\s*(['"]?)(\w+)\1([\s\S]*?^\s*\2)/gm, (m, _q, _word, body) =>
-          INTERPOLATES.test(body) ? m : ' ',
-        )
-        .replace(/'[^']*'/g, ' ')
-        .replace(/"([^"]*)"/g, (m, body) => (INTERPOLATES.test(body) ? m : ' '))
+const cronScanTarget = (cmd) => {
+  let out = ''
+  let word = '' // the current word with quotes removed, for deciding what kind of word it is
+  let wordOut = '' // the current word as it goes to the classifier
+  let commandPos = true
+  let firstCommand = true
+  let verdict = null
+  const endWord = () => {
+    if (word === '' && wordOut === '') return
+    if (commandPos && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+      // an assignment prefix leaves the command position open
+    } else if (commandPos && word.startsWith('$')) {
+      verdict ??= { deny: 'an indirect command (a variable or substitution in command position) cannot be classified' }
+    } else if (commandPos && isShellWord(word)) {
+      verdict ??= firstCommand ? { raw: true } : { deny: `a shell or wrapper (${word}) behind another command cannot be classified` }
+    } else if (commandPos) {
+      commandPos = false
+    }
+    out += wordOut
+    word = ''
+    wordOut = ''
+  }
+  const quoted = (content, asWritten) => {
+    word += content
+    // At command position the quotes are part of an executable word; the tokenizer splits on
+    // them and sees the word. In argument position the content is prose unless it interpolates.
+    wordOut += commandPos || INTERPOLATES.test(content) ? asWritten : ' '
+  }
+  for (let i = 0; i < cmd.length; ) {
+    const ch = cmd[i]
+    if (ch === '\\' && i + 1 < cmd.length) {
+      word += cmd[i + 1]
+      wordOut += ch + cmd[i + 1]
+      i += 2
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      const close = cmd.indexOf(ch, i + 1)
+      const stop = close < 0 ? cmd.length : close
+      quoted(cmd.slice(i + 1, stop), cmd.slice(i, stop + 1))
+      i = stop + 1
+      continue
+    }
+    if (cmd.startsWith('<<', i)) {
+      // A heredoc: the body is prose to the classifier unless it interpolates. The command
+      // consuming it was judged as a word already, so a shell reading its script from a
+      // heredoc has been caught above.
+      const m = /^<<-?\s*(['"]?)(\w+)\1[^\n]*\n([\s\S]*?)(^\s*\2\s*$|$(?![\s\S]))/m.exec(cmd.slice(i))
+      if (m) {
+        endWord()
+        out += INTERPOLATES.test(m[3]) ? m[0] : `<<${m[2]}\n\n${m[2]}`
+        i += m[0].length
+        continue
+      }
+    }
+    if (/[;|&()\n]/.test(ch)) {
+      endWord()
+      commandPos = true
+      firstCommand = false
+      out += ch
+      i += 1
+      continue
+    }
+    if (/\s/.test(ch)) {
+      endWord()
+      out += ch
+      i += 1
+      continue
+    }
+    word += ch
+    wordOut += ch
+    i += 1
+  }
+  endWord()
+  if (verdict?.deny) return verdict
+  if (verdict?.raw) return { text: cmd }
+  return { text: out }
+}
 
 const cronVerdict = (cmd, job) => {
   const tokens = cmd.replace(/[;|&()<>\n`'"]/g, ' $& ').split(/\s+/).filter(Boolean)
@@ -223,7 +301,11 @@ process.stdin.on('end', () => {
   // scripts/flow-cron.mjs; keep the write set in step with the prompts in skills/flow/cron/.
   const cronJob = process.env.FLOW_CRON_JOB || ''
   if (cronJob) {
-    const verdict = cronVerdict(cronScanTarget(cmd), cronJob)
+    const target = cronScanTarget(cmd)
+    if (target.deny) {
+      deny(`flow cron guard (${cronJob}): ${target.deny}. Cron runs plain commands one at a time; spell the command out.`)
+    }
+    const verdict = cronVerdict(target.text, cronJob)
     if (verdict) deny(verdict)
     process.exit(0) // cron sessions never commit, so the trailer rules below are moot
   }

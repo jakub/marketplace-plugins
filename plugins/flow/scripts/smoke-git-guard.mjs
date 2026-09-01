@@ -92,6 +92,20 @@ expectEnv(false, `gripe add <<'G'\nthe guard denied git branch -D on a merged br
 expectEnv(true, 'git worktree remove /home/x/code/r-wt', lint, 'lint: the real worktree remove still denied')
 // …but a literal the shell runs, or one that interpolates, is not prose.
 expectEnv(true, 'gh issue comment 42 --body "$(git push origin main)"', lint, 'lint: substitution inside a quoted body')
+// Quoting forms executable words, and shells run scripts through more than a literal -c.
+// Each of these begins with a read, so the Bash(git:*) allowance waves the string through
+// and only this guard stands in front of the write.
+expectEnv(true, "git log -1 >/dev/null; 'git' push origin main", lint, 'lint: quoted git word at command position')
+expectEnv(true, "git log -1 >/dev/null; bash -lc 'git push origin main'", lint, 'lint: shell with a bundled -c behind a read')
+expectEnv(true, "git log -1 >/dev/null; bash <<'X'\ngit push origin main\nX", lint, 'lint: shell fed a heredoc behind a read')
+expectEnv(true, "git log -1; nohup 'git' push origin main", lint, 'lint: exec wrapper around a quoted git word')
+expectEnv(true, 'git log -1; X=git; $X push origin main', lint, 'lint: variable in command position')
+expectEnv(true, 'git log -1 | bash', lint, 'lint: shell reading a read\'s output')
+expectEnv(true, "nohup 'git' push origin main", lint, 'lint: exec wrapper as the first command')
+expectEnv(false, 'git log -1 | head -5', lint, 'lint: pipe into a plain filter still reads')
+expectEnv(false, 'git fetch origin --prune && git branch -a', lint, 'lint: two reads chained')
+expectEnv(false, "gh issue comment 42 --body 'run git branch -D old; then git push'", lint, 'lint: single-quoted prose about git writes')
+expectEnv(false, 'node /x/scripts/lint-actions.mjs prune-worktree --repo /home/x/code/r --path /home/x/code/r-wt', lint, 'lint: the executor invocation')
 expectEnv(true, 'git -C /home/x/code/r branch -D feat/done', sweep, 'sweep: branch -D denied')
 expectEnv(true, 'git -C /home/x/code/r worktree remove /p', sweep, 'sweep: worktree remove denied')
 expectEnv(false, 'git -C /home/x/code/r worktree list --porcelain', sweep, 'sweep: worktree list')
