@@ -356,8 +356,15 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       } else if (!terminalResult) {
         const acceptedWrite = job.access === 'workspace-write' && accepted
         const status = cancelled && !acceptedWrite ? 'cancelled' : acceptedWrite ? 'unknown' : 'failed'
+        // A known refusal outranks every other reason for the missing terminal frame: the
+        // interrupt that followed it is this worker's own doing.
+        if (refusal && mismatch) refusal.fallbackModel ||= mismatch.served
         await settle(status, {
-          error: status === 'cancelled' ? null : {
+          error: status === 'cancelled' ? null : refusal ? {
+            kind: 'REFUSAL',
+            message: 'Claude declined the delegated turn.',
+            details: refusal,
+          } : {
             kind: mismatch ? 'MODEL_MISMATCH' : stalled ? 'STALL' : timedOut ? 'TIMEOUT' : 'CLAUDE_SDK',
             message: mismatch
               ? 'Claude answered on a model other than the one requested, and the turn was interrupted.'

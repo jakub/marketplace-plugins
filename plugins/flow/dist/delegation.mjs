@@ -58305,8 +58305,13 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
       } else if (!terminalResult) {
         const acceptedWrite = job.access === "workspace-write" && accepted;
         const status = cancelled && !acceptedWrite ? "cancelled" : acceptedWrite ? "unknown" : "failed";
+        if (refusal && mismatch) refusal.fallbackModel ||= mismatch.served;
         await settle(status, {
-          error: status === "cancelled" ? null : {
+          error: status === "cancelled" ? null : refusal ? {
+            kind: "REFUSAL",
+            message: "Claude declined the delegated turn.",
+            details: refusal
+          } : {
             kind: mismatch ? "MODEL_MISMATCH" : stalled ? "STALL" : timedOut ? "TIMEOUT" : "CLAUDE_SDK",
             message: mismatch ? "Claude answered on a model other than the one requested, and the turn was interrupted." : acceptedWrite ? "Claude did not prove the accepted write turn reached a terminal state." : "Claude ended before the delegated turn reached a terminal state.",
             details: mismatch

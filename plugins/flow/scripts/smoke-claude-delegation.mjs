@@ -99,7 +99,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (mode === 'capture-instructions') writeFileSync(${JSON.stringify(appendOut)}, message.request.appendSystemPrompt || '')
     if (mode !== 'startup-slow') initialize(message)
   } else if (message.type === 'control_request' && message.request?.subtype === 'interrupt') {
-    if (mode === 'interrupt-hangs') return
+    if (mode === 'interrupt-hangs' || mode === 'refusal-swap-hang') return
     say({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { still_queued: [] } } })
     if (mode === 'cancel-no-result') return setTimeout(() => process.exit(0), 10)
     result({ text: 'Interrupted', error: true })
@@ -153,6 +153,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (mode === 'silent-swap') {
       say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from a model nobody asked for' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'answer from a model nobody asked for' })
+    }
+    if (mode === 'refusal-swap-hang') {
+      // Refusal banner, then a frame from the fallback model, then nothing: the worker's own
+      // interrupt gets no answer and the CLI never sends a result frame.
+      say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'partial answer from the fallback' }], model: 'claude-opus-4-8', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return
     }
     if (mode === 'swap-then-return') {
       // The wrong model answers first, the right one later. The first frame has to decide.
@@ -334,6 +341,10 @@ try {
   assert.equal(refusedEvents.filter((type) => type === 'turn.refused').length, 1, 'one refusal journals one event')
   const declinedEvents = (await call('delegation_events', { jobId: refused.jobId }, { stateDir: state('refusal') })).structuredContent.events.map((event) => event.type)
   assert.equal(declinedEvents.filter((type) => type === 'turn.refused').length, 1, 'an assistant refusal followed by its banner journals one event')
+  const hung = await startJob({ prompt: 'Refused, swapped, then silence' }, { mode: 'refusal-swap-hang', stateDir: state('refusal-swap-hang') })
+  assert.equal(hung.status, 'failed')
+  assert.equal(hung.error.kind, 'REFUSAL', 'a known refusal outranks the missing terminal frame the interrupt caused')
+  assert.equal(hung.error.details.fallbackModel, 'claude-opus-4-8')
   const tagged = await startJob({ prompt: 'Same model, context tag' }, { mode: 'tagged-model', stateDir: state('tagged-model') })
   assert.equal(tagged.status, 'succeeded', 'a context-window tag on the served model id is not a swap')
   const schemaOutputLimit = await startJob({ prompt: 'Schema retry failure' }, { mode: 'schema-output-limit', stateDir: state('schema-output-limit') })
