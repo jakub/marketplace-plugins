@@ -254,6 +254,23 @@ try {
     ['R5f. a trailing-backslash quoted key is absence', '[plugins."gripe@jakub"]\n"enabled\\\n'],
     ['R5g. a bare word then a comment, no `=`, is absence', '[plugins."gripe@jakub"]\nenabled # yes\n'],
     ['R5h. an `=` with an empty key is absence', '[plugins."gripe@jakub"]\n = false\n'],
+    // R5 round-5: the recognizer is now a positive whitelist, so an OTHER key stays ignored
+    // ONLY when its value is a fully recognized conservative scalar. An empty, junk, or
+    // bracket-shaped value, a dotted or escaped key, or a bracket line that is not a clean
+    // table header all fail closed to absence rather than leaking the bare-table enabled
+    // default. Every input a reviewer surfaced across rounds 4-5 is pinned here.
+    ['R5i. `priority =` with an empty value is absence', '[plugins."gripe@jakub"]\npriority =\n'],
+    ['R5j. `priority = @` is absence', '[plugins."gripe@jakub"]\npriority = @\n'],
+    ['R5k. `priority = ]` is absence', '[plugins."gripe@jakub"]\npriority = ]\n'],
+    ['R5l. a dotted, bad-escape other key is absence', '[plugins."gripe@jakub"]\nfoo."bad\\q" = 1\n'],
+    ['R5m. a dotted, out-of-range-escape other key is absence',
+      '[plugins."gripe@jakub"]\npriority."\\UFFFFFFFF" = 1\n'],
+    ['R5n. a quoted key with a raw control char is absence',
+      `[plugins."gripe@jakub"]\n"en${String.fromCharCode(1)}abled" = false\n`],
+    ['R5o. a bare `[` line inside the table is absence, not a silent end',
+      '[plugins."gripe@jakub"]\nenabled = true\n[\n'],
+    ['R5p. a bracket line with trailing junk is absence',
+      '[plugins."gripe@jakub"]\nenabled = true\n[other]x\n'],
   ]
   for (const [name, contents] of absenceCases) {
     const home = makeHome()
@@ -559,13 +576,13 @@ try {
   }
 
   {
-    // R4: the confinement returns the CANONICAL bin/gripe and main spawns exactly that, not a
-    // lexical path a symlink would let node re-resolve. The 0.6.0 version dir is a real
-    // directory - so it passes the round-4 exact-location check - whose bin/gripe is a symlink
-    // to 0.5.0's real binary, both inside the cache. It sorts highest and wins; its root is the
-    // lexical 0.6.0 path, but its binary is the realpath under 0.5.0, and that realpath is the
-    // argv the shim hands node. (A symlinked version DIR, which round 3 admitted here, is now
-    // rejected by round 4's version-name confinement and is covered by F2a below.)
+    // FIX 2 (round 5): the round-4 version-name confinement realpath'd the version dir and only
+    // required bin/gripe to stay under the cache root, so a real 0.6.0 dir whose bin/gripe is a
+    // symlink to 0.5.0's binary - both inside the cache - ranked as 0.6.0 while it would spawn
+    // 0.5.0. That is a version spoof / forced rollback: the executed binary did not belong to
+    // the ranked version. confinedBinary now also requires realpath(bin/gripe) to equal
+    // <versionDir>/bin/gripe, so the cross-version symlink is rejected and the real 0.5.0 wins,
+    // ranked and spawned as itself. (This construction PASSED before the fix; it must now fail.)
     const home = makeHome()
     claudeRegistry(home, { plugins: {} })
     codexConfig(home, table('true'))
@@ -575,6 +592,7 @@ try {
     symlinkSync(join(real, 'bin', 'gripe'), join(sixBin, 'gripe'))
     const resolved = resolveIn(home)
     const canonical = realpathSync(join(real, 'bin', 'gripe'))
+    const spoofed = resolved.candidates.some((candidate) => candidate.root.endsWith('0.6.0'))
     let spawnedTarget = null
     const code = main({
       argv: ['add'],
@@ -583,10 +601,10 @@ try {
       spawn: (execPath, args) => { spawnedTarget = args[0]; return { status: 0 } },
       stderr: () => {},
     })
-    check('R4. a confined candidate spawns its canonical bin/gripe, not a lexical path',
-      code === 0 && resolved.root === normalizeRoot(join(codexCacheDir(home), 'jakub', 'gripe', '0.6.0'))
+    check('F2c. a cross-version in-cache bin symlink is rejected, the real 0.5.0 wins and spawns',
+      code === 0 && !spoofed && resolved.root === real
       && resolved.bin === canonical && spawnedTarget === canonical,
-      `root ${resolved.root} bin ${resolved.bin} spawned ${spawnedTarget}`)
+      `root ${resolved.root} spoofed=${spoofed} bin ${resolved.bin} spawned ${spawnedTarget}`)
   }
 
   {

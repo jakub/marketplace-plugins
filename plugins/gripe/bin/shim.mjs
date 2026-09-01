@@ -43,13 +43,14 @@ const ENABLED_VALUE_RE = /^[ \t]*enabled[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$
 // TOML basic-string simple escapes. Only \u and \U can spell letters, but the standard set
 // is decoded so a valid key reads as its real value.
 const SIMPLE_ESCAPES = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' }
-// assignmentKey returns this for any line inside a gripe table that is neither a blank/full-
-// line comment nor a well-formed `key = value` assignment: a bare word with no `=`, a key
-// with a stray character (`enabled!`, `enabled other`, `"enabled"x`), an unterminated or
-// dangling-escape quote, or an empty key. Distinct from null (a blank or comment, a genuine
-// non-assignment) because a malformed line could be a half-written `enabled` toggle, so it is
-// ambiguity that drops the whole registration to absence, never a line to skip past into the
-// bare-table enabled default - the fail-open direction the design forbids.
+// assignmentKey returns this for a line inside a gripe table that is not even a parseable
+// top-level `key = value`: a bare word with no `=`, an unterminated or dangling-escape quote,
+// or a top-level `#` before any `=`. A stray character, a quoted or dotted key, and an empty
+// key still parse structurally (they have a top-level `=`); the caller rejects those by the
+// clean-bare-key whitelist. Distinct from null (a blank or comment, a genuine non-assignment)
+// because a malformed line could be a half-written `enabled` toggle, so it is ambiguity that
+// drops the whole registration to absence, never a line to skip past into the bare-table
+// enabled default - the fail-open direction the design forbids.
 const MALFORMED_KEY = Symbol('malformed-key')
 
 // Written as code points rather than as literals, because a source file carrying a raw
@@ -120,28 +121,32 @@ function realOrNull(path) {
 }
 
 /**
- * A cache candidate must resolve to exactly the lexical location it was scanned from, with
- * every traversed component - the marketplace directory, the literal `gripe`, and the version
- * directory - confined under the real cache root. The scanned version directory is realpath'd
- * and required to equal `<realCache>/<marketplace>/gripe/<version>`, where `<version>` is the
- * directory name read from the cache. That one comparison confines all three components at
- * once: a symlink at the marketplace or at the version name that resolves anywhere else - even
- * elsewhere inside the same cache, so a lexical `9.9.9` pointing at a real `0.1.0` - fails it
- * and the candidate is rejected. Without this, the candidate ranks by its lexical name while
- * its binary is a different version, a version spoof or forced rollback. bin/gripe is then
- * realpath'd too and must itself stay under the cache root. Returns the CANONICAL bin/gripe
- * path so the caller spawns exactly the object validated here, never a lexical path a later
- * spawn would re-resolve through the same symlinks. Returns null when the version directory
- * escapes that exact shape, bin/gripe escapes the cache, or either cannot be resolved. This
- * confines only the two plugin caches; GRIPE_HOME and the Claude manager registry are the
- * user's own explicit declarations and may point anywhere.
+ * A cache candidate must resolve to exactly the lexical location it was scanned from, and the
+ * binary it will run must provably belong to that ranked version directory. Two realpath
+ * checks, both required:
+ *   1. The scanned version directory realpath'd equals `<realCache>/<marketplace>/gripe/<name>`
+ *      (passed as expectedVersionDir), where `<name>` is the directory name read from the
+ *      cache. That one comparison confines all three traversed components at once - the
+ *      marketplace directory, the literal `gripe`, and the version name: a symlink at any of
+ *      them resolving anywhere else, even elsewhere inside the same cache so a lexical `9.9.9`
+ *      pointing at a real `0.1.0`, fails it and the candidate is rejected.
+ *   2. bin/gripe realpath'd equals exactly `<expectedVersionDir>/bin/gripe`. Without this, a
+ *      real `9.9.9` version dir whose bin/gripe is a symlink to `0.1.0`'s binary - both inside
+ *      the cache, so a mere under-the-cache-root check passed - would rank as `9.9.9` while it
+ *      spawns `0.1.0`, a version spoof or forced rollback. The executed binary must be the
+ *      ranked version's own, not merely somewhere under the cache root.
+ * Returns the CANONICAL bin/gripe path so the caller spawns exactly the object validated here,
+ * never a lexical path a later spawn would re-resolve through the same symlinks. Returns null
+ * when the version directory escapes that exact shape, bin/gripe is not exactly its own
+ * version's binary, or either cannot be resolved. This confines only the two plugin caches;
+ * GRIPE_HOME and the Claude manager registry are the user's own explicit declarations and may
+ * point anywhere.
  */
-function confinedBinary(root, confineReal, expectedVersionDir) {
-  const prefix = confineReal.endsWith(sep) ? confineReal : confineReal + sep
+function confinedBinary(root, expectedVersionDir) {
   const versionReal = realOrNull(root)
   if (versionReal === null || versionReal !== expectedVersionDir) return null
   const binReal = realOrNull(join(root, 'bin', 'gripe'))
-  if (binReal === null || !binReal.startsWith(prefix)) return null
+  if (binReal === null || binReal !== join(expectedVersionDir, 'bin', 'gripe')) return null
   return binReal
 }
 
@@ -206,7 +211,7 @@ function scanVersionDir(cacheRoot, marketplace, base, confineReal) {
     if (version === null) continue
     const root = normalizeRoot(join(dir, name))
     if (!usableRoot(root)) continue
-    const bin = confinedBinary(root, confineReal, join(confineReal, marketplace, 'gripe', name))
+    const bin = confinedBinary(root, join(confineReal, marketplace, 'gripe', name))
     if (bin === null) continue
     found.push({ ...base, root, version, bin })
   }
@@ -281,7 +286,7 @@ export function readClaudeRegistry(home) {
 // A single, properly terminated TOML basic string: opens with `"` and the matching close is
 // the final character, backslash escapes consuming the next character. Rejects `"a"b"` (an
 // early close leaves trailing junk) and `"a` (never closed). Escape VALIDITY is not judged
-// here, only the string's shape; keyEnabledness decodes an accepted key and catches a bad \u.
+// here, only the string's shape, since a table-header key is never decoded for its value.
 function singleBasicString(t) {
   if (t.length < 2 || t[0] !== '"') return false
   for (let i = 1; i < t.length; i++) {
@@ -299,13 +304,11 @@ function singleLiteralString(t) {
 
 const BARE_KEY_RE = /^[A-Za-z0-9_-]+$/
 
-// Whether the text left of the `=` is a well-formed TOML key: a dot-separated run of
-// segments, each (trimmed of surrounding whitespace) a bare key `[A-Za-z0-9_-]+`, a single
-// basic string, or a single literal string. This is the whitelist that replaces enumerating
-// bad shapes: `enabled!`, `enabled other`, `"enabled"x`, `'enabled'x`, or an empty segment
-// all fail it, so the caller treats the line as malformed and the table resolves to absence.
-// A clean `enabled`, `"enabled"`, `enabled.value`, or `priority` passes, and keyEnabledness
-// then decides whether it is the toggle.
+// Whether a TOML key is well-formed: a dot-separated run of segments, each (trimmed of
+// surrounding whitespace) a bare key `[A-Za-z0-9_-]+`, a single basic string, or a single
+// literal string. `plugins."gripe@jakub"` and `valid.other` pass; an empty segment or a stray
+// character fails. isCleanTableHeader uses it to tell a clean header for some other table,
+// which legitimately ends the gripe table, from a malformed bracket line, which does not.
 function wellFormedKey(keyText) {
   const segments = []
   let basic = false
@@ -336,15 +339,57 @@ function wellFormedKey(keyText) {
   return true
 }
 
-// Classify one line inside a recognized gripe table. Returns null for a blank line or a
-// full-line comment (a genuine non-assignment to skip past), the KEY TEXT for a well-formed
-// `key = value` line, or MALFORMED_KEY for every other shape. The classification is a
-// whitelist, not a blacklist: a line reaches keyEnabledness only when it is a clean
-// assignment with a well-formed key and a real top-level `=` (a `=` inside quotes does not
-// count). A bare word with no `=`, a stray character after the key, an unterminated or
-// dangling-escape quote, an empty key, or a top-level `#` before any `=` are all malformed,
-// which marks the table ambiguous and drops the registration to absence - never a line
-// skipped past into the bare-table enabled default.
+// Whether a bracket-prefixed line is a clean TOML table or array-of-tables header for some
+// table: `[ key ]` or `[[ key ]]`, the key a well-formed dotted key, with optional surrounding
+// whitespace and an optional trailing comment. A clean header for any table legitimately ends
+// the current gripe table; a bracket line that is not one (a bare `[`, an unterminated `[key`,
+// stray characters after the close) is malformed and, inside a gripe table, must invalidate it
+// rather than silently ending it and leaving a recorded registration enabled.
+function isCleanTableHeader(line) {
+  let i = 0
+  while (i < line.length && (line[i] === ' ' || line[i] === '\t')) i++
+  if (line[i] !== '[') return false
+  i++
+  const doubled = line[i] === '['
+  if (doubled) i++
+  const keyStart = i
+  let basic = false
+  let literal = false
+  let close = -1
+  for (; i < line.length; i++) {
+    const c = line[i]
+    if (basic) {
+      if (c === '\\') { i++; continue }
+      if (c === '"') basic = false
+      continue
+    }
+    if (literal) {
+      if (c === "'") literal = false
+      continue
+    }
+    if (c === '"') { basic = true; continue }
+    if (c === "'") { literal = true; continue }
+    if (c === ']') { close = i; break }
+  }
+  if (basic || literal || close === -1) return false
+  const keyText = line.slice(keyStart, close)
+  let rest = close + 1
+  if (doubled) {
+    if (line[rest] !== ']') return false
+    rest++
+  }
+  if (!isCommentTail(line.slice(rest))) return false
+  return wellFormedKey(keyText)
+}
+
+// Classify one line inside a recognized gripe table by STRUCTURE only. Returns null for a blank
+// line or a full-line comment (a genuine non-assignment to skip past), MALFORMED_KEY when the
+// line is not a parseable top-level `key = value` (a bare word with no `=`, an unterminated or
+// dangling-escape quote, or a top-level `#` before any `=`), or `{ key, value }` with the raw
+// text on each side of the first top-level `=` (a `=` inside quotes does not count). The caller
+// decides whether the key and value are the whitelisted clean forms; every other shape is
+// ambiguity that drops the registration to absence, never a line skipped past into the
+// bare-table enabled default.
 function assignmentKey(line) {
   if (/^[ \t]*$/.test(line)) return null
   if (/^[ \t]*#/.test(line)) return null
@@ -370,30 +415,7 @@ function assignmentKey(line) {
   }
   // An unterminated quote, or a line with no top-level `=` at all, is not an assignment.
   if (basic || literal || eq === -1) return MALFORMED_KEY
-  const keyText = line.slice(0, eq)
-  return wellFormedKey(keyText) ? keyText : MALFORMED_KEY
-}
-
-// The first dotted segment of a key, a `.` inside quotes ignored.
-function firstSegment(key) {
-  let basic = false
-  let literal = false
-  for (let i = 0; i < key.length; i++) {
-    const c = key[i]
-    if (basic) {
-      if (c === '\\') { i++; continue }
-      if (c === '"') basic = false
-      continue
-    }
-    if (literal) {
-      if (c === "'") literal = false
-      continue
-    }
-    if (c === '"') { basic = true; continue }
-    if (c === "'") { literal = true; continue }
-    if (c === '.') return key.slice(0, i)
-  }
-  return key
+  return { key: line.slice(0, eq), value: line.slice(eq + 1) }
 }
 
 // Decode a TOML basic string's contents, or null if an escape is malformed.
@@ -426,36 +448,58 @@ function decodeBasic(inner) {
   return out
 }
 
-// How a key's first segment relates to the bare TOML key `enabled`:
-//   'enabled'     - it normalizes to `enabled`, however spelled: bare, single-quoted
-//                   (literal), or double-quoted with escapes. This is what lets
-//                   `enabled.value = false` and `"enabled" = false` be recognized as enabled
-//                   assignments the bare matcher would miss, and so treated as ambiguity.
-//   'undecodable' - a double-quoted segment whose escapes do not decode (a malformed or
-//                   out-of-range \u/\U). We cannot tell whether it spells `enabled`, so the
-//                   table is ambiguous and must resolve to absence, never to the bare-table
-//                   enabled default and never to a throw.
-//   'other'       - it decodes to something that is plainly not `enabled`.
-function keyEnabledness(key) {
-  const segment = firstSegment(key).trim()
-  if (segment === 'enabled') return 'enabled'
-  if (segment.length >= 2 && segment.startsWith("'") && segment.endsWith("'")) {
-    return segment.slice(1, -1) === 'enabled' ? 'enabled' : 'other'
+// Only horizontal whitespace and an optional trailing comment may follow a recognized value.
+function isCommentTail(rest) {
+  return /^[ \t]*(?:#.*)?$/.test(rest)
+}
+
+// Whether the text right of a `=` is a fully recognized conservative scalar: a bare boolean, a
+// base-10 integer (optional sign), or one properly terminated basic/literal string with only
+// valid escapes, then optional whitespace and an optional trailing comment. This is the value
+// half of the fail-closed whitelist: an OTHER key stays ignored per decision 38 only when its
+// value is recognized here. An empty value, a bare `@` or `]`, an unterminated or bad-escape
+// string, or any trailing junk is not recognized, so the caller marks the table ambiguous and
+// the whole registration resolves to absence rather than the bare-table enabled default.
+function recognizedScalar(text) {
+  let i = 0
+  while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i++
+  const s = text.slice(i)
+  if (s === '' || s[0] === '#') return false
+  if (s[0] === '"') {
+    let j = 1
+    for (; j < s.length; j++) {
+      if (s[j] === '\\') { j++; continue }
+      if (s[j] === '"') break
+    }
+    // Unterminated (ran off the end or a dangling escape swallowed the close), or an escape
+    // that does not decode: not a recognized value.
+    if (j >= s.length || s[j] !== '"') return false
+    if (decodeBasic(s.slice(1, j)) === null) return false
+    return isCommentTail(s.slice(j + 1))
   }
-  if (segment.length >= 2 && segment.startsWith('"') && segment.endsWith('"')) {
-    const decoded = decodeBasic(segment.slice(1, -1))
-    if (decoded === null) return 'undecodable'
-    return decoded === 'enabled' ? 'enabled' : 'other'
+  if (s[0] === "'") {
+    const close = s.indexOf("'", 1)
+    if (close === -1) return false
+    return isCommentTail(s.slice(close + 1))
   }
-  return 'other'
+  const token = /^[^ \t#]+/.exec(s)[0]
+  if (!/^(?:true|false|[+-]?\d+)$/.test(token)) return false
+  return isCommentTail(s.slice(token.length))
 }
 
 /**
- * A line scanner, not a TOML parser. It recognizes one shape of table header and one
- * shape of `enabled` value; everything else about the file is somebody else's business.
- * The cost of that is honesty about its blind spot: a header can hide inside a multi-line
- * string, so a file holding multi-line string delimiters at all reports no registration
- * rather than a guess. Ambiguity is absence, in every direction.
+ * A line scanner, not a TOML parser, with a FAIL-CLOSED posture. Inside a recognized gripe
+ * table a line keeps the registration valid only when it is POSITIVELY one of a short list of
+ * clean forms: blank or a full-line comment; the clean bare `enabled` toggle set to a bare
+ * boolean; or a clean bare OTHER key (per decision 38, ignored) set to a fully recognized
+ * conservative scalar. Anything else - a quoted, dotted, or escaped key whether or not it
+ * spells `enabled`, an unrecognized value, an empty key, a bare word with no `=`, an inline
+ * table or array, a bracket line that is not a clean new table header - is AMBIGUITY, and the
+ * whole registration resolves to absence. Absence only blocks Codex fallback resolution, so an
+ * unrecognized form fails closed (safe) instead of fail-open (read as enabled, the old bug).
+ *
+ * The blind spot is honest: a header can hide inside a multi-line string, so a file holding
+ * multi-line string delimiters at all reports no registration rather than a guess.
  *
  * The table is the registration and `enabled` is the toggle, so a bare table counts as
  * enabled. That branch is dead code against Codex CLI 0.151.0, read 2026-08-31: every
@@ -478,29 +522,38 @@ export function parseCodexRegistration(text) {
       if (header && safeComponent(header[1])) {
         current = { marketplace: header[1], enabled: undefined, invalid: false }
         tables.push(current)
+      } else if (isCleanTableHeader(line)) {
+        // A clean header for some other table legitimately ends the gripe table.
+        current = null
       } else {
+        // A bracket line that is not a clean table header is ambiguity inside the gripe table:
+        // invalidate it rather than silently ending it and leaving a recorded registration
+        // enabled. Outside any gripe table it is simply not a gripe registration.
+        if (current !== null) current.invalid = true
         current = null
       }
       continue
     }
     if (current === null) continue
-    const key = assignmentKey(line)
-    // A malformed key (an unterminated or dangling-escape quote) could be an `enabled`
-    // toggle we cannot read, so it is ambiguity: mark the table invalid and drop the whole
-    // registration to absence, never let it fall through to the bare-table enabled default.
-    if (key === MALFORMED_KEY) { current.invalid = true; continue }
-    if (key === null) continue
-    const kind = keyEnabledness(key)
-    if (kind === 'other') continue
-    // An undecodable key could be an `enabled` toggle we cannot read, so it is ambiguity: mark
-    // the table invalid and drop the whole registration to absence.
-    if (kind === 'undecodable') { current.invalid = true; continue }
-    // The line is an enabled assignment in some form. Only the exact bare form sets the
-    // toggle; a quoted, escaped, dotted, non-boolean, or duplicate one is ambiguity, which
-    // marks the table invalid and drops the whole registration to absence.
-    const value = ENABLED_VALUE_RE.exec(line)
-    if (!value || current.enabled !== undefined) current.invalid = true
-    else current.enabled = value[1] === 'true'
+    const parsed = assignmentKey(line)
+    // A malformed line (a bare word with no `=`, an unterminated or dangling-escape quote, a
+    // top-level `#` before any `=`) could be a half-written `enabled` toggle we cannot read, so
+    // it is ambiguity: invalidate the table and drop the whole registration to absence.
+    if (parsed === MALFORMED_KEY) { current.invalid = true; continue }
+    if (parsed === null) continue
+    const key = parsed.key.trim()
+    if (key === 'enabled') {
+      // The clean bare toggle. Only a bare boolean (optional spaces, optional trailing comment)
+      // sets it; a non-boolean or a duplicate is ambiguity.
+      const value = ENABLED_VALUE_RE.exec(line)
+      if (!value || current.enabled !== undefined) current.invalid = true
+      else current.enabled = value[1] === 'true'
+    } else if (!BARE_KEY_RE.test(key) || !recognizedScalar(parsed.value)) {
+      // Not the clean bare toggle: it stays IGNORED only when it is a clean bare OTHER key with
+      // a fully recognized scalar value. A quoted, dotted, or escaped key (which could spell
+      // `enabled` in a form we do not read as the toggle) or an unrecognized value is ambiguity.
+      current.invalid = true
+    }
   }
   if (tables.length !== 1 || tables[0].invalid) return absent
   return { registered: true, marketplace: tables[0].marketplace, enabled: tables[0].enabled ?? true }
