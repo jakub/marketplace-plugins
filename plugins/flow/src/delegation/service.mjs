@@ -50,13 +50,21 @@ function validateStart(input, target) {
   }
 }
 
-// The MCP initialize handshake is the only live report of who is calling this service. A reader
-// checking whether hostCapabilities.verifiedAgainst still describes the host it runs on needs
-// that observed value as the second operand, or it compares the static record against itself and
-// learns nothing. Doctor repeats clientInfo exactly as the handshake gave it, and answers nulls
-// when there was no handshake to read: never a guess, never this service's own version.
+// The MCP initialize handshake is the only live report of who is calling this service. Doctor
+// repeats clientInfo exactly as the handshake gave it, and answers nulls when there was no
+// handshake to read: never a guess, never this service's own version.
 function observedClient(client) {
   return { name: client?.name ?? null, version: client?.version ?? null }
+}
+
+// The version of the CLI conducting this session, which is a different question from the
+// target's. A Claude host is its own MCP client, so the handshake carries the Claude Code
+// version. A Codex host's MCP client reports its own component version, so the CLI is asked
+// directly. This is the live operand of the drift verdict; the recorded one is in
+// capabilities.json.
+function observedHostVersion(host, handshakeClient) {
+  if (host === 'claude') return handshakeClient?.version ?? null
+  return codexVersion().version
 }
 
 function terminal(job) { return TERMINAL_STATES.includes(job.status) }
@@ -137,6 +145,11 @@ export class DelegationService {
   target() { return targetForHost(this.host) }
 
   capabilities() { return capabilitiesForTarget(this.target()) }
+
+  // The inventory plus the drift verdict the reader is told not to compute for itself.
+  hostCapabilities(handshakeClient) {
+    return capabilitiesForHost(this.host, { installed: observedHostVersion(this.host, handshakeClient) })
+  }
 
   requireRoute(job) {
     if (job.host !== this.host || job.target !== this.target()) {
@@ -487,7 +500,7 @@ export class DelegationService {
     // hostCapabilities sits beside checks, never inside it. It is a declarative inventory of
     // what this harness can do, so a false entry is a fact about the harness and must not pull
     // doctor's ok down the way a failed probe does.
-    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), client: observedClient(handshakeClient), hostCapabilities: capabilitiesForHost(this.host), checks }
+    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), client: observedClient(handshakeClient), hostCapabilities: this.hostCapabilities(handshakeClient), checks }
   }
 
   async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) }, client = null } = {}) {
@@ -520,7 +533,7 @@ export class DelegationService {
       target: 'claude',
       capabilities: this.capabilities(),
       client: observedClient(client),
-      hostCapabilities: capabilitiesForHost(this.host),
+      hostCapabilities: this.hostCapabilities(client),
       checks,
     }
   }

@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "hosts": {
+    "claude": {
+      "verifiedAgainst": "claude-code 2.1.257",
+      "capabilities": {
+        "plugin-skill-contribution": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "A plugin ships skills under skills/ and the loader registers them."
+        },
+        "plugin-command-contribution": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "A plugin ships slash commands under commands/ and the loader registers them."
+        },
+        "implicit-skill-suppression": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "Skill frontmatter disable-model-invocation keeps a skill out of automatic selection."
+        },
+        "structured-question": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "The interactive ask tool returns the option the human picked."
+        },
+        "suspended-turn-ask": {
+          "supported": false,
+          "assurance": "unverified",
+          "verifiedAt": "2026-08-29",
+          "note": "Not needed. The interactive ask tool already collects an answer mid-turn."
+        },
+        "hook-ask": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "A hook returning ask shows the human a permission prompt."
+        },
+        "hook-deny": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "A hook returning deny stops the tool call."
+        },
+        "per-seat-tool-allowlist": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-31",
+          "note": "An agent definition's tools frontmatter fixes the tool list for that seat."
+        },
+        "agent-depth-limit": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-31",
+          "note": "A leaf seat's agent def omits the Agent tool (flow:implementer, Explore), so nesting is impossible rather than discouraged."
+        },
+        "per-seat-authority-narrowing": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-31",
+          "note": "An agent def's tools list narrows each seat below the session (Explore has no Edit/Write/Agent; flow:implementer has no Agent); neither host has a per-seat filesystem sandbox."
+        },
+        "skill-composition": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "The Skill tool loads a named skill mid-turn."
+        },
+        "mcp-client-roots": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-31",
+          "note": "The MCP client advertises the roots capability and answers roots/list with the session workspace."
+        },
+        "hooks-in-native-children": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-31",
+          "note": "A subagent's tool calls run the session's PreToolUse hooks."
+        }
+      }
+    },
+    "codex": {
+      "verifiedAgainst": "codex-cli 0.152.0",
+      "capabilities": {
+        "plugin-skill-contribution": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "Live probe: Codex discovers a plugin's skills with no extra configuration."
+        },
+        "plugin-command-contribution": {
+          "supported": false,
+          "assurance": "unverified",
+          "verifiedAt": "2026-08-29",
+          "note": "Live probe: Codex did not discover a plugin's commands/ directory."
+        },
+        "implicit-skill-suppression": {
+          "supported": false,
+          "assurance": "unverified",
+          "verifiedAt": "2026-08-29",
+          "note": "The 0.151.0 source honors allow_implicit_invocation, but nothing proves the plugin-loader path reaches that code. A live capture of a plugin-supplied agents/openai.yaml staying out of automatic selection flips this to true."
+        },
+        "structured-question": {
+          "supported": false,
+          "assurance": "unverified",
+          "verifiedAt": "2026-08-29",
+          "note": "No interactive question tool that returns a chosen option."
+        },
+        "suspended-turn-ask": {
+          "supported": true,
+          "assurance": "contract",
+          "verifiedAt": "2026-08-29",
+          "note": "The turn ends with the question and the human answers in the next turn. The platform sends no receipt, so the protocol is the whole assurance."
+        },
+        "hook-ask": {
+          "supported": false,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "Codex 0.151.0 accepts an ask decision and then fails open, running the command with no prompt. false is the honest value."
+        },
+        "hook-deny": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-29",
+          "note": "A hook returning deny stops the tool call."
+        },
+        "per-seat-tool-allowlist": {
+          "supported": false,
+          "assurance": "unverified",
+          "verifiedAt": "2026-08-29",
+          "note": "No per-seat tool allowlist found."
+        },
+        "agent-depth-limit": {
+          "supported": false,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-30",
+          "note": "agents.max_depth is V1-only and ignored by multi-agent V2 (codex-rs/core/src/config/mod.rs:882); the V2 spawn path (agent/control/spawn.rs) has no depth check, so a descendant-spawn prohibition is prompt contract only."
+        },
+        "per-seat-authority-narrowing": {
+          "supported": false,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-30",
+          "note": "V2 spawn_agent accepts only model, reasoning_effort and fork_turns (tools/handlers/multi_agents_spec.rs); a child inherits the parent's cwd, approval policy and sandbox."
+        },
+        "skill-composition": {
+          "supported": true,
+          "assurance": "contract",
+          "verifiedAt": "2026-08-30",
+          "note": "No Skill-call tool; a skill composes by reading its sibling SKILL.md files as its own text instructs. Verified on the installed-plugin path by the slice 3 Codex prep capture (flow-evidence pr-9/capture-prep-codex.txt): grill-with-docs loaded ../grilling/SKILL.md and ../domain-modeling/SKILL.md and ran the grill under them."
+        },
+        "mcp-client-roots": {
+          "supported": false,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-30",
+          "note": "The Codex 0.151.0 MCP client advertises no roots capability and sets no project-dir variable; the delegation server takes the launch shell PWD as the workspace boundary on this host, so a session started with codex -C elsewhere fails closed with OUTSIDE_ROOTS."
+        },
+        "hooks-in-native-children": {
+          "supported": true,
+          "assurance": "mechanism",
+          "verifiedAt": "2026-08-30",
+          "note": "A V2 child receives a Config derived from the parent's turn (agent/control/spawn.rs) and the plugin PreToolUse hooks fire inside it: a spawn_agent child attempting an unsanctioned issue create and a git push --no-verify was denied by both flow guards (slice 3 capture, flow-evidence pr-9/capture-child-hooks.*)."
+        }
+      }
+    }
+  }
+}

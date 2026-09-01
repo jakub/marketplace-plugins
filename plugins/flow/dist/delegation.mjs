@@ -22737,6 +22737,7 @@ var StdioServerTransport = class {
 import { spawn as spawn4 } from "node:child_process";
 
 // src/delegation/contracts.mjs
+import { readFileSync } from "node:fs";
 var HOSTS = ["claude", "codex"];
 var TARGETS = ["claude", "codex"];
 var MODES = ["task", "review", "adversarial-review"];
@@ -22832,84 +22833,62 @@ function capabilitiesForTarget(target) {
   };
 }
 var HOST_CAPABILITIES_SCHEMA_VERSION = 1;
-var HOST_CAPABILITY_VERIFIED_AT = "2026-08-29";
-var HOST_VERIFIED_AGAINST = { claude: "claude-code 2.1.257", codex: "codex-cli 0.152.0" };
-var HOST_CAPABILITY_TABLE = {
-  "plugin-skill-contribution": {
-    claude: { supported: true, assurance: "mechanism", note: "A plugin ships skills under skills/ and the loader registers them." },
-    codex: { supported: true, assurance: "mechanism", note: "Live probe: Codex discovers a plugin's skills with no extra configuration." }
-  },
-  "plugin-command-contribution": {
-    claude: { supported: true, assurance: "mechanism", note: "A plugin ships slash commands under commands/ and the loader registers them." },
-    codex: { supported: false, assurance: "unverified", note: "Live probe: Codex did not discover a plugin's commands/ directory." }
-  },
-  "implicit-skill-suppression": {
-    claude: { supported: true, assurance: "mechanism", note: "Skill frontmatter disable-model-invocation keeps a skill out of automatic selection." },
-    codex: { supported: false, assurance: "unverified", note: "The 0.151.0 source honors allow_implicit_invocation, but nothing proves the plugin-loader path reaches that code. A live capture of a plugin-supplied agents/openai.yaml staying out of automatic selection flips this to true." }
-  },
-  "structured-question": {
-    claude: { supported: true, assurance: "mechanism", note: "The interactive ask tool returns the option the human picked." },
-    codex: { supported: false, assurance: "unverified", note: "No interactive question tool that returns a chosen option." }
-  },
-  "suspended-turn-ask": {
-    claude: { supported: false, assurance: "unverified", note: "Not needed. The interactive ask tool already collects an answer mid-turn." },
-    codex: { supported: true, assurance: "contract", note: "The turn ends with the question and the human answers in the next turn. The platform sends no receipt, so the protocol is the whole assurance." }
-  },
-  "hook-ask": {
-    claude: { supported: true, assurance: "mechanism", note: "A hook returning ask shows the human a permission prompt." },
-    codex: { supported: false, assurance: "mechanism", note: "Codex 0.151.0 accepts an ask decision and then fails open, running the command with no prompt. false is the honest value." }
-  },
-  "hook-deny": {
-    claude: { supported: true, assurance: "mechanism", note: "A hook returning deny stops the tool call." },
-    codex: { supported: true, assurance: "mechanism", note: "A hook returning deny stops the tool call." }
-  },
-  "per-seat-tool-allowlist": {
-    claude: { supported: true, assurance: "mechanism", verifiedAt: "2026-08-31", note: "An agent definition's tools frontmatter fixes the tool list for that seat." },
-    codex: { supported: false, assurance: "unverified", note: "No per-seat tool allowlist found." }
-  },
-  "agent-depth-limit": {
-    claude: { supported: true, assurance: "mechanism", verifiedAt: "2026-08-31", note: "A leaf seat's agent def omits the Agent tool (flow:implementer, Explore), so nesting is impossible rather than discouraged." },
-    codex: { supported: false, assurance: "mechanism", verifiedAt: "2026-08-30", note: "agents.max_depth is V1-only and ignored by multi-agent V2 (codex-rs/core/src/config/mod.rs:882); the V2 spawn path (agent/control/spawn.rs) has no depth check, so a descendant-spawn prohibition is prompt contract only." }
-  },
-  "per-seat-authority-narrowing": {
-    claude: { supported: true, assurance: "mechanism", verifiedAt: "2026-08-31", note: "An agent def's tools list narrows each seat below the session (Explore has no Edit/Write/Agent; flow:implementer has no Agent); neither host has a per-seat filesystem sandbox." },
-    codex: { supported: false, assurance: "mechanism", verifiedAt: "2026-08-30", note: "V2 spawn_agent accepts only model, reasoning_effort and fork_turns (tools/handlers/multi_agents_spec.rs); a child inherits the parent's cwd, approval policy and sandbox." }
-  },
-  "skill-composition": {
-    claude: { supported: true, assurance: "mechanism", note: "The Skill tool loads a named skill mid-turn." },
-    codex: { supported: true, assurance: "contract", verifiedAt: "2026-08-30", note: "No Skill-call tool; a skill composes by reading its sibling SKILL.md files as its own text instructs. Verified on the installed-plugin path by the slice 3 Codex prep capture (flow-evidence pr-9/capture-prep-codex.txt): grill-with-docs loaded ../grilling/SKILL.md and ../domain-modeling/SKILL.md and ran the grill under them." }
-  },
-  "mcp-client-roots": {
-    claude: { supported: true, assurance: "mechanism", verifiedAt: "2026-08-31", note: "The MCP client advertises the roots capability and answers roots/list with the session workspace." },
-    codex: { supported: false, assurance: "mechanism", verifiedAt: "2026-08-30", note: "The Codex 0.151.0 MCP client advertises no roots capability and sets no project-dir variable; the delegation server takes the launch shell PWD as the workspace boundary on this host, so a session started with codex -C elsewhere fails closed with OUTSIDE_ROOTS." }
-  },
-  "hooks-in-native-children": {
-    claude: { supported: true, assurance: "mechanism", verifiedAt: "2026-08-31", note: "A subagent's tool calls run the session's PreToolUse hooks." },
-    codex: { supported: true, assurance: "mechanism", verifiedAt: "2026-08-30", note: "A V2 child receives a Config derived from the parent's turn (agent/control/spawn.rs) and the plugin PreToolUse hooks fire inside it: a spawn_agent child attempting an unsanctioned issue create and a git push --no-verify was denied by both flow guards (slice 3 capture, flow-evidence pr-9/capture-child-hooks.*)." }
+function readCapabilityFile() {
+  for (const path of ["../capabilities.json", "../../capabilities.json"]) {
+    try {
+      return JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+    } catch {
+    }
   }
-};
+  throw new DelegationError("INTERNAL", "The host capability table could not be read.");
+}
 function deepFreeze(value) {
   for (const child of Object.values(value)) {
     if (child && typeof child === "object") deepFreeze(child);
   }
   return Object.freeze(value);
 }
-var HOST_CAPABILITIES = deepFreeze(Object.fromEntries(HOSTS.map((host) => [host, {
-  schemaVersion: HOST_CAPABILITIES_SCHEMA_VERSION,
-  host,
-  verifiedAgainst: HOST_VERIFIED_AGAINST[host],
-  capabilities: Object.fromEntries(Object.entries(HOST_CAPABILITY_TABLE).map(([id2, hosts]) => [id2, {
-    supported: hosts[host].supported,
-    verifiedAt: hosts[host].verifiedAt ?? HOST_CAPABILITY_VERIFIED_AT,
-    assurance: hosts[host].assurance,
-    note: hosts[host].note
-  }]))
-}])));
-function capabilitiesForHost(host) {
+var cachedHostCapabilities = null;
+function hostCapabilityRecord(host) {
+  if (!cachedHostCapabilities) {
+    const file = readCapabilityFile();
+    if (file?.schemaVersion !== HOST_CAPABILITIES_SCHEMA_VERSION) {
+      throw new DelegationError("INTERNAL", "The host capability table has an unsupported schema version.");
+    }
+    cachedHostCapabilities = deepFreeze(Object.fromEntries(HOSTS.map((name) => [name, {
+      schemaVersion: file.schemaVersion,
+      host: name,
+      verifiedAgainst: file.hosts?.[name]?.verifiedAgainst ?? null,
+      capabilities: file.hosts?.[name]?.capabilities ?? {}
+    }])));
+  }
+  return cachedHostCapabilities[host];
+}
+function bareVersion(value) {
+  const match = /\b\d+(?:\.\d+)+\b/.exec(String(value ?? ""));
+  return match ? match[0] : null;
+}
+function compareVersions(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference) return difference > 0 ? 1 : -1;
+  }
+  return 0;
+}
+function capabilityDrift(installed, verifiedAgainst) {
+  const observed = bareVersion(installed);
+  const record2 = bareVersion(verifiedAgainst);
+  const status = !observed || !record2 ? "unknown" : compareVersions(observed, record2) === 0 ? "match" : compareVersions(observed, record2) > 0 ? "newer" : "older";
+  return Object.freeze({ installed: observed, verifiedAgainst: record2, status });
+}
+function capabilitiesForHost(host, { installed = null } = {}) {
   if (!HOSTS.includes(host)) {
     throw new DelegationError("ROUTE_DENIED", "The delegation host names an unknown model family.");
   }
-  return HOST_CAPABILITIES[host];
+  const record2 = hostCapabilityRecord(host);
+  return Object.freeze({ ...record2, drift: capabilityDrift(installed, record2.verifiedAgainst) });
 }
 function publicQuarantine(job) {
   if (job.status !== "quarantined") return null;
@@ -23358,12 +23337,12 @@ function claudePolicyHook(job, { onDenied = () => {
 // src/delegation/containment.mjs
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
-import { readdirSync as readdirSync2, readFileSync as readFileSync2 } from "node:fs";
+import { readdirSync as readdirSync2, readFileSync as readFileSync3 } from "node:fs";
 
 // src/delegation/store.mjs
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync as readFileSync2, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { dirname as dirname2, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -23376,7 +23355,7 @@ function processStartToken(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   if (process.platform === "linux") {
     try {
-      const stat2 = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const stat2 = readFileSync2(`/proc/${pid}/stat`, "utf8");
       const fields = stat2.slice(stat2.lastIndexOf(")") + 1).trim().split(/\s+/);
       return fields[19] ? `linux:${fields[19]}` : null;
     } catch {
@@ -24155,7 +24134,7 @@ function providerScopeRunning(scopeName) {
   const controlGroup = scopeControlGroup(scopeName);
   if (!controlGroup) return false;
   try {
-    const events = readFileSync2(`/sys/fs/cgroup${controlGroup}/cgroup.events`, "utf8");
+    const events = readFileSync3(`/sys/fs/cgroup${controlGroup}/cgroup.events`, "utf8");
     return /^populated 1$/m.test(events);
   } catch {
     return false;
@@ -24204,7 +24183,7 @@ function captureProcessDescendants(rootPid, knownDescendants, { freeze = false }
       for (const taskId of taskIds) {
         let children;
         try {
-          children = readFileSync2(`/proc/${parent}/task/${taskId}/children`, "utf8");
+          children = readFileSync3(`/proc/${parent}/task/${taskId}/children`, "utf8");
         } catch {
           continue;
         }
@@ -56761,58 +56740,25 @@ ${body}${separator}</flow-profile>
 }
 
 // lib/seat-contract.mjs
-var CONTRACT_SECTIONS = [
-  "Containment",
-  "Synchronous execution",
-  "Scope and completion",
-  "Reporting"
-];
-var ATX = /^ {0,3}(#{1,6})(?:[ \t](.*))?$/;
-var SETEXT_UNDERLINE = /^ {0,3}(=+|-+)\s*$/;
-var atxText = (rest) => (rest ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim();
-function renderedHeadings(text) {
-  const lines = text.split("\n");
-  const found = [];
-  for (const [at2, line] of lines.entries()) {
-    const atx = ATX.exec(line);
-    if (atx) {
-      found.push({ at: at2, level: atx[1].length, text: atxText(atx[2]), line, form: line.startsWith("#") ? "ATX" : "indented ATX" });
-      continue;
-    }
-    const underline = SETEXT_UNDERLINE.exec(line);
-    const above = lines[at2 - 1];
-    if (!underline || above === void 0 || above.trim() === "") continue;
-    if (ATX.test(above) || SETEXT_UNDERLINE.test(above)) continue;
-    found.push({ at: at2 - 1, level: underline[1].startsWith("=") ? 1 : 2, text: above.trim(), line: above, form: "setext" });
-  }
-  return found.map((heading) => ({
-    ...heading,
-    canonical: heading.level === 2 && CONTRACT_SECTIONS.some((name) => heading.line === `## ${name}`)
-  }));
-}
-var isBoundary = (heading) => heading.level <= 2;
-function contractSection(text, heading) {
-  const lines = text.split("\n");
-  const start = lines.indexOf(`## ${heading}`);
-  if (start === -1) return null;
-  const next = renderedHeadings(text).find((found) => isBoundary(found) && found.at > start);
-  if (!next) return lines.slice(start).join("\n");
-  return `${lines.slice(start, next.at).join("\n")}
-`;
-}
 function universalContainment(text) {
-  return contractSection(text, "Containment");
+  const lines = text.split("\n");
+  const start = lines.indexOf("## Containment");
+  if (start === -1) return null;
+  const next = lines.findIndex((line, at2) => at2 > start && line.startsWith("## "));
+  if (next === -1) return lines.slice(start).join("\n");
+  return `${lines.slice(start, next).join("\n")}
+`;
 }
 
 // src/delegation/charter.mjs
-var FLOW_CHARTER = true ? "Note to agents: this charter outlines how we use `flow` to work on bigger projects. \nIf we're working on a smaller project that *isn't* using `flow`, don't ignore this file! \nThere's good stuff here that I want you to follow, so skip the ceremony but apply the principles: follow everything except the `flow` pipeline section.\nOrchestration, delegation, model selection, and rules of engagement ALWAYS apply.\n\n<flow-charter>\n\n# Flow Engineering Charter\nThis is the charter for the `flow` plugin, injected at the start of each session.\nYour host's user instructions cover who the user is; this describes how we build and delegate our work.\nUse this as a guide for all development tasks.\n\nThis charter is host-neutral: wherever it names a role in `[[role:\u2026]]` brackets, the `<flow-profile>` block injected beside it says what that role binds to on your host. Charter present but no profile block? Say so once, keep every rule here that is still true, invent no host mechanism, and don't start the pipeline stages until the human fixes the install.\n\n## Orchestration with Delegation to Worker Seats\nThe overall operating model for `flow` is a main-thread conductor that spawns and monitors worker seats [[role:sub-seat]]. The host decides which model conducts [[role:orchestrator-model]]; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.\n\nThe orchestrator has standing permission to spawn seats at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by worker seats.\n\nDelegation is not free however: each seat re-establishes context and reports back, and you re-read the report. Delegate genuinely independent, sizeable tracks - not work you could finish in a handful of tool calls, and never verification of your own work, which belongs in your own loop.\n\nNever spawn more than ~20 parallel seats without the user's confirmation first.\n\nPermissions scale with how reversible the change is. Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.\n \n## Cross-Family Delegation\nReach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses\n`delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to\ninspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either\nprovider through shell commands.\n\nSet the model and effort explicitly every time. Always use the `default` service tier. The\nserver rejects same-family calls and nested cross-family calls. Codex supports live steering\nand crash reconciliation. Claude supports cancellation and session continuation, but not live\nsteering or post-crash result recovery; read the reported capabilities instead of assuming\nsymmetry.\n\n## The `flow` pipeline\nThe pipeline is three stages that run in order: prep \u2192 issue \u2192 land [[role:pipeline-entry]]; your host profile says how each one is invoked.\n\n`prep` is the front door, and nothing enters the issue tracker otherwise.\n`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.\n`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.\n\nThe issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.\n\nIssues must contain acceptance criteria, including what evidence is required to satisfy.\nPRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher [[role:artifact-publish]] (the plans client).\n\n`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything I didn't say or that changes the proposed shape for the better, then interview me one question at a time, prioritizing answers that change the architecture.\n\n## Model Rankings (as of 2026-08)\nHigher is better, on every axis. \nCheapness is inverted - Luna is effectively free and Fable is expensive.\nIntelligence is how hard a problem the model can handle unsupervised.\nTaste covers UI/UX, code quality assessments, API and architecture design, and copy text.\n\n| model                    | cheapness | intelligence        | taste |\n|--------------------------|-----------|---------------------|-------|\n| gpt-5.6-luna             | 9         | 4 (7 at max effort) | 4     |\n| sonnet-5                 | 5         | 6                   | 6     |\n| opus-5                   | 4         | 8                   | 8     |\n| gpt-5.6-sol              | 7         | 8                   | 5     |\n| gpt-daybreak-blue-latest | 7         | 8                   | 5     |\n| fable-5                  | 2         | 9                   | 9     |\n \n## Rules of Engagement - Model Selection\nThese are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.\n\nGeneral rule: intelligence > taste > cost, and anything user-facing (UI, text) *must* have taste >= 7.\nThe flip side is that lower efforts wander less and follow instructions more literally.\n\n### GPT-5.6 Luna\nLuna is basically free, and at max effort competes with Opus and Sol at medium-high efforts. It can handle low-to-moderate complexity tasks, lightweight code exploration, and anything that just needs a cheap but decent model.\n\n### Sonnet\nSonnet is primarily for mechanical work: invoking Sol or Luna through Flow's MCP tools, codebase exploration, writing ledgers, running deep test suites and gates. Use low effort for tool-driving work, medium/high/xhigh for anything needing to return a verdict.\n\n### Opus\nThe workhorse. Used for implementation, fixes, code review, and adjudication. High effort by default, xhigh for code and security reviews, max for adjudicating conflicting decisions. Opus xhigh is roughly similar to Fable for code writing tasks.\n\nOpus runs cyber classifiers. A refused seat returns null - indistinguishable from a dead agent, never a downgrade - so a security-flavored seat that comes back empty is a refusal until proven otherwise. Retry on the other family first: Daybreak Blue, then Sol. Fable shares the classifiers and is the last resort, not the first.\n\nDo not use Opus for taste calls - Fable is always used here.\n\n### GPT-5.6 Sol\nSol is in between Opus and Fable. It's an extremely competent, hard working, persistent model that writes code slightly uglier than Anthropic models. Sol is your default option for an outside or decorrelated opinion, adversarial reviews, and competing designs. Use it to review and challenge both Opus and Fable.\n\n### Daybreak Blue\nDaybreak Blue is a version of Sol without cyber classifiers, intended for vulnerability finding and defensive work by approved security researchers. Prefer Daybreak Blue over Sol for cyber or security-sensitive tasks.\n\n### Fable\nFable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.\n\nFable runs the same cyber classifiers as Opus, tuned stricter. A refusal returns null, not a weaker answer. Retry on Daybreak Blue first, then Opus; a double-null is reported to the user, never swallowed.\n\n## Rules of Engagement - Model Contracts\nWorker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.\n\nWorker seats do **NOT** inherit this charter - only a context-inheriting spawn does [[role:context-inheritance]], by copying your context. A fresh seat gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.\n\nPure locate/search fan-outs run on the search seat [[role:search-seat]] - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.\n\nReview non-trivial changes before assuming they're done, and monitor every backgrounded command.\n\nSpawning parallel implementers is permitted if there is sufficient isolation between the tasks handed out.\n\n## Rules of Engagement - Everything Else\nBefore adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.\n\nPackages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.\n\nIf the Context7 MCP is available, use it to fetch live documentation.\n\nGreenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.\n\nAgents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.\n\nAvoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.\n\nA backgrounded task, monitor, or worker seat that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.\n\nGreen verdicts on anything that ships need a confirming cross-model read. \n\nWhen structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.\n\nWhen adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through the artifact publisher with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.\n\nWe are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix. \n\nNo unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.\n\nComments are documentation - preserve and update while working, drop only if provably wrong.\nReal dependencies over mocks. \nDesign against races/TOCTOU up front for check-then-act code.\nRedact implementation details (db errors, stack traces, internal paths) at trust boundaries.\nWhen asked for a secret, surface ONLY the credential requested and avoid log pollution.\n\nNo commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. Both rules are enforced by the `git-guard` hook anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.\n\nConventional commits, imperative, present tense; each commit is one atomic logical change.\n\nNot in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.\n\n`gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.\nDon't `await` a gate with nothing checking it.\nLong outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.\n\nNever bare-`cd` into a worktree - subshell `(cd $WT && \u2026)`, `git -C $WT`, or absolute paths. \"Shell cwd was reset\" notices are benign harness noise, ignore them.\n\nNever batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.\n\nPR descriptions: summary narrative + one-line-per-commit changelog.\n\nFind the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce \u2192 minimize \u2192 instrument \u2192 regression-test.\n\n## Gripes\nIf the `gripe` plugin is installed, the friction log is available [[role:gripe-cli]] - your host binding says how, or that it isn't. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.\n\n</flow-charter>\n" : readFileSync(new URL("../../charter/charter.md", import.meta.url), "utf8");
+var FLOW_CHARTER = true ? "Note to agents: this charter outlines how we use `flow` to work on bigger projects. \nIf we're working on a smaller project that *isn't* using `flow`, don't ignore this file! \nThere's good stuff here that I want you to follow, so skip the ceremony but apply the principles: follow everything except the `flow` pipeline section.\nOrchestration, delegation, model selection, and rules of engagement ALWAYS apply.\n\n<flow-charter>\n\n# Flow Engineering Charter\nThis is the charter for the `flow` plugin, injected at the start of each session.\nYour host's user instructions cover who the user is; this describes how we build and delegate our work.\nUse this as a guide for all development tasks.\n\nThis charter is host-neutral: wherever it names a role in `[[role:\u2026]]` brackets, the `<flow-profile>` block injected beside it says what that role binds to on your host. Charter present but no profile block? Say so once, keep every rule here that is still true, invent no host mechanism, and don't start the pipeline stages until the human fixes the install.\n\n## Orchestration with Delegation to Worker Seats\nThe overall operating model for `flow` is a main-thread conductor that spawns and monitors worker seats [[role:sub-seat]]. The model the human launched the session with conducts; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.\n\nThe orchestrator has standing permission to spawn seats at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by worker seats.\n\nDelegation is not free however: each seat re-establishes context and reports back, and you re-read the report. Delegate genuinely independent, sizeable tracks - not work you could finish in a handful of tool calls, and never verification of your own work, which belongs in your own loop.\n\nNever spawn more than ~20 parallel seats without the user's confirmation first.\n\nPermissions scale with how reversible the change is. Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.\n \n## Cross-Family Delegation\nReach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses\n`delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to\ninspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either\nprovider through shell commands.\n\nSet the model and effort explicitly every time. Always use the `default` service tier. The\nserver rejects same-family calls and nested cross-family calls. Codex supports live steering\nand crash reconciliation. Claude supports cancellation and session continuation, but not live\nsteering or post-crash result recovery; read the reported capabilities instead of assuming\nsymmetry.\n\n## The `flow` pipeline\nThe pipeline is three stages that run in order: prep \u2192 issue \u2192 land [[role:pipeline-entry]]; your host profile says how each one is invoked. Where a stage needs a decision from the human, it goes through the human-choice binding [[role:human-choice]], and whether that binding answers inside the turn or ends it is a fact about your host, not a preference.\n\n`prep` is the front door, and nothing enters the issue tracker otherwise.\n`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.\n`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.\n\nThe issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.\n\nIssues must contain acceptance criteria, including what evidence is required to satisfy.\nPRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher [[role:artifact-publish]] (the plans client).\n\n`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything I didn't say or that changes the proposed shape for the better, then interview me one question at a time, prioritizing answers that change the architecture.\n\n## Model Rankings (as of 2026-08)\nHigher is better, on every axis. \nCheapness is inverted - Luna is effectively free and Fable is expensive.\nIntelligence is how hard a problem the model can handle unsupervised.\nTaste covers UI/UX, code quality assessments, API and architecture design, and copy text.\n\n| model                    | cheapness | intelligence        | taste |\n|--------------------------|-----------|---------------------|-------|\n| gpt-5.6-luna             | 9         | 4 (7 at max effort) | 4     |\n| sonnet-5                 | 5         | 6                   | 6     |\n| opus-5                   | 4         | 8                   | 8     |\n| gpt-5.6-sol              | 7         | 8                   | 5     |\n| gpt-daybreak-blue-latest | 7         | 8                   | 5     |\n| fable-5                  | 2         | 9                   | 9     |\n \n## Rules of Engagement - Model Selection\nThese are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.\n\nGeneral rule: intelligence > taste > cost, and anything user-facing (UI, text) *must* have taste >= 7.\nThe flip side is that lower efforts wander less and follow instructions more literally.\n\n### GPT-5.6 Luna\nLuna is basically free, and at max effort competes with Opus and Sol at medium-high efforts. It can handle low-to-moderate complexity tasks, lightweight code exploration, and anything that just needs a cheap but decent model.\n\n### Sonnet\nSonnet is primarily for mechanical work: invoking Sol or Luna through Flow's MCP tools, codebase exploration, writing ledgers, running deep test suites and gates. Use low effort for tool-driving work, medium/high/xhigh for anything needing to return a verdict.\n\n### Opus\nThe workhorse. Used for implementation, fixes, code review, and adjudication. High effort by default, xhigh for code and security reviews, max for adjudicating conflicting decisions. Opus xhigh is roughly similar to Fable for code writing tasks.\n\nOpus runs cyber classifiers. A refused seat returns null - indistinguishable from a dead agent, never a downgrade - so a security-flavored seat that comes back empty is a refusal until proven otherwise. Retry on the other family first: Daybreak Blue, then Sol. Fable shares the classifiers and is the last resort, not the first.\n\nDo not use Opus for taste calls - Fable is always used here.\n\n### GPT-5.6 Sol\nSol is in between Opus and Fable. It's an extremely competent, hard working, persistent model that writes code slightly uglier than Anthropic models. Sol is your default option for an outside or decorrelated opinion, adversarial reviews, and competing designs. Use it to review and challenge both Opus and Fable.\n\n### Daybreak Blue\nDaybreak Blue is a version of Sol without cyber classifiers, intended for vulnerability finding and defensive work by approved security researchers. Prefer Daybreak Blue over Sol for cyber or security-sensitive tasks.\n\n### Fable\nFable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.\n\nFable runs the same cyber classifiers as Opus, tuned stricter. A refusal returns null, not a weaker answer. Retry on Daybreak Blue first, then Opus; a double-null is reported to the user, never swallowed.\n\n## Rules of Engagement - Model Contracts\nWorker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.\n\nWorker seats do **NOT** inherit this charter - only a context-inheriting spawn does [[role:context-inheritance]], by copying your context. A fresh seat gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.\n\nPure locate/search fan-outs run on the search seat [[role:search-seat]] - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.\n\nReview non-trivial changes before assuming they're done, and monitor every backgrounded command.\n\nSpawning parallel implementers is permitted if there is sufficient isolation between the tasks handed out.\n\n## Rules of Engagement - Everything Else\nBefore adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.\n\nPackages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.\n\nIf the Context7 MCP is available, use it to fetch live documentation.\n\nGreenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.\n\nAgents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.\n\nAvoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.\n\nA backgrounded task, monitor, or worker seat that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.\n\nGreen verdicts on anything that ships need a confirming cross-model read. \n\nWhen structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.\n\nWhen adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through the artifact publisher with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.\n\nWe are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix. \n\nNo unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.\n\nComments are documentation - preserve and update while working, drop only if provably wrong.\nReal dependencies over mocks. \nDesign against races/TOCTOU up front for check-then-act code.\nRedact implementation details (db errors, stack traces, internal paths) at trust boundaries.\nWhen asked for a secret, surface ONLY the credential requested and avoid log pollution.\n\nNo commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. Both rules are enforced by the `git-guard` hook anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.\n\nConventional commits, imperative, present tense; each commit is one atomic logical change.\n\nNot in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.\n\n`gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.\nDon't `await` a gate with nothing checking it.\nLong outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.\n\nNever bare-`cd` into a worktree - subshell `(cd $WT && \u2026)`, `git -C $WT`, or absolute paths. \"Shell cwd was reset\" notices are benign harness noise, ignore them.\n\nNever batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.\n\nPR descriptions: summary narrative + one-line-per-commit changelog.\n\nFind the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce \u2192 minimize \u2192 instrument \u2192 regression-test.\n\n## Gripes\nIf the `gripe` plugin is installed, the `gripe` CLI is on the shell on both hosts. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.\n\n</flow-charter>\n" : readFileSync(new URL("../../charter/charter.md", import.meta.url), "utf8");
 
 // src/delegation/seat-contract.mjs
 var FLOW_SEAT_CONTRACT = true ? 'You are one leaf of a parallel fan-out run by a conductor. You implement the plan you are\nhanded, in the worktree you are pointed at, and nothing else. The rules below are\nmechanical, not advisory.\n\n## Containment\n\n- Do the work yourself in this seat. You are already the delegate: spawn no agents and\n  start no delegations, and never claim to have delegated, launched, backgrounded, or\n  handed off anything. Verification belongs in your own loop.\n- All writes happen inside the worktree you were assigned. Keep the persistent shell\n  rooted where it starts - wrap a cd in a subshell `(cd <wt> && <cmd>)`, or point the\n  command at the worktree with `-C`, or pass an absolute path under the worktree. Never\n  bare-cd.\n- The worktree may be shared with sibling seats. Stage only the files you touched, by\n  explicit path - never `git add -A` / `commit -a`. No `--no-verify`, no attribution\n  trailers.\n\n## Synchronous execution\n\n- Run every command yourself, in your own shell, in the foreground, and watch it finish.\n  Never background a command and end your turn "waiting" on it: no monitor, task, or\n  notification will ever call you back, and a turn that ends mid-wait ends the seat.\n- If a command genuinely cannot finish in one step, split it into steps you can observe to\n  completion, or report the blocker plainly. Do not report progress you did not watch\n  happen.\n\n## Scope and completion\n\n- Deliver the plan\'s scope and nothing beyond it: no unasked-for abstractions, files,\n  flags, or error handling for cases that cannot happen.\n- Milestones in order, TDD where the plan calls for it: failing test first, minimum code\n  to pass, refactor. Commit each milestone atomically with a conventional message in\n  present tense.\n- Finish the whole task. Report completion only when every milestone is genuinely done.\n  If something is truly blocked, complete everything else and say plainly what is missing\n  and why, rather than reporting done.\n- Structural deviation from the plan \u2192 stop at that milestone and report it as a\n  deviation; local deviation \u2192 adapt, note it in the commit message, keep going.\n\n## Reporting\n\nYour final message is a claim the conductor will verify against `git log` and the tree,\nnot a narrative it will trust. Make it cheap to check:\n\n- List the commits you made (sha + subject). Never list a commit you did not author in\n  this seat as your own.\n- Per milestone: done / partial / blocked, with the test command you ran and what it\n  printed (red \u2192 green, or the failure).\n- Deviations from the plan, each with the reason.\n- Anything you did NOT do that the plan asked for.\n\nIf a transient failure (rate limit, 5xx, network) blocks a step, retry up to three times\nwith backoff, then report status unknown with the reason. Unknown is its own state: never\nround it up to a pass, and never report a pass you did not observe.\n' : readFileSync(new URL("../../seat-contract.md", import.meta.url), "utf8");
 
 // src/delegation/profiles.mjs
-var FLOW_PROFILE_CLAUDE = true ? "# flow host profile: Claude Code\n\nInjected beside the charter. Each section binds one of its `[[role:\u2026]]` names to this\nhost's mechanism; the charter says what a role is for, this file says what it is here.\n\n## Bindings\n\n### role: orchestrator-model\n\nThe session model the human launched conducts - on this host that's usually Fable. The\nmodel table governs every other seat.\n\n### role: sub-seat\n\nThe Agent tool. Read-only seats use the built-in agent types; write-capable pipeline\nseats spawn as `flow:implementer`, whose toolset has no Agent tool. The ~20-parallel\ncap and the worktree rule apply as written.\n\n### role: context-inheritance\n\n`fork` - the one spawn that copies your context, charter included. Every other agent\ntype starts from harness defaults, so carry the non-negotiables in the prompt.\n\n### role: search-seat\n\n`Explore` agents at `model: sonnet`. Escalate the model when the search itself needs\njudgment.\n\n### role: pipeline-entry\n\nThe slash commands: `/flow:prep` \u2192 `/flow:issue` \u2192 `/flow:land`, typed by the human.\nThe invocation is the authorization.\n\n### role: artifact-publish\n\nThe `/artifacts` skill (plans client). PR evidence publishes with `--keep`; artifacts\nstay tailnet-private.\n\n### role: gripe-cli\n\nThe `gripe` CLI resolves through the shell. File silently.\n" : readProfileSource("claude");
-var FLOW_PROFILE_CODEX = true ? "# flow host profile: Codex\n\nInjected beside the charter. Each section binds one of its `[[role:\u2026]]` names to this\nhost's mechanism; the charter says what a role is for, this file says what it is here.\n\n## Bindings\n\n### role: orchestrator-model\n\nThe session model the human launched conducts. The model table governs every other seat.\n\n### role: sub-seat\n\nNative subagents, with model and effort named per spawn. Read-only seats spawn freely;\na substantial write seat runs contained - same-family in a native seat carrying the\nseat contract in its spawn prompt, cross-family through `delegate_to_claude` with\nworkspace-write. The ~20-parallel cap and the worktree rule apply as written.\n\n### role: context-inheritance\n\nNative spawns can inherit your turns - the fork_turns knob - and the platform's\ndefaults lean toward inheriting, so treat inheritance as ON unless you explicitly\nset it off. That makes turn inheritance this host's context-inheriting spawn: choose\nthe boundary deliberately per seat, and never hand an inheriting seat a session\nholding material it shouldn't see. Carry the charter's non-negotiables in the spawn\nprompt for every seat regardless - a cold seat needs them, and an inheriting seat\nmust not depend on having seen them scroll by.\n\n### role: search-seat\n\nA native read-only subagent on `gpt-5.6-luna`, medium effort. Escalate the model when\nthe search itself needs judgment.\n\n### role: pipeline-entry\n\nNo slash commands - this host ignores a plugin's commands directory. All three stages run\nhere: the human names the plugin's `prep-stage`, `issue-stage` or `land-stage` skill, or\nasks for that stage in words. A discovered defect, adjacent discussion, or a PR that merely\nlooks ready is never an invocation. Do not slide into implementing inline after the\ntriviality gate declined it - a stage without its body skips the claim rules and the\ncontainment that make it safe.\n\n### role: artifact-publish\n\nThe plans CLI directly (`plans publish`, `--keep` for PR evidence); there is no skill\nwrapper on this host. Artifacts stay tailnet-private.\n\n### role: gripe-cli\n\nThe `gripe` CLI resolves through the shell, cross-harness (the dual resolver of\nissue #6, slice 5). File silently.\n" : readProfileSource("codex");
+var FLOW_PROFILE_CLAUDE = true ? "# flow host profile: Claude Code\n\nInjected beside the charter. Each section binds one of its `[[role:\u2026]]` names to this\nhost's mechanism; the charter says what a role is for, this file says what it is here.\n\n## Bindings\n\n### role: sub-seat\n\nThe Agent tool. Read-only seats use the built-in agent types; write-capable pipeline\nseats spawn as `flow:implementer`, whose toolset has no Agent tool. The ~20-parallel\ncap and the worktree rule apply as written.\n\n### role: context-inheritance\n\n`fork` - the one spawn that copies your context, charter included. Every other agent\ntype starts from harness defaults, so carry the non-negotiables in the prompt.\n\n### role: search-seat\n\n`Explore` agents at `model: sonnet`. Escalate the model when the search itself needs\njudgment.\n\n### role: human-choice\n\nThe AskUserQuestion tool: up to 4 questions per call, each with selectable options and\nthe recommendation first. The answer comes back inside the same turn, so asking does not\nend a run. Never replace it with a prose question the human has to answer in an essay.\n\n### role: pipeline-entry\n\nThe slash commands: `/flow:prep` \u2192 `/flow:issue` \u2192 `/flow:land`, typed by the human.\nThe invocation is the authorization.\n\n### role: artifact-publish\n\nThe `/artifacts` skill (plans client). PR evidence publishes with `--keep`; artifacts\nstay tailnet-private.\n" : readProfileSource("claude");
+var FLOW_PROFILE_CODEX = true ? "# flow host profile: Codex\n\nInjected beside the charter. Each section binds one of its `[[role:\u2026]]` names to this\nhost's mechanism; the charter says what a role is for, this file says what it is here.\n\n## Bindings\n\n### role: sub-seat\n\nNative subagents, with model and effort named per spawn. Read-only seats spawn freely;\na substantial write seat runs contained - same-family in a native seat carrying the\nseat contract in its spawn prompt, cross-family through `delegate_to_claude` with\nworkspace-write. The ~20-parallel cap and the worktree rule apply as written.\n\n### role: context-inheritance\n\nNative spawns can inherit your turns - the fork_turns knob - and the platform's\ndefaults lean toward inheriting, so treat inheritance as ON unless you explicitly\nset it off. That makes turn inheritance this host's context-inheriting spawn: choose\nthe boundary deliberately per seat, and never hand an inheriting seat a session\nholding material it shouldn't see. Carry the charter's non-negotiables in the spawn\nprompt for every seat regardless - a cold seat needs them, and an inheriting seat\nmust not depend on having seen them scroll by.\n\n### role: search-seat\n\nA native read-only subagent on `gpt-5.6-luna`, medium effort. Escalate the model when\nthe search itself needs judgment.\n\n### role: human-choice\n\nThe suspended turn. There is no in-turn question tool, and a PreToolUse hook cannot ask:\na hook's `ask` result reads as a failure and the command runs anyway. So write the\nquestion, list up to 4 numbered options with a one-line consequence each and the\nrecommended one first, then end the turn. The human's next message is the answer. Do not\nguess an answer to keep a run moving, and do not stack two questions into one suspension.\n\n### role: pipeline-entry\n\nNo slash commands - this host ignores a plugin's commands directory. All three stages run\nhere: the human names the plugin's `prep-stage`, `issue-stage` or `land-stage` skill, or\nasks for that stage in words. A discovered defect, adjacent discussion, or a PR that merely\nlooks ready is never an invocation. Do not slide into implementing inline after the\ntriviality gate declined it - a stage without its body skips the claim rules and the\ncontainment that make it safe.\n\n### role: artifact-publish\n\nThe plans CLI directly (`plans publish`, `--keep` for PR evidence); there is no skill\nwrapper on this host. Artifacts stay tailnet-private.\n" : readProfileSource("codex");
 function profileForTarget(target) {
   if (target === "claude") return FLOW_PROFILE_CLAUDE;
   if (target === "codex") return FLOW_PROFILE_CODEX;
@@ -57525,6 +57471,10 @@ function validateStart(input, target) {
 function observedClient(client) {
   return { name: client?.name ?? null, version: client?.version ?? null };
 }
+function observedHostVersion(host, handshakeClient) {
+  if (host === "claude") return handshakeClient?.version ?? null;
+  return codexVersion().version;
+}
 function terminal(job) {
   return TERMINAL_STATES.includes(job.status);
 }
@@ -57603,6 +57553,10 @@ var DelegationService = class {
   }
   capabilities() {
     return capabilitiesForTarget(this.target());
+  }
+  // The inventory plus the drift verdict the reader is told not to compute for itself.
+  hostCapabilities(handshakeClient) {
+    return capabilitiesForHost(this.host, { installed: observedHostVersion(this.host, handshakeClient) });
   }
   requireRoute(job) {
     if (job.host !== this.host || job.target !== this.target()) {
@@ -57949,7 +57903,7 @@ var DelegationService = class {
         }
       }
     }
-    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), client: observedClient(handshakeClient), hostCapabilities: capabilitiesForHost(this.host), checks };
+    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), client: observedClient(handshakeClient), hostCapabilities: this.hostCapabilities(handshakeClient), checks };
   }
   async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) }, client = null } = {}) {
     const checks = {
@@ -57983,7 +57937,7 @@ var DelegationService = class {
       target: "claude",
       capabilities: this.capabilities(),
       client: observedClient(client),
-      hostCapabilities: capabilitiesForHost(this.host),
+      hostCapabilities: this.hostCapabilities(client),
       checks
     };
   }
@@ -58336,7 +58290,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
 }
 
 // src/delegation/cli.mjs
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 async function stdin() {
   if (process.stdin.isTTY) return "";
   process.stdin.setEncoding("utf8");
@@ -58380,7 +58334,7 @@ async function runCli({ argv: argv2, entryPath: entryPath2 }) {
   let value;
   if (command === "run") {
     const prompt = await stdin();
-    const outputSchema = flags["schema-file"] ? JSON.parse(readFileSync4(flags["schema-file"], "utf8")) : null;
+    const outputSchema = flags["schema-file"] ? JSON.parse(readFileSync5(flags["schema-file"], "utf8")) : null;
     const job = await service.start({
       mode: flags.mode || "task",
       prompt,

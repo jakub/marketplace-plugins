@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { AppServerClient } from '../src/delegation/app-server.mjs'
 import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
-import { assertRoute, capabilitiesForHost, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
+import { assertRoute, capabilitiesForHost, capabilityDrift, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
 import { universalContainment } from '../lib/seat-contract.mjs'
 
 assert.equal(process.platform, 'linux', 'smoke-delegation requires the Linux Codex host and systemd-scope contract')
@@ -547,6 +547,14 @@ try {
 
   console.log('host capability inventory')
   const hostInventories = { claude: capabilitiesForHost('claude'), codex: capabilitiesForHost('codex') }
+  // The table is a data file the bundle reads at runtime, so re-verifying a row is an edit to
+  // capabilities.json and no rebuild. An inlined copy would defeat that, and the note strings are
+  // long enough to be unmistakable, so their absence from the built bundle is the proof.
+  const capabilityFile = JSON.parse(readFileSync(join(root, 'capabilities.json'), 'utf8'))
+  assert.equal(capabilityFile.schemaVersion, HOST_CAPABILITIES_SCHEMA_VERSION)
+  const sampleNote = capabilityFile.hosts.codex.capabilities['hook-ask'].note
+  assert.ok(sampleNote.length > 40)
+  assert.equal(readFileSync(bundle, 'utf8').includes(sampleNote), false, 'the bundle inlined the capability table')
   const claudeIds = Object.keys(hostInventories.claude.capabilities)
   assert.ok(claudeIds.length > 0)
   assert.deepEqual(claudeIds.sort(), Object.keys(hostInventories.codex.capabilities).sort(), 'every capability id names both hosts')
@@ -1447,127 +1455,28 @@ try {
   assert.equal(doctorHostCapabilities.host, 'claude')
   assert.equal(doctorHostCapabilities.capabilities['hook-deny'].supported, true)
   assert.equal(doctorResult.structuredContent.checks.hostCapabilities, undefined, 'the inventory is a sibling of checks, not a check')
-  // No MCP session can arrive without clientInfo: the SDK's InitializeRequestParamsSchema makes it
-  // required, so an initialize that omits it is rejected and no session exists to run doctor over.
-  // The CLI doctor is the real no-handshake path, and it answers nulls instead of inventing a
-  // version for a caller it never saw.
-  const cliDoctor = cli(['doctor', '--cwd', repo], { stateDir: state('cli-doctor') })
-  assert.deepEqual(cliDoctor.client, { name: null, version: null })
-
-  // The names a host is allowed to introduce itself by. A Claude record reads "claude-code 2.1.252"
-  // while the client says "claude", and neither spelling is wrong. Keyed by host and fixed, exactly
-  // as the issue-stage profiles write them, so a new host is an edit in both places.
-  //
-  // Keyed by host and not derived from the record, because the record is the thing under suspicion.
-  // A verifiedAgainst cross-copied between hosts, a codex-cli string sitting in the Claude row,
-  // would otherwise re-anchor the whole rule: it would start admitting codex clients on the Claude
-  // route while the profile rejects the real Claude client. Host in, allowed names out.
-  //
-  // codex-mcp-client is the literal name the 0.151.0 MCP client sends in its initialize handshake
-  // (codex-rs rust-v0.151.0, rmcp_client.rs), so it is the identity a real Codex preflight reads,
-  // and the issue-stage codex profile accepts it. Without it every production Codex session would
-  // read as drifted while this smoke passed on names no client actually sends.
-  const HOST_PRODUCT_NAMES = {
-    claude: new Set(['claude', 'claude-code']),
-    codex: new Set(['codex', 'codex-cli', 'codex-mcp-client']),
-  }
-
-  // The drift decision the issue-stage preflight makes, written out here so the shapes it stands
-  // on are under test. The normative text is skills/issue-stage/profiles/<host>.md; this is a copy
-  // of that rule, not a second authority. Split verifiedAgainst on its one space into a product and
-  // a version. A client.name outside the host's set is drift on its own, whatever version it
-  // reports, so that check runs first: flow-smoke reporting 0.151.0 tells you nothing about
-  // codex-cli 0.151.0. There is no fallback for a name nobody listed, because the profiles have no
-  // such rule and inventing one here would be the smoke disagreeing with the normative text. With
-  // the name accepted, or with no name to judge, the version decides and has to match string for
-  // string. No client, no version, an unlisted host, or a record that will not split is drift too,
-  // because a preflight that cannot read its own record has verified nothing.
-  const driftedAgainst = (host, observed, verifiedAgainst) => {
-    const allowed = HOST_PRODUCT_NAMES[host]
-    if (!allowed) return { drifted: true, reason: `no product names are written down for host ${JSON.stringify(host)}` }
-    const parts = String(verifiedAgainst ?? '').split(' ')
-    if (parts.length !== 2 || !parts[0] || !parts[1]) {
-      return { drifted: true, reason: `the record ${JSON.stringify(verifiedAgainst)} is not one product and one version` }
-    }
-    const version = parts[1]
-    if (!observed) return { drifted: true, reason: 'the doctor result carries no client identity' }
-    if (observed.name && !allowed.has(observed.name)) {
-      return { drifted: true, reason: `the client calls itself ${observed.name}, which is not a name the ${host} host answers to` }
-    }
-    if (!observed.version) return { drifted: true, reason: 'the client reported no version' }
-    if (observed.version === version) {
-      return { drifted: false, reason: `the client reports ${version}, the version the record was verified against` }
-    }
-    return { drifted: true, reason: `the client reports version ${observed.version}, and the record was verified against ${version}` }
-  }
-
-  // Both real records, because the bug this replaces was a shape mismatch: the rule compared a
-  // bare clientInfo.version against a product-qualified record and could never match. If a future
-  // verifiedAgainst stops being "<product> <version>", these cases fail here rather than turning
-  // every preflight into a silent pass.
-  for (const inventoryHost of ['claude', 'codex']) {
-    const record = capabilitiesForHost(inventoryHost).verifiedAgainst
-    const fields = record.split(' ')
-    assert.equal(fields.length, 2, `${inventoryHost} verifiedAgainst ${JSON.stringify(record)} is not "<product> <version>"`)
-    const [product, version] = fields
-    const allowed = HOST_PRODUCT_NAMES[inventoryHost]
-    // The record and the host must agree before any case below means anything. A verifiedAgainst
-    // copied from the other host fails right here, instead of quietly re-pointing the cases at the
-    // wrong product and passing.
-    assert.ok(allowed.has(product), `the ${inventoryHost} record names product ${product}, which is not a ${inventoryHost} name: expected one of ${[...allowed].join(', ')}`)
-    // Every record is product-qualified, so the host's other spelling is the short one.
-    const shortName = [...allowed].find((one) => one !== product)
-    assert.ok(shortName, `${inventoryHost}: ${product} has no second spelling to test with`)
-    const cases = [
-      { label: 'the version the record names', client: { name: product, version }, drifted: false },
-      { label: 'the same host under its short name', client: { name: shortName, version }, drifted: false },
-      { label: 'an upgraded host', client: { name: product, version: '9.9.9' }, drifted: true },
-      { label: 'the whole record passed as a version', client: { name: product, version: record }, drifted: true },
-      { label: 'a null version', client: { name: product, version: null }, drifted: true },
-      { label: 'another product on the matching version', client: { name: 'flow-smoke', version }, drifted: true },
-      { label: 'another product with no version', client: { name: 'flow-smoke', version: null }, drifted: true },
-      { label: 'no name, matching version', client: { name: null, version }, drifted: false },
-      { label: 'no name, wrong version', client: { name: null, version: '9.9.9' }, drifted: true },
-      { label: 'no client at all', client: null, drifted: true },
-      { label: 'a record that will not split', client: { name: product, version }, record: product, drifted: true },
-    ]
-    for (const one of cases) {
-      const verdict = driftedAgainst(inventoryHost, one.client, one.record ?? record)
-      assert.equal(verdict.drifted, one.drifted, `${inventoryHost}, ${one.label}: ${verdict.reason}`)
-    }
-    // A name outside the host's set decides on its own, so the reason names the host and never
-    // reaches version talk. The other host's own name is foreign here too, which is the case that
-    // a record-derived alias set would have got wrong.
-    const foreign = driftedAgainst(inventoryHost, { name: 'flow-smoke', version }, record)
-    assert.match(foreign.reason, new RegExp(`^the client calls itself flow-smoke, which is not a name the ${inventoryHost} host answers to$`), `${inventoryHost}: ${foreign.reason}`)
-    const otherHost = inventoryHost === 'claude' ? 'codex' : 'claude'
-    for (const otherName of HOST_PRODUCT_NAMES[otherHost]) {
-      assert.equal(driftedAgainst(inventoryHost, { name: otherName, version }, record).drifted, true, `${inventoryHost} accepted ${otherName}, a ${otherHost} name`)
-    }
-    // Every name the host answers to has to pass on the record's own version, so a name added to
-    // the set later is exercised without waiting for someone to write it a case.
-    for (const name of allowed) {
-      assert.equal(driftedAgainst(inventoryHost, { name, version }, record).drifted, false, `${inventoryHost} rejected its own name ${name} on version ${version}`)
-    }
-  }
-
-  // The real Codex client, spelled out on both hosts rather than left to the loops above, because
-  // this is the identity a production preflight reads and the one a synthetic flow-smoke fixture
-  // could never have caught.
-  const codexRecord = capabilitiesForHost('codex').verifiedAgainst
-  const claudeRecord = capabilitiesForHost('claude').verifiedAgainst
-  const codexMcpOnCodex = driftedAgainst('codex', { name: 'codex-mcp-client', version: codexRecord.split(' ')[1] }, codexRecord)
-  assert.equal(codexMcpOnCodex.drifted, false, `the codex host rejected its own MCP client: ${codexMcpOnCodex.reason}`)
-  const codexMcpOnClaude = driftedAgainst('claude', { name: 'codex-mcp-client', version: claudeRecord.split(' ')[1] }, claudeRecord)
-  assert.equal(codexMcpOnClaude.drifted, true, 'the claude host accepted codex-mcp-client, another product')
-  assert.equal(driftedAgainst('claude', { name: 'codex-mcp-client', version: codexRecord.split(' ')[1] }, claudeRecord).drifted, true, 'the claude host accepted codex-mcp-client on a Codex version')
-
-  assert.equal(driftedAgainst('gemini', { name: 'gemini', version: '1.0.0' }, 'gemini 1.0.0').drifted, true, 'a host with no written-down names read as current')
-  // The decision itself, over the result this doctor call just returned. flow-smoke 1.0.0 is not
-  // the host the inventory was verified against, so a preflight running this rule stops here.
-  const liveDrift = driftedAgainst(doctorHostCapabilities.host, doctorResult.structuredContent.client, doctorHostCapabilities.verifiedAgainst)
-  assert.equal(liveDrift.drifted, true, `the live doctor result read as current: ${liveDrift.reason}`)
-  assert.equal(driftedAgainst(doctorHostCapabilities.host, cliDoctor.client, doctorHostCapabilities.verifiedAgainst).drifted, true, 'a doctor result with no handshake read as current')
+  // Every drift status, on synthetic operands, because the live doctor can only ever show one of
+  // them. The record is "<product> <version>" and the comparison uses the version half, so a
+  // record that stops splitting that way reads unknown rather than quietly passing.
+  const record = capabilitiesForHost('claude').verifiedAgainst
+  assert.equal(record.split(' ').length, 2, `verifiedAgainst ${JSON.stringify(record)} is not "<product> <version>"`)
+  const recordedVersion = record.split(' ')[1]
+  assert.equal(capabilityDrift(recordedVersion, record).status, 'match')
+  assert.equal(capabilityDrift('9.9.9', record).status, 'newer')
+  assert.equal(capabilityDrift('0.0.1', record).status, 'older')
+  assert.equal(capabilityDrift(null, record).status, 'unknown')
+  assert.equal(capabilityDrift(recordedVersion, null).status, 'unknown')
+  assert.equal(capabilityDrift('not-a-version', record).status, 'unknown')
+  assert.equal(capabilityDrift(record, record).status, 'match', 'a product-qualified operand still compares on its version')
+  // Field order in a version is significant and 10 sorts above 9, so this is a number compare
+  // and not a string one.
+  assert.equal(capabilityDrift('2.10.0', 'x 2.9.0').status, 'newer')
+  assert.equal(capabilityDrift('2.9.0', 'x 2.10.0').status, 'older')
+  assert.equal(capabilityDrift('2.1', 'x 2.1.0').status, 'match', 'a missing field reads as zero')
+  assert.deepEqual(capabilityDrift(recordedVersion, record), { installed: recordedVersion, verifiedAgainst: recordedVersion, status: 'match' })
+  // The doctor result carries the same verdict, computed by the service. flow-smoke 1.0.0 is not
+  // the version the claude record names, so this one reads older.
+  assert.deepEqual(doctorHostCapabilities.drift, { installed: '1.0.0', verifiedAgainst: recordedVersion, status: 'older' })
   // Unsupported entries are inventory, not failures. Doctor stays ok while they are present.
   assert.ok(Object.values(doctorHostCapabilities.capabilities).some((entry) => entry.supported === false))
   assert.equal(doctorResult.structuredContent.ok, true)
