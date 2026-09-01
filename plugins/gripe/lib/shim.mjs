@@ -19,10 +19,6 @@ const MODE = 0o755
 // A published shim is a few kilobytes. Anything past this is not a shim whose epoch is
 // worth parsing, and reading it in full would be the only unbounded read on this path.
 const DESTINATION_CAP = 64 * 1024
-// Lock acquisition: a small backoff, and enough attempts to outwait a legitimate holder
-// that is writing a shim (microseconds) without wedging if something truly hangs.
-const LOCK_BACKOFF_MS = 2
-const LOCK_MAX_ATTEMPTS = 5000
 
 let counter = 0
 
@@ -32,7 +28,7 @@ let counter = 0
  * an ambiguous file is that it has no claim on staying put.
  *
  * This is a text parse and never an import. Importing an on-disk shim to ask its version
- * would execute the very file the ratchet exists to distrust.
+ * would execute the very file the upgrade-only rule exists to distrust.
  */
 export function shimEpoch(text) {
   if (typeof text !== 'string') return null
@@ -68,58 +64,6 @@ function readCapped(path, cap) {
   }
 }
 
-/** A synchronous pause with no wall clock, so a resumed run reproduces it exactly. */
-function sleep(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-}
-
-/** Whether the pid recorded in a held lock is gone, so a stale lock can be reclaimed. */
-function lockHolderDead(lockPath) {
-  let pid
-  try {
-    pid = Number.parseInt(readFileSync(lockPath, 'utf8').trim(), 10)
-  } catch {
-    return true
-  }
-  if (!Number.isInteger(pid) || pid <= 0) return true
-  try {
-    // Signal 0 is an existence probe: it delivers nothing and only reports whether the
-    // process is there. ESRCH means it is gone; EPERM means it is alive but someone else's.
-    process.kill(pid, 0)
-    return false
-  } catch (error) {
-    return error?.code === 'ESRCH'
-  }
-}
-
-/**
- * An exclusive lock in the shim's own directory. It makes the epoch re-read and the rename
- * one step, so a writer that decided to publish from a now-stale pre-check cannot clobber a
- * higher epoch another writer published in between. The lock file carries the holder's pid:
- * a crashed holder is detected as gone and reclaimed, so a dead process never wedges
- * publication forever. Returns the held fd, or null when the lock could not be taken (a
- * later SessionStart tries again).
- */
-function acquireLock(lockPath) {
-  for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
-    let fd
-    try {
-      fd = openSync(lockPath, 'wx', 0o644)
-    } catch (error) {
-      if (error?.code !== 'EEXIST') return null
-      if (lockHolderDead(lockPath)) {
-        try { unlinkSync(lockPath) } catch { /* another racer already reclaimed it */ }
-        continue
-      }
-      sleep(LOCK_BACKOFF_MS)
-      continue
-    }
-    try { writeSync(fd, String(process.pid)) } catch { /* the pid is a best-effort hint */ }
-    return fd
-  }
-  return null
-}
-
 /** A correctly published shim is a regular file (not a symlink) at exactly 0755. */
 function publishedRegular(path) {
   try {
@@ -131,9 +75,10 @@ function publishedRegular(path) {
 }
 
 /**
- * What to do with the destination given the source and its epoch:
+ * What to do with the destination given the source and its epoch. Returns the action and
+ * the destination bytes it read (null when there is no readable regular file there):
  *   unchanged   - already the source bytes AND already a regular file at 0755
- *   kept-newer  - declares a strictly higher epoch, so it is a newer shim, left untouched
+ *   kept-newer  - declares a strictly higher epoch, so it is a newer shim, not downgraded
  *   write       - missing, drifted, wrong mode, a symlink, or a lower/equal epoch: replace
  *
  * The mode-and-type check is why an identical file at 0644, or a symlink whose target holds
@@ -141,28 +86,94 @@ function publishedRegular(path) {
  */
 function classify(shimPath, source, sourceEpoch) {
   const current = readCapped(shimPath, DESTINATION_CAP)
-  if (current === null) return 'write'
+  if (current === null) return { action: 'write', current: null }
   const currentEpoch = shimEpoch(current.toString('utf8'))
-  if (currentEpoch !== null && currentEpoch > sourceEpoch) return 'kept-newer'
-  if (current.equals(source) && publishedRegular(shimPath)) return 'unchanged'
-  return 'write'
+  if (currentEpoch !== null && currentEpoch > sourceEpoch) return { action: 'kept-newer', current }
+  if (current.equals(source) && publishedRegular(shimPath)) return { action: 'unchanged', current }
+  return { action: 'write', current }
+}
+
+/**
+ * Write bytes as a regular 0755 file at shimPath, through a same-directory temp file and one
+ * rename, so a reader sees the old file or the new one and never a half-written script.
+ * Rename replaces the directory entry, which is also how a symlink at the shim path stops
+ * being one instead of getting written through. No fsync: the promise is what concurrent
+ * readers see, not what survives a power cut. Returns whether the rename landed.
+ */
+function writeRegular(shimPath, bytes) {
+  const directory = dirname(shimPath)
+  try {
+    mkdirSync(directory, { recursive: true })
+  } catch {
+    return false
+  }
+  // pid plus a bounded counter: unique against every other writer without a clock or a
+  // random source, both of which a resumed run would have to reproduce.
+  let temp = null
+  let fd
+  try {
+    for (let attempt = 0; attempt < 16 && fd === undefined; attempt++) {
+      counter = (counter + 1) % 1_000_000
+      const candidate = join(directory, `.${basename(shimPath)}.${process.pid}.${counter}.tmp`)
+      try {
+        fd = openSync(candidate, 'wx', MODE)
+        temp = candidate
+      } catch {
+        fd = undefined
+      }
+    }
+    if (fd === undefined) return false
+    let offset = 0
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset)
+    // The open mode is subject to umask; this is what makes the published shim executable.
+    fchmodSync(fd, MODE)
+    closeSync(fd)
+    fd = undefined
+    renameSync(temp, shimPath)
+    temp = null
+    return true
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd) } catch { /* nothing left to salvage */ }
+    }
+    if (temp !== null) {
+      try { unlinkSync(temp) } catch { /* a leftover temp is worse than a failed unlink */ }
+    }
+  }
+}
+
+/**
+ * A destination that declares a strictly higher epoch is a newer shim, so its bytes are
+ * kept. But "kept" still has to leave a command PATH can run: if the entry there is a
+ * symlink pinned to an external target, or a regular file at the wrong mode, `gripe` would
+ * resolve to something that will not execute. So preserve those exact higher-epoch bytes and,
+ * only when the entry is not already a regular 0755 file, re-materialize them as one. A
+ * failed re-materialize still reports kept-newer: the higher-epoch bytes are what matters and
+ * a later SessionStart tries the fix-up again.
+ */
+function materializeKeptNewer(shimPath, currentBytes) {
+  if (publishedRegular(shimPath)) return 'kept-newer'
+  writeRegular(shimPath, currentBytes)
+  return 'kept-newer'
 }
 
 /**
  * Point shimPath at sourcePath's bytes, upgrade-only. Returns what it did:
  *   written     - the file was missing, older, or drifted, and now matches the source
  *   unchanged   - byte-identical already
- *   kept-newer  - the file there declares a higher epoch and was left alone, byte for byte
+ *   kept-newer  - the file there declares a higher epoch and its bytes were preserved (and
+ *                 re-materialized as a regular 0755 file if the entry was a symlink or the
+ *                 wrong mode)
  *   refused     - the source declares no epoch, so publishing it would restart the flapping
  *   failed      - the write did not happen; a later SessionStart tries again
  *
- * The write goes through a temp file in the target's own directory and one rename, so a
- * reader sees the old shim or the new one and never a half-written script. Rename replaces
- * the directory entry, which is also how a symlink at the shim path stops being one
- * instead of getting written through. No fsync: the promise is what concurrent readers
- * see, not what survives a power cut.
+ * beforeRecheck is a test-only seam, undefined in production. It fires once, after the temp
+ * file is written and just before the pre-rename re-read, so a smoke can plant a higher-epoch
+ * destination deterministically and prove the downgrade guard without a timing race.
  */
-export function pointShim({ sourcePath, shimPath }) {
+export function pointShim({ sourcePath, shimPath, beforeRecheck } = {}) {
   let source
   try {
     source = readFileSync(sourcePath)
@@ -172,11 +183,9 @@ export function pointShim({ sourcePath, shimPath }) {
   const sourceEpoch = shimEpoch(source.toString('utf8'))
   if (sourceEpoch === null) return 'refused'
 
-  // A cheap pre-check outside the lock skips the work when the file is already right or
-  // newer. It is re-decided under the lock before the rename, so a race here costs at most
-  // one wasted lock, never a wrong outcome.
   const pre = classify(shimPath, source, sourceEpoch)
-  if (pre !== 'write') return pre
+  if (pre.action === 'unchanged') return 'unchanged'
+  if (pre.action === 'kept-newer') return materializeKeptNewer(shimPath, pre.current)
 
   const directory = dirname(shimPath)
   try {
@@ -185,21 +194,9 @@ export function pointShim({ sourcePath, shimPath }) {
     return 'failed'
   }
 
-  const lockPath = join(directory, `.${basename(shimPath)}.lock`)
-  const lockFd = acquireLock(lockPath)
-  if (lockFd === null) return 'failed'
-
-  // pid plus a bounded counter: unique against every other writer without a clock or a
-  // random source, both of which a resumed run would have to reproduce.
   let temp = null
   let fd
   try {
-    // Re-decide under the lock, immediately before promoting. If another writer published a
-    // strictly higher epoch since the pre-check, this returns kept-newer and the rename
-    // never happens, which is what makes a downgrade impossible rather than merely unlikely.
-    const locked = classify(shimPath, source, sourceEpoch)
-    if (locked !== 'write') return locked
-
     for (let attempt = 0; attempt < 16 && fd === undefined; attempt++) {
       counter = (counter + 1) % 1_000_000
       const candidate = join(directory, `.${basename(shimPath)}.${process.pid}.${counter}.tmp`)
@@ -217,6 +214,25 @@ export function pointShim({ sourcePath, shimPath }) {
     fchmodSync(fd, MODE)
     closeSync(fd)
     fd = undefined
+
+    if (typeof beforeRecheck === 'function') beforeRecheck()
+
+    // Lock-free downgrade guard: re-read and re-parse the on-disk destination epoch
+    // immediately before the rename. If it is now strictly higher than the source, another
+    // writer published a newer shim between the initial classify and here, so abort instead
+    // of clobbering it (and re-materialize those higher-epoch bytes when the entry there is
+    // not a runnable regular 0755 file). This shrinks the downgrade window to the gap between
+    // this re-read and the rename below.
+    //
+    // The residual window - two writers carrying different versions both pass this check, and
+    // the later rename wins - is accepted (design decision 40): contention is fine because a
+    // later SessionStart re-runs and converges. An exclusive lock would close it, but a lock
+    // on this path reintroduces the FIFO-hang, non-atomic-acquire, and recycled-PID hazards
+    // that removing it fixed, so the guard stays lock-free.
+    const recheck = classify(shimPath, source, sourceEpoch)
+    if (recheck.action === 'unchanged') return 'unchanged'
+    if (recheck.action === 'kept-newer') return materializeKeptNewer(shimPath, recheck.current)
+
     renameSync(temp, shimPath)
     temp = null
     return 'written'
@@ -229,7 +245,5 @@ export function pointShim({ sourcePath, shimPath }) {
     if (temp !== null) {
       try { unlinkSync(temp) } catch { /* a leftover temp is worse than a failed unlink */ }
     }
-    try { closeSync(lockFd) } catch { /* the lock is released by the unlink below */ }
-    try { unlinkSync(lockPath) } catch { /* a crashed reader reclaims a stale lock by pid */ }
   }
 }

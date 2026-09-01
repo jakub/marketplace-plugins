@@ -15,7 +15,7 @@ import {
   symlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
@@ -203,6 +203,11 @@ try {
     ['F7a. a basic-escape enabled key set false is absence', '[plugins."gripe@jakub"]\n"\\u0065nabled" = false\n'],
     ['F7b. a dotted enabled key is absence', '[plugins."gripe@jakub"]\nenabled.value = false\n'],
     ['F7c. a quoted enabled key set false is absence', '[plugins."gripe@jakub"]\n"enabled" = false\n'],
+    // G3: a \U escape naming a code point past U+10FFFF is undecodable, so the key is
+    // ambiguity, not a silently-skipped non-enabled key. It must resolve to absence, and it
+    // must never throw RangeError out of String.fromCodePoint and abort the whole resolve.
+    ['G3a. a hostile out-of-range \\U escape key is absence, not a throw',
+      '[plugins."gripe@jakub"]\n"\\UFFFFFFFFnabled" = false\n'],
   ]
   for (const [name, contents] of absenceCases) {
     const home = makeHome()
@@ -218,6 +223,26 @@ try {
       threw = String(error?.message ?? error)
     }
     check(name, threw === null && root === null, threw ?? root)
+  }
+
+  {
+    // G3: one harness's hostile bytes must never sink the other. The same out-of-range \U
+    // escape that used to throw out of resolveGripeRoot sits in the codex config, but a valid
+    // Claude 1.0.0 registry is present: the codex table decodes to absence and Claude still
+    // resolves, so add stays exit-0-and-files-when-anything-resolves.
+    const home = makeHome()
+    const claude = claudeInstall(home, '1.0.0')
+    claudeRegistry(home, registry(entry(claude, '1.0.0')))
+    codexConfig(home, '[plugins."gripe@jakub"]\n"\\UFFFFFFFFnabled" = false\n')
+    let root
+    let threw = null
+    try {
+      root = resolveIn(home).root
+    } catch (error) {
+      threw = String(error?.message ?? error)
+    }
+    check('G3b. a hostile codex \\U escape never sinks a valid claude filing',
+      threw === null && root === claude, threw ?? root)
   }
 
   {
@@ -727,6 +752,36 @@ try {
   }
 
   {
+    // G2: kept-newer must still leave a command PATH can run. A higher-epoch destination that
+    // is a symlink pinned to an external target is re-materialized as a regular 0755 file
+    // holding those same higher-epoch bytes, and still reports kept-newer.
+    const shimPath = nextTarget()
+    const twin = join(TMP, `g2a-twin-${++serial}.mjs`)
+    const higher = withMarker(4, 'console.log("newer via symlink")')
+    writeFileSync(twin, higher)
+    symlinkSync(twin, shimPath)
+    const action = pointShim({ sourcePath: source, shimPath })
+    const stat = lstatSync(shimPath)
+    check('G2a. a higher-epoch symlink dest becomes a regular 0755 file, bytes kept',
+      action === 'kept-newer' && stat.isFile() && (stat.mode & 0o777) === 0o755
+      && readFileSync(shimPath, 'utf8') === higher, `${action}, mode ${(stat.mode & 0o777).toString(8)}`)
+  }
+
+  {
+    // G2: a higher-epoch destination at 0644 advertises a command that cannot run. Its bytes
+    // are preserved, but the mode is fixed to 0755, and it still reports kept-newer.
+    const shimPath = nextTarget()
+    const higher = withMarker(5, 'console.log("newer at 0644")')
+    writeFileSync(shimPath, higher)
+    chmodSync(shimPath, 0o644)
+    const action = pointShim({ sourcePath: source, shimPath })
+    const stat = lstatSync(shimPath)
+    check('G2b. a higher-epoch 0644 dest is re-materialized 0755, bytes unchanged',
+      action === 'kept-newer' && stat.isFile() && (stat.mode & 0o777) === 0o755
+      && readFileSync(shimPath, 'utf8') === higher, `${action}, mode ${(stat.mode & 0o777).toString(8)}`)
+  }
+
+  {
     const shimPath = nextTarget()
     writeFileSync(shimPath, withMarker('banana'))
     const action = pointShim({ sourcePath: source, shimPath })
@@ -787,41 +842,26 @@ try {
   }
 
   {
-    // F4: a higher epoch published while a writer is mid-promote must not be downgraded.
-    // The actual downgrade only lands when the low writer's own slow rename happens to fall
-    // after a concurrent publish, which is timing-dependent and unfit for a committed test,
-    // so this drives the fix's mechanism directly. We hold the shim's own lock, let a
-    // lower-epoch writer block on it (its pre-check already saw the old epoch-0 bytes),
-    // publish epoch 3, then release. With the lock and the re-read inside it, the writer
-    // must observe epoch 3 and report 'kept-newer'. Without them it commits its stale
-    // decision and reports 'written' - the downgrade the ratchet exists to kill. The lock
-    // path mirrors pointShim's own `.<name>.lock` convention on purpose.
+    // F4: a higher epoch that lands on disk between the initial classify and the pre-rename
+    // re-read must not be downgraded. This is deterministic, not a speed race. A source that
+    // reads as epoch 1 classifies the epoch-0 destination as 'write', so pointShim writes its
+    // temp; the beforeRecheck seam then plants epoch-3 bytes at the destination immediately
+    // before the pre-rename re-read. The lock-free guard must observe epoch 3 and report
+    // 'kept-newer' without renaming its stale epoch-1 temp over the newer file. A pointShim
+    // with no re-read would rename anyway and report 'written' - the downgrade this guards.
     const raceShim = nextTarget()
     writeFileSync(raceShim, withMarker(0))
-    const lowSource = join(TMP, 'f4-low.mjs')
-    writeFileSync(lowSource, withMarker(1))
-    const lockPath = join(dirname(raceShim), `.${basename(raceShim)}.lock`)
-    writeFileSync(lockPath, String(process.pid))
-    const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
-      env: {
-        ...process.env,
-        GRIPE_SHIM_RATCHET_CHILD: '1',
-        GRIPE_SHIM_RATCHET_SOURCE: lowSource,
-        GRIPE_SHIM_RATCHET_TARGET: raceShim,
-      },
-      stdio: ['ignore', 'pipe', 'ignore'],
+    chmodSync(raceShim, 0o755)
+    const higher = withMarker(3, 'console.log("from the future")')
+    const action = pointShim({
+      sourcePath: source,
+      shimPath: raceShim,
+      beforeRecheck: () => { writeFileSync(raceShim, higher); chmodSync(raceShim, 0o755) },
     })
-    let action = ''
-    child.stdout.setEncoding('utf8').on('data', (chunk) => { action += chunk })
-    // Capture close before the wait: a pre-fix writer ignores the lock and exits during it.
-    const closed = new Promise((resolve) => child.on('close', resolve))
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    writeFileSync(raceShim, withMarker(3))
-    rmSync(lockPath, { force: true })
-    await closed
     const finalEpoch = shimEpoch(readFileSync(raceShim, 'utf8'))
-    check('F4. a higher epoch published while a writer is blocked is kept, not downgraded',
-      action.trim() === 'kept-newer' && finalEpoch === 3, `${action.trim()}, epoch ${finalEpoch}`)
+    check('F4. an epoch that rises to strictly-higher before the pre-rename re-read is kept',
+      action === 'kept-newer' && finalEpoch === 3 && readFileSync(raceShim, 'utf8') === higher,
+      `${action}, epoch ${finalEpoch}`)
   }
 
   {

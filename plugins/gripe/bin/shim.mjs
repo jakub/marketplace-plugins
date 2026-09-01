@@ -211,33 +211,41 @@ function scanCacheRoot(cacheRoot, base) {
  */
 export function readClaudeRegistry(home) {
   const path = join(home, '.claude', 'plugins', 'installed_plugins.json')
-  const raw = readCapped(path)
-  if (!raw.ok) return { path, readable: false, candidates: [] }
-  let parsed
+  // Per-harness containment: anything unexpected while reading Claude's registry counts as a
+  // Claude outage (readable: false, cache fallback opens) and never propagates out of the
+  // resolver, so Codex's already-collected candidates survive one harness's hostile bytes.
+  const unreadable = { path, readable: false, candidates: [] }
   try {
-    parsed = JSON.parse(raw.text)
-  } catch {
-    return { path, readable: false, candidates: [] }
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { path, readable: false, candidates: [] }
-  }
-  const candidates = []
-  const table = parsed.plugins
-  if (table !== null && typeof table === 'object' && !Array.isArray(table)) {
-    for (const [key, entries] of Object.entries(table)) {
-      if (!REGISTRY_KEY_RE.test(key)) continue
-      for (const entry of Array.isArray(entries) ? entries : []) {
-        const installPath = entry?.installPath
-        if (typeof installPath !== 'string' || installPath === '') continue
-        const root = normalizeRoot(installPath)
-        if (!usableRoot(root)) continue
-        const version = parseStableVersion(entry?.version) ?? parseStableVersion(basename(root))
-        candidates.push({ root, version, exact: true, harness: 'claude', tier: 0 })
+    const raw = readCapped(path)
+    if (!raw.ok) return unreadable
+    let parsed
+    try {
+      parsed = JSON.parse(raw.text)
+    } catch {
+      return unreadable
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return unreadable
+    }
+    const candidates = []
+    const table = parsed.plugins
+    if (table !== null && typeof table === 'object' && !Array.isArray(table)) {
+      for (const [key, entries] of Object.entries(table)) {
+        if (!REGISTRY_KEY_RE.test(key)) continue
+        for (const entry of Array.isArray(entries) ? entries : []) {
+          const installPath = entry?.installPath
+          if (typeof installPath !== 'string' || installPath === '') continue
+          const root = normalizeRoot(installPath)
+          if (!usableRoot(root)) continue
+          const version = parseStableVersion(entry?.version) ?? parseStableVersion(basename(root))
+          candidates.push({ root, version, exact: true, harness: 'claude', tier: 0 })
+        }
       }
     }
+    return { path, readable: true, candidates }
+  } catch {
+    return unreadable
   }
-  return { path, readable: true, candidates }
 }
 
 // The text left of the first top-level `=` (a `=` inside quotes does not count), or null
@@ -296,7 +304,15 @@ function decodeBasic(inner) {
       const width = next === 'u' ? 4 : 8
       const hex = inner.slice(i + 2, i + 2 + width)
       if (hex.length !== width || !/^[0-9a-fA-F]+$/.test(hex)) return null
-      out += String.fromCodePoint(Number.parseInt(hex, 16))
+      const scalar = Number.parseInt(hex, 16)
+      // A TOML \u/\U escape must name a Unicode scalar value. A code point past U+10FFFF
+      // (a `\U` can spell up to 0xFFFFFFFF) or in the surrogate range U+D800..U+DFFF is not
+      // one, and String.fromCodePoint throws RangeError on it. An uncaught throw here would
+      // escape readCodexRegistry and resolveGripeRoot and drop an otherwise-valid Claude
+      // filing, so treat it as an undecodable escape (null): the key becomes ambiguous, the
+      // table resolves to absence, and nothing throws.
+      if (scalar > 0x10ffff || (scalar >= 0xd800 && scalar <= 0xdfff)) return null
+      out += String.fromCodePoint(scalar)
       i += 1 + width
       continue
     }
@@ -308,20 +324,28 @@ function decodeBasic(inner) {
   return out
 }
 
-// Whether a key's first segment normalizes to the bare TOML key `enabled`, however it is
-// spelled: bare, single-quoted (literal), or double-quoted with escapes. This is what lets
-// `enabled.value = false` and `"enabled" = false` be recognized as enabled
-// assignments the bare matcher would miss, and so treated as ambiguity rather than default.
-function keyIsEnabled(key) {
+// How a key's first segment relates to the bare TOML key `enabled`:
+//   'enabled'     - it normalizes to `enabled`, however spelled: bare, single-quoted
+//                   (literal), or double-quoted with escapes. This is what lets
+//                   `enabled.value = false` and `"enabled" = false` be recognized as enabled
+//                   assignments the bare matcher would miss, and so treated as ambiguity.
+//   'undecodable' - a double-quoted segment whose escapes do not decode (a malformed or
+//                   out-of-range \u/\U). We cannot tell whether it spells `enabled`, so the
+//                   table is ambiguous and must resolve to absence, never to the bare-table
+//                   enabled default and never to a throw.
+//   'other'       - it decodes to something that is plainly not `enabled`.
+function keyEnabledness(key) {
   const segment = firstSegment(key).trim()
-  if (segment === 'enabled') return true
+  if (segment === 'enabled') return 'enabled'
   if (segment.length >= 2 && segment.startsWith("'") && segment.endsWith("'")) {
-    return segment.slice(1, -1) === 'enabled'
+    return segment.slice(1, -1) === 'enabled' ? 'enabled' : 'other'
   }
   if (segment.length >= 2 && segment.startsWith('"') && segment.endsWith('"')) {
-    return decodeBasic(segment.slice(1, -1)) === 'enabled'
+    const decoded = decodeBasic(segment.slice(1, -1))
+    if (decoded === null) return 'undecodable'
+    return decoded === 'enabled' ? 'enabled' : 'other'
   }
-  return false
+  return 'other'
 }
 
 /**
@@ -359,7 +383,12 @@ export function parseCodexRegistration(text) {
     }
     if (current === null) continue
     const key = assignmentKey(line)
-    if (key === null || !keyIsEnabled(key)) continue
+    if (key === null) continue
+    const kind = keyEnabledness(key)
+    if (kind === 'other') continue
+    // An undecodable key could be an `enabled` toggle we cannot read, so it is ambiguity: mark
+    // the table invalid and drop the whole registration to absence.
+    if (kind === 'undecodable') { current.invalid = true; continue }
     // The line is an enabled assignment in some form. Only the exact bare form sets the
     // toggle; a quoted, escaped, dotted, non-boolean, or duplicate one is ambiguity, which
     // marks the table invalid and drops the whole registration to absence.
@@ -379,25 +408,33 @@ export function readCodexRegistry({ env, home }) {
   const codexHome = normalizeRoot(env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(home, '.codex'))
   const path = join(codexHome, 'config.toml')
   const cacheRoot = join(codexHome, 'plugins', 'cache')
-  const raw = readCapped(path)
-  if (!raw.ok) return { codexHome, path, cacheRoot, readable: false, scannedCache: false, candidates: [] }
-  const registration = parseCodexRegistration(raw.text)
-  if (!registration.registered || registration.enabled === false) {
-    return { codexHome, path, cacheRoot, readable: true, scannedCache: false, candidates: [] }
-  }
-  // The confirmed scan consulted the cache root, so it is a resolution surface even when it
-  // turns up empty; scannedCache tells the caller to record it in the miss diagnostic.
-  const confineReal = realOrNull(cacheRoot)
-  const dir = join(cacheRoot, registration.marketplace, 'gripe')
-  return {
-    codexHome,
-    path,
-    cacheRoot,
-    readable: true,
-    scannedCache: true,
-    candidates: confineReal === null
-      ? []
-      : scanVersionDir(dir, { exact: false, harness: 'codex', tier: 0 }, confineReal),
+  // Per-harness containment: anything unexpected while reading Codex's config counts as a
+  // Codex outage (readable: false, cache fallback opens) and never propagates out of the
+  // resolver, so Claude's already-collected candidates survive one harness's hostile bytes.
+  const unreadable = { codexHome, path, cacheRoot, readable: false, scannedCache: false, candidates: [] }
+  try {
+    const raw = readCapped(path)
+    if (!raw.ok) return unreadable
+    const registration = parseCodexRegistration(raw.text)
+    if (!registration.registered || registration.enabled === false) {
+      return { codexHome, path, cacheRoot, readable: true, scannedCache: false, candidates: [] }
+    }
+    // The confirmed scan consulted the cache root, so it is a resolution surface even when it
+    // turns up empty; scannedCache tells the caller to record it in the miss diagnostic.
+    const confineReal = realOrNull(cacheRoot)
+    const dir = join(cacheRoot, registration.marketplace, 'gripe')
+    return {
+      codexHome,
+      path,
+      cacheRoot,
+      readable: true,
+      scannedCache: true,
+      candidates: confineReal === null
+        ? []
+        : scanVersionDir(dir, { exact: false, harness: 'codex', tier: 0 }, confineReal),
+    }
+  } catch {
+    return unreadable
   }
 }
 
