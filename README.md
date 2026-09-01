@@ -121,7 +121,7 @@ The one rule is that filing has to be free. `gripe add` never exits non-zero and
 
 Gripes are stored in `$XDG_STATE_HOME/gripe/gripe.db`, falling back to `~/.local/state/gripe/gripe.db` if unset.
 
-One database, one command, both harnesses. On every run the `gripe` on PATH globs `~/.claude/plugins/cache/*/gripe/*/bin/gripe` and `${CODEX_HOME:-~/.codex}/plugins/cache/*/gripe/*/bin/gripe`, ranks what it finds by the version in the directory name, and runs the newest, so a host with gripe installed in both harnesses still has one CLI and one log. No registry file is read; the cache directory name is the whole of what it trusts. `GRIPE_HOME` overrides that for development work, and a `GRIPE_HOME` that points nowhere usable stops with one stderr line instead of quietly filing into the live database through the installed copy.
+One database, one command, both harnesses. On every run the `gripe` on PATH globs `~/.claude/plugins/cache/jakub/gripe/*/bin/gripe` and `${CODEX_HOME:-~/.codex}/plugins/cache/jakub/gripe/*/bin/gripe`, skips a version Claude Code has orphaned, ranks the rest by the version in the directory name, and runs the newest, so a host with gripe installed in both harnesses still has one CLI and one log. No registry file is read; the cache directory name is the whole of what it trusts. `GRIPE_HOME` overrides that for development work, and a `GRIPE_HOME` that points nowhere usable stops with one stderr line instead of quietly filing into the live database through the installed copy.
 
 ---
 
@@ -137,6 +137,6 @@ The `/gripe` skill is unneeded day-to-day, but tells the agent how to read the d
 | Path | What's there |
 |---|---|
 | `plugins/gripe/bin/gripe` | The CLI. `add`, `dump`, `seen`, `search`, and `doctor` all live here. |
-| `plugins/gripe/bin/shim.mjs` | The resolver. A copy of it sits on PATH at `~/.local/bin/gripe`, picks the newest install in either plugin cache at exec time, and hands off to that install's `bin/gripe`, so reinstalls and version bumps don't strand it. |
+| `plugins/gripe/bin/shim.mjs` | The resolver. A copy of it sits on PATH at `~/.local/bin/gripe`, picks the newest live install of this plugin in either plugin cache at exec time, and hands off to that install's `bin/gripe`, so reinstalls and version bumps don't strand it. |
 | `plugins/gripe/hooks/` | Claude and Codex registrations plus thin wire adapters for advertisements, harness-specific observations, and checkpoints. |
 | `plugins/gripe/skills/gripe/` | How to read the gripe database. For doing analysis, not for normal work. |

@@ -70,7 +70,7 @@ contract.
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |
 | Gripe checkpoint | Claude transcript folded incrementally at `Stop` and `SubagentStop` | `PostToolUse` folds counters, parent `Stop` evaluates them | `lib/checkpoint.mjs` |
 | Gripe denial and turn-failure observations | `PermissionDenied`, `StopFailure` | Not registered; Codex has no equivalent after-the-fact events | Existing Claude-only observed-row code |
-| Gripe CLI resolution | `~/.claude/plugins/cache/*/gripe/*/bin/gripe` | `${CODEX_HOME:-~/.codex}/plugins/cache/*/gripe/*/bin/gripe` | `bin/shim.mjs` globs both roots every run, ranks by the version in the directory name, and execs the newest |
+| Gripe CLI resolution | `~/.claude/plugins/cache/jakub/gripe/*/bin/gripe` | `${CODEX_HOME:-~/.codex}/plugins/cache/jakub/gripe/*/bin/gripe` | `bin/shim.mjs` globs both roots every run, skips `.orphaned_at` versions, ranks by the version in the directory name, and execs the newest |
 | Unslop rules | `SessionStart`, `SubagentStart` | Same events | `lib/rules.mjs` and `lib/agent-selection.mjs` |
 
 ## Deliberate non-equivalences
@@ -166,13 +166,15 @@ stops with one stderr line naming `GRIPE_HOME` and scans no cache. A typo in a d
 override must not file into the live database through installed code.
 
 Otherwise the shim globs both plugin cache roots on every run, `~/.claude/plugins/cache` and
-`${CODEX_HOME:-~/.codex}/plugins/cache`, taking every `<marketplace>/gripe/<version>/bin/gripe`
-under them. A version directory is dotted integers and nothing else, so a prerelease or a
-hash-named checkout is skipped, and so is a root whose `bin/gripe` is not a readable regular
-file. The highest version wins whichever harness installed it, with the path as tie-break so
+`${CODEX_HOME:-~/.codex}/plugins/cache`, taking `jakub/gripe/<version>/bin/gripe` under each:
+this marketplace's directory only, since every plugin here installs as `<plugin>@jakub`. A
+version directory is dotted integers and nothing else, so a prerelease or a hash-named checkout
+is skipped, so is a root whose `bin/gripe` is not a readable regular file, and so is a version
+Claude Code has marked with `.orphaned_at` (Codex writes no such marker, so a removed-but-cached
+newer version wins there until its directory is deleted). The highest version wins whichever harness installed it, with the path as tie-break so
 the answer is deterministic. No manifest is read on either side: the cache directory name is
 the whole of the evidence. When nothing resolves, the shim prints one bounded line naming the
-two cache roots and the override, never the versions under them.
+two directories scanned and the override, never the versions under them.
 
 Filing stays free whatever happens. `gripe add` and a bare `gripe` exit 0 through every
 failure; every other subcommand passes the child's status through. The shim carries one

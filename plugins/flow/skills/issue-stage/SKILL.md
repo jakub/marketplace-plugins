@@ -45,7 +45,7 @@ This runs before any mutation, and "any" is literal: no assignment, no label, no
 Read the host capabilities with the `delegation_doctor` tool. Its `hostCapabilities` block carries one entry per capability id with `supported`, `verifiedAt`, `assurance` and a note, and a `drift` block the service computes: `installed`, the host CLI version the doctor observed; `verifiedAgainst`, the version the table was last checked on; and `status`, one of `match`, `newer`, `older`, `unknown`. Do not compute drift yourself from the strings.
 
 - `match`: proceed.
-- `newer`: the host has moved past the last verified version. Proceed, and journal a `host newer than verified` event with both versions so the human knows the table wants a re-check. The table is biased false, so a newer host can only have gained capabilities the table does not yet claim.
+- `newer`: the host has moved past the last verified version. Proceed, and journal a `host newer than verified` event with both versions so the human knows the table wants a re-check. This is an accepted exposure, decided 2026-09-01 and not yours to re-open per run: the false bias protects capabilities the table has never claimed, but it cannot protect a `supported: true` mechanism from a regression in a CLI release the table has not seen, so a run on a `newer` host is trusting last week's mechanisms to still hold. The alternative, an exact match, stopped this stage on every routine CLI update, and the human retired that. The mitigation is that re-verifying is a one-line edit to `capabilities.json` with no rebuild, and the nightly lint reports a `newer` host so it gets done.
 - `older` or `unknown`: stop. Every capability the run depends on reads `unverified`.
 
 For every write-seat class this run will use, the host has to name a containment answer on three dimensions - workspace, descendants, hooks - and each answer is one of exactly three words: `mechanism`, `contract`, `unverified`. `mechanism` means something outside the model's control enforces it. `contract` means the seat was told and nothing checks. `unverified` means nobody knows. Your host's subsection maps each class's dimensions to the capability ids that decide them; the answers come from the doctor read, never from memory.
@@ -224,6 +224,7 @@ An answer that arrives over moved anchors is expired. Journal `stale-answer-reje
 
 - **The composed run has no run id.** Bridge jobs have durable job ids, but the surrounding dynamic run still recovers from the issue comments and the worktree diff. Parked at prep, deliberately: cross-machine run identity is a bigger design than this stage needs.
 - **No calibration ledger**: per-seat finding precision is not tracked across runs. Compose from the charter's model table.
+- **A `newer` host is trusted on last week's evidence.** §2 says why and what mitigates it. If a CLI release ever regresses a `mechanism` this stage depends on (hooks in native children, the per-seat tool list), the table has to be re-verified by hand and the stop reintroduced for that capability; nothing here detects it.
 
 ## Host mechanics
 
