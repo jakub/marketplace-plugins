@@ -1,6 +1,8 @@
 # Cross-family delegation
 
-Flow provides one durable delegation service in both directions. A Claude Code host calls Codex through Codex App Server. A Codex host calls Claude through the Claude Agent SDK. Each host receives one native MCP server named `flow_delegate`. The server exposes only the new-call tool for the other model family.
+As of 2026-09-01, against Codex CLI 0.152.0 and Claude Code 2.1.257 as installed. Both deterministic smokes pass on those versions; the live-turn validations keep their own dates below, because nothing re-ran them today.
+
+Flow provides one durable delegation service in both directions. A Claude Code host calls Codex through Codex App Server. A Codex host calls Claude through the Claude Agent SDK. Each host receives one native MCP server named `flow_delegate`, which exposes the new-call tool for the other model family and the small set of job controls listed below. It exposes nothing else.
 
 The local job record belongs to Flow. The provider owns its native session and turn. This split keeps model work in the provider's supported protocol while Flow owns workspace checks, write leases, progress, cancellation, continuation, bounded recovery, and the public result type.
 
@@ -24,7 +26,7 @@ Both routes require Linux with cgroup v2 and a working systemd user manager, and
 
 ## Route policy
 
-Each plugin manifest starts the MCP server with a trusted `--host` argument. Tool input cannot replace it. The Codex manifest also names `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` and `PWD` in `env_vars`: Codex starts a stdio MCP server with a curated environment, and without the first two `systemd-run --user` cannot reach the user bus, so every provider scope fails with `CONTAINMENT_UNAVAILABLE` (found live on Codex CLI 0.151.0, 2026-08-30). `PWD` is there for a different reason. Codex 0.151.0's MCP client advertises no `roots` capability and sets no project-dir variable, so the server had no workspace and every tool call failed with `NO_ROOTS` (found live 2026-08-30). On the Codex host the server therefore takes `PWD`, the shell cwd the human launched `codex` from, as the workspace boundary. A session started with `codex -C <elsewhere>` works on a directory outside that boundary and fails closed with `OUTSIDE_ROOTS`, which is the intended answer. The Claude host never reads `PWD`, because it has real roots and `CLAUDE_PROJECT_DIR`. MCP mode refuses to start when the argument is missing or invalid. A worker adds `FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider process environment.
+Each plugin manifest starts the MCP server with a trusted `--host` argument. Tool input cannot replace it, and MCP mode refuses to start when the argument is missing or names an unknown family. The Codex manifest also names `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` and `PWD` in `env_vars`: Codex starts a stdio MCP server with a curated environment, and without the first two `systemd-run --user` cannot reach the user bus, so every provider scope fails with `CONTAINMENT_UNAVAILABLE` (found live on Codex CLI 0.151.0, 2026-08-30). `PWD` is there for a different reason. The Codex MCP client advertises no `roots` capability and sets no project-dir variable, so the server had no workspace and every tool call failed with `NO_ROOTS` (found live on 0.151.0, 2026-08-30; the capability table still reads that way against 0.152.0). On the Codex host the server therefore takes `PWD`, the shell cwd the human launched `codex` from, as the workspace boundary. A session started with `codex -C <elsewhere>` works on a directory outside that boundary and fails closed with `OUTSIDE_ROOTS`, which is the intended answer. The Claude host never reads `PWD`, because it has real roots and `CLAUDE_PROJECT_DIR`. A worker adds `FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider process environment.
 
 | Host | Target | Depth | Result |
 |---|---|---:|---|
@@ -46,13 +48,15 @@ Every job has a wall-clock limit from 30 through 7,200 seconds. Claude jobs may 
 
 `delegation_status`, `delegation_result`, and `delegation_events` read durable state for the current route. Status reconciles a stale record when the provider has a supported recovery method.
 
-`delegation_cancel` records a cancel request. A queued job becomes cancelled without starting a provider. A live Codex turn receives `turn/interrupt`. A live Claude query receives the SDK `interrupt()` call. Both workers terminate their child process after a grace period when cooperative cancellation does not finish.
+`delegation_cancel` records a cancel request. A queued job becomes cancelled without starting a provider. A live Codex turn receives `turn/interrupt`. A live Claude query receives the SDK `interrupt()` call. Both workers terminate their child process after a grace period when cooperative cancellation does not finish. On a quarantined job it does something else entirely, described under state and write safety.
 
 `delegation_steer` sends text to Codex through `turn/steer`. Claude Agent SDK 0.3.251 has no equivalent control for an active query, so on a Codex host the tool is not registered at all and the capability report says `liveSteer: false`. A tool whose only behaviour is a typed refusal is worse than an absent one: the caller has to try it to learn what the capability report already said.
 
 `delegation_continue` creates a new local job linked to the prior one. Codex resumes the saved thread. Claude resumes the saved session ID. The new job gets its own status, events, result, and time budget. An active job cannot continue. An `unknown` job cannot continue because Flow cannot prove the earlier write turn stopped.
 
 `delegation_doctor` reports named checks for Node, provider containment, the provider runtime, account state, the job database, and provider initialization. Linux containment requires cgroup v2 plus a working systemd user manager. The Codex route also checks the Linux host requirement, minimum CLI version, experimental permission-profile API, active restricted profile, and MCP isolation on a real ephemeral thread. Doctor reports the MCP client identity, capabilities, advertised roots, usable roots, and project-directory input. Missing roots produce a normal diagnostic result with `ok: false`; they do not prevent unrelated checks from running. The MCP SDK does not expose the negotiated protocol version after initialization, so doctor marks that field unavailable instead of guessing. It returns the provider capability object.
+
+Doctor is also the only tool that answers without a workspace, because explaining a missing root is what it is for. Every other tool needs one.
 
 Doctor also returns `hostCapabilities`, a sibling of the target capability object rather than another named check. It answers a different question. `capabilities` says what Flow can do to a delegated job on the target. `hostCapabilities` says what the harness Flow is running under can do at all, so a command can decide whether to ask a question through a permission prompt or end the turn and wait. It carries `schemaVersion`, the host name, the `verifiedAgainst` provider version the entries were checked against, and one entry per capability id with `supported`, `verifiedAt`, `assurance`, and a `note`. Every id names both hosts. Beside it, doctor returns a top-level `client: { name, version }`, the MCP client identity observed in the initialize handshake, and nulls where no handshake supplied one.
 
@@ -67,7 +71,7 @@ The table itself is `capabilities.json` at the plugin root, beside the bundle th
 | cancel | yes | yes |
 | continue native context | yes | yes |
 | structured output | yes | yes |
-| steer the active turn | yes | no, typed refusal |
+| steer the active turn | yes | no, tool not registered |
 | recover a result after worker death | yes, through `thread/read` | no |
 | hard turn limit | no | yes, `maxTurns` |
 | hard provider cost limit | no | yes, `maxBudgetUsd` |
@@ -115,9 +119,11 @@ Flow never maps a missing process, empty response, or transport error to success
 
 ## Codex App Server contract
 
-This contract was validated against Codex CLI 0.151.0 on Linux on 2026-08-29. That validation exercised live delegated turns; the 2026-08-28 validation against 0.150.1 covered the protocol only, and no sandboxed command had ever exited 0 before the runtime grant described above. Codex delegation additionally requires Codex CLI 0.150.1 or newer. A missing provider-containment boundary fails with `CONTAINMENT_UNAVAILABLE`. Older or unreadable Codex versions fail before Flow creates a job.
+This contract was validated against Codex CLI 0.151.0 on Linux on 2026-08-29, and its deterministic smoke passes against Codex CLI 0.152.0 on 2026-09-01. The 0.151.0 validation exercised live delegated turns; the 2026-08-28 validation against 0.150.1 covered the protocol only, and no sandboxed command had ever exited 0 before the runtime grant described above. Codex delegation additionally requires Codex CLI 0.150.1 or newer. A missing provider-containment boundary fails with `CONTAINMENT_UNAVAILABLE`. Older or unreadable Codex versions fail before Flow creates a job.
 
 The worker starts `codex app-server` over JSON lines with the experimental API enabled. Before it creates a thread, it reads the effective MCP inventory. The thread config disables plugin loading, app loading, and every discovered standalone MCP server. After the thread starts or resumes, Flow reads that thread's MCP inventory. It refuses to send the prompt unless every remaining server is disabled and exposes zero tools. This check prevents the delegated Codex process from inheriting the host's Flow server, browser tools, apps, or other local MCP authority.
+
+Reading it back is the point, and it is the difference between the two routes. On Codex, MCP isolation and the restricted permission profile are both configured and then PROVEN: Flow asks the live thread what servers it has and what profile is active, and a mismatch stops the job before the prompt goes out. On Claude, the equivalents are configured and not read back, because the Agent SDK offers nothing to read them from. See the Claude section for what that means there.
 
 Codex's built-in read-only sandbox can read the host filesystem. Flow does not use it. Each thread receives a custom `flow_delegation` permission profile. The profile grants read access to Codex's minimal runtime paths, grants the requested read or write access to the canonical worktree, and grants write access to one owner-only temporary directory for that job. It also grants read access to the resolved Codex executable and, for an npm install, its `@openai/codex` package root: Codex re-execs its own binary inside the bubblewrap namespace for every shell command, and a profile without that grant breaks all delegated commands with execvp ENOENT while the turn still completes (openai/codex#29049; validated against Codex CLI 0.151.0 on 2026-08-29). The grant can retire when upstream binds its own runtime unconditionally. Network access is disabled. Exact Git metadata paths remain read-only, including linked-worktree metadata outside the checkout. For write jobs, `.git`, `.agents`, and `.codex` also remain read-only when present. Flow sets the profile on `thread/start` or `thread/resume`, verifies that App Server reports it as active, and does not replace it at `turn/start`. The worker removes the private temporary directory after the provider stops.
 
@@ -139,7 +145,7 @@ The App Server client treats malformed JSON lines, a closed stdin pipe, and earl
 
 ## Claude Agent SDK contract
 
-This contract was validated against Claude Code 2.1.250 and `@anthropic-ai/claude-agent-sdk` 0.3.251 on 2026-08-28. The repository pins the exact SDK version used to build the committed bundle. The bundle contains the SDK library but not a Claude Code executable. It uses the installed `claude` binary and its current authentication.
+This contract was validated against Claude Code 2.1.250 and `@anthropic-ai/claude-agent-sdk` 0.3.251 on 2026-08-28, and its deterministic smoke passes against Claude Code 2.1.257 on 2026-09-01. The repository pins the exact SDK version used to build the committed bundle. The bundle contains the SDK library but not a Claude Code executable. It uses the installed `claude` binary and its current authentication.
 
 Claude's current plan policy permits Agent SDK and `claude -p` usage to draw from Claude plan limits. Anthropic's planned June 15, 2026 usage-policy change is paused. Flow verified the linked policy on 2026-08-27. This is a dated operational dependency and must be rechecked before changing authentication or publishing guidance:
 
@@ -156,6 +162,10 @@ The worker calls `query()` with these controls:
 - no loaded setting sources, plugins, skills, MCP servers, browser, web tools, or subagents
 - the Claude Code system prompt, Flow's current charter, and a final delegated-worker contract
 - a sandbox that fails closed when unavailable
+
+Every item on that list is CONFIGURED and none of it is read back. The Agent SDK has no call that reports the tool set, the MCP inventory, or the sandbox a running query actually ended up with, so Flow states the contract and trusts the SDK to apply it. The Codex route proves the same two properties against the live thread and refuses the job when the answer is wrong. That asymmetry is real and it is not a formatting difference: on Claude the isolation rests on the SDK doing what its options say.
+
+The Claude worker also gives the provider no private temporary directory. The Codex worker creates one owner-only directory per job and points `TMPDIR` at it, and the permission profile grants write there and nowhere else outside the worktree. The Agent SDK has no equivalent knob, so a delegated Claude process uses the worker's own `TMPDIR`.
 
 The sandbox blocks network access for commands, local binding, Unix sockets, and unsandboxed commands. Read-only jobs deny worktree writes. Write jobs grant the canonical worktree; Claude's own runtime temporary locations may remain writable, but another checkout does not. A PreToolUse policy also checks direct edits, direct shell writers, wildcard write targets, mutation-capable inline evaluators, and publication commands. It does not try to spot a nested provider launch in command text. That rule existed and was removed: `npx claude`, `$X -p`, and base64 all walked around it, and a check three obvious tricks defeat reads as protection while providing none. The sandbox is the control that holds. It denies the effective Claude and Codex executable paths and every credential store, and the network allowlist is empty, so a provider a delegated command manages to start has no authentication and no egress. Direct reads and searches cannot enter common local credential stores or custom credential paths named by the provider environment. On Linux, the command sandbox and PreToolUse policy deny `/proc`, including process environments and descriptors. This still applies when the assigned worktree sits below a protected credential directory. The Claude process receives an explicit runtime, network, and provider-authentication environment allowlist instead of the host's complete environment. Auto-memory is disabled. Secret and proxy variables are removed from sandboxed commands. These checks do not depend on prompt compliance.
 
@@ -179,6 +189,8 @@ Every result uses one envelope:
   "target": "claude",
   "model": "sonnet",
   "effort": "high",
+  "mode": "task",
+  "access": "read-only",
   "limits": {
     "timeBudgetSeconds": 900,
     "maxTurns": 20,
@@ -192,13 +204,17 @@ Every result uses one envelope:
   "usage": {},
   "commandFailures": 0,
   "error": null,
-  "quarantine": null
+  "quarantine": null,
+  "createdAt": 0,
+  "updatedAt": 0
 }
 ```
 
-`commandFailures` counts the job's recorded command completions whose status was `failed` or whose exit code was nonzero, computed from the event journal on every read. A succeeded job with a nonzero count answered without working shell evidence; treat its output the way you would treat an unverified claim. Claude jobs currently record no command completion events, so the field stays 0 on that route.
+`commandFailures` counts the job's recorded command completions whose status was `failed` or whose exit code was nonzero, computed from the event journal on every read. A succeeded job with a nonzero count answered without working shell evidence; treat its output the way you would treat an unverified claim.
 
-Review modes use one strict findings schema. A clean review returns an empty findings array. Both provider workers receive the charter from `charter/charter.md` at build time, followed by the narrower delegated-seat rule that forbids subagents and nested provider calls. Since 2026-08-31 the payload ends with the Containment section of `seat-contract.md`, in a `<seat-contract scope="containment">` block. That section and no other. The remaining three are doctrine for a seat working an issue, so a caller that wants them puts them in its own task text. The public error contains a named kind, a short message, and bounded public details. It never contains a stack, raw provider payload, account identifier, model identifier from an error payload, or internal path. Owner-only `internal.error` events and `service.log` keep bounded diagnostic detail that the caller does not receive.
+On the Claude route the field is ALWAYS 0. The Agent SDK reports a tool call starting and finishing but never its exit status, so Flow records no command completion events there and has nothing to count. A zero on a Claude job means the question was not asked, not that every command worked, and reading it as evidence is exactly the mistake the field exists to prevent.
+
+Review mode uses one strict findings schema. A clean review returns an empty findings array. Both provider workers receive the charter from `charter/charter.md` at build time, followed by the narrower delegated-seat rule that forbids subagents and nested provider calls. Since 2026-08-31 the payload ends with the Containment section of `seat-contract.md`, in a `<seat-contract scope="containment">` block. That section and no other. The remaining three are doctrine for a seat working an issue, so a caller that wants them puts them in its own task text. The public error contains a named kind, a short message, and bounded public details. It never contains a stack, raw provider payload, account identifier, model identifier from an error payload, or internal path. Owner-only `internal.error` events and `service.log` keep bounded diagnostic detail that the caller does not receive.
 
 ## Workspace trust
 
@@ -206,7 +222,7 @@ The MCP server asks the client for roots when the client supports `roots/list`. 
 
 For every job, Flow checks the Git worktree root before it grants provider access to that root. A linked worktree beside the approved repository passes only when its common Git directory belongs to the approved root and Git lists that worktree. A caller-writable `.git` pointer alone is not proof. A nested client root does not silently widen into its parent worktree.
 
-Review modes resolve base and head revisions to full commit IDs before the worker starts. The prompt names those immutable IDs.
+Review mode resolves base and head revisions to full commit IDs before the worker starts. The prompt names those immutable IDs.
 
 ## Retry and recovery rules
 
@@ -218,7 +234,7 @@ A read-only caller may create a new job after a named failure. Continuation resu
 
 Source lives under `src/delegation`. `deps/package.json` pins the MCP SDK, Ajv, esbuild, and the Claude Agent SDK. The build writes one committed ESM bundle at `dist/delegation.mjs`. That file has two entry modes, `mcp` and `worker`, and nothing else: a host starts the server, and the service starts one worker per job with a job ID, so the prompt does not cross a shell boundary. Both smokes drive the server the way a host does, over MCP.
 
-The Claude manifest contains the direct `flow_delegate` server definition. It sets a 7,500,000 millisecond MCP call timeout. The Codex manifest points to plugin-root `.mcp.json`, which starts the same bundle with `--host codex` and a 7,500 second tool timeout. Both values exceed the maximum 7,200 second job budget so the MCP client does not cut off a valid attached call first. The build injects the Flow plugin version, the current charter, both host binding profiles, and the seat contract into the bundle, the last through the `__FLOW_SEAT_CONTRACT__` define. Both plugin manifests and Flow's marketplace entry carry that plugin version. The marketplace catalog's top-level metadata version moves independently.
+The Claude manifest contains the direct `flow_delegate` server definition. It sets a 7,500,000 millisecond MCP call timeout. The Codex manifest points to plugin-root `.mcp.json`, which starts the same bundle with `--host codex` and a 7,500 second tool timeout. Both values exceed the maximum 7,200 second job budget so the MCP client does not cut off a valid attached call first. The build injects the Flow plugin version, the current charter, both host binding profiles, and the seat contract into the bundle, the last through the `__FLOW_SEAT_CONTRACT__` define. The host capability table is deliberately not injected: it is read from `capabilities.json` at runtime, so re-verifying a row needs no rebuild. Both plugin manifests and Flow's marketplace entry carry that plugin version. The marketplace catalog's top-level metadata version moves independently.
 
 `scripts/smoke-bundle-drift.mjs` rebuilds from source and requires a byte-identical committed bundle. It needs a development checkout with `npm ci` already run in `plugins/flow/deps`. `.gitattributes` exempts the bundle from the blank-at-end-of-line diff check, because bundled dependency string literals contain whitespace-only lines.
 
@@ -233,6 +249,8 @@ The deterministic test set covers:
 - full JSON Schema validation and immutable review revisions
 - job transitions, event order, retention, the schema reset, and concurrent database opens
 - Codex App Server startup, deltas, controls, recovery, and unknown write outcomes
+- the quarantine barrier, including the cancel that clears one nothing is left to observe
+- the host capability inventory, its four drift statuses, and the table living outside the bundle
 - delegated Codex MCP isolation, malformed protocol input, and broken App Server stdin
 - delegated Codex permission-profile activation, workspace-only reads, protected Git metadata, and private temporary storage
 - Claude SDK initialization, output, rate limits, approval denial, cancellation during startup, continuation, provider crashes, and unknown write outcomes
@@ -241,7 +259,7 @@ The deterministic test set covers:
 - provider-specific MCP registration, host requirements, root diagnostics, capabilities, and progress
 - plugin manifests, versions, hooks, charter injection, and byte-identical bundle generation
 
-An operator should also run one authenticated task through each route when both accounts have allowance. The deterministic Claude smoke uses the real SDK library against a fake Claude Code protocol process, so it does not spend plan usage and can exercise success and failure cases in CI.
+Both smokes drive the shipped bundle over MCP, because that is the only entry mode there is: the tested path and the shipped path are the same path. The Claude smoke uses the real SDK library against a fake Claude Code protocol process, and the Codex smoke a fake App Server, so neither spends plan usage and both can exercise failure cases. An operator should still run one authenticated task through each route when both accounts have allowance; a fake proves the protocol, never the account.
 
 ## Deliberate limits
 
