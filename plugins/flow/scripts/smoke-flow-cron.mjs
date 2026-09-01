@@ -62,6 +62,9 @@ check("plain text stdout", extractReport(REPORT).report, REPORT);
 check("empty stdout", extractReport("").report, "");
 check("empty stdout has no result text", extractReport("").resultText, "");
 check("a truncated line does not throw", extractReport(assistant(REPORT) + '{"type":"resu').report, REPORT);
+check("a bare null on stdout is not a message", extractReport("null").report, "");
+check("a null entry in a message array is skipped", extractReport(JSON.stringify([null, { type: "assistant", message: { content: [{ type: "text", text: REPORT }] } }, 7, "x"])).report, REPORT);
+check("a null line in stream-json is skipped", extractReport("null\n" + assistant(REPORT) + result("ok")).report, REPORT);
 
 console.log(bad === 0 ? "\nflow-cron: ALL PASS" : `\nflow-cron: ${bad} FAILURE(S)`);
 process.exit(bad === 0 ? 0 : 1);

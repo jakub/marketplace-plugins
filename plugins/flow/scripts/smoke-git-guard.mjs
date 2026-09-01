@@ -106,6 +106,11 @@ expectEnv(false, 'git log -1 | head -5', lint, 'lint: pipe into a plain filter s
 expectEnv(false, 'git fetch origin --prune && git branch -a', lint, 'lint: two reads chained')
 expectEnv(false, "gh issue comment 42 --body 'run git branch -D old; then git push'", lint, 'lint: single-quoted prose about git writes')
 expectEnv(false, 'node /x/scripts/lint-actions.mjs prune-worktree --repo /home/x/code/r --path /home/x/code/r-wt', lint, 'lint: the executor invocation')
+// Review-found shapes: prose naming a shell form, a dashed heredoc delimiter, and a quoted
+// heredoc delimiter that turns interpolation off.
+expectEnv(false, 'gh issue comment 42 --body "do not use bash -c git push"', lint, 'lint: prose naming bash -c in a quoted body')
+expectEnv(false, "gripe add <<'END-MARK'\nreport: $(git push) and git worktree remove /tmp/wt were denied\nEND-MARK", lint, 'lint: quoted dashed heredoc delimiter, body is prose')
+expectEnv(true, 'gripe add <<END\n$(git push origin main)\nEND', lint, 'lint: unquoted heredoc body still interpolates')
 expectEnv(true, 'git -C /home/x/code/r branch -D feat/done', sweep, 'sweep: branch -D denied')
 expectEnv(true, 'git -C /home/x/code/r worktree remove /p', sweep, 'sweep: worktree remove denied')
 expectEnv(false, 'git -C /home/x/code/r worktree list --porcelain', sweep, 'sweep: worktree list')

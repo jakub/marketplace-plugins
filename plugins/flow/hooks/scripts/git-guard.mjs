@@ -186,13 +186,15 @@ const cronScanTarget = (cmd) => {
       continue
     }
     if (cmd.startsWith('<<', i)) {
-      // A heredoc: the body is prose to the classifier unless it interpolates. The command
+      // A heredoc: the body is prose to the classifier unless it interpolates. Delimiters may
+      // carry a dash (END-MARK), which \w alone misses and then reads the whole body as live. The command
       // consuming it was judged as a word already, so a shell reading its script from a
       // heredoc has been caught above.
-      const m = /^<<-?\s*(['"]?)(\w+)\1[^\n]*\n([\s\S]*?)(^\s*\2\s*$|$(?![\s\S]))/m.exec(cmd.slice(i))
+      const m = /^<<-?\s*(['"]?)([\w-]+)\1[^\n]*\n([\s\S]*?)(^\s*\2\s*$|$(?![\s\S]))/m.exec(cmd.slice(i))
       if (m) {
         endWord()
-        out += INTERPOLATES.test(m[3]) ? m[0] : `<<${m[2]}\n\n${m[2]}`
+        // A quoted delimiter (<<'X') turns interpolation off, so that body is prose whatever it holds.
+        out += !m[1] && INTERPOLATES.test(m[3]) ? m[0] : `<<${m[2]}\n\n${m[2]}`
         i += m[0].length
         continue
       }

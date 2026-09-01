@@ -70,12 +70,16 @@ const REPORT_MARKER = /^\s*# flow /;
 // One JSON value per line (--output-format stream-json), a single object (--output-format
 // json), or an array of them (what older builds wrote for json). Unparseable lines are
 // skipped instead of throwing: a stray line on stdout must not cost the report.
+// A bare `null` or a non-object value on stdout is not a message; reading `.type` off it would
+// throw before the failure report gets written.
+const isMessageObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
 export const parseMessages = (stdout) => {
   const trimmed = (stdout || "").trim();
   if (!trimmed) return [];
   try {
     const whole = JSON.parse(trimmed);
-    return Array.isArray(whole) ? whole : [whole];
+    return (Array.isArray(whole) ? whole : [whole]).filter(isMessageObject);
   } catch {
     // Not one JSON value, so read it as one value per line.
   }
@@ -84,7 +88,8 @@ export const parseMessages = (stdout) => {
     const t = line.trim();
     if (!t.startsWith("{")) continue;
     try {
-      out.push(JSON.parse(t));
+      const value = JSON.parse(t);
+      if (isMessageObject(value)) out.push(value);
     } catch {
       // A partial or interleaved line. The report is somewhere else.
     }
