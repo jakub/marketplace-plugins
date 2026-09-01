@@ -2,6 +2,8 @@
 # Install (or refresh) flow's scheduled jobs as systemd user timers. Idempotent:
 # re-running overwrites the launcher and units with the plugin's current templates
 # and re-enables the timers. `status` prints what is installed and when it next runs.
+# `install` writes nothing at all until a candidate launcher has proved it resolves the
+# installed plugin, so a failed install leaves a working one alone.
 #
 #   install-cron.sh install    write launcher + units, daemon-reload, enable --now
 #   install-cron.sh status     timers, last result per job, newest report per job
@@ -20,10 +22,38 @@ jobs="lint doc-sweep"
 
 case "${1:-status}" in
 install)
+  # Every check that does not need a launcher runs before the first write, so a machine
+  # that fails one is left exactly as it was found.
   systemctl --user show-environment >/dev/null 2>&1 || { echo "no running systemd user manager; these timers need one - skipping install" >&2; exit 1; }
-  command -v claude >/dev/null || { echo "claude is not on PATH; install Claude Code first" >&2; exit 1; }
+  command -v claude >/dev/null || { echo "claude is not on PATH; the jobs run as headless Claude sessions - install Claude Code first" >&2; exit 1; }
   command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
-  mkdir -p "$(dirname "$launcher")" "$units_dir" "$state/reports" "$HOME/.config/flow"
+  need=("$tpl/flow-cron.launcher" "$root/scripts/flow-cron.mjs")
+  for j in $jobs; do need+=("$tpl/flow-$j.service" "$tpl/flow-$j.timer" "$root/skills/flow/cron/$j.md"); done
+  for f in "${need[@]}"; do [ -r "$f" ] || { echo "missing or unreadable: $f; $root is not a complete flow install" >&2; exit 1; }; done
+
+  # The launcher is the only thing that can prove the plugin resolves, and proving it
+  # means running it. So write a CANDIDATE beside the final path, dry-run both jobs
+  # through the candidate, and promote it with a rename only once both pass: a failure
+  # here arms nothing and leaves a launcher that already worked untouched. The trap
+  # removes the candidate on the failure exit below and on an interrupt mid-dry-run.
+  mkdir -p "$(dirname "$launcher")"
+  candidate="$launcher.candidate.$$"
+  trap 'rm -f "$candidate"' EXIT
+  install -m 0755 "$tpl/flow-cron.launcher" "$candidate"
+  # Nothing is armed before this passes: a persistent timer that is overdue fires the
+  # moment it is enabled.
+  for j in $jobs; do
+    "$candidate" "$j" --dry-run >/dev/null || {
+      printf '%s\n' \
+        "launcher dry-run failed for $j; nothing was installed - the candidate launcher is deleted, no units, no env file, no timer enabled, and a launcher that was already there is untouched." \
+        "The jobs are Claude-hosted (each one is a headless claude -p session), so flow@jakub has to be installed at Claude USER scope no matter which host you conduct the pipeline from: the launcher reads $HOME/.claude/plugins/installed_plugins.json for a user-scope entry and nothing else." \
+        "Fix: claude plugin install flow@jakub --scope user   (then re-run this installer)" >&2
+      exit 1
+    }
+  done
+  mv -f "$candidate" "$launcher"
+
+  mkdir -p "$units_dir" "$state/reports" "$HOME/.config/flow"
   # Persist the config the units need: systemctl does not carry the installer's env.
   env_file="$HOME/.config/flow/cron.env"
   {
@@ -33,10 +63,6 @@ install)
     echo "FLOW_CRON_TIMEOUT_MIN=${FLOW_CRON_TIMEOUT_MIN:-40}"
   } > "$env_file"
   chmod 0600 "$env_file"
-  install -m 0755 "$tpl/flow-cron.launcher" "$launcher"
-  # Prove the launcher resolves the installed plugin BEFORE arming anything: a
-  # persistent timer that is overdue fires the moment it is enabled.
-  for j in $jobs; do "$launcher" "$j" --dry-run >/dev/null || { echo "launcher dry-run failed for $j; not enabling timers" >&2; exit 1; }; done
   for j in $jobs; do
     install -m 0644 "$tpl/flow-$j.service" "$units_dir/flow-$j.service"
     install -m 0644 "$tpl/flow-$j.timer" "$units_dir/flow-$j.timer"
