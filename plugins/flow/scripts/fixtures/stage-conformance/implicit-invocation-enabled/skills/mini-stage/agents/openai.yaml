@@ -1,5 +1,0 @@
-interface:
-  display_name: "Mini Stage"
-  short_description: "A fixture stage that nothing runs"
-policy:
-  allow_implicit_invocation: true
