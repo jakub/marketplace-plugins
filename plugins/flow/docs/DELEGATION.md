@@ -38,7 +38,7 @@ The server checks the route when it creates a job. The worker checks it again be
 
 ## MCP tools and capabilities
 
-The Claude manifest registers `delegate_to_codex`. The Codex manifest registers `delegate_to_claude`. Both register the shared `delegation_*` controls.
+The Claude manifest registers `delegate_to_codex`. The Codex manifest registers `delegate_to_claude`. Alongside it each host gets `delegation_status`, `delegation_result`, `delegation_events`, `delegation_cancel`, `delegation_continue` and `delegation_doctor`. A Claude host also gets `delegation_steer`, because its target is Codex. That is the whole tool set, and both smokes assert it as a set.
 
 `delegate_to_codex` or `delegate_to_claude` starts a task or an adversarial review. Required fields are `prompt`, `cwd`, `model`, and `effort`. Access is `read-only` or `workspace-write`. Delivery is `attached` or `detached`. Both families take the same five effort levels, `low` through `max`.
 
@@ -46,15 +46,13 @@ Every job has a wall-clock limit from 30 through 7,200 seconds. Claude jobs may 
 
 `delegation_status`, `delegation_result`, and `delegation_events` read durable state for the current route. Status reconciles a stale record when the provider has a supported recovery method.
 
-`delegation_list` returns a cursor-paginated list of recent jobs for the current host and target. It rechecks every job against the current MCP workspace roots. It omits jobs outside those roots, and it never includes prompts or outputs.
-
 `delegation_cancel` records a cancel request. A queued job becomes cancelled without starting a provider. A live Codex turn receives `turn/interrupt`. A live Claude query receives the SDK `interrupt()` call. Both workers terminate their child process after a grace period when cooperative cancellation does not finish.
 
-`delegation_steer` sends text to Codex through `turn/steer`. Claude Agent SDK 0.3.251 has no equivalent control for an active query. A Claude job returns `CONTROL_UNSUPPORTED` without queuing the text. The tool remains registered so the control API stays predictable, but the capability report says `liveSteer: false` for Claude.
+`delegation_steer` sends text to Codex through `turn/steer`. Claude Agent SDK 0.3.251 has no equivalent control for an active query, so on a Codex host the tool is not registered at all and the capability report says `liveSteer: false`. A tool whose only behaviour is a typed refusal is worse than an absent one: the caller has to try it to learn what the capability report already said.
 
 `delegation_continue` creates a new local job linked to the prior one. Codex resumes the saved thread. Claude resumes the saved session ID. The new job gets its own status, events, result, and time budget. An active job cannot continue. An `unknown` job cannot continue because Flow cannot prove the earlier write turn stopped.
 
-`delegation_models` asks the target provider for its live catalog. `delegation_doctor` reports named checks for Node, provider containment, the provider runtime, account state, the job database, and provider initialization. Linux containment requires cgroup v2 plus a working systemd user manager. The Codex route also checks the Linux host requirement, minimum CLI version, experimental permission-profile API, active restricted profile, and MCP isolation on a real ephemeral thread. Doctor reports the MCP client identity, capabilities, advertised roots, usable roots, and project-directory input. Missing roots produce a normal diagnostic result with `ok: false`; they do not prevent unrelated checks from running. The MCP SDK does not expose the negotiated protocol version after initialization, so doctor marks that field unavailable instead of guessing. Both tools return the provider capability object.
+`delegation_doctor` reports named checks for Node, provider containment, the provider runtime, account state, the job database, and provider initialization. Linux containment requires cgroup v2 plus a working systemd user manager. The Codex route also checks the Linux host requirement, minimum CLI version, experimental permission-profile API, active restricted profile, and MCP isolation on a real ephemeral thread. Doctor reports the MCP client identity, capabilities, advertised roots, usable roots, and project-directory input. Missing roots produce a normal diagnostic result with `ok: false`; they do not prevent unrelated checks from running. The MCP SDK does not expose the negotiated protocol version after initialization, so doctor marks that field unavailable instead of guessing. It returns the provider capability object.
 
 Doctor also returns `hostCapabilities`, a sibling of the target capability object rather than another named check. It answers a different question. `capabilities` says what Flow can do to a delegated job on the target. `hostCapabilities` says what the harness Flow is running under can do at all, so a command can decide whether to ask a question through a permission prompt or end the turn and wait. It carries `schemaVersion`, the host name, the `verifiedAgainst` provider version the entries were checked against, and one entry per capability id with `supported`, `verifiedAt`, `assurance`, and a `note`. Every id names both hosts. Beside it, doctor returns a top-level `client: { name, version }`, the MCP client identity observed in the initialize handshake, and nulls where no handshake supplied one.
 
@@ -202,7 +200,7 @@ Review modes use one strict findings schema. A clean review returns an empty fin
 
 ## Workspace trust
 
-The MCP server asks the client for roots when the client supports `roots/list`. It also accepts the host's canonical project directory. At least one of those sources must name a usable directory before Flow can start, continue, list, or query models for a workspace. Doctor is the exception because it must explain a missing-root failure. A requested working directory must resolve inside one of those roots. Flow rejects missing paths, symlink escapes, and unrelated checkouts.
+The MCP server asks the client for roots when the client supports `roots/list`. It also accepts the host's canonical project directory. At least one of those sources must name a usable directory before Flow can start or continue a job, or read one back. Doctor is the exception because it must explain a missing-root failure. A requested working directory must resolve inside one of those roots. Flow rejects missing paths, symlink escapes, and unrelated checkouts.
 
 For every job, Flow checks the Git worktree root before it grants provider access to that root. A linked worktree beside the approved repository passes only when its common Git directory belongs to the approved root and Git lists that worktree. A caller-writable `.git` pointer alone is not proof. A nested client root does not silently widen into its parent worktree.
 
@@ -227,7 +225,7 @@ The Claude manifest contains the direct `flow_delegate` server definition. It se
 The deterministic test set covers:
 
 - both allowed routes, same-family denial, nested denial, and route ownership
-- workspace roots, linked worktrees, symlink escapes, and write lease races
+- workspace roots, linked worktrees, symlink escapes, job visibility, and write lease races
 - full JSON Schema validation and immutable review revisions
 - job transitions, event order, retention, the schema reset, and concurrent database opens
 - Codex App Server startup, deltas, controls, recovery, and unknown write outcomes
@@ -236,7 +234,7 @@ The deterministic test set covers:
 - Claude SDK initialization, output, rate limits, approval denial, cancellation during startup, continuation, provider crashes, and unknown write outcomes
 - Claude direct-tool and Bash permission policy
 - conditional Claude `StructuredOutput` policy, provider-specific schema checks, charter delivery, and public provider-error redaction
-- provider-specific MCP registration, host requirements, list pagination, root diagnostics, capabilities, and progress
+- provider-specific MCP registration, host requirements, root diagnostics, capabilities, and progress
 - plugin manifests, versions, hooks, charter injection, and byte-identical bundle generation
 
 An operator should also run one authenticated task through each route when both accounts have allowance. The deterministic Claude smoke uses the real SDK library against a fake Claude Code protocol process, so it does not spend plan usage and can exercise success and failure cases in CI.

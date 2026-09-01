@@ -335,9 +335,11 @@ try {
 
   const slowState = state('slow')
   const slow = await startJob({ prompt: 'wait', delivery: 'detached' }, { mode: 'slow', stateDir: slowState })
-  const steer = envelope(await call('delegation_steer', { jobId: slow.jobId, text: 'redirect' }, { stateDir: slowState }))
-  assert.equal(steer.status, 'failed')
-  assert.equal(steer.error.kind, 'CONTROL_UNSUPPORTED')
+  // There is no delegation_steer on this route. Claude has no live-steer control, and a tool
+  // whose whole behaviour is a typed refusal teaches the caller nothing the capability report
+  // did not already say.
+  assert.equal((await session({ stateDir: slowState }, (client) => client.listTools()))
+    .tools.some((tool) => tool.name === 'delegation_steer'), false)
   await cancelJob(slow.jobId, { stateDir: slowState })
   await waitFor(slow.jobId, slowState, 'cancelled')
   const startupState = state('startup-slow')
@@ -557,9 +559,12 @@ try {
   await assert.rejects(deadClient.start(), /MCP server exited early/)
   await session({ stateDir: state('mcp') }, async (client) => {
     const tools = await client.listTools()
-    const names = tools.tools.map((tool) => tool.name)
-    assert.ok(names.includes('delegate_to_claude'))
-    assert.ok(!names.includes('delegate_to_codex'))
+    // The Codex-hosted tool set, as a set. delegation_steer is absent because the target is
+    // Claude, and delegate_to_codex because a host never delegates to its own family.
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
+      'delegate_to_claude', 'delegation_cancel', 'delegation_continue', 'delegation_doctor',
+      'delegation_events', 'delegation_result', 'delegation_status',
+    ])
     const delegateTool = tools.tools.find((tool) => tool.name === 'delegate_to_claude')
     assert.ok(delegateTool.inputSchema.properties.maxTurns)
     assert.ok(delegateTool.inputSchema.properties.maxBudgetUsd)

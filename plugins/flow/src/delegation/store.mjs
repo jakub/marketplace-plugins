@@ -92,7 +92,6 @@ const SCHEMA = `
     job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
   );
   CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
-  CREATE INDEX jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
   CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
 `
 
@@ -302,22 +301,6 @@ export class JobStore {
         AND (json_extract(payload_json, '$.status') = 'failed'
           OR COALESCE(json_extract(payload_json, '$.exitCode'), 0) != 0)`).get(id).count)
     return job
-  }
-
-  listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
-    const clauses = ['host = ?', 'target = ?']
-    const values = [host, target]
-    if (status) {
-      clauses.push('status = ?')
-      values.push(status)
-    }
-    if (before) {
-      clauses.push('(created_at < ? OR (created_at = ? AND id < ?))')
-      values.push(before.createdAt, before.createdAt, before.id)
-    }
-    values.push(Math.max(1, Math.min(limit, 100)))
-    return this.db.prepare(`SELECT * FROM jobs WHERE ${clauses.join(' AND ')}
-      ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values).map(decode)
   }
 
   quarantinedCount() {

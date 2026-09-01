@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, EFFORTS, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, EFFORTS, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, restrictedPermissionConfig } from './app-server.mjs'
 import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
 import { providerContainmentSupport, providerScopeRunning } from './containment.mjs'
@@ -9,8 +9,6 @@ import { JobStore, defaultStateDir, processStartToken, serviceLog } from './stor
 import { canonicalRoots, canonicalWorkspace, gitMetadataPaths, immutableReview, validatedWorktreeKey, worktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const LIST_SCAN_LIMIT = 1_000
-const LIST_VISIBILITY_PROBE_LIMIT = 32
 
 // Every field is type-checked before it is pattern-checked: a regex coerces its argument, so
 // an undefined model matched the shape test and only failed later, as an opaque NOT NULL
@@ -89,34 +87,6 @@ function quarantineRunning(job) {
 
 function providerRecorded(job) {
   return Boolean(job.providerPid || job.providerProcessGroupId || job.providerScope || job.providerProcesses?.length)
-}
-
-function decodeListCursor(cursor, { host, target, status }) {
-  if (!cursor) return null
-  if (typeof cursor !== 'string' || cursor.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(cursor)) {
-    throw new DelegationError('BAD_REQUEST', 'The delegation list cursor is invalid.')
-  }
-  try {
-    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
-    if (value?.v !== 1 || value.host !== host || value.target !== target || value.status !== status
-      || !Number.isSafeInteger(value.createdAt) || typeof value.id !== 'string') {
-      throw new Error('cursor mismatch')
-    }
-    return { createdAt: value.createdAt, id: value.id }
-  } catch {
-    throw new DelegationError('BAD_REQUEST', 'The delegation list cursor is invalid.')
-  }
-}
-
-function encodeListCursor(job, { host, target, status }) {
-  return Buffer.from(JSON.stringify({
-    v: 1,
-    host,
-    target,
-    status,
-    createdAt: job.createdAt,
-    id: job.id,
-  })).toString('base64url')
 }
 
 export class DelegationService {
@@ -280,72 +250,6 @@ export class DelegationService {
     return this.withStore((store) => store.events(jobId, options))
   }
 
-  async list({ status = null, limit = 20, cursor = null } = {}, { rootUris = [], fallbackCwd = null } = {}) {
-    if (status !== null && !JOB_STATES.includes(status)) {
-      throw new DelegationError('BAD_REQUEST', 'status is invalid.')
-    }
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new DelegationError('BAD_REQUEST', 'limit must be between 1 and 100.')
-    }
-    const target = this.target()
-    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
-    if (!roots.length) throw new DelegationError('NO_ROOTS', 'The client did not provide a usable workspace root.')
-    const context = { host: this.host, target, status }
-    let before = decodeListCursor(cursor, context)
-    const visible = []
-    let scanned = 0
-    let lastScanned = null
-    let scanTruncated = false
-    const store = this.store()
-    const visibility = new Map()
-    let visibilityProbes = 0
-    const visibleFromRoots = async (cwd) => {
-      if (visibility.has(cwd)) return visibility.get(cwd)
-      if (visibilityProbes >= LIST_VISIBILITY_PROBE_LIMIT) return null
-      visibilityProbes++
-      try {
-        await canonicalWorkspace(cwd, roots)
-        visibility.set(cwd, true)
-        return true
-      } catch (error) {
-        if (!(error instanceof DelegationError)) throw error
-        visibility.set(cwd, false)
-        return false
-      }
-    }
-    try {
-      scan:
-      while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
-        const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned)
-        const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit })
-        if (!candidates.length) break
-        for (const job of candidates) {
-          const isVisible = await visibleFromRoots(job.cwd)
-          if (isVisible === null) {
-            scanTruncated = true
-            break scan
-          }
-          scanned++
-          lastScanned = job
-          before = { createdAt: job.createdAt, id: job.id }
-          if (!isVisible) continue
-          visible.push(job)
-          if (visible.length > limit) break scan
-        }
-        if (candidates.length < chunkLimit) break
-      }
-      if (!scanTruncated && visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
-        scanTruncated = store.listJobs({ host: this.host, target, status, before, limit: 1 }).length > 0
-      }
-    } finally { store.close() }
-    const jobs = visible.slice(0, limit)
-    const cursorJob = visible.length > limit ? jobs.at(-1) : (scanTruncated ? lastScanned : null)
-    return {
-      jobs,
-      nextCursor: cursorJob ? encodeListCursor(cursorJob, context) : null,
-    }
-  }
-
   cancel(jobId) {
     this.get(jobId)
     return this.withStore((store) => store.requestCancel(jobId))
@@ -385,22 +289,6 @@ export class DelegationService {
       parentJobId: previous.id,
       nativeThreadId: previous.nativeThreadId,
     }, roots)
-  }
-
-  async models(cwd) {
-    if (this.target() === 'claude') return claudeModels(cwd)
-    const client = new AppServerClient({ cwd })
-    try {
-      await client.start()
-      const models = []
-      let cursor = null
-      do {
-        const page = await client.request('model/list', { cursor, limit: 100, includeHidden: false }, 20_000)
-        models.push(...(page.data || []))
-        cursor = page.nextCursor || null
-      } while (cursor)
-      return models
-    } finally { await client.stop() }
   }
 
   // handshakeClient, not client: the App Server connection a few lines down already owns that

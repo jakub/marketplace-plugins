@@ -22746,8 +22746,6 @@ var DELIVERIES = ["attached", "detached"];
 var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 var ACTIVE_STATES = ["queued", "starting", "running", "reconciling"];
 var TERMINAL_STATES = ["succeeded", "failed", "cancelled", "unknown", "awaiting_approval"];
-var QUARANTINE_STATES = ["quarantined"];
-var JOB_STATES = [...ACTIVE_STATES, ...QUARANTINE_STATES, ...TERMINAL_STATES];
 var MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
 var STALL_SECONDS = 420;
 var FINDINGS_SCHEMA = {
@@ -22916,31 +22914,6 @@ function resultEnvelope(job) {
     findings: job.mode === "task" ? null : job.structured?.findings ?? null,
     usage: job.usage,
     commandFailures: job.commandFailures ?? 0,
-    error: job.error,
-    quarantine: publicQuarantine(job),
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt
-  };
-}
-function jobSummary(job) {
-  return {
-    jobId: job.id,
-    parentJobId: job.parentJobId,
-    status: job.status,
-    host: job.host,
-    target: job.target,
-    mode: job.mode,
-    access: job.access,
-    cwd: job.cwd,
-    model: job.model,
-    effort: job.effort,
-    limits: {
-      timeBudgetSeconds: job.timeBudgetSeconds,
-      maxTurns: job.maxTurns,
-      maxBudgetUsd: job.maxBudgetUsd
-    },
-    threadId: job.nativeThreadId,
-    turnId: job.nativeTurnId,
     error: job.error,
     quarantine: publicQuarantine(job),
     createdAt: job.createdAt,
@@ -23418,7 +23391,6 @@ var SCHEMA = `
     job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE
   );
   CREATE INDEX jobs_status_idx ON jobs(status, heartbeat_at);
-  CREATE INDEX jobs_route_created_idx ON jobs(host, target, created_at DESC, id DESC);
   CREATE INDEX controls_pending_idx ON controls(job_id, handled_at, id);
 `;
 function serviceLog(stateDir, message) {
@@ -23646,21 +23618,6 @@ var JobStore = class {
         AND (json_extract(payload_json, '$.status') = 'failed'
           OR COALESCE(json_extract(payload_json, '$.exitCode'), 0) != 0)`).get(id2).count);
     return job;
-  }
-  listJobs({ host, target, status = null, before = null, limit = 100 } = {}) {
-    const clauses = ["host = ?", "target = ?"];
-    const values = [host, target];
-    if (status) {
-      clauses.push("status = ?");
-      values.push(status);
-    }
-    if (before) {
-      clauses.push("(created_at < ? OR (created_at = ? AND id < ?))");
-      values.push(before.createdAt, before.createdAt, before.id);
-    }
-    values.push(Math.max(1, Math.min(limit, 100)));
-    return this.db.prepare(`SELECT * FROM jobs WHERE ${clauses.join(" AND ")}
-      ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values).map(decode3);
   }
   quarantinedCount() {
     return Number(this.db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE status='quarantined'").get().count);
@@ -57266,8 +57223,6 @@ Review only the changes in git diff ${baseSha}...${headSha}. Read surrounding co
 
 // src/delegation/service.mjs
 var sleep = (ms2) => new Promise((resolve8) => setTimeout(resolve8, ms2));
-var LIST_SCAN_LIMIT = 1e3;
-var LIST_VISIBILITY_PROBE_LIMIT = 32;
 function validateStart(input, target) {
   if (!MODES.includes(input.mode)) throw new DelegationError("BAD_REQUEST", "mode is invalid.");
   if (!ACCESS_MODES.includes(input.access)) throw new DelegationError("BAD_REQUEST", "access is invalid.");
@@ -57329,31 +57284,6 @@ function quarantineRunning(job) {
 }
 function providerRecorded(job) {
   return Boolean(job.providerPid || job.providerProcessGroupId || job.providerScope || job.providerProcesses?.length);
-}
-function decodeListCursor(cursor, { host, target, status }) {
-  if (!cursor) return null;
-  if (typeof cursor !== "string" || cursor.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(cursor)) {
-    throw new DelegationError("BAD_REQUEST", "The delegation list cursor is invalid.");
-  }
-  try {
-    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    if (value?.v !== 1 || value.host !== host || value.target !== target || value.status !== status || !Number.isSafeInteger(value.createdAt) || typeof value.id !== "string") {
-      throw new Error("cursor mismatch");
-    }
-    return { createdAt: value.createdAt, id: value.id };
-  } catch {
-    throw new DelegationError("BAD_REQUEST", "The delegation list cursor is invalid.");
-  }
-}
-function encodeListCursor(job, { host, target, status }) {
-  return Buffer.from(JSON.stringify({
-    v: 1,
-    host,
-    target,
-    status,
-    createdAt: job.createdAt,
-    id: job.id
-  })).toString("base64url");
 }
 var DelegationService = class {
   constructor({ host, depth = 0, stateDir = defaultStateDir(), entryPath: entryPath2, projectDir = null } = {}) {
@@ -57518,73 +57448,6 @@ var DelegationService = class {
     this.get(jobId2);
     return this.withStore((store) => store.events(jobId2, options));
   }
-  async list({ status = null, limit = 20, cursor = null } = {}, { rootUris = [], fallbackCwd = null } = {}) {
-    if (status !== null && !JOB_STATES.includes(status)) {
-      throw new DelegationError("BAD_REQUEST", "status is invalid.");
-    }
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new DelegationError("BAD_REQUEST", "limit must be between 1 and 100.");
-    }
-    const target = this.target();
-    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd });
-    if (!roots.length) throw new DelegationError("NO_ROOTS", "The client did not provide a usable workspace root.");
-    const context = { host: this.host, target, status };
-    let before = decodeListCursor(cursor, context);
-    const visible = [];
-    let scanned = 0;
-    let lastScanned = null;
-    let scanTruncated = false;
-    const store = this.store();
-    const visibility = /* @__PURE__ */ new Map();
-    let visibilityProbes = 0;
-    const visibleFromRoots = async (cwd) => {
-      if (visibility.has(cwd)) return visibility.get(cwd);
-      if (visibilityProbes >= LIST_VISIBILITY_PROBE_LIMIT) return null;
-      visibilityProbes++;
-      try {
-        await canonicalWorkspace(cwd, roots);
-        visibility.set(cwd, true);
-        return true;
-      } catch (error2) {
-        if (!(error2 instanceof DelegationError)) throw error2;
-        visibility.set(cwd, false);
-        return false;
-      }
-    };
-    try {
-      scan:
-        while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
-          const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned);
-          const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit });
-          if (!candidates.length) break;
-          for (const job of candidates) {
-            const isVisible = await visibleFromRoots(job.cwd);
-            if (isVisible === null) {
-              scanTruncated = true;
-              break scan;
-            }
-            scanned++;
-            lastScanned = job;
-            before = { createdAt: job.createdAt, id: job.id };
-            if (!isVisible) continue;
-            visible.push(job);
-            if (visible.length > limit) break scan;
-          }
-          if (candidates.length < chunkLimit) break;
-        }
-      if (!scanTruncated && visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
-        scanTruncated = store.listJobs({ host: this.host, target, status, before, limit: 1 }).length > 0;
-      }
-    } finally {
-      store.close();
-    }
-    const jobs = visible.slice(0, limit);
-    const cursorJob = visible.length > limit ? jobs.at(-1) : scanTruncated ? lastScanned : null;
-    return {
-      jobs,
-      nextCursor: cursorJob ? encodeListCursor(cursorJob, context) : null
-    };
-  }
   cancel(jobId2) {
     this.get(jobId2);
     return this.withStore((store) => store.requestCancel(jobId2));
@@ -57622,23 +57485,6 @@ var DelegationService = class {
       parentJobId: previous.id,
       nativeThreadId: previous.nativeThreadId
     }, roots);
-  }
-  async models(cwd) {
-    if (this.target() === "claude") return claudeModels(cwd);
-    const client = new AppServerClient({ cwd });
-    try {
-      await client.start();
-      const models = [];
-      let cursor = null;
-      do {
-        const page = await client.request("model/list", { cursor, limit: 100, includeHidden: false }, 2e4);
-        models.push(...page.data || []);
-        cursor = page.nextCursor || null;
-      } while (cursor);
-      return models;
-    } finally {
-      await client.stop();
-    }
   }
   // handshakeClient, not client: the App Server connection a few lines down already owns that
   // name inside this method, and two different clients under one identifier is a trap.
@@ -58029,26 +57875,6 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       events: service.events(jobId2, { after, limit })
     });
   }));
-  server.registerTool("delegation_list", {
-    description: "List recent delegation jobs owned by this host route and visible from the current workspace roots. Prompts and outputs are omitted.",
-    inputSchema: {
-      status: _enum([...JOB_STATES]).optional(),
-      limit: number2().int().min(1).max(100).default(20),
-      cursor: string2().optional()
-    },
-    annotations: { readOnlyHint: true, openWorldHint: false }
-  }, asTool(async (input) => {
-    const page = await service.list({
-      status: input.status || null,
-      limit: input.limit,
-      cursor: input.cursor || null
-    }, await rootOptions());
-    return toolResult({
-      ok: true,
-      jobs: page.jobs.map(jobSummary),
-      nextCursor: page.nextCursor
-    });
-  }));
   server.registerTool("delegation_cancel", {
     description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId },
@@ -58057,14 +57883,16 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     await requireVisibleJob(jobId2);
     return toolResult({ ok: true, job: resultEnvelope(service.cancel(jobId2)) });
   }));
-  server.registerTool("delegation_steer", {
-    description: capabilities.liveSteer ? `Add instructions to the active ${targetTitle} turn without starting a new job.` : `${targetTitle} does not support live turn steering. This tool returns CONTROL_UNSUPPORTED for ${targetTitle} jobs.`,
-    inputSchema: { jobId, text: string2().min(1) },
-    annotations: { openWorldHint: false }
-  }, asTool(async ({ jobId: jobId2, text }) => {
-    await requireVisibleJob(jobId2);
-    return toolResult({ ok: true, job: resultEnvelope(service.steer(jobId2, text)) });
-  }));
+  if (capabilities.liveSteer) {
+    server.registerTool("delegation_steer", {
+      description: `Add instructions to the active ${targetTitle} turn without starting a new job.`,
+      inputSchema: { jobId, text: string2().min(1) },
+      annotations: { openWorldHint: false }
+    }, asTool(async ({ jobId: jobId2, text }) => {
+      await requireVisibleJob(jobId2);
+      return toolResult({ ok: true, job: resultEnvelope(service.steer(jobId2, text)) });
+    }));
+  }
   server.registerTool("delegation_continue", {
     description: `Start a new job that continues an existing ${targetTitle} session.`,
     inputSchema: {
@@ -58085,16 +57913,6 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     if (input.delivery === "detached") return toolResult({ ok: true, job: resultEnvelope(job) });
     const finished = await service.wait(job.id, attachedOptions(extra));
     return toolResult({ ok: finished.status === "succeeded", job: resultEnvelope(finished) }, finished.status !== "succeeded");
-  }));
-  server.registerTool("delegation_models", {
-    description: `Read the live ${targetTitle} model catalog and Flow control capabilities.`,
-    inputSchema: { cwd: string2().optional() },
-    annotations: { readOnlyHint: true, openWorldHint: true }
-  }, asTool(async ({ cwd }) => {
-    const roots = canonicalRoots({ rootUris: await clientRoots(), projectDir });
-    const checked = await canonicalWorkspace(cwd || projectDir || roots[0], roots);
-    const models = await service.models(checked);
-    return toolResult({ ok: true, target, capabilities, models });
   }));
   server.registerTool("delegation_doctor", {
     description: `Check the local delegation database, ${targetTitle} runtime, and account.`,

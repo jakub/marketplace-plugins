@@ -11,8 +11,6 @@ export const DELIVERIES = ['attached', 'detached']
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const ACTIVE_STATES = ['queued', 'starting', 'running', 'reconciling']
 export const TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval']
-export const QUARANTINE_STATES = ['quarantined']
-export const JOB_STATES = [...ACTIVE_STATES, ...QUARANTINE_STATES, ...TERMINAL_STATES]
 export const MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
 // The total budget alone cannot catch a wedged provider: a half-dead socket sends no
 // notifications while the worker keeps heartbeating as healthy. This is the quiet-period
@@ -230,32 +228,6 @@ export function resultEnvelope(job) {
     findings: job.mode === 'task' ? null : (job.structured?.findings ?? null),
     usage: job.usage,
     commandFailures: job.commandFailures ?? 0,
-    error: job.error,
-    quarantine: publicQuarantine(job),
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-  }
-}
-
-export function jobSummary(job) {
-  return {
-    jobId: job.id,
-    parentJobId: job.parentJobId,
-    status: job.status,
-    host: job.host,
-    target: job.target,
-    mode: job.mode,
-    access: job.access,
-    cwd: job.cwd,
-    model: job.model,
-    effort: job.effort,
-    limits: {
-      timeBudgetSeconds: job.timeBudgetSeconds,
-      maxTurns: job.maxTurns,
-      maxBudgetUsd: job.maxBudgetUsd,
-    },
-    threadId: job.nativeThreadId,
-    turnId: job.nativeTurnId,
     error: job.error,
     quarantine: publicQuarantine(job),
     createdAt: job.createdAt,

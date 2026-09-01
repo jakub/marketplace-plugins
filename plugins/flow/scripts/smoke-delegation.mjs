@@ -1082,8 +1082,10 @@ try {
     assert.ok(columnsOf('jobs').includes(live), live)
   }
   assert.ok(!columnsOf('leases').includes('heartbeat_at'))
-  assert.ok(upgraded.db.prepare('PRAGMA index_list(jobs)').all()
-    .some((index) => index.name === 'jobs_route_created_idx'))
+  // The route index went with delegation_list. Nothing orders jobs by (host, target,
+  // created_at) any more, and an index no query uses is write cost for nothing.
+  assert.deepEqual(upgraded.db.prepare('PRAGMA index_list(jobs)').all()
+    .map((index) => index.name).filter((name) => !name.startsWith('sqlite_')), ['jobs_status_idx'])
   const afterReset = upgraded.createJob({
     traceId: 'after-reset', host: 'claude', target: 'codex', depth: 0,
     mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
@@ -1118,7 +1120,13 @@ try {
   await client.start()
   const tools = await client.listTools()
   const names = tools.tools.map((tool) => tool.name)
-  for (const name of ['delegate_to_codex', 'delegation_status', 'delegation_result', 'delegation_events', 'delegation_list', 'delegation_cancel', 'delegation_steer', 'delegation_continue', 'delegation_models', 'delegation_doctor']) assert.ok(names.includes(name), name)
+  // The whole tool set, asserted as a set: an addition has to be a decision, not a diff nobody
+  // noticed. delegation_steer is here because the target is Codex, the one family that can
+  // take text mid-turn.
+  assert.deepEqual(names.sort(), [
+    'delegate_to_codex', 'delegation_cancel', 'delegation_continue', 'delegation_doctor',
+    'delegation_events', 'delegation_result', 'delegation_status', 'delegation_steer',
+  ])
   const delegateTool = tools.tools.find((tool) => tool.name === 'delegate_to_codex')
   assert.equal(delegateTool.inputSchema.properties.maxTurns, undefined)
   assert.equal(delegateTool.inputSchema.properties.maxBudgetUsd, undefined)
@@ -1176,80 +1184,30 @@ try {
   assert.equal(mcpContinued.structuredContent.job.threadId, mcpResult.structuredContent.job.threadId)
   assert.notEqual(mcpContinued.structuredContent.job.jobId, mcpResult.structuredContent.job.jobId)
   assert.ok(continuedProgress.length > 0)
-  const firstPage = await client.callTool('delegation_list', { limit: 1 }, { timeout: 30_000 })
-  assert.equal(firstPage.structuredContent.jobs.length, 1)
-  assert.equal(firstPage.structuredContent.jobs[0].host, 'claude')
-  assert.equal(firstPage.structuredContent.jobs[0].target, 'codex')
-  assert.equal(Object.hasOwn(firstPage.structuredContent.jobs[0], 'prompt'), false)
-  assert.equal(Object.hasOwn(firstPage.structuredContent.jobs[0], 'output'), false)
-  assert.ok(firstPage.structuredContent.nextCursor)
-  const secondPage = await client.callTool('delegation_list', {
-    limit: 1,
-    cursor: firstPage.structuredContent.nextCursor,
-  }, { timeout: 30_000 })
-  assert.equal(secondPage.structuredContent.jobs.length, 1)
-  assert.notEqual(secondPage.structuredContent.jobs[0].jobId, firstPage.structuredContent.jobs[0].jobId)
-  const mismatchedCursor = await client.callTool('delegation_list', {
-    status: 'succeeded',
-    limit: 1,
-    cursor: firstPage.structuredContent.nextCursor,
-  }, { timeout: 30_000 })
-  assert.equal(mismatchedCursor.isError, true)
-  assert.equal(mismatchedCursor.structuredContent.error.kind, 'BAD_REQUEST')
-  const succeededPage = await client.callTool('delegation_list', { status: 'succeeded', limit: 100 }, { timeout: 30_000 })
-  assert.ok(succeededPage.structuredContent.jobs.length >= 2)
-  assert.ok(succeededPage.structuredContent.jobs.every((job) => job.status === 'succeeded'))
-
+  // A job whose workspace sits outside the client's roots is invisible to every tool that
+  // takes a job ID, not just to the one that reads it.
+  const hiddenCwd = join(temp, 'hidden-job')
+  mkdirSync(hiddenCwd)
   const hiddenStore = new JobStore(mcpState)
-  for (let index = 0; index < 33; index++) {
-    const hiddenCwd = join(temp, `hidden-list-${index}`)
-    mkdirSync(hiddenCwd)
-    hiddenStore.createJob({
-      traceId: `hidden-list-job-${index}`, host: 'claude', target: 'codex', depth: 0,
-      mode: 'task', access: 'read-only', cwd: hiddenCwd, workspaceKey: hiddenCwd,
-      model: 'gpt-5.6-luna', effort: 'low',
-      timeBudgetSeconds: 30, prompt: 'hidden', outputSchema: null,
-    })
-  }
-  hiddenStore.createJob({
-    traceId: 'other-route-list-job', host: 'codex', target: 'claude', depth: 0,
-    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
-    model: 'sonnet', effort: 'low',
-    timeBudgetSeconds: 30, prompt: 'other route', outputSchema: null,
+  const hiddenJob = hiddenStore.createJob({
+    traceId: 'hidden-job', host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'read-only', cwd: hiddenCwd, workspaceKey: hiddenCwd,
+    model: 'gpt-5.6-luna', effort: 'low',
+    timeBudgetSeconds: 30, prompt: 'hidden', outputSchema: null,
   })
   hiddenStore.close()
-  let hiddenCursor = null
-  let firstHiddenCursor = null
-  let hiddenPages = 0
-  do {
-    const hiddenPage = await client.callTool('delegation_list', {
-      status: 'queued', limit: 100, ...(hiddenCursor ? { cursor: hiddenCursor } : {}),
-    }, { timeout: 30_000 })
-    assert.deepEqual(hiddenPage.structuredContent.jobs, [])
-    hiddenCursor = hiddenPage.structuredContent.nextCursor
-    if (!firstHiddenCursor) firstHiddenCursor = hiddenCursor
-    hiddenPages++
-  } while (hiddenCursor)
-  assert.ok(hiddenPages >= 2)
-  assert.ok(firstHiddenCursor)
-  const hiddenJobId = JSON.parse(Buffer.from(firstHiddenCursor, 'base64url').toString('utf8')).id
   for (const [tool, input] of [
-    ['delegation_status', { jobId: hiddenJobId }],
-    ['delegation_result', { jobId: hiddenJobId }],
-    ['delegation_events', { jobId: hiddenJobId }],
-    ['delegation_steer', { jobId: hiddenJobId, text: 'hidden' }],
-    ['delegation_continue', { jobId: hiddenJobId, prompt: 'hidden' }],
-    ['delegation_cancel', { jobId: hiddenJobId }],
+    ['delegation_status', { jobId: hiddenJob.id }],
+    ['delegation_result', { jobId: hiddenJob.id }],
+    ['delegation_events', { jobId: hiddenJob.id }],
+    ['delegation_steer', { jobId: hiddenJob.id, text: 'hidden' }],
+    ['delegation_continue', { jobId: hiddenJob.id, prompt: 'hidden' }],
+    ['delegation_cancel', { jobId: hiddenJob.id }],
   ]) {
     const deniedHiddenJob = await client.callTool(tool, input, { timeout: 30_000 })
     assert.equal(deniedHiddenJob.isError, true, tool)
     assert.equal(deniedHiddenJob.structuredContent.error.kind, 'OUTSIDE_ROOTS', tool)
   }
-  const modelResult = await client.callTool('delegation_models', { cwd: repo }, { timeout: 30_000 })
-  assert.equal(modelResult.structuredContent.models[0].id, 'gpt-5.6-luna')
-  const escapedModels = await client.callTool('delegation_models', { cwd: temp }, { timeout: 30_000 })
-  assert.equal(escapedModels.isError, true)
-  assert.equal(escapedModels.structuredContent.error.kind, 'OUTSIDE_ROOTS')
   const doctorResult = await client.callTool('delegation_doctor', { cwd: repo }, { timeout: 30_000 })
   assert.equal(doctorResult.structuredContent.ok, true)
   assert.equal(doctorResult.structuredContent.checks.workspace.ok, true)
@@ -1318,9 +1276,12 @@ try {
   assert.equal(noRootsDoctor.structuredContent.ok, false)
   assert.equal(noRootsDoctor.structuredContent.checks.workspace.error.kind, 'NO_ROOTS')
   assert.equal(noRootsDoctor.structuredContent.checks.appServer.ok, true)
-  const noRootsList = await noRootsClient.callTool('delegation_list', {}, { timeout: 30_000 })
-  assert.equal(noRootsList.isError, true)
-  assert.equal(noRootsList.structuredContent.error.kind, 'NO_ROOTS')
+  const noRootsStart = await noRootsClient.callTool('delegate_to_codex', {
+    mode: 'task', prompt: 'no roots', cwd: repo, access: 'read-only',
+    model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30,
+  }, { timeout: 30_000 })
+  assert.equal(noRootsStart.isError, true)
+  assert.equal(noRootsStart.structuredContent.error.kind, 'NO_ROOTS')
   await noRootsClient.close()
 
   // Codex 0.151.0 advertises no roots capability and sets no project-dir variable, which is
@@ -1341,10 +1302,19 @@ try {
     },
     roots: [],
   })
+  // Seeded rather than started: what is under test is whether PWD resolves to a workspace the
+  // job's cwd sits inside, and reading a job back proves that without a provider turn.
+  const pwdSeed = new JobStore(state('mcp-codex-pwd'))
+  const pwdJob = pwdSeed.createJob({
+    traceId: 'codex-pwd', host: 'codex', target: 'claude', depth: 0,
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'sonnet', effort: 'low', timeBudgetSeconds: 30, prompt: 'pwd', outputSchema: null,
+  })
+  pwdSeed.close()
   await codexPwdClient.start()
-  const codexPwdList = await codexPwdClient.callTool('delegation_list', {}, { timeout: 30_000 })
-  assert.equal(codexPwdList.isError, undefined, 'the Codex host resolves a workspace from PWD')
-  assert.ok(Array.isArray(codexPwdList.structuredContent.jobs), 'PWD-rooted list returns jobs')
+  const codexPwdRead = await codexPwdClient.callTool('delegation_status', { jobId: pwdJob.id }, { timeout: 30_000 })
+  assert.equal(codexPwdRead.isError, undefined, 'the Codex host resolves a workspace from PWD')
+  assert.equal(codexPwdRead.structuredContent.job.jobId, pwdJob.id)
   await codexPwdClient.close()
 
   const codexNoPwdClient = new McpStdioClient({
@@ -1361,10 +1331,17 @@ try {
     },
     roots: [],
   })
+  const noPwdSeed = new JobStore(state('mcp-codex-no-pwd'))
+  const noPwdJob = noPwdSeed.createJob({
+    traceId: 'codex-no-pwd', host: 'codex', target: 'claude', depth: 0,
+    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
+    model: 'sonnet', effort: 'low', timeBudgetSeconds: 30, prompt: 'no pwd', outputSchema: null,
+  })
+  noPwdSeed.close()
   await codexNoPwdClient.start()
-  const codexNoPwdList = await codexNoPwdClient.callTool('delegation_list', {}, { timeout: 30_000 })
-  assert.equal(codexNoPwdList.isError, true)
-  assert.equal(codexNoPwdList.structuredContent.error.kind, 'NO_ROOTS')
+  const codexNoPwdRead = await codexNoPwdClient.callTool('delegation_status', { jobId: noPwdJob.id }, { timeout: 30_000 })
+  assert.equal(codexNoPwdRead.isError, true)
+  assert.equal(codexNoPwdRead.structuredContent.error.kind, 'NO_ROOTS')
   await codexNoPwdClient.close()
 
   for (const entry of readdirSync(temp, { withFileTypes: true })) {

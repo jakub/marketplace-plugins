@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod/v4'
 import { DelegationService } from './service.mjs'
-import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, EFFORTS, JOB_STATES, jobSummary, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, EFFORTS, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { serviceLog } from './store.mjs'
 import { VERSION } from './version.mjs'
 import { canonicalRoots, canonicalWorkspace } from './workspace.mjs'
@@ -170,27 +170,6 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     })
   }))
 
-  server.registerTool('delegation_list', {
-    description: 'List recent delegation jobs owned by this host route and visible from the current workspace roots. Prompts and outputs are omitted.',
-    inputSchema: {
-      status: z.enum([...JOB_STATES]).optional(),
-      limit: z.number().int().min(1).max(100).default(20),
-      cursor: z.string().optional(),
-    },
-    annotations: { readOnlyHint: true, openWorldHint: false },
-  }, asTool(async (input) => {
-    const page = await service.list({
-      status: input.status || null,
-      limit: input.limit,
-      cursor: input.cursor || null,
-    }, await rootOptions())
-    return toolResult({
-      ok: true,
-      jobs: page.jobs.map(jobSummary),
-      nextCursor: page.nextCursor,
-    })
-  }))
-
   server.registerTool('delegation_cancel', {
     description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId: jobId },
@@ -200,16 +179,18 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     return toolResult({ ok: true, job: resultEnvelope(service.cancel(jobId)) })
   }))
 
-  server.registerTool('delegation_steer', {
-    description: capabilities.liveSteer
-      ? `Add instructions to the active ${targetTitle} turn without starting a new job.`
-      : `${targetTitle} does not support live turn steering. This tool returns CONTROL_UNSUPPORTED for ${targetTitle} jobs.`,
-    inputSchema: { jobId: jobId, text: z.string().min(1) },
-    annotations: { openWorldHint: false },
-  }, asTool(async ({ jobId, text }) => {
-    await requireVisibleJob(jobId)
-    return toolResult({ ok: true, job: resultEnvelope(service.steer(jobId, text)) })
-  }))
+  // Registered only where it works. A tool whose whole behaviour is a typed refusal is worse
+  // than no tool: the caller has to try it to learn what the capability report already says.
+  if (capabilities.liveSteer) {
+    server.registerTool('delegation_steer', {
+      description: `Add instructions to the active ${targetTitle} turn without starting a new job.`,
+      inputSchema: { jobId: jobId, text: z.string().min(1) },
+      annotations: { openWorldHint: false },
+    }, asTool(async ({ jobId, text }) => {
+      await requireVisibleJob(jobId)
+      return toolResult({ ok: true, job: resultEnvelope(service.steer(jobId, text)) })
+    }))
+  }
 
   server.registerTool('delegation_continue', {
     description: `Start a new job that continues an existing ${targetTitle} session.`,
@@ -231,17 +212,6 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     if (input.delivery === 'detached') return toolResult({ ok: true, job: resultEnvelope(job) })
     const finished = await service.wait(job.id, attachedOptions(extra))
     return toolResult({ ok: finished.status === 'succeeded', job: resultEnvelope(finished) }, finished.status !== 'succeeded')
-  }))
-
-  server.registerTool('delegation_models', {
-    description: `Read the live ${targetTitle} model catalog and Flow control capabilities.`,
-    inputSchema: { cwd: z.string().optional() },
-    annotations: { readOnlyHint: true, openWorldHint: true },
-  }, asTool(async ({ cwd }) => {
-    const roots = canonicalRoots({ rootUris: await clientRoots(), projectDir })
-    const checked = await canonicalWorkspace(cwd || projectDir || roots[0], roots)
-    const models = await service.models(checked)
-    return toolResult({ ok: true, target, capabilities, models })
   }))
 
   server.registerTool('delegation_doctor', {
