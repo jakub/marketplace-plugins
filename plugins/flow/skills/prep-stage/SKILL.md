@@ -12,7 +12,7 @@ First, before the argument step or anything else: read the profile for the activ
 
 Every `[[gate:<id>]]` marker below has its own section in the profile you just read, and where a step needs a decision from the human, that profile's human-choice binding says how the choice is put in front of them and how the answer comes back.
 
-/flow:issue is a hands-off autonomous implementation, so the issue we hand it needs to be precise, well designed, well scoped, and complete with acceptance criteria. We need to examine the codebase and produce a solid proposal that contains everything a cold implementer in a new session would need.
+The implementation stage is a hands-off autonomous run, so the issue we hand it needs to be precise, well designed, well scoped, and complete with acceptance criteria. We need to examine the codebase and produce a solid proposal that contains everything a cold implementer in a new session would need.
 
 Prep is the only lane where a new issue may be born: the `no-backlog-guard.mjs` hook blocks `gh issue create` everywhere else, so creating one at finalize means `FLOW_SANCTION=prep gh issue create ...`. That sanction names the lane you're in; don't sprinkle it on other commands.
 
@@ -60,7 +60,7 @@ The seats should return:
 ## 3. Triviality gate
 
 If the issue is fully specified and small (clear AC, no open questions, no design forks): 
-- Issue mode: recommend skipping straight to `/flow:issue <N>`, but only if the issue already carries `ready-for-agent` and still validates against the label contract. If it doesn't, the recommendation is to finish this prep and label it first, then hand off.
+- Issue mode: recommend handing the issue straight to the implementation stage, invoked the way this host's binding says, but only if it already carries `ready-for-agent` and still validates against the label contract. If it doesn't, the recommendation is to finish this prep and label it first, then hand off.
 - Free-text mode: **recommend doing it right now** - no ticket theater for little fixes.
 
 [[gate:triviality-agreement]] The recommendation goes to the human through the human-choice binding, and their agreement is what authorizes the shortcut. On agreement in free-text mode, implement it directly (normal quick-fix rules), commit to main, and stop; the tracker never hears of it. Without that agreement, continue to the dialectic - never slide into implementing on your own reading of how small the work is.
