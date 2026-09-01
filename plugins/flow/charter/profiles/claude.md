@@ -2,6 +2,10 @@
 
 Injected beside the charter. Each section binds one of its `[[role:…]]` names to this
 host's mechanism; the charter says what a role is for, this file says what it is here.
+A seat role's section opens with the charter table's model name and the effort, and the
+conformance lint reads exactly those two against the role's floors. The Agent tool takes
+`model` only, so a native seat runs at the session's effort: name the intended effort in
+the spawn prompt, and raise the session effort for a hard milestone.
 
 ## Bindings
 
@@ -18,8 +22,64 @@ type starts from harness defaults, so carry the non-negotiables in the prompt.
 
 ### role: search-seat
 
-`Explore` agents at `model: sonnet`. Escalate the model when the search itself needs
-judgment.
+`sonnet-5` at low effort: `Explore` agents (`model: sonnet`). Escalate the model when the
+search itself needs judgment.
+
+### role: outside-scout
+
+`gpt-5.6-sol` at medium effort through `delegate_to_codex`, `access: read-only`, the
+repository root as `cwd`.
+
+### role: design-leg-native
+
+`opus-5` at xhigh effort as `flow:code-architect` (`model: opus`), in the background.
+
+### role: design-leg-bridge
+
+`gpt-5.6-sol` at high effort through `delegate_to_codex`, `access: read-only`,
+`delivery: attached`, the repository root as `cwd`. The outside opinion on this host is
+the Codex family.
+
+### role: taste-leg
+
+`fable-5-1` at high effort as `flow:code-architect` (`model: fable`).
+
+### role: write-seat-mechanical
+
+`sonnet-5` at medium effort as `flow:implementer` (`model: sonnet`).
+
+### role: write-seat-standard
+
+`opus-5` at high effort as `flow:implementer` (`model: opus`). The default rung.
+
+### role: write-seat-hard
+
+`opus-5` at xhigh effort as `flow:implementer` (`model: opus`).
+
+### role: bulk-seat
+
+`gpt-5.6-luna` at max effort through `delegate_to_codex`. The cheap-depth seat, never the
+decorrelation seat.
+
+### role: review-seat-native
+
+`opus-5` at xhigh effort as `flow:code-reviewer` (`model: opus`), for a diff a bridge
+writer produced.
+
+### role: review-seat-bridge
+
+`gpt-5.6-sol` at high effort through `delegate_to_codex` in `mode: "adversarial-review"`
+against an immutable `base`, `access: read-only`, for a diff `flow:implementer` produced.
+Sol is flat-rate on this host, so extra lenses cost turnaround and not money: widen on a
+hunch.
+
+### role: security-seat
+
+`gpt-daybreak-blue-latest` at high effort through `delegate_to_codex`.
+
+### role: adjudicator
+
+`opus-5` at max effort (`model: opus`).
 
 ### role: human-choice
 

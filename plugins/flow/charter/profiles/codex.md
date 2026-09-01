@@ -2,6 +2,9 @@
 
 Injected beside the charter. Each section binds one of its `[[role:…]]` names to this
 host's mechanism; the charter says what a role is for, this file says what it is here.
+A seat role's section opens with the charter table's model name and the effort, and the
+conformance lint reads exactly those two against the role's floors. A bridge binding also
+spells the provider id the delegation tool takes.
 
 ## Bindings
 
@@ -24,8 +27,67 @@ must not depend on having seen them scroll by.
 
 ### role: search-seat
 
-A native read-only subagent on `gpt-5.6-luna`, medium effort. Escalate the model when
-the search itself needs judgment.
+`gpt-5.6-luna` at medium effort: a native read-only `spawn_agent` seat with
+`fork_turns: "none"`. Escalate the model when the search itself needs judgment.
+
+### role: outside-scout
+
+`sonnet-5` at medium effort through `delegate_to_claude` as `claude-sonnet-5`,
+`access: read-only`, the repository root as `cwd`.
+
+### role: design-leg-native
+
+`gpt-5.6-sol` at high effort: a `spawn_agent` seat with `fork_turns: "none"`, read-only
+by its prompt.
+
+### role: design-leg-bridge
+
+`opus-5` at high effort through `delegate_to_claude` as `claude-opus-5`,
+`access: read-only`, `delivery: attached`, the repository root as `cwd`. The outside
+opinion on this host is a Claude model; the charter's "Sol is the decorrelated seat" is
+written from a Claude host.
+
+### role: taste-leg
+
+`fable-5-1` at high effort through `delegate_to_claude` as `claude-fable-5-1`.
+
+### role: write-seat-mechanical
+
+`gpt-5.6-luna` at max effort, native `spawn_agent`. Luna counts 7 only at max, which
+is what the rung's floor needs; Sol at medium costs little more, so take the higher
+rung when torn.
+
+### role: write-seat-standard
+
+`gpt-5.6-sol` at medium effort, native `spawn_agent`. The default rung.
+
+### role: write-seat-hard
+
+`gpt-5.6-sol` at high effort, native `spawn_agent`.
+
+### role: bulk-seat
+
+`gpt-5.6-luna` at max effort, native `spawn_agent`.
+
+### role: review-seat-native
+
+`gpt-5.6-sol` at high effort, native `spawn_agent`, for a diff a bridge writer produced.
+Do not send that one across the bridge.
+
+### role: review-seat-bridge
+
+`opus-5` at xhigh effort through `delegate_to_claude` as `claude-opus-5` in
+`mode: "adversarial-review"` against an immutable `base`, `access: read-only`, for a diff
+a native writer produced. The outside family is metered on this host: trim optional
+lenses on a quiet diff, never this pass.
+
+### role: security-seat
+
+`gpt-daybreak-blue-latest` at high effort, native `spawn_agent`.
+
+### role: adjudicator
+
+`gpt-5.6-sol` at max effort, native `spawn_agent`.
 
 ### role: human-choice
 

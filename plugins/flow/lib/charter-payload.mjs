@@ -12,10 +12,12 @@ export const CLAUDE_HOOK_CAP = 10_000
 export const CLAUDE_PART_BUDGET = 9_000
 
 // Codex takes one payload and measures it in tokens, so these are maintenance budgets
-// rather than hard limits: spilling is the runtime fallback, not the target.
+// rather than hard limits: spilling is the runtime fallback, not the target. The hook in
+// hooks/codex.json declares additionalContextLimit 8000; the seat-role bindings measured
+// about 3.6 bytes per token on this payload, so 22,000 bytes leaves the limit some room.
 export const CODEX_CHARTER_BYTE_BUDGET = 15_000
-export const CODEX_PROFILE_BYTE_BUDGET = 3_000
-export const CODEX_INLINE_BYTE_BUDGET = 18_000
+export const CODEX_PROFILE_BYTE_BUDGET = 5_000
+export const CODEX_INLINE_BYTE_BUDGET = 22_000
 
 export const NO_BINDINGS_NOTE =
   "This host's binding profile did not load, so you are running on the charter alone. " +
