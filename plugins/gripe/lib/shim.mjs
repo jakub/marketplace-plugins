@@ -11,7 +11,7 @@
 // epoch is a property of shim behavior and not of the release: it moves when the resolver
 // or the exit contract changes, and stays put through ordinary version bumps.
 
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 const EPOCH_RE = /^[ \t]*\/\/[ \t]*gripe-shim-epoch:[ \t]*(\d{1,9})[ \t]*\r?$/gm
@@ -149,14 +149,18 @@ function writeRegular(shimPath, bytes) {
  * kept. But "kept" still has to leave a command PATH can run: if the entry there is a
  * symlink pinned to an external target, or a regular file at the wrong mode, `gripe` would
  * resolve to something that will not execute. So preserve those exact higher-epoch bytes and,
- * only when the entry is not already a regular 0755 file, re-materialize them as one. A
- * failed re-materialize still reports kept-newer: the higher-epoch bytes are what matters and
- * a later SessionStart tries the fix-up again.
+ * only when the entry is not already a regular 0755 file, re-materialize them as one.
+ *
+ * kept-newer is reported ONLY once the entry is verified a regular 0755 file. A
+ * re-materialize that did not land (a full disk, a permission error, a rename failure) leaves
+ * the symlink or wrong-mode entry in place, which breaks the regular-0755 postcondition, so
+ * it reports 'failed' and the caller treats it as a failed publish that a later SessionStart
+ * retries. Claiming kept-newer over an entry PATH cannot run would be a false success.
  */
 function materializeKeptNewer(shimPath, currentBytes) {
   if (publishedRegular(shimPath)) return 'kept-newer'
   writeRegular(shimPath, currentBytes)
-  return 'kept-newer'
+  return publishedRegular(shimPath) ? 'kept-newer' : 'failed'
 }
 
 /**
@@ -174,12 +178,12 @@ function materializeKeptNewer(shimPath, currentBytes) {
  * destination deterministically and prove the downgrade guard without a timing race.
  */
 export function pointShim({ sourcePath, shimPath, beforeRecheck } = {}) {
-  let source
-  try {
-    source = readFileSync(sourcePath)
-  } catch {
-    return 'failed'
-  }
+  // Read the source through the same capped, non-blocking, regular-file-only helper the
+  // destination uses. A FIFO or other special file planted at the source path (a corrupted
+  // or partial install) would hang a plain readFileSync forever and stall every SessionStart
+  // to its hook timeout; here it fails closed to 'failed', and a later SessionStart retries.
+  const source = readCapped(sourcePath, DESTINATION_CAP)
+  if (source === null) return 'failed'
   const sourceEpoch = shimEpoch(source.toString('utf8'))
   if (sourceEpoch === null) return 'refused'
 

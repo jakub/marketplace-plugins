@@ -11,8 +11,8 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import {
-  chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
-  symlinkSync, writeFileSync,
+  chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync,
+  statSync, symlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -208,6 +208,14 @@ try {
     // must never throw RangeError out of String.fromCodePoint and abort the whole resolve.
     ['G3a. a hostile out-of-range \\U escape key is absence, not a throw',
       '[plugins."gripe@jakub"]\n"\\UFFFFFFFFnabled" = false\n'],
+    // R3: a key that opens a quoted string it never closes is malformed, not a
+    // non-assignment. The old scanner returned null for it and skipped it like a blank line,
+    // so the table fell through to the bare-table enabled default - a broken disable read as
+    // enabled, the fail-open direction the design forbids. Both an unterminated quote and a
+    // dangling escape that swallows the closing quote resolve to absence now.
+    ['R3a. an unterminated basic-string key is absence', '[plugins."gripe@jakub"]\n"enabled = false\n'],
+    ['R3b. a dangling-escape key that swallows its close is absence',
+      '[plugins."gripe@jakub"]\n"enabled\\" = false\n'],
   ]
   for (const [name, contents] of absenceCases) {
     const home = makeHome()
@@ -513,6 +521,33 @@ try {
   }
 
   {
+    // R4: the confinement returns the CANONICAL bin/gripe and main spawns exactly that, not a
+    // lexical path a symlinked version dir would let node re-resolve. The 0.6.0 version dir is
+    // a symlink to 0.5.0, both inside the cache, so it stays confined; it sorts highest and
+    // wins, its root is the lexical 0.6.0 path, but its binary is the realpath under 0.5.0 -
+    // and that realpath is the argv the shim hands node.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('true'))
+    const real = codexInstall(home, '0.5.0')
+    symlinkSync(real, join(codexCacheDir(home), 'jakub', 'gripe', '0.6.0'))
+    const resolved = resolveIn(home)
+    const canonical = realpathSync(join(real, 'bin', 'gripe'))
+    let spawnedTarget = null
+    const code = main({
+      argv: ['add'],
+      env: {},
+      home,
+      spawn: (execPath, args) => { spawnedTarget = args[0]; return { status: 0 } },
+      stderr: () => {},
+    })
+    check('R4. a confined candidate spawns its canonical bin/gripe, not a lexical path',
+      code === 0 && resolved.root === normalizeRoot(join(codexCacheDir(home), 'jakub', 'gripe', '0.6.0'))
+      && resolved.bin === canonical && spawnedTarget === canonical,
+      `root ${resolved.root} bin ${resolved.bin} spawned ${spawnedTarget}`)
+  }
+
+  {
     const long = 'a'.repeat(4000)
     const line = boundedLine(`${long}\nsecond line`)
     check('bounded diagnostics: one line, one newline, at most 2048 bytes',
@@ -782,6 +817,35 @@ try {
   }
 
   {
+    // R2: materializeKeptNewer must report 'failed', not 'kept-newer', when the re-materialize
+    // does not land. The destination is a symlink to higher-epoch bytes, so classify keeps it
+    // and tries to re-materialize a runnable regular 0755 file. Its parent directory is read
+    // only, so every temp create fails and the entry stays a symlink: the regular-0755
+    // postcondition is unmet, and reporting kept-newer over a command PATH cannot run would be
+    // a false success. The caller must surface the failure so a later SessionStart retries.
+    const dir = join(TMP, `r2-readonly-${++serial}`)
+    mkdirSync(dir, { recursive: true })
+    const shimPath = join(dir, 'shim')
+    const twin = join(TMP, `r2-twin-${serial}.mjs`)
+    writeFileSync(twin, withMarker(9, 'console.log("newer")'))
+    symlinkSync(twin, shimPath)
+    chmodSync(dir, 0o555)
+    let action = null
+    let threw = null
+    try {
+      action = pointShim({ sourcePath: source, shimPath })
+    } catch (error) {
+      threw = String(error?.message ?? error)
+    } finally {
+      chmodSync(dir, 0o755)
+    }
+    const link = lstatSync(shimPath)
+    check('R2. a failed re-materialize of a higher-epoch entry reports failed, not kept-newer',
+      threw === null && action === 'failed' && link.isSymbolicLink(),
+      threw ?? `${action}, ${link.isSymbolicLink() ? 'still a symlink' : 'not a symlink'}`)
+  }
+
+  {
     const shimPath = nextTarget()
     writeFileSync(shimPath, withMarker('banana'))
     const action = pointShim({ sourcePath: source, shimPath })
@@ -965,6 +1029,35 @@ try {
     check('F3e. pointShim over a fifo shim path never hangs and replaces it',
       made && child.signal !== 'SIGTERM' && child.stdout.trim() === 'written'
       && lstatSync(shimPath).isFile() && readFileSync(shimPath, 'utf8') === withMarker(1),
+      `${child.stdout.trim()} ${child.signal ?? ''}`)
+  }
+
+  {
+    // R1: a fifo at the SOURCE path (a corrupted or partial install) must not hang pointShim.
+    // The source read now goes through the same capped non-blocking helper as the destination,
+    // so a non-regular source fails closed to 'failed' promptly instead of blocking on the
+    // open and stalling every SessionStart to its hook timeout. Run under a timeout: a hang
+    // shows as SIGTERM, the fix as a prompt 'failed' with nothing written at the target.
+    const sourceFifo = join(ratchetDir, 'fifo-source')
+    const made = mkfifo(sourceFifo)
+    const shimPath = join(ratchetDir, 'fifo-source-target')
+    const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
+      env: {
+        ...process.env,
+        GRIPE_SHIM_RATCHET_CHILD: '1',
+        GRIPE_SHIM_RATCHET_SOURCE: sourceFifo,
+        GRIPE_SHIM_RATCHET_TARGET: shimPath,
+      },
+      stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', timeout: 8000,
+    })
+    let exists = true
+    try {
+      statSync(shimPath)
+    } catch {
+      exists = false
+    }
+    check('F3f. pointShim over a fifo source path fails closed without hanging',
+      made && child.signal !== 'SIGTERM' && child.stdout.trim() === 'failed' && !exists,
       `${child.stdout.trim()} ${child.signal ?? ''}`)
   }
 

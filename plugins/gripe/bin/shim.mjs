@@ -43,6 +43,12 @@ const ENABLED_VALUE_RE = /^[ \t]*enabled[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$
 // TOML basic-string simple escapes. Only \u and \U can spell letters, but the standard set
 // is decoded so a valid key reads as its real value.
 const SIMPLE_ESCAPES = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' }
+// assignmentKey returns this for a line that opens a quoted key it never closes: an
+// unterminated basic or literal string, or a dangling escape that swallows the closing
+// quote. Distinct from null (a blank or comment, a genuine non-assignment) because a
+// malformed key could be spelling `enabled`, so it is ambiguity, not a line to skip past
+// into the bare-table enabled default.
+const MALFORMED_KEY = Symbol('malformed-key')
 
 // Written as code points rather than as literals, because a source file carrying a raw
 // NUL is a source file every tool downstream calls binary.
@@ -112,17 +118,24 @@ function realOrNull(path) {
 }
 
 /**
- * A cache candidate's real binary must stay under the cache root it was scanned from. A
- * version directory symlinked out of the cache resolves to code the cache never vouched
- * for, and spawning it would run that code, so it is rejected. This confines only the two
- * plugin caches; GRIPE_HOME and the Claude manager registry are the user's own explicit
- * declarations and may point anywhere.
+ * A cache candidate must resolve entirely inside the cache root it was scanned from. The
+ * version directory, its bin subdirectory, and bin/gripe are each realpath'd, and each must
+ * stay under the cache root: a symlink at any of those components that escapes the cache
+ * resolves to code the cache never vouched for, and spawning it would run that code, so the
+ * candidate is rejected. Returns the CANONICAL bin/gripe path (realpath'd) so the caller
+ * spawns exactly the object validated here, never a lexical path a later spawn would
+ * re-resolve through the same symlinks. Returns null when any component escapes or cannot
+ * be resolved. This confines only the two plugin caches; GRIPE_HOME and the Claude manager
+ * registry are the user's own explicit declarations and may point anywhere.
  */
 function confinedBinary(root, confineReal) {
-  const real = realOrNull(join(root, 'bin', 'gripe'))
-  if (real === null) return false
   const prefix = confineReal.endsWith(sep) ? confineReal : confineReal + sep
-  return real.startsWith(prefix)
+  const binReal = realOrNull(join(root, 'bin', 'gripe'))
+  if (binReal === null) return null
+  for (const component of [realOrNull(root), realOrNull(join(root, 'bin')), binReal]) {
+    if (component === null || !component.startsWith(prefix)) return null
+  }
+  return binReal
 }
 
 /** Lexical only. realpath would make two names for one install look like two installs. */
@@ -180,7 +193,10 @@ function scanVersionDir(dir, base, confineReal) {
     const version = parseStableVersion(name)
     if (version === null) continue
     const root = normalizeRoot(join(dir, name))
-    if (usableRoot(root) && confinedBinary(root, confineReal)) found.push({ ...base, root, version })
+    if (!usableRoot(root)) continue
+    const bin = confinedBinary(root, confineReal)
+    if (bin === null) continue
+    found.push({ ...base, root, version, bin })
   }
   return found
 }
@@ -238,7 +254,9 @@ export function readClaudeRegistry(home) {
           const root = normalizeRoot(installPath)
           if (!usableRoot(root)) continue
           const version = parseStableVersion(entry?.version) ?? parseStableVersion(basename(root))
-          candidates.push({ root, version, exact: true, harness: 'claude', tier: 0 })
+          // A manager-declared root may point anywhere, so it is not confined; its binary is
+          // the lexical bin/gripe under the declared root.
+          candidates.push({ root, version, exact: true, harness: 'claude', tier: 0, bin: join(root, 'bin', 'gripe') })
         }
       }
     }
@@ -248,8 +266,13 @@ export function readClaudeRegistry(home) {
   }
 }
 
-// The text left of the first top-level `=` (a `=` inside quotes does not count), or null
-// when the line is a comment, blank, or otherwise not an assignment.
+// The text left of the first top-level `=` (a `=` inside quotes does not count); null when
+// the line is a comment or blank (a genuine non-assignment); or MALFORMED_KEY when the line
+// opens a basic or literal string it never closes. A dangling escape at end of line, or an
+// escaped quote that swallows the closing quote, both leave a string open at end and count
+// as malformed. That distinction matters because a malformed key could be spelling
+// `enabled`: skipping it as if it were a blank line would let a broken disable fall through
+// to the bare-table enabled default, the exact fail-open direction the design forbids.
 function assignmentKey(line) {
   let basic = false
   let literal = false
@@ -269,6 +292,10 @@ function assignmentKey(line) {
     if (c === '=') return line.slice(0, i)
     if (c === '#') return null
   }
+  // Reached the end with a quoted string still open: an unterminated quote, or a dangling
+  // escape that consumed the close. Either could hide an `enabled` assignment, so it is
+  // malformed, not a clean non-assignment.
+  if (basic || literal) return MALFORMED_KEY
   return null
 }
 
@@ -383,6 +410,10 @@ export function parseCodexRegistration(text) {
     }
     if (current === null) continue
     const key = assignmentKey(line)
+    // A malformed key (an unterminated or dangling-escape quote) could be an `enabled`
+    // toggle we cannot read, so it is ambiguity: mark the table invalid and drop the whole
+    // registration to absence, never let it fall through to the bare-table enabled default.
+    if (key === MALFORMED_KEY) { current.invalid = true; continue }
     if (key === null) continue
     const kind = keyEnabledness(key)
     if (kind === 'other') continue
@@ -451,7 +482,7 @@ export function resolveGripeRoot({ env = process.env, home = homedir() } = {}) {
       checked.override, checked.claudeRegistry, checked.claudeCache,
       checked.codexConfig, checked.codexCache,
     ].filter((surface) => surface !== null)
-    return { root: null, error: null, candidates: [], surfaces: [...new Set(surfaces)], ...extra }
+    return { root: null, bin: null, error: null, candidates: [], surfaces: [...new Set(surfaces)], ...extra }
   }
 
   if (Object.hasOwn(env, 'GRIPE_HOME')) {
@@ -459,9 +490,11 @@ export function resolveGripeRoot({ env = process.env, home = homedir() } = {}) {
     checked.override = raw === '' ? 'GRIPE_HOME (empty)' : normalizeRoot(raw)
     if (raw !== '' && usableRoot(normalizeRoot(raw))) {
       const root = normalizeRoot(resolve(raw))
+      const bin = join(root, 'bin', 'gripe')
       return result({
         root,
-        candidates: [{ root, version: null, exact: true, harness: 'override', tier: 0 }],
+        bin,
+        candidates: [{ root, version: null, exact: true, harness: 'override', tier: 0, bin }],
       })
     }
     return result({ error: 'override', overridePath: raw })
@@ -488,7 +521,8 @@ export function resolveGripeRoot({ env = process.env, home = homedir() } = {}) {
   }
 
   candidates.sort(compareCandidates)
-  return result({ root: candidates[0]?.root ?? null, candidates })
+  const winner = candidates[0]
+  return result({ root: winner?.root ?? null, bin: winner?.bin ?? null, candidates })
 }
 
 function capBytes(text, limit) {
@@ -545,7 +579,10 @@ export function main({
     if (resolved.root === null) {
       return fail(`no installation found (set GRIPE_HOME or install gripe@jakub); checked: ${resolved.surfaces.join(', ')}`)
     }
-    const target = join(resolved.root, 'bin', 'gripe')
+    // Spawn the canonical binary the resolver validated, not a path rebuilt here: a cache
+    // candidate's bin is the realpath'd bin/gripe proven under its cache root, so the object
+    // executed is exactly the object confined.
+    const target = resolved.bin
     const child = spawn(process.execPath, [target, ...argv], { stdio: 'inherit' })
     // An exec failure beats a status: spawnSync reports both, and only the error is real.
     if (child?.error) return fail(`cannot run ${target}: ${child.error.code ?? child.error.message}`)
