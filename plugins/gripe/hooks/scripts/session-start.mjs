@@ -5,11 +5,12 @@
 //
 // Contract: read hook JSON on stdin, print the advertisement to stdout, always exit 0.
 
-import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { readdirSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { heredocDelim, stateDir } from '../../lib/gate.mjs'
+import { pointShim } from '../../lib/shim.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SWEEP_AGE_MS = 3 * 24 * 60 * 60 * 1000
@@ -28,22 +29,17 @@ async function markSession(sessionId) {
   }
 }
 
-function pointShim() {
-  // A set GRIPE_HOME means a working tree is under test; re-pointing would clobber the
-  // developer's shim and silently send traffic back to the stale installed copy.
-  if (process.env.GRIPE_HOME) return
-  try {
-    const desired = readFileSync(join(HERE, '..', '..', 'bin', 'shim.mjs'), 'utf8')
-    const shimPath = join(homedir(), '.local', 'bin', 'gripe')
-    let current = null
-    try { current = readFileSync(shimPath, 'utf8') } catch {}
-    if (current === desired) return
-    mkdirSync(dirname(shimPath), { recursive: true })
-    writeFileSync(shimPath, desired)
-    chmodSync(shimPath, 0o755)
-  } catch {
-    // No shim just means `gripe` is not on PATH yet; the next session retries.
-  }
+function publishShim() {
+  // Presence, not truthiness, and the same rule the shim's own resolver uses: any
+  // GRIPE_HOME in the environment means a working tree is under test, and re-pointing
+  // would clobber the developer's shim and send traffic back to the installed copy.
+  if (Object.hasOwn(process.env, 'GRIPE_HOME')) return
+  // The verdict is deliberately ignored. Every outcome, including losing a race with the
+  // other harness's session, is fixed by the next SessionStart trying again.
+  pointShim({
+    sourcePath: join(HERE, '..', '..', 'bin', 'shim.mjs'),
+    shimPath: join(homedir(), '.local', 'bin', 'gripe'),
+  })
 }
 
 function sweep() {
@@ -68,7 +64,7 @@ async function main() {
   try { input = JSON.parse(raw) } catch {}
 
   await markSession(input.session_id)
-  pointShim()
+  publishShim()
   sweep()
 
   // The delimiter is random per advertisement; see heredocDelim for why a fixed one is

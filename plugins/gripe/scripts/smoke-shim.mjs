@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // gripe shim smoke. Each thing under test here has a way of failing that a green
 // `gripe add` would hide: which install the resolver picks, what the process exits with
-// when it cannot pick one, and whether the running install can say what it is.
+// when it cannot pick one, whether publishing a shim can ever downgrade it, and whether
+// the running install can say what it is.
 //
 // Every synthetic home lives under one throwaway directory. Nothing here reads the real
 // ~/.claude or ~/.codex, and nothing writes outside the temp tree.
@@ -20,11 +21,21 @@ import {
   boundedLine, compareVersions, main, normalizeRoot, parseCodexRegistration, parseStableVersion,
   resolveGripeRoot,
 } from '../bin/shim.mjs'
+import { pointShim, shimEpoch } from '../lib/shim.mjs'
 import { installFacts } from '../lib/install.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN = normalizeRoot(join(HERE, '..'))
 const SHIM = join(PLUGIN, 'bin', 'shim.mjs')
+
+// Forked back into by the ratchet's concurrency case; see the eight-writer check below.
+if (process.env.GRIPE_SHIM_RATCHET_CHILD) {
+  process.stdout.write(pointShim({
+    sourcePath: process.env.GRIPE_SHIM_RATCHET_SOURCE,
+    shimPath: process.env.GRIPE_SHIM_RATCHET_TARGET,
+  }))
+  process.exit(0)
+}
 
 let checks = 0
 let failures = 0
@@ -581,10 +592,143 @@ try {
     check('filing swallows the same status', result.status === 0, `exit ${result.status}`)
   }
 
+  console.log('the epoch ratchet')
+
+  const withMarker = (epoch, tail = 'console.log(1)') =>
+    `#!/usr/bin/env node\n// gripe-shim-epoch: ${epoch}\n${tail}\n`
+  const source = join(TMP, 'ratchet-source.mjs')
+  writeFileSync(source, withMarker(1))
+  const ratchetDir = join(TMP, 'ratchet')
+  mkdirSync(ratchetDir, { recursive: true })
+  let target = 0
+  const nextTarget = () => join(ratchetDir, `shim-${++target}`)
+
+  {
+    const shimPath = nextTarget()
+    const action = pointShim({ sourcePath: source, shimPath })
+    check('a missing shim is written, executable',
+      action === 'written' && readFileSync(shimPath, 'utf8') === withMarker(1)
+      && (statSync(shimPath).mode & 0o777) === 0o755,
+      `${action}, mode ${(statSync(shimPath).mode & 0o777).toString(8)}`)
+  }
+
+  {
+    const shimPath = nextTarget()
+    writeFileSync(shimPath, withMarker(1))
+    check('a byte-identical shim is left alone', pointShim({ sourcePath: source, shimPath }) === 'unchanged')
+  }
+
+  {
+    const shimPath = nextTarget()
+    writeFileSync(shimPath, withMarker(0))
+    const action = pointShim({ sourcePath: source, shimPath })
+    check('a lower epoch is upgraded',
+      action === 'written' && readFileSync(shimPath, 'utf8') === withMarker(1), action)
+  }
+
+  {
+    const shimPath = nextTarget()
+    writeFileSync(shimPath, withMarker(1, 'console.log("drifted")'))
+    const action = pointShim({ sourcePath: source, shimPath })
+    check('equal-epoch byte drift is repaired',
+      action === 'written' && readFileSync(shimPath, 'utf8') === withMarker(1), action)
+  }
+
+  {
+    const shimPath = nextTarget()
+    const newer = withMarker(2, 'console.log("from the future")')
+    writeFileSync(shimPath, newer)
+    const action = pointShim({ sourcePath: source, shimPath })
+    check('a strictly higher epoch is kept, byte for byte',
+      action === 'kept-newer' && readFileSync(shimPath, 'utf8') === newer, action)
+  }
+
+  {
+    const shimPath = nextTarget()
+    writeFileSync(shimPath, withMarker('banana'))
+    const action = pointShim({ sourcePath: source, shimPath })
+    check('an unparseable marker is overwritten, so corruption repairs itself',
+      action === 'written' && readFileSync(shimPath, 'utf8') === withMarker(1), action)
+  }
+
+  {
+    const shimPath = nextTarget()
+    mkdirSync(shimPath, { recursive: true })
+    let threw = null
+    let action = null
+    try {
+      action = pointShim({ sourcePath: source, shimPath })
+    } catch (error) {
+      threw = String(error?.message ?? error)
+    }
+    check('a directory at the shim path fails without throwing',
+      threw === null && action === 'failed', threw ?? action)
+  }
+
+  {
+    const shimPath = nextTarget()
+    const unversioned = join(TMP, 'ratchet-unversioned.mjs')
+    writeFileSync(unversioned, '#!/usr/bin/env node\nconsole.log(1)\n')
+    const action = pointShim({ sourcePath: unversioned, shimPath })
+    let exists = true
+    try {
+      statSync(shimPath)
+    } catch {
+      exists = false
+    }
+    check('a source with no marker is refused and nothing is written',
+      action === 'refused' && !exists, action)
+  }
+
+  {
+    const shimPath = nextTarget()
+    const contenders = await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve) => {
+      const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
+        env: {
+          ...process.env,
+          GRIPE_SHIM_RATCHET_CHILD: '1',
+          GRIPE_SHIM_RATCHET_SOURCE: source,
+          GRIPE_SHIM_RATCHET_TARGET: shimPath,
+        },
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      let out = ''
+      child.stdout.setEncoding('utf8').on('data', (chunk) => { out += chunk })
+      child.on('close', () => resolve(out))
+    })))
+    const leftovers = readdirSync(ratchetDir).filter((name) => name.endsWith('.tmp'))
+    check('eight concurrent writers leave the source bytes and no temp files',
+      readFileSync(shimPath, 'utf8') === withMarker(1) && leftovers.length === 0
+      && contenders.every((action) => action === 'written' || action === 'unchanged'),
+      contenders.join(','))
+  }
+
+  {
+    const shimPath = nextTarget()
+    // A symlink at the shim path is replaced as a directory entry, never written through.
+    const decoy = join(TMP, 'ratchet-decoy')
+    writeFileSync(decoy, 'decoy\n')
+    symlinkSync(decoy, shimPath)
+    const action = pointShim({ sourcePath: source, shimPath })
+    check('a symlink at the shim path is replaced, not followed',
+      action === 'written' && readFileSync(shimPath, 'utf8') === withMarker(1)
+      && readFileSync(decoy, 'utf8') === 'decoy\n', action)
+  }
+
+  check('shimEpoch: absent, doubled, and out-of-range markers all read null',
+    shimEpoch('console.log(1)') === null
+    && shimEpoch(`${withMarker(1)}// gripe-shim-epoch: 2\n`) === null
+    && shimEpoch('// gripe-shim-epoch: 1234567890123\n') === null
+    && shimEpoch('  //  gripe-shim-epoch:  0  \n') === 0
+    && shimEpoch(withMarker(1).replace(/\n/g, '\r\n')) === 1)
+
   console.log('structure and install identity')
 
   {
     const text = readFileSync(SHIM, 'utf8')
+    const markers = text.split('\n').filter((line) => /^[ \t]*\/\/[ \t]*gripe-shim-epoch:/.test(line))
+    check('bin/shim.mjs carries exactly one parseable epoch marker',
+      markers.length === 1 && shimEpoch(text) === 1, markers.join(' | '))
     const specifiers = [
       ...text.matchAll(/(?:^|\s)import\s[^'"\n]*from\s*['"]([^'"]+)['"]/g),
       ...text.matchAll(/\bimport\(\s*['"]([^'"]+)['"]/g),
