@@ -58047,6 +58047,7 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
   let refusal = null;
   let servedBy = null;
   let expectedModel = null;
+  let mismatch = null;
   let terminalResult = null;
   let latestPreview = "";
   let previewChars = 0;
@@ -58129,6 +58130,12 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
       stalled = true;
       try {
         store.appendEvent(jobId2, "turn.stalled", { seconds: STALL_SECONDS });
+      } catch (error2) {
+        recordBackgroundFailure(error2);
+      }
+    } else if (reason === "model_mismatch") {
+      try {
+        store.appendEvent(jobId2, "turn.interrupted", { reason });
       } catch (error2) {
         recordBackgroundFailure(error2);
       }
@@ -58218,7 +58225,7 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
               originalModel: message.original_model ?? known?.originalModel ?? null,
               fallbackModel: message.fallback_model ?? known?.fallbackModel ?? null
             };
-            if (!known || known.fallbackModel !== refusal.fallbackModel) store.appendEvent(jobId2, "turn.refused", refusal);
+            if (!known) store.appendEvent(jobId2, "turn.refused", refusal);
           } else if (message.type === "system" && message.subtype === "init") {
             if (message.session_id !== sessionId) {
               throw new DelegationError("CLAUDE_PROTOCOL", "Claude returned a different session ID than Flow requested.");
@@ -58251,7 +58258,13 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
             }
             if (message.message?.model && message.message.model !== servedBy) {
               servedBy = message.message.model;
-              store.appendEvent(jobId2, "model.served", { model: servedBy, expected: expectedModel, matches: modelKey(servedBy) === expectedModel });
+              const matches = modelKey(servedBy) === expectedModel;
+              store.appendEvent(jobId2, "model.served", { model: servedBy, expected: expectedModel, matches });
+              if (!matches && !mismatch) {
+                mismatch = { expected: expectedModel, served: servedBy };
+                store.appendEvent(jobId2, "model.mismatch", mismatch);
+                void interruptAndForce("model_mismatch").catch(recordBackgroundFailure);
+              }
             }
             for (const block of message.message?.content || []) {
               if (block.type === "tool_use") {
@@ -58294,23 +58307,23 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
         const status = cancelled && !acceptedWrite ? "cancelled" : acceptedWrite ? "unknown" : "failed";
         await settle(status, {
           error: status === "cancelled" ? null : {
-            kind: stalled ? "STALL" : timedOut ? "TIMEOUT" : "CLAUDE_SDK",
-            message: acceptedWrite ? "Claude did not prove the accepted write turn reached a terminal state." : "Claude ended before the delegated turn reached a terminal state.",
-            details: null
+            kind: mismatch ? "MODEL_MISMATCH" : stalled ? "STALL" : timedOut ? "TIMEOUT" : "CLAUDE_SDK",
+            message: mismatch ? "Claude answered on a model other than the one requested, and the turn was interrupted." : acceptedWrite ? "Claude did not prove the accepted write turn reached a terminal state." : "Claude ended before the delegated turn reached a terminal state.",
+            details: mismatch
           },
           usage
         });
       } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== "success")) {
         await settle("cancelled", { usage });
       } else if (refusal) {
-        if (servedBy && modelKey(servedBy) !== expectedModel) refusal.fallbackModel ||= servedBy;
+        if (mismatch) refusal.fallbackModel ||= mismatch.served;
         await settle("failed", {
           error: { kind: "REFUSAL", message: "Claude declined the delegated turn.", details: refusal },
           usage
         });
-      } else if (servedBy && modelKey(servedBy) !== expectedModel) {
+      } else if (mismatch) {
         await settle("failed", {
-          error: { kind: "MODEL_MISMATCH", message: "Claude answered on a model other than the one requested.", details: { expected: expectedModel, served: servedBy } },
+          error: { kind: "MODEL_MISMATCH", message: "Claude answered on a model other than the one requested.", details: mismatch },
           usage
         });
       } else if (timedOut || stalled) {

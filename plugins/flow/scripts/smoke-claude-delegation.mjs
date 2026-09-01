@@ -154,6 +154,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from a model nobody asked for' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'answer from a model nobody asked for' })
     }
+    if (mode === 'swap-then-return') {
+      // The wrong model answers first, the right one later. The first frame has to decide.
+      say({ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'from the wrong model' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return setTimeout(() => {
+        say({ type: 'assistant', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'from the right model' }], model: 'claude-sonnet-5', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+        result({ text: 'from the right model' })
+      }, 400)
+    }
     if (mode === 'tagged-model') {
       say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'same model, tagged' }], model: 'claude-sonnet-5[1m]', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'same model, tagged' })
@@ -314,6 +322,18 @@ try {
   assert.equal(swapped.error.kind, 'MODEL_MISMATCH')
   assert.equal(swapped.error.details.served, 'claude-opus-4-8')
   assert.equal(swapped.error.details.expected, 'claude-sonnet-5')
+  const returned = await startJob({ prompt: 'Swapped, then back' }, { mode: 'swap-then-return', stateDir: state('swap-then-return') })
+  assert.equal(returned.status, 'failed', 'a later frame from the requested model does not undo the swap')
+  assert.equal(returned.error.kind, 'MODEL_MISMATCH')
+  assert.equal(returned.error.details.served, 'claude-opus-4-8')
+  const returnedEvents = (await call('delegation_events', { jobId: returned.jobId }, { stateDir: state('swap-then-return') })).structuredContent.events.map((event) => event.type)
+  assert.ok(returnedEvents.includes('model.mismatch'), 'the mismatch is journaled')
+  assert.ok(returnedEvents.includes('turn.interrupted'), 'the provider was interrupted on the first mismatched frame')
+  assert.equal(returnedEvents.filter((type) => type === 'model.mismatch').length, 1, 'one mismatch is latched once')
+  const refusedEvents = (await call('delegation_events', { jobId: fellBack.jobId }, { stateDir: state('refusal-fallback') })).structuredContent.events.map((event) => event.type)
+  assert.equal(refusedEvents.filter((type) => type === 'turn.refused').length, 1, 'one refusal journals one event')
+  const declinedEvents = (await call('delegation_events', { jobId: refused.jobId }, { stateDir: state('refusal') })).structuredContent.events.map((event) => event.type)
+  assert.equal(declinedEvents.filter((type) => type === 'turn.refused').length, 1, 'an assistant refusal followed by its banner journals one event')
   const tagged = await startJob({ prompt: 'Same model, context tag' }, { mode: 'tagged-model', stateDir: state('tagged-model') })
   assert.equal(tagged.status, 'succeeded', 'a context-window tag on the served model id is not a swap')
   const schemaOutputLimit = await startJob({ prompt: 'Schema retry failure' }, { mode: 'schema-output-limit', stateDir: state('schema-output-limit') })
