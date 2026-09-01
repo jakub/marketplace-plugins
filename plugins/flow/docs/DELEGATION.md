@@ -220,7 +220,9 @@ Source lives under `src/delegation`. `deps/package.json` pins the MCP SDK, Ajv, 
 
 The Claude manifest contains the direct `flow_delegate` server definition. It sets a 7,500,000 millisecond MCP call timeout. The Codex manifest points to plugin-root `.mcp.json`, which starts the same bundle with `--host codex` and a 7,500 second tool timeout. Both values exceed the maximum 7,200 second job budget so the MCP client does not cut off a valid attached call first. The build injects the Flow plugin version, the current charter, both host binding profiles, and the seat contract into the bundle, the last through the `__FLOW_SEAT_CONTRACT__` define. Both plugin manifests and Flow's marketplace entry carry that plugin version. The marketplace catalog's top-level metadata version moves independently.
 
-`scripts/smoke-bundle-drift.mjs` rebuilds from source and requires a byte-identical committed bundle. It needs a development checkout with `npm ci` already run in `plugins/flow/deps`.
+`scripts/smoke-bundle-drift.mjs` rebuilds from source and requires a byte-identical committed bundle. It needs a development checkout with `npm ci` already run in `plugins/flow/deps`. `.gitattributes` exempts the bundle from the blank-at-end-of-line diff check, because bundled dependency string literals contain whitespace-only lines.
+
+A merged bundle is not a live bundle. Both host copies of the plugin have to be reinstalled and both clients restarted before a running session calls the new one.
 
 ## Acceptance checks
 
@@ -246,5 +248,7 @@ An operator should also run one authenticated task through each route when both 
 Flow does not pretend the providers have identical controls. Claude live steering and post-crash result recovery remain unsupported until the Agent SDK has native operations that can prove those outcomes. Flow will not infer them from transcript files.
 
 The service does not grant model-requested approvals, expose raw chain-of-thought, share jobs across machines, bundle provider executables, or act as a general remote execution service. Those additions would increase authority or operational scope without making the current local cross-family calls more reliable.
+
+Several App Server features are deliberately unused, because each needs a product decision before it needs code: caller-facing interaction (`item/tool/requestUserInput`, `mcpServer/elicitation/request`), experimental dynamic tool calls, request attestation, provider quota and rate-limit reporting, context attachments and file checkpoints, App Server tasks, server instructions and native thread forks, and any reconciliation between Flow's 14-day retention and the longer life of a native provider session. A delegated job continues by resuming the same provider session under a new Flow job, and that is the whole of it.
 
 The rejected alternative was a thin `claude -p` text wrapper. It could produce an answer, but it would lose native session continuation, structured control messages, cooperative cancellation, live model discovery, and an honest acceptance boundary. The Agent SDK route is the closest practical match to the Codex App Server route without inventing provider features.
