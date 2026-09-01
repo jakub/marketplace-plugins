@@ -2,10 +2,11 @@
 // Codex publish guard. Two jobs, and they are not the same job.
 //
 // 1. Registry publication. crates.io, npm, PyPI and RubyGems have no real undo, and Codex
-//    cannot turn a PreToolUse hook result into an approval prompt: as of Codex CLI 0.151.0 an
-//    unsupported `ask` reads as a hook failure and the command runs anyway. So publication
-//    fails closed here instead of asking, everywhere, with no way through from inside a
-//    session. The human types it in their own terminal.
+//    cannot turn a PreToolUse hook result into an approval prompt. An unsupported `ask` reads
+//    as a hook failure and the command runs anyway, first captured on Codex CLI 0.149.1
+//    (2026-08-26) and still the behaviour on 0.152.0 (2026-09-01). So publication fails closed
+//    here instead of asking, everywhere, with no way through from inside a session. The human
+//    types it in their own terminal.
 //
 // 2. Pull request merges, in a repository that opts in. A repository opts in by committing
 //    a `.flow/managed` file, which is how flow tells "a repo whose merges I am responsible

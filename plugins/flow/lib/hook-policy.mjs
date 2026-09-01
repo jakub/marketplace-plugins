@@ -147,7 +147,7 @@ const quotedPayloads = (text) =>
  * @param {(text: string) => string[]} classify
  * @returns {string[]}
  */
-export function scanThroughShell(command, classify) {
+function scanThroughShell(command, classify) {
   const found = []
   const add = (items) => {
     for (const item of items) if (!found.includes(item)) found.push(item)

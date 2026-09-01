@@ -8,11 +8,8 @@
 // which branch, which head, whether the pull request is open, whether it is a draft, what it
 // targets - it reads for itself from the origin remote and from GitHub.
 //
-// The authorization is the same one the Claude host has always used: the human explicitly
-// asked to land this pull request, and the stage's own gates decided the merge is warranted.
-// There is no approval file and no ceremony (an earlier design had a human-written release
-// sanction here; jakub retired it 2026-08-29 - the cost per land outweighed what it bought at
-// this trust level, and the Claude path never had it). What this program adds over a raw
+// The authorization is the human's explicit request to land this pull request plus the stage's
+// own gates, and there is nothing else: no approval file, no ceremony. What this adds over a raw
 // `gh pr merge` is that nothing about the merge is taken from the conversation: the facts are
 // re-derived, the merge is pinned to the head that was just verified, and the outcome is
 // proven by re-reading rather than inferred from an exit code.
