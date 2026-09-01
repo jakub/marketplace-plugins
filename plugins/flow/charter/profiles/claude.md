@@ -60,8 +60,8 @@ the Codex family.
 
 ### role: bulk-seat
 
-`gpt-5.6-luna` at max effort through `delegate_to_codex`. The cheap-depth seat, never the
-decorrelation seat.
+`gpt-5.6-luna` at max effort through `delegate_to_codex`, the repository root as `cwd`.
+The cheap-depth seat, never the decorrelation seat.
 
 ### role: review-seat-native
 
@@ -77,7 +77,8 @@ hunch.
 
 ### role: security-seat
 
-`gpt-daybreak-blue-latest` at high effort through `delegate_to_codex`.
+`gpt-daybreak-blue-latest` at high effort through `delegate_to_codex`, `access: read-only`,
+the repository root as `cwd`.
 
 ### role: adjudicator
 

@@ -90,7 +90,7 @@ Every seat the pipeline spawns is one of the roles below. This table gives each 
 
 Model notes. Luna at max competes with Opus and Sol at medium to high. Sonnet drives tools at low effort and returns verdicts at medium and up. Opus at xhigh writes code about as well as Fable, and is never the taste call. Sol writes slightly uglier code and is the decorrelated opinion by default. Daybreak Blue is Sol without cyber classifiers. Fable is depth and taste, and the most expensive seat.
 
-A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry on the security seat first, then the rest of the other family, then Fable last. A double refusal is reported to the user, never swallowed.
+A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry on the security seat first; a refusal from the security seat itself goes to the rest of the other family, then Fable last. A double refusal is reported to the user, never swallowed.
 
 ## Rules of Engagement - Model Contracts
 Worker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.

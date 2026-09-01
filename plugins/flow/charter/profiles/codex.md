@@ -49,7 +49,8 @@ written from a Claude host.
 
 ### role: taste-leg
 
-`fable-5-1` at high effort through `delegate_to_claude` as `claude-fable-5-1`.
+`fable-5-1` at high effort through `delegate_to_claude` as `claude-fable-5-1`,
+`access: read-only`, the repository root as `cwd`.
 
 ### role: write-seat-mechanical
 

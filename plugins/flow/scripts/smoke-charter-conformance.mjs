@@ -117,22 +117,40 @@ const familyOf = (model) => (model.startsWith('gpt-') ? 'openai' : 'anthropic')
 const cells = (line) => line.split('|').slice(1, -1).map((cell) => cell.trim())
 const isRow = (line) => /^\|/.test(line) && !/^\|\s*-/.test(line)
 
-// One row per model. A score written a/b is the score at default effort and at max effort.
+// One row per model, columns read by the header's names so a reordered table still scores
+// the right cell. A score written a/b is the score at default effort and at max effort. A
+// model that appears twice is a defect, not a later row winning.
 const rankings = (charterText) => {
   const rows = new Map()
+  const problems = []
   const at = charterText.search(/^## Model Rankings/m)
-  if (at === -1) return rows
-  const body = charterText.slice(at).split('\n## ')[0]
+  if (at === -1) return { rows, problems: ['the charter has no Model Rankings table'] }
+  const lines = charterText.slice(at).split('\n## ')[0].split('\n').filter(isRow)
+  const header = cells(lines[0] || '')
+  const column = (name) => header.indexOf(name)
+  for (const name of ['model', 'cheapness', 'intelligence', 'taste', 'classifiers']) {
+    if (column(name) === -1) problems.push(`the Model Rankings table has no "${name}" column`)
+  }
+  if (problems.length > 0) return { rows, problems }
   const score = (text) => {
     const m = /^(\d+)(?:\/(\d+))?$/.exec(text || '')
     return m ? { base: Number(m[1]), max: Number(m[2] ?? m[1]) } : null
   }
-  for (const line of body.split('\n').filter(isRow)) {
-    const [model, cheapness, intelligence, taste, classifiers] = cells(line)
-    if (model === 'model') continue
-    rows.set(model, { cheapness: score(cheapness), intelligence: score(intelligence), taste: score(taste), classifiers: classifiers || null })
+  for (const line of lines.slice(1)) {
+    const values = cells(line)
+    const model = values[column('model')]
+    if (rows.has(model)) {
+      problems.push(`the Model Rankings table lists ${model} twice`)
+      continue
+    }
+    rows.set(model, {
+      cheapness: score(values[column('cheapness')]),
+      intelligence: score(values[column('intelligence')]),
+      taste: score(values[column('taste')]),
+      classifiers: values[column('classifiers')] || null,
+    })
   }
-  return rows
+  return { rows, problems }
 }
 
 // One row per marked role, floors written "criterion >= n" or "criterion: value". A floor
@@ -170,6 +188,7 @@ const floorsOf = (charterText) => {
       }
       parsed.push({ criterion: m[1], value: m[3] })
     }
+    if (parsed.length === 0) problems.push(`role ${id[1]} sits in the seat table and declares no floors`)
     roles.set(id[1], parsed)
   }
   return { roles, problems }
@@ -197,9 +216,10 @@ const bindingOf = (section, models) => {
 }
 
 const floorProblems = (charterText, profiles) => {
-  const table = rankings(charterText)
-  const { roles, problems } = floorsOf(charterText)
-  if (table.size === 0) problems.push('the charter has no Model Rankings table')
+  const { rows: table, problems: tableProblems } = rankings(charterText)
+  const { roles, problems: floorProblemsFound } = floorsOf(charterText)
+  const problems = [...tableProblems, ...floorProblemsFound]
+  if (tableProblems.length > 0) return { roles, problems }
   for (const [name, raw] of Object.entries(profiles)) {
     const host = name.replace(/\.md$/, '')
     for (const [id, floors] of roles) {
@@ -239,7 +259,7 @@ const floorProblems = (charterText, profiles) => {
 // model on its own and the profile's decision is decoration. Takes the stage files as pairs.
 const unusedRoles = (roles, stages) => [...roles]
   .filter(([, floors]) => floors.length > 0)
-  .filter(([id]) => !stages.some(([, text]) => text.includes('`' + id + '`')))
+  .filter(([id]) => !stages.some(([, text]) => uncommented(text).includes('`' + id + '`')))
   .map(([id]) => `no stage names the seat role ${id}, so its binding spawns nothing`)
 
 const markdownUnder = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -390,6 +410,27 @@ const CASES = [
     label: 'a floor with the wrong operator',
     problems: () => floorProblems(...MINI('family >= other', '`gpt-mini` at high effort.')).problems,
     name: 'family takes ":"',
+  },
+  {
+    label: 'a rankings row listed twice',
+    problems: () => floorProblems('## Model Rankings (as of 2026-08)\n\n| model | cheapness | intelligence | taste | classifiers |\n|---|---|---|---|---|\n| gpt-mini | 7 | 8 | 5 | none |\n| gpt-mini | 7 | 4 | 5 | none |\n', {}).problems,
+    name: 'lists gpt-mini twice',
+  },
+  {
+    label: 'a rankings table with a column reordered',
+    // Same scores, columns swapped: the lint reads the header, so the floor still binds to intelligence.
+    problems: () => floorProblems('## Model Rankings (as of 2026-08)\n\n| model | taste | intelligence | cheapness | classifiers |\n|---|---|---|---|---|\n| gpt-mini | 5 | 4 | 7 | none |\n\n## Rules of Engagement - Model Selection\n\n| role | floors | what it is for |\n|---|---|---|\n| [[role:mini-seat]] | intelligence >= 6 | a seat |\n', { 'claude.md': '### role: mini-seat\n\n`gpt-mini` at high effort.\n' }).problems,
+    name: "scoring 4 on intelligence under the role's floor of 6",
+  },
+  {
+    label: 'a seat-table role with no floors',
+    problems: () => floorProblems(...MINI('', '`gpt-mini` at high effort.')).problems,
+    name: 'declares no floors',
+  },
+  {
+    label: 'a floored role named only inside a stage comment',
+    problems: () => unusedRoles(new Map([['mini-seat', [{ criterion: 'taste', value: '5' }]]]), [['skills/mini-stage/SKILL.md', '<!-- spawn `mini-seat` -->\nSpawn the usual seat.\n']]),
+    name: 'no stage names the seat role mini-seat',
   },
   {
     label: 'a floored role no stage names',
