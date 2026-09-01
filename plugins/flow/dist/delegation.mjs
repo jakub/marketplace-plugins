@@ -23249,24 +23249,6 @@ function protectedShellReason(job, command) {
   }
   return null;
 }
-function nestedProviderReason(command) {
-  const text = String(command || "");
-  const dequoted = text.replace(/'([^']*)'|"((?:\\.|[^"])*)"/g, (_match, single, double) => single ?? double.replace(/\\(["\\$`])/g, "$1"));
-  for (const candidate of /* @__PURE__ */ new Set([text, dequoted])) {
-    const provider = /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+|-(?:exec|execdir)\s+)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:[^\s;&|()/]+\/)*(claude|codex)(?=[\s;&|)`]|$)/m.exec(candidate) || /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:command|exec|env|nohup|sudo|xargs)\b[^;&|\n`$()]*?\b(claude|codex)(?=[\s;&|)`]|$)/m.exec(candidate);
-    if (provider) return `Flow delegated workers cannot invoke ${provider[1]} directly or start nested delegation.`;
-  }
-  if (/(?:^|[\n;&|`(]\s*|\$\(\s*)(?:(?:command|exec|env|nohup|sudo)\b[^;&|\n`$()]*?\s+)?(?:(?:[^\s;&|()/]+\/)*busybox\s+)?(?:[^\s;&|()/]+\/)*(?:bash|dash|sh|ash|ksh|zsh|fish|csh|tcsh|pwsh|powershell)\s+(?:-[^\s]*c\b|-{1,2}command\b)/im.test(text)) {
-    return "Flow delegated workers cannot hide a second shell command behind a shell interpreter.";
-  }
-  const inlineRunner = /(?:^|[\n;&|`(]\s*|\$\(\s*)(?:[^\s;&|()/]+\/)*(?:python(?:\d+(?:\.\d+)*)?|node|ruby|perl|php|lua)\b[^;&|\n]*?(?:-c|-e|--eval)\s+(?:'([^']*)'|"((?:\\.|[^"])*)"|([^\s;&|]+))/gmi;
-  for (const match of text.matchAll(inlineRunner)) {
-    const payload = match[1] ?? match[2] ?? match[3] ?? "";
-    const nested = /\b(claude|codex)\b/i.exec(payload);
-    if (nested) return `Flow delegated workers cannot invoke ${nested[1].toLowerCase()} directly or start nested delegation.`;
-  }
-  return null;
-}
 function claudePolicyHook(job, { onDenied = () => {
 } } = {}) {
   const allowed = new Set(claudeTools(job.access, { structured: job.outputSchema != null }));
@@ -23285,7 +23267,7 @@ function claudePolicyHook(job, { onDenied = () => {
     } else if (toolName === "Bash") {
       const command = input.tool_input?.command;
       if (typeof command !== "string") reason = "Claude sent a Bash call without an inspectable command.";
-      else reason = nestedProviderReason(command) || protectedShellReason(job, command) || publishReason(command);
+      else reason = protectedShellReason(job, command) || publishReason(command);
     }
     if (!reason) return { continue: true };
     onDenied({ toolName, reason });

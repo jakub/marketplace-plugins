@@ -481,24 +481,21 @@ try {
   else process.env.GOOGLE_APPLICATION_CREDENTIALS = previousCredentials
   const escapedEdit = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(temp, 'outside.txt') } })
   assert.equal(escapedEdit.hookSpecificOutput.permissionDecision, 'deny')
-  const nestedCli = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'claude -p hello' } })
-  assert.equal(nestedCli.hookSpecificOutput.permissionDecision, 'deny')
-  const nestedSubstitution = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'value=$(claude -p hello)' } })
-  assert.equal(nestedSubstitution.hookSpecificOutput.permissionDecision, 'deny')
-  const nestedWrapper = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'env -i /usr/bin/codex exec hello' } })
-  assert.equal(nestedWrapper.hookSpecificOutput.permissionDecision, 'deny')
-  const nestedShell = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'env -i bash -lc "claude -p hello"' } })
-  assert.equal(nestedShell.hookSpecificOutput.permissionDecision, 'deny')
-  const nestedDash = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'dash -c "claude -p hello"' } })
-  assert.equal(nestedDash.hookSpecificOutput.permissionDecision, 'deny')
-  const nestedNode = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'node -e "require(\\\'node:child_process\\\').spawnSync(\\\'codex\\\')"' } })
-  assert.equal(nestedNode.hookSpecificOutput.permissionDecision, 'deny')
-  const quotedNestedCli = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: "'claude' -p hello" } })
-  assert.equal(quotedNestedCli.hookSpecificOutput.permissionDecision, 'deny')
-  const concatenatedNestedCli = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: "cl''aude -p hello" } })
-  assert.equal(concatenatedNestedCli.hookSpecificOutput.permissionDecision, 'deny')
-  const harmlessNode = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'node -e "console.log(1)"' } })
-  assert.equal(harmlessNode.continue, true)
+  // A nested provider launch is not a command-text rule any more. Matching the text lost to
+  // `npx claude`, to `$X -p`, and to base64, and a check three obvious tricks walk around reads
+  // as protection while providing none. The sandbox below is the real control: both provider
+  // executables and every credential path are unreadable, and the network allowlist is empty,
+  // so a launch that gets past the text has no auth and nowhere to send anything.
+  for (const command of [
+    'claude -p hello',
+    'value=$(claude -p hello)',
+    'env -i /usr/bin/codex exec hello',
+    'dash -c "claude -p hello"',
+    'node -e "console.log(1)"',
+  ]) {
+    const allowed = await writeHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } })
+    assert.equal(allowed.continue, true, command)
+  }
   const environmentRead = await readHook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/proc/self/environ' } })
   assert.equal(environmentRead.hookSpecificOutput.permissionDecision, 'deny')
   const threadEnvironmentRead = await readHook({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/proc/thread-self/environ' } })
@@ -542,6 +539,14 @@ try {
     assert.ok(sandbox.filesystem.denyRead.includes(realpathSync(fake)))
     assert.ok(sandbox.filesystem.denyRead.includes(realpathSync(fakeCodex)))
     assert.ok(sandbox.filesystem.denyRead.includes('/proc'))
+    // The half of the nested-launch answer that command text never had: no reachable provider
+    // binary, no credential store, no network, and a sandbox that fails closed.
+    assert.ok(sandbox.filesystem.denyRead.includes(join(homedir(), '.claude')))
+    assert.deepEqual(sandbox.network.allowedDomains, [])
+    assert.equal(sandbox.network.strictAllowlist, true)
+    assert.equal(sandbox.enabled, true)
+    assert.equal(sandbox.failIfUnavailable, true)
+    assert.equal(sandbox.allowUnsandboxedCommands, false)
   } finally {
     delete process.env[secretName]
     if (previousClaudeBin === undefined) delete process.env.FLOW_DELEGATION_CLAUDE_BIN
@@ -549,7 +554,7 @@ try {
     if (previousCodexBin === undefined) delete process.env.FLOW_DELEGATION_CODEX_BIN
     else process.env.FLOW_DELEGATION_CODEX_BIN = previousCodexBin
   }
-  assert.ok(denied.length >= 22, `expected at least 22 policy-denial callbacks, received ${denied.length}`)
+  assert.ok(denied.length >= 15, `expected at least 15 policy-denial callbacks, received ${denied.length}`)
   for (const toolName of ['Bash', 'Edit', 'Grep', 'Read', 'Write']) {
     assert.ok(denied.some((entry) => entry.toolName === toolName), `missing policy-denial callback for ${toolName}`)
   }
