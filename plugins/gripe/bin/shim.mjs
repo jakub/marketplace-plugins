@@ -43,11 +43,13 @@ const ENABLED_VALUE_RE = /^[ \t]*enabled[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$
 // TOML basic-string simple escapes. Only \u and \U can spell letters, but the standard set
 // is decoded so a valid key reads as its real value.
 const SIMPLE_ESCAPES = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' }
-// assignmentKey returns this for a line that opens a quoted key it never closes: an
-// unterminated basic or literal string, or a dangling escape that swallows the closing
-// quote. Distinct from null (a blank or comment, a genuine non-assignment) because a
-// malformed key could be spelling `enabled`, so it is ambiguity, not a line to skip past
-// into the bare-table enabled default.
+// assignmentKey returns this for any line inside a gripe table that is neither a blank/full-
+// line comment nor a well-formed `key = value` assignment: a bare word with no `=`, a key
+// with a stray character (`enabled!`, `enabled other`, `"enabled"x`), an unterminated or
+// dangling-escape quote, or an empty key. Distinct from null (a blank or comment, a genuine
+// non-assignment) because a malformed line could be a half-written `enabled` toggle, so it is
+// ambiguity that drops the whole registration to absence, never a line to skip past into the
+// bare-table enabled default - the fail-open direction the design forbids.
 const MALFORMED_KEY = Symbol('malformed-key')
 
 // Written as code points rather than as literals, because a source file carrying a raw
@@ -118,23 +120,28 @@ function realOrNull(path) {
 }
 
 /**
- * A cache candidate must resolve entirely inside the cache root it was scanned from. The
- * version directory, its bin subdirectory, and bin/gripe are each realpath'd, and each must
- * stay under the cache root: a symlink at any of those components that escapes the cache
- * resolves to code the cache never vouched for, and spawning it would run that code, so the
- * candidate is rejected. Returns the CANONICAL bin/gripe path (realpath'd) so the caller
- * spawns exactly the object validated here, never a lexical path a later spawn would
- * re-resolve through the same symlinks. Returns null when any component escapes or cannot
- * be resolved. This confines only the two plugin caches; GRIPE_HOME and the Claude manager
- * registry are the user's own explicit declarations and may point anywhere.
+ * A cache candidate must resolve to exactly the lexical location it was scanned from, with
+ * every traversed component - the marketplace directory, the literal `gripe`, and the version
+ * directory - confined under the real cache root. The scanned version directory is realpath'd
+ * and required to equal `<realCache>/<marketplace>/gripe/<version>`, where `<version>` is the
+ * directory name read from the cache. That one comparison confines all three components at
+ * once: a symlink at the marketplace or at the version name that resolves anywhere else - even
+ * elsewhere inside the same cache, so a lexical `9.9.9` pointing at a real `0.1.0` - fails it
+ * and the candidate is rejected. Without this, the candidate ranks by its lexical name while
+ * its binary is a different version, a version spoof or forced rollback. bin/gripe is then
+ * realpath'd too and must itself stay under the cache root. Returns the CANONICAL bin/gripe
+ * path so the caller spawns exactly the object validated here, never a lexical path a later
+ * spawn would re-resolve through the same symlinks. Returns null when the version directory
+ * escapes that exact shape, bin/gripe escapes the cache, or either cannot be resolved. This
+ * confines only the two plugin caches; GRIPE_HOME and the Claude manager registry are the
+ * user's own explicit declarations and may point anywhere.
  */
-function confinedBinary(root, confineReal) {
+function confinedBinary(root, confineReal, expectedVersionDir) {
   const prefix = confineReal.endsWith(sep) ? confineReal : confineReal + sep
+  const versionReal = realOrNull(root)
+  if (versionReal === null || versionReal !== expectedVersionDir) return null
   const binReal = realOrNull(join(root, 'bin', 'gripe'))
-  if (binReal === null) return null
-  for (const component of [realOrNull(root), realOrNull(join(root, 'bin')), binReal]) {
-    if (component === null || !component.startsWith(prefix)) return null
-  }
+  if (binReal === null || !binReal.startsWith(prefix)) return null
   return binReal
 }
 
@@ -181,8 +188,13 @@ export function compareCandidates(a, b) {
   return a.root < b.root ? -1 : 1
 }
 
-function scanVersionDir(dir, base, confineReal) {
+// Scan `<cacheRoot>/<marketplace>/gripe/*` for version directories. The lexical read follows
+// whatever symlinks the cache holds, but confinedBinary then requires each candidate's
+// canonical path to be exactly `<realCache>/<marketplace>/gripe/<name>`, so the ranked
+// version is the real final component of a confined location, never a symlink's lexical name.
+function scanVersionDir(cacheRoot, marketplace, base, confineReal) {
   const found = []
+  const dir = join(cacheRoot, marketplace, 'gripe')
   let names
   try {
     names = readdirSync(dir)
@@ -194,7 +206,7 @@ function scanVersionDir(dir, base, confineReal) {
     if (version === null) continue
     const root = normalizeRoot(join(dir, name))
     if (!usableRoot(root)) continue
-    const bin = confinedBinary(root, confineReal)
+    const bin = confinedBinary(root, confineReal, join(confineReal, marketplace, 'gripe', name))
     if (bin === null) continue
     found.push({ ...base, root, version, bin })
   }
@@ -213,7 +225,7 @@ function scanCacheRoot(cacheRoot, base) {
   }
   for (const marketplace of marketplaces) {
     if (!safeComponent(marketplace)) continue
-    found.push(...scanVersionDir(join(cacheRoot, marketplace, 'gripe'), base, confineReal))
+    found.push(...scanVersionDir(cacheRoot, marketplace, base, confineReal))
   }
   return found
 }
@@ -266,16 +278,79 @@ export function readClaudeRegistry(home) {
   }
 }
 
-// The text left of the first top-level `=` (a `=` inside quotes does not count); null when
-// the line is a comment or blank (a genuine non-assignment); or MALFORMED_KEY when the line
-// opens a basic or literal string it never closes. A dangling escape at end of line, or an
-// escaped quote that swallows the closing quote, both leave a string open at end and count
-// as malformed. That distinction matters because a malformed key could be spelling
-// `enabled`: skipping it as if it were a blank line would let a broken disable fall through
-// to the bare-table enabled default, the exact fail-open direction the design forbids.
-function assignmentKey(line) {
+// A single, properly terminated TOML basic string: opens with `"` and the matching close is
+// the final character, backslash escapes consuming the next character. Rejects `"a"b"` (an
+// early close leaves trailing junk) and `"a` (never closed). Escape VALIDITY is not judged
+// here, only the string's shape; keyEnabledness decodes an accepted key and catches a bad \u.
+function singleBasicString(t) {
+  if (t.length < 2 || t[0] !== '"') return false
+  for (let i = 1; i < t.length; i++) {
+    if (t[i] === '\\') { i++; continue }
+    if (t[i] === '"') return i === t.length - 1
+  }
+  return false
+}
+
+// A single, properly terminated TOML literal string: opens with `'` and the next `'` is the
+// final character. Literal strings have no escapes, so the first inner quote must close it.
+function singleLiteralString(t) {
+  return t.length >= 2 && t[0] === "'" && t.indexOf("'", 1) === t.length - 1
+}
+
+const BARE_KEY_RE = /^[A-Za-z0-9_-]+$/
+
+// Whether the text left of the `=` is a well-formed TOML key: a dot-separated run of
+// segments, each (trimmed of surrounding whitespace) a bare key `[A-Za-z0-9_-]+`, a single
+// basic string, or a single literal string. This is the whitelist that replaces enumerating
+// bad shapes: `enabled!`, `enabled other`, `"enabled"x`, `'enabled'x`, or an empty segment
+// all fail it, so the caller treats the line as malformed and the table resolves to absence.
+// A clean `enabled`, `"enabled"`, `enabled.value`, or `priority` passes, and keyEnabledness
+// then decides whether it is the toggle.
+function wellFormedKey(keyText) {
+  const segments = []
   let basic = false
   let literal = false
+  let start = 0
+  for (let i = 0; i < keyText.length; i++) {
+    const c = keyText[i]
+    if (basic) {
+      if (c === '\\') { i++; continue }
+      if (c === '"') basic = false
+      continue
+    }
+    if (literal) {
+      if (c === "'") literal = false
+      continue
+    }
+    if (c === '"') { basic = true; continue }
+    if (c === "'") { literal = true; continue }
+    if (c === '.') { segments.push(keyText.slice(start, i)); start = i + 1 }
+  }
+  if (basic || literal) return false
+  segments.push(keyText.slice(start))
+  for (const segment of segments) {
+    const t = segment.trim()
+    if (BARE_KEY_RE.test(t) || singleBasicString(t) || singleLiteralString(t)) continue
+    return false
+  }
+  return true
+}
+
+// Classify one line inside a recognized gripe table. Returns null for a blank line or a
+// full-line comment (a genuine non-assignment to skip past), the KEY TEXT for a well-formed
+// `key = value` line, or MALFORMED_KEY for every other shape. The classification is a
+// whitelist, not a blacklist: a line reaches keyEnabledness only when it is a clean
+// assignment with a well-formed key and a real top-level `=` (a `=` inside quotes does not
+// count). A bare word with no `=`, a stray character after the key, an unterminated or
+// dangling-escape quote, an empty key, or a top-level `#` before any `=` are all malformed,
+// which marks the table ambiguous and drops the registration to absence - never a line
+// skipped past into the bare-table enabled default.
+function assignmentKey(line) {
+  if (/^[ \t]*$/.test(line)) return null
+  if (/^[ \t]*#/.test(line)) return null
+  let basic = false
+  let literal = false
+  let eq = -1
   for (let i = 0; i < line.length; i++) {
     const c = line[i]
     if (basic) {
@@ -289,14 +364,14 @@ function assignmentKey(line) {
     }
     if (c === '"') { basic = true; continue }
     if (c === "'") { literal = true; continue }
-    if (c === '=') return line.slice(0, i)
-    if (c === '#') return null
+    if (c === '=') { eq = i; break }
+    // A top-level `#` before any `=` on a non-comment line is a bare word, not an assignment.
+    if (c === '#') return MALFORMED_KEY
   }
-  // Reached the end with a quoted string still open: an unterminated quote, or a dangling
-  // escape that consumed the close. Either could hide an `enabled` assignment, so it is
-  // malformed, not a clean non-assignment.
-  if (basic || literal) return MALFORMED_KEY
-  return null
+  // An unterminated quote, or a line with no top-level `=` at all, is not an assignment.
+  if (basic || literal || eq === -1) return MALFORMED_KEY
+  const keyText = line.slice(0, eq)
+  return wellFormedKey(keyText) ? keyText : MALFORMED_KEY
 }
 
 // The first dotted segment of a key, a `.` inside quotes ignored.
@@ -453,7 +528,6 @@ export function readCodexRegistry({ env, home }) {
     // The confirmed scan consulted the cache root, so it is a resolution surface even when it
     // turns up empty; scannedCache tells the caller to record it in the miss diagnostic.
     const confineReal = realOrNull(cacheRoot)
-    const dir = join(cacheRoot, registration.marketplace, 'gripe')
     return {
       codexHome,
       path,
@@ -462,7 +536,7 @@ export function readCodexRegistry({ env, home }) {
       scannedCache: true,
       candidates: confineReal === null
         ? []
-        : scanVersionDir(dir, { exact: false, harness: 'codex', tier: 0 }, confineReal),
+        : scanVersionDir(cacheRoot, registration.marketplace, { exact: false, harness: 'codex', tier: 0 }, confineReal),
     }
   } catch {
     return unreadable

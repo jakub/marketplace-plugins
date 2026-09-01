@@ -189,6 +189,30 @@ try {
     check('7. a bare table is a registration and resolves', resolveIn(home).root === codex)
   }
 
+  {
+    // R5: the flip side of the malformed-line class. A genuinely well-formed OTHER key
+    // (`priority = 2`) is ignored exactly as before, so the bare table with no `enabled` key
+    // still counts as the registration and resolves enabled. Closing the malformed class must
+    // not sweep a clean non-enabled key into absence.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, '[plugins."gripe@jakub"]\npriority = 2\n')
+    const codex = codexInstall(home, '0.2.1')
+    check('7b. a well-formed non-enabled key leaves the bare table enabled',
+      resolveIn(home).root === codex, resolveIn(home).root)
+  }
+
+  {
+    // And a well-formed other key alongside an explicit `enabled = true` still resolves: the
+    // other key is ignored and the exact bare toggle sets enabledness.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, '[plugins."gripe@jakub"]\npriority = 2\nenabled = true\n')
+    const codex = codexInstall(home, '0.2.1')
+    check('7c. a well-formed other key next to `enabled = true` resolves',
+      resolveIn(home).root === codex, resolveIn(home).root)
+  }
+
   const absenceCases = [
     ['8. the same table twice is absence', `${table('true')}\n${table('true')}`],
     ['9. two marketplaces are absence', `${table('true')}\n${table('true', 'other')}`],
@@ -216,6 +240,20 @@ try {
     ['R3a. an unterminated basic-string key is absence', '[plugins."gripe@jakub"]\n"enabled = false\n'],
     ['R3b. a dangling-escape key that swallows its close is absence',
       '[plugins."gripe@jakub"]\n"enabled\\" = false\n'],
+    // R5: the malformed-line class, closed structurally. The scanner now whitelists a
+    // well-formed `key = value` (a clean bare, basic, or literal key with a real top-level
+    // `=`) and treats every other non-blank, non-comment line as malformed -> ambiguity ->
+    // absence. These are the shapes reviewers kept finding one at a time; the fix is the
+    // whitelist, not this list. A half-finished `enabled` line must read as absence, never
+    // fall through to the bare-table enabled default.
+    ['R5a. a bare `enabled` with no `=` is absence', '[plugins."gripe@jakub"]\nenabled\n'],
+    ['R5b. `"enabled"x = false` is absence', '[plugins."gripe@jakub"]\n"enabled"x = false\n'],
+    ['R5c. `enabled! = false` is absence', '[plugins."gripe@jakub"]\nenabled! = false\n'],
+    ['R5d. `enabled other = false` is absence', '[plugins."gripe@jakub"]\nenabled other = false\n'],
+    ["R5e. `'enabled'x = false` is absence", '[plugins."gripe@jakub"]\n\'enabled\'x = false\n'],
+    ['R5f. a trailing-backslash quoted key is absence', '[plugins."gripe@jakub"]\n"enabled\\\n'],
+    ['R5g. a bare word then a comment, no `=`, is absence', '[plugins."gripe@jakub"]\nenabled # yes\n'],
+    ['R5h. an `=` with an empty key is absence', '[plugins."gripe@jakub"]\n = false\n'],
   ]
   for (const [name, contents] of absenceCases) {
     const home = makeHome()
@@ -522,15 +560,19 @@ try {
 
   {
     // R4: the confinement returns the CANONICAL bin/gripe and main spawns exactly that, not a
-    // lexical path a symlinked version dir would let node re-resolve. The 0.6.0 version dir is
-    // a symlink to 0.5.0, both inside the cache, so it stays confined; it sorts highest and
-    // wins, its root is the lexical 0.6.0 path, but its binary is the realpath under 0.5.0 -
-    // and that realpath is the argv the shim hands node.
+    // lexical path a symlink would let node re-resolve. The 0.6.0 version dir is a real
+    // directory - so it passes the round-4 exact-location check - whose bin/gripe is a symlink
+    // to 0.5.0's real binary, both inside the cache. It sorts highest and wins; its root is the
+    // lexical 0.6.0 path, but its binary is the realpath under 0.5.0, and that realpath is the
+    // argv the shim hands node. (A symlinked version DIR, which round 3 admitted here, is now
+    // rejected by round 4's version-name confinement and is covered by F2a below.)
     const home = makeHome()
     claudeRegistry(home, { plugins: {} })
     codexConfig(home, table('true'))
     const real = codexInstall(home, '0.5.0')
-    symlinkSync(real, join(codexCacheDir(home), 'jakub', 'gripe', '0.6.0'))
+    const sixBin = join(codexCacheDir(home), 'jakub', 'gripe', '0.6.0', 'bin')
+    mkdirSync(sixBin, { recursive: true })
+    symlinkSync(join(real, 'bin', 'gripe'), join(sixBin, 'gripe'))
     const resolved = resolveIn(home)
     const canonical = realpathSync(join(real, 'bin', 'gripe'))
     let spawnedTarget = null
@@ -545,6 +587,42 @@ try {
       code === 0 && resolved.root === normalizeRoot(join(codexCacheDir(home), 'jakub', 'gripe', '0.6.0'))
       && resolved.bin === canonical && spawnedTarget === canonical,
       `root ${resolved.root} bin ${resolved.bin} spawned ${spawnedTarget}`)
+  }
+
+  {
+    // F2: confinement must cover every traversed component, not just the version root and its
+    // bin. The marketplace `spoof` is a symlink out of the cache; outside/gripe/9.9.9 is a
+    // symlink back to a real 0.1.0 inside the cache. Round 3 realpath'd the version root, its
+    // bin, and bin/gripe, all of which resolve inside the cache, so 9.9.9 was admitted and
+    // ranked as 9.9.9 while its canonical binary was 0.1.0 - a version spoof / forced rollback.
+    // The version dir's canonical path must now equal `<realCache>/<marketplace>/gripe/<name>`,
+    // so the spoof's realpath (`.../inside/gripe/0.1.0`, name and marketplace both wrong) is
+    // rejected and the real 0.1.0 wins, ranked by its true version. Both manifests are absent,
+    // so the fallback tier walks the codex cache across all marketplaces.
+    const home = makeHome()
+    const real010 = codexInstall(home, '0.1.0', 'inside')
+    const outside = join(TMP, `f2-outside-${++serial}`)
+    mkdirSync(join(outside, 'gripe'), { recursive: true })
+    symlinkSync(real010, join(outside, 'gripe', '9.9.9'))
+    mkdirSync(codexCacheDir(home), { recursive: true })
+    symlinkSync(outside, join(codexCacheDir(home), 'spoof'))
+    const resolved = resolveIn(home)
+    const spoofed = resolved.candidates.some((candidate) => candidate.root.endsWith('9.9.9'))
+    check('F2a. a symlinked-out marketplace escape is rejected, the real 0.1.0 wins by true version',
+      resolved.root === real010 && !spoofed, `${resolved.root} spoofed=${spoofed}`)
+  }
+
+  {
+    // F2: a normal cache candidate at its true canonical location still resolves and ranks by
+    // its real version. The exact-location check must not reject a legitimate real install.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('true'))
+    const codex = codexInstall(home, '0.7.0')
+    const resolved = resolveIn(home)
+    check('F2b. a real cache candidate resolves and ranks by its true version',
+      resolved.root === codex && resolved.candidates[0]?.version?.join('.') === '0.7.0',
+      `${resolved.root} ${resolved.candidates[0]?.version?.join('.')}`)
   }
 
   {
