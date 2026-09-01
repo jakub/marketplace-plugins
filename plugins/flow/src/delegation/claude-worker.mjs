@@ -91,6 +91,8 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
   let approvalRequired = null
   let assistantError = null
   let rateLimitStatus = null
+  let refusal = null
+  let servedBy = null
   let terminalResult = null
   let latestPreview = ''
   let previewChars = 0
@@ -247,7 +249,18 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       try {
         for await (const message of active) {
           resetStall()
-          if (message.type === 'system' && message.subtype === 'init') {
+          if (message.type === 'system' && (message.subtype === 'model_refusal_no_fallback' || message.subtype === 'model_refusal_fallback')) {
+            // The CLI's structured counterpart to stop_reason 'refusal'. The fallback variant
+            // means the harness answered on another model anyway; the job still fails, because
+            // a downgraded answer under the requested model's name is the one outcome the
+            // charter forbids.
+            refusal = {
+              category: message.api_refusal_category ?? null,
+              originalModel: message.original_model ?? null,
+              fallbackModel: message.fallback_model ?? null,
+            }
+            store.appendEvent(jobId, 'turn.refused', refusal)
+          } else if (message.type === 'system' && message.subtype === 'init') {
             if (message.session_id !== sessionId) {
               throw new DelegationError('CLAUDE_PROTOCOL', 'Claude returned a different session ID than Flow requested.')
             }
@@ -273,6 +286,14 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
             }
           } else if (message.type === 'assistant') {
             assistantError ||= message.error || null
+            if (message.message?.stop_reason === 'refusal' && !refusal) {
+              refusal = { category: message.message.stop_details?.category ?? null, originalModel: message.message.model ?? null, fallbackModel: null }
+              store.appendEvent(jobId, 'turn.refused', refusal)
+            }
+            if (message.message?.model && message.message.model !== servedBy) {
+              servedBy = message.message.model
+              store.appendEvent(jobId, 'model.served', { model: servedBy })
+            }
             for (const block of message.message?.content || []) {
               if (block.type === 'tool_use') {
                 store.appendEvent(jobId, 'tool.started', { toolName: block.name || 'unknown' })
@@ -327,6 +348,11 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
         })
       } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== 'success')) {
         await settle('cancelled', { usage })
+      } else if (refusal) {
+        await settle('failed', {
+          error: { kind: 'REFUSAL', message: 'Claude declined the delegated turn.', details: refusal },
+          usage,
+        })
       } else if (timedOut || stalled) {
         await settle('failed', {
           error: {

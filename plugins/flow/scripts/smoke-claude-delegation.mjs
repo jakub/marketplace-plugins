@@ -32,7 +32,7 @@ if (args[0] === 'auth' && args[1] === 'status') {
 }
 const mode = process.env.FLOW_FAKE_CLAUDE_MODE || 'happy'
 if (mode === 'assert-env') {
-  if (process.env.FLOW_SMOKE_API_KEY || process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1' || !process.env.FLOW_DELEGATION_DEPTH) process.exit(19)
+  if (process.env.FLOW_SMOKE_API_KEY || process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1' || process.env.CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK !== '1' || !process.env.FLOW_DELEGATION_DEPTH) process.exit(19)
 }
 if (mode === 'schema-false') {
   const schemaIndex = args.indexOf('--json-schema')
@@ -139,6 +139,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       const error = mode === 'billing' ? 'billing_error' : 'overloaded'
       say({ type: 'assistant', error, message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: error, error: true })
+    }
+    if (mode === 'refusal') {
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber' }, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
+      return result({ text: '' })
+    }
+    if (mode === 'refusal-fallback') {
+      say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from the fallback' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return result({ text: 'answer from the fallback' })
     }
     if (mode === 'max-turns') return result({ text: 'turn limit', error: true, subtype: 'error_max_turns' })
     if (mode === 'max-budget') return result({ text: 'budget limit', error: true, subtype: 'error_max_budget_usd' })
@@ -282,6 +292,15 @@ try {
   const overloaded = await startJob({ prompt: 'Overload failure' }, { mode: 'overloaded', stateDir: state('overloaded') })
   assert.equal(overloaded.error.kind, 'OVERLOADED')
   assert.match(overloaded.error.message, /overloaded/)
+  const refused = await startJob({ prompt: 'Refused turn' }, { mode: 'refusal', stateDir: state('refusal') })
+  assert.equal(refused.status, 'failed')
+  assert.equal(refused.error.kind, 'REFUSAL')
+  assert.equal(refused.error.details.category, 'cyber')
+  assert.equal(refused.error.details.fallbackModel, null)
+  const fellBack = await startJob({ prompt: 'Refused then answered elsewhere' }, { mode: 'refusal-fallback', stateDir: state('refusal-fallback') })
+  assert.equal(fellBack.status, 'failed', 'an answer from a fallback model is a refusal, not a success')
+  assert.equal(fellBack.error.kind, 'REFUSAL')
+  assert.equal(fellBack.error.details.fallbackModel, 'claude-opus-4-8')
   const schemaOutputLimit = await startJob({ prompt: 'Schema retry failure' }, { mode: 'schema-output-limit', stateDir: state('schema-output-limit') })
   assert.equal(schemaOutputLimit.error.kind, 'SCHEMA_OUTPUT')
   assert.match(schemaOutputLimit.error.message, /requested schema/)
