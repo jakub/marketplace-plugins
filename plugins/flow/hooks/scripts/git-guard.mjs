@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 // git guard: enforces the charter's two git non-negotiables at the hook layer -
 //   1. NEVER `--no-verify` (it exists to skip the checks that catch bad commits)
 //   2. no commit trailers of any kind - not attribution (Co-Authored-By, Generated-with),
@@ -120,107 +122,170 @@ const BRANCH_LIST_OPTS = new Set([
 // permits no bare assignment prefix, carries the rest.
 const isGitToken = (t) => /(^|[/=])git$/.test(t)
 
-// What cron mode classifies. Text about a git write is not a git write: an issue body
-// quoted into `gh issue comment --body "... run git worktree remove /tmp/wt"` used to deny
-// the whole call, and a lint that cannot report what it found is worse than no lint. So
-// quoted text in ARGUMENT position is blanked before classification.
+// What cron mode classifies. The scheduled jobs read untrusted text, so this is a grammar
+// that fails closed, not a scanner that blanks what it recognizes: two rounds of review found
+// eleven ways past a blanking scanner (quoted executable words, bash -lc, a shell fed a heredoc,
+// g'it', g\it, if/then, trap, find -exec, the rest of a heredoc opener line, ...), and every one
+// of them is a shape the grammar below never accepts.
 //
-// Argument position is the whole rule, and a small scanner tracks it rather than a regex,
-// because the shell decides what runs by position and not by quoting. A quoted word at
-// command position (`'git' push`) is an executable word and stays visible to the tokenizer
-// below. A shell, interpreter or exec-wrapper at command position hands its arguments, its
-// stdin or a file to something that runs them: as the first command the allowlist already
-// judged it and the whole string is classified raw; behind a separator it is denied, since
-// a cron job never needs `git log | bash` or `; nohup 'git' push` and no scan can see
-// through either. A variable at command position (`$X push`) cannot be classified and is
-// denied. A quoted argument or heredoc body holding `$(` or a backtick keeps its content,
-// because the substitution really runs. Everything else quoted is prose.
-const SHELL_WORDS = new Set([
-  'sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'eval', 'exec', 'source', '.',
-  'xargs', 'env', 'nohup', 'time', 'command', 'timeout', 'nice', 'ionice', 'setsid',
-  'sudo', 'doas', 'script', 'node', 'python', 'python3', 'perl', 'ruby',
+// A cron command is one or more simple commands joined by ';', '&&', '||', a newline, or '|'.
+// A simple command is a plain unquoted command word followed by argument words. Denied outright:
+// a backslash outside quotes; a backtick, $(, <(, >(, parentheses or braces anywhere outside
+// single quotes; a lone '&'; a quote glued to a word except after --opt=; a redirection that is
+// not to /dev/null or a descriptor; a command word that is quoted, holds '$', is an assignment,
+// or is a shell, interpreter, exec-wrapper or shell keyword; a pipe into anything but a fixed set
+// of read-only filters; a heredoc whose unquoted body interpolates. Two exceptions carry the
+// jobs' real commands: bash or sh may run a script under the plugin root, and node may run a
+// script (never -e, -p, --eval, --print, --input-type, --require, --import). Quoted argument
+// words then drop out before the git classifier below reads the command words, so an issue
+// body that mentions a git write is prose again.
+const CRON_COMMAND_DENY = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'eval', 'exec', 'source', '.', 'command',
+  'builtin', 'xargs', 'env', 'nohup', 'time', 'timeout', 'nice', 'ionice', 'setsid', 'sudo',
+  'doas', 'script', 'find', 'awk', 'gawk', 'mawk', 'sed', 'perl', 'python', 'python3', 'ruby',
+  'php', 'lua', 'make', 'watch', 'expect', 'screen', 'tmux', 'trap', 'if', 'then', 'else',
+  'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'in', 'function',
+  'select', 'coproc', 'export', 'declare', 'typeset', 'local', 'readonly', 'let', 'set',
+  'unset', 'shopt', 'alias', 'unalias', 'read', 'mapfile', 'readarray',
 ])
-const isShellWord = (w) => SHELL_WORDS.has(w.replace(/^.*\//, ''))
+const CRON_FILTERS = new Set([
+  'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'wc', 'cut', 'tr', 'jq', 'cat',
+  'column', 'paste', 'rev', 'nl', 'fold', 'fmt', 'tac',
+])
+const NODE_EVAL = /^(-e|-p|-r|-i|--eval|--print|--require|--import|--input-type|--loader|--experimental-loader)(=|$)/
+const PLAIN_COMMAND_WORD = /^[A-Za-z0-9_./+-]+$/
 const INTERPOLATES = /\$\(|`/
+const pluginRoot = () =>
+  process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
 const cronScanTarget = (cmd) => {
-  let out = ''
-  let word = '' // the current word with quotes removed, for deciding what kind of word it is
-  let wordOut = '' // the current word as it goes to the classifier
-  let commandPos = true
-  let firstCommand = true
-  let verdict = null
-  const endWord = () => {
-    if (word === '' && wordOut === '') return
-    if (commandPos && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
-      // an assignment prefix leaves the command position open
-    } else if (commandPos && word.startsWith('$')) {
-      verdict ??= { deny: 'an indirect command (a variable or substitution in command position) cannot be classified' }
-    } else if (commandPos && isShellWord(word)) {
-      verdict ??= firstCommand ? { raw: true } : { deny: `a shell or wrapper (${word}) behind another command cannot be classified` }
-    } else if (commandPos) {
-      commandPos = false
+  const stop = (why) => ({ deny: why })
+  const segments = [] // [{ words: [{ text, quoted }], piped }]
+  let words = []
+  let piped = false
+  let word = null // { text, quoted } while a word is open
+  let pendingHeredocs = [] // delimiters whose bodies start at the next newline
+  const openWord = () => { if (!word) word = { text: '', quoted: false } }
+  const closeWord = () => { if (word) { words.push(word); word = null } }
+  const closeSegment = (nextPiped) => {
+    closeWord()
+    if (words.length) segments.push({ words, piped })
+    else if (piped) return stop('a pipe with nothing after it')
+    words = []
+    piped = nextPiped
+    return null
+  }
+  // Returns [content, indexAfterClosingQuote], or null when unterminated. Double quotes honor
+  // backslash escapes; single quotes never do.
+  const readQuoted = (i, q) => {
+    let j = i + 1
+    let content = ''
+    while (j < cmd.length) {
+      const c = cmd[j]
+      if (q === '"' && c === '\\' && j + 1 < cmd.length) { content += cmd[j + 1]; j += 2; continue }
+      if (c === q) return [content, j + 1]
+      content += c
+      j += 1
     }
-    out += wordOut
-    word = ''
-    wordOut = ''
+    return null
   }
-  const quoted = (content, asWritten) => {
-    word += content
-    // At command position the quotes are part of an executable word; the tokenizer splits on
-    // them and sees the word. In argument position the content is prose unless it interpolates.
-    wordOut += commandPos || INTERPOLATES.test(content) ? asWritten : ' '
-  }
-  for (let i = 0; i < cmd.length; ) {
+  let i = 0
+  while (i < cmd.length) {
     const ch = cmd[i]
-    if (ch === '\\' && i + 1 < cmd.length) {
-      word += cmd[i + 1]
-      wordOut += ch + cmd[i + 1]
-      i += 2
-      continue
-    }
+    const next = cmd[i + 1]
+    if (ch === '\\') return stop('a backslash escape outside quotes')
+    if (ch === '`') return stop('a backtick substitution')
+    if (ch === '$' && next === '(') return stop('a $( ) substitution')
+    if ((ch === '<' || ch === '>') && next === '(') return stop('a process substitution')
+    if (ch === '(' || ch === ')' || ch === '{' || ch === '}') return stop(`a shell grouping character (${ch})`)
     if (ch === "'" || ch === '"') {
-      const close = cmd.indexOf(ch, i + 1)
-      const stop = close < 0 ? cmd.length : close
-      quoted(cmd.slice(i + 1, stop), cmd.slice(i, stop + 1))
-      i = stop + 1
+      const glued = word !== null && word.text !== ''
+      if (glued && !/^-[A-Za-z0-9-]+=$/.test(word.text)) return stop('a quote glued to a word')
+      const read = readQuoted(i, ch)
+      if (!read) return stop('an unterminated quote')
+      const [content, after] = read
+      if (ch === '"' && INTERPOLATES.test(content)) return stop('a substitution inside double quotes')
+      const tail = cmd[after]
+      if (tail !== undefined && !/[\s;|&]/.test(tail)) return stop('a quote glued to a word')
+      openWord()
+      // A quote glued after --opt= keeps the option and drops the value: the classifier
+      // needs to see the option, and the value is data. A whole quoted word is data too.
+      if (glued) word.valueDropped = true
+      else word.quoted = true
+      word.text += content
+      i = after
       continue
     }
-    if (cmd.startsWith('<<', i)) {
-      // A heredoc: the body is prose to the classifier unless it interpolates. Delimiters may
-      // carry a dash (END-MARK), which \w alone misses and then reads the whole body as live. The command
-      // consuming it was judged as a word already, so a shell reading its script from a
-      // heredoc has been caught above.
-      const m = /^<<-?\s*(['"]?)([\w-]+)\1[^\n]*\n([\s\S]*?)(^\s*\2\s*$|$(?![\s\S]))/m.exec(cmd.slice(i))
-      if (m) {
-        endWord()
-        // A quoted delimiter (<<'X') turns interpolation off, so that body is prose whatever it holds.
-        out += !m[1] && INTERPOLATES.test(m[3]) ? m[0] : `<<${m[2]}\n\n${m[2]}`
-        i += m[0].length
-        continue
+    if (ch === '<' && next === '<') {
+      const m = /^<<-?\s*(['"]?)([\w-]+)\1/.exec(cmd.slice(i))
+      if (!m) return stop('a heredoc without a plain delimiter')
+      pendingHeredocs.push({ delimiter: m[2], quoted: m[1] !== '' })
+      closeWord()
+      i += m[0].length
+      continue
+    }
+    if (ch === '<') return stop('a redirection from a file')
+    if (ch === '>' || (ch === '&' && next === '>')) {
+      // Only /dev/null and descriptor duplication are targets a cron job may name; anything
+      // else is a file write the job has no authority for (and a way to stage a script).
+      if (word && !/^\d+$/.test(word.text)) return stop('a redirection glued to a word')
+      const m = /^(?:&>|>>?)(?:&\d|\s*\/dev\/null)/.exec(cmd.slice(i))
+      if (!m) return stop('a redirection to a file')
+      word = null
+      i += m[0].length
+      continue
+    }
+    if (ch === '&' && next === '&') { const e = closeSegment(false); if (e) return e; i += 2; continue }
+    if (ch === '&') return stop('a background operator')
+    if (ch === '|' && next === '|') { const e = closeSegment(false); if (e) return e; i += 2; continue }
+    if (ch === '|') { const e = closeSegment(true); if (e) return e; i += 1; continue }
+    if (ch === ';') { const e = closeSegment(false); if (e) return e; i += 1; continue }
+    if (ch === '\n') {
+      const e = closeSegment(false)
+      if (e) return e
+      i += 1
+      for (const h of pendingHeredocs) {
+        const rest = cmd.slice(i)
+        const endRe = new RegExp('^\\s*' + h.delimiter.replace(/-/g, '\\-') + '\\s*$', 'm')
+        const em = endRe.exec(rest)
+        const body = em ? rest.slice(0, em.index) : rest
+        if (!h.quoted && (INTERPOLATES.test(body) || /\$\{/.test(body))) return stop('an interpolating heredoc body')
+        i += em ? em.index + em[0].length : rest.length
       }
-    }
-    if (/[;|&()\n]/.test(ch)) {
-      endWord()
-      commandPos = true
-      firstCommand = false
-      out += ch
-      i += 1
+      pendingHeredocs = []
       continue
     }
-    if (/\s/.test(ch)) {
-      endWord()
-      out += ch
-      i += 1
-      continue
-    }
-    word += ch
-    wordOut += ch
+    if (/\s/.test(ch)) { closeWord(); i += 1; continue }
+    if (ch === '#' && !word) return stop('a comment')
+    openWord()
+    word.text += ch
     i += 1
   }
-  endWord()
-  if (verdict?.deny) return verdict
-  if (verdict?.raw) return { text: cmd }
-  return { text: out }
+  const e = closeSegment(false)
+  if (e) return e
+
+  const root = pluginRoot()
+  const out = []
+  for (const seg of segments) {
+    const [head, ...args] = seg.words
+    if (head.quoted) return stop('a quoted command word')
+    if (!PLAIN_COMMAND_WORD.test(head.text)) return stop(`a command word the grammar cannot vouch for (${head.text.slice(0, 30)})`)
+    const base = head.text.replace(/^.*\//, '')
+    if (seg.piped && !CRON_FILTERS.has(base)) return stop(`a pipe into ${base}, which is not a read-only filter`)
+    if (CRON_COMMAND_DENY.has(base)) {
+      const script = args[0]
+      const runsPluginScript = (base === 'bash' || base === 'sh') && script && !script.quoted
+        && /\.sh$/.test(script.text) && resolve(script.text).startsWith(root + '/')
+        && !args.slice(1).some((a) => !a.quoted && a.text.startsWith('-'))
+      if (!runsPluginScript) return stop(`${base} in command position`)
+    }
+    if (base === 'node' && args.some((a) => !a.quoted && NODE_EVAL.test(a.text))) return stop('node evaluating inline code')
+    if (isGitToken(head.text) && seg.words.some((w) => /::|:\/\//.test(w.text))) return stop('a git command naming a URL or transport')
+    // A refspec hidden in quotes would pass the classifier below as an opaque word.
+    if (isGitToken(head.text) && seg.words.some((w) => w.quoted && /^\+|refs\//.test(w.text))) return stop('a quoted refspec')
+    out.push(seg.words.map((w) => (w.quoted ? 'QUOTED' : w.valueDropped ? w.text.slice(0, w.text.indexOf('=') + 1) : w.text)).join(' '))
+  }
+  return { text: out.join(' ; ') }
 }
 
 const cronVerdict = (cmd, job) => {
@@ -231,6 +296,11 @@ const cronVerdict = (cmd, job) => {
     // Skip global options (and their values) to find the subcommand.
     let j = i + 1
     while (j < tokens.length && tokens[j].startsWith('-')) {
+      // -c writes config for one call, and config runs code (core.pager, alias.*, credential.helper);
+      // --exec-path swaps the git binaries. Neither has a read-only use here.
+      if (/^(-c|--config-env|--exec-path)(=|$)/.test(tokens[j])) {
+        return `flow cron guard (${job}): git ${tokens[j]} is outside this job's permissions - it can run code. Cron git is read-only; report the need instead of working around this.`
+      }
       if (valueOpts.has(tokens[j])) j += 2
       else j += 1
     }
@@ -292,14 +362,15 @@ process.stdin.on('end', () => {
     process.exit(0) // unparseable input → never block on our own bug
   }
   const cmd = input?.tool_input?.command || ''
-  if (!/\bgit\b/.test(cmd)) process.exit(0)
 
   // Cron mode: when flow-cron.mjs spawned this session it exported FLOW_CRON_JOB, and
   // hooks inherit that env. The scheduled jobs read untrusted text (issue bodies, PR
-  // titles, repo files), so here git is deny-by-default: only the subcommands the job's
-  // standing permissions name may run, and FLOW_SANCTION is ignored - an injected
-  // instruction can put the sanction string in a command, but it cannot change this
-  // process's environment. Interactive sessions are untouched. Env source of truth:
+  // titles, repo files), so here EVERY command has to fit the cron grammar above, git or
+  // not - a substitution inside a gh comment body is an exfiltration whether or not the
+  // word git appears - and git itself is deny-by-default: only the subcommands the job's
+  // standing permissions name may run, and FLOW_SANCTION is ignored, since an injected
+  // instruction can put the sanction string in a command but cannot change this process's
+  // environment. Interactive sessions are untouched. Env source of truth:
   // scripts/flow-cron.mjs; keep the write set in step with the prompts in skills/flow/cron/.
   const cronJob = process.env.FLOW_CRON_JOB || ''
   if (cronJob) {
@@ -311,6 +382,8 @@ process.stdin.on('end', () => {
     if (verdict) deny(verdict)
     process.exit(0) // cron sessions never commit, so the trailer rules below are moot
   }
+
+  if (!/\bgit\b/.test(cmd)) process.exit(0)
 
   if (/\bFLOW_SANCTION=git\b/.test(cmd)) process.exit(0)
 
