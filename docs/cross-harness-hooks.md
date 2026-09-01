@@ -61,7 +61,7 @@ contract.
 | Flow charter | Two `SessionStart` commands split below Claude's output cap, then a third that runs `inject-profile.mjs` and emits the `<flow-profile>` block | One ordered `SessionStart` command that emits the charter and the Codex profile in a single payload, under a 6,000-token inline limit | Host-neutral `charter/charter.md`, whose `[[role:<id>]]` markers each host's `charter/profiles/<host>.md` binds |
 | Flow Bash guards | `PreToolUse` on `Bash` | `PreToolUse` on `Bash` | Existing no-backlog and Git guards; publication policy in `lib/hook-policy.mjs` |
 | Flow protected files | `file_path` from Edit/Write input, `notebook_path` from NotebookEdit | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
-| Flow registry publication gate | `permissionDecision: "ask"` | Deterministic deny with a manual-publish instruction | `publishReason()` |
+| Flow registry publication gate | `permissionDecision: "ask"` built from `publishReason()`, which strips quoted text before classifying | Deterministic deny with a manual-publish instruction, built from `publishOperationsStrict()`, which also classifies what a shell-execution form would run | `registryReason()` over the one `PUBLISH` table |
 | Flow pull request merge | Pre-approved `gh pr merge --squash --match-head-commit`, no per-command prompt. The human's explicit `/flow:land` invocation, then the stage's CI-green and unresolved-thread checks, are the gate | Same gate (the human asked in words), same checks; a repo with a committed `.flow/managed` marker routes the merge through `scripts/land-merge.mjs`, which re-derives every fact from GitHub before merging | `mergeShapes()` classifies the routed commands; the executor holds the checks |
 | Flow prep stage | `/flow:prep` is an alias that reads `skills/prep-stage/profiles/claude.md`, then the skill | The plugin-namespaced `prep-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/prep-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
 | Flow issue stage | `/flow:issue` is an alias that reads `skills/issue-stage/profiles/claude.md`, then the skill | The plugin-namespaced `issue-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/issue-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
@@ -85,6 +85,16 @@ on the exact irreversible operation the guard exists to stop.
 The shared policy returns a reason. Claude's adapter turns it into an approval request.
 Codex's adapter denies the command and tells the agent that the human can run it after
 review. This is a capability difference, not a policy fork.
+
+The two adapters do not read the command the same way, and on this path Codex is the stricter
+one. Claude's `publishReason()` treats a quoted string as inert text, so `cargo publish` asks
+but `bash -lc 'cargo publish'` does not: the wrapper hides the operation from the classifier.
+Codex's `publishOperationsStrict()` classifies the command and, when the command names a form
+that executes a string, every quoted payload too, so it denies the wrapped publish. Both
+directions were chosen. A false deny on a deny-by-default path costs a human one rephrase; a
+false allow ships a release nobody can unship. The Claude guard keeps the prose exemption it has
+always had, which is why a sentence about publishing can still be written in a commit message
+there, and why a shell-wrapped publish gets no prompt from it.
 
 ### The Codex merge path is a cooperative guardrail, not a boundary
 
