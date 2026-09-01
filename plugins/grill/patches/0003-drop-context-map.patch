@@ -1,5 +1,5 @@
 diff --git a/plugins/grill/skills/domain-modeling/SKILL.md b/plugins/grill/skills/domain-modeling/SKILL.md
-index 6d621d6..4b7af7a 100644
+index bc46e7f..4b7af7a 100644
 --- a/plugins/grill/skills/domain-modeling/SKILL.md
 +++ b/plugins/grill/skills/domain-modeling/SKILL.md
 @@ -9,7 +9,7 @@ Actively build and sharpen the project's domain model as you design. This is the
@@ -15,11 +15,11 @@ index 6d621d6..4b7af7a 100644
  └── src/
  ```
  
--If a `context-map.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
+-If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
 -
 -```
 -/
--├── context-map.md
+-├── CONTEXT-MAP.md
 -├── docs/
 -│   └── adr/                          ← system-wide decisions
 -├── src/
@@ -35,7 +35,7 @@ index 6d621d6..4b7af7a 100644
  
  ## During the session
 diff --git a/plugins/grill/skills/domain-modeling/context-format.md b/plugins/grill/skills/domain-modeling/context-format.md
-index bdd215f..4f714a4 100644
+index e5314b9..4f714a4 100644
 --- a/plugins/grill/skills/domain-modeling/context-format.md
 +++ b/plugins/grill/skills/domain-modeling/context-format.md
 @@ -29,32 +29,8 @@ _Avoid_: Client, buyer, account
@@ -47,7 +47,7 @@ index bdd215f..4f714a4 100644
  
 -**Single context (most repos):** One `context.md` at the repo root.
 -
--**Multiple contexts:** A `context-map.md` at the repo root lists the contexts, where they live, and how they relate to each other:
+-**Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the contexts, where they live, and how they relate to each other:
 -
 -```md
 -# Context Map
@@ -67,7 +67,7 @@ index bdd215f..4f714a4 100644
 -
 -The skill infers which structure applies:
 -
--- If `context-map.md` exists, read it to find contexts
+-- If `CONTEXT-MAP.md` exists, read it to find contexts
 -- If only a root `context.md` exists, single context
 -- If neither exists, create a root `context.md` lazily when the first term is resolved
 +A `context.md` sits at the root of each context. Create one lazily where you need it, when the first term is resolved.

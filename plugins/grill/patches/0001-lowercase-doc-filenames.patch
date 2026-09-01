@@ -1,5 +1,5 @@
 diff --git a/plugins/grill/skills/domain-modeling/SKILL.md b/plugins/grill/skills/domain-modeling/SKILL.md
-index 9b97707..6d621d6 100644
+index 9b97707..bc46e7f 100644
 --- a/plugins/grill/skills/domain-modeling/SKILL.md
 +++ b/plugins/grill/skills/domain-modeling/SKILL.md
 @@ -1,11 +1,11 @@
@@ -25,18 +25,7 @@ index 9b97707..6d621d6 100644
  ├── docs/
  │   └── adr/
  │       ├── 0001-event-sourced-orders.md
-@@ -21,29 +21,29 @@ Most repos have a single context:
- └── src/
- ```
- 
--If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
-+If a `context-map.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
- 
- ```
- /
--├── CONTEXT-MAP.md
-+├── context-map.md
- ├── docs/
+@@ -30,20 +30,20 @@ If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The ma
  │   └── adr/                          ← system-wide decisions
  ├── src/
  │   ├── ordering/
@@ -87,10 +76,10 @@ similarity index 100%
 rename from plugins/grill/skills/domain-modeling/ADR-FORMAT.md
 rename to plugins/grill/skills/domain-modeling/adr-format.md
 diff --git a/plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md b/plugins/grill/skills/domain-modeling/context-format.md
-similarity index 77%
+similarity index 82%
 rename from plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md
 rename to plugins/grill/skills/domain-modeling/context-format.md
-index 79bbb32..bdd215f 100644
+index 79bbb32..e5314b9 100644
 --- a/plugins/grill/skills/domain-modeling/CONTEXT-FORMAT.md
 +++ b/plugins/grill/skills/domain-modeling/context-format.md
 @@ -1,4 +1,4 @@
@@ -99,18 +88,16 @@ index 79bbb32..bdd215f 100644
  
  ## Structure
  
-@@ -31,18 +31,18 @@ _Avoid_: Client, buyer, account
+@@ -31,7 +31,7 @@ _Avoid_: Client, buyer, account
  
  ## Single vs multi-context repos
  
 -**Single context (most repos):** One `CONTEXT.md` at the repo root.
 +**Single context (most repos):** One `context.md` at the repo root.
  
--**Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the contexts, where they live, and how they relate to each other:
-+**Multiple contexts:** A `context-map.md` at the repo root lists the contexts, where they live, and how they relate to each other:
+ **Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the contexts, where they live, and how they relate to each other:
  
- ```md
- # Context Map
+@@ -40,9 +40,9 @@ _Avoid_: Client, buyer, account
  
  ## Contexts
  
@@ -123,14 +110,12 @@ index 79bbb32..bdd215f 100644
  
  ## Relationships
  
-@@ -53,8 +53,8 @@ _Avoid_: Client, buyer, account
- 
+@@ -54,7 +54,7 @@ _Avoid_: Client, buyer, account
  The skill infers which structure applies:
  
--- If `CONTEXT-MAP.md` exists, read it to find contexts
+ - If `CONTEXT-MAP.md` exists, read it to find contexts
 -- If only a root `CONTEXT.md` exists, single context
 -- If neither exists, create a root `CONTEXT.md` lazily when the first term is resolved
-+- If `context-map.md` exists, read it to find contexts
 +- If only a root `context.md` exists, single context
 +- If neither exists, create a root `context.md` lazily when the first term is resolved
  
