@@ -514,6 +514,6 @@ registers only an enabled-plugin flag), so `Bash(gripe add:*)` goes into
 `~/.claude/settings.json` `permissions.allow` by hand, once per machine. That line is what
 makes invariant 2 ("never prompts after setup") hold.
 
-Publishing is the four-edit ritual documented in the marketplace repo's AGENTS.md: matching
-versions in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`, the marketplace entry,
-and the catalog version bump.
+Publishing is the version ritual documented in the marketplace repo's AGENTS.md: matching
+versions in `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and the marketplace entry.
+There is no catalog version.
