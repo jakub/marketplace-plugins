@@ -7673,7 +7673,7 @@ var require__ = __commonJS({
     var discriminator_1 = require_discriminator();
     var json_schema_2020_12_1 = require_json_schema_2020_12();
     var META_SCHEMA_ID = "https://json-schema.org/draft/2020-12/schema";
-    var Ajv20203 = class extends core_1.default {
+    var Ajv20202 = class extends core_1.default {
       constructor(opts = {}) {
         super({
           ...opts,
@@ -7700,11 +7700,11 @@ var require__ = __commonJS({
         return this.opts.defaultMeta = super.defaultMeta() || (this.getSchema(META_SCHEMA_ID) ? META_SCHEMA_ID : void 0);
       }
     };
-    exports.Ajv2020 = Ajv20203;
-    module.exports = exports = Ajv20203;
-    module.exports.Ajv2020 = Ajv20203;
+    exports.Ajv2020 = Ajv20202;
+    module.exports = exports = Ajv20202;
+    module.exports.Ajv2020 = Ajv20202;
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.default = Ajv20203;
+    exports.default = Ajv20202;
     var validate_1 = require_validate();
     Object.defineProperty(exports, "KeywordCxt", { enumerable: true, get: function() {
       return validate_1.KeywordCxt;
@@ -56693,18 +56693,19 @@ function validateCodexNode(schema, path = "", { root = false } = {}) {
     validateCodexNode(schema.items, `${path}.items`);
   }
 }
+function compileOutputSchema(schema) {
+  try {
+    return new import__.default({ allErrors: true, strict: false }).compile(schema);
+  } catch {
+    throw new DelegationError("BAD_SCHEMA", "outputSchema is not a valid JSON Schema.");
+  }
+}
 function validateOutputSchema(schema, target) {
   if (schema == null) return null;
   if (Buffer.byteLength(JSON.stringify(schema)) > 64 * 1024) {
     throw new DelegationError("BAD_SCHEMA", "The output schema exceeds 64 KiB.");
   }
-  const ajv = new import__.default({ allErrors: true, strict: false });
-  if (!ajv.validateSchema(schema)) throw new DelegationError("BAD_SCHEMA", "outputSchema is not a valid JSON Schema.");
-  try {
-    ajv.compile(schema);
-  } catch {
-    throw new DelegationError("BAD_SCHEMA", "outputSchema cannot be compiled.");
-  }
+  compileOutputSchema(schema);
   if (target === "codex") {
     validateCodexNode(schema, "", { root: true });
   }
@@ -57003,7 +57004,6 @@ function createClaudeQuery(job, prompt, {
 }
 
 // src/delegation/outcome.mjs
-var import__2 = __toESM(require__(), 1);
 function finalMessage(turn, fallback) {
   const messages = (turn?.items || []).filter((item) => item.type === "agentMessage" && item.text);
   return messages.at(-1)?.text || fallback || "";
@@ -57018,13 +57018,7 @@ function validateStructured(schema, text) {
   return validateStructuredValue(schema, value, "Codex");
 }
 function validateStructuredValue(schema, value, provider = "The delegated model") {
-  const ajv = new import__2.default({ allErrors: true, strict: false });
-  let validate;
-  try {
-    validate = ajv.compile(schema);
-  } catch {
-    throw new DelegationError("BAD_SCHEMA", "The output schema is not a valid JSON Schema.");
-  }
+  const validate = compileOutputSchema(schema);
   if (!validate(value)) {
     throw new DelegationError("SCHEMA_OUTPUT", `${provider} returned JSON that does not match the requested schema.`, {
       errors: validate.errors?.slice(0, 20) || []

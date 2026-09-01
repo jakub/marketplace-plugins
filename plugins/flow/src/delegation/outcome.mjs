@@ -1,5 +1,5 @@
-import Ajv2020 from 'ajv/dist/2020.js'
 import { DelegationError, publicError } from './contracts.mjs'
+import { compileOutputSchema } from './schema.mjs'
 
 export function finalMessage(turn, fallback) {
   const messages = (turn?.items || []).filter((item) => item.type === 'agentMessage' && item.text)
@@ -15,11 +15,7 @@ export function validateStructured(schema, text) {
 }
 
 export function validateStructuredValue(schema, value, provider = 'The delegated model') {
-  const ajv = new Ajv2020({ allErrors: true, strict: false })
-  let validate
-  try { validate = ajv.compile(schema) } catch {
-    throw new DelegationError('BAD_SCHEMA', 'The output schema is not a valid JSON Schema.')
-  }
+  const validate = compileOutputSchema(schema)
   if (!validate(value)) {
     throw new DelegationError('SCHEMA_OUTPUT', `${provider} returned JSON that does not match the requested schema.`, {
       errors: validate.errors?.slice(0, 20) || [],
