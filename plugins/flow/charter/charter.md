@@ -62,7 +62,7 @@ Taste covers UI/UX, code quality assessments, API and architecture design, and c
 | opus-5                   | 4         | 8                   | 8     |
 | gpt-5.6-sol              | 7         | 8                   | 5     |
 | gpt-daybreak-blue-latest | 7         | 8                   | 5     |
-| fable-5                  | 2         | 9                   | 9     |
+| fable-5-1                | 2         | 9                   | 9     |
  
 ## Rules of Engagement - Model Selection
 These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
