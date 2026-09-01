@@ -55,14 +55,32 @@ const DESCRIPTION_LIMIT = 100
 // parse comes back short, and the run goes red where it should.
 const OPEN_FENCE = /^ {0,3}(`{3,}|~{3,})/
 const CLOSE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
+// A four-space (or tab) indent is a Markdown indented code block, which GitHub renders as code
+// and not as a table or paragraph; an HTML comment renders as nothing. A table row or a modifier
+// line hidden in either is not part of the published contract, so both are stripped before the
+// parse - otherwise the smoke could pass on a taxonomy no reader ever sees.
+const INDENTED_CODE = /^(?: {4,}|\t)/
 const unfenced = (lines) => {
   const kept = []
   let open = null
-  for (const line of lines) {
+  let inComment = false
+  for (let line of lines) {
+    if (inComment) {
+      const at = line.indexOf('-->')
+      if (at === -1) continue
+      line = line.slice(at + 3)
+      inComment = false
+    }
+    for (let at = line.indexOf('<!--'); at !== -1; at = line.indexOf('<!--')) {
+      const close = line.indexOf('-->', at + 4)
+      if (close === -1) { line = line.slice(0, at); inComment = true; break }
+      line = line.slice(0, at) + line.slice(close + 3)
+    }
     if (open === null) {
       const opener = OPEN_FENCE.exec(line)
-      if (opener) open = opener[1]
-      else kept.push(line)
+      if (opener) { open = opener[1]; continue }
+      if (INDENTED_CODE.test(line)) continue
+      kept.push(line)
       continue
     }
     const closer = CLOSE_FENCE.exec(line)
@@ -260,6 +278,32 @@ const CASES = [
     text: () => mutate('the non-closing-fence case', '(never resurrected by agents)\n```',
       '(never resurrected by agents)\n```still-code'),
     name: 'did not parse: 0 table rows and 0 type modifiers',
+    count: 1,
+  },
+  {
+    // The real file with every table row wrapped in an inline HTML comment. GitHub renders a
+    // commented row as nothing, so a checker that still counts it would bless a contract no
+    // reader sees. unfenced strips the comments, the rows drop, and the parse comes back short.
+    label: 'table hidden in an HTML comment',
+    text: () => {
+      const t = contract.replace(/^\|.*$/gm, (row) => `<!-- ${row} -->`)
+      assert.notEqual(t, contract, 'the html-comment case changed nothing, so it proves nothing')
+      return t
+    },
+    name: 'did not parse: 0 table rows',
+    count: 1,
+  },
+  {
+    // The real file with every table row indented four spaces. That is a Markdown indented code
+    // block, which GitHub renders as code and not a table, so the rows must not count. unfenced
+    // rejects the indented lines, the rows drop, and the parse comes back short.
+    label: 'four-space-indented table',
+    text: () => {
+      const t = contract.replace(/^\|.*$/gm, (row) => `    ${row}`)
+      assert.notEqual(t, contract, 'the indented-table case changed nothing, so it proves nothing')
+      return t
+    },
+    name: 'did not parse: 0 table rows',
     count: 1,
   },
 ]

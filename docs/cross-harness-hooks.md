@@ -190,11 +190,14 @@ The shim carries one `// gripe-shim-epoch: <n>` marker line, and the SessionStar
 maintains `~/.local/bin/gripe` is an upgrade-only ratchet. It writes through a same-directory
 temp file and an atomic rename unless the on-disk file's marker parses as strictly higher. A
 missing, lower, or unparseable marker gets rewritten, and so does an equal marker over bytes
-that no longer match the source, so byte drift and corruption repair themselves while a newer
-shim survives an older harness. Two caveats. The epoch counts shim
-protocol changes, not releases. And gripe 0.2.x has no marker logic at all, so a host with one
-harness still registered on 0.2.x overwrites the newer shim at every session start there. The
-fix is re-registering both harnesses, which is why the README says to upgrade them in one
+that no longer match the source, so byte drift and corruption repair themselves, and a newer
+shim survives a sequential write from an older harness. Two caveats and one accepted race. The
+epoch counts shim protocol changes, not releases. Gripe 0.2.x has no marker logic at all, so a
+host with one harness still registered on 0.2.x overwrites the newer shim at every session start
+there. And the ratchet re-reads the on-disk marker just before the rename but does not hold a
+lock, so two SessionStart writers racing can let an older writer's rename land after that
+recheck and overwrite a newer shim; this is a narrow accepted downgrade that a later session
+repairs. The fix for the 0.2.x case is re-registering both harnesses, which is why the README says to upgrade them in one
 sitting.
 
 Known limits. Three residuals are accepted as shipped. Each one is reachable only by a process
