@@ -120,6 +120,29 @@ const BRANCH_LIST_OPTS = new Set([
 // permits no bare assignment prefix, carries the rest.
 const isGitToken = (t) => /(^|[/=])git$/.test(t)
 
+// What cron mode classifies. Text about a git write is not a git write: an issue body
+// quoted into `gh issue comment --body "... run git worktree remove /tmp/wt"` used to deny
+// the whole call, and a lint that cannot report what it found is worse than no lint. So the
+// literals come off first, the same way the interactive rules below strip them.
+//
+// Two carve-outs keep the untrusted-input mode from losing what it used to catch. A command
+// that runs its own argument (`bash -c "git push"`, `sh -c '...'`, `eval`, `xargs`) is
+// classified raw, because there the quoted text IS the command. And a double-quoted or
+// heredoc body holding `$(...)` or a backtick keeps its content, because both interpolate in
+// that position and the substitution really runs. Single quotes never interpolate in any
+// shell, so they always come off.
+const RUNS_ITS_ARGUMENT = /\b(?:ba|z|k|da|a|c)?sh\b[^;&|]*\s-c(?:\s|$)|\beval\b|\bxargs\b/
+const INTERPOLATES = /\$\(|`/
+const cronScanTarget = (cmd) =>
+  RUNS_ITS_ARGUMENT.test(cmd)
+    ? cmd
+    : cmd
+        .replace(/<<-?\s*(['"]?)(\w+)\1([\s\S]*?^\s*\2)/gm, (m, _q, _word, body) =>
+          INTERPOLATES.test(body) ? m : ' ',
+        )
+        .replace(/'[^']*'/g, ' ')
+        .replace(/"([^"]*)"/g, (m, body) => (INTERPOLATES.test(body) ? m : ' '))
+
 const cronVerdict = (cmd, job) => {
   const tokens = cmd.replace(/[;|&()<>\n`'"]/g, ' $& ').split(/\s+/).filter(Boolean)
   const valueOpts = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'])
@@ -200,7 +223,7 @@ process.stdin.on('end', () => {
   // scripts/flow-cron.mjs; keep the write set in step with the prompts in skills/flow/cron/.
   const cronJob = process.env.FLOW_CRON_JOB || ''
   if (cronJob) {
-    const verdict = cronVerdict(cmd, cronJob)
+    const verdict = cronVerdict(cronScanTarget(cmd), cronJob)
     if (verdict) deny(verdict)
     process.exit(0) // cron sessions never commit, so the trailer rules below are moot
   }

@@ -84,6 +84,14 @@ expectEnv(false, 'git -C /home/x/code/r rev-list --count origin/b..HEAD', lint, 
 expectEnv(false, 'git remote get-url origin', lint, 'lint: remote get-url')
 expectEnv(false, 'git -C /home/x/code/r fetch origin main', lint, 'lint: fetch')
 expectEnv(false, 'git -C /home/x/code/r branch --format="%(refname:short)"', lint, 'lint: branch list')
+// Reporting a git write is not performing one. The lint's whole output is prose about
+// repos, and it files that prose through `gh issue comment` and gripe heredocs; classifying
+// the raw string denied the report itself.
+expectEnv(false, 'gh issue comment 42 --body "stale worktree, run git worktree remove /tmp/wt"', lint, 'lint: git write quoted in an issue comment')
+expectEnv(false, `gripe add <<'G'\nthe guard denied git branch -D on a merged branch\nG`, lint, 'lint: git write inside a heredoc body')
+expectEnv(true, 'git worktree remove /home/x/code/r-wt', lint, 'lint: the real worktree remove still denied')
+// …but a literal the shell runs, or one that interpolates, is not prose.
+expectEnv(true, 'gh issue comment 42 --body "$(git push origin main)"', lint, 'lint: substitution inside a quoted body')
 expectEnv(true, 'git -C /home/x/code/r branch -D feat/done', sweep, 'sweep: branch -D denied')
 expectEnv(true, 'git -C /home/x/code/r worktree remove /p', sweep, 'sweep: worktree remove denied')
 expectEnv(false, 'git -C /home/x/code/r worktree list --porcelain', sweep, 'sweep: worktree list')
