@@ -1,0 +1,640 @@
+#!/usr/bin/env node
+// gripe shim smoke. Each thing under test here has a way of failing that a green
+// `gripe add` would hide: which install the resolver picks, what the process exits with
+// when it cannot pick one, and whether the running install can say what it is.
+//
+// Every synthetic home lives under one throwaway directory. Nothing here reads the real
+// ~/.claude or ~/.codex, and nothing writes outside the temp tree.
+//
+// Usage: node plugins/gripe/scripts/smoke-shim.mjs
+
+import { spawn, spawnSync } from 'node:child_process'
+import {
+  mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import {
+  boundedLine, compareVersions, main, normalizeRoot, parseCodexRegistration, parseStableVersion,
+  resolveGripeRoot,
+} from '../bin/shim.mjs'
+import { installFacts } from '../lib/install.mjs'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const PLUGIN = normalizeRoot(join(HERE, '..'))
+const SHIM = join(PLUGIN, 'bin', 'shim.mjs')
+
+let checks = 0
+let failures = 0
+function check(name, ok, detail) {
+  checks++
+  if (ok) {
+    console.log(`  ok: ${name}${detail ? ` - ${detail}` : ''}`)
+  } else {
+    failures++
+    console.log(`  FAIL: ${name}${detail ? ` - ${detail}` : ''}`)
+  }
+}
+
+const TMP = mkdtempSync(join(tmpdir(), 'gripe-shim-'))
+let serial = 0
+
+// ---------------------------------------------------------------- synthetic home builders
+
+// The stub stands in for a real bin/gripe: it prints the root it was launched from and
+// touches a marker, so a case can prove which install ran and, more importantly, that a
+// refused resolution ran nothing at all.
+const stubSource = (root) => [
+  '#!/usr/bin/env node',
+  `require('fs').writeFileSync(${JSON.stringify(join(root, 'ran'))}, process.argv.slice(2).join(' '))`,
+  `console.log('ROOT=' + ${JSON.stringify(normalizeRoot(root))})`,
+  'process.exitCode = Number(process.env.GRIPE_STUB_EXIT || 0)',
+  '',
+].join('\n')
+
+function plantRoot(root) {
+  mkdirSync(join(root, 'bin'), { recursive: true })
+  writeFileSync(join(root, 'bin', 'gripe'), stubSource(root), { mode: 0o755 })
+  return normalizeRoot(root)
+}
+
+const ran = (root) => {
+  try {
+    statSync(join(root, 'ran'))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function makeHome() {
+  const home = join(TMP, `home-${++serial}`)
+  mkdirSync(home, { recursive: true })
+  return home
+}
+
+function claudeRegistry(home, value) {
+  const dir = join(home, '.claude', 'plugins')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'installed_plugins.json'), typeof value === 'string' ? value : JSON.stringify(value))
+}
+
+const registry = (...entries) => ({ plugins: { 'gripe@jakub': entries } })
+const entry = (installPath, version) => (version === undefined ? { installPath } : { installPath, version })
+const claudeCacheDir = (home) => join(home, '.claude', 'plugins', 'cache')
+const claudeInstall = (home, version, marketplace = 'jakub') =>
+  plantRoot(join(claudeCacheDir(home), marketplace, 'gripe', version))
+
+function codexConfig(home, contents) {
+  const dir = join(home, '.codex')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'config.toml'), contents)
+}
+
+const codexCacheDir = (home) => join(home, '.codex', 'plugins', 'cache')
+const codexInstall = (home, version, marketplace = 'jakub') =>
+  plantRoot(join(codexCacheDir(home), marketplace, 'gripe', version))
+const table = (enabled, marketplace = 'jakub') =>
+  `[plugins."gripe@${marketplace}"]\nenabled = ${enabled}\n`
+
+const resolveIn = (home, env = {}) => resolveGripeRoot({ env, home })
+
+try {
+  console.log('resolver: the confirmed tier')
+
+  {
+    // The live skew on this machine, 2026-08-31: Claude registered 0.2.0, Codex cached
+    // 0.2.1. Newest wins across harnesses or the whole dual read was pointless.
+    const home = makeHome()
+    const claude = claudeInstall(home, '0.2.0')
+    claudeRegistry(home, registry(entry(claude, '0.2.0')))
+    codexConfig(home, table('true'))
+    const codex = codexInstall(home, '0.2.1')
+    check('1. claude 0.2.0 exact vs codex 0.2.1 enabled resolves codex',
+      resolveIn(home).root === codex, resolveIn(home).root)
+  }
+
+  {
+    const home = makeHome()
+    const claude = claudeInstall(home, '0.3.0')
+    claudeRegistry(home, registry(entry(claude, '0.3.0')))
+    codexConfig(home, table('true'))
+    codexInstall(home, '0.2.1')
+    check('2. the same skew reversed resolves claude 0.3.0', resolveIn(home).root === claude)
+  }
+
+  {
+    const home = makeHome()
+    const claude = claudeInstall(home, '0.4.0')
+    claudeRegistry(home, registry(entry(claude, '0.4.0')))
+    codexConfig(home, table('true'))
+    codexInstall(home, '0.4.0')
+    check('3. equal versions prefer the manager-supplied root over the cache-derived one',
+      resolveIn(home).root === claude)
+  }
+
+  {
+    // A readable registry with no gripe entry means uninstalled, so Claude's stale cache
+    // must not answer. It says nothing at all about the Codex install.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    claudeInstall(home, '0.9.0')
+    codexConfig(home, table('true'))
+    const codex = codexInstall(home, '0.2.1')
+    check('4. readable-empty claude registry blocks only the claude cache',
+      resolveIn(home).root === codex, resolveIn(home).root)
+  }
+
+  {
+    // The mirror image, and the reason the veto is per-harness: a Codex config that says
+    // "not installed here" cannot reach across and cancel Claude's outage fallback.
+    const home = makeHome()
+    codexConfig(home, table('false'))
+    codexInstall(home, '0.4.0')
+    const claude = claudeInstall(home, '0.1.0')
+    check('5. enabled = false blocks only the codex cache, claude falls back to 0.1.0',
+      resolveIn(home).root === claude, resolveIn(home).root)
+  }
+
+  {
+    const home = makeHome()
+    claudeInstall(home, '0.9.0')
+    const codex = codexInstall(home, '0.10.0')
+    check('6. both manifests unreadable, the highest cache across both wins numerically',
+      resolveIn(home).root === codex, resolveIn(home).root)
+  }
+
+  {
+    // Dated live evidence: codex-cli 0.151.0, config read 2026-08-31, every plugins table
+    // carries an explicit boolean. The bare-table branch is therefore unreachable today,
+    // and pinned here because bare-as-absent would silently drop a real registration.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, '[plugins."gripe@jakub"]\n')
+    const codex = codexInstall(home, '0.2.1')
+    check('7. a bare table is a registration and resolves', resolveIn(home).root === codex)
+  }
+
+  const absenceCases = [
+    ['8. the same table twice is absence', `${table('true')}\n${table('true')}`],
+    ['9. two marketplaces are absence', `${table('true')}\n${table('true', 'other')}`],
+    ['10a. enabled = "true" is absence', '[plugins."gripe@jakub"]\nenabled = "true"\n'],
+    ['10b. enabled = 1 is absence', '[plugins."gripe@jakub"]\nenabled = 1\n'],
+    ['10c. a duplicate enabled key is absence', '[plugins."gripe@jakub"]\nenabled = true\nenabled = true\n'],
+    ['23a. a `..` marketplace is rejected', '[plugins."gripe@.."]\nenabled = true\n'],
+    ['23b. an `a/b` marketplace is rejected', '[plugins."gripe@a/b"]\nenabled = true\n'],
+  ]
+  for (const [name, contents] of absenceCases) {
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, contents)
+    codexInstall(home, '0.2.1')
+    codexInstall(home, '0.2.1', 'other')
+    let root
+    let threw = null
+    try {
+      root = resolveIn(home).root
+    } catch (error) {
+      threw = String(error?.message ?? error)
+    }
+    check(name, threw === null && root === null, threw ?? root)
+  }
+
+  {
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('true'))
+    for (const name of ['0.3.0-rc.1', 'latest', '0.3', '1.2.3.4', 'v1.2.3', '.hidden', '0.2.0']) {
+      plantRoot(join(codexCacheDir(home), 'jakub', 'gripe', name))
+    }
+    check('11. prerelease and malformed cache names are not versions',
+      resolveIn(home).root === normalizeRoot(join(codexCacheDir(home), 'jakub', 'gripe', '0.2.0')),
+      resolveIn(home).root)
+  }
+
+  {
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('true'))
+    mkdirSync(join(codexCacheDir(home), 'jakub', 'gripe', '0.9.0'), { recursive: true })
+    const good = codexInstall(home, '0.2.0')
+    check('12. a semver directory with no bin/gripe is skipped for the next best',
+      resolveIn(home).root === good, resolveIn(home).root)
+  }
+
+  {
+    // The entry is real, the tree it names is gone. That is still a readable registry, so
+    // Claude is uninstalled-with-a-stale-entry and its cache stays blocked.
+    const home = makeHome()
+    claudeRegistry(home, registry(entry(join(home, 'deleted', 'gripe'), '9.9.9')))
+    claudeInstall(home, '0.7.0')
+    const resolved = resolveIn(home)
+    check('13. a registry entry at a deleted path is absence, not an outage',
+      resolved.root === null, resolved.root)
+  }
+
+  {
+    const home = makeHome()
+    const claude = plantRoot(join(claudeCacheDir(home), 'jakub', 'gripe', '1.4.0'))
+    claudeRegistry(home, registry(entry(claude, 'nightly')))
+    codexConfig(home, table('true'))
+    codexInstall(home, '1.3.0')
+    check('14a. a junk registry version falls back to the path basename',
+      resolveIn(home).root === claude, resolveIn(home).root)
+  }
+
+  {
+    const home = makeHome()
+    const claude = plantRoot(join(home, 'checkout'))
+    claudeRegistry(home, registry(entry(claude, 'nightly')))
+    const resolved = resolveIn(home)
+    check('14b. an unknown version still resolves when it is the only candidate',
+      resolved.root === claude && resolved.candidates[0]?.version === null, resolved.root)
+  }
+
+  console.log('resolver: hostile and oversized manifests')
+
+  const hostileCases = [
+    ['15a. a 200 KiB unterminated line is absence', `${table('true')}${'x'.repeat(200 * 1024)}`, null],
+    ['15b. a header inside a multi-line string is absence',
+      `motd = """\n[plugins."gripe@jakub"]\nenabled = true\n"""\n`, null],
+    ['15c. a NUL byte is absence', `${table('true')}${String.fromCharCode(0)}`, null],
+    ['15d. invalid UTF-8 is absence', null, null],
+    ['15e. CRLF around a real table resolves', table('true').replace(/\n/g, '\r\n'), 'resolved'],
+    ['15f. whitespace and a trailing comment on the header resolves',
+      '  [plugins."gripe@jakub"]  # registered\n  enabled = true # on\n', 'resolved'],
+  ]
+  for (const [name, contents, expect] of hostileCases) {
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    const codex = codexInstall(home, '0.2.1')
+    if (contents === null) {
+      // Bytes that are not UTF-8 at all: the read turns them into replacement characters,
+      // which is exactly the signal the scanner refuses to guess past.
+      mkdirSync(join(home, '.codex'), { recursive: true })
+      writeFileSync(join(home, '.codex', 'config.toml'),
+        Buffer.concat([Buffer.from(table('true')), Buffer.from([0xff, 0xfe, 0xfd])]))
+    } else {
+      codexConfig(home, contents)
+    }
+    let root
+    let threw = null
+    try {
+      root = resolveIn(home).root
+    } catch (error) {
+      threw = String(error?.message ?? error)
+    }
+    check(name, threw === null && root === (expect === 'resolved' ? codex : null), threw ?? root)
+  }
+
+  {
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, `${table('true')}${'#'.repeat(2 * 1024 * 1024)}\n`)
+    const codex = codexInstall(home, '0.6.0')
+    // Human-ratified 2026-09-01: a config too big to read is an outage, not an answer,
+    // so the fallback runs. The line cap never gets a look at this file.
+    check('16a. a 2 MiB codex config is unreadable and the codex cache fallback runs',
+      resolveIn(home).root === codex, resolveIn(home).root)
+  }
+
+  {
+    const home = makeHome()
+    claudeRegistry(home, `{"plugins":{}}${' '.repeat(2 * 1024 * 1024)}`)
+    const claude = claudeInstall(home, '0.6.0')
+    codexConfig(home, table('false'))
+    check('16b. a 2 MiB claude registry is unreadable and the claude cache fallback runs',
+      resolveIn(home).root === claude, resolveIn(home).root)
+  }
+
+  {
+    const home = makeHome()
+    claudeRegistry(home, '{"plugins": {')
+    const claude = claudeInstall(home, '0.5.0')
+    codexConfig(home, table('false'))
+    check('17. malformed registry JSON is an outage and the claude fallback runs',
+      resolveIn(home).root === claude, resolveIn(home).root)
+  }
+
+  {
+    const home = makeHome()
+    const elsewhereName = `codex-elsewhere-${serial}`
+    const elsewhere = join(TMP, elsewhereName)
+    mkdirSync(elsewhere, { recursive: true })
+    writeFileSync(join(elsewhere, 'config.toml'), table('true'))
+    const codex = plantRoot(join(elsewhere, 'plugins', 'cache', 'jakub', 'gripe', '0.8.0'))
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('false'))
+    codexInstall(home, '9.9.9')
+    const absolute = resolveIn(home, { CODEX_HOME: elsewhere })
+    check('18a. CODEX_HOME redirects both the config read and the cache scan',
+      absolute.root === codex, absolute.root)
+
+    const cwd = process.cwd()
+    process.chdir(TMP)
+    const relative = resolveIn(home, { CODEX_HOME: `./${elsewhereName}` })
+    process.chdir(cwd)
+    check('18b. a relative CODEX_HOME resolves once and is recorded absolute',
+      relative.root === codex && relative.surfaces.some((surface) => surface === join(elsewhere, 'config.toml')),
+      relative.surfaces.join(' '))
+  }
+
+  console.log('resolver: the override and the total miss')
+
+  {
+    const home = makeHome()
+    const override = plantRoot(join(TMP, `override-${serial}`))
+    claudeRegistry(home, registry(entry(claudeInstall(home, '9.9.9'), '9.9.9')))
+    const resolved = resolveIn(home, { GRIPE_HOME: override })
+    check('19. a valid GRIPE_HOME beats every install and reads no registry',
+      resolved.root === override && resolved.surfaces.length === 1,
+      resolved.surfaces.join(' '))
+  }
+
+  {
+    const home = makeHome()
+    const installed = claudeInstall(home, '1.0.0')
+    claudeRegistry(home, registry(entry(installed, '1.0.0')))
+    const broken = join(TMP, `broken-override-${serial}`)
+    mkdirSync(broken, { recursive: true })
+    for (const [label, value] of [['broken', broken], ['empty', '']]) {
+      const resolved = resolveIn(home, { GRIPE_HOME: value })
+      check(`20a. a ${label} GRIPE_HOME stops instead of falling through`,
+        resolved.root === null && resolved.error === 'override', resolved.error)
+    }
+    let stderr = ''
+    const code = main({
+      argv: ['add'],
+      env: { GRIPE_HOME: broken },
+      home,
+      spawn: () => { throw new Error('the shim spawned something under a broken override') },
+      stderr: (text) => { stderr += text },
+    })
+    check('20b. the broken-override diagnostic names GRIPE_HOME and nothing else',
+      code === 0 && stderr.includes('GRIPE_HOME') && !stderr.includes('installed_plugins')
+        && !ran(installed),
+      JSON.stringify(stderr))
+  }
+
+  {
+    const home = makeHome()
+    let stderr = ''
+    const code = main({
+      argv: ['dump'],
+      env: {},
+      home,
+      spawn: () => { throw new Error('the shim spawned something with no root') },
+      stderr: (text) => { stderr += text },
+    })
+    const surfaces = resolveIn(home).surfaces
+    check('21. the total miss names every surface checked, in one bounded line',
+      code === 1
+      && surfaces.length === 4
+      && surfaces.every((surface) => stderr.includes(surface))
+      && Buffer.byteLength(stderr) <= 2048
+      && stderr.endsWith('\n')
+      && stderr.indexOf('\n') === stderr.length - 1,
+      JSON.stringify(stderr))
+  }
+
+  {
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('true'))
+    const older = plantRoot(join(codexCacheDir(home), 'jakub', 'gripe', '9007199254740992.0.1'))
+    const newer = plantRoot(join(codexCacheDir(home), 'jakub', 'gripe', '9007199254740993.0.0'))
+    check('22. version components compare as BigInt, past 2^53',
+      resolveIn(home).root === newer && resolveIn(home).root !== older, resolveIn(home).root)
+  }
+
+  {
+    const home = makeHome()
+    const first = plantRoot(join(home, 'a-install'))
+    const second = plantRoot(join(home, 'b-install'))
+    claudeRegistry(home, registry(entry(first, '2.0.0'), entry(second, '2.0.0')))
+    const once = resolveIn(home).root
+    const twice = resolveIn(home).root
+    check('23c. an equal-version tie at two paths is broken deterministically',
+      once === twice && once === first, `${once} then ${twice}`)
+  }
+
+  {
+    const long = 'a'.repeat(4000)
+    const line = boundedLine(`${long}\nsecond line`)
+    check('bounded diagnostics: one line, one newline, at most 2048 bytes',
+      Buffer.byteLength(line) <= 2048 && line.endsWith('\n')
+      && line.indexOf('\n') === line.length - 1 && !line.includes(String.fromCharCode(7)),
+      `${Buffer.byteLength(line)} bytes`)
+  }
+
+  check('version parsing admits leading zeros and compares them numerically',
+    compareVersions(parseStableVersion('01.2.3'), parseStableVersion('1.2.4')) > 0
+    && parseStableVersion('1.2.3-rc1') === null && parseStableVersion('1.2') === null)
+
+  check('an unrecognized codex table shape reports no registration',
+    parseCodexRegistration('[plugins."flow@jakub"]\nenabled = true\n').registered === false
+    && parseCodexRegistration(table('true')).enabled === true)
+
+  console.log('the honesty split')
+
+  const filingHome = makeHome()
+  const filingRoot = claudeInstall(filingHome, '1.1.0')
+  claudeRegistry(filingHome, registry(entry(filingRoot, '1.1.0')))
+  const enoent = () => ({ error: Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }), status: null })
+  const neverSpawn = () => { throw new Error('the shim spawned something it should not have') }
+
+  const OUTCOMES = [
+    { name: 'spawn error (ENOENT)', home: filingHome, spawn: enoent, honest: 1, diagnostic: /ENOENT/ },
+    {
+      name: 'an error alongside a status (the error wins)',
+      home: filingHome,
+      spawn: () => ({ ...enoent(), status: 3 }),
+      honest: 1,
+      diagnostic: /ENOENT/,
+    },
+    {
+      name: 'a signal, named and never turned into 128+n',
+      home: filingHome,
+      spawn: () => ({ status: null, signal: 'SIGKILL' }),
+      honest: 1,
+      diagnostic: /SIGKILL/,
+    },
+    { name: 'a real child status of 7', home: filingHome, spawn: () => ({ status: 7 }), honest: 7, diagnostic: null },
+    { name: 'a real child status of 0', home: filingHome, spawn: () => ({ status: 0 }), honest: 0, diagnostic: null },
+    { name: 'no installation at all', home: makeHome(), spawn: neverSpawn, honest: 1, diagnostic: /no installation/ },
+    { name: 'the resolver throwing', home: 42, spawn: neverSpawn, honest: 1, diagnostic: /resolution failed/ },
+  ]
+
+  // A getter that flags any read of process.stdin. The shim must not so much as touch it:
+  // a synchronous read on an inherited pipe never returns, and a hung `gripe add` stops
+  // the agent that called it.
+  const stdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin')
+  let stdinTouched = false
+  Object.defineProperty(process, 'stdin', {
+    configurable: true,
+    get() {
+      stdinTouched = true
+      return stdinDescriptor.get.call(process)
+    },
+  })
+
+  try {
+    for (const outcome of OUTCOMES) {
+      const observed = []
+      let ok = true
+      for (const argv of [[], ['add'], ['doctor'], ['dump']]) {
+        const filing = argv.length === 0 || argv[0] === 'add'
+        let stderr = ''
+        let stdio = null
+        const code = main({
+          argv,
+          env: {},
+          home: outcome.home,
+          spawn: (execPath, args, options) => {
+            stdio = options?.stdio
+            return outcome.spawn()
+          },
+          stderr: (text) => { stderr += text },
+        })
+        const expected = filing ? 0 : outcome.honest
+        observed.push(`[${argv.join(' ')}] ${code}`)
+        if (code !== expected) ok = false
+        if (stdio !== null && stdio !== 'inherit') ok = false
+        if (outcome.diagnostic === null) {
+          // A real exit code is the child's own report; a second line from the shim would
+          // be noise on top of it.
+          if (stderr !== '') ok = false
+        } else if (
+          !outcome.diagnostic.test(stderr) || !stderr.endsWith('\n')
+          || stderr.indexOf('\n') !== stderr.length - 1 || Buffer.byteLength(stderr) > 2048
+        ) {
+          ok = false
+        }
+      }
+      check(`exit matrix: ${outcome.name}`, ok, observed.join(', '))
+    }
+  } finally {
+    Object.defineProperty(process, 'stdin', stdinDescriptor)
+  }
+  check('the shim never touches process.stdin', !stdinTouched)
+
+  console.log('the honesty split, end to end')
+
+  const liveHome = makeHome()
+  const liveRoot = claudeInstall(liveHome, '1.2.0')
+  claudeRegistry(liveHome, registry(entry(liveRoot, '1.2.0')))
+  const cleanEnv = (home, extra = {}) => ({ PATH: process.env.PATH, HOME: home, ...extra })
+
+  const runShim = (argv, env) =>
+    spawnSync(process.execPath, [SHIM, ...argv], { encoding: 'utf8', env })
+
+  {
+    const missHome = makeHome()
+    const started = process.hrtime.bigint()
+    const child = spawn(process.execPath, [SHIM, 'add'], {
+      env: cleanEnv(missHome),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    // stdin stays open and empty for the child's whole life. A shim that reads it hangs
+    // here, which is the failure this case exists to catch.
+    const code = await new Promise((resolve) => {
+      const timer = setTimeout(() => { child.kill('SIGKILL'); resolve('timed out') }, 10_000)
+      child.on('close', (status) => { clearTimeout(timer); resolve(status) })
+    })
+    child.stdin.destroy()
+    const ms = Number(process.hrtime.bigint() - started) / 1e6
+    check('add on a total miss exits 0 with an open unwritten stdin pipe',
+      code === 0 && ms < 10_000, `exit ${code} after ${Math.round(ms)}ms`)
+  }
+
+  {
+    const missHome = makeHome()
+    const result = runShim(['doctor'], cleanEnv(missHome))
+    check('doctor on a total miss exits 1 and says what it checked',
+      result.status === 1 && result.stderr.includes('no installation found'),
+      JSON.stringify(result.stderr))
+  }
+
+  {
+    const link = join(TMP, `gripe-link-${++serial}`)
+    symlinkSync(SHIM, link)
+    const override = plantRoot(join(TMP, `symlink-target-${serial}`))
+    const result = spawnSync(process.execPath, [link, 'add', 'hello'], {
+      encoding: 'utf8',
+      env: cleanEnv(liveHome, { GRIPE_HOME: override }),
+    })
+    check('an invocation through a symlink still runs',
+      result.status === 0 && result.stdout.includes(`ROOT=${override}`) && ran(override),
+      JSON.stringify(result.stdout.trim()))
+  }
+
+  {
+    const result = runShim(['dump'], cleanEnv(liveHome, { GRIPE_STUB_EXIT: '7' }))
+    check('a human command passes a real child status through',
+      result.status === 7 && result.stderr === '', `exit ${result.status}`)
+  }
+
+  {
+    const result = runShim(['add'], cleanEnv(liveHome, { GRIPE_STUB_EXIT: '7' }))
+    check('filing swallows the same status', result.status === 0, `exit ${result.status}`)
+  }
+
+  console.log('structure and install identity')
+
+  {
+    const text = readFileSync(SHIM, 'utf8')
+    const specifiers = [
+      ...text.matchAll(/(?:^|\s)import\s[^'"\n]*from\s*['"]([^'"]+)['"]/g),
+      ...text.matchAll(/\bimport\(\s*['"]([^'"]+)['"]/g),
+    ].map((hit) => hit[1])
+    check('bin/shim.mjs imports node builtins only',
+      specifiers.length > 0 && specifiers.every((specifier) => specifier.startsWith('node:')),
+      specifiers.join(' '))
+  }
+
+  {
+    const facts = (root) => installFacts(pathToFileURL(join(root, 'bin', 'gripe')).href)
+    // The last directory component is what a plugin cache names an install, so a case
+    // that wants the manifest to be the only possible source names it something else.
+    const build = (name, manifests, version = 'unversioned') => {
+      const root = join(TMP, 'facts', name, version)
+      mkdirSync(join(root, 'bin'), { recursive: true })
+      for (const [directory, contents] of Object.entries(manifests)) {
+        mkdirSync(join(root, directory), { recursive: true })
+        writeFileSync(join(root, directory, 'plugin.json'), contents)
+      }
+      return root
+    }
+
+    const claudeManifest = build('claude', { '.claude-plugin': '{"version":"1.5.0"}' })
+    check('installFacts: the claude manifest supplies the version',
+      facts(claudeManifest).plugin_version === '1.5.0'
+      && facts(claudeManifest).plugin_root === normalizeRoot(claudeManifest))
+
+    const codexManifest = build('codex', { '.codex-plugin': '{"version":"1.6.0"}' })
+    check('installFacts: a missing claude manifest falls through to the codex one',
+      facts(codexManifest).plugin_version === '1.6.0')
+
+    const malformed = build('malformed', { '.claude-plugin': '{"version":' }, '2.1.0')
+    check('installFacts: malformed JSON falls back to the cache directory name',
+      facts(malformed).plugin_version === '2.1.0', facts(malformed).plugin_root)
+
+    const nonSemver = build('nonsemver', { '.claude-plugin': '{"version":"nightly"}' }, '2.2.0')
+    check('installFacts: a non-semver manifest version loses to a semver directory name',
+      facts(nonSemver).plugin_version === '2.2.0')
+
+    const neither = join(TMP, 'facts', 'neither')
+    mkdirSync(join(neither, 'bin'), { recursive: true })
+    const bare = facts(neither)
+    check('installFacts: with neither, the version is null and the root is still reported',
+      bare.plugin_version === null && bare.plugin_root === normalizeRoot(neither), bare.plugin_root)
+  }
+
+  console.log(`\ngripe shim: ${failures === 0 ? 'ALL PASS' : `${failures} FAILED`} (${checks} checks)`)
+} finally {
+  rmSync(TMP, { recursive: true, force: true })
+}
+
+process.exitCode = failures === 0 ? 0 : 1
