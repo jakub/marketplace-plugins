@@ -1,8 +1,9 @@
 # marketplace-plugins
 
-Jakub's personal Claude Code marketplace. Every plugin here also carries a native Codex
-manifest: Flow, Gripe, and Unslop bring hook adapters with theirs, and Grill installs on
-Codex as skills alone. The Claude marketplace remains the publishing catalog.
+Jakub's personal Claude Code marketplace. Everything here installs on Codex too. Flow,
+Gripe, and Unslop carry a Codex manifest, because Codex reads hook and MCP registrations
+only from one; Grill ships skills alone and needs none, since Codex finds
+`skills/*/SKILL.md` by itself. The Claude marketplace remains the publishing catalog.
 
 ```bash
 claude plugin marketplace add jakub/marketplace-plugins
@@ -59,7 +60,7 @@ If you have flow or gripe registered in both Claude Code and Codex, update both 
 
 Gripe's `~/.local/bin/gripe` shim carries a protocol epoch marker, and the SessionStart hook that maintains it replaces a shim whose marker is missing, lower, or unparseable, repairs one whose marker matches but whose bytes have drifted, and leaves a strictly higher one alone. That ratchet lives in the shim's own code, so a harness still registered on gripe 0.2.x has no ratchet at all. Its SessionStart hook overwrites whatever it finds, including the newer shim you just installed, and you end up with a shim that flips back and forth depending on which harness you last opened.
 
-The same reasoning is why the shim resolving the newest install across both harnesses is mitigation and not a guarantee. Hooks import their own install's storage code directly and never run through the shim, so an old hook can still open the database whatever the shim decides. The durable guarantee sits underneath. Schema migrations are numbered and additive only, and code older than the database refuses to touch it and exits 0 with one stderr line rather than corrupting it.
+The same reasoning is why the shim running the newest install it can find is mitigation and not a guarantee. Hooks import their own install's storage code directly and never run through the shim, so an old hook can still open the database whatever the shim decides. The durable guarantee sits underneath. Schema migrations are numbered and additive only, and code older than the database refuses to touch it and exits 0 with one stderr line rather than corrupting it.
 
 ## Plugins
 
@@ -89,15 +90,15 @@ Three commands in order:
 
 `/flow:land` is the human gate and the only merge path. We run CI and review-thread checks, rebase, squash merge, cleanup, and then perform a survey of what tasks are up next.
 
-All three run on Codex too. Each one is a host-neutral stage skill plus a binding profile per host, so both hosts run the same gates and the slash command is only an alias to it.
+All three run on Codex too. Each one is a single stage skill: one host-neutral body, then a `## Host mechanics` section at the end that names the seats, models and calls for the host in use. The slash command is a one-sentence alias to that file.
 
-Two timers run in the background once `/flow setup` has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly report-only doc sweep that raises bug fix issues.
+Two timers run in the background once `/flow setup` has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly doc sweep. The sweep has no write tools at all, so it files nothing and opens nothing; it reports the doc drift it found and, for a small fix, the diff you can paste.
 
 | Path | What's there |
 |---|---|
 | `plugins/flow/charter/charter.md` | The engineering charter. |
 | `plugins/flow/commands/` | `prep.md`, `issue.md` and `land.md`, each only an alias to its stage. |
-| `plugins/flow/skills/prep-stage/`, `skills/issue-stage/`, `skills/land-stage/` | The steps of all three stages, written once for both hosts, with `profiles/claude.md` and `profiles/codex.md` binding each gate to a mechanism. |
+| `plugins/flow/skills/prep-stage/`, `skills/issue-stage/`, `skills/land-stage/` | One `SKILL.md` per stage: the steps written once for both hosts, then a `## Host mechanics` section per host. |
 | `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool and a fixed schema output), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
 | `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`, `/flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
@@ -120,7 +121,7 @@ The one rule is that filing has to be free. `gripe add` never exits non-zero and
 
 Gripes are stored in `$XDG_STATE_HOME/gripe/gripe.db`, falling back to `~/.local/state/gripe/gripe.db` if unset.
 
-One database, one command, both harnesses. The `gripe` on PATH reads Claude's plugin registry and Codex's `config.toml` on every run and hands off to the newest install either of them reports, so a host with gripe registered in both still has one CLI and one log. `GRIPE_HOME` overrides that for development work, and a `GRIPE_HOME` that points nowhere usable stops with one stderr line instead of quietly filing into the live database through the installed copy.
+One database, one command, both harnesses. On every run the `gripe` on PATH globs `~/.claude/plugins/cache/*/gripe/*/bin/gripe` and `${CODEX_HOME:-~/.codex}/plugins/cache/*/gripe/*/bin/gripe`, ranks what it finds by the version in the directory name, and runs the newest, so a host with gripe installed in both harnesses still has one CLI and one log. No registry file is read; the cache directory name is the whole of what it trusts. `GRIPE_HOME` overrides that for development work, and a `GRIPE_HOME` that points nowhere usable stops with one stderr line instead of quietly filing into the live database through the installed copy.
 
 ---
 
@@ -136,6 +137,6 @@ The `/gripe` skill is unneeded day-to-day, but tells the agent how to read the d
 | Path | What's there |
 |---|---|
 | `plugins/gripe/bin/gripe` | The CLI. `add`, `dump`, `seen`, `search`, and `doctor` all live here. |
-| `plugins/gripe/bin/shim.mjs` | The resolver. A copy of it sits on PATH at `~/.local/bin/gripe`, picks an install at exec time, and hands off to that install's `bin/gripe`, so reinstalls and version bumps don't strand it. |
+| `plugins/gripe/bin/shim.mjs` | The resolver. A copy of it sits on PATH at `~/.local/bin/gripe`, picks the newest install in either plugin cache at exec time, and hands off to that install's `bin/gripe`, so reinstalls and version bumps don't strand it. |
 | `plugins/gripe/hooks/` | Claude and Codex registrations plus thin wire adapters for advertisements, harness-specific observations, and checkpoints. |
 | `plugins/gripe/skills/gripe/` | How to read the gripe database. For doing analysis, not for normal work. |
