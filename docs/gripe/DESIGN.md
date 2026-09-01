@@ -266,8 +266,9 @@ honest non-equivalence rather than a silent classifier that never sees real fail
 The Claude gates, in order. Skip when `is_interrupt` is set, because that is jakub pressing escape rather
 than the tooling fighting the agent. Then fire on repeats, not firsts: the first failure of a
 given tool with a given error shape is ordinary work, the second is a pattern. Hold a cooldown
-on the fingerprint so a retry loop asks once rather than forty times. A blocklist of noisy
-commands stays available as a backstop, never as the primary gate.
+on the fingerprint so a retry loop asks once rather than forty times. The repeat gate has held
+on its own since 0.1.0, so there is no per-command blocklist; if one tool ever proves it needs
+suppressing, that is the day to add one.
 
 Advertises `--via error_nudge` with `--trigger` and `--prompt` baked from the payload. Every
 fingerprint it nudges on goes into the shared gate state so the Stop checkpoint does not cite
