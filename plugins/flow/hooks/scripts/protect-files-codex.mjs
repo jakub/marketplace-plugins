@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Codex protected-file adapter. As of Codex CLI 0.149.1 (2026-08-26) edits arrive as
-// apply_patch with the full patch under tool_input.command; the registration also
-// matches Edit/Write so an alias route, if one exists, cannot bypass the check.
+// Codex protected-file adapter. Edits arrive as apply_patch with the full patch under
+// tool_input.command - first captured on Codex CLI 0.149.1 (2026-08-26), still the shape on
+// 0.152.0 (2026-09-01). The registration also matches Edit/Write so an alias route, if one
+// exists, cannot bypass the check.
 //
 // Every target-bearing field present is checked - a benign file_path must not vouch
 // for a patch riding in the same envelope. One decision per invocation, first deny

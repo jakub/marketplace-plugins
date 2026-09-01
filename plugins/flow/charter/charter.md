@@ -13,7 +13,7 @@ Use this as a guide for all development tasks.
 This charter is host-neutral: wherever it names a role in `[[role:…]]` brackets, the `<flow-profile>` block injected beside it says what that role binds to on your host. Charter present but no profile block? Say so once, keep every rule here that is still true, invent no host mechanism, and don't start the pipeline stages until the human fixes the install.
 
 ## Orchestration with Delegation to Worker Seats
-The overall operating model for `flow` is a main-thread conductor that spawns and monitors worker seats [[role:sub-seat]]. The host decides which model conducts [[role:orchestrator-model]]; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.
+The overall operating model for `flow` is a main-thread conductor that spawns and monitors worker seats [[role:sub-seat]]. The model the human launched the session with conducts; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.
 
 The orchestrator has standing permission to spawn seats at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by worker seats.
 
@@ -36,7 +36,7 @@ steering or post-crash result recovery; read the reported capabilities instead o
 symmetry.
 
 ## The `flow` pipeline
-The pipeline is three stages that run in order: prep → issue → land [[role:pipeline-entry]]; your host profile says how each one is invoked.
+The pipeline is three stages that run in order: prep → issue → land [[role:pipeline-entry]]; your host profile says how each one is invoked. Where a stage needs a decision from the human, it goes through the human-choice binding [[role:human-choice]], and whether that binding answers inside the turn or ends it is a fact about your host, not a preference.
 
 `prep` is the front door, and nothing enters the issue tracker otherwise.
 `issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.
@@ -155,6 +155,6 @@ PR descriptions: summary narrative + one-line-per-commit changelog.
 Find the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
 
 ## Gripes
-If the `gripe` plugin is installed, the friction log is available [[role:gripe-cli]] - your host binding says how, or that it isn't. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.
+If the `gripe` plugin is installed, the `gripe` CLI is on the shell on both hosts. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.
 
 </flow-charter>

@@ -1,18 +1,21 @@
+import { readFileSync } from 'node:fs'
+
 export const HOSTS = ['claude', 'codex']
 export const TARGETS = ['claude', 'codex']
-export const MODES = ['task', 'review', 'adversarial-review']
+export const MODES = ['task', 'adversarial-review']
 export const ACCESS_MODES = ['read-only', 'workspace-write']
 export const DELIVERIES = ['attached', 'detached']
 // Codex's live model catalog starts every model at 'low'; a 'minimal' request reaches the
 // provider and dies late as BAD_MODEL, blaming the wrong parameter. Reject it at the edge.
-export const CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-export const SERVICE_TIERS = ['default']
+// Both families take the same five, so there is one list and no per-target lookup.
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const ACTIVE_STATES = ['queued', 'starting', 'running', 'reconciling']
 export const TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approval']
-export const QUARANTINE_STATES = ['quarantined']
-export const JOB_STATES = [...ACTIVE_STATES, ...QUARANTINE_STATES, ...TERMINAL_STATES]
 export const MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
+// The total budget alone cannot catch a wedged provider: a half-dead socket sends no
+// notifications while the worker keeps heartbeating as healthy. This is the quiet-period
+// ceiling both workers enforce, inherited from the shell transport they replaced.
+export const STALL_SECONDS = 420
 
 export const FINDINGS_SCHEMA = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -78,12 +81,6 @@ export function targetForHost(host) {
   return host === 'claude' ? 'codex' : 'claude'
 }
 
-export function effortsForTarget(target) {
-  if (target === 'codex') return CODEX_EFFORTS
-  if (target === 'claude') return CLAUDE_EFFORTS
-  throw new DelegationError('ROUTE_DENIED', 'The delegation target names an unknown model family.')
-}
-
 export function capabilitiesForTarget(target) {
   if (!TARGETS.includes(target)) {
     throw new DelegationError('ROUTE_DENIED', 'The delegation target names an unknown model family.')
@@ -107,74 +104,25 @@ export const HOST_CAPABILITY_ASSURANCES = ['mechanism', 'contract', 'unverified'
 
 // What the host harness itself can do, which is a different question from what a delegated
 // target can do. capabilitiesForTarget answers "can I steer this job"; this table answers
-// "does the harness I am running under have a permission prompt". It is a hand-maintained
-// inventory, so it is biased false: an entry nobody has probed reads supported:false with
-// assurance 'unverified', and a reader never mistakes silence for support. 'mechanism' means
-// a named feature was observed doing the thing. 'contract' means the behaviour rests on an
-// agreement both sides keep, with no platform receipt to check. Every id names both hosts, so
-// a gap is visible in this source rather than at the call site. A cell dated later than the
-// rest carries its own verifiedAt, so adding a row never re-dates the rows already there.
-const HOST_CAPABILITY_VERIFIED_AT = '2026-08-29'
-// Re-verified 2026-09-01 against claude-code 2.1.257 and codex-cli 0.152.0 by observation, not
-// by a fresh probe of each row: both provider smokes and a live `cli doctor --host claude` pass
-// on these versions, and nothing in the table changed value or assurance with the bump. The five
-// rows dated 2026-08-31 were re-verified the same way, by watching the slice 4 run use them.
-// Pinning to whatever is installed today is a stopgap; the drift rule that compares against this
-// record is being redesigned separately.
-const HOST_VERIFIED_AGAINST = { claude: 'claude-code 2.1.257', codex: 'codex-cli 0.152.0' }
-const HOST_CAPABILITY_TABLE = {
-  'plugin-skill-contribution': {
-    claude: { supported: true, assurance: 'mechanism', note: 'A plugin ships skills under skills/ and the loader registers them.' },
-    codex: { supported: true, assurance: 'mechanism', note: 'Live probe: Codex discovers a plugin\'s skills with no extra configuration.' },
-  },
-  'plugin-command-contribution': {
-    claude: { supported: true, assurance: 'mechanism', note: 'A plugin ships slash commands under commands/ and the loader registers them.' },
-    codex: { supported: false, assurance: 'unverified', note: 'Live probe: Codex did not discover a plugin\'s commands/ directory.' },
-  },
-  'implicit-skill-suppression': {
-    claude: { supported: true, assurance: 'mechanism', note: 'Skill frontmatter disable-model-invocation keeps a skill out of automatic selection.' },
-    codex: { supported: false, assurance: 'unverified', note: 'The 0.151.0 source honors allow_implicit_invocation, but nothing proves the plugin-loader path reaches that code. A live capture of a plugin-supplied agents/openai.yaml staying out of automatic selection flips this to true.' },
-  },
-  'structured-question': {
-    claude: { supported: true, assurance: 'mechanism', note: 'The interactive ask tool returns the option the human picked.' },
-    codex: { supported: false, assurance: 'unverified', note: 'No interactive question tool that returns a chosen option.' },
-  },
-  'suspended-turn-ask': {
-    claude: { supported: false, assurance: 'unverified', note: 'Not needed. The interactive ask tool already collects an answer mid-turn.' },
-    codex: { supported: true, assurance: 'contract', note: 'The turn ends with the question and the human answers in the next turn. The platform sends no receipt, so the protocol is the whole assurance.' },
-  },
-  'hook-ask': {
-    claude: { supported: true, assurance: 'mechanism', note: 'A hook returning ask shows the human a permission prompt.' },
-    codex: { supported: false, assurance: 'mechanism', note: 'Codex 0.151.0 accepts an ask decision and then fails open, running the command with no prompt. false is the honest value.' },
-  },
-  'hook-deny': {
-    claude: { supported: true, assurance: 'mechanism', note: 'A hook returning deny stops the tool call.' },
-    codex: { supported: true, assurance: 'mechanism', note: 'A hook returning deny stops the tool call.' },
-  },
-  'per-seat-tool-allowlist': {
-    claude: { supported: true, assurance: 'mechanism', verifiedAt: '2026-08-31', note: 'An agent definition\'s tools frontmatter fixes the tool list for that seat.' },
-    codex: { supported: false, assurance: 'unverified', note: 'No per-seat tool allowlist found.' },
-  },
-  'agent-depth-limit': {
-    claude: { supported: true, assurance: 'mechanism', verifiedAt: '2026-08-31', note: 'A leaf seat\'s agent def omits the Agent tool (flow:implementer, Explore), so nesting is impossible rather than discouraged.' },
-    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'agents.max_depth is V1-only and ignored by multi-agent V2 (codex-rs/core/src/config/mod.rs:882); the V2 spawn path (agent/control/spawn.rs) has no depth check, so a descendant-spawn prohibition is prompt contract only.' },
-  },
-  'per-seat-authority-narrowing': {
-    claude: { supported: true, assurance: 'mechanism', verifiedAt: '2026-08-31', note: 'An agent def\'s tools list narrows each seat below the session (Explore has no Edit/Write/Agent; flow:implementer has no Agent); neither host has a per-seat filesystem sandbox.' },
-    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'V2 spawn_agent accepts only model, reasoning_effort and fork_turns (tools/handlers/multi_agents_spec.rs); a child inherits the parent\'s cwd, approval policy and sandbox.' },
-  },
-  'skill-composition': {
-    claude: { supported: true, assurance: 'mechanism', note: 'The Skill tool loads a named skill mid-turn.' },
-    codex: { supported: true, assurance: 'contract', verifiedAt: '2026-08-30', note: 'No Skill-call tool; a skill composes by reading its sibling SKILL.md files as its own text instructs. Verified on the installed-plugin path by the slice 3 Codex prep capture (flow-evidence pr-9/capture-prep-codex.txt): grill-with-docs loaded ../grilling/SKILL.md and ../domain-modeling/SKILL.md and ran the grill under them.' },
-  },
-  'mcp-client-roots': {
-    claude: { supported: true, assurance: 'mechanism', verifiedAt: '2026-08-31', note: 'The MCP client advertises the roots capability and answers roots/list with the session workspace.' },
-    codex: { supported: false, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'The Codex 0.151.0 MCP client advertises no roots capability and sets no project-dir variable; the delegation server takes the launch shell PWD as the workspace boundary on this host, so a session started with codex -C elsewhere fails closed with OUTSIDE_ROOTS.' },
-  },
-  'hooks-in-native-children': {
-    claude: { supported: true, assurance: 'mechanism', verifiedAt: '2026-08-31', note: 'A subagent\'s tool calls run the session\'s PreToolUse hooks.' },
-    codex: { supported: true, assurance: 'mechanism', verifiedAt: '2026-08-30', note: 'A V2 child receives a Config derived from the parent\'s turn (agent/control/spawn.rs) and the plugin PreToolUse hooks fire inside it: a spawn_agent child attempting an unsanctioned issue create and a git push --no-verify was denied by both flow guards (slice 3 capture, flow-evidence pr-9/capture-child-hooks.*).' },
-  },
+// "does the harness I am running under have a permission prompt". It lives in
+// capabilities.json at the plugin root, next to the bundle that reads it, so re-verifying a
+// row is an edit to that file and no rebuild. The bundle reads it at runtime and never
+// inlines it.
+//
+// The table is hand-maintained, so it is biased false: an entry nobody has probed reads
+// supported:false with assurance 'unverified', and a reader never mistakes silence for
+// support. 'mechanism' means a named feature was observed doing the thing. 'contract' means
+// the behaviour rests on an agreement both sides keep, with no platform receipt to check.
+// Every id names both hosts, so a gap is visible in the file rather than at the call site.
+// Every entry carries its own verifiedAt, so re-dating one row never re-dates the rest.
+function readCapabilityFile() {
+  // dist/delegation.mjs sits one directory under the plugin root; src/delegation sits two.
+  // The installed plugin only ever runs the bundle, so the first path is the real one and
+  // the second is what lets a dev tree import this module straight from source.
+  for (const path of ['../capabilities.json', '../../capabilities.json']) {
+    try { return JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) } catch {}
+  }
+  throw new DelegationError('INTERNAL', 'The host capability table could not be read.')
 }
 
 function deepFreeze(value) {
@@ -184,23 +132,67 @@ function deepFreeze(value) {
   return Object.freeze(value)
 }
 
-const HOST_CAPABILITIES = deepFreeze(Object.fromEntries(HOSTS.map((host) => [host, {
-  schemaVersion: HOST_CAPABILITIES_SCHEMA_VERSION,
-  host,
-  verifiedAgainst: HOST_VERIFIED_AGAINST[host],
-  capabilities: Object.fromEntries(Object.entries(HOST_CAPABILITY_TABLE).map(([id, hosts]) => [id, {
-    supported: hosts[host].supported,
-    verifiedAt: hosts[host].verifiedAt ?? HOST_CAPABILITY_VERIFIED_AT,
-    assurance: hosts[host].assurance,
-    note: hosts[host].note,
-  }])),
-}])))
+let cachedHostCapabilities = null
+function hostCapabilityRecord(host) {
+  if (!cachedHostCapabilities) {
+    const file = readCapabilityFile()
+    if (file?.schemaVersion !== HOST_CAPABILITIES_SCHEMA_VERSION) {
+      throw new DelegationError('INTERNAL', 'The host capability table has an unsupported schema version.')
+    }
+    cachedHostCapabilities = deepFreeze(Object.fromEntries(HOSTS.map((name) => [name, {
+      schemaVersion: file.schemaVersion,
+      host: name,
+      verifiedAgainst: file.hosts?.[name]?.verifiedAgainst ?? null,
+      capabilities: file.hosts?.[name]?.capabilities ?? {},
+    }])))
+  }
+  return cachedHostCapabilities[host]
+}
 
-export function capabilitiesForHost(host) {
+// The bare dotted version inside a version string, so "codex-cli 0.152.0" and
+// "2.1.257 (Claude Code)" both yield the number the comparison needs.
+export function bareVersion(value) {
+  const match = /\b\d+(?:\.\d+)+\b/.exec(String(value ?? ''))
+  return match ? match[0] : null
+}
+
+// Numeric compare on dot-separated integers, shorter operand padded with zeroes. Neither
+// host tags a build or a prerelease onto the version it reports, so there is nothing else
+// to order.
+function compareVersions(left, right) {
+  const a = left.split('.').map(Number)
+  const b = right.split('.').map(Number)
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0)
+    if (difference) return difference > 0 ? 1 : -1
+  }
+  return 0
+}
+
+// The whole drift verdict, computed here so no caller has to compare version strings by
+// hand. 'unknown' covers a missing operand and one that will not parse, and it is a stop for
+// the reader exactly like 'older': a preflight that cannot read its own record has verified
+// nothing.
+export function capabilityDrift(installed, verifiedAgainst) {
+  const observed = bareVersion(installed)
+  const record = bareVersion(verifiedAgainst)
+  const status = !observed || !record ? 'unknown'
+    : compareVersions(observed, record) === 0 ? 'match'
+      : compareVersions(observed, record) > 0 ? 'newer' : 'older'
+  return Object.freeze({ installed: observed, verifiedAgainst: record, status })
+}
+
+/**
+ * The host capability inventory, plus the drift verdict between the version the host CLI
+ * reports right now and the version the table was last verified against. The caller supplies
+ * the observed version because only it can see the live host.
+ */
+export function capabilitiesForHost(host, { installed = null } = {}) {
   if (!HOSTS.includes(host)) {
     throw new DelegationError('ROUTE_DENIED', 'The delegation host names an unknown model family.')
   }
-  return HOST_CAPABILITIES[host]
+  const record = hostCapabilityRecord(host)
+  return Object.freeze({ ...record, drift: capabilityDrift(installed, record.verifiedAgainst) })
 }
 
 function publicQuarantine(job) {
@@ -224,7 +216,6 @@ export function resultEnvelope(job) {
     access: job.access,
     model: job.model,
     effort: job.effort,
-    serviceTier: job.serviceTier,
     limits: {
       timeBudgetSeconds: job.timeBudgetSeconds,
       maxTurns: job.maxTurns,
@@ -237,32 +228,6 @@ export function resultEnvelope(job) {
     findings: job.mode === 'task' ? null : (job.structured?.findings ?? null),
     usage: job.usage,
     commandFailures: job.commandFailures ?? 0,
-    error: job.error,
-    quarantine: publicQuarantine(job),
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-  }
-}
-
-export function jobSummary(job) {
-  return {
-    jobId: job.id,
-    parentJobId: job.parentJobId,
-    status: job.status,
-    host: job.host,
-    target: job.target,
-    mode: job.mode,
-    access: job.access,
-    cwd: job.cwd,
-    model: job.model,
-    effort: job.effort,
-    limits: {
-      timeBudgetSeconds: job.timeBudgetSeconds,
-      maxTurns: job.maxTurns,
-      maxBudgetUsd: job.maxBudgetUsd,
-    },
-    threadId: job.nativeThreadId,
-    turnId: job.nativeTurnId,
     error: job.error,
     quarantine: publicQuarantine(job),
     createdAt: job.createdAt,

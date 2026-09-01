@@ -19,6 +19,12 @@ const SCHEMA_CHILDREN = new Set([
   'unevaluatedItems', 'unevaluatedProperties',
 ])
 
+// Ajv, at any strictness, only answers whether a schema is well-formed JSON Schema. Everything
+// below is Codex's structured-output subset instead: an object root, an explicit type on every
+// node, closed objects, required listing every property, item schemas on arrays, and no
+// applicator Flow has not inspected. Each of those is a schema Ajv accepts and Codex answers
+// against constraints nobody checked, so this walk is the only thing between the caller and a
+// review whose findings were shaped by a rule the provider quietly dropped.
 function validateCodexNode(schema, path = '', { root = false } = {}) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
     throw new DelegationError('BAD_SCHEMA', `${objectAt(path)} must be an object for Codex structured output.`)
@@ -73,14 +79,24 @@ function validateCodexNode(schema, path = '', { root = false } = {}) {
   }
 }
 
+// One compile, and one Ajv to do it with. compile() checks the schema against its meta-schema
+// on the way through, so a separate validateSchema pass is the same work twice. The instance
+// is per call on purpose: a shared Ajv keeps every schema it has ever compiled in its own
+// registry, and the MCP server process outlives a lot of jobs.
+export function compileOutputSchema(schema) {
+  try {
+    return new Ajv2020({ allErrors: true, strict: false }).compile(schema)
+  } catch {
+    throw new DelegationError('BAD_SCHEMA', 'outputSchema is not a valid JSON Schema.')
+  }
+}
+
 export function validateOutputSchema(schema, target) {
   if (schema == null) return null
   if (Buffer.byteLength(JSON.stringify(schema)) > 64 * 1024) {
     throw new DelegationError('BAD_SCHEMA', 'The output schema exceeds 64 KiB.')
   }
-  const ajv = new Ajv2020({ allErrors: true, strict: false })
-  if (!ajv.validateSchema(schema)) throw new DelegationError('BAD_SCHEMA', 'outputSchema is not a valid JSON Schema.')
-  try { ajv.compile(schema) } catch { throw new DelegationError('BAD_SCHEMA', 'outputSchema cannot be compiled.') }
+  compileOutputSchema(schema)
   if (target === 'codex') {
     validateCodexNode(schema, '', { root: true })
   }

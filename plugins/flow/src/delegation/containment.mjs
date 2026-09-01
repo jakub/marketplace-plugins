@@ -49,9 +49,11 @@ function probeProviderContainment() {
   }
 }
 
+// The whole subsystem requires Linux, and this is where that requirement is enforced for
+// both routes: no transient systemd scope, no delegation.
 export function providerContainmentSupport({ fresh = false } = {}) {
   if (process.platform !== 'linux') {
-    return { ok: true, kind: null, mode: 'process-tree' }
+    return { ok: false, kind: 'UNSUPPORTED_HOST', mode: null, platform: process.platform, required: 'linux' }
   }
   if (!fresh && cachedContainmentSupport) return cachedContainmentSupport
   cachedContainmentSupport = probeProviderContainment()
@@ -59,7 +61,6 @@ export function providerContainmentSupport({ fresh = false } = {}) {
 }
 
 export function scopedProviderCommand(command, args, scopeName) {
-  if (process.platform !== 'linux') return { command, args }
   return {
     command: 'systemd-run',
     args: [...scopeOptions(scopeName), '--', command, ...args],
@@ -67,7 +68,7 @@ export function scopedProviderCommand(command, args, scopeName) {
 }
 
 function scopeControlGroup(scopeName) {
-  if (process.platform !== 'linux' || !scopeName) return null
+  if (!scopeName) return null
   const cached = controlGroupCache.get(scopeName)
   if (cached) return cached
   try {
@@ -90,7 +91,7 @@ export function providerScopeRunning(scopeName) {
 }
 
 export function signalProviderScope(scopeName, signal) {
-  if (process.platform !== 'linux' || !scopeName) return
+  if (!scopeName) return
   try {
     execFileSync('systemctl', [
       '--user', 'kill', `--signal=${signal}`, '--kill-whom=all', scopeName,
@@ -107,7 +108,7 @@ export function trackedDescendantRunning(knownDescendants) {
 }
 
 export function captureProcessDescendants(rootPid, knownDescendants, { freeze = false } = {}) {
-  if (process.platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) return
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return
   if (freeze) try { process.kill(-rootPid, 'SIGSTOP') } catch {}
   for (let pass = 0; pass < 4; pass++) {
     let added = false

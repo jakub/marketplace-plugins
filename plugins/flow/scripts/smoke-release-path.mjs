@@ -5,12 +5,13 @@
 //
 // The executor is a cooperative guardrail, not a security boundary: at one uid a model could
 // ignore it. What the cases below prove is that the ordinary path is verified - the executor
-// pins every gh call to the host-qualified repository the origin remote names, refuses a
-// closed or draft pull request, a non-default base, a merge queue or an armed auto-merge
-// before mutating, merges with --match-head-commit pinned to the head it verified, and
-// reports honest outcomes afterwards: our confirmed merge, a foreign merge of the same number
-// that it will not claim, an authoritative failure, or a genuinely unknown result it tells
-// the operator to verify by hand rather than retry.
+// takes the pull request number and the head its caller was gated on, refuses when GitHub
+// reports any other head, pins every gh call to the host-qualified repository the origin
+// remote names, refuses a closed or draft pull request, a non-default base, a merge queue or
+// an armed auto-merge before mutating, merges with --match-head-commit pinned to that head,
+// and reports honest outcomes afterwards: our confirmed merge, a foreign merge of the same
+// number that it will not claim, an authoritative failure, or a genuinely unknown result it
+// tells the operator to verify by hand rather than retry.
 //
 // The executor is driven in process through its exported landMerge() with a fake gh injected as
 // a plain function across the module boundary. No environment variable selects the gh binary.
@@ -224,6 +225,10 @@ const pinnedTo = (identity, host) => (args) => {
 }
 const isPinned = pinnedTo(IDENTITY, 'github.com')
 
+// The ordinary invocation: the pull request number, and the head the gates upstream inspected.
+// Every case that is not about argument handling passes this.
+const ARGS = [String(PR), head]
+
 const runExecutor = (args, { cwd = repo, env = {}, st } = {}) => {
   const s = st || freshState()
   const result = landMerge({ argv: args, env: { FLOW_CRON_JOB: '', HOME: tmp, ...env }, cwd, runGh: makeRunGh(s) })
@@ -292,10 +297,10 @@ check(
   'a semicolon inside a quoted flag value does not hide the merge',
   mergeShapes(`gh pr merge ${PR} --squash -b "one; two"`).length === 1,
 )
-check('the executor is not merge-shaped', JSON.stringify(mergeShapes(`node ${EXECUTOR} ${PR}`)) === '[]')
+check('the executor is not merge-shaped', JSON.stringify(mergeShapes(`node ${EXECUTOR} ${PR} ${head}`)) === '[]')
 check(
   'wherever it is installed',
-  JSON.stringify(mergeShapes(`node /home/x/.claude/plugins/flow/scripts/land-merge.mjs ${PR}`)) === '[]',
+  JSON.stringify(mergeShapes(`node /home/x/.claude/plugins/flow/scripts/land-merge.mjs ${PR} ${head}`)) === '[]',
 )
 check('a commit message about merging is not merge-shaped', JSON.stringify(mergeShapes('git commit -m "gh pr merge once CI is green"')) === '[]')
 check('nor is a comment quoting the command', JSON.stringify(mergeShapes(`gh pr comment ${PR} -b "run gh pr merge once green"`)) === '[]')
@@ -306,6 +311,7 @@ check('nor is git merge', JSON.stringify(mergeShapes('git merge --ff-only origin
 console.log('\nin a repo with .flow/managed, merging by hand is routed to the executor')
 denies('a plain merge is denied', MERGE, 'node ')
 denies('and the denial names the executor', MERGE, EXECUTOR)
+denies('and shows the two-argument form', MERGE, '<pr-number> <expected-head-sha>')
 denies('and says the repository opted in', MERGE, '.flow/managed')
 denies('a bare merge is denied', `gh pr merge ${PR}`, 'gh pr merge')
 denies('a merge wrapped in bash -lc is denied', QUOTED, 'gh pr merge')
@@ -322,9 +328,9 @@ denies('a subdirectory of the repo is still the repo', MERGE, EXECUTOR, { cwd: j
 denies('a directory git cannot read fails closed', MERGE, EXECUTOR, { cwd: join(tmp, 'nowhere') })
 denies('a repo whose HEAD the marker probe cannot list fails closed', MERGE, EXECUTOR, { cwd: nohead })
 denies('a committed marker with a deleted worktree copy is still managed', MERGE, EXECUTOR, { cwd: mdel })
-allows('the executor itself is not denied', `node ${EXECUTOR} ${PR}`)
-allows('nor is it from another install path', `node /home/x/.claude/plugins/flow/scripts/land-merge.mjs ${PR}`)
-allows('nor is it by relative path', `node plugins/flow/scripts/land-merge.mjs ${PR}`)
+allows('the executor itself is not denied', `node ${EXECUTOR} ${PR} ${head}`)
+allows('nor is it from another install path', `node /home/x/.claude/plugins/flow/scripts/land-merge.mjs ${PR} ${head}`)
+allows('nor is it by relative path', `node plugins/flow/scripts/land-merge.mjs ${PR} ${head}`)
 
 console.log('\nin a repo without the marker, flow gates no merges')
 allows('a plain merge passes', MERGE, { cwd: plain })
@@ -347,14 +353,14 @@ denies('a quoted registry publish, unmanaged', "bash -lc 'npm publish'", 'Regist
 console.log('\nscheduled jobs merge nothing anywhere, executor included')
 denies('a cron job is denied in a managed repo', MERGE, 'scheduled jobs do not merge', { env: { FLOW_CRON_JOB: 'lint' } })
 denies('and in an unmanaged one', MERGE, 'scheduled jobs do not merge', { cwd: plain, env: { FLOW_CRON_JOB: 'lint' } })
-denies('a cron job may not invoke the executor', `node ${EXECUTOR} ${PR}`, 'merge executor', { env: { FLOW_CRON_JOB: 'lint' } })
+denies('a cron job may not invoke the executor', `node ${EXECUTOR} ${PR} ${head}`, 'merge executor', { env: { FLOW_CRON_JOB: 'lint' } })
 denies(
   'even after stripping the variable off the child',
-  `env -u FLOW_CRON_JOB node ${EXECUTOR} ${PR}`,
+  `env -u FLOW_CRON_JOB node ${EXECUTOR} ${PR} ${head}`,
   'merge executor',
   { env: { FLOW_CRON_JOB: 'lint' } },
 )
-allows('but the executor invocation is fine in an attended session', `node ${EXECUTOR} ${PR}`)
+allows('but the executor invocation is fine in an attended session', `node ${EXECUTOR} ${PR} ${head}`)
 
 console.log('\nordinary commands are untouched')
 allows('git status', 'git status --porcelain')
@@ -371,13 +377,18 @@ allows('a local merge', 'git merge --ff-only origin/main')
 
 // ------------------------------------------------------------------------------ the executor
 console.log('\nthe executor merges once, pinning every call to the origin repository')
-const merged = runExecutor([String(PR)])
+const merged = runExecutor(ARGS)
 check('it exits 0', merged.code === 0, `${merged.stdout}${merged.stderr}`)
 check('and says what it merged', merged.stdout.includes(`merged #${PR} on ${IDENTITY}`), merged.stdout)
 check('it merged exactly once', merged.merges.length === 1, JSON.stringify(merged.merges))
 check(
   'with --repo, --squash and the verified head',
   JSON.stringify(merged.merges[0]) === JSON.stringify(['pr', 'merge', String(PR), '--repo', IDENTITY, '--squash', '--match-head-commit', head]),
+  JSON.stringify(merged.merges[0]),
+)
+check(
+  'and the head it pinned is the head the caller passed',
+  merged.merges[0][merged.merges[0].indexOf('--match-head-commit') + 1] === ARGS[1],
   JSON.stringify(merged.merges[0]),
 )
 check('every gh call is pinned to the origin repository', merged.calls.every(isPinned), JSON.stringify(merged.calls.filter((a) => !isPinned(a))))
@@ -390,18 +401,30 @@ check(
   JSON.stringify(merged.calls.filter((a) => a[0] === 'api')),
 )
 
+// The reason the second argument exists. Pinning --match-head-commit to a head this program
+// read for itself proves only that the pull request held still during this run: a push between
+// the gates and the first read would be merged just as confidently. So GitHub's head has to be
+// the caller's head, checked before any merge call.
+console.log('\nthe head the gates ran against is the head that merges')
+const GATED = 'a'.repeat(40)
+const moved = runExecutor([String(PR), GATED])
+check('a head other than the expected one is refused', moved.code === 1 && moved.stderr.includes('head moved (expected'), moved.stderr)
+check('and the refusal names both SHAs', moved.stderr.includes(GATED) && moved.stderr.includes(head), moved.stderr)
+check('and nothing merged', moved.merges.length === 0, JSON.stringify(moved.merges))
+check('and it says to re-run the gates', moved.stderr.includes('run them again against the new head'), moved.stderr)
+
 console.log('\na stray GH_REPO cannot redirect the executor')
-const redirected = runExecutor([String(PR)], { env: { GH_REPO: 'someone/evil', GH_HOST: 'evil.example' } })
+const redirected = runExecutor(ARGS, { env: { GH_REPO: 'someone/evil', GH_HOST: 'evil.example' } })
 check('it still merges the origin repository', redirected.code === 0, `${redirected.stdout}${redirected.stderr}`)
 check('and every call stayed pinned', redirected.calls.every(isPinned), JSON.stringify(redirected.calls.filter((a) => !isPinned(a))))
 
 console.log('\na read GitHub redirected to another repository is refused')
-const wrongUrl = runExecutor([String(PR)], { st: freshState({ pr: { url: 'https://github.com/someone/evil/pull/12' } }) })
+const wrongUrl = runExecutor(ARGS, { st: freshState({ pr: { url: 'https://github.com/someone/evil/pull/12' } }) })
 check('it refuses on the mismatched url', wrongUrl.code === 1 && wrongUrl.stderr.includes('was redirected'), wrongUrl.stderr)
 check('and merged nothing', wrongUrl.merges.length === 0, JSON.stringify(wrongUrl.merges))
 
 console.log('\na GitHub Enterprise origin pins the GHE identity, not github.com')
-const gheRun = runExecutor([String(PR)], {
+const gheRun = runExecutor(ARGS, {
   cwd: ghe,
   st: freshState({ pr: { url: `https://${GHE_HOST}/${SLUG}/pull/${PR}` } }),
 })
@@ -412,7 +435,7 @@ check(
   JSON.stringify(gheRun.calls.filter((a) => !pinnedTo(`${GHE_HOST}/${SLUG}`, GHE_HOST)(a))),
 )
 check('a github.com url against a GHE origin is refused', (() => {
-  const crossed = runExecutor([String(PR)], { cwd: ghe })
+  const crossed = runExecutor(ARGS, { cwd: ghe })
   return crossed.code === 1 && crossed.stderr.includes('was redirected') && crossed.merges.length === 0
 })())
 
@@ -423,78 +446,78 @@ const executorRefuses = (name, args, substring, { st, env, cwd, merges = 0 } = {
   check(`${name}: merged ${merges}`, result.merges.length === merges, JSON.stringify(result.merges))
 }
 
-executorRefuses('a closed pull request is refused', [String(PR)], 'only an open pull request', { st: freshState({ pr: { state: 'CLOSED' } }) })
-executorRefuses('an already merged one is refused', [String(PR)], 'only an open pull request', { st: freshState({ pr: { state: 'MERGED' } }) })
-executorRefuses('a draft is refused', [String(PR)], 'is a draft', { st: freshState({ pr: { isDraft: true } }) })
-executorRefuses('an unreadable draft flag is refused', [String(PR)], 'cannot be shown ready', { st: freshState({ pr: { isDraft: null } }) })
-executorRefuses('an unreadable head is refused', [String(PR)], '40-character', { st: freshState({ pr: { headRefOid: 'short' } }) })
+executorRefuses('a closed pull request is refused', ARGS, 'only an open pull request', { st: freshState({ pr: { state: 'CLOSED' } }) })
+executorRefuses('an already merged one is refused', ARGS, 'only an open pull request', { st: freshState({ pr: { state: 'MERGED' } }) })
+executorRefuses('a draft is refused', ARGS, 'is a draft', { st: freshState({ pr: { isDraft: true } }) })
+executorRefuses('an unreadable draft flag is refused', ARGS, 'cannot be shown ready', { st: freshState({ pr: { isDraft: null } }) })
+executorRefuses('an unreadable head is refused', ARGS, '40-character', { st: freshState({ pr: { headRefOid: 'short' } }) })
 executorRefuses(
   'a base other than the default branch is refused',
-  [String(PR)], 'the default branch is', { st: freshState({ pr: { baseRefName: 'release/1.x' } }) },
+  ARGS, 'the default branch is', { st: freshState({ pr: { baseRefName: 'release/1.x' } }) },
 )
 executorRefuses(
   'an unreadable default branch is refused',
-  [String(PR)], 'default branch could not be read', { st: freshState({ defaultBranch: null }) },
+  ARGS, 'default branch could not be read', { st: freshState({ defaultBranch: null }) },
 )
-executorRefuses('a directory with no origin remote is refused', [String(PR)], 'no readable origin remote', { cwd: norepo })
+executorRefuses('a directory with no origin remote is refused', ARGS, 'no readable origin remote', { cwd: norepo })
 
 // Never leave an armed future merge behind. Both are caught before the merge call.
 executorRefuses(
   'a pull request with auto-merge already armed is refused',
-  [String(PR)], 'auto-merge armed', { st: freshState({ pr: { autoMergeRequest: { enabledBy: { login: 'bot' } } } }) },
+  ARGS, 'auto-merge armed', { st: freshState({ pr: { autoMergeRequest: { enabledBy: { login: 'bot' } } } }) },
 )
 executorRefuses(
   'a base carrying a merge queue is refused before mutating',
-  [String(PR)], 'uses a merge queue', { st: freshState({ mergeQueue: { id: 'MQ_kwABC' } }) },
+  ARGS, 'uses a merge queue', { st: freshState({ mergeQueue: { id: 'MQ_kwABC' } }) },
 )
 executorRefuses(
   'an unreadable merge-queue status is refused',
-  [String(PR)], 'could not be read', { st: freshState({ graphqlFails: true }) },
+  ARGS, 'could not be read', { st: freshState({ graphqlFails: true }) },
 )
 
 // The last re-read of base and head, right before the merge, catches movement the first read
 // did not see - a retarget, or a push that raced the gates.
 executorRefuses(
   'a retarget between the check and the merge is refused',
-  [String(PR)], 'was retargeted to', { st: freshState({ recheckBase: 'release/9.x' }) },
+  ARGS, 'was retargeted to', { st: freshState({ recheckBase: 'release/9.x' }) },
 )
 executorRefuses(
   'a head moved between the check and the merge is refused',
-  [String(PR)], 'moved mid-run', { st: freshState({ recheckHead: 'c'.repeat(40) }) },
+  ARGS, 'moved mid-run', { st: freshState({ recheckHead: 'c'.repeat(40) }) },
 )
 
 // The merge ran, gh reported failure, and the confirming read shows a clean OPEN with nothing
 // armed. That is the one non-MERGED shape that is an authoritative failure rather than UNKNOWN.
-executorRefuses('a gh merge that fails and stays cleanly open is a failure', [String(PR)], '`gh pr merge` failed', {
+executorRefuses('a gh merge that fails and stays cleanly open is a failure', ARGS, '`gh pr merge` failed', {
   st: freshState({ mergeExit: 1, mergeStderr: 'X Pull request #12 is not mergeable: the head commit has changed\n' }),
   merges: 1,
 })
 
 // A MERGED read is our success only if the merged pull request is still the one we verified. A
 // foreign merge of the same number - a different head - is reported UNKNOWN, never claimed.
-executorRefuses('a MERGED read whose head no longer matches is not claimed as our merge', [String(PR)], 'no longer matches', {
+executorRefuses('a MERGED read whose head no longer matches is not claimed as our merge', ARGS, 'no longer matches', {
   st: freshState({ afterHead: 'd'.repeat(40) }), merges: 1,
 })
 
 // A non-MERGED read after the merge call is not automatically a failure. An armed auto-merge, an
 // armed or unreadable merge queue, or gh reporting success while the pull request is still open
 // are all UNKNOWN: the merge may still land, so a blind retry would be wrong.
-executorRefuses('an armed auto-merge after a non-MERGED read is UNKNOWN', [String(PR)], 'auto-merge armed', {
+executorRefuses('an armed auto-merge after a non-MERGED read is UNKNOWN', ARGS, 'auto-merge armed', {
   st: freshState({ mergeExit: 1, afterAutoMerge: { enabledBy: { login: 'bot' } } }), merges: 1,
 })
-executorRefuses('a merge queue armed only after the merge call is UNKNOWN', [String(PR)], 'merge-queue status is armed', {
+executorRefuses('a merge queue armed only after the merge call is UNKNOWN', ARGS, 'merge-queue status is armed', {
   st: freshState({ mergeExit: 1, afterMergeQueue: { id: 'MQ_after' } }), merges: 1,
 })
-executorRefuses('an unreadable merge queue after the merge call is UNKNOWN', [String(PR)], 'merge-queue status is unreadable', {
+executorRefuses('an unreadable merge queue after the merge call is UNKNOWN', ARGS, 'merge-queue status is unreadable', {
   st: freshState({ mergeExit: 1, afterGraphqlFails: true }), merges: 1,
 })
-executorRefuses('a merge that reports success but lands nothing is UNKNOWN, not a failure', [String(PR)], 'could not confirm', {
+executorRefuses('a merge that reports success but lands nothing is UNKNOWN, not a failure', ARGS, 'could not confirm', {
   st: freshState({ mergeLandsNothing: true }), merges: 1,
 })
 
 // A lost confirming read is UNKNOWN, not refused: the merge may or may not have landed.
 console.log('\nan unconfirmable outcome is reported UNKNOWN, not refused')
-const unknown = runExecutor([String(PR)], { st: freshState({ mergeExit: 1, confirmFails: true }) })
+const unknown = runExecutor(ARGS, { st: freshState({ mergeExit: 1, confirmFails: true }) })
 check('it reports it could not confirm', unknown.code === 1 && unknown.stderr.includes('could not confirm'), unknown.stderr)
 check('it does not claim the merge was refused', !unknown.stderr.includes('refused'), unknown.stderr)
 check('it merged once', unknown.merges.length === 1, JSON.stringify(unknown.merges))
@@ -503,15 +526,25 @@ console.log('\nthings the executor refuses before reading anything')
 // cwd is a directory with no origin remote on purpose: if the cron check ever moved below the
 // origin read, this case would refuse with "no readable origin remote" instead, so the
 // substring match is what proves the ordering - not just the absence of gh calls.
-const cron = runExecutor([String(PR)], { env: { FLOW_CRON_JOB: 'lint' }, cwd: norepo })
+const cron = runExecutor(ARGS, { env: { FLOW_CRON_JOB: 'lint' }, cwd: norepo })
 check('a scheduled job cannot merge, before even the origin read', cron.code === 1 && cron.stderr.includes('nobody is watching'), cron.stderr)
 check('and calls gh not at all', cron.calls.length === 0, JSON.stringify(cron.calls))
-const notANumber = runExecutor(['twelve'])
-check('a pull request number that is not a number exits 2', notANumber.code === 2, notANumber.stderr)
-const noArgs = runExecutor([])
-check('no argument exits 2', noArgs.code === 2, noArgs.stderr)
-const tooMany = runExecutor([String(PR), '--admin'])
-check('a second argument exits 2', tooMany.code === 2, tooMany.stderr)
+// Both arguments are required, and every rejection reads as a refusal that merged nothing.
+const argRefusal = (name, args) => {
+  const result = runExecutor(args)
+  check(name, result.code === 1 && result.stderr.includes('refused'), `code ${result.code}: ${(result.stderr || result.stdout).trim().split('\n')[0]}`)
+  check(`${name}: merged nothing`, result.merges.length === 0, JSON.stringify(result.merges))
+}
+argRefusal('no arguments at all', [])
+argRefusal('the pull request number alone', [String(PR)])
+argRefusal('the expected head alone', [head])
+argRefusal('a pull request number that is not a number', ['twelve', head])
+argRefusal('a third argument', [String(PR), head, '--admin'])
+argRefusal('an expected head that is not hex', [String(PR), 'not-a-sha'])
+argRefusal('an abbreviated expected head', [String(PR), head.slice(0, 12)])
+argRefusal('an uppercase expected head', [String(PR), head.toUpperCase()])
+const help = runExecutor(['--help'])
+check('--help still prints the usage and exits 0', help.code === 0 && help.stdout.includes('<pull-request-number> <expected-head-sha>'), `${help.code}: ${help.stdout}`)
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(bad === 0 ? '\nrelease path: ALL PASS' : `\nrelease path: ${bad} FAILURE(S)`)

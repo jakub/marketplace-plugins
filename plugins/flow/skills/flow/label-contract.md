@@ -24,7 +24,7 @@ stage and never a slash command; `smoke-label-contract.mjs` holds that line.
 | label | lane | color | description (verbatim) | set by | cleared by |
 |---|---|---|---|---|---|
 | `needs-triage` | intake | `fbca04` | Untriaged intake; exits only through the prep stage | human, tooling, lint | the prep stage |
-| `agent-found` | intake | `fbca04` | Scheduled-hunter quarantine: verified + deduped, not human-reviewed | hunters (`FLOW_SANCTION=hunter`) | the prep stage |
+| `agent-found` | intake | `fbca04` | Scheduled-hunter quarantine: verified + deduped, not human-reviewed | human or tooling | the prep stage |
 | `ready-for-agent` | staging | `0e8a16` | Design-hardened per the label contract; eligible for the issue stage | the prep stage only | claim step of the issue stage |
 | `in-progress` | active | `1d76db` | Claimed by an issue stage run: assignee + this label | the issue stage claim step | the land stage or escalation |
 | `needs-info` | blocked | `b60205` | Blocked on an answer only the human has | prep or run escalation | human answer + re-prep |
@@ -49,14 +49,11 @@ Rules:
   covers the window from the existing-run scan to the first push of the work branch, and the
   issue stage releases it there. After that the branch, worktree, and PR are what mark the run
   live. A tag still sitting on an issue is a stale-claim signal for a human, not healthy state.
-- `agent-found` is reserved ahead of need: no scheduled hunters exist yet, and nothing
-  else may file into that lane.
+- No agent files into `agent-found`. The no-backlog guard knows two sanctions, `prep` and
+  `land`, and neither of them writes that label.
 
-Retired - do not recreate:
-- `ready-for-human`: staging for human-shaped work; prep hardens the spec and the assignee
-  field records who builds it, so the lane stays empty.
-- `evidence-public`: a public-publish ack. Runs publish artifact evidence to the
-  tailnet-private plans host, always; there is nothing to ack.
+Retired labels are not named here on purpose: the set above is exhaustive, so anything else
+is drift and the lint never recreates it.
 
 ## The ready-for-agent contract
 

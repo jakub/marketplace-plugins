@@ -17,76 +17,70 @@ closure. Upstream ships 36 skills; the rest are deliberately not carried here.
 LOCAL MODIFICATIONS
 -------------------
 
-These files are NOT verbatim. Five patches apply on top of upstream, in order:
+These files are NOT verbatim. Four patches apply on top of upstream, in order:
 
     patches/0001-lowercase-doc-filenames.patch
-    patches/0002-askuserquestion-rounds.patch
+    patches/0002-conditional-round-delivery.patch
     patches/0003-drop-context-map.patch
     patches/0004-enable-model-invocation.patch
-    patches/0005-capability-conditional-delivery.patch
 
-0001 lowercases the doc-artifact names this repo standardises on - CONTEXT.md ->
-context.md, CONTEXT-MAP.md -> context-map.md - and renames the skill's own
-reference docs to match (ADR-FORMAT.md -> adr-format.md, CONTEXT-FORMAT.md ->
-context-format.md). On a case-sensitive filesystem the uppercase names would be
-separate, competing files, so this is a correctness fix rather than a cosmetic one.
-It touches `domain-modeling` only.
+0001 lowercases the doc-artifact name this repo standardises on - CONTEXT.md ->
+context.md - and renames the skill's own reference docs to match (ADR-FORMAT.md ->
+adr-format.md, CONTEXT-FORMAT.md -> context-format.md). On a case-sensitive filesystem
+the uppercase names would be separate, competing files, so this is a correctness fix
+rather than a cosmetic one. It touches `domain-modeling` only. CONTEXT-MAP.md keeps its
+uppercase name here, because 0003 deletes every line that names it and renaming a doomed
+line only makes the two patches fight.
 
-0002 changes how `grilling` delivers a round, not how it thinks. Upstream asks the
-whole frontier as a numbered prose block with emoji headers, which leaves the user
-writing an essay to answer it. This routes every round through the AskUserQuestion
-tool instead: up to 4 questions per call, 2-4 selectable options each, the
-recommendation first. Upstream's design-tree and frontier model is kept intact. It
-touches `grilling/SKILL.md` only.
+0002 changes how `grilling` delivers a round and how `grill-with-docs` composes, not how
+either one thinks. Upstream asks the whole frontier as a numbered prose block with emoji
+headers, which leaves the user writing an essay to answer it. A round now goes through the
+AskUserQuestion tool when that tool is in the model's list: up to 4 questions per call, 2-4
+selectable options each, the recommendation first. Codex has no AskUserQuestion and no
+Skill tool, so the same text says what to do without them - ask one question per turn with
+up to 4 numbered options and end the turn, which keeps the round-per-turn rhythm and still
+avoids the numbered essay this patch exists to prevent. Upstream's design-tree and frontier
+model is kept intact. The check is inline in the vendored text because a model can read its
+own tool list. The same patch gives `grill-with-docs`'s one-line body a second sentence:
+without a Skill tool, read `../grilling/SKILL.md` and `../domain-modeling/SKILL.md` and
+follow both. Those paths are relative to the file that names them, which is why they climb
+a level. Its last hunk flips `allow_implicit_invocation` in
+`grill-with-docs/agents/openai.yaml` from false to true, which is the Codex half of the
+decision 0004 makes on the Claude side; upstream ships that flag paired with the
+`disable-model-invocation: true` that 0004 removes.
 
 0003 removes the `context-map.md` mechanism from `domain-modeling`: the multi-context
 directory tree in SKILL.md, and the map file plus the structure-inference list in
 context-format.md. We do not use a map file; the `## Contexts` section of a repo's
 AGENTS.md is the map. Note what it deliberately does NOT do. It does not assert that a
-repo is single-context, because flow's prep.md forbids inferring that from a missing
+repo is single-context, because flow's prep stage forbids inferring that from a missing
 map file, and it keeps "when multiple contexts exist, infer which one the topic relates
 to", which still applies when the map lives elsewhere. It also rewords SKILL.md's
 "Most repos have a single context" lead-in - the surviving half of a deleted contrast -
-to stay neutral about context count. 0001 still lowercases
-CONTEXT-MAP.md; that hunk builds the intermediate state 0003 then deletes, so the order
-matters.
+to stay neutral about context count. The blocks it deletes carry `context.md` in the
+spelling 0001 gave them, so it applies after 0001 and nowhere else.
 
-0004 drops `disable-model-invocation: true` from `grill-with-docs`'s frontmatter, so
-the model can invoke the skill itself instead of waiting for the user to type the
-slash command. It touches `grill-with-docs/SKILL.md` only, and within it only the
-frontmatter; the body it leaves verbatim, and 0005 is what later edits that body.
-SKILL.md keeps its uppercase name - the skill loader discovers skills by that exact
-filename.
-
-0005 makes the two host-specific mechanisms conditional, so the skills still work
-where those mechanisms do not exist. Codex has no AskUserQuestion tool and no Skill
-tool, and a human can invoke either skill directly on either host. `grilling` now
-says to use AskUserQuestion when it is in the tool list and, without it, to ask one
-question per turn with numbered options and end the turn - the round-per-turn rhythm
-survives, and neither host gets the numbered essay 0002 exists to prevent.
-Upstream's one-line `grill-with-docs` body gains a second sentence: without a Skill
-tool, read `../grilling/SKILL.md` and `../domain-modeling/SKILL.md` and follow both.
-Those paths are relative to the file that names them, which is why they climb a
-level. The third hunk flips `allow_implicit_invocation` in
-`grill-with-docs/agents/openai.yaml` from false to true. Upstream ships that flag
-paired with the `disable-model-invocation: true` that 0004 removes, so this is the
-same decision on the Codex side; without it the model can invoke the skill on Claude
-and not on Codex.
+0004 drops `disable-model-invocation: true` from `grill-with-docs`'s frontmatter, so the
+model can invoke the skill itself instead of waiting for the user to type the slash
+command. It touches that one file's frontmatter, and the body line it carries as context
+is the sentence 0002 wrote, so it applies after 0002. SKILL.md keeps its uppercase name -
+the skill loader discovers skills by that exact filename.
 
 RE-SYNCING
 ----------
 
     1. Copy the three upstream directories over skills/
     2. git apply patches/0001-lowercase-doc-filenames.patch
-    3. git apply patches/0002-askuserquestion-rounds.patch
+    3. git apply patches/0002-conditional-round-delivery.patch
     4. git apply patches/0003-drop-context-map.patch
     5. git apply patches/0004-enable-model-invocation.patch
-    6. git apply patches/0005-capability-conditional-delivery.patch
-    7. Update the commit SHA above; regenerate any patch that stops applying
+    6. Update the commit SHA above; regenerate any patch that stops applying
 
-To regenerate: commit the upstream-verbatim state, redo the change on top of it,
-and `git diff -M` the two commits. Verify by applying every patch to a fresh copy
-of upstream and diffing the result against skills/. They must be identical.
+The patches are ordinary `git diff` output with `a/plugins/grill/skills/...` paths, so
+apply them from the repo root. To regenerate one: commit the state it applies to, redo the
+change on top of that, and `git diff -M` the two commits. Verify the whole chain by
+applying it to a fresh copy of upstream in a scratch directory and diffing the result
+against skills/. They must be byte-identical.
 
 ---------------------------------------------------------------------------
 

@@ -16,9 +16,9 @@
 // It reads the table, and if the parse comes back short the run goes red rather than reporting
 // that zero rows are all fine: a checker that matches nothing has to look like a failure.
 //
-// The same checker runs over one directory per way the tuple goes wrong under
-// scripts/fixtures/label-contract/, plus the two cases built by mutating the real file, so a
-// green run also means the checker can still fail and says where.
+// The same checker runs over the broken taxonomies at the bottom - one per way the tuple goes
+// wrong, each built by mutating a mini taxonomy or the real file - so a green run also means
+// the checker can still fail and says where.
 // Run: node plugins/flow/scripts/smoke-label-contract.mjs
 
 import assert from 'node:assert/strict'
@@ -26,11 +26,12 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { repeats } from './lib/conformance.mjs'
-
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CONTRACT = join(ROOT, 'skills', 'flow', 'label-contract.md')
-const FIXTURE = join(ROOT, 'scripts', 'fixtures', 'label-contract')
+
+// Every value that shows up twice in a list. One line, so it lives here rather than in a
+// library shared with lints that have nothing else in common with this one.
+const repeats = (list) => [...new Set(list.filter((v, i) => list.indexOf(v) !== i))]
 
 // The taxonomy is nine lifecycle labels and three type modifiers. The floors are what tells a
 // failed parse apart from a passing file: below either one the checker reports the parse and
@@ -201,35 +202,75 @@ for (const row of rows) lanes.set(row.lane, row.color)
 ok(`${lanes.size} lanes, one color each: ${[...lanes].map(([lane, color]) => `${lane} ${color}`).join(', ')}`)
 
 console.log('the checker can still fail')
-// One directory per way the tuple goes wrong, each a whole contract that is valid but for the
-// one defect it is named for, plus two cases built by mutating the real file: their whole
-// content would be a copy of that file with one cell changed, and a directory holding that copy
-// would rot the day the real taxonomy grows a row. Every case asserts the problem count as well
-// as the reason, so a fixture that drifts into a second defect reads as a failure and not as
-// extra proof.
-const mutate = (label, from, to) => {
-  const text = contract.replace(from, to)
-  assert.notEqual(text, contract, `${label} changed nothing in the real contract, so it proves nothing`)
+// Two sources for the broken cases. A mini taxonomy, written out once below and mutated one
+// cell per case, covers the defects that live in a single row. The structural cases mutate the
+// real file instead, because a stored copy of it with one cell changed would rot the day the
+// real taxonomy grows a row. Every case asserts the problem count as well as the reason, so a
+// case that drifts into a second defect reads as a failure and not as extra proof.
+const MINI = `# Mini label contract
+
+A taxonomy that is legal in every cell. Each case below changes exactly one of them, and the
+smoke requires that one problem and no other. Nothing loads this at runtime.
+
+## Taxonomy (the state machine)
+
+| label | lane | color | description (verbatim) | set by | cleared by |
+|---|---|---|---|---|---|
+| \`mini-triage\` | intake | \`fbca04\` | Untriaged intake; exits only through the prep stage | human | the prep stage |
+| \`mini-found\` | intake | \`fbca04\` | Hunter quarantine: verified and deduped, not human-reviewed | hunters | the prep stage |
+| \`mini-ready\` | staging | \`0e8a16\` | Design-hardened per the contract; eligible for the issue stage | the prep stage | the issue stage |
+| \`mini-active\` | active | \`1d76db\` | Claimed by an issue stage run: assignee + this label | the issue stage | the land stage |
+| \`mini-info\` | blocked | \`b60205\` | Blocked on an answer only the human has | prep escalation | human answer |
+| \`mini-human\` | blocked | \`b60205\` | Escalated: a real blocker survived the fix loop | the issue stage | human review |
+| \`mini-rebase\` | blocked | \`b60205\` | Worktree conflicts with moved main | the issue stage | human rebase |
+| \`mini-wontfix\` | buried | \`6e6e6e\` | Buried by human decision; agents never resurrect | human | human |
+| \`mini-deferred\` | buried | \`6e6e6e\` | Consciously parked; agents never resurrect | human | human |
+
+Type modifiers - orthogonal, stack with anything, stock colors and descriptions:
+\`mini-bug\` (\`d73a4a\`), \`mini-enhancement\` (\`a2eeef\`), \`mini-documentation\` (\`0075ca\`).
+
+## Rules
+
+- Every open issue carries exactly one lifecycle label.
+- The taxonomy is closed: the table plus the three modifiers is the whole legal set.
+`
+const mutate = (label, source, from, to) => {
+  const text = source.replace(from, to)
+  assert.notEqual(text, source, `${label} changed nothing in its source, so it proves nothing`)
   return text
 }
+const mini = (label, from, to) => mutate(label, MINI, from, to)
 const CASES = [
   {
-    dir: 'too-long',
+    // One description past the 100-code-point ceiling: GitHub accepts it and truncates it, so
+    // no reviewer ever reads the end of it.
+    label: 'over-long description',
+    text: () => mini('the over-long case', 'Design-hardened per the contract; eligible for the issue stage',
+      'Design-hardened per the contract and eligible for the issue stage, with every reason it got there spelled out at length'),
     name: 'has a description of 119 code points, over the 100-point ceiling',
     count: 1,
   },
   {
-    dir: 'slash-command',
+    // A description that still spells one host's slash command, which reconciliation would
+    // publish into label metadata every reader of every issue sees.
+    label: 'slash command in a description',
+    text: () => mini('the slash-command case', 'exits only through the prep stage', 'exits only through /flow:prep'),
     name: 'has a description containing "/"',
     count: 1,
   },
   {
-    dir: 'bad-color',
+    // Six characters that read like a color and are not one. The row sits alone in its lane, so
+    // the one-lane-one-color rule stays quiet and only the hex check can report it.
+    label: 'color that is not hex',
+    text: () => mini('the bad-color case', '`0e8a16`', '`0e8a1g`'),
     name: 'carries color "0e8a1g", which is not six lowercase hex digits',
     count: 1,
   },
   {
-    dir: 'duplicate-name',
+    // Two rows under one name, lane and color untouched, so one label would be written twice
+    // with two different descriptions and the last write would win.
+    label: 'duplicate label name',
+    text: () => mini('the duplicate-name case', '`mini-rebase`', '`mini-human`'),
     name: 'label "mini-human" appears more than once in the taxonomy',
     count: 1,
   },
@@ -238,7 +279,7 @@ const CASES = [
     // every name is untouched, so nothing but the one-lane-one-color rule can catch it, and
     // reconciliation would happily paint two labels of one lane two colors.
     label: 'lane-color conflict',
-    text: () => mutate('the lane-color case', '`b60205`', '`b6020a`'),
+    text: () => mutate('the lane-color case', contract, '`b60205`', '`b6020a`'),
     name: 'carries 2 colors (b60205, b6020a); one lane is one color',
     count: 1,
   },
@@ -246,7 +287,7 @@ const CASES = [
     // The real file with every table row deleted, heading and modifier line intact. A parser
     // that shrugs at zero rows would report no problems and read green forever.
     label: 'no table at all',
-    text: () => mutate('the empty-table case', /^\|.*$/gm, ''),
+    text: () => mutate('the empty-table case', contract, /^\|.*$/gm, ''),
     name: '0 table rows and 3 type modifiers',
     count: 1,
   },
@@ -257,19 +298,20 @@ const CASES = [
     // text where nothing after the heading is real. The anchored close leaves the fence open,
     // drops the table and the modifiers, and the parse comes back short.
     label: 'non-closing fence',
-    text: () => mutate('the non-closing-fence case', '(never resurrected by agents)\n```',
+    text: () => mutate('the non-closing-fence case', contract, '(never resurrected by agents)\n```',
       '(never resurrected by agents)\n```still-code'),
     name: 'did not parse: 0 table rows and 0 type modifiers',
     count: 1,
   },
 ]
-for (const { dir, label, text, name, count } of CASES) {
-  const which = dir ?? label
-  const found = labelProblems(dir ? readFileSync(join(FIXTURE, dir, 'label-contract.md'), 'utf8') : text())
-  assert.ok(found.length > 0, `the checker passed ${which}, a case built to fail`)
-  assert.equal(found.length, count, `${which} reported ${found.length} problems, expected ${count}: ${found.join('; ')}`)
-  assert.ok(found.some((problem) => problem.includes(name)), `${which} failed without naming "${name}": ${found.join('; ')}`)
-  ok(`the checker fails ${which} and names the defect: ${found[0]}`)
+assert.deepEqual(labelProblems(MINI), [], 'the mini taxonomy every case mutates is itself broken')
+ok('the mini taxonomy the cases mutate passes clean')
+for (const { label, text, name, count } of CASES) {
+  const found = labelProblems(text())
+  assert.ok(found.length > 0, `the checker passed ${label}, a case built to fail`)
+  assert.equal(found.length, count, `${label} reported ${found.length} problems, expected ${count}: ${found.join('; ')}`)
+  assert.ok(found.some((problem) => problem.includes(name)), `${label} failed without naming "${name}": ${found.join('; ')}`)
+  ok(`the checker fails ${label} and names the defect: ${found[0]}`)
 }
 
 console.log(`\nlabel contract: ALL PASS (${checks} checks)`)

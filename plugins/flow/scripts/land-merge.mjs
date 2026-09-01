@@ -3,16 +3,20 @@
 //
 // This is the same shape as scripts/lint-actions.mjs: the model proposes, deterministic code
 // re-derives the conditions from fresh state and decides. The session runs
-// `node <flow>/scripts/land-merge.mjs <pr-number>` and that number is the whole of what this
-// program takes from its caller. Everything else it needs - which host, which repository,
-// which branch, which head, whether the pull request is open, whether it is a draft, what it
-// targets - it reads for itself from the origin remote and from GitHub.
+// `node <flow>/scripts/land-merge.mjs <pr-number> <expected-head-sha>` and those two values are
+// the whole of what this program takes from its caller. Everything else it needs - which host,
+// which repository, which branch, whether the pull request is open, whether it is a draft, what
+// it targets - it reads for itself from the origin remote and from GitHub.
 //
-// The authorization is the same one the Claude host has always used: the human explicitly
-// asked to land this pull request, and the stage's own gates decided the merge is warranted.
-// There is no approval file and no ceremony (an earlier design had a human-written release
-// sanction here; jakub retired it 2026-08-29 - the cost per land outweighed what it bought at
-// this trust level, and the Claude path never had it). What this program adds over a raw
+// The second argument is the head every gate upstream inspected, and it is what makes the pin
+// mean something. Reading the head here and merging with `--match-head-commit` on that same
+// value proves only that the pull request did not move during this program's own run: if it
+// moved from the gated commit A to some B before the first read, the executor would merge B
+// consistently and confidently. So GitHub's head has to equal the head the caller was gated on,
+// or nothing merges and the caller re-runs its gates against the new head.
+//
+// The authorization is the human's explicit request to land this pull request plus the stage's
+// own gates, and there is nothing else: no approval file, no ceremony. What this adds over a raw
 // `gh pr merge` is that nothing about the merge is taken from the conversation: the facts are
 // re-derived, the merge is pinned to the head that was just verified, and the outcome is
 // proven by re-reading rather than inferred from an exit code.
@@ -52,12 +56,13 @@ const READ_TIMEOUT_MS = 60_000
 const MERGE_TIMEOUT_MS = 120_000
 const GIT_TIMEOUT_MS = 5_000
 
-const USAGE = `land-merge.mjs <pull-request-number>
+const USAGE = `land-merge.mjs <pull-request-number> <expected-head-sha>
 
-Merges one pull request, once. The number is the only thing this takes from you: the host,
-the repository, the branch, the head SHA, the pull request state and the merge target are all
-re-read from the origin remote and GitHub, the merge is pinned to that verified head with
---match-head-commit, and the outcome is confirmed by re-reading the pull request.
+Merges one pull request, once. The expected head is the full 40-character SHA your gates ran
+against; if GitHub reports a different head, nothing merges. The host, the repository, the
+branch, the pull request state and the merge target are all re-read from the origin remote and
+GitHub, the merge is pinned to the verified head with --match-head-commit, and the outcome is
+confirmed by re-reading the pull request.
 `
 
 const SHA = /^[0-9a-f]{40}$/
@@ -140,12 +145,18 @@ export function landMerge({ argv, env, cwd, runGh }) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
     return { code: 0, stdout: USAGE, stderr: '' }
   }
-  if (argv.length !== 1) {
-    return { code: 2, stdout: '', stderr: `land-merge: expected one argument, the pull request number.\n\n${USAGE}` }
+  // Two arguments, both required. A missing expected head is not a thing to default: the whole
+  // point of the second argument is that it comes from outside this program.
+  if (argv.length !== 2) {
+    return refuse(`expected two arguments, the pull request number and the head SHA your gates ran against.\n\n${USAGE}`)
   }
   const prNumber = Number(argv[0])
   if (!Number.isInteger(prNumber) || prNumber <= 0) {
-    return { code: 2, stdout: '', stderr: `land-merge: ${JSON.stringify(argv[0])} is not a pull request number.\n\n${USAGE}` }
+    return refuse(`${JSON.stringify(argv[0])} is not a pull request number.\n\n${USAGE}`)
+  }
+  const expectedHead = argv[1]
+  if (typeof expectedHead !== 'string' || !SHA.test(expectedHead)) {
+    return refuse(`${JSON.stringify(argv[1])} is not a full 40-character lowercase commit SHA.\n\n${USAGE}`)
   }
 
   const identity = identityOfRemote(tryGit(['remote', 'get-url', 'origin'], cwd))
@@ -179,6 +190,12 @@ export function landMerge({ argv, env, cwd, runGh }) {
   const head = view.headRefOid
   if (typeof head !== 'string' || !SHA.test(head)) {
     return refuse(`the head of #${prNumber} did not read back as a 40-character lowercase SHA (found ${JSON.stringify(view.headRefOid ?? null)})`)
+  }
+  // The one check that makes --match-head-commit worth anything. Everything below pins to
+  // `head`, which from here on is the same commit the caller was gated on.
+  if (head !== expectedHead) {
+    return refuse(`head moved (expected ${expectedHead}, GitHub reports ${head}). ` +
+      `#${prNumber} changed after the gates ran, so run them again against the new head and land that`)
   }
   const base = view.baseRefName
   if (typeof base !== 'string' || base.trim() === '') return refuse(`the base branch of #${prNumber} could not be read`)
@@ -229,7 +246,8 @@ export function landMerge({ argv, env, cwd, runGh }) {
   }
 
   // argv, not a shell line. There is no quoting to get wrong and nothing for a later reader to
-  // re-parse. --match-head-commit is GitHub's own re-check of the SHA that was just verified.
+  // re-parse. --match-head-commit is GitHub's own re-check of the SHA that was just verified,
+  // which is the caller's expected head: the argument check above is what makes those equal.
   const mergeResult = runGh(
     ['pr', 'merge', String(prNumber), '--repo', identity.full, '--squash', '--match-head-commit', head],
     MERGE_TIMEOUT_MS,

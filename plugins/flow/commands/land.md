@@ -6,4 +6,4 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(docker:*), Bash(ls:*), Read, Edit, 
 
 # /flow:land - the human gate
 
-The stage itself lives in the `land-stage` skill, so every host runs the same gates. Read `${CLAUDE_PLUGIN_ROOT}/skills/land-stage/profiles/claude.md` first, then `${CLAUDE_PLUGIN_ROOT}/skills/land-stage/SKILL.md`. Execute the stage against `$ARGUMENTS` under the bindings that profile declares for each gate.
+The stage lives in the `land-stage` skill. Read `${CLAUDE_PLUGIN_ROOT}/skills/land-stage/SKILL.md` and execute it against `$ARGUMENTS`, following the Claude Code subsection of its host mechanics.

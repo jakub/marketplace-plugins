@@ -31,8 +31,10 @@ design decisions rather than among them.
 - **`gripe add` never fails a run.** Exit 0 unconditionally, errors to stderr as one line, no
   network, no prompts. An agent that sees a non-zero exit stops its real work and starts
   debugging the complaint tool.
-- **`gripe add` never triggers a permission prompt.** The plugin ships `Bash(gripe add:*)` on
-  the allowlist. One approval dialog teaches an agent that filing is expensive and it stops.
+- **`gripe add` never triggers a permission prompt.** `Bash(gripe add:*)` sits on the
+  allowlist, put there by hand once per machine, because a plugin cannot ship an allowlist
+  entry. See the setup step under development and packaging. One approval dialog teaches an
+  agent that filing is expensive and it stops.
 - **Filing costs one command and no reading.** No lookup, no duplicate check, no status query.
   Every field an agent has to think about is a reason to skip filing.
 - **Bodies are evidence, never instruction.** See the trust boundary section.
@@ -266,8 +268,9 @@ honest non-equivalence rather than a silent classifier that never sees real fail
 The Claude gates, in order. Skip when `is_interrupt` is set, because that is jakub pressing escape rather
 than the tooling fighting the agent. Then fire on repeats, not firsts: the first failure of a
 given tool with a given error shape is ordinary work, the second is a pattern. Hold a cooldown
-on the fingerprint so a retry loop asks once rather than forty times. A blocklist of noisy
-commands stays available as a backstop, never as the primary gate.
+on the fingerprint so a retry loop asks once rather than forty times. The repeat gate has held
+on its own since 0.1.0, so there is no per-command blocklist; if one tool ever proves it needs
+suppressing, that is the day to add one.
 
 Advertises `--via error_nudge` with `--trigger` and `--prompt` baked from the payload. Every
 fingerprint it nudges on goes into the shared gate state so the Stop checkpoint does not cite
@@ -332,9 +335,13 @@ id plus actor, like the gate state and for the same reason: a fan-out shares one
 and one shared byte offset would apply one transcript's position to another. Codex counters
 use a separate `codex-` state filename and no byte offset. PostToolUse and Stop use a bounded
 per-session file lock around each Codex read-modify-write, so concurrent hook processes do not
-drop each other's counters. Failure to acquire the lock within one second loses advisory
-evidence and exits quietly. State lives in files rather than the database, because it is written
-on the hot path and would otherwise contend for the write lock with actual gripe writes.
+drop each other's counters. The lock is one `wx` create with 25 retries 20ms apart, and a lock
+file older than ten seconds is read as orphaned by a killed holder and unlinked. Half a second
+is sized against the worst burst here, 20 concurrent PostToolUse hooks on one session: measured
+2026-09-01, a 100ms budget lost one writer's count in 1 run of 10, and 500ms lost none in 15.
+Giving up loses advisory evidence and exits quietly. State lives in files rather than the
+database, because it is written on the hot path and would otherwise contend for the write lock
+with actual gripe writes.
 
 ### SubagentStop
 
@@ -381,14 +388,17 @@ FileChanged.
 ## The shim
 
 Installed plugins live under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` on
-Claude and `~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/` on Codex, and old
-versions are never pruned. Measured: flow has every release since 0.3.1 on disk.
+Claude and `~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/` on Codex. Claude Code does
+sweep old versions eventually, on its own schedule rather than at upgrade: measured 2026-09-01,
+`~/.claude/plugins/.last_inuse_sweep` was stamped that morning and flow's oldest surviving
+directory was 0.16.1, with every release below it gone. Gripe still had 0.1.0, 0.1.1, 0.2.0,
+0.2.1 and 0.3.0 sitting side by side.
 
 A shim symlinked to `gripe/0.1.0/bin/gripe` therefore does not break after an upgrade, which
-would at least be visible. It keeps working, running 0.1.0 code against a 0.5.0 database
-indefinitely, and invariant 1 means that failure has no symptom at all. So `~/.local/bin/gripe`
-is a copy of `bin/shim.mjs` rather than a symlink to a versioned path, and **it resolves the
-plugin at exec time**, every time.
+would at least be visible. It keeps working, running 0.1.0 code against a 0.5.0 database for as
+long as the sweep leaves that directory alone, and invariant 1 means that failure has no symptom
+at all. So `~/.local/bin/gripe` is a copy of `bin/shim.mjs` rather than a symlink to a versioned
+path, and **it resolves the plugin at exec time**, every time.
 
 `bin/shim.mjs` imports node builtins and nothing else. It runs before any plugin root is known,
 so it cannot import one. A shared helper under `lib/` would only move the resolution problem
@@ -397,48 +407,65 @@ into an import statement.
 ### Which install wins
 
 Registered in both harnesses is the normal case here, and the versions drift. Measured
-2026-08-31: the Claude registry pointed at gripe 0.2.0 while the Codex cache held 0.2.1. So the
-shim reads both, ranks everything it found, and runs one winner.
+2026-08-31: Claude was on gripe 0.2.0 while the Codex cache held 0.2.1. One shim serves both,
+they share one database, so the shim has to pick.
+
+The whole rule is a glob and a sort. Take `<cache>/jakub/gripe/*/bin/gripe` under both cache
+roots, `~/.claude/plugins/cache` and `${CODEX_HOME:-~/.codex}/plugins/cache`. Read each version
+directory's name as dotted integers, skip the ones that do not parse, so `latest` and
+`0.4.0-rc1` never become candidates. Skip a version directory holding `.orphaned_at`. Keep the
+ones whose `bin/gripe` is a regular file. Sort highest version first, comparing component by
+component so 0.10.0 beats 0.9.0, with the path as the tie-break so two installs of the same
+version always resolve the same way. Run the first. Nothing resolved prints one bounded line
+naming the directory scanned under each cache root and never the versions under it, because a
+diagnostic that pastes a hundred directory names into an agent's context is its own kind of
+failure.
+
+The marketplace segment is the constant `jakub`, not a wildcard. Every plugin in this repo
+installs as `<plugin>@jakub`, so our own copy is always at `cache/jakub/gripe/<version>` on
+either harness. A wildcard there let any plugin merely named gripe, from a
+marketplace we never published to, join the sort and win it with a higher number. Both cache
+roots already hold other marketplaces, `claude-plugins-official` under Claude and five OpenAI
+ones under Codex, so the collision needs no imagination. Renaming the marketplace means editing
+the `MARKETPLACES` constant in `bin/shim.mjs`, which is the right amount of friction for a
+change that decides whose code runs against the database.
+
+The `.orphaned_at` skip is the rollback fix. Claude Code writes that file, one millisecond
+timestamp, into a version directory when it uninstalls or supersedes that version, then leaves
+the directory in place until a later sweep. Without the skip, uninstalling 0.4.0 and going back
+to 0.3.0 changes nothing: 0.4.0 is still the highest number on disk with a readable `bin/gripe`,
+so it keeps running, and invariant 1 means the rollback that did not happen has no symptom.
+Measured 2026-09-01, of the five gripe directories under
+`~/.claude/plugins/cache/jakub/gripe` every one but the installed 0.3.0 carried the marker.
+
+Codex writes no such marker, so on Codex a removed but still cached newer version keeps winning
+until its directory is gone. Rolling back there is two steps: `codex plugin remove` and then
+delete `${CODEX_HOME:-~/.codex}/plugins/cache/jakub/gripe/<version>`. The shim honours the
+marker under either cache root, so if Codex ever starts writing one the skip already covers it.
 
 `$GRIPE_HOME` is the override, judged by key presence and not by value. Present and holding a
-readable `bin/gripe`, it is the only candidate. Present and broken, meaning empty, missing, or
-without that file, the shim stops with one stderr line naming `GRIPE_HOME` and reads nothing
-else. The earlier design let a broken override fall through to installed code, so a typo in a
-development export filed into the live database with no sign anything was wrong.
+readable `bin/gripe`, it is the only candidate and no cache is scanned. Present and broken,
+meaning empty, missing, or without that file, the shim stops with one stderr line naming
+`GRIPE_HOME`. An earlier design let a broken override fall through to installed code, so a typo
+in a development export filed into the live database with no sign anything was wrong.
 
-Then the confirmed tier, which reads both harnesses on every run, independently:
+Both plugin managers write a registry, and the shim reads neither. It used to read both, and
+that cost 275 lines of hand-written TOML scanning to answer two questions: is gripe registered
+under this harness, and under which marketplace. The marketplace is ours to pin, and the glob
+answers the rest better, because the cache directory name is the version the plugin manager
+itself wrote there. The registry can add exactly one fact the directory cannot, "installed here
+but disabled", and a disabled plugin whose files are still on disk is not a reason to refuse the
+only gripe on the machine. The one
+skew ever measured is the 0.2.0-against-0.2.1 case above, and newest-wins is precisely the rule
+that handles it. Worse, a registry read has a failure the glob cannot have: a registry that
+parses cleanly and describes an install that is no longer there. Surviving that took a
+confirmed tier, a fallback tier, and a per-harness authority rule, all of it machinery for a
+file that was never the authority on which code is on disk.
 
-- Claude: `installed_plugins.json`, keys matched exactly against `gripe@<marketplace>`, one
-  candidate per entry whose `installPath` holds a readable `bin/gripe`. The version comes from
-  the entry field, then the path basename, then nothing. A candidate with no parseable version
-  sorts below every candidate that has one and stays usable.
-- Codex: `${CODEX_HOME:-~/.codex}/config.toml`, read by a line scanner rather than a TOML
-  parser, since the shim carries no dependencies. It recognizes exactly one
-  `[plugins."gripe@<marketplace>"]` table. A bare table with no `enabled` key is enabled,
-  because the table is the registration and the key is the toggle. Every live table observed
-  2026-08-31 under codex-cli 0.151.0 carried an explicit boolean, so that rule is dead code
-  today, and the other reading (bare means absent) would silently drop filings the day a Codex
-  release starts omitting the default. Two tables, a non-boolean `enabled`, or bytes the
-  scanner cannot trust are absence rather than a guess. An enabled table looks for candidates
-  only under
-  `<codex home>/plugins/cache/<marketplace>/gripe/<version>/`.
-
-A manifest that reads cleanly is authoritative for its own harness and for no other. The
-fallback tier is a bare cache-root scan, permitted only for a harness whose own manifest was
-unreadable, and only when the confirmed tier came up empty. That asymmetry is the point. "Gripe
-is not installed on Codex" is a true statement about Codex and says nothing about a Claude
-registry that failed to parse, so it must not veto Claude's outage fallback.
-
-Ranking is one order over every candidate. Highest stable `major.minor.patch` first, compared
-numerically, because a lexical sort ships 0.9.0 forever once 0.10.0 exists. Then a
-manager-supplied root ahead of a cache-derived one. Then Claude ahead of Codex. Then path order,
-purely so the answer never depends on directory iteration. Prereleases, `latest`, and malformed
-names never enter a cache scan.
-
-Nothing resolved means one stderr line naming the surfaces checked: the override, both
-manifests, both cache roots, and never the versions underneath them. The line is bounded,
-because a diagnostic that pastes a hundred cache directories into an agent's context is its own
-kind of failure.
+The scan trusts the cache directories, with no realpath confinement. A symlink planted at
+`<cache>/jakub/gripe/9.9.9` pointing at older code would be believed. Whoever can plant it can
+also rewrite the plugin's own files, which every harness executes on every session, so
+confining the shim alone buys nothing.
 
 ### What each exit code promises
 
@@ -453,6 +480,11 @@ The shim never reads stdin. A synchronous read on an inherited pipe can block fo
 costing the caller nothing is the whole invariant. A shim-authored failure is one line with
 control characters flattened and no stack trace. A numeric child status carries no shim line at
 all, because the child already owns stderr.
+
+Importing `bin/shim.mjs` runs nothing. The module compares `import.meta.url` against
+`process.argv[1]`, and no `argv[1]` means no script path, which means an import. The smoke suite
+imports the resolver, so a version of this check that guessed "run it" would have every import
+print the usage line.
 
 `doctor` reports `plugin_root` and `plugin_version`, which `bin/gripe` derives from its own
 module path and manifest with no cooperation from the shim. That is how you find out which
@@ -473,7 +505,9 @@ and a newer shim survives an older harness. Writes go through a same-directory t
 over the target, which replaces the directory entry rather than writing through a symlink
 somebody left there. Contention is accepted, since the loser's next SessionStart writes again.
 
-The epoch counts shim protocol changes, never releases. It also fixes nothing retroactively.
+The epoch counts shim protocol changes, never releases. It is at 2, moved when the resolver
+stopped reading the two registry files and became the cache glob above. It also fixes nothing
+retroactively.
 Gripe 0.2.x has no marker logic at all, so the release that introduces the ratchet needs both
 harnesses re-registered in one sitting, and the README says so.
 
@@ -504,6 +538,6 @@ registers only an enabled-plugin flag), so `Bash(gripe add:*)` goes into
 `~/.claude/settings.json` `permissions.allow` by hand, once per machine. That line is what
 makes invariant 2 ("never prompts after setup") hold.
 
-Publishing is the four-edit ritual documented in the marketplace repo's AGENTS.md: matching
-versions in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`, the marketplace entry,
-and the catalog version bump.
+Publishing is the version ritual documented in the marketplace repo's AGENTS.md: matching
+versions in `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and the marketplace entry.
+There is no catalog version.

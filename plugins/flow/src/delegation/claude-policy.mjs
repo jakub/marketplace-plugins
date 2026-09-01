@@ -80,16 +80,13 @@ export function sensitiveReadPaths(cwd = process.cwd()) {
 
 export function resolveExecutablePaths(executables) {
   const paths = new Set()
-  const suffixes = process.platform === 'win32'
-    ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
-    : ['']
   for (const executable of executables) {
     const candidates = isAbsolute(executable) || executable.includes(sep)
       ? [resolve(executable)]
       : (process.env.PATH || '').split(delimiter).flatMap((directory) =>
           // POSIX treats an empty PATH entry as the current directory. Flow deliberately
           // skips it so an untrusted worktree cannot replace a provider executable.
-          directory ? suffixes.map((suffix) => resolve(directory, `${executable}${suffix}`)) : [])
+          directory ? [resolve(directory, executable)] : [])
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue
       paths.add(candidate)
@@ -278,27 +275,18 @@ function protectedShellReason(job, command) {
   return null
 }
 
-function nestedProviderReason(command) {
-  const text = String(command || '')
-  const dequoted = text.replace(/'([^']*)'|"((?:\\.|[^"])*)"/g, (_match, single, double) =>
-    single ?? double.replace(/\\(["\\$`])/g, '$1'))
-  for (const candidate of new Set([text, dequoted])) {
-    const provider = /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+|-(?:exec|execdir)\s+)(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:[^\s;&|()/]+\/)*(claude|codex)(?=[\s;&|)`]|$)/m.exec(candidate)
-      || /(?:^|[\n;&|`(]\s*|\$\(\s*|\b(?:then|do|else)\s+)(?:command|exec|env|nohup|sudo|xargs)\b[^;&|\n`$()]*?\b(claude|codex)(?=[\s;&|)`]|$)/m.exec(candidate)
-    if (provider) return `Flow delegated workers cannot invoke ${provider[1]} directly or start nested delegation.`
-  }
-  if (/(?:^|[\n;&|`(]\s*|\$\(\s*)(?:(?:command|exec|env|nohup|sudo)\b[^;&|\n`$()]*?\s+)?(?:(?:[^\s;&|()/]+\/)*busybox\s+)?(?:[^\s;&|()/]+\/)*(?:bash|dash|sh|ash|ksh|zsh|fish|csh|tcsh|pwsh|powershell)\s+(?:-[^\s]*c\b|-{1,2}command\b)/im.test(text)) {
-    return 'Flow delegated workers cannot hide a second shell command behind a shell interpreter.'
-  }
-  const inlineRunner = /(?:^|[\n;&|`(]\s*|\$\(\s*)(?:[^\s;&|()/]+\/)*(?:python(?:\d+(?:\.\d+)*)?|node|ruby|perl|php|lua)\b[^;&|\n]*?(?:-c|-e|--eval)\s+(?:'([^']*)'|"((?:\\.|[^"])*)"|([^\s;&|]+))/gmi
-  for (const match of text.matchAll(inlineRunner)) {
-    const payload = match[1] ?? match[2] ?? match[3] ?? ''
-    const nested = /\b(claude|codex)\b/i.exec(payload)
-    if (nested) return `Flow delegated workers cannot invoke ${nested[1].toLowerCase()} directly or start nested delegation.`
-  }
-  return null
-}
-
+/**
+ * The PreToolUse policy for a delegated Claude worker. It is workflow policy on top of the
+ * sandbox, not a replacement for it: the tool set, the read targets, the direct write targets,
+ * and the publication commands.
+ *
+ * It deliberately does NOT try to spot a nested provider launch in command text. That rule
+ * existed and was deleted: `npx claude`, `$X -p`, and base64 all walk around it, and a check
+ * that can be walked around by three obvious tricks reads as protection while providing none.
+ * What actually stops a nested provider is claudeSandboxFor: the credential paths and both
+ * provider executables are unreadable, and the network allowlist is empty. A launch that gets
+ * past the text has no auth and no egress.
+ */
 export function claudePolicyHook(job, { onDenied = () => {} } = {}) {
   const allowed = new Set(claudeTools(job.access, { structured: job.outputSchema != null }))
   return async (input) => {
@@ -316,7 +304,7 @@ export function claudePolicyHook(job, { onDenied = () => {} } = {}) {
     } else if (toolName === 'Bash') {
       const command = input.tool_input?.command
       if (typeof command !== 'string') reason = 'Claude sent a Bash call without an inspectable command.'
-      else reason = nestedProviderReason(command) || protectedShellReason(job, command) || publishReason(command)
+      else reason = protectedShellReason(job, command) || publishReason(command)
     }
     if (!reason) return { continue: true }
     onDenied({ toolName, reason })

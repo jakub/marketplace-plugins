@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, effortsForTarget, JOB_STATES, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, SERVICE_TIERS, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, EFFORTS, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, restrictedPermissionConfig } from './app-server.mjs'
 import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
 import { providerContainmentSupport, providerScopeRunning } from './containment.mjs'
@@ -9,8 +9,6 @@ import { JobStore, defaultStateDir, processStartToken, serviceLog } from './stor
 import { canonicalRoots, canonicalWorkspace, gitMetadataPaths, immutableReview, validatedWorktreeKey, worktreeKey } from './workspace.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const LIST_SCAN_LIMIT = 1_000
-const LIST_VISIBILITY_PROBE_LIMIT = 32
 
 // Every field is type-checked before it is pattern-checked: a regex coerces its argument, so
 // an undefined model matched the shape test and only failed later, as an opaque NOT NULL
@@ -19,18 +17,12 @@ function validateStart(input, target) {
   if (!MODES.includes(input.mode)) throw new DelegationError('BAD_REQUEST', 'mode is invalid.')
   if (!ACCESS_MODES.includes(input.access)) throw new DelegationError('BAD_REQUEST', 'access is invalid.')
   if (!DELIVERIES.includes(input.delivery)) throw new DelegationError('BAD_REQUEST', 'delivery is invalid.')
-  if (!effortsForTarget(target).includes(input.effort)) {
-    throw new DelegationError('BAD_REQUEST', `effort is invalid for ${target}.`)
-  }
-  if (!SERVICE_TIERS.includes(input.serviceTier)) throw new DelegationError('BAD_REQUEST', 'Only the default service tier is allowed.')
+  if (!EFFORTS.includes(input.effort)) throw new DelegationError('BAD_REQUEST', 'effort is invalid.')
   if (typeof input.model !== 'string' || !MODEL_PATTERN.test(input.model)) {
     throw new DelegationError('BAD_REQUEST', 'model is required and must match the model name shape.')
   }
   if (typeof input.cwd !== 'string' || !input.cwd.trim()) {
     throw new DelegationError('BAD_REQUEST', 'cwd is required and must be an absolute directory path.')
-  }
-  if (typeof input.profile !== 'string' || !input.profile.trim()) {
-    throw new DelegationError('BAD_REQUEST', 'profile is invalid.')
   }
   if (typeof input.prompt !== 'string' || (!input.prompt.trim() && input.mode === 'task')) {
     throw new DelegationError('BAD_REQUEST', 'Task mode requires a non-empty prompt.')
@@ -50,20 +42,28 @@ function validateStart(input, target) {
   }
 }
 
-// The MCP initialize handshake is the only live report of who is calling this service. A reader
-// checking whether hostCapabilities.verifiedAgainst still describes the host it runs on needs
-// that observed value as the second operand, or it compares the static record against itself and
-// learns nothing. Doctor repeats clientInfo exactly as the handshake gave it, and answers nulls
-// when there was no handshake to read: never a guess, never this service's own version.
+// The MCP initialize handshake is the only live report of who is calling this service. Doctor
+// repeats clientInfo exactly as the handshake gave it, and answers nulls when there was no
+// handshake to read: never a guess, never this service's own version.
 function observedClient(client) {
   return { name: client?.name ?? null, version: client?.version ?? null }
+}
+
+// The version of the CLI conducting this session, which is a different question from the
+// target's. A Claude host is its own MCP client, so the handshake carries the Claude Code
+// version. A Codex host's MCP client reports its own component version, so the CLI is asked
+// directly. This is the live operand of the drift verdict; the recorded one is in
+// capabilities.json.
+function observedHostVersion(host, handshakeClient) {
+  if (host === 'claude') return handshakeClient?.version ?? null
+  return codexVersion().version
 }
 
 function terminal(job) { return TERMINAL_STATES.includes(job.status) }
 function settled(job) { return terminal(job) || job.status === 'quarantined' }
 
 function processGroupRunning(processGroupId) {
-  if (process.platform === 'win32' || !Number.isInteger(processGroupId) || processGroupId <= 0) return false
+  if (!Number.isInteger(processGroupId) || processGroupId <= 0) return false
   try {
     process.kill(-processGroupId, 0)
     return true
@@ -72,49 +72,42 @@ function processGroupRunning(processGroupId) {
   }
 }
 
-function quarantineRunning(job) {
-  if (providerScopeRunning(job.providerScope)) return true
-  if (processGroupRunning(job.providerProcessGroupId)) return true
-  const identities = [
+function recordedIdentities(job) {
+  return [
     ...(job.providerPid && job.providerStartToken
       ? [{ pid: job.providerPid, startToken: job.providerStartToken }]
       : []),
     ...(job.providerProcesses || []),
   ]
+}
+
+function quarantineRunning(job) {
+  if (providerScopeRunning(job.providerScope)) return true
+  if (processGroupRunning(job.providerProcessGroupId)) return true
+  const identities = recordedIdentities(job)
+  // Recovery never guesses: a job that recorded no process identity offers nothing to observe,
+  // so nothing is proved stopped and the quarantine holds. delegation_cancel is the way out.
   if (!identities.length) return true
   return identities.some(({ pid, startToken }) => processStartToken(pid) === startToken)
 }
 
+// The same liveness question, answered with names instead of a boolean, and without the
+// no-identities rule above. What is alive goes back to the caller in the refusal.
+function liveProviderIdentities(job) {
+  const live = new Map()
+  const add = (kind, id) => live.set(`${kind}:${id}`, { kind, id })
+  if (providerScopeRunning(job.providerScope)) add('scope', job.providerScope)
+  if (processGroupRunning(job.providerProcessGroupId)) add('processGroup', job.providerProcessGroupId)
+  // The lead process is usually recorded twice, once on its own and once inside the tracked
+  // set, and one process is one thing to go and look at.
+  for (const { pid, startToken } of recordedIdentities(job)) {
+    if (processStartToken(pid) === startToken) add('process', pid)
+  }
+  return [...live.values()]
+}
+
 function providerRecorded(job) {
   return Boolean(job.providerPid || job.providerProcessGroupId || job.providerScope || job.providerProcesses?.length)
-}
-
-function decodeListCursor(cursor, { host, target, status }) {
-  if (!cursor) return null
-  if (typeof cursor !== 'string' || cursor.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(cursor)) {
-    throw new DelegationError('BAD_REQUEST', 'The delegation list cursor is invalid.')
-  }
-  try {
-    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
-    if (value?.v !== 1 || value.host !== host || value.target !== target || value.status !== status
-      || !Number.isSafeInteger(value.createdAt) || typeof value.id !== 'string') {
-      throw new Error('cursor mismatch')
-    }
-    return { createdAt: value.createdAt, id: value.id }
-  } catch {
-    throw new DelegationError('BAD_REQUEST', 'The delegation list cursor is invalid.')
-  }
-}
-
-function encodeListCursor(job, { host, target, status }) {
-  return Buffer.from(JSON.stringify({
-    v: 1,
-    host,
-    target,
-    status,
-    createdAt: job.createdAt,
-    id: job.id,
-  })).toString('base64url')
 }
 
 export class DelegationService {
@@ -138,6 +131,11 @@ export class DelegationService {
 
   capabilities() { return capabilitiesForTarget(this.target()) }
 
+  // The inventory plus the drift verdict the reader is told not to compute for itself.
+  hostCapabilities(handshakeClient) {
+    return capabilitiesForHost(this.host, { installed: observedHostVersion(this.host, handshakeClient) })
+  }
+
   requireRoute(job) {
     if (job.host !== this.host || job.target !== this.target()) {
       throw new DelegationError('ROUTE_DENIED', 'This delegation host does not own that job route.')
@@ -152,8 +150,6 @@ export class DelegationService {
       delivery: input.delivery || 'attached',
       effort: input.effort,
       model: input.model,
-      serviceTier: input.serviceTier || 'default',
-      profile: input.profile || 'standard',
       prompt: input.prompt || '',
       cwd: input.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || 900,
@@ -170,7 +166,7 @@ export class DelegationService {
     assertRoute({ host: this.host, target, depth: this.depth })
     const containment = providerContainmentSupport()
     if (!containment.ok) {
-      throw new DelegationError(containment.kind, 'Linux delegation requires a working systemd user scope for provider containment.')
+      throw new DelegationError(containment.kind, 'Delegation requires Linux with a working systemd user scope for provider containment.')
     }
     if (target === 'codex') {
       const host = codexHostSupport()
@@ -275,75 +271,19 @@ export class DelegationService {
     return this.withStore((store) => store.events(jobId, options))
   }
 
-  async list({ status = null, limit = 20, cursor = null } = {}, { rootUris = [], fallbackCwd = null } = {}) {
-    if (status !== null && !JOB_STATES.includes(status)) {
-      throw new DelegationError('BAD_REQUEST', 'status is invalid.')
-    }
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new DelegationError('BAD_REQUEST', 'limit must be between 1 and 100.')
-    }
-    const target = this.target()
-    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
-    if (!roots.length) throw new DelegationError('NO_ROOTS', 'The client did not provide a usable workspace root.')
-    const context = { host: this.host, target, status }
-    let before = decodeListCursor(cursor, context)
-    const visible = []
-    let scanned = 0
-    let lastScanned = null
-    let scanTruncated = false
-    const store = this.store()
-    const visibility = new Map()
-    let visibilityProbes = 0
-    const visibleFromRoots = async (cwd) => {
-      if (visibility.has(cwd)) return visibility.get(cwd)
-      if (visibilityProbes >= LIST_VISIBILITY_PROBE_LIMIT) return null
-      visibilityProbes++
-      try {
-        await canonicalWorkspace(cwd, roots)
-        visibility.set(cwd, true)
-        return true
-      } catch (error) {
-        if (!(error instanceof DelegationError)) throw error
-        visibility.set(cwd, false)
-        return false
-      }
-    }
-    try {
-      scan:
-      while (visible.length <= limit && scanned < LIST_SCAN_LIMIT) {
-        const chunkLimit = Math.min(100, LIST_SCAN_LIMIT - scanned)
-        const candidates = store.listJobs({ host: this.host, target, status, before, limit: chunkLimit })
-        if (!candidates.length) break
-        for (const job of candidates) {
-          const isVisible = await visibleFromRoots(job.cwd)
-          if (isVisible === null) {
-            scanTruncated = true
-            break scan
-          }
-          scanned++
-          lastScanned = job
-          before = { createdAt: job.createdAt, id: job.id }
-          if (!isVisible) continue
-          visible.push(this.requireRoute(job))
-          if (visible.length > limit) break scan
-        }
-        if (candidates.length < chunkLimit) break
-      }
-      if (!scanTruncated && visible.length <= limit && scanned >= LIST_SCAN_LIMIT && before) {
-        scanTruncated = store.listJobs({ host: this.host, target, status, before, limit: 1 }).length > 0
-      }
-    } finally { store.close() }
-    const jobs = visible.slice(0, limit)
-    const cursorJob = visible.length > limit ? jobs.at(-1) : (scanTruncated ? lastScanned : null)
-    return {
-      jobs,
-      nextCursor: cursorJob ? encodeListCursor(cursorJob, context) : null,
-    }
-  }
-
+  // Cancelling a quarantined job is the one way out of a quarantine that cannot end by itself:
+  // the recorded processes are all gone, or none was ever recorded, so no later status read
+  // will ever prove the writer stopped and the write lease would be held forever. Liveness is
+  // re-checked here rather than trusted from the row, and the ending is 'unknown' because
+  // nothing proved what the turn did.
   cancel(jobId) {
-    this.get(jobId)
-    return this.withStore((store) => store.requestCancel(jobId))
+    const job = this.get(jobId)
+    if (job.status !== 'quarantined') return this.withStore((store) => store.requestCancel(jobId))
+    const live = liveProviderIdentities(job)
+    if (live.length) {
+      throw new DelegationError('JOB_QUARANTINED', 'The quarantined provider is still running, so Flow will not release its write lease.', { live })
+    }
+    return this.withStore((store) => store.resolveQuarantine(jobId, { force: 'unknown' }))
   }
 
   steer(jobId, text) {
@@ -371,8 +311,6 @@ export class DelegationService {
       delivery: input.delivery || 'attached',
       effort: input.effort || previous.effort,
       model: input.model || previous.model,
-      serviceTier: 'default',
-      profile: input.profile || previous.profile,
       prompt: input.prompt,
       cwd: previous.cwd,
       timeBudgetSeconds: input.timeBudgetSeconds || previous.timeBudgetSeconds,
@@ -382,22 +320,6 @@ export class DelegationService {
       parentJobId: previous.id,
       nativeThreadId: previous.nativeThreadId,
     }, roots)
-  }
-
-  async models(cwd) {
-    if (this.target() === 'claude') return claudeModels(cwd)
-    const client = new AppServerClient({ cwd })
-    try {
-      await client.start()
-      const models = []
-      let cursor = null
-      do {
-        const page = await client.request('model/list', { cursor, limit: 100, includeHidden: false }, 20_000)
-        models.push(...(page.data || []))
-        cursor = page.nextCursor || null
-      } while (cursor)
-      return models
-    } finally { await client.stop() }
   }
 
   // handshakeClient, not client: the App Server connection a few lines down already owns that
@@ -421,7 +343,12 @@ export class DelegationService {
     try {
       const quarantined = this.withStore((store) => store.quarantinedCount())
       checks.database = { ok: true, path: this.stateDir, quarantined }
-    } catch { checks.database = { ok: false, kind: 'DATABASE' } }
+    } catch (error) {
+      // The kind survives, because one of these is actionable and the rest are not. A store
+      // that refuses to reset an older database while jobs are still live answers
+      // STORE_UPGRADE_BLOCKED, and doctor is where an operator finds out why nothing starts.
+      checks.database = { ok: false, kind: error instanceof DelegationError ? error.kind : 'DATABASE' }
+    }
     // Each probe reports itself. Sharing one catch made an account failure read as a dead App
     // Server, which is the opposite of what doctor is for.
     if (checks.host.ok && checks.codex.ok && checks.containment.ok) {
@@ -487,7 +414,7 @@ export class DelegationService {
     // hostCapabilities sits beside checks, never inside it. It is a declarative inventory of
     // what this harness can do, so a false entry is a fact about the harness and must not pull
     // doctor's ok down the way a failed probe does.
-    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), client: observedClient(handshakeClient), hostCapabilities: capabilitiesForHost(this.host), checks }
+    return { ok: Object.values(checks).every((check) => check.ok), target, capabilities: this.capabilities(), client: observedClient(handshakeClient), hostCapabilities: this.hostCapabilities(handshakeClient), checks }
   }
 
   async claudeDoctor(cwd, { workspace = { ok: Boolean(cwd) }, client = null } = {}) {
@@ -504,7 +431,12 @@ export class DelegationService {
     try {
       const quarantined = this.withStore((store) => store.quarantinedCount())
       checks.database = { ok: true, path: this.stateDir, quarantined }
-    } catch { checks.database = { ok: false, kind: 'DATABASE' } }
+    } catch (error) {
+      // The kind survives, because one of these is actionable and the rest are not. A store
+      // that refuses to reset an older database while jobs are still live answers
+      // STORE_UPGRADE_BLOCKED, and doctor is where an operator finds out why nothing starts.
+      checks.database = { ok: false, kind: error instanceof DelegationError ? error.kind : 'DATABASE' }
+    }
     if (!cwd) {
       checks.models = { ok: false, kind: 'NO_WORKSPACE' }
     } else if (checks.claude.ok && checks.account.ok && checks.containment.ok) {
@@ -520,7 +452,7 @@ export class DelegationService {
       target: 'claude',
       capabilities: this.capabilities(),
       client: observedClient(client),
-      hostCapabilities: capabilitiesForHost(this.host),
+      hostCapabilities: this.hostCapabilities(client),
       checks,
     }
   }

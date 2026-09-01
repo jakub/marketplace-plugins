@@ -99,6 +99,20 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
   with esbuild, so it needs a repo checkout with `npm ci` already run in `plugins/flow/deps`,
   and it cannot run against `${CLAUDE_PLUGIN_ROOT}` or from the nightly lint. Where the tree
   cannot support it, report it as not run rather than folding it into a clean line.
+- The smoke suite is checked against the tree, both directions: a script on disk that this
+  list does not name is drift, and so is a name here with no file behind it. One at the repo
+  root, `scripts/smoke-plugin-manifests.mjs`. Fifteen under `plugins/flow/scripts/`:
+  `smoke-bundle-drift`, `smoke-charter-conformance`, `smoke-claude-delegation`,
+  `smoke-codex-hooks`, `smoke-delegation`, `smoke-flow-cron`, `smoke-git-guard`,
+  `smoke-issue-claim`, `smoke-label-contract`, `smoke-protect-files`, `smoke-publish-guard`,
+  `smoke-release-path`, `smoke-seat-contract`, `smoke-stage-conformance`,
+  `smoke-tree-snapshot`. Three under `plugins/gripe/scripts/`: `collision-test`,
+  `smoke-hooks`, `smoke-shim`. One under `plugins/unslop/scripts/`: `smoke-hooks`. A smoke
+  that lints a document builds its broken examples as inline strings, so a checked-in fixture
+  tree is itself drift.
+  Running them is dev-checkout work, not the nightly lint's: two of them (`smoke-bundle-drift`
+  and `smoke-claude-delegation`) need `npm ci` in `plugins/flow/deps`, and only
+  `smoke-delegation.mjs` is on the cron's allowlist.
 
 ## Output format
 

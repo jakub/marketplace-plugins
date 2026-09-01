@@ -31,7 +31,7 @@ export class AppServerClient {
     this.onNotification = onNotification
     this.onServerRequest = onServerRequest
     this.onClose = onClose
-    this.scopeName = process.platform === 'linux' ? scopeName || providerScopeName() : null
+    this.scopeName = scopeName || providerScopeName()
     this.child = null
     this.nextId = 1
     this.pending = new Map()
@@ -52,7 +52,7 @@ export class AppServerClient {
         stdio: ['pipe', 'pipe', 'pipe'],
         // A separate POSIX process group lets Flow prove that App Server and every ordinary
         // descendant stopped before it releases a workspace-write lease.
-        detached: process.platform !== 'win32',
+        detached: true,
       })
     } catch (cause) {
       throw new DelegationError('CODEX_NOT_INSTALLED', 'Codex could not be started.')
@@ -203,7 +203,6 @@ export class AppServerClient {
 
   treeRunning() {
     if (!this.child?.pid) return false
-    if (process.platform === 'win32') return this.child.exitCode === null && !this.child.signalCode
     if (providerScopeRunning(this.scopeName)) return true
     let groupRunning = false
     try {
@@ -239,9 +238,7 @@ export class AppServerClient {
   signalTree(signal) {
     if (!this.child?.pid) return
     signalProviderScope(this.scopeName, signal)
-    if (process.platform === 'win32') {
-      try { this.child.kill(signal) } catch {}
-    } else signalTrackedProcessTree(this.child.pid, this.knownDescendants, signal)
+    signalTrackedProcessTree(this.child.pid, this.knownDescendants, signal)
   }
 
   async waitTree(ms) {

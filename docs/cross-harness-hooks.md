@@ -4,11 +4,12 @@ This repository keeps hook behavior portable without pretending Claude Code and 
 have the same event protocol. The stable unit is the plugin's policy or domain state.
 Each harness gets a small adapter and its own registration file.
 
-Prompt text follows the same split. A stage that both harnesses run is one host-neutral
-skill body plus one profile per harness, and the command file that used to hold the steps
-becomes an alias that reads its own profile first.
+Prompt text follows the same split, but in one file. A stage both harnesses run is a single
+`SKILL.md`: a body that names no host, then a `## Host mechanics` section at the end with one
+subsection per harness. The command file that used to hold the steps is a one-sentence alias
+pointing at that skill.
 
-This document describes the implemented contract as of 2026-08-31. Product behavior
+This document describes the implemented contract as of 2026-09-01. Product behavior
 that can change is based on the current Codex hooks documentation and must be rechecked
 before changing an adapter.
 
@@ -19,13 +20,12 @@ Each compatible plugin is still a self-contained deployment unit:
 ```text
 plugins/<name>/
   .claude-plugin/plugin.json     Claude manifest
-  .codex-plugin/plugin.json      Codex manifest, points at hooks/codex.json
+  .codex-plugin/plugin.json      Codex manifest, only where Codex needs one for hooks or MCP
   hooks/hooks.json               Claude event registrations
   hooks/codex.json               Codex event registrations
   hooks/scripts/                 wire adapters and simple direct handlers
   lib/                           harness-neutral policy, rendering, or state
-  skills/<stage>/SKILL.md        harness-neutral prose, one [[gate:<id>]] per checkpoint
-  skills/<stage>/profiles/       one file per harness, one section per gate
+  skills/<stage>/SKILL.md        the whole stage: neutral steps, then ## Host mechanics
   skills/<stage>/agents/         Codex-side skill metadata and invocation policy
 ```
 
@@ -63,24 +63,25 @@ contract.
 | Flow protected files | `file_path` from Edit/Write input, `notebook_path` from NotebookEdit | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
 | Flow registry publication gate | `permissionDecision: "ask"` built from `publishReason()`, which strips quoted text before classifying | Deterministic deny with a manual-publish instruction, built from `publishOperationsStrict()`, which also classifies what a shell-execution form would run | `registryReason()` over the one `PUBLISH` table |
 | Flow pull request merge | Pre-approved `gh pr merge --squash --match-head-commit`, no per-command prompt. The human's explicit `/flow:land` invocation, then the stage's CI-green and unresolved-thread checks, are the gate | Same gate (the human asked in words), same checks; a repo with a committed `.flow/managed` marker routes the merge through `scripts/land-merge.mjs`, which re-derives every fact from GitHub before merging | `mergeShapes()` classifies the routed commands; the executor holds the checks |
-| Flow prep stage | `/flow:prep` is an alias that reads `skills/prep-stage/profiles/claude.md`, then the skill | The plugin-namespaced `prep-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/prep-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
-| Flow issue stage | `/flow:issue` is an alias that reads `skills/issue-stage/profiles/claude.md`, then the skill | The plugin-namespaced `issue-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/issue-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
-| Flow land stage | `/flow:land` is an alias that reads `skills/land-stage/profiles/claude.md`, then the skill | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md`, whose `[[gate:<id>]]` markers both profiles must bind |
+| Flow prep stage | `/flow:prep` is a one-sentence alias: read `skills/prep-stage/SKILL.md` and follow the Claude Code subsection of its host mechanics | The plugin-namespaced `prep-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/prep-stage/SKILL.md` - one body, one `## Host mechanics` section, one subsection per host |
+| Flow issue stage | `/flow:issue` is a one-sentence alias: read `skills/issue-stage/SKILL.md` and follow the Claude Code subsection of its host mechanics | The plugin-namespaced `issue-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/issue-stage/SKILL.md` - one body, one `## Host mechanics` section, one subsection per host |
+| Flow land stage | `/flow:land` is a one-sentence alias: read `skills/land-stage/SKILL.md` and follow the Claude Code subsection of its host mechanics | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md` - one body, one `## Host mechanics` section, one subsection per host |
 | Gripe advertisement | `SessionStart`, `SubagentStart` | Same events | Existing advertisement and storage code |
 | Gripe repeated failures | `PostToolUseFailure` and top-level `error` | Not mapped; `PostToolUse` has no reliable failure status | `recordRepeatedFailure()` in the Claude adapter |
 | Gripe checkpoint | Claude transcript folded incrementally at `Stop` and `SubagentStop` | `PostToolUse` folds counters, parent `Stop` evaluates them | `lib/checkpoint.mjs` |
 | Gripe denial and turn-failure observations | `PermissionDenied`, `StopFailure` | Not registered; Codex has no equivalent after-the-fact events | Existing Claude-only observed-row code |
-| Gripe CLI resolution | `~/.claude/plugins/installed_plugins.json`, and a scan of the Claude cache root only when that file is unreadable | One `[plugins."gripe@<marketplace>"]` table in `${CODEX_HOME:-~/.codex}/config.toml` plus its cache directory, and a scan of the Codex cache root only when that file is unreadable | `bin/shim.mjs` reads both every run, ranks the candidates as one list, and execs the winner's `bin/gripe` |
+| Gripe CLI resolution | `~/.claude/plugins/cache/jakub/gripe/*/bin/gripe` | `${CODEX_HOME:-~/.codex}/plugins/cache/jakub/gripe/*/bin/gripe` | `bin/shim.mjs` globs both roots every run, skips `.orphaned_at` versions, ranks by the version in the directory name, and execs the newest |
 | Unslop rules | `SessionStart`, `SubagentStart` | Same events | `lib/rules.mjs` and `lib/agent-selection.mjs` |
 
 ## Deliberate non-equivalences
 
 ### Publication asks become denies
 
-Claude can return `permissionDecision: "ask"` from `PreToolUse`. Codex currently parses
-that value but treats it as an unsupported hook result, reports a hook failure, and lets the
-tool continue. Returning the Claude result from a shared handler would therefore fail open
-on the exact irreversible operation the guard exists to stop.
+Claude can return `permissionDecision: "ask"` from `PreToolUse`. Codex parses that value but
+treats it as an unsupported hook result, reports a hook failure, and lets the tool continue.
+That was first captured on Codex CLI 0.149.1 (2026-08-26) and is still the behaviour on
+0.152.0 (2026-09-01). Returning the Claude result from a shared handler would therefore fail
+open on the exact irreversible operation the guard exists to stop.
 
 The shared policy returns a reason. Claude's adapter turns it into an approval request.
 Codex's adapter denies the command and tells the agent that the human can run it after
@@ -104,9 +105,8 @@ publishes, not this merge. The gate is upstream of the command: the land stage r
 human invokes `/flow:land`, and its own CI-green and unresolved-thread checks decide whether the
 merge is warranted. Codex has the same gate in different clothes: the human asks for the land in
 words, the same stage gates run, and in a repo carrying a committed `.flow/managed` marker the
-publish guard routes the merge through `scripts/land-merge.mjs` instead of a raw gh command. (An
-earlier design added a human-written release sanction here; it was retired 2026-08-29 - the
-per-land ceremony cost more than it bought at this trust level, and the Claude path never had it.)
+publish guard routes the merge through `scripts/land-merge.mjs` instead of a raw gh command. Neither
+host asks for anything beyond that pair, the request and the gates.
 
 None of this is a security boundary. Everything runs as one uid, where a determined model could
 substitute its own gh, call the GitHub API with the token, or curl the merge endpoint, and no
@@ -162,72 +162,31 @@ because it runs before any plugin root is known.
 
 `GRIPE_HOME` comes first, judged by key presence rather than by value. Set and holding a
 readable `bin/gripe`, it is the only candidate considered. Set but empty or broken, the shim
-stops with one stderr line naming `GRIPE_HOME` and reads no registry and no cache. A typo in a
-development override must not file into the live database through installed code.
+stops with one stderr line naming `GRIPE_HOME` and scans no cache. A typo in a development
+override must not file into the live database through installed code.
 
-Otherwise the confirmed tier reads both harnesses, every run, independently. Claude's side is
-`~/.claude/plugins/installed_plugins.json`, with keys matched exactly against
-`gripe@<marketplace>`, and every entry whose `installPath` holds a readable `bin/gripe`
-contributing one candidate. Codex's side is `${CODEX_HOME:-~/.codex}/config.toml`, scanned line
-by line rather than parsed as TOML, looking for exactly one `[plugins."gripe@<marketplace>"]`
-table. A bare table counts as enabled, because the table is the registration and `enabled` is
-the toggle; `enabled = false`, two tables, or bytes the scanner cannot trust all count as
-absence. An enabled table contributes candidates from
-`<codex home>/plugins/cache/<marketplace>/gripe/<version>/` and nowhere else.
+Otherwise the shim globs both plugin cache roots on every run, `~/.claude/plugins/cache` and
+`${CODEX_HOME:-~/.codex}/plugins/cache`, taking `jakub/gripe/<version>/bin/gripe` under each:
+this marketplace's directory only, since every plugin here installs as `<plugin>@jakub`. A
+version directory is dotted integers and nothing else, so a prerelease or a hash-named checkout
+is skipped, so is a root whose `bin/gripe` is not a readable regular file, and so is a version
+Claude Code has marked with `.orphaned_at` (Codex writes no such marker, so a removed-but-cached
+newer version wins there until its directory is deleted). The highest version wins whichever harness installed it, with the path as tie-break so
+the answer is deterministic. No manifest is read on either side: the cache directory name is
+the whole of the evidence. When nothing resolves, the shim prints one bounded line naming the
+two directories scanned and the override, never the versions under them.
 
-Authority is per harness, and that is the part worth stating plainly. A manifest that reads
-cleanly is authoritative for its own harness and for no other. The fallback tier, a bare scan of
-a harness's cache root, runs only for a harness whose own manifest was unreadable, and only when
-the confirmed tier produced no candidate at all. A Codex config that reads cleanly and says
-gripe is not installed here blocks the Codex cache scan and cannot veto Claude's fallback when
-the Claude registry is missing or corrupt.
+Filing stays free whatever happens. `gripe add` and a bare `gripe` exit 0 through every
+failure; every other subcommand passes the child's status through. The shim carries one
+`// gripe-shim-epoch: <n>` marker, at 2 since the resolver stopped reading manifests, and the
+SessionStart hook that maintains the published copy is an upgrade-only ratchet. It rewrites a
+missing, lower, or unparseable marker, repairs drifted bytes under an equal one, and leaves a
+strictly higher one alone. The epoch counts shim protocol changes, not releases. Gripe 0.2.x
+has no marker logic at all, so a harness still registered on it overwrites the newer shim at
+every session start there, which is why the README says to upgrade both in one sitting.
 
-Candidates from both harnesses rank in one list: confirmed candidates before fallback ones (the
-comparator is defensive here, though the tiers never coexist, since fallback scans only when the
-confirmed tier found nothing); then the highest stable `major.minor.patch`, compared numerically
-so 0.10.0 beats 0.9.0; then a manager-supplied root over a cache-derived one; then Claude over
-Codex; then path order, purely so the answer is deterministic.
-Prereleases and malformed directory names never enter a cache scan. When nothing resolves at
-all, the shim prints one bounded line naming the surfaces it checked, the override path, both
-manifests, and both cache roots, never the versions under them.
-
-Failure honesty splits by command, because filing has to stay free. `gripe add`, and a bare
-`gripe` with no arguments, exit 0 whatever went wrong: nothing resolved, a broken override, a
-spawn error, a child killed by a signal. Every other subcommand is honest, passing a numeric
-child status straight through and exiting 1 when there was no resolution or the child died on a
-signal. The shim writes at most one bounded stderr line of its own and never reads stdin, since
-a synchronous read on an inherited pipe can block forever.
-
-The shim carries one `// gripe-shim-epoch: <n>` marker line, and the SessionStart hook that
-maintains `~/.local/bin/gripe` is an upgrade-only ratchet. It writes through a same-directory
-temp file and an atomic rename unless the on-disk file's marker parses as strictly higher. A
-missing, lower, or unparseable marker gets rewritten, and so does an equal marker over bytes
-that no longer match the source, so byte drift and corruption repair themselves, and a newer
-shim survives a sequential write from an older harness. Two caveats and one accepted race. The
-epoch counts shim protocol changes, not releases. Gripe 0.2.x has no marker logic at all, so a
-host with one harness still registered on 0.2.x overwrites the newer shim at every session start
-there. And the ratchet re-reads the on-disk marker just before the rename but does not hold a
-lock, so two SessionStart writers racing can let an older writer's rename land after that
-recheck and overwrite a newer shim; this is a narrow accepted downgrade that a later session
-repairs. The fix for the 0.2.x case is re-registering both harnesses, which is why the README says to upgrade them in one
-sitting.
-
-Known limits. Three residuals are accepted as shipped. Each one is reachable only by a process
-that can already write the user's own home on a single-user machine, the real harm is low or
-zero, and the security-relevant direction stays fail-closed.
-
-- The published shim at `~/.local/bin/gripe` is written through a same-directory temp file and a
-  rename. A process that can already write that directory could unlink the temp and re-point it
-  at a symlink between the create and the rename. Writing that directory is already full control
-  of the user's PATH, so this buys the attacker nothing they did not have.
-- The resolver checks that the resolved binary sits under its cache root and spawns that binary's
-  canonical path, but an external process could retarget a cache symlink between the check and the
-  spawn. The design accepts this check-to-spawn race.
-- The Codex `config.toml` is read by a strict line recognizer, not a full TOML parser (decision
-  38, no TOML dependency). A malformed config that Codex itself would reject can read as an
-  enabled registration rather than as absence, and then run the user's own installed gripe. The
-  security-relevant direction is fail-closed: reaching an attacker-chosen install on top of this
-  also requires planting a cache directory, which is again write access to the user's own home.
+The reasoning behind each of those decisions, the residual races that are accepted as shipped,
+and what each exit code promises are in [`docs/gripe/DESIGN.md`](gripe/DESIGN.md).
 
 ### Unsupported observed signals stay unsupported
 
@@ -246,9 +205,9 @@ to a nearby event with different meaning.
 - Every state map is bounded. A corrupt or missing state file degrades to a missed advisory
   nudge, never a blocked task.
 - Codex PostToolUse and Stop serialize their shared checkpoint state through a bounded
-  per-session lock. Contention loses advisory evidence after one second, and a lock left
-  behind by a killed holder is broken once it is ten seconds old; neither delays the hook
-  past its five-second timeout or blocks the agent's work.
+  per-session lock. Contention loses advisory evidence after half a second (25 attempts, 20 ms
+  apart), and a lock left behind by a killed holder is unlinked once it is ten seconds old;
+  neither delays the hook past its five-second timeout or blocks the agent's work.
 - Flow enforcement adapters deny when the target cannot be inspected. Gripe and Unslop are
   advisory and exit quietly when their own input cannot be parsed.
 - Codex SessionStart context limits are sized above the current Flow and Unslop payloads so
@@ -274,31 +233,38 @@ node plugins/gripe/scripts/smoke-shim.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs
 ```
 
-The manifest test derives each plugin's version from the marketplace manifest and checks
-Claude/Codex/marketplace parity, supported Codex event names, `${PLUGIN_ROOT}` use, and
-every registered command target. Plugin smoke tests cover
-both positive and negative wire cases with throwaway state, including the captured Codex
-failure payload that deliberately remains unclassified. The charter conformance lint checks
-that every `[[role:<id>]]` marker in the charter is bound in both host profiles, that the
-charter stays free of host names outside its three model-naming sections, and that both
-charter halves and each profile hold under their byte budgets; it runs the same checks over
-the per-case broken fixtures under `scripts/fixtures/charter-conformance/`. The stage
-conformance lint finds every stage by structure, any directory under `skills/` holding a
-`profiles/` subdirectory, and per stage compares the skill's gate ids against each profile's
-sections in both directions, rejects a host name in the shared body, and holds the alias's
-tool allowance equal to the Claude profile's. It runs the same checks over the per-case
-broken fixtures, both the bare skill-and-profile pairs and the miniature plugin roots, so a
-green run also shows the check can still fail.
+The manifest test derives each plugin's version from the marketplace manifest and checks that
+a plugin's Claude manifest, its Codex manifest where it has one, and its marketplace entry all
+agree. It also holds the rule about which plugins get a Codex manifest at all: one that
+registers Codex hooks or an MCP server must carry one, and a skills-only plugin needs none,
+because Codex finds `skills/*/SKILL.md` by itself. Then it checks supported Codex event names
+and that every `${PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_ROOT}` command target exists on disk.
+There is no catalog version, so releasing a dual-harness plugin is three edits: the two plugin
+manifests and the marketplace entry.
 
-`smoke-shim.mjs` builds synthetic Claude and Codex homes under one temporary directory and
-drives the resolver against them: version skew across harnesses, an unreadable manifest on
-either side, hostile `config.toml` bytes, the `GRIPE_HOME` override, the exit split between
-`gripe add` and every other subcommand, and the epoch ratchet. `smoke-label-contract.mjs`
-parses the taxonomy table out of `plugins/flow/skills/flow/label-contract.md` and holds the
-tuple to its rules, unique names, six-hex colors, one color per lane, and descriptions that
-stay short and carry no slash-command spelling, because those strings are copied into GitHub
-metadata in other repositories. Both check their rules against fixtures that are valid but for
-one named defect.
+Plugin smoke tests cover both positive and negative wire cases with throwaway state, including
+the captured Codex failure payload that deliberately remains unclassified. The lints that read
+a document work the same way and keep no fixture tree on disk: each one carries its broken
+examples as inline strings, runs its own checker over them, and asserts the defect it names,
+so a green run also shows the check can still fail. The charter conformance lint checks that
+the charter's six `[[role:<id>]]` markers are bound in both host profiles and nowhere else,
+that the charter names no host outside its three allowlisted sections, and that both charter
+halves and each profile hold under their byte budgets. The stage conformance lint finds every
+stage by structure and holds it to the one-file shape: no host named above the line, exactly
+one `## Host mechanics` heading as the last section, a `### Claude Code` and a `### Codex`
+subsection under it in that order with prose in each, implicit invocation off, and an alias
+that is one heading plus one routing sentence naming the stage file, under its own
+`allowed-tools` line.
+
+`smoke-shim.mjs` builds synthetic Claude and Codex plugin caches under one temporary directory
+and drives the resolver against them: version skew across the two caches, a directory name that
+is not dotted integers, a version directory with no runnable `bin/gripe`, an absent cache on
+either side, `CODEX_HOME`, the `GRIPE_HOME` override, the exit split between `gripe add` and
+every other subcommand, and the epoch ratchet. `smoke-label-contract.mjs` parses the taxonomy
+table out of `plugins/flow/skills/flow/label-contract.md` and holds the tuple to its rules,
+unique names, six-hex colors, one color per lane, and descriptions that stay short and carry no
+slash-command spelling, because those strings are copied into GitHub metadata in other
+repositories.
 
 These tests do not enable, install, or trust a plugin. Codex skips untrusted plugin hook
 definitions until the user reviews them. Claude plugin installs still pull from the pinned

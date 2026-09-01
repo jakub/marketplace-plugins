@@ -1,16 +1,20 @@
 import { fileURLToPath } from 'node:url'
 import { startMcp } from './mcp.mjs'
-import { parse, safeRunCli } from './cli.mjs'
 import { HOSTS } from './contracts.mjs'
 import { runWorker } from './worker.mjs'
 import { defaultStateDir } from './store.mjs'
 
+// Two entry modes and no more. A host starts the MCP server; the service starts one worker
+// per job, so the prompt never crosses a shell boundary.
 const argv = process.argv.slice(2)
 const mode = argv[0]
 const entryPath = fileURLToPath(import.meta.url)
+const flags = {}
+for (let index = 1; index < argv.length; index += 2) {
+  if (argv[index]?.startsWith('--')) flags[argv[index].slice(2)] = argv[index + 1]
+}
 
 if (mode === 'mcp') {
-  const { flags } = parse(argv)
   if (!HOSTS.includes(flags.host)) {
     process.stderr.write(`--host is required for MCP mode and must be one of: ${HOSTS.join(', ')}.\n`)
     process.exitCode = 2
@@ -34,14 +38,11 @@ if (mode === 'mcp') {
     })
   }
 } else if (mode === 'worker') {
-  const { flags } = parse(argv)
   await runWorker({
     jobId: flags.job || null,
     stateDir: flags['state-dir'] || defaultStateDir(),
   })
-} else if (mode === 'cli') {
-  await safeRunCli({ argv: argv.slice(1), entryPath })
 } else {
-  process.stderr.write('usage: delegation.mjs mcp|worker|cli\n')
+  process.stderr.write('usage: delegation.mjs mcp|worker\n')
   process.exitCode = 2
 }

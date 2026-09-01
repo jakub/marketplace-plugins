@@ -9,10 +9,6 @@
 import { recordRepeatedFailure } from '../../lib/failure.mjs'
 import { safeId } from '../../lib/context.mjs'
 
-// Backstop blocklist of command prefixes too noisy to ever nudge on. The repeat gate is
-// the primary mechanism; add here only when a specific tool proves it needs it.
-const NOISY_PREFIXES = []
-
 async function main() {
   let raw = ''
   for await (const chunk of process.stdin) raw += chunk
@@ -28,9 +24,6 @@ async function main() {
   // path of its own choosing.
   const sessionId = safeId(input.session_id)
   if (!sessionId) return
-
-  const cmd = typeof input.tool_input?.command === 'string' ? input.tool_input.command : ''
-  if (NOISY_PREFIXES.some((p) => cmd.startsWith(p))) return
 
   const actor = safeId(input.agent_id) ?? 'main'
   const note = recordRepeatedFailure({

@@ -229,8 +229,8 @@ export function pointShim({ sourcePath, shimPath, beforeRecheck } = {}) {
     // this re-read and the rename below.
     //
     // The residual window - two writers carrying different versions both pass this check, and
-    // the later rename wins - is accepted (design decision 40): contention is fine because a
-    // later SessionStart re-runs and converges. An exclusive lock would close it, but a lock
+    // the later rename wins - is accepted: contention is fine, because a later SessionStart
+    // re-runs and converges. An exclusive lock would close it, but a lock
     // on this path reintroduces the FIFO-hang, non-atomic-acquire, and recycled-PID hazards
     // that removing it fixed, so the guard stays lock-free.
     const recheck = classify(shimPath, source, sourceEpoch)
