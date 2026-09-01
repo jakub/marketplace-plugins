@@ -599,12 +599,14 @@ check('the identity is host and path, with the userinfo dropped', leaky.json?.re
 check('the token appears nowhere in stdout or stderr', !leakyOutput.includes(PAT), 'the token was printed')
 check('the username appears nowhere either', !leakyOutput.includes(PAT_USER), 'the username was printed')
 
-// The strict parser rejects this shape because of the query string, so the answer comes from the
-// sanitizing fallback instead. Same identity, same absence of the token.
+// The same URL with a query string on the end, which is where the land-merge regexes safeIdentity
+// replaced would have kept ?redirect=1 in the identity. There is no second parser to fall back to
+// here: every URL with a scheme goes through new URL(), and a query lands in .search, which
+// safeIdentity never reads. So this takes the same branch as the case above and answers the same.
 git(creds, 'remote', 'set-url', 'origin', `https://${PAT_USER}:${PAT}@127.0.0.1:1/jakub/marketplace-plugins.git?redirect=1`)
 const leakyOdd = claim(creds, 'acquire', '12')
 const leakyOddOutput = leakyOdd.stdout + leakyOdd.stderr
-check('a URL the strict parser rejects still reports host and path', leakyOdd.json?.repo === '127.0.0.1/jakub/marketplace-plugins', leakyOdd.json?.repo)
+check('a query string is dropped from the identity, not carried into it', leakyOdd.json?.repo === '127.0.0.1/jakub/marketplace-plugins', leakyOdd.json?.repo)
 check('and still prints no token', !leakyOddOutput.includes(PAT) && !leakyOddOutput.includes(PAT_USER), 'a credential was printed')
 
 // A shape nothing can parse becomes a fixed placeholder rather than the bytes that came back.
