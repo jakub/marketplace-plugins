@@ -1121,7 +1121,6 @@ try {
     { id: 'legacy-done', status: 'succeeded' },
     { id: 'legacy-failed', status: 'failed' },
     { id: 'legacy-cancelled', status: 'cancelled' },
-    { id: 'legacy-unknown', status: 'unknown', lease: true },
   ])
   const upgraded = new JobStore(legacyState)
   const columnsOf = (table) => upgraded.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
@@ -1153,7 +1152,7 @@ try {
   // job's row carries its lease on the worktree, and dropping the row hands the worktree to the
   // next job without anyone proving the old provider dead. Nothing here can prove that, so the
   // store refuses to open and says what to do about it.
-  for (const status of ['running', 'queued', 'starting', 'reconciling', 'awaiting_approval', 'quarantined']) {
+  for (const status of ['running', 'queued', 'starting', 'reconciling', 'awaiting_approval', 'quarantined', 'unknown']) {
     const blockedState = state(`legacy-live-${status}`)
     writeLegacyStore(blockedState, [{ id: 'legacy-live', status, lease: true }])
     assert.throws(() => new JobStore(blockedState), (error) => {

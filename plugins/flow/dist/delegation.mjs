@@ -23294,7 +23294,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 var SCHEMA_VERSION = 6;
 var RETENTION_DAYS = 14;
-var LIVE_ON_UPGRADE = [...ACTIVE_STATES, "awaiting_approval", "quarantined"];
+var LIVE_ON_UPGRADE = [...ACTIVE_STATES, "awaiting_approval", "quarantined", "unknown"];
 var now = () => Date.now();
 var json = (value) => value == null ? null : JSON.stringify(value);
 var parse3 = (value) => value == null ? null : JSON.parse(value);

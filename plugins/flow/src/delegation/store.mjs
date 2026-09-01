@@ -13,7 +13,10 @@ const RETENTION_DAYS = 14
 // obvious ones. `quarantined` is a job Flow could not prove dead. `awaiting_approval` is
 // terminal in this version, but a row in an older schema was written by code whose meaning of
 // that word is gone, and the word says parked rather than finished, so it counts as live here.
-const LIVE_ON_UPGRADE = [...ACTIVE_STATES, 'awaiting_approval', 'quarantined']
+// 'unknown' is terminal for a reader but not for the worktree: an older worker wrote it for an
+// accepted write turn that lost its terminal proof, before it awaited the provider's stop, so the
+// provider may still be writing under that lease.
+const LIVE_ON_UPGRADE = [...ACTIVE_STATES, 'awaiting_approval', 'quarantined', 'unknown']
 
 const now = () => Date.now()
 const json = (value) => value == null ? null : JSON.stringify(value)
