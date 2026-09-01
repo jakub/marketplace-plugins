@@ -57002,7 +57002,12 @@ function createClaudeQuery(job, prompt, {
         // Claude Code retries a refused turn on a fallback model by default, and for a
         // subagent-style query that retry is silent. The charter's rule is that a refusal is a
         // typed result, never a quieter model, so the worker sees the refusal instead.
-        CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1"
+        CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1",
+        // The CLI's own no-fallback guarantee: the availability chain collapses to the primary
+        // model and any fallback pivot trips an internal error instead of switching. Neither
+        // variable is public API, so the worker also checks the model named on every assistant
+        // frame against the one it asked for, and fails the job when they differ.
+        CLAUDE_CODE_NO_MODEL_FALLBACK: "1"
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {
@@ -57755,7 +57760,7 @@ var DelegationService = class {
 
 // src/delegation/mcp.mjs
 var jobId = string2().uuid().describe("Durable Flow delegation job ID");
-var model = string2().regex(MODEL_PATTERN);
+var model = string2().regex(MODEL_PATTERN).describe("Provider model id or alias as listed by delegation_models. Claude takes an alias (sonnet, opus, fable) or a full id (claude-fable-5-1); Codex takes its own ids (gpt-5.6-sol). Never the charter table's short names.");
 var access2 = _enum([...ACCESS_MODES]);
 var delivery = _enum([...DELIVERIES]);
 function toolResult(value, isError = false) {
@@ -57768,7 +57773,7 @@ function toolResult(value, isError = false) {
 async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectDir }) {
   const target = targetForHost(host);
   const targetTitle = target[0].toUpperCase() + target.slice(1);
-  const effort = _enum([...EFFORTS]);
+  const effort = _enum([...EFFORTS]).describe("Reasoning effort, low through max. The provider rejects a level its catalog does not list.");
   const capabilities = capabilitiesForTarget(target);
   const providerLimits = target === "claude" ? {
     maxTurns: number2().int().min(1).max(1e3).optional().describe("Hard Claude conversation-turn limit for this job"),
@@ -57969,6 +57974,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
 // src/delegation/claude-worker.mjs
 import { randomUUID as randomUUID4 } from "node:crypto";
 var STARTUP_SECONDS = 30;
+var modelKey = (value) => String(value || "").replace(/\[1m\]$/i, "").toLowerCase();
 var RESULT_FAILURE_MESSAGES = {
   RATE_LIMIT: "Claude rejected the turn because the current plan or API rate limit is exhausted.",
   CLAUDE_AUTH: "Claude Code is not authenticated for Agent SDK use.",
@@ -58040,6 +58046,7 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
   let rateLimitStatus = null;
   let refusal = null;
   let servedBy = null;
+  let expectedModel = null;
   let terminalResult = null;
   let latestPreview = "";
   let previewChars = 0;
@@ -58185,6 +58192,7 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
         return;
       }
       const selectedModel = Array.isArray(initialized.models) ? initialized.models.find((entry) => entry.value === job.model) : null;
+      expectedModel = modelKey(selectedModel?.resolvedModel || job.model);
       store.setRunning(jobId2, { threadId: sessionId });
       store.appendEvent(jobId2, job.nativeThreadId ? "session.resumed" : "session.started", {
         sessionId,
@@ -58204,12 +58212,13 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
         for await (const message of active) {
           resetStall();
           if (message.type === "system" && (message.subtype === "model_refusal_no_fallback" || message.subtype === "model_refusal_fallback")) {
+            const known = refusal;
             refusal = {
-              category: message.api_refusal_category ?? null,
-              originalModel: message.original_model ?? null,
-              fallbackModel: message.fallback_model ?? null
+              category: message.api_refusal_category ?? known?.category ?? null,
+              originalModel: message.original_model ?? known?.originalModel ?? null,
+              fallbackModel: message.fallback_model ?? known?.fallbackModel ?? null
             };
-            store.appendEvent(jobId2, "turn.refused", refusal);
+            if (!known || known.fallbackModel !== refusal.fallbackModel) store.appendEvent(jobId2, "turn.refused", refusal);
           } else if (message.type === "system" && message.subtype === "init") {
             if (message.session_id !== sessionId) {
               throw new DelegationError("CLAUDE_PROTOCOL", "Claude returned a different session ID than Flow requested.");
@@ -58242,7 +58251,7 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
             }
             if (message.message?.model && message.message.model !== servedBy) {
               servedBy = message.message.model;
-              store.appendEvent(jobId2, "model.served", { model: servedBy });
+              store.appendEvent(jobId2, "model.served", { model: servedBy, expected: expectedModel, matches: modelKey(servedBy) === expectedModel });
             }
             for (const block of message.message?.content || []) {
               if (block.type === "tool_use") {
@@ -58294,8 +58303,14 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
       } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== "success")) {
         await settle("cancelled", { usage });
       } else if (refusal) {
+        if (servedBy && modelKey(servedBy) !== expectedModel) refusal.fallbackModel ||= servedBy;
         await settle("failed", {
           error: { kind: "REFUSAL", message: "Claude declined the delegated turn.", details: refusal },
+          usage
+        });
+      } else if (servedBy && modelKey(servedBy) !== expectedModel) {
+        await settle("failed", {
+          error: { kind: "MODEL_MISMATCH", message: "Claude answered on a model other than the one requested.", details: { expected: expectedModel, served: servedBy } },
           usage
         });
       } else if (timedOut || stalled) {

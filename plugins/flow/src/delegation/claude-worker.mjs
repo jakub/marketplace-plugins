@@ -7,6 +7,8 @@ import { validateStructuredValue } from './outcome.mjs'
 import { processStartToken, serviceLog } from './store.mjs'
 
 const STARTUP_SECONDS = 30
+// Catalog ids and response ids can differ by the context-window tag; nothing else.
+const modelKey = (value) => String(value || '').replace(/\[1m\]$/i, '').toLowerCase()
 const RESULT_FAILURE_MESSAGES = {
   RATE_LIMIT: 'Claude rejected the turn because the current plan or API rate limit is exhausted.',
   CLAUDE_AUTH: 'Claude Code is not authenticated for Agent SDK use.',
@@ -93,6 +95,7 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
   let rateLimitStatus = null
   let refusal = null
   let servedBy = null
+  let expectedModel = null
   let terminalResult = null
   let latestPreview = ''
   let previewChars = 0
@@ -232,6 +235,7 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       const selectedModel = Array.isArray(initialized.models)
         ? initialized.models.find((entry) => entry.value === job.model)
         : null
+      expectedModel = modelKey(selectedModel?.resolvedModel || job.model)
       store.setRunning(jobId, { threadId: sessionId })
       store.appendEvent(jobId, job.nativeThreadId ? 'session.resumed' : 'session.started', {
         sessionId,
@@ -254,12 +258,13 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
             // means the harness answered on another model anyway; the job still fails, because
             // a downgraded answer under the requested model's name is the one outcome the
             // charter forbids.
+            const known = refusal
             refusal = {
-              category: message.api_refusal_category ?? null,
-              originalModel: message.original_model ?? null,
-              fallbackModel: message.fallback_model ?? null,
+              category: message.api_refusal_category ?? known?.category ?? null,
+              originalModel: message.original_model ?? known?.originalModel ?? null,
+              fallbackModel: message.fallback_model ?? known?.fallbackModel ?? null,
             }
-            store.appendEvent(jobId, 'turn.refused', refusal)
+            if (!known || known.fallbackModel !== refusal.fallbackModel) store.appendEvent(jobId, 'turn.refused', refusal)
           } else if (message.type === 'system' && message.subtype === 'init') {
             if (message.session_id !== sessionId) {
               throw new DelegationError('CLAUDE_PROTOCOL', 'Claude returned a different session ID than Flow requested.')
@@ -292,7 +297,7 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
             }
             if (message.message?.model && message.message.model !== servedBy) {
               servedBy = message.message.model
-              store.appendEvent(jobId, 'model.served', { model: servedBy })
+              store.appendEvent(jobId, 'model.served', { model: servedBy, expected: expectedModel, matches: modelKey(servedBy) === expectedModel })
             }
             for (const block of message.message?.content || []) {
               if (block.type === 'tool_use') {
@@ -349,8 +354,19 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== 'success')) {
         await settle('cancelled', { usage })
       } else if (refusal) {
+        // A served model that differs from the requested one is the fallback, whichever lane
+        // produced it and whether or not the CLI announced it.
+        if (servedBy && modelKey(servedBy) !== expectedModel) refusal.fallbackModel ||= servedBy
         await settle('failed', {
           error: { kind: 'REFUSAL', message: 'Claude declined the delegated turn.', details: refusal },
+          usage,
+        })
+      } else if (servedBy && modelKey(servedBy) !== expectedModel) {
+        // No refusal signal, but the answer came from another model. That is a swap the
+        // caller never asked for, and reporting it under the requested model's name is the
+        // one outcome this worker exists to prevent.
+        await settle('failed', {
+          error: { kind: 'MODEL_MISMATCH', message: 'Claude answered on a model other than the one requested.', details: { expected: expectedModel, served: servedBy } },
           usage,
         })
       } else if (timedOut || stalled) {

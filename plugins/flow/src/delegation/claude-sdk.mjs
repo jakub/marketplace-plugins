@@ -221,6 +221,11 @@ export function createClaudeQuery(job, prompt, {
         // subagent-style query that retry is silent. The charter's rule is that a refusal is a
         // typed result, never a quieter model, so the worker sees the refusal instead.
         CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '1',
+        // The CLI's own no-fallback guarantee: the availability chain collapses to the primary
+        // model and any fallback pivot trips an internal error instead of switching. Neither
+        // variable is public API, so the worker also checks the model named on every assistant
+        // frame against the one it asked for, and fails the job when they differ.
+        CLAUDE_CODE_NO_MODEL_FALLBACK: '1',
       },
       stderr: onStderr,
       spawnClaudeCodeProcess: ({ command, args, cwd, env }) => {

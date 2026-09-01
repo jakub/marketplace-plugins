@@ -32,7 +32,7 @@ if (args[0] === 'auth' && args[1] === 'status') {
 }
 const mode = process.env.FLOW_FAKE_CLAUDE_MODE || 'happy'
 if (mode === 'assert-env') {
-  if (process.env.FLOW_SMOKE_API_KEY || process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1' || process.env.CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK !== '1' || !process.env.FLOW_DELEGATION_DEPTH) process.exit(19)
+  if (process.env.FLOW_SMOKE_API_KEY || process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1' || process.env.CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK !== '1' || process.env.CLAUDE_CODE_NO_MODEL_FALLBACK !== '1' || !process.env.FLOW_DELEGATION_DEPTH) process.exit(19)
 }
 if (mode === 'schema-false') {
   const schemaIndex = args.indexOf('--json-schema')
@@ -149,6 +149,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
       say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from the fallback' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'answer from the fallback' })
+    }
+    if (mode === 'silent-swap') {
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from a model nobody asked for' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return result({ text: 'answer from a model nobody asked for' })
+    }
+    if (mode === 'tagged-model') {
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'same model, tagged' }], model: 'claude-sonnet-5[1m]', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return result({ text: 'same model, tagged' })
     }
     if (mode === 'max-turns') return result({ text: 'turn limit', error: true, subtype: 'error_max_turns' })
     if (mode === 'max-budget') return result({ text: 'budget limit', error: true, subtype: 'error_max_budget_usd' })
@@ -301,6 +309,13 @@ try {
   assert.equal(fellBack.status, 'failed', 'an answer from a fallback model is a refusal, not a success')
   assert.equal(fellBack.error.kind, 'REFUSAL')
   assert.equal(fellBack.error.details.fallbackModel, 'claude-opus-4-8')
+  const swapped = await startJob({ prompt: 'Swapped without a word' }, { mode: 'silent-swap', stateDir: state('silent-swap') })
+  assert.equal(swapped.status, 'failed', 'an answer from an unrequested model fails even with no refusal signal')
+  assert.equal(swapped.error.kind, 'MODEL_MISMATCH')
+  assert.equal(swapped.error.details.served, 'claude-opus-4-8')
+  assert.equal(swapped.error.details.expected, 'claude-sonnet-5')
+  const tagged = await startJob({ prompt: 'Same model, context tag' }, { mode: 'tagged-model', stateDir: state('tagged-model') })
+  assert.equal(tagged.status, 'succeeded', 'a context-window tag on the served model id is not a swap')
   const schemaOutputLimit = await startJob({ prompt: 'Schema retry failure' }, { mode: 'schema-output-limit', stateDir: state('schema-output-limit') })
   assert.equal(schemaOutputLimit.error.kind, 'SCHEMA_OUTPUT')
   assert.match(schemaOutputLimit.error.message, /requested schema/)
