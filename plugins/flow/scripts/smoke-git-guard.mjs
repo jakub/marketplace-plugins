@@ -140,6 +140,16 @@ expectEnv(false, "gh issue comment 42 -F - <<'EOF'\nliteral $GH_TOKEN stays lite
 expectEnv(false, "gh issue comment 42 --body 'a literal $ in single quotes'", lint, 'lint: dollar in single quotes')
 expectEnv(false, 'claude plugin list', lint, 'lint: claude plugin list')
 expectEnv(false, 'echo ok', lint, 'lint: echo')
+// Fourth review round: bare command names only, filters that write or launch, hidden refspecs.
+expectEnv(true, 'git log -1; ./git push origin main', lint, 'lint: relative path to a git')
+expectEnv(true, '/tmp/bash /x/scripts/worktree-audit.sh /r', { ...lint, CLAUDE_PLUGIN_ROOT: '/x' }, 'lint: path-qualified bash')
+expectEnv(true, 'git log -1 | sort -o /home/x/.bashrc', lint, 'lint: sort writing a file')
+expectEnv(true, 'git log -1 | sort --compress-program=/tmp/x', lint, 'lint: sort launching a program')
+expectEnv(true, 'git log -1 | grep -f /etc/passwd x', lint, 'lint: grep reading patterns from a file')
+expectEnv(false, 'git log --oneline -20 | sort -r | uniq -c', lint, 'lint: sort with a read-only flag')
+expectEnv(true, "git fetch origin 'maint:tmp'", lint, 'lint: quoted refspec with a colon')
+expectEnv(true, "git fetch --refmap='refs/heads/*:refs/heads/*' origin", lint, 'lint: refspec hidden in a dropped option value')
+expectEnv(false, "git log -5 --format='%h %(refname:short)'", lint, 'lint: colon in a format value on a read')
 expectEnv(true, 'git log -1 &', lint, 'lint: background operator')
 expectEnv(true, 'git log -1; (git push origin main)', lint, 'lint: subshell grouping')
 // …and the lint's real commands still fit the grammar.

@@ -150,6 +150,9 @@ const CRON_FILTERS = new Set([
   'column', 'paste', 'rev', 'nl', 'fold', 'fmt', 'tac',
 ])
 const NODE_EVAL = /^(-e|-p|-r|-i|--eval|--print|--require|--import|--input-type|--loader|--experimental-loader)(=|$)/
+// Filter options that turn a read-only filter into a writer or a launcher: sort -o and
+// --compress-program are the known ones, and the rest are their spellings elsewhere.
+const FILTER_WRITES = /^(-o|--output|--compress-program|-T|--temporary-directory|--files0-from|-f|--file)(=|$)|^-[a-zA-Z]*[oT]/
 const PLAIN_COMMAND_WORD = /^[A-Za-z0-9_./+-]+$/
 const pluginRoot = () =>
   process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -266,8 +269,12 @@ const cronScanTarget = (cmd) => {
     const [head, ...args] = seg.words
     if (head.quoted) return stop('a quoted command word')
     if (!PLAIN_COMMAND_WORD.test(head.text)) return stop(`a command word the grammar cannot vouch for (${head.text.slice(0, 30)})`)
-    const base = head.text.replace(/^.*\//, '')
+    // The bare name, resolved through PATH by the shell: a path-qualified word (./git, /tmp/bash)
+    // is whatever the repository or the temp directory put there.
+    const base = head.text
+    if (base.includes('/')) return stop(`a path-qualified command word (${base.slice(0, 30)})`)
     if (seg.piped && !CRON_FILTERS.has(base)) return stop(`a pipe into ${base}, which is not a read-only filter`)
+    if (seg.piped && args.some((a) => !a.quoted && FILTER_WRITES.test(a.text))) return stop(`a filter option that writes a file or runs a program`)
     if (!seg.piped && !CRON_COMMANDS.has(base)) return stop(`${base} is not a command a cron job runs`)
     if (base === 'bash' || base === 'sh') {
       const script = args[0]
@@ -282,8 +289,14 @@ const cronScanTarget = (cmd) => {
       if (args.some((a) => !a.quoted && NODE_EVAL.test(a.text))) return stop('node evaluating inline code')
     }
     if (isGitToken(head.text) && seg.words.some((w) => /::|:\/\//.test(w.text))) return stop('a git command naming a URL or transport')
-    // A refspec hidden in quotes would pass the classifier below as an opaque word.
-    if (isGitToken(head.text) && seg.words.some((w) => w.quoted && /^\+|refs\//.test(w.text))) return stop('a quoted refspec')
+    // A refspec hidden in quotes, or in a dropped --refmap= value, would pass the classifier below
+    // as an opaque word. Only the ref-moving subcommands take refspecs, so the colon check is scoped
+    // to them and --format='%(refname:short)' on a log or branch stays legal.
+    if (isGitToken(head.text)) {
+      const movesRefs = args.some((a) => !a.quoted && /^(fetch|pull|push|remote|ls-remote|clone|submodule)$/.test(a.text))
+      const hidden = seg.words.some((w) => (w.quoted || w.valueDropped) && (/^\+|refs\//.test(w.text) || (movesRefs && /:/.test(w.text))))
+      if (hidden) return stop('a quoted refspec')
+    }
     out.push(seg.words.map((w) => (w.quoted ? 'QUOTED' : w.valueDropped ? w.text.slice(0, w.text.indexOf('=') + 1) : w.text)).join(' '))
   }
   return { text: out.join(' ; ') }
