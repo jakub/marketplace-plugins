@@ -1,0 +1,28 @@
+the real charter
+  ok: 7 roles, and both profiles bind exactly those, each under prose: sub-seat, orchestrator-model, pipeline-entry, artifact-publish, context-inheritance, search-seat, gripe-cli
+  ok: the marked roles are exactly the expected set
+  ok: all 3 allowlisted sections still exist: Cross-Family Delegation; Model Rankings (as of 2026-08); Rules of Engagement - Model Selection
+  ok: the charter names no host outside the allowlisted sections
+  ok: the charter names the <flow-profile> tag in its presence paragraph
+  ok: no stage marks or rebinds a charter role
+the real emitters
+  ok: charter part 1 is 5493 chars, under 9000, with no warning
+  ok: charter part 2 is 8129 chars, under 9000, with no warning
+  ok: the Claude profile block is 1355 chars and reports bindings="bound"
+  ok: a root with no profiles emits bindings="none" and the no-bindings note
+the setup pointer
+  ok: the flow skill carries the presence sentence verbatim
+the negative fixtures
+  ok: the checker fails missing-binding and names the gap: codex.md has no "### role: mini-publish" section for a role the charter marks
+  ok: the checker fails malformed-marker and names the gap: the charter writes [[role:Bad_Id]], which is not a canonical [[role:<id>]] marker
+  ok: the checker fails host-leak and names the gap: the charter names "Anthropic" outside the allowlisted sections: "Prefer the Anthropic tone in the writing, which is the leak this case exists to catch."
+  ok: the checker fails stage-role-redefinition and names the gap: skills/mini-stage/profiles/claude.md declares "### role: mini-seat"; roles are bound in charter/profiles only
+  ok: the checker fails commented-out-heading and names the gap: hidden.md has no "### role: mini-publish" section for a role the charter marks
+  ok: the checker fails miscased-marker and names the gap: the charter writes [[Role:mini-seat]], which is not a canonical [[role:<id>]] marker
+  ok: the checker fails setext-masked-empty and names the gap: setext.md declares role mini-seat with an empty section
+  ok: the checker fails tab-heading-masked-empty and names the gap: tabbed.md declares role mini-seat with an empty section
+  ok: the checker fails indented-heading and names the gap: indented.md writes "   ### role: mini-publish", which is not a canonical "### role: <id>" heading
+  ok: the checker fails indented-masked-empty and names the gap: indented.md declares role mini-seat with an empty section
+  ok: the checker fails commented-out-binding and names the gap: commented.md declares role mini-seat with an empty section
+
+charter conformance: ALL PASS (22 checks)

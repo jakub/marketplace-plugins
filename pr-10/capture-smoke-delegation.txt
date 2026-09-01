@@ -1,0 +1,16 @@
+task and typed output
+seat contract rides the delegated payload
+immutable structured review
+host capability inventory
+route and nesting guards
+redacted internal errors
+rejected requests never reach the job table
+writer lease, cancel, steer, and continuation
+duplicate worker claim
+provider quarantine retains and safely releases a write lease
+stale workers quarantine live providers before recovery
+unexpected approval and stale-job recovery
+recovered turn classification
+concurrent opens, retention, and the v1 upgrade
+MCP registration, roots, progress, and attached result
+smoke-delegation: ALL PASS

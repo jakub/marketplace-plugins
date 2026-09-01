@@ -1,0 +1,17 @@
+the real pair
+  ok: agents/implementer.md carries the contract byte for byte below one sentinel line
+  ok: the contract's 4 rendered headings are exactly the canonical set, in order, once each, no indented or setext spelling: Containment; Synchronous execution; Scope and completion; Reporting
+  ok: Containment reads back as 705 characters, heading included
+  ok: Containment names no host and no host-only tool
+  ok: contractSection() reads each of the four and returns null for a heading the file lacks
+  ok: the preamble and the four sections rebuild all 2861 characters, so nothing hides between them
+  ok: the sentinel lives in the mirror and not in the contract
+  ok: a fenced block added to the real contract is rejected, one problem per fence line, while its inline code spans stay legal
+the checker can still fail
+  ok: the checker fails one-char-drift and names the gap: one-char-drift/implementer.md has a tail that is not the contract: first difference at byte 412, where the contract reads "r.\n" and one-char-drift/implementer.md reads "v.\n"
+  ok: the checker fails duplicate-heading and names the gap: the contract writes "## Containment" 2 times, and a seat handed that section alone would read only the first
+  ok: the checker fails indented-heading and names the gap: the contract renders "Hidden policy" as a level-2 indented ATX heading on line 19, and only the four canonical "## " lines at column one may start a section, so this one reaches a seat that reads the whole tail and no seat handed one section
+  ok: the checker fails setext-heading and names the gap: the contract renders "Hidden policy" as a level-2 setext heading on line 19, and only the four canonical "## " lines at column one may start a section, so this one reaches a seat that reads the whole tail and no seat handed one section
+  ok: the checker fails fenced-heading-masquerade and names the gap: the contract writes a code fence "```" on line 5, and a fence in the compared bytes would let renderers and extractors read different files
+
+seat contract: ALL PASS (13 checks)

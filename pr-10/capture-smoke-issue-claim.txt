@@ -1,0 +1,168 @@
+a claim is taken once, and the second run is told it lost
+  ok: the first run acquires the claim
+  ok: it reports the tag it created and the object under it
+  ok: it names the repository it claimed on
+  ok: the tag is on the remote, at the head of main
+  ok: a claim on issue 60 did not read as a claim on issue 6
+  ok: a win says nothing on stderr
+  ok: the second run is told the claim is held
+  ok: it reports the object the held tag points at
+  ok: it tells a human to leave it alone
+  ok: the tag on the remote is untouched
+  ok: raw git exits 0 when it pushes the same object at a tag it did not create
+  ok: and only the flag column says so, with =, not *
+
+a claim that appears between the preflight and the push is still a loss
+  ok: an "up to date" push is reported held, not acquired
+  ok: and it says the push is what failed to create the ref
+  ok: the rival claim is still on the remote
+  ok: a rejected push is reported held, not acquired
+  ok: it reports the rival's object, not the one it tried to push
+  ok: the rival claim still points at its original object
+
+a clone that has not fetched since origin moved can still take a claim
+  ok: the fixture is genuinely stale: the clone lacks origin's current main object
+  ok: the stale clone acquires the claim
+  ok: the tag on the remote points at origin's current main head
+  ok: and it reports that same object as the claim's
+  ok: not one ref in the clone changed, including the temporary fetch ref
+  ok: no FETCH_HEAD was written
+  ok: the branch is where it was, and still reads as behind
+  ok: the clone now holds the object it pushed
+  ok: two stale clones racing: exactly one acquires
+  ok: and the other is held, not unknown
+  ok: and the winner's tag is origin's current main head
+  ok: no claim tag was dragged into either clone by the fetch
+
+two runs started together: exactly one wins, never both
+  ok: round 1: exactly one run acquires
+  ok: round 1: the other is held, and exits 3
+  ok: round 1: the tag on the remote is the winner's object
+  ok: round 2: exactly one run acquires
+  ok: round 2: the other is held, and exits 3
+  ok: round 2: the tag on the remote is the winner's object
+  ok: round 3: exactly one run acquires
+  ok: round 3: the other is held, and exits 3
+  ok: round 3: the tag on the remote is the winner's object
+  ok: round 4: exactly one run acquires
+  ok: round 4: the other is held, and exits 3
+  ok: round 4: the tag on the remote is the winner's object
+  ok: round 5: exactly one run acquires
+  ok: round 5: the other is held, and exits 3
+  ok: round 5: the tag on the remote is the winner's object
+  (of 5 losers, 0 lost at the preflight and 5 at the push)
+
+release refuses until the branch proves the work was pushed
+  ok: the claim is taken
+  ok: release with no branch on the remote is refused
+  ok: and names the missing branch as the reason
+  ok: and the claim tag survives the refusal
+  ok: and it says the tag stays
+  ok: release against a head the branch is not at is refused
+  ok: and reports the head it actually found
+  ok: and the claim tag survives that refusal too
+  ok: release with something that is not a SHA is refused
+  ok: and the claim tag survives that too
+
+release only accepts the branch belonging to the issue it is releasing
+  ok: release of issue 8 against main, at main's real head, is refused
+  ok: and the reason is that the branch is not the issue's
+  ok: and issue 8's claim survives the bypass
+  ok: another issue's branch cannot release this issue's claim
+  ok: and issue 8's claim survives that too
+  ok: issue 80's branch cannot release issue 8, despite the shared prefix
+  ok: and issue 8's claim survives that as well
+  ok: the issue's own branch is accepted, on any of feat, fix and chore
+  ok: and issue 8's claim is untouched by a release of issue 9
+
+release gives the claim back once the branch reads back as pushed
+  ok: the claim is released
+  ok: the tag is gone from the remote
+  ok: and a release says nothing on stderr
+  ok: releasing an already-released claim is the same answer
+
+abandon gives back a claim the caller just took, and nothing else
+  ok: abandon with no tag on the remote is refused
+  ok: the claim is taken
+  ok: abandon with a receipt that is not the tag's object is refused
+  ok: and it reports the object the tag actually holds
+  ok: and the claim survives the wrong receipt
+  ok: and it says abandon is not a way to break someone else's claim
+  ok: abandon with something that is not a SHA is refused
+  ok: and the claim survives that too
+  ok: abandon with the acquire's own receipt succeeds
+  ok: and the tag is gone from the remote
+  ok: and a clean abandon says nothing on stderr
+  ok: abandoning twice is refused, not a second success
+  ok: a claim is taken for the lease case
+  ok: a tag swapped after the receipt check is not deleted
+  ok: and the caller is told the outcome is unknown, not abandoned
+  ok: and it reports the object now sitting there
+
+the replay: a contender that scanned clean, acquired late, and backed out
+  ok: B's pre-acquire scan finds the issue clear
+  ok: A acquires the claim
+  ok: A publishes its branch and releases the claim
+  ok: so the claim tag is gone before B's push lands
+  ok: B's delayed acquire succeeds, because the tag is absent again
+  ok: and B holds a fresh claim on the remote
+  ok: B's post-acquire recheck finds A's branch
+  ok: and the only claim tag it sees is B's own
+  ok: B abandons the claim it just took
+  ok: the claim tag is gone
+  ok: A's branch is untouched, at the head A pushed
+  ok: the issue is left holding A's branch and nothing of B's
+
+an unreachable remote is unknown: never held, never acquired
+  ok: acquire against a remote that is not there is unknown
+  ok: it does not claim the issue is held
+  ok: it does not claim the issue was acquired
+  ok: it pushed nothing: the remote still has no such tag
+  ok: it tells a human not to start work on it
+  ok: a host URL remote is reported host-qualified
+  ok: and an unreachable host is still unknown
+  ok: a directory with no origin remote is refused
+
+a remote that reads from one repository and pushes to another is refused
+  ok: acquire refuses a divergent pushurl
+  ok: and names the mismatch
+  ok: nothing landed in the repository it reads from
+  ok: and nothing landed in the one it would have pushed to
+  ok: release refuses a divergent pushurl too
+  ok: abandon refuses a divergent pushurl as well
+  ok: a pushurl equal to the fetch URL is not a mismatch
+  ok: two push URLs on origin is refused
+  ok: and still nothing landed anywhere
+
+nothing it prints carries a credential out of the remote URL
+  ok: the identity is host and path, with the userinfo dropped
+  ok: the token appears nowhere in stdout or stderr
+  ok: the username appears nowhere either
+  ok: a URL the strict parser rejects still reports host and path
+  ok: and still prints no token
+  ok: an unparseable origin reports the placeholder
+  ok: and prints none of the raw value
+
+things it refuses before touching the remote
+  ok: an issue number that is not a number exits 2
+  ok: issue 0 exits 2
+  ok: a negative issue number exits 2
+  ok: a second argument to acquire exits 2
+  ok: no subcommand exits 2
+  ok: a subcommand that is not acquire or release exits 2
+  ok: release without a head SHA exits 2
+  ok: a branch name that is not a branch name exits 2
+  ok: --help exits 0 with the usage text
+
+nothing in the source overwrites a ref
+  ok: no bare --force anywhere in the code
+  ok: no -f argv token
+  ok: no + refspec anywhere in the code
+  ok: the only lease is abandon's, pinned to the claim ref and the receipt
+  ok: the push refspecs are a plain create and a plain delete
+  ok: the fetch refspec is unforced and lands under refs/flow-claim
+  ok: git-guard allows abandon's lease delete
+  ok: and still denies a bare force-push, so that is not a permissive guard
+  ok: the fetch cannot move a remote-tracking ref or write FETCH_HEAD
+
+issue claim: ALL PASS

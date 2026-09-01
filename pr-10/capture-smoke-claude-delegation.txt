@@ -1,0 +1,5 @@
+Claude routing, models, doctor, and typed output
+Claude effort, nesting, control, and recovery semantics
+Claude SDK hook policy
+Codex-hosted MCP registration
+smoke-claude-delegation: ALL PASS

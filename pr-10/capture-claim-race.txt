@@ -1,0 +1,36 @@
+== helper: /home/jakub/code/marketplace-plugins-issue-6-stage/plugins/flow/scripts/issue-claim.mjs (branch feat/issue-6-issue-stage @ 9905d11)
+== work dir: /tmp/tmp.cF47t7NPrm
+
+== clone A and B, fresh, from github.com/jakub/flow-land-scratch
+A HEAD: cbd305073d90a3cdfc556050aa5e01fefb40f957
+B HEAD: cbd305073d90a3cdfc556050aa5e01fefb40f957
+
+== pre-state: no claim tag for issue 99 on the remote
+  (empty above = absent)
+
+== concurrent acquire: A and B race
+--- A exit 0, output:
+  {"command":"acquire","repo":"github.com/jakub/flow-land-scratch","issue":99,"tag":"flow-claim-issue-99","ref":"refs/tags/flow-claim-issue-99","result":"acquired","sha":"cbd305073d90a3cdfc556050aa5e01fefb40f957"}
+--- B exit 3, output:
+  {"command":"acquire","repo":"github.com/jakub/flow-land-scratch","issue":99,"tag":"flow-claim-issue-99","ref":"refs/tags/flow-claim-issue-99","result":"held","sha":"cbd305073d90a3cdfc556050aa5e01fefb40f957","detail":"the push did not create the ref (git said \"!\" [remote rejected] (cannot lock ref 'refs/tags/flow-claim-issue-99': reference already exists), exit 1)"}
+
+== verdicts: A=acquired B=held
+== exactly one winner: A (loser B held, exit 3)
+
+== the tag on the remote points at main's head
+  cbd305073d90a3cdfc556050aa5e01fefb40f957	refs/tags/flow-claim-issue-99
+
+== the loser mutated nothing: its full ref state is byte-identical to its own pre-race snapshot
+  identical show-ref output: the loser changed no ref and dragged no tag in
+  loser worktree status: 0 entries (0 = untouched)
+
+== winner's post-acquire rescan (the stage's double-checked window): no issue-99 branches exist
+  (empty above = clear; a real run would proceed to mutate)
+
+== winner abandons with its acquire receipt cbd305073d90a3cdfc556050aa5e01fefb40f957 (live lease compare-and-delete)
+  {"command":"abandon","repo":"github.com/jakub/flow-land-scratch","issue":99,"tag":"flow-claim-issue-99","ref":"refs/tags/flow-claim-issue-99","receipt":"cbd305073d90a3cdfc556050aa5e01fefb40f957","result":"abandoned"}
+
+== post-state: tag gone from the remote
+  (empty above = absent; the scratch repo is clean)
+
+== capture complete: one deterministic winner, a loser that mutated nothing, a live abandon

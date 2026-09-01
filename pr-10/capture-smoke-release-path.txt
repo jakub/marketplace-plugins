@@ -1,0 +1,158 @@
+operation classification
+  ok: gh pr merge is an operation
+  ok: npm publish is an operation
+  ok: a dry run publishes nothing
+  ok: merge in prose is not a merge
+  ok: ordinary work publishes nothing
+  ok: publishReason ignores the merge op
+  ok: the Claude guard says nothing about a merge
+  ok: the Claude guard still asks about cargo publish
+  ok: a quoted merge is invisible to the shallow read
+  ok: the strict read finds it
+  ok: the Claude guard is untouched by the strict read
+  ok: a quoted registry publish is found too
+  ok: prose inside a quoted payload is still prose
+
+the merge tripwire
+  ok: a bare merge is merge-shaped
+  ok: so is one wrapped in a shell
+  ok: so is one under eval
+  ok: so is the REST endpoint
+  ok: so is the GraphQL mutation
+  ok: a semicolon inside a quoted flag value does not hide the merge
+  ok: the executor is not merge-shaped
+  ok: wherever it is installed
+  ok: a commit message about merging is not merge-shaped
+  ok: nor is a comment quoting the command
+  ok: nor is reading the pull request
+  ok: nor is git merge
+
+in a repo with .flow/managed, merging by hand is routed to the executor
+  ok: a plain merge is denied
+  ok: and the denial names the executor
+  ok: and says the repository opted in
+  ok: a bare merge is denied
+  ok: a merge wrapped in bash -lc is denied
+  ok: a merge under eval is denied
+  ok: the -R form is denied
+  ok: the REST endpoint is denied
+  ok: a quoted REST path is denied
+  ok: the GraphQL mutation is denied
+  ok: a subdirectory of the repo is still the repo
+  ok: a directory git cannot read fails closed
+  ok: a repo whose HEAD the marker probe cannot list fails closed
+  ok: a committed marker with a deleted worktree copy is still managed
+  ok: the executor itself is not denied
+  ok: nor is it from another install path
+  ok: nor is it by relative path
+
+in a repo without the marker, flow gates no merges
+  ok: a plain merge passes
+  ok: so does the REST endpoint
+  ok: so does a merge wrapped in bash -lc
+  ok: an uncommitted marker does not enroll a repo
+
+registry publication is denied in both
+  ok: the plain publication deny text is unchanged
+  ok: npm publish, managed
+  ok: npm publish, unmanaged
+  ok: a quoted registry publish, managed
+  ok: a quoted registry publish, unmanaged
+
+scheduled jobs merge nothing anywhere, executor included
+  ok: a cron job is denied in a managed repo
+  ok: and in an unmanaged one
+  ok: a cron job may not invoke the executor
+  ok: even after stripping the variable off the child
+  ok: but the executor invocation is fine in an attended session
+
+ordinary commands are untouched
+  ok: git status
+  ok: git add
+  ok: git commit
+  ok: git push
+  ok: git commit describing a merge
+  ok: a test run
+  ok: a dry run
+  ok: a dry run through a shell
+  ok: a merge described in prose
+  ok: reading a PR
+  ok: a local merge
+
+the executor merges once, pinning every call to the origin repository
+  ok: it exits 0
+  ok: and says what it merged
+  ok: it merged exactly once
+  ok: with --repo, --squash and the verified head
+  ok: every gh call is pinned to the origin repository
+  ok: it read the live pull request first
+  ok: and the repository default branch
+  ok: and checked the base for a merge queue
+  ok: the merge-queue query names the branch it checks
+
+a stray GH_REPO cannot redirect the executor
+  ok: it still merges the origin repository
+  ok: and every call stayed pinned
+
+a read GitHub redirected to another repository is refused
+  ok: it refuses on the mismatched url
+  ok: and merged nothing
+
+a GitHub Enterprise origin pins the GHE identity, not github.com
+  ok: it merges against the GHE host
+  ok: and every call is pinned to the GHE identity
+  ok: a github.com url against a GHE origin is refused
+
+the executor refuses what should not merge, before mutating anything
+  ok: a closed pull request is refused
+  ok: a closed pull request is refused: merged 0
+  ok: an already merged one is refused
+  ok: an already merged one is refused: merged 0
+  ok: a draft is refused
+  ok: a draft is refused: merged 0
+  ok: an unreadable draft flag is refused
+  ok: an unreadable draft flag is refused: merged 0
+  ok: an unreadable head is refused
+  ok: an unreadable head is refused: merged 0
+  ok: a base other than the default branch is refused
+  ok: a base other than the default branch is refused: merged 0
+  ok: an unreadable default branch is refused
+  ok: an unreadable default branch is refused: merged 0
+  ok: a directory with no origin remote is refused
+  ok: a directory with no origin remote is refused: merged 0
+  ok: a pull request with auto-merge already armed is refused
+  ok: a pull request with auto-merge already armed is refused: merged 0
+  ok: a base carrying a merge queue is refused before mutating
+  ok: a base carrying a merge queue is refused before mutating: merged 0
+  ok: an unreadable merge-queue status is refused
+  ok: an unreadable merge-queue status is refused: merged 0
+  ok: a retarget between the check and the merge is refused
+  ok: a retarget between the check and the merge is refused: merged 0
+  ok: a head moved between the check and the merge is refused
+  ok: a head moved between the check and the merge is refused: merged 0
+  ok: a gh merge that fails and stays cleanly open is a failure
+  ok: a gh merge that fails and stays cleanly open is a failure: merged 1
+  ok: a MERGED read whose head no longer matches is not claimed as our merge
+  ok: a MERGED read whose head no longer matches is not claimed as our merge: merged 1
+  ok: an armed auto-merge after a non-MERGED read is UNKNOWN
+  ok: an armed auto-merge after a non-MERGED read is UNKNOWN: merged 1
+  ok: a merge queue armed only after the merge call is UNKNOWN
+  ok: a merge queue armed only after the merge call is UNKNOWN: merged 1
+  ok: an unreadable merge queue after the merge call is UNKNOWN
+  ok: an unreadable merge queue after the merge call is UNKNOWN: merged 1
+  ok: a merge that reports success but lands nothing is UNKNOWN, not a failure
+  ok: a merge that reports success but lands nothing is UNKNOWN, not a failure: merged 1
+
+an unconfirmable outcome is reported UNKNOWN, not refused
+  ok: it reports it could not confirm
+  ok: it does not claim the merge was refused
+  ok: it merged once
+
+things the executor refuses before reading anything
+  ok: a scheduled job cannot merge, before even the origin read
+  ok: and calls gh not at all
+  ok: a pull request number that is not a number exits 2
+  ok: no argument exits 2
+  ok: a second argument exits 2
+
+release path: ALL PASS

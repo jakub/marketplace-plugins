@@ -1,0 +1,35 @@
+["ready-for-agent"]
+EXIT=124
+session id: 01a05a0b-662b-74b3-9628-c910434d6e01
+new file mode 100644
+index 0000000000000000000000000000000000000000..4aba041199eea55b37d5efa396de80f38bf74237
+--- /dev/null
++++ b//tmp/flow-lychee-issue3-fixtures/README.md
+@@ -0,0 +1,5 @@
++# Fixture heading
++
++[missing file](missing-file.md)
++[missing anchor](README.md#this-heading-does-not-exist)
++[genuine 404](https://github.com/lycheeverse/lychee/blob/lychee-v0.24.2/this-file-does-not-exist.md)
+diff --git a//tmp/flow-lychee-issue3-fixtures/SECOND.markdown b//tmp/flow-lychee-issue3-fixtures/SECOND.markdown
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2b60e7183652bd956241a0a6ec0d8f79ea09a70
+--- /dev/null
++++ b//tmp/flow-lychee-issue3-fixtures/SECOND.markdown
+@@ -0,0 +1,3 @@
++# Second extension
++
++[missing second file](also-missing.md)
+diff --git a//tmp/flow-lychee-issue3-zero/README.md b//tmp/flow-lychee-issue3-zero/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd2cda4955a1071776e1f78c7412df8b5a5671bb
+--- /dev/null
++++ b//tmp/flow-lychee-issue3-zero/README.md
+@@ -0,0 +1,3 @@
++# Zero-link fixture
++
++There are no links here.
+
+collab: Wait
+
+[exited with code 0]

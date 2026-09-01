@@ -1,0 +1,1 @@
+committed delegation bundle: ALL PASS (2570699 bytes, byte-identical to a fresh build)
