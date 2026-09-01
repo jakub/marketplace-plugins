@@ -4,8 +4,7 @@
     "name": "jakub"
   },
   "metadata": {
-    "description": "jakub's Claude Code marketplace - plugins and skill bundles.",
-    "version": "0.42.0"
+    "description": "jakub's Claude Code marketplace - plugins and skill bundles."
   },
   "plugins": [
     {

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Validate the parallel Claude/Codex plugin manifests and every registered command path.
-// Versions are derived from the marketplace manifest, not pinned here: the invariant is
-// that every listed plugin's Claude manifest, Codex manifest (when present), and
-// marketplace entry agree, so a release stays the four documented edits.
+// Validate the Claude and Codex plugin manifests and every registered hook command path.
+// Versions are derived from the marketplace manifest, not pinned here: the invariant is that
+// a plugin's Claude manifest, its Codex manifest when it has one, and its marketplace entry
+// all agree. A release of a dual-harness plugin is those three edits and nothing else - the
+// marketplace manifest carries no catalog version, because no software reads one.
 
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +18,6 @@ const CODEX_EVENTS = new Set([
   'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit',
 ])
 
-assert.match(marketplace.metadata.version, /^\d+\.\d+\.\d+$/, 'catalog version is semver')
 assert.ok(marketplace.plugins.length > 0, 'marketplace lists plugins')
 const codexPlugins = []
 
@@ -44,23 +43,48 @@ for (const listed of marketplace.plugins) {
     assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'PWD'], 'flow Codex MCP passes the user-bus environment and the launch cwd through')
   }
 
+  // Every ${CLAUDE_PLUGIN_ROOT} path Claude will run has to resolve inside the plugin. Claude
+  // finds hooks/hooks.json by convention, so the file's presence is the registration.
+  const claudeHooks = join(pluginRoot, 'hooks', 'hooks.json')
+  if (existsSync(claudeHooks)) {
+    for (const [event, groups] of Object.entries(readJson(claudeHooks).hooks)) {
+      for (const group of groups) {
+        for (const handler of group.hooks) {
+          assert.equal(handler.type, 'command', `${name} Claude ${event} handler is a command`)
+          const match = handler.command.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"' ]+)/)
+          assert.ok(match, `${name} Claude command uses CLAUDE_PLUGIN_ROOT: ${handler.command}`)
+          assert.ok(existsSync(join(pluginRoot, match[1])), `${name} Claude command target ${match[1]}`)
+        }
+      }
+    }
+  }
+
+  // Codex finds skills/*/SKILL.md on its own, so a plugin that ships nothing but skills needs
+  // no Codex manifest and does not carry one. Hooks and MCP servers are the other way round:
+  // Codex reads them only out of .codex-plugin/plugin.json, so a plugin that registers either
+  // one without that manifest silently loses it on Codex.
+  const registersOnCodex = existsSync(join(pluginRoot, 'hooks', 'codex.json')) ||
+    existsSync(join(pluginRoot, '.mcp.json'))
   const codexManifest = join(pluginRoot, '.codex-plugin', 'plugin.json')
-  if (!existsSync(codexManifest)) continue
+  const skillsRoot = join(pluginRoot, 'skills')
+  const skills = existsSync(skillsRoot)
+    ? readdirSync(skillsRoot).filter((dir) => existsSync(join(skillsRoot, dir, 'SKILL.md')))
+    : []
+
+  if (!existsSync(codexManifest)) {
+    assert.ok(!registersOnCodex, `${name} registers Codex hooks or an MCP server and needs a Codex manifest`)
+    assert.ok(skills.length > 0, `${name} has no Codex manifest, so skills are all it can contribute there`)
+    continue
+  }
+
   codexPlugins.push(name)
   const codex = readJson(codexManifest)
   assert.equal(codex.version, listed.version, `${name} Codex version matches marketplace`)
-
-  // Codex finds skills/*/SKILL.md on its own, so a skills-only plugin registers no hooks
-  // and needs no key for them. What it must not be is empty: a Codex manifest that
-  // registers nothing and ships no skill contributes nothing, and is a typo.
-  if (codex.hooks === undefined) {
-    const skillsRoot = join(pluginRoot, 'skills')
-    const skills = existsSync(skillsRoot)
-      ? readdirSync(skillsRoot).filter((dir) => existsSync(join(skillsRoot, dir, 'SKILL.md')))
-      : []
-    assert.ok(skills.length > 0, `${name} Codex manifest without hooks ships at least one skill`)
-    continue
-  }
+  assert.ok(
+    codex.hooks !== undefined || codex.mcpServers !== undefined,
+    `${name} Codex manifest registers hooks or an MCP server; skills alone need no manifest`,
+  )
+  if (codex.hooks === undefined) continue
 
   const hooksPath = join(pluginRoot, codex.hooks)
   assert.ok(existsSync(hooksPath), `${name} Codex hooks path`)
@@ -78,27 +102,9 @@ for (const listed of marketplace.plugins) {
   }
 }
 
-// The dual-harness set shrinking to zero would mean the Codex manifests moved or were
-// renamed without this test noticing; that is a failure, not an empty success.
-assert.ok(codexPlugins.length >= 4, `expected at least 4 Codex-capable plugins, found ${codexPlugins.length}`)
-assert.ok(codexPlugins.includes('grill'), 'grill carries a Codex manifest')
-
-// The catalog version must move whenever the plugin set or a listed version moves.
-// Parity alone cannot prove that, so compare against main's committed manifest when
-// the ref is available; without one (shallow CI clone) the check is skipped.
-let baseline = null
-try {
-  baseline = JSON.parse(execFileSync(
-    'git', ['-C', ROOT, 'show', 'main:.claude-plugin/marketplace.json'], { encoding: 'utf8' },
-  ))
-} catch {}
-if (baseline && baseline.metadata.version !== marketplace.metadata.version) {
-  // Catalog already bumped relative to main; nothing further to prove.
-} else if (baseline) {
-  const drifted = marketplace.plugins.length !== baseline.plugins.length ||
-    marketplace.plugins.some((entry) =>
-      baseline.plugins.find((b) => b.name === entry.name)?.version !== entry.version)
-  assert.ok(!drifted, 'a listed plugin version changed against main but the catalog version did not move')
-}
+// flow, gripe and unslop all register Codex hooks. The set shrinking would mean a Codex
+// manifest moved or was renamed without this test noticing; that is a failure, not an empty
+// success. grill is deliberately outside it, shipping skills alone.
+assert.ok(codexPlugins.length >= 3, `expected at least 3 Codex manifests, found ${codexPlugins.length}`)
 
 console.log('parallel plugin manifests: ALL PASS')
