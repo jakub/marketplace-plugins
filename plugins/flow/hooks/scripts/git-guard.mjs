@@ -144,11 +144,15 @@ const isGitToken = (t) => /(^|[/=])git$/.test(t)
 // The command words a cron job may run at all. Anything else in command position is refused,
 // so `git log; rm -rf ~` and `git log; curl ...` die on the word and not on a guess about
 // what it does. Pipe targets have their own, narrower set below.
-const CRON_COMMANDS = new Set(['git', 'gh', 'node', 'bash', 'sh', 'claude', 'gripe', 'echo', 'true', 'ls', 'cat', 'pwd', 'date', 'test', '['])
+const CRON_COMMANDS = new Set(['git', 'gh', 'node', 'bash', 'sh', 'claude', 'gripe', 'echo', 'true', 'pwd', 'date', 'test', '['])
+// Filters read stdin and nothing else: a file operand on cat or head is a file read the job has
+// no business doing from a shell. grep and jq take exactly one positional, the pattern; tr takes
+// its two sets; everything else takes none.
 const CRON_FILTERS = new Set([
   'head', 'tail', 'grep', 'egrep', 'fgrep', 'sort', 'uniq', 'wc', 'cut', 'tr', 'jq', 'cat',
   'column', 'paste', 'rev', 'nl', 'fold', 'fmt', 'tac',
 ])
+const FILTER_POSITIONALS = { grep: 1, egrep: 1, fgrep: 1, jq: 1, tr: 2 }
 const NODE_EVAL = /^(-e|-p|-r|-i|--eval|--print|--require|--import|--input-type|--loader|--experimental-loader)(=|$)/
 // Filter options that turn a read-only filter into a writer or a launcher: sort -o and
 // --compress-program are the known ones, and the rest are their spellings elsewhere.
@@ -275,6 +279,10 @@ const cronScanTarget = (cmd) => {
     if (base.includes('/')) return stop(`a path-qualified command word (${base.slice(0, 30)})`)
     if (seg.piped && !CRON_FILTERS.has(base)) return stop(`a pipe into ${base}, which is not a read-only filter`)
     if (seg.piped && args.some((a) => !a.quoted && FILTER_WRITES.test(a.text))) return stop(`a filter option that writes a file or runs a program`)
+    if (seg.piped) {
+      const positionals = args.filter((a) => a.quoted || !a.text.startsWith('-')).length
+      if (positionals > (FILTER_POSITIONALS[base] ?? 0)) return stop(`a file operand on ${base}, which reads stdin only here`)
+    }
     if (!seg.piped && !CRON_COMMANDS.has(base)) return stop(`${base} is not a command a cron job runs`)
     if (base === 'bash' || base === 'sh') {
       const script = args[0]
@@ -285,7 +293,7 @@ const cronScanTarget = (cmd) => {
     }
     if (base === 'node') {
       const script = args[0]
-      if (!script || script.quoted || !/\.(mjs|js)$/.test(script.text)) return stop('node may only run a .mjs or .js script path')
+      if (!script || script.quoted || !/\.(mjs|js)$/.test(script.text) || !resolve(script.text).startsWith(root + '/')) return stop('node may only run a .mjs or .js script under the plugin root')
       if (args.some((a) => !a.quoted && NODE_EVAL.test(a.text))) return stop('node evaluating inline code')
     }
     if (isGitToken(head.text) && seg.words.some((w) => /::|:\/\//.test(w.text))) return stop('a git command naming a URL or transport')
