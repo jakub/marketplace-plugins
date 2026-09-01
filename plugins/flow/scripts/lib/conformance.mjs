@@ -102,12 +102,19 @@ export const uncommented = (text) => text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
 // Whether text holds a "<!--" with no matching "-->" anywhere after it. Walks opener to closer to
 // opener, the same pairing uncommented()'s regex does, so this agrees with what that function is
 // about to erase: a closed comment earlier in the text does not make a later, unclosed one safe.
+// The closer search starts at open + 4, past the opener's own four characters, for the same
+// reason uncommented()'s regex only starts looking for "-->" after "<!--" matches: "<!-->" and
+// "<!--->" both have a "-->" sitting inside the opener itself, borrowing its trailing dashes.
+// Searching from open, not open + 4, reads that borrowed "-->" as a real closer and calls the
+// comment closed, while uncommented() still finds no "-->" after the opener and erases to end of
+// file. A helper that disagrees with the function it is supposed to be watching stays silent on
+// exactly the spellings it exists to catch.
 const opensUnclosedComment = (text) => {
   let at = 0
   for (;;) {
     const open = text.indexOf('<!--', at)
     if (open === -1) return false
-    const close = text.indexOf('-->', open)
+    const close = text.indexOf('-->', open + 4)
     if (close === -1) return true
     at = close + 3
   }

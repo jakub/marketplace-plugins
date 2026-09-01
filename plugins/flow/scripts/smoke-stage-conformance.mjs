@@ -386,6 +386,16 @@ const PAIR_CASES = [
     dir: 'indented-terminated-comment',
     names: ['the stage quotes an HTML comment delimiter in indented code, which this lint cannot classify - use a fenced block'],
   },
+  {
+    // A bare "<!-->" in ordinary prose. Its own trailing dashes read as a "-->" to a closer search
+    // that starts at the opener's position instead of past it, so the unterminated-comment rule
+    // used to see this spelling as closed while uncommented() erased to end of file anyway. This
+    // only closes that index-math gap in the loud rule; "<!-->" and kin are not canonical HTML
+    // comment syntax to begin with, and that wider grammar divergence is a ratified residual, not
+    // a defect this fix is trying to close.
+    dir: 'invalid-comment-spelling',
+    names: ['the stage opens an HTML comment that never closes, so everything after it would be invisible to this lint'],
+  },
 ]
 for (const { dir, names } of PAIR_CASES) {
   const at = join(FIXTURE, dir)
