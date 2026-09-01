@@ -97,11 +97,12 @@ const isManagedRepo = (cwd) => {
 const mergeDenial = (shapes) =>
   `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
   'merge guardrail with a committed .flow/managed file. Merges here run through the executor, not a raw gh ' +
-  `command: \`node "${EXECUTOR}" <pr-number>\`. It takes the pull request number and nothing else, derives the ` +
-  'repository from the origin remote, reads the head SHA, the state, the draft flag and the base branch from ' +
-  'GitHub, merges with --match-head-commit pinned to that verified head, and confirms the outcome by ' +
-  're-reading the pull request. Run it when the human has asked to land this pull request and the land gates ' +
-  'have passed.'
+  `command: \`node "${EXECUTOR}" <pr-number> <expected-head-sha>\`. It takes the pull request number and the ` +
+  'full 40-character head SHA your gates ran against, and nothing else. It derives the repository from the ' +
+  'origin remote, reads the head SHA, the state, the draft flag and the base branch from GitHub, refuses if ' +
+  'GitHub\'s head is not the one you passed, merges with --match-head-commit pinned to that verified head, and ' +
+  'confirms the outcome by re-reading the pull request. Run it when the human has asked to land this pull ' +
+  'request and the land gates have passed.'
 
 const decide = (input) => {
   const command = input?.tool_input?.command
@@ -120,7 +121,7 @@ const decide = (input) => {
   // Scheduled jobs read untrusted text and nobody is watching them, so merging is simply off
   // there, opted-in repository or not, and that includes the executor. FLOW_CRON_JOB is read
   // from the hook's own environment, which is the cron session's, so a command that strips the
-  // variable off its own child - `env -u FLOW_CRON_JOB node land-merge.mjs 12` - is still
+  // variable off its own child - `env -u FLOW_CRON_JOB node land-merge.mjs 12 <sha>` - is still
   // denied here even though the executor it launches would no longer see the variable itself.
   // This is checked before the merge-shape early return so the executor invocation, which is
   // not merge-shaped, is caught too.
