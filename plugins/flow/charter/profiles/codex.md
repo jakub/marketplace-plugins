@@ -2,9 +2,9 @@
 
 Injected beside the charter. Each section binds one of its `[[role:…]]` names to this
 host's mechanism; the charter says what a role is for, this file says what it is here.
-A seat role's section opens with the charter table's model name and the effort, and the
-conformance lint reads exactly those two against the role's floors. A bridge binding also
-spells the provider id the delegation tool takes.
+A seat role's section opens with the charter table's model name and an effort, and the
+conformance lint reads exactly that opening pair against the role's floors. A bridge
+binding also spells the provider id the delegation tool takes.
 
 ## Bindings
 

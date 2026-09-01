@@ -2,10 +2,12 @@
 
 Injected beside the charter. Each section binds one of its `[[role:…]]` names to this
 host's mechanism; the charter says what a role is for, this file says what it is here.
-A seat role's section opens with the charter table's model name and the effort, and the
-conformance lint reads exactly those two against the role's floors. The Agent tool takes
-`model` only, so a native seat runs at the session's effort: name the intended effort in
-the spawn prompt, and raise the session effort for a hard milestone.
+A seat role's section opens with the charter table's model name and an effort, and the
+conformance lint reads exactly that opening pair against the role's floors. The Agent tool
+takes `model` only, so a native seat runs at the session's effort: a native binding's
+"session effort" is the effort this session must be running at when it spawns that role.
+Raise it before the spawn, and journal the effort you were at. A bridge binding's effort
+is set on the call.
 
 ## Bindings
 
@@ -22,7 +24,7 @@ type starts from harness defaults, so carry the non-negotiables in the prompt.
 
 ### role: search-seat
 
-`sonnet-5` at low effort: `Explore` agents (`model: sonnet`). Escalate the model when the
+`sonnet-5` at low session effort: `Explore` agents (`model: sonnet`). Escalate the model when the
 search itself needs judgment.
 
 ### role: outside-scout
@@ -32,7 +34,7 @@ repository root as `cwd`.
 
 ### role: design-leg-native
 
-`opus-5` at xhigh effort as `flow:code-architect` (`model: opus`), in the background.
+`opus-5` at xhigh session effort as `flow:code-architect` (`model: opus`), in the background.
 
 ### role: design-leg-bridge
 
@@ -42,19 +44,19 @@ the Codex family.
 
 ### role: taste-leg
 
-`fable-5-1` at high effort as `flow:code-architect` (`model: fable`).
+`fable-5-1` at high session effort as `flow:code-architect` (`model: fable`).
 
 ### role: write-seat-mechanical
 
-`sonnet-5` at medium effort as `flow:implementer` (`model: sonnet`).
+`sonnet-5` at medium session effort as `flow:implementer` (`model: sonnet`).
 
 ### role: write-seat-standard
 
-`opus-5` at high effort as `flow:implementer` (`model: opus`). The default rung.
+`opus-5` at high session effort as `flow:implementer` (`model: opus`). The default rung.
 
 ### role: write-seat-hard
 
-`opus-5` at xhigh effort as `flow:implementer` (`model: opus`).
+`opus-5` at xhigh session effort as `flow:implementer` (`model: opus`).
 
 ### role: bulk-seat
 
@@ -63,7 +65,7 @@ decorrelation seat.
 
 ### role: review-seat-native
 
-`opus-5` at xhigh effort as `flow:code-reviewer` (`model: opus`), for a diff a bridge
+`opus-5` at xhigh session effort as `flow:code-reviewer` (`model: opus`), for a diff a bridge
 writer produced.
 
 ### role: review-seat-bridge
@@ -79,7 +81,7 @@ hunch.
 
 ### role: adjudicator
 
-`opus-5` at max effort (`model: opus`).
+`opus-5` at max session effort (`model: opus`).
 
 ### role: human-choice
 

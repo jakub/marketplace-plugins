@@ -135,7 +135,16 @@ const rankings = (charterText) => {
   return rows
 }
 
-// One row per marked role, floors written "criterion >= n" or "criterion: value".
+// One row per marked role, floors written "criterion >= n" or "criterion: value". A floor
+// the parser cannot read is a floor that checks nothing, so every value is validated here.
+const FLOOR_GRAMMAR = {
+  cheapness: { op: '>=', ok: (v) => /^(?:10|\d)$/.test(v) },
+  intelligence: { op: '>=', ok: (v) => /^(?:10|\d)$/.test(v) },
+  taste: { op: '>=', ok: (v) => /^(?:10|\d)$/.test(v) },
+  effort: { op: '>=', ok: (v) => EFFORTS.includes(v) },
+  family: { op: ':', ok: (v) => ['other', 'native'].includes(v) },
+  classifiers: { op: ':', ok: (v) => ['none', 'standard', 'strict'].includes(v) },
+}
 const floorsOf = (charterText) => {
   const roles = new Map()
   const problems = []
@@ -146,8 +155,17 @@ const floorsOf = (charterText) => {
     const parsed = []
     for (const clause of (floors || '').split(',').map((part) => part.trim()).filter(Boolean)) {
       const m = /^([a-z]+)\s*(>=|:)\s*([a-z0-9]+)$/.exec(clause)
-      if (!m || !CRITERIA.includes(m[1])) {
+      const grammar = m && FLOOR_GRAMMAR[m[1]]
+      if (!grammar) {
         problems.push(`role ${id[1]} declares the floor "${clause}", which names no known criterion`)
+        continue
+      }
+      if (m[2] !== grammar.op) {
+        problems.push(`role ${id[1]} declares the floor "${clause}", and ${m[1]} takes "${grammar.op}"`)
+        continue
+      }
+      if (!grammar.ok(m[3])) {
+        problems.push(`role ${id[1]} declares the floor "${clause}", and "${m[3]}" is not a value ${m[1]} can take`)
         continue
       }
       parsed.push({ criterion: m[1], value: m[3] })
@@ -166,16 +184,16 @@ const sectionOf = (profileText, id) => {
   return rest.slice(0, end === -1 ? undefined : end).join('\n')
 }
 
+// The binding is the section's opening clause and nothing else: "`model` at <effort> effort",
+// with "session effort" allowed for a host that cannot set effort per seat. Prose after the
+// clause may name escalations, provider ids, or other models without moving the binding.
+const OPENING = /^`?([a-z0-9][a-z0-9.-]*)`? at (low|medium|high|xhigh|max)(?: session)? effort\b/
 const bindingOf = (section, models) => {
-  let first = null
-  for (const name of models) {
-    const re = new RegExp(`(?<![\\w.-])${name.replace(/\./g, '\\.')}(?![\\w.-])`)
-    const m = re.exec(section)
-    if (m && (first === null || m.index < first.index)) first = { model: name, index: m.index }
-  }
-  if (!first) return null
-  const effort = /\b(low|medium|high|xhigh|max)(?:imum)? effort\b/.exec(section.slice(first.index))
-  return { model: first.model, effort: effort ? effort[1] : null }
+  const opening = section.split('\n').map((line) => line.trim()).find((line) => line.length > 0) || ''
+  const m = OPENING.exec(opening)
+  if (!m) return { problem: 'does not open with "`<model>` at <effort> effort"' }
+  if (![...models].includes(m[1])) return { problem: `opens with ${m[1]}, which is not a model in the rankings table` }
+  return { model: m[1], effort: m[2] }
 }
 
 const floorProblems = (charterText, profiles) => {
@@ -189,8 +207,8 @@ const floorProblems = (charterText, profiles) => {
       const section = sectionOf(raw.replace(/\r\n/g, '\n'), id)
       if (section === null) continue
       const bound = bindingOf(section, table.keys())
-      if (!bound) {
-        problems.push(`${name} binds ${id} to no model from the rankings table`)
+      if (bound.problem) {
+        problems.push(`${name} binds ${id} but the section ${bound.problem}`)
         continue
       }
       const row = table.get(bound.model)
@@ -216,6 +234,13 @@ const floorProblems = (charterText, profiles) => {
   }
   return { roles, problems }
 }
+
+// A role with floors that no stage names is a binding nothing spawns: the conductor picks a
+// model on its own and the profile's decision is decoration. Takes the stage files as pairs.
+const unusedRoles = (roles, stages) => [...roles]
+  .filter(([, floors]) => floors.length > 0)
+  .filter(([id]) => !stages.some(([, text]) => text.includes('`' + id + '`')))
+  .map(([id]) => `no stage names the seat role ${id}, so its binding spawns nothing`)
 
 const markdownUnder = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
@@ -273,6 +298,9 @@ assert.deepEqual(floors.problems, [], floors.problems.join('\n'))
 const floored = [...floors.roles].filter(([, list]) => list.length > 0).map(([id]) => id)
 assert.ok(floored.length > 0, 'the charter declares no seat-role floors')
 ok(`${floored.length} seat roles carry floors, and both profiles bind each one at or above its floor`)
+const unused = unusedRoles(floors.roles, markdownUnder(join(ROOT, 'skills')).filter(([at]) => /^skills\/[^/]+-stage\/SKILL\.md$/.test(at)))
+assert.deepEqual(unused, [], unused.join('\n'))
+ok('every seat role with floors is named by at least one stage body')
 
 console.log('the real emitters')
 for (const part of ['1', '2']) {
@@ -343,8 +371,30 @@ const CASES = [
   },
   {
     label: 'a binding that names no table model',
-    problems: () => floorProblems(...MINI('intelligence >= 6', 'the usual one at high effort.')).problems,
-    name: 'binds mini-seat to no model from the rankings table',
+    problems: () => floorProblems(...MINI('intelligence >= 6', '`mini-vast` at high effort.')).problems,
+    name: 'opens with mini-vast, which is not a model in the rankings table',
+  },
+  {
+    // The first model mentioned is not the binding; the opening clause is. A section that
+    // talks its way to a different model must fail, not pass as the model it mentioned first.
+    label: 'a binding buried in prose after another model',
+    problems: () => floorProblems(...MINI('intelligence >= 6', '`gpt-mini` is unavailable; use `mini-cheap` at high effort.')).problems,
+    name: 'does not open with',
+  },
+  {
+    label: 'a floor with a value its criterion cannot take',
+    problems: () => floorProblems(...MINI('effort >= hihg', '`gpt-mini` at high effort.')).problems,
+    name: 'is not a value effort can take',
+  },
+  {
+    label: 'a floor with the wrong operator',
+    problems: () => floorProblems(...MINI('family >= other', '`gpt-mini` at high effort.')).problems,
+    name: 'family takes ":"',
+  },
+  {
+    label: 'a floored role no stage names',
+    problems: () => unusedRoles(new Map([['mini-seat', [{ criterion: 'taste', value: '5' }]]]), [['skills/mini-stage/SKILL.md', 'Spawn the usual seat.\n']]),
+    name: 'no stage names the seat role mini-seat',
   },
   {
     label: 'a role no profile binds',
