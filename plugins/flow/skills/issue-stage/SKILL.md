@@ -14,7 +14,7 @@ There is no fixed pipeline here and no stage list. You are the conductor, in the
 
 ## Core principles
 
-1) You conduct inline, so the session is occupied for the run and its context has to last. File scans, command output, and diffs live in seats; only conclusions come home.
+1) You conduct inline. File scans, command output, and diffs live in seats; only conclusions come home.
 2) The invariants in §5 bind however you orchestrate. Fabric width, seats, modes, rounds are yours to flex, and every flex is journaled.
 3) Hands-off by default. The only mid-run questions are forks genuinely the human's to pick, and a trust-model fork is never guessed and never continued past.
 4) The issue is the record. The journal comments are what a human reads to audit the run, and the only recovery trail there is.
@@ -250,7 +250,7 @@ Everything above is host-neutral. The subsections name the seats, calls and cont
 
 **Contract delivery.** A native writer is always `flow:implementer`; the canonical contract rides its definition as a byte-equal tail, so the spawn prompt carries the worktree path and the milestones and no contract text. A `general-purpose` seat holding Edit is a containment violation whatever its prompt says. A bridge writer gets the ENTIRE contract pasted into its task text (the delegated payload carries the Containment section alone).
 
-**Design legs.** Native: `flow:code-architect` at `model: opus`, effort high, in the background; its definition holds no Edit, Write or Agent tool. Bridge: `delegate_to_codex` with `gpt-5.6-sol` at high effort, `access: "read-only"`, the repository root as `cwd`. The outside opinion here is the Codex family. Widen to a taste leg on `fable-5`.
+**Design legs.** Native: `flow:code-architect` at `model: opus`, effort high, in the background; its definition holds no Edit, Write or Agent tool. Bridge: `delegate_to_codex` with `gpt-5.6-sol` at high effort, `access: "read-only"`, the repository root as `cwd`. The outside opinion here is the Codex family. Widen to a taste leg on `fable-5-1`.
 
 **Review fabric.** A Claude-family seat is a native Agent call; a Codex-family seat is `delegate_to_codex`. A diff from `flow:implementer` is Claude-written, so its mandatory review is `delegate_to_codex` in `mode: "adversarial-review"` against an immutable `base`, `access: "read-only"`. A diff from a bridge writer is Codex-written, so its mandatory review is `flow:code-reviewer` at `model: opus`, effort xhigh; sending it back across the bridge is Codex reviewing Codex. Sol is flat-rate on the subscription here, so extra lenses cost turnaround and not money: widen on a hunch. Security-flavored seats go to `gpt-daybreak-blue-latest` first.
 
@@ -286,7 +286,7 @@ Read a `supported: false` entry carrying `assurance: mechanism` for what it is: 
 
 **Contract delivery.** A native writer carries the ENTIRE canonical contract pasted verbatim into its spawn prompt - a path reference is a spawn prompt with no contract in it, because the seat gets no second fetch. Above the paste, one host line: the plugin's hooks fire inside this seat, so git-guard and the no-backlog guard deny there exactly as they deny here, and a spawn from this seat is a contract breach with nothing to stop it. Every pipeline seat gets `fork_turns: "none"`, so it starts from its own prompt and not from a copy of your turn. Scouts, reviewers and transports carry the read-only prohibitions instead. A bridge writer gets the same full paste in its delegation task text.
 
-**Design legs.** Native: `spawn_agent` on `gpt-5.6-sol` at high effort, `fork_turns: "none"`, read-only by its prompt. Bridge: `delegate_to_claude` with `claude-opus-5` at high effort, `access: "read-only"`, the repository root as `cwd`; the delegation tools take the provider's own model ids, not the charter table's short names. The outside opinion here is a Claude model - the charter's table is written from a Claude host, and a cold reader gets that inversion wrong in the same direction every time. Widen to a taste leg through the bridge on `claude-fable-5`.
+**Design legs.** Native: `spawn_agent` on `gpt-5.6-sol` at high effort, `fork_turns: "none"`, read-only by its prompt. Bridge: `delegate_to_claude` with `claude-opus-5` at high effort, `access: "read-only"`, the repository root as `cwd`; the delegation tools take the provider's own model ids, not the charter table's short names. The outside opinion here is a Claude model - the charter's table is written from a Claude host, and a cold reader gets that inversion wrong in the same direction every time. Widen to a taste leg through the bridge on `claude-fable-5-1`.
 
 **Review fabric.** A Codex-family seat is a native `spawn_agent`; a Claude-family seat is `delegate_to_claude`. A diff from a native writer is Codex-written, so its mandatory review is `delegate_to_claude` in `mode: "adversarial-review"` against an immutable `base`, `access: "read-only"` - the common case here. A diff from a bridge writer is Claude-written, so its mandatory review is a native seat on `gpt-5.6-sol` at high effort; do not send that one across the bridge. The outside family is metered on this host, so a wide fabric has a bill: trim optional lenses on a quiet diff, never the mandatory opposite-family pass. Security-flavored seats prefer `gpt-daybreak-blue-latest` natively.
 

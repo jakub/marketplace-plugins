@@ -32,7 +32,7 @@ if (args[0] === 'auth' && args[1] === 'status') {
 }
 const mode = process.env.FLOW_FAKE_CLAUDE_MODE || 'happy'
 if (mode === 'assert-env') {
-  if (process.env.FLOW_SMOKE_API_KEY || process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1' || !process.env.FLOW_DELEGATION_DEPTH) process.exit(19)
+  if (process.env.FLOW_SMOKE_API_KEY || process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1' || process.env.CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK !== '1' || process.env.CLAUDE_CODE_NO_MODEL_FALLBACK !== '1' || !process.env.FLOW_DELEGATION_DEPTH) process.exit(19)
 }
 if (mode === 'schema-false') {
   const schemaIndex = args.indexOf('--json-schema')
@@ -99,7 +99,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (mode === 'capture-instructions') writeFileSync(${JSON.stringify(appendOut)}, message.request.appendSystemPrompt || '')
     if (mode !== 'startup-slow') initialize(message)
   } else if (message.type === 'control_request' && message.request?.subtype === 'interrupt') {
-    if (mode === 'interrupt-hangs') return
+    if (mode === 'interrupt-hangs' || mode === 'refusal-swap-hang') return
     say({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { still_queued: [] } } })
     if (mode === 'cancel-no-result') return setTimeout(() => process.exit(0), 10)
     result({ text: 'Interrupted', error: true })
@@ -139,6 +139,44 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       const error = mode === 'billing' ? 'billing_error' : 'overloaded'
       say({ type: 'assistant', error, message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: error, error: true })
+    }
+    if (mode === 'refusal') {
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber' }, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
+      return result({ text: '' })
+    }
+    if (mode === 'refusal-fallback') {
+      say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from the fallback' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return result({ text: 'answer from the fallback' })
+    }
+    if (mode === 'silent-swap') {
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from a model nobody asked for' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return result({ text: 'answer from a model nobody asked for' })
+    }
+    if (mode === 'refusal-hang') {
+      // A refusal with no result frame, waiting for whoever cancels it.
+      say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
+      return
+    }
+    if (mode === 'refusal-swap-hang') {
+      // Refusal banner, then a frame from the fallback model, then nothing: the worker's own
+      // interrupt gets no answer and the CLI never sends a result frame.
+      say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'partial answer from the fallback' }], model: 'claude-opus-4-8', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return
+    }
+    if (mode === 'swap-then-return') {
+      // The wrong model answers first, the right one later. The first frame has to decide.
+      say({ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'from the wrong model' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return setTimeout(() => {
+        say({ type: 'assistant', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'from the right model' }], model: 'claude-sonnet-5', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+        result({ text: 'from the right model' })
+      }, 400)
+    }
+    if (mode === 'tagged-model') {
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'same model, tagged' }], model: 'claude-sonnet-5[1m]', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return result({ text: 'same model, tagged' })
     }
     if (mode === 'max-turns') return result({ text: 'turn limit', error: true, subtype: 'error_max_turns' })
     if (mode === 'max-budget') return result({ text: 'budget limit', error: true, subtype: 'error_max_budget_usd' })
@@ -282,6 +320,38 @@ try {
   const overloaded = await startJob({ prompt: 'Overload failure' }, { mode: 'overloaded', stateDir: state('overloaded') })
   assert.equal(overloaded.error.kind, 'OVERLOADED')
   assert.match(overloaded.error.message, /overloaded/)
+  const refused = await startJob({ prompt: 'Refused turn' }, { mode: 'refusal', stateDir: state('refusal') })
+  assert.equal(refused.status, 'failed')
+  assert.equal(refused.error.kind, 'REFUSAL')
+  assert.equal(refused.error.details.category, 'cyber')
+  assert.equal(refused.error.details.fallbackModel, null)
+  const fellBack = await startJob({ prompt: 'Refused then answered elsewhere' }, { mode: 'refusal-fallback', stateDir: state('refusal-fallback') })
+  assert.equal(fellBack.status, 'failed', 'an answer from a fallback model is a refusal, not a success')
+  assert.equal(fellBack.error.kind, 'REFUSAL')
+  assert.equal(fellBack.error.details.fallbackModel, 'claude-opus-4-8')
+  const swapped = await startJob({ prompt: 'Swapped without a word' }, { mode: 'silent-swap', stateDir: state('silent-swap') })
+  assert.equal(swapped.status, 'failed', 'an answer from an unrequested model fails even with no refusal signal')
+  assert.equal(swapped.error.kind, 'MODEL_MISMATCH')
+  assert.equal(swapped.error.details.served, 'claude-opus-4-8')
+  assert.equal(swapped.error.details.expected, 'claude-sonnet-5')
+  const returned = await startJob({ prompt: 'Swapped, then back' }, { mode: 'swap-then-return', stateDir: state('swap-then-return') })
+  assert.equal(returned.status, 'failed', 'a later frame from the requested model does not undo the swap')
+  assert.equal(returned.error.kind, 'MODEL_MISMATCH')
+  assert.equal(returned.error.details.served, 'claude-opus-4-8')
+  const returnedEvents = (await call('delegation_events', { jobId: returned.jobId }, { stateDir: state('swap-then-return') })).structuredContent.events.map((event) => event.type)
+  assert.ok(returnedEvents.includes('model.mismatch'), 'the mismatch is journaled')
+  assert.ok(returnedEvents.includes('turn.interrupted'), 'the provider was interrupted on the first mismatched frame')
+  assert.equal(returnedEvents.filter((type) => type === 'model.mismatch').length, 1, 'one mismatch is latched once')
+  const refusedEvents = (await call('delegation_events', { jobId: fellBack.jobId }, { stateDir: state('refusal-fallback') })).structuredContent.events.map((event) => event.type)
+  assert.equal(refusedEvents.filter((type) => type === 'turn.refused').length, 1, 'one refusal journals one event')
+  const declinedEvents = (await call('delegation_events', { jobId: refused.jobId }, { stateDir: state('refusal') })).structuredContent.events.map((event) => event.type)
+  assert.equal(declinedEvents.filter((type) => type === 'turn.refused').length, 1, 'an assistant refusal followed by its banner journals one event')
+  const hung = await startJob({ prompt: 'Refused, swapped, then silence' }, { mode: 'refusal-swap-hang', stateDir: state('refusal-swap-hang') })
+  assert.equal(hung.status, 'failed')
+  assert.equal(hung.error.kind, 'REFUSAL', 'a known refusal outranks the missing terminal frame the interrupt caused')
+  assert.equal(hung.error.details.fallbackModel, 'claude-opus-4-8')
+  const tagged = await startJob({ prompt: 'Same model, context tag' }, { mode: 'tagged-model', stateDir: state('tagged-model') })
+  assert.equal(tagged.status, 'succeeded', 'a context-window tag on the served model id is not a swap')
   const schemaOutputLimit = await startJob({ prompt: 'Schema retry failure' }, { mode: 'schema-output-limit', stateDir: state('schema-output-limit') })
   assert.equal(schemaOutputLimit.error.kind, 'SCHEMA_OUTPUT')
   assert.match(schemaOutputLimit.error.message, /requested schema/)
@@ -347,6 +417,14 @@ try {
   await waitForActive(startup.jobId, startupState)
   await cancelJob(startup.jobId, { stateDir: startupState })
   await waitFor(startup.jobId, startupState, 'cancelled')
+  const refusedHangState = state('refusal-hang')
+  const refusedHang = await startJob({ prompt: 'refused, then cancelled' , delivery: 'detached' }, { mode: 'refusal-hang', stateDir: refusedHangState })
+  await waitForRunning(refusedHang.jobId, refusedHangState)
+  await delay(300)
+  await cancelJob(refusedHang.jobId, { stateDir: refusedHangState })
+  const refusedThenCancelled = await waitFor(refusedHang.jobId, refusedHangState, 'failed')
+  assert.equal(refusedThenCancelled.error.kind, 'REFUSAL', 'a cancel that races a refusal does not hide the refusal')
+  assert.equal(refusedThenCancelled.error.details.category, 'cyber')
   const noResultState = state('cancel-no-result')
   const noResult = await startJob({ prompt: 'cancel without result', delivery: 'detached' }, { mode: 'cancel-no-result', stateDir: noResultState })
   await waitForRunning(noResult.jobId, noResultState)

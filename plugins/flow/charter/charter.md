@@ -62,7 +62,7 @@ Taste covers UI/UX, code quality assessments, API and architecture design, and c
 | opus-5                   | 4         | 8                   | 8     |
 | gpt-5.6-sol              | 7         | 8                   | 5     |
 | gpt-daybreak-blue-latest | 7         | 8                   | 5     |
-| fable-5                  | 2         | 9                   | 9     |
+| fable-5-1                | 2         | 9                   | 9     |
  
 ## Rules of Engagement - Model Selection
 These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
@@ -79,7 +79,7 @@ Sonnet is primarily for mechanical work: invoking Sol or Luna through Flow's MCP
 ### Opus
 The workhorse. Used for implementation, fixes, code review, and adjudication. High effort by default, xhigh for code and security reviews, max for adjudicating conflicting decisions. Opus xhigh is roughly similar to Fable for code writing tasks.
 
-Opus runs cyber classifiers. A refused seat returns null - indistinguishable from a dead agent, never a downgrade - so a security-flavored seat that comes back empty is a refusal until proven otherwise. Retry on the other family first: Daybreak Blue, then Sol. Fable shares the classifiers and is the last resort, not the first.
+Opus runs cyber classifiers. On the delegation path a refusal comes back as a typed `REFUSAL` with its category, and the harness's own silent model fallback is switched off for delegated seats; a native Agent seat surfaces it as a fallback notice on the response. Either way a refusal is a refusal, never a quieter answer from a different model. Retry on the other family first: Daybreak Blue, then Sol. Fable shares the classifiers and is the last resort, not the first.
 
 Do not use Opus for taste calls - Fable is always used here.
 
@@ -92,7 +92,7 @@ Daybreak Blue is a version of Sol without cyber classifiers, intended for vulner
 ### Fable
 Fable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.
 
-Fable runs the same cyber classifiers as Opus, tuned stricter. A refusal returns null, not a weaker answer. Retry on Daybreak Blue first, then Opus; a double-null is reported to the user, never swallowed.
+Fable runs the same cyber classifiers as Opus. A refusal is a typed result, not a weaker answer. Retry on Daybreak Blue first, then Opus; a double refusal is reported to the user, never swallowed.
 
 ## Rules of Engagement - Model Contracts
 Worker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.

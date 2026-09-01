@@ -8,7 +8,7 @@ import { VERSION } from './version.mjs'
 import { canonicalRoots, canonicalWorkspace } from './workspace.mjs'
 
 const jobId = z.string().uuid().describe('Durable Flow delegation job ID')
-const model = z.string().regex(MODEL_PATTERN)
+const model = z.string().regex(MODEL_PATTERN).describe('Provider model id or alias as listed by delegation_models. Claude takes an alias (sonnet, opus, fable) or a full id (claude-fable-5-1); Codex takes its own ids (gpt-5.6-sol). Never the charter table\'s short names.')
 const access = z.enum([...ACCESS_MODES])
 const delivery = z.enum([...DELIVERIES])
 
@@ -23,7 +23,7 @@ function toolResult(value, isError = false) {
 export async function startMcp({ host, depth, stateDir, entryPath, projectDir }) {
   const target = targetForHost(host)
   const targetTitle = target[0].toUpperCase() + target.slice(1)
-  const effort = z.enum([...EFFORTS])
+  const effort = z.enum([...EFFORTS]).describe('Reasoning effort, low through max. The provider rejects a level its catalog does not list.')
   const capabilities = capabilitiesForTarget(target)
   const providerLimits = target === 'claude' ? {
     maxTurns: z.number().int().min(1).max(1000).optional().describe('Hard Claude conversation-turn limit for this job'),

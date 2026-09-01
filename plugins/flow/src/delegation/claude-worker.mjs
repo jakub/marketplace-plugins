@@ -7,6 +7,8 @@ import { validateStructuredValue } from './outcome.mjs'
 import { processStartToken, serviceLog } from './store.mjs'
 
 const STARTUP_SECONDS = 30
+// Catalog ids and response ids can differ by the context-window tag; nothing else.
+const modelKey = (value) => String(value || '').replace(/\[1m\]$/i, '').toLowerCase()
 const RESULT_FAILURE_MESSAGES = {
   RATE_LIMIT: 'Claude rejected the turn because the current plan or API rate limit is exhausted.',
   CLAUDE_AUTH: 'Claude Code is not authenticated for Agent SDK use.',
@@ -91,6 +93,12 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
   let approvalRequired = null
   let assistantError = null
   let rateLimitStatus = null
+  let refusal = null
+  let servedBy = null
+  let expectedModel = null
+  // Latched on the first assistant frame from a model other than the requested one and
+  // never cleared: a later frame from the right model does not undo a swap that already ran.
+  let mismatch = null
   let terminalResult = null
   let latestPreview = ''
   let previewChars = 0
@@ -169,6 +177,10 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       try { store.appendEvent(jobId, 'turn.stalled', { seconds: STALL_SECONDS }) } catch (error) {
         recordBackgroundFailure(error)
       }
+    } else if (reason === 'model_mismatch') {
+      try { store.appendEvent(jobId, 'turn.interrupted', { reason }) } catch (error) {
+        recordBackgroundFailure(error)
+      }
     }
     forcedTimer = setTimeout(() => { try { active.close() } catch {} }, 5_000)
     const interrupt = Promise.resolve().then(() => active.interrupt()).catch(() => {})
@@ -230,6 +242,7 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       const selectedModel = Array.isArray(initialized.models)
         ? initialized.models.find((entry) => entry.value === job.model)
         : null
+      expectedModel = modelKey(selectedModel?.resolvedModel || job.model)
       store.setRunning(jobId, { threadId: sessionId })
       store.appendEvent(jobId, job.nativeThreadId ? 'session.resumed' : 'session.started', {
         sessionId,
@@ -247,7 +260,19 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       try {
         for await (const message of active) {
           resetStall()
-          if (message.type === 'system' && message.subtype === 'init') {
+          if (message.type === 'system' && (message.subtype === 'model_refusal_no_fallback' || message.subtype === 'model_refusal_fallback')) {
+            // The CLI's structured counterpart to stop_reason 'refusal'. The fallback variant
+            // means the harness answered on another model anyway; the job still fails, because
+            // a downgraded answer under the requested model's name is the one outcome the
+            // charter forbids.
+            const known = refusal
+            refusal = {
+              category: message.api_refusal_category ?? known?.category ?? null,
+              originalModel: message.original_model ?? known?.originalModel ?? null,
+              fallbackModel: message.fallback_model ?? known?.fallbackModel ?? null,
+            }
+            if (!known) store.appendEvent(jobId, 'turn.refused', refusal)
+          } else if (message.type === 'system' && message.subtype === 'init') {
             if (message.session_id !== sessionId) {
               throw new DelegationError('CLAUDE_PROTOCOL', 'Claude returned a different session ID than Flow requested.')
             }
@@ -273,6 +298,22 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
             }
           } else if (message.type === 'assistant') {
             assistantError ||= message.error || null
+            if (message.message?.stop_reason === 'refusal' && !refusal) {
+              refusal = { category: message.message.stop_details?.category ?? null, originalModel: message.message.model ?? null, fallbackModel: null }
+              store.appendEvent(jobId, 'turn.refused', refusal)
+            }
+            if (message.message?.model && message.message.model !== servedBy) {
+              servedBy = message.message.model
+              const matches = modelKey(servedBy) === expectedModel
+              store.appendEvent(jobId, 'model.served', { model: servedBy, expected: expectedModel, matches })
+              if (!matches && !mismatch) {
+                // Stop the provider now rather than at the end of the turn: on a write job the
+                // wrong model is editing the worktree while this loop reads about it.
+                mismatch = { expected: expectedModel, served: servedBy }
+                store.appendEvent(jobId, 'model.mismatch', mismatch)
+                void interruptAndForce('model_mismatch').catch(recordBackgroundFailure)
+              }
+            }
             for (const block of message.message?.content || []) {
               if (block.type === 'tool_use') {
                 store.appendEvent(jobId, 'tool.started', { toolName: block.name || 'unknown' })
@@ -314,19 +355,47 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
         })
       } else if (!terminalResult) {
         const acceptedWrite = job.access === 'workspace-write' && accepted
-        const status = cancelled && !acceptedWrite ? 'cancelled' : acceptedWrite ? 'unknown' : 'failed'
+        // A refusal or a swap that was already seen outranks a cancel that raced it: the
+        // caller asked to stop, but what it needs to know is why the turn was already lost.
+        const diagnosed = refusal || mismatch
+        const status = cancelled && !acceptedWrite && !diagnosed ? 'cancelled' : acceptedWrite ? 'unknown' : 'failed'
+        // A known refusal outranks every other reason for the missing terminal frame: the
+        // interrupt that followed it is this worker's own doing.
+        if (refusal && mismatch) refusal.fallbackModel ||= mismatch.served
         await settle(status, {
-          error: status === 'cancelled' ? null : {
-            kind: stalled ? 'STALL' : timedOut ? 'TIMEOUT' : 'CLAUDE_SDK',
-            message: acceptedWrite
-              ? 'Claude did not prove the accepted write turn reached a terminal state.'
-              : 'Claude ended before the delegated turn reached a terminal state.',
-            details: null,
+          error: status === 'cancelled' ? null : refusal ? {
+            kind: 'REFUSAL',
+            message: 'Claude declined the delegated turn.',
+            details: refusal,
+          } : {
+            kind: mismatch ? 'MODEL_MISMATCH' : stalled ? 'STALL' : timedOut ? 'TIMEOUT' : 'CLAUDE_SDK',
+            message: mismatch
+              ? 'Claude answered on a model other than the one requested, and the turn was interrupted.'
+              : acceptedWrite
+                ? 'Claude did not prove the accepted write turn reached a terminal state.'
+                : 'Claude ended before the delegated turn reached a terminal state.',
+            details: mismatch,
           },
           usage,
         })
-      } else if (cancelled && (terminalResult.is_error || terminalResult.subtype !== 'success')) {
+      } else if (cancelled && !refusal && !mismatch && (terminalResult.is_error || terminalResult.subtype !== 'success')) {
         await settle('cancelled', { usage })
+      } else if (refusal) {
+        // A served model that differs from the requested one is the fallback, whichever lane
+        // produced it and whether or not the CLI announced it.
+        if (mismatch) refusal.fallbackModel ||= mismatch.served
+        await settle('failed', {
+          error: { kind: 'REFUSAL', message: 'Claude declined the delegated turn.', details: refusal },
+          usage,
+        })
+      } else if (mismatch) {
+        // No refusal signal, but the answer came from another model. That is a swap the
+        // caller never asked for, and reporting it under the requested model's name is the
+        // one outcome this worker exists to prevent.
+        await settle('failed', {
+          error: { kind: 'MODEL_MISMATCH', message: 'Claude answered on a model other than the one requested.', details: mismatch },
+          usage,
+        })
       } else if (timedOut || stalled) {
         await settle('failed', {
           error: {
