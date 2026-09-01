@@ -51,7 +51,24 @@ install)
       exit 1
     }
   done
-  mv -f "$candidate" "$launcher"
+  # Promote with no-target-directory semantics. Plain `mv -f candidate launcher`
+  # treats a directory (or a symlink to one) already sitting at the launcher path as
+  # a container: the candidate lands INSIDE it, the launcher path is never replaced,
+  # mv still exits 0, and the timers below would name a directory in ExecStart. `mv -T`
+  # refuses to overwrite a directory and replaces a symlink entry rather than following
+  # it, so a bad shape leaves the candidate in place for the trap and the check below
+  # to catch.
+  mv -fT "$candidate" "$launcher" 2>/dev/null || true
+  # Prove the promotion landed a real launcher before writing or enabling anything:
+  # a regular, executable file at the exact path, not a directory and not a dangling
+  # or surviving symlink. On failure the trap deletes the candidate and no unit, env
+  # file, or timer is written, so a launcher that already worked is left untouched.
+  if [ -L "$launcher" ] || [ ! -f "$launcher" ] || [ ! -x "$launcher" ]; then
+    printf '%s\n' \
+      "cron launcher was not promoted: $launcher is not a regular executable file (a directory or symlink is in the way); nothing was installed - the candidate launcher is deleted, no units, no env file, no timer enabled." \
+      "Remove whatever occupies $launcher, then re-run this installer." >&2
+    exit 1
+  fi
 
   mkdir -p "$units_dir" "$state/reports" "$HOME/.config/flow"
   # Persist the config the units need: systemctl does not carry the installer's env.
