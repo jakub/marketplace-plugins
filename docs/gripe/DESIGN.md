@@ -332,9 +332,13 @@ id plus actor, like the gate state and for the same reason: a fan-out shares one
 and one shared byte offset would apply one transcript's position to another. Codex counters
 use a separate `codex-` state filename and no byte offset. PostToolUse and Stop use a bounded
 per-session file lock around each Codex read-modify-write, so concurrent hook processes do not
-drop each other's counters. Failure to acquire the lock within one second loses advisory
-evidence and exits quietly. State lives in files rather than the database, because it is written
-on the hot path and would otherwise contend for the write lock with actual gripe writes.
+drop each other's counters. The lock is one `wx` create with 25 retries 20ms apart, and a lock
+file older than ten seconds is read as orphaned by a killed holder and unlinked. Half a second
+is sized against the worst burst here, 20 concurrent PostToolUse hooks on one session: measured
+2026-09-01, a 100ms budget lost one writer's count in 1 run of 10, and 500ms lost none in 15.
+Giving up loses advisory evidence and exits quietly. State lives in files rather than the
+database, because it is written on the hot path and would otherwise contend for the write lock
+with actual gripe writes.
 
 ### SubagentStop
 

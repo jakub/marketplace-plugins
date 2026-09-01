@@ -1,7 +1,7 @@
 // Harness-neutral checkpoint counters and policy. Claude fills this state from its
 // transcript adapter; Codex fills it incrementally from PostToolUse events.
 
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import {
@@ -13,8 +13,14 @@ export const CHURN_THRESHOLD = 3
 export const REPEAT_THRESHOLD = 2
 export const MAX_TOOL_NAMES = 4000
 export const MAX_SCAN_BYTES = 4 * 1024 * 1024
-const LOCK_ATTEMPTS = 200
-const LOCK_WAIT_MS = 5
+// The critical section is one small JSON read and write, so a live holder is gone in about
+// a millisecond and the wait is almost always the first attempt. The budget covers a burst
+// instead: twenty concurrent PostToolUse hooks queueing on one session's counter, measured
+// at 20 writers, where 100ms dropped one of them. Half a second in 20ms polls is patient
+// enough for that and still well inside a five-second hook timeout. Giving up costs one
+// skipped advisory nudge.
+const LOCK_ATTEMPTS = 25
+const LOCK_WAIT_MS = 20
 // A holder killed between open and unlink (harness timeout, interrupt) must not disable
 // the checkpoint for the rest of the session. Any hold is milliseconds, so a lock this
 // old is orphaned, not contended.
@@ -72,14 +78,11 @@ async function acquireCheckpointLock(sessionId, actor, source) {
     } catch (error) {
       if (error?.code !== 'EEXIST') return null
       try {
-        if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) {
-          // Rename before unlink: rename is atomic, so exactly one contender wins the
-          // right to remove a stale lock, and a slow racer that statted the old file
-          // cannot delete the fresh lock that replaced it.
-          const tombstone = `${path}.stale.${process.pid}`
-          renameSync(path, tombstone)
-          unlinkSync(tombstone)
-        }
+        // Break an orphaned lock with a plain unlink. Two breakers can race and one can
+        // remove a successor's fresh lock, which lets two writers into the counter and
+        // loses one of their updates. That is the worst case here and it costs one
+        // advisory nudge, so it does not earn a tombstone dance.
+        if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) unlinkSync(path)
       } catch {
         // Raced another process breaking or releasing the same lock; retry decides.
       }
