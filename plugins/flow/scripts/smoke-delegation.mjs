@@ -513,7 +513,12 @@ try {
   const openTag = '<seat-contract scope="containment">'
   assert.equal((payload.match(/<seat-contract /g) || []).length, 1, 'expected exactly one seat-contract block')
   assert.ok(payload.includes(openTag), 'the seat-contract block is not scoped to containment')
-  assert.ok(payload.indexOf('</delegated-seat>') < payload.indexOf(openTag), 'the seat-contract block precedes the delegated-seat block')
+  // Both halves of the ordering check, separately. indexOf returns -1 for a tag that is not there,
+  // and -1 is lower than every real index, so a payload that lost </delegated-seat> altogether
+  // would satisfy the comparison below while proving nothing.
+  const seatBlockEnd = payload.indexOf('</delegated-seat>')
+  assert.ok(seatBlockEnd >= 0, 'the delegated payload has no </delegated-seat> to order against')
+  assert.ok(seatBlockEnd < payload.indexOf(openTag), 'the seat-contract block must sit after the delegated-seat block, and it does not')
   const blockStart = payload.indexOf(openTag) + openTag.length
   const blockEnd = payload.indexOf('</seat-contract>')
   assert.ok(blockEnd > blockStart, 'the seat-contract block never closes')
