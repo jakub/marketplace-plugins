@@ -573,9 +573,10 @@ try {
   assert.equal(capabilitiesForHost('claude').capabilities['hook-ask'].supported, true)
 
   // The slice 3 rows were probed a day after the table default, so every Codex cell in them
-  // carries its own verifiedAt. Their Claude cells fall back to the table date, and so does an
-  // untouched older row, which is what proves the override lands per entry instead of re-dating
-  // the whole table.
+  // carries its own verifiedAt, and four of the Claude cells carry the 2026-08-31 re-verification
+  // date. skill-composition is the one Claude cell in this group that run did not exercise, so it
+  // still reads the table default, which is what proves a date lands per entry rather than
+  // re-dating the whole table.
   const tableDefaultDate = hostInventories.codex.capabilities['hook-deny'].verifiedAt
   assert.equal(tableDefaultDate, '2026-08-29', 'table default date')
   const sliceThreeRows = {
@@ -593,10 +594,23 @@ try {
       assert.equal(entry.assurance, assurance, `${host}/${id} assurance`)
     }
     assert.equal(hostInventories.codex.capabilities[id].verifiedAt, '2026-08-30', `codex/${id} verifiedAt`)
-    assert.equal(hostInventories.claude.capabilities[id].verifiedAt, tableDefaultDate, `claude/${id} verifiedAt`)
+    const claudeDate = id === 'skill-composition' ? tableDefaultDate : '2026-08-31'
+    assert.equal(hostInventories.claude.capabilities[id].verifiedAt, claudeDate, `claude/${id} verifiedAt`)
   }
   assert.throws(() => { hostInventories.codex.capabilities['agent-depth-limit'].verifiedAt = '1999-01-01' }, TypeError)
   assert.throws(() => { hostInventories.claude.capabilities['skill-composition'].supported = false }, TypeError)
+
+  // The 2026-08-31 Claude re-verification. The machine had moved to claude-code 2.1.252 while the
+  // record still said 2.1.251, the drift gate caught it, and these five rows were re-dated because
+  // the slice 4 run used every one of them: seat tool lists held, leaf defs with no Agent tool
+  // could not spawn, the PreToolUse guards fired inside seats, and the session still advertised
+  // roots. Watched at work, not re-probed, so no supported or assurance value moved with the date.
+  assert.equal(hostInventories.claude.verifiedAgainst, 'claude-code 2.1.252', 'the claude record names the version those rows were re-verified under')
+  for (const id of ['per-seat-tool-allowlist', 'agent-depth-limit', 'per-seat-authority-narrowing', 'hooks-in-native-children', 'mcp-client-roots']) {
+    assert.equal(hostInventories.claude.capabilities[id].verifiedAt, '2026-08-31', `claude/${id} verifiedAt`)
+    assert.equal(hostInventories.claude.capabilities[id].supported, true, `claude/${id} supported`)
+    assert.equal(hostInventories.claude.capabilities[id].assurance, 'mechanism', `claude/${id} assurance`)
+  }
 
   // The issue-stage profiles cite these ids by name, in prose no test parses. Renaming a row in
   // HOST_CAPABILITY_TABLE has to fail here rather than leave a profile naming an id nobody has.
@@ -1435,7 +1449,7 @@ try {
   const cliDoctor = cli(['doctor', '--cwd', repo], { stateDir: state('cli-doctor') })
   assert.deepEqual(cliDoctor.client, { name: null, version: null })
 
-  // The names a host is allowed to introduce itself by. A Claude record reads "claude-code 2.1.251"
+  // The names a host is allowed to introduce itself by. A Claude record reads "claude-code 2.1.252"
   // while the client says "claude", and neither spelling is wrong. Keyed by host and fixed, exactly
   // as the issue-stage profiles write them, so a new host is an edit in both places.
   //
