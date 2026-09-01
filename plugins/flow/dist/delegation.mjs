@@ -23782,7 +23782,14 @@ var JobStore = class {
     this.appendEvent(id2, "job.quarantined", { resumeStatus });
     return this.getJob(id2);
   }
-  resolveQuarantine(id2) {
+  // force is the escape hatch delegation_cancel uses. A quarantine only clears itself when the
+  // recorded processes are observed dead, and a job that recorded none can never reach that
+  // proof on its own; it would hold its write lease forever. The caller does the liveness
+  // check and passes the ending it wants, which is always a terminal one.
+  resolveQuarantine(id2, { force = null } = {}) {
+    if (force !== null && !TERMINAL_STATES.includes(force)) {
+      throw new DelegationError("JOB_STATE", `Cannot resolve a quarantined job as ${force}.`);
+    }
     const at2 = now();
     let resumeStatus;
     this.db.exec("BEGIN IMMEDIATE");
@@ -23793,7 +23800,7 @@ var JobStore = class {
         this.db.exec("COMMIT");
         return current;
       }
-      resumeStatus = current.quarantineResumeStatus;
+      resumeStatus = force || current.quarantineResumeStatus;
       if (!TERMINAL_STATES.includes(resumeStatus) && resumeStatus !== "reconciling") {
         throw new DelegationError("JOB_STATE", "The quarantined job has no valid resume state.");
       }
@@ -57266,15 +57273,28 @@ function processGroupRunning(processGroupId) {
     return error2?.code === "EPERM";
   }
 }
-function quarantineRunning(job) {
-  if (providerScopeRunning(job.providerScope)) return true;
-  if (processGroupRunning(job.providerProcessGroupId)) return true;
-  const identities = [
+function recordedIdentities(job) {
+  return [
     ...job.providerPid && job.providerStartToken ? [{ pid: job.providerPid, startToken: job.providerStartToken }] : [],
     ...job.providerProcesses || []
   ];
+}
+function quarantineRunning(job) {
+  if (providerScopeRunning(job.providerScope)) return true;
+  if (processGroupRunning(job.providerProcessGroupId)) return true;
+  const identities = recordedIdentities(job);
   if (!identities.length) return true;
   return identities.some(({ pid, startToken }) => processStartToken(pid) === startToken);
+}
+function liveProviderIdentities(job) {
+  const live = /* @__PURE__ */ new Map();
+  const add = (kind, id2) => live.set(`${kind}:${id2}`, { kind, id: id2 });
+  if (providerScopeRunning(job.providerScope)) add("scope", job.providerScope);
+  if (processGroupRunning(job.providerProcessGroupId)) add("processGroup", job.providerProcessGroupId);
+  for (const { pid, startToken } of recordedIdentities(job)) {
+    if (processStartToken(pid) === startToken) add("process", pid);
+  }
+  return [...live.values()];
 }
 function providerRecorded(job) {
   return Boolean(job.providerPid || job.providerProcessGroupId || job.providerScope || job.providerProcesses?.length);
@@ -57442,9 +57462,19 @@ var DelegationService = class {
     this.get(jobId2);
     return this.withStore((store) => store.events(jobId2, options));
   }
+  // Cancelling a quarantined job is the one way out of a quarantine that cannot end by itself:
+  // the recorded processes are all gone, or none was ever recorded, so no later status read
+  // will ever prove the writer stopped and the write lease would be held forever. Liveness is
+  // re-checked here rather than trusted from the row, and the ending is 'unknown' because
+  // nothing proved what the turn did.
   cancel(jobId2) {
-    this.get(jobId2);
-    return this.withStore((store) => store.requestCancel(jobId2));
+    const job = this.get(jobId2);
+    if (job.status !== "quarantined") return this.withStore((store) => store.requestCancel(jobId2));
+    const live = liveProviderIdentities(job);
+    if (live.length) {
+      throw new DelegationError("JOB_QUARANTINED", "The quarantined provider is still running, so Flow will not release its write lease.", { live });
+    }
+    return this.withStore((store) => store.resolveQuarantine(jobId2, { force: "unknown" }));
   }
   steer(jobId2, text) {
     if (!text?.trim()) throw new DelegationError("BAD_REQUEST", "Steering text cannot be empty.");

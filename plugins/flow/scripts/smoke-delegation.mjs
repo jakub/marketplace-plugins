@@ -745,6 +745,8 @@ try {
   const quarantineCancel = await cancelJob(quarantinedJob.id, { stateDir: quarantineState })
   assert.equal(quarantineCancel.status, 'failed')
   assert.equal(quarantineCancel.error.kind, 'JOB_QUARANTINED')
+  // The refusal names what is still alive, so the human reading it can go and look.
+  assert.deepEqual(quarantineCancel.error.details.live, [{ kind: 'process', id: provider.pid }])
   provider.kill('SIGKILL')
   await new Promise((resolve) => provider.once('exit', resolve))
   const released = await statusOf(quarantinedJob.id, { stateDir: quarantineState })
@@ -755,6 +757,43 @@ try {
   releasedStore.claim(blockedJob.id, process.pid, processStartToken(process.pid))
   releasedStore.finish(blockedJob.id, 'cancelled')
   releasedStore.close()
+
+  // A quarantine with nothing left to observe cannot clear itself: a status read has no
+  // identity to check, so the job stays quarantined and its write lease stays held forever.
+  // Cancelling is the way out, and it ends the job as unknown because nothing proved what the
+  // accepted write turn did.
+  const strandedState = state('quarantine-stranded')
+  const strandedStore = new JobStore(strandedState)
+  const strandedJob = strandedStore.createJob({
+    traceId: 'stranded', host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low',
+    timeBudgetSeconds: 30, prompt: 'stranded', outputSchema: null,
+  })
+  strandedStore.claim(strandedJob.id, process.pid, processStartToken(process.pid))
+  strandedStore.quarantine(strandedJob.id, 'reconciling', {
+    error: { kind: 'PROVIDER_QUARANTINED', message: 'test quarantine with no identities', details: null },
+  })
+  assert.equal(strandedStore.db.prepare('SELECT COUNT(*) AS count FROM leases').get().count, 1)
+  strandedStore.close()
+  const stillQuarantined = await statusOf(strandedJob.id, { stateDir: strandedState })
+  assert.equal(stillQuarantined.status, 'quarantined')
+  assert.equal(stillQuarantined.quarantine.trackedProcesses, 0)
+  const cleared = await cancelJob(strandedJob.id, { stateDir: strandedState })
+  assert.equal(cleared.status, 'unknown', JSON.stringify(cleared))
+  assert.equal(cleared.quarantine, null)
+  const clearedStore = new JobStore(strandedState)
+  assert.equal(clearedStore.db.prepare('SELECT COUNT(*) AS count FROM leases').get().count, 0)
+  // The lease is free, so the next write job on that worktree can claim it.
+  const nextWrite = clearedStore.createJob({
+    traceId: 'after-stranded', host: 'claude', target: 'codex', depth: 0,
+    mode: 'task', access: 'workspace-write', cwd: repo, workspaceKey: repo,
+    model: 'gpt-5.6-luna', effort: 'low',
+    timeBudgetSeconds: 30, prompt: 'after stranded', outputSchema: null,
+  })
+  clearedStore.claim(nextWrite.id, process.pid, processStartToken(process.pid))
+  clearedStore.finish(nextWrite.id, 'cancelled')
+  clearedStore.close()
 
   console.log('stale workers quarantine live providers before recovery')
   const crashQuarantineState = state('crash-quarantine')

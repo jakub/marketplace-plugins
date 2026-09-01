@@ -72,17 +72,38 @@ function processGroupRunning(processGroupId) {
   }
 }
 
-function quarantineRunning(job) {
-  if (providerScopeRunning(job.providerScope)) return true
-  if (processGroupRunning(job.providerProcessGroupId)) return true
-  const identities = [
+function recordedIdentities(job) {
+  return [
     ...(job.providerPid && job.providerStartToken
       ? [{ pid: job.providerPid, startToken: job.providerStartToken }]
       : []),
     ...(job.providerProcesses || []),
   ]
+}
+
+function quarantineRunning(job) {
+  if (providerScopeRunning(job.providerScope)) return true
+  if (processGroupRunning(job.providerProcessGroupId)) return true
+  const identities = recordedIdentities(job)
+  // Recovery never guesses: a job that recorded no process identity offers nothing to observe,
+  // so nothing is proved stopped and the quarantine holds. delegation_cancel is the way out.
   if (!identities.length) return true
   return identities.some(({ pid, startToken }) => processStartToken(pid) === startToken)
+}
+
+// The same liveness question, answered with names instead of a boolean, and without the
+// no-identities rule above. What is alive goes back to the caller in the refusal.
+function liveProviderIdentities(job) {
+  const live = new Map()
+  const add = (kind, id) => live.set(`${kind}:${id}`, { kind, id })
+  if (providerScopeRunning(job.providerScope)) add('scope', job.providerScope)
+  if (processGroupRunning(job.providerProcessGroupId)) add('processGroup', job.providerProcessGroupId)
+  // The lead process is usually recorded twice, once on its own and once inside the tracked
+  // set, and one process is one thing to go and look at.
+  for (const { pid, startToken } of recordedIdentities(job)) {
+    if (processStartToken(pid) === startToken) add('process', pid)
+  }
+  return [...live.values()]
 }
 
 function providerRecorded(job) {
@@ -250,9 +271,19 @@ export class DelegationService {
     return this.withStore((store) => store.events(jobId, options))
   }
 
+  // Cancelling a quarantined job is the one way out of a quarantine that cannot end by itself:
+  // the recorded processes are all gone, or none was ever recorded, so no later status read
+  // will ever prove the writer stopped and the write lease would be held forever. Liveness is
+  // re-checked here rather than trusted from the row, and the ending is 'unknown' because
+  // nothing proved what the turn did.
   cancel(jobId) {
-    this.get(jobId)
-    return this.withStore((store) => store.requestCancel(jobId))
+    const job = this.get(jobId)
+    if (job.status !== 'quarantined') return this.withStore((store) => store.requestCancel(jobId))
+    const live = liveProviderIdentities(job)
+    if (live.length) {
+      throw new DelegationError('JOB_QUARANTINED', 'The quarantined provider is still running, so Flow will not release its write lease.', { live })
+    }
+    return this.withStore((store) => store.resolveQuarantine(jobId, { force: 'unknown' }))
   }
 
   steer(jobId, text) {

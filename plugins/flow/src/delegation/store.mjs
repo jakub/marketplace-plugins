@@ -479,7 +479,14 @@ export class JobStore {
     return this.getJob(id)
   }
 
-  resolveQuarantine(id) {
+  // force is the escape hatch delegation_cancel uses. A quarantine only clears itself when the
+  // recorded processes are observed dead, and a job that recorded none can never reach that
+  // proof on its own; it would hold its write lease forever. The caller does the liveness
+  // check and passes the ending it wants, which is always a terminal one.
+  resolveQuarantine(id, { force = null } = {}) {
+    if (force !== null && !TERMINAL_STATES.includes(force)) {
+      throw new DelegationError('JOB_STATE', `Cannot resolve a quarantined job as ${force}.`)
+    }
     const at = now()
     let resumeStatus
     this.db.exec('BEGIN IMMEDIATE')
@@ -490,7 +497,7 @@ export class JobStore {
         this.db.exec('COMMIT')
         return current
       }
-      resumeStatus = current.quarantineResumeStatus
+      resumeStatus = force || current.quarantineResumeStatus
       if (!TERMINAL_STATES.includes(resumeStatus) && resumeStatus !== 'reconciling') {
         throw new DelegationError('JOB_STATE', 'The quarantined job has no valid resume state.')
       }
