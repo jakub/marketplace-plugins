@@ -25,7 +25,7 @@
 // Self-contained on purpose: node builtins only, no import of the plugin's own lib, so a
 // half-installed or version-skewed plugin cannot break the resolver that has to find it.
 
-import { closeSync, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, constants, fstatSync, openSync, readdirSync, readSync, realpathSync } from 'node:fs'
 import { basename, join, normalize, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -37,8 +37,12 @@ const REGISTRY_KEY_RE = /^gripe@[A-Za-z0-9._-]+$/
 // A registration table header, and only that shape: optional horizontal whitespace, the
 // quoted `plugins."gripe@<marketplace>"` key, an optional trailing comment.
 const CODEX_TABLE_RE = /^[ \t]*\[plugins\."gripe@([A-Za-z0-9._-]+)"\][ \t]*(?:#.*)?$/
-const ENABLED_KEY_RE = /^[ \t]*(?:enabled|"enabled"|'enabled')[ \t]*=/
+// The one accepted enabled form: a bare `enabled` key set to a bare boolean, optional
+// spaces and a trailing comment. Any other spelling of an enabled assignment is ambiguity.
 const ENABLED_VALUE_RE = /^[ \t]*enabled[ \t]*=[ \t]*(true|false)[ \t]*(?:#.*)?$/
+// TOML basic-string simple escapes. Only \u and \U can spell letters, but the standard set
+// is decoded so a valid key reads as its real value.
+const SIMPLE_ESCAPES = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' }
 
 // Written as code points rather than as literals, because a source file carrying a raw
 // NUL is a source file every tool downstream calls binary.
@@ -51,11 +55,19 @@ const MANIFEST_CAP = 1024 * 1024
 const LINE_CAP = 4096
 const DIAGNOSTIC_CAP = 2048
 
+// Every read on the resolution path opens non-blocking, so a FIFO or other special file
+// planted at a manifest, config, or bin/gripe path can never hang the process; fstat then
+// rejects anything that is not a regular file. The filing contract requires `gripe add` to
+// return promptly whatever the filesystem holds, and a blocking open would break exactly
+// that, so each read fails closed instead. Following a final symlink is harmless: the fd is
+// non-blocking and fstat still sees the FIFO the link points at.
+const READ_FLAGS = constants.O_RDONLY | constants.O_NONBLOCK
+
 /** Read a whole small file, or report it unreadable. Over the cap counts as unreadable. */
 function readCapped(path, cap = MANIFEST_CAP) {
   let fd
   try {
-    fd = openSync(path, 'r')
+    fd = openSync(path, READ_FLAGS)
     const stat = fstatSync(fd)
     if (!stat.isFile() || stat.size > cap) return { ok: false }
     const buffer = Buffer.alloc(Number(stat.size))
@@ -77,14 +89,40 @@ function readCapped(path, cap = MANIFEST_CAP) {
 
 /** A root is usable when its bin/gripe is a regular file this process can open. */
 function usableRoot(root) {
+  let fd
   try {
-    const path = join(root, 'bin', 'gripe')
-    if (!statSync(path).isFile()) return false
-    closeSync(openSync(path, 'r'))
-    return true
+    fd = openSync(join(root, 'bin', 'gripe'), READ_FLAGS)
+    return fstatSync(fd).isFile()
   } catch {
     return false
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd) } catch { /* the read already decided the outcome */ }
+    }
   }
+}
+
+/** The canonical path of a directory, or null when it cannot be resolved. */
+function realOrNull(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A cache candidate's real binary must stay under the cache root it was scanned from. A
+ * version directory symlinked out of the cache resolves to code the cache never vouched
+ * for, and spawning it would run that code, so it is rejected. This confines only the two
+ * plugin caches; GRIPE_HOME and the Claude manager registry are the user's own explicit
+ * declarations and may point anywhere.
+ */
+function confinedBinary(root, confineReal) {
+  const real = realOrNull(join(root, 'bin', 'gripe'))
+  if (real === null) return false
+  const prefix = confineReal.endsWith(sep) ? confineReal : confineReal + sep
+  return real.startsWith(prefix)
 }
 
 /** Lexical only. realpath would make two names for one install look like two installs. */
@@ -130,7 +168,7 @@ export function compareCandidates(a, b) {
   return a.root < b.root ? -1 : 1
 }
 
-function scanVersionDir(dir, base) {
+function scanVersionDir(dir, base, confineReal) {
   const found = []
   let names
   try {
@@ -142,13 +180,15 @@ function scanVersionDir(dir, base) {
     const version = parseStableVersion(name)
     if (version === null) continue
     const root = normalizeRoot(join(dir, name))
-    if (usableRoot(root)) found.push({ ...base, root, version })
+    if (usableRoot(root) && confinedBinary(root, confineReal)) found.push({ ...base, root, version })
   }
   return found
 }
 
 function scanCacheRoot(cacheRoot, base) {
   const found = []
+  const confineReal = realOrNull(cacheRoot)
+  if (confineReal === null) return found
   let marketplaces
   try {
     marketplaces = readdirSync(cacheRoot)
@@ -157,7 +197,7 @@ function scanCacheRoot(cacheRoot, base) {
   }
   for (const marketplace of marketplaces) {
     if (!safeComponent(marketplace)) continue
-    found.push(...scanVersionDir(join(cacheRoot, marketplace, 'gripe'), base))
+    found.push(...scanVersionDir(join(cacheRoot, marketplace, 'gripe'), base, confineReal))
   }
   return found
 }
@@ -200,6 +240,90 @@ export function readClaudeRegistry(home) {
   return { path, readable: true, candidates }
 }
 
+// The text left of the first top-level `=` (a `=` inside quotes does not count), or null
+// when the line is a comment, blank, or otherwise not an assignment.
+function assignmentKey(line) {
+  let basic = false
+  let literal = false
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (basic) {
+      if (c === '\\') { i++; continue }
+      if (c === '"') basic = false
+      continue
+    }
+    if (literal) {
+      if (c === "'") literal = false
+      continue
+    }
+    if (c === '"') { basic = true; continue }
+    if (c === "'") { literal = true; continue }
+    if (c === '=') return line.slice(0, i)
+    if (c === '#') return null
+  }
+  return null
+}
+
+// The first dotted segment of a key, a `.` inside quotes ignored.
+function firstSegment(key) {
+  let basic = false
+  let literal = false
+  for (let i = 0; i < key.length; i++) {
+    const c = key[i]
+    if (basic) {
+      if (c === '\\') { i++; continue }
+      if (c === '"') basic = false
+      continue
+    }
+    if (literal) {
+      if (c === "'") literal = false
+      continue
+    }
+    if (c === '"') { basic = true; continue }
+    if (c === "'") { literal = true; continue }
+    if (c === '.') return key.slice(0, i)
+  }
+  return key
+}
+
+// Decode a TOML basic string's contents, or null if an escape is malformed.
+function decodeBasic(inner) {
+  let out = ''
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] !== '\\') { out += inner[i]; continue }
+    const next = inner[i + 1]
+    if (next === 'u' || next === 'U') {
+      const width = next === 'u' ? 4 : 8
+      const hex = inner.slice(i + 2, i + 2 + width)
+      if (hex.length !== width || !/^[0-9a-fA-F]+$/.test(hex)) return null
+      out += String.fromCodePoint(Number.parseInt(hex, 16))
+      i += 1 + width
+      continue
+    }
+    const simple = SIMPLE_ESCAPES[next]
+    if (simple === undefined) return null
+    out += simple
+    i += 1
+  }
+  return out
+}
+
+// Whether a key's first segment normalizes to the bare TOML key `enabled`, however it is
+// spelled: bare, single-quoted (literal), or double-quoted with escapes. This is what lets
+// `enabled.value = false` and `"enabled" = false` be recognized as enabled
+// assignments the bare matcher would miss, and so treated as ambiguity rather than default.
+function keyIsEnabled(key) {
+  const segment = firstSegment(key).trim()
+  if (segment === 'enabled') return true
+  if (segment.length >= 2 && segment.startsWith("'") && segment.endsWith("'")) {
+    return segment.slice(1, -1) === 'enabled'
+  }
+  if (segment.length >= 2 && segment.startsWith('"') && segment.endsWith('"')) {
+    return decodeBasic(segment.slice(1, -1)) === 'enabled'
+  }
+  return false
+}
+
 /**
  * A line scanner, not a TOML parser. It recognizes one shape of table header and one
  * shape of `enabled` value; everything else about the file is somebody else's business.
@@ -233,7 +357,12 @@ export function parseCodexRegistration(text) {
       }
       continue
     }
-    if (current === null || !ENABLED_KEY_RE.test(line)) continue
+    if (current === null) continue
+    const key = assignmentKey(line)
+    if (key === null || !keyIsEnabled(key)) continue
+    // The line is an enabled assignment in some form. Only the exact bare form sets the
+    // toggle; a quoted, escaped, dotted, non-boolean, or duplicate one is ambiguity, which
+    // marks the table invalid and drops the whole registration to absence.
     const value = ENABLED_VALUE_RE.exec(line)
     if (!value || current.enabled !== undefined) current.invalid = true
     else current.enabled = value[1] === 'true'
@@ -251,18 +380,24 @@ export function readCodexRegistry({ env, home }) {
   const path = join(codexHome, 'config.toml')
   const cacheRoot = join(codexHome, 'plugins', 'cache')
   const raw = readCapped(path)
-  if (!raw.ok) return { codexHome, path, cacheRoot, readable: false, candidates: [] }
+  if (!raw.ok) return { codexHome, path, cacheRoot, readable: false, scannedCache: false, candidates: [] }
   const registration = parseCodexRegistration(raw.text)
   if (!registration.registered || registration.enabled === false) {
-    return { codexHome, path, cacheRoot, readable: true, candidates: [] }
+    return { codexHome, path, cacheRoot, readable: true, scannedCache: false, candidates: [] }
   }
+  // The confirmed scan consulted the cache root, so it is a resolution surface even when it
+  // turns up empty; scannedCache tells the caller to record it in the miss diagnostic.
+  const confineReal = realOrNull(cacheRoot)
   const dir = join(cacheRoot, registration.marketplace, 'gripe')
   return {
     codexHome,
     path,
     cacheRoot,
     readable: true,
-    candidates: scanVersionDir(dir, { exact: false, harness: 'codex', tier: 0 }),
+    scannedCache: true,
+    candidates: confineReal === null
+      ? []
+      : scanVersionDir(dir, { exact: false, harness: 'codex', tier: 0 }, confineReal),
   }
 }
 
@@ -299,6 +434,9 @@ export function resolveGripeRoot({ env = process.env, home = homedir() } = {}) {
   checked.claudeRegistry = claude.path
   const codex = readCodexRegistry({ env, home })
   checked.codexConfig = codex.path
+  // A confirmed, enabled Codex scan consulted its cache root even when it found nothing, so
+  // record that surface here rather than only in the unreadable-config fallback below.
+  if (codex.scannedCache) checked.codexCache = codex.cacheRoot
   const candidates = [...claude.candidates, ...codex.candidates]
 
   if (candidates.length === 0) {

@@ -11,10 +11,11 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import {
-  mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
+  chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
+  symlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
@@ -196,6 +197,12 @@ try {
     ['10c. a duplicate enabled key is absence', '[plugins."gripe@jakub"]\nenabled = true\nenabled = true\n'],
     ['23a. a `..` marketplace is rejected', '[plugins."gripe@.."]\nenabled = true\n'],
     ['23b. an `a/b` marketplace is rejected', '[plugins."gripe@a/b"]\nenabled = true\n'],
+    // F7: a disable written in any form a real TOML parser reads as `enabled = false` must
+    // never be scanned as the enabled default. Basic-string escapes and dotted keys both
+    // spell an enabled key the old literal matcher missed, so they are ambiguity -> absence.
+    ['F7a. a basic-escape enabled key set false is absence', '[plugins."gripe@jakub"]\n"\\u0065nabled" = false\n'],
+    ['F7b. a dotted enabled key is absence', '[plugins."gripe@jakub"]\nenabled.value = false\n'],
+    ['F7c. a quoted enabled key set false is absence', '[plugins."gripe@jakub"]\n"enabled" = false\n'],
   ]
   for (const [name, contents] of absenceCases) {
     const home = makeHome()
@@ -411,6 +418,27 @@ try {
   }
 
   {
+    // F8: a readable, enabled codex table with an empty cache is a confirmed scan that
+    // found nothing. The cache root it scanned belongs in the miss diagnostic, not only in
+    // the unreadable-config fallback branch that the both-unreadable miss happens to hit.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('true'))
+    const codexCache = codexCacheDir(home)
+    let stderr = ''
+    const code = main({
+      argv: ['dump'],
+      env: {},
+      home,
+      spawn: () => { throw new Error('the shim spawned something with no root') },
+      stderr: (text) => { stderr += text },
+    })
+    check('F8. a confirmed but empty codex cache is named in the miss diagnostic',
+      code === 1 && resolveIn(home).surfaces.includes(codexCache) && stderr.includes(codexCache),
+      JSON.stringify(stderr))
+  }
+
+  {
     const home = makeHome()
     claudeRegistry(home, { plugins: {} })
     codexConfig(home, table('true'))
@@ -429,6 +457,34 @@ try {
     const twice = resolveIn(home).root
     check('23c. an equal-version tie at two paths is broken deterministically',
       once === twice && once === first, `${once} then ${twice}`)
+  }
+
+  console.log('resolver: cache confinement')
+
+  {
+    // A version directory inside the cache that is a symlink to a payload outside it. Its
+    // realpath escapes the cache root, so the confined scan must reject it and fall to the
+    // real 0.2.0 install even though the escaping name (9.9.9) sorts higher.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('true'))
+    const outside = plantRoot(join(TMP, `f1-escape-${serial}`))
+    const versionDir = join(codexCacheDir(home), 'jakub', 'gripe', '9.9.9')
+    mkdirSync(dirname(versionDir), { recursive: true })
+    symlinkSync(outside, versionDir)
+    const good = codexInstall(home, '0.2.0')
+    check('F1a. a cache version dir symlinked outside its root is rejected',
+      resolveIn(home).root === good, resolveIn(home).root)
+  }
+
+  {
+    // The user's explicit override is not a cache candidate and stays exempt: GRIPE_HOME
+    // may point anywhere, cache root or not.
+    const home = makeHome()
+    const override = plantRoot(join(TMP, `f1-override-${serial}`))
+    claudeRegistry(home, { plugins: {} })
+    check('F1b. GRIPE_HOME outside any cache still resolves',
+      resolveIn(home, { GRIPE_HOME: override }).root === override, override)
   }
 
   {
@@ -615,7 +671,34 @@ try {
   {
     const shimPath = nextTarget()
     writeFileSync(shimPath, withMarker(1))
+    // A correctly published shim is 0755; writeFileSync honours umask, so pin the mode.
+    chmodSync(shimPath, 0o755)
     check('a byte-identical shim is left alone', pointShim({ sourcePath: source, shimPath }) === 'unchanged')
+  }
+
+  {
+    // F6: a symlink whose target holds the source bytes is not a runnable shim. The dest
+    // entry must become a regular 0755 file, not stay a symlink.
+    const shimPath = nextTarget()
+    const twin = join(TMP, 'f6-twin.mjs')
+    writeFileSync(twin, withMarker(1))
+    symlinkSync(twin, shimPath)
+    const action = pointShim({ sourcePath: source, shimPath })
+    const stat = lstatSync(shimPath)
+    check('F6a. a symlink with the source bytes is rewritten to a regular 0755 file',
+      action === 'written' && stat.isFile() && (stat.mode & 0o777) === 0o755
+      && readFileSync(shimPath, 'utf8') === withMarker(1), action)
+  }
+
+  {
+    // F6: an identical file at the wrong mode advertises a command that cannot run, so it
+    // is rewritten rather than skipped.
+    const shimPath = nextTarget()
+    writeFileSync(shimPath, withMarker(1))
+    chmodSync(shimPath, 0o644)
+    const action = pointShim({ sourcePath: source, shimPath })
+    check('F6b. an identical 0644 file is rewritten 0755',
+      action === 'written' && (statSync(shimPath).mode & 0o777) === 0o755, action)
   }
 
   {
@@ -704,6 +787,44 @@ try {
   }
 
   {
+    // F4: a higher epoch published while a writer is mid-promote must not be downgraded.
+    // The actual downgrade only lands when the low writer's own slow rename happens to fall
+    // after a concurrent publish, which is timing-dependent and unfit for a committed test,
+    // so this drives the fix's mechanism directly. We hold the shim's own lock, let a
+    // lower-epoch writer block on it (its pre-check already saw the old epoch-0 bytes),
+    // publish epoch 3, then release. With the lock and the re-read inside it, the writer
+    // must observe epoch 3 and report 'kept-newer'. Without them it commits its stale
+    // decision and reports 'written' - the downgrade the ratchet exists to kill. The lock
+    // path mirrors pointShim's own `.<name>.lock` convention on purpose.
+    const raceShim = nextTarget()
+    writeFileSync(raceShim, withMarker(0))
+    const lowSource = join(TMP, 'f4-low.mjs')
+    writeFileSync(lowSource, withMarker(1))
+    const lockPath = join(dirname(raceShim), `.${basename(raceShim)}.lock`)
+    writeFileSync(lockPath, String(process.pid))
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
+      env: {
+        ...process.env,
+        GRIPE_SHIM_RATCHET_CHILD: '1',
+        GRIPE_SHIM_RATCHET_SOURCE: lowSource,
+        GRIPE_SHIM_RATCHET_TARGET: raceShim,
+      },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    let action = ''
+    child.stdout.setEncoding('utf8').on('data', (chunk) => { action += chunk })
+    // Capture close before the wait: a pre-fix writer ignores the lock and exits during it.
+    const closed = new Promise((resolve) => child.on('close', resolve))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    writeFileSync(raceShim, withMarker(3))
+    rmSync(lockPath, { force: true })
+    await closed
+    const finalEpoch = shimEpoch(readFileSync(raceShim, 'utf8'))
+    check('F4. a higher epoch published while a writer is blocked is kept, not downgraded',
+      action.trim() === 'kept-newer' && finalEpoch === 3, `${action.trim()}, epoch ${finalEpoch}`)
+  }
+
+  {
     const shimPath = nextTarget()
     // A symlink at the shim path is replaced as a directory entry, never written through.
     const decoy = join(TMP, 'ratchet-decoy')
@@ -721,6 +842,91 @@ try {
     && shimEpoch('// gripe-shim-epoch: 1234567890123\n') === null
     && shimEpoch('  //  gripe-shim-epoch:  0  \n') === 0
     && shimEpoch(withMarker(1).replace(/\n/g, '\r\n')) === 1)
+
+  console.log('special files never hang')
+
+  // A FIFO with no writer blocks a plain open forever. Every read on the resolution and
+  // publication paths must open non-blocking and reject it, or `gripe add` hangs and the
+  // filing contract is broken. Each case runs the real file under a timeout: a hang shows
+  // as a SIGTERM kill, a fix as a prompt exit.
+  const mkfifo = (path) => spawnSync('mkfifo', [path]).status === 0
+
+  {
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    const made = mkfifo(join(home, '.codex', 'config.toml'))
+    const result = spawnSync(process.execPath, [SHIM, 'add'], {
+      encoding: 'utf8', env: cleanEnv(home), timeout: 8000,
+    })
+    check('F3a. gripe add with a fifo codex config exits 0 without hanging',
+      made && result.signal !== 'SIGTERM' && result.status === 0,
+      `${result.status} ${result.signal ?? ''}`)
+  }
+
+  {
+    const home = makeHome()
+    mkdirSync(join(home, '.claude', 'plugins'), { recursive: true })
+    const made = mkfifo(join(home, '.claude', 'plugins', 'installed_plugins.json'))
+    codexConfig(home, table('false'))
+    const result = spawnSync(process.execPath, [SHIM, 'add'], {
+      encoding: 'utf8', env: cleanEnv(home), timeout: 8000,
+    })
+    check('F3b. gripe add with a fifo claude registry exits 0 without hanging',
+      made && result.signal !== 'SIGTERM' && result.status === 0,
+      `${result.status} ${result.signal ?? ''}`)
+  }
+
+  {
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    const made = mkfifo(join(home, '.codex', 'config.toml'))
+    const result = spawnSync(process.execPath, [SHIM, 'doctor'], {
+      encoding: 'utf8', env: cleanEnv(home), timeout: 8000,
+    })
+    check('F3c. a fifo codex config reads unreadable and a non-filing command still reports',
+      made && result.signal !== 'SIGTERM' && result.status === 1
+      && result.stderr.includes('no installation found'),
+      `${result.status} ${result.signal ?? ''}`)
+  }
+
+  {
+    // usableRoot opens the candidate bin/gripe; a fifo there must not block either.
+    const home = makeHome()
+    claudeRegistry(home, { plugins: {} })
+    codexConfig(home, table('true'))
+    const bin = join(codexCacheDir(home), 'jakub', 'gripe', '0.2.0', 'bin')
+    mkdirSync(bin, { recursive: true })
+    const made = mkfifo(join(bin, 'gripe'))
+    const result = spawnSync(process.execPath, [SHIM, 'doctor'], {
+      encoding: 'utf8', env: cleanEnv(home), timeout: 8000,
+    })
+    check('F3d. a fifo bin/gripe is not a usable root and never blocks',
+      made && result.signal !== 'SIGTERM' && result.status === 1
+      && result.stderr.includes('no installation found'),
+      `${result.status} ${result.signal ?? ''}`)
+  }
+
+  {
+    // The publication path: a fifo at the shim path must not hang pointShim, and the fifo
+    // is replaced by a regular file like any other stale entry.
+    const shimPath = join(ratchetDir, 'fifo-shim')
+    const made = mkfifo(shimPath)
+    const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
+      env: {
+        ...process.env,
+        GRIPE_SHIM_RATCHET_CHILD: '1',
+        GRIPE_SHIM_RATCHET_SOURCE: source,
+        GRIPE_SHIM_RATCHET_TARGET: shimPath,
+      },
+      stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', timeout: 8000,
+    })
+    check('F3e. pointShim over a fifo shim path never hangs and replaces it',
+      made && child.signal !== 'SIGTERM' && child.stdout.trim() === 'written'
+      && lstatSync(shimPath).isFile() && readFileSync(shimPath, 'utf8') === withMarker(1),
+      `${child.stdout.trim()} ${child.signal ?? ''}`)
+  }
 
   console.log('structure and install identity')
 
