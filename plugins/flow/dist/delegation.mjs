@@ -22833,7 +22833,7 @@ function capabilitiesForTarget(target) {
 }
 var HOST_CAPABILITIES_SCHEMA_VERSION = 1;
 var HOST_CAPABILITY_VERIFIED_AT = "2026-08-29";
-var HOST_VERIFIED_AGAINST = { claude: "claude-code 2.1.252", codex: "codex-cli 0.151.0" };
+var HOST_VERIFIED_AGAINST = { claude: "claude-code 2.1.257", codex: "codex-cli 0.152.0" };
 var HOST_CAPABILITY_TABLE = {
   "plugin-skill-contribution": {
     claude: { supported: true, assurance: "mechanism", note: "A plugin ships skills under skills/ and the loader registers them." },

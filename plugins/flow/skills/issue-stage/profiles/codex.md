@@ -137,8 +137,8 @@ Two write-seat classes exist on this host.
 
 Version drift is a string comparison against a live operand, not a probe. The doctor result
 carries `client`, the MCP client identity observed in the initialize handshake, as a name and a
-version, with nulls where no handshake supplied one. That version is bare, `0.151.0`. The
-`verifiedAgainst` record beside it is product-qualified, `codex-cli 0.151.0`. Compare those two
+version, with nulls where no handshake supplied one. That version is bare, `0.152.0`. The
+`verifiedAgainst` record beside it is product-qualified, `codex-cli 0.152.0`. Compare those two
 whole and they never match, so the run would stop at preflight on exactly the versions the table
 does support.
 

@@ -605,12 +605,12 @@ try {
   assert.throws(() => { hostInventories.codex.capabilities['agent-depth-limit'].verifiedAt = '1999-01-01' }, TypeError)
   assert.throws(() => { hostInventories.claude.capabilities['skill-composition'].supported = false }, TypeError)
 
-  // The 2026-08-31 Claude re-verification. The machine had moved to claude-code 2.1.252 while the
-  // record still said 2.1.251, the drift gate caught it, and these five rows were re-dated because
+  // The 2026-08-31 Claude re-verification. The machine had moved past the recorded claude-code
+  // version, the drift gate caught it, and these five rows were re-dated because
   // the slice 4 run used every one of them: seat tool lists held, leaf defs with no Agent tool
   // could not spawn, the PreToolUse guards fired inside seats, and the session still advertised
   // roots. Watched at work, not re-probed, so no supported or assurance value moved with the date.
-  assert.equal(hostInventories.claude.verifiedAgainst, 'claude-code 2.1.252', 'the claude record names the version those rows were re-verified under')
+  assert.equal(hostInventories.claude.verifiedAgainst, 'claude-code 2.1.257', 'the claude record names the version those rows were re-verified under')
   for (const id of ['per-seat-tool-allowlist', 'agent-depth-limit', 'per-seat-authority-narrowing', 'hooks-in-native-children', 'mcp-client-roots']) {
     assert.equal(hostInventories.claude.capabilities[id].verifiedAt, '2026-08-31', `claude/${id} verifiedAt`)
     assert.equal(hostInventories.claude.capabilities[id].supported, true, `claude/${id} supported`)

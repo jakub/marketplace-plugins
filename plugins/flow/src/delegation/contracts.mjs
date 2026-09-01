@@ -115,9 +115,13 @@ export const HOST_CAPABILITY_ASSURANCES = ['mechanism', 'contract', 'unverified'
 // a gap is visible in this source rather than at the call site. A cell dated later than the
 // rest carries its own verifiedAt, so adding a row never re-dates the rows already there.
 const HOST_CAPABILITY_VERIFIED_AT = '2026-08-29'
-// Claude moved to 2.1.252 and the five rows dated 2026-08-31 were re-verified by watching the
-// slice 4 run use them, not by probing them again from scratch, so no value or assurance moved.
-const HOST_VERIFIED_AGAINST = { claude: 'claude-code 2.1.252', codex: 'codex-cli 0.151.0' }
+// Re-verified 2026-09-01 against claude-code 2.1.257 and codex-cli 0.152.0 by observation, not
+// by a fresh probe of each row: both provider smokes and a live `cli doctor --host claude` pass
+// on these versions, and nothing in the table changed value or assurance with the bump. The five
+// rows dated 2026-08-31 were re-verified the same way, by watching the slice 4 run use them.
+// Pinning to whatever is installed today is a stopgap; the drift rule that compares against this
+// record is being redesigned separately.
+const HOST_VERIFIED_AGAINST = { claude: 'claude-code 2.1.257', codex: 'codex-cli 0.152.0' }
 const HOST_CAPABILITY_TABLE = {
   'plugin-skill-contribution': {
     claude: { supported: true, assurance: 'mechanism', note: 'A plugin ships skills under skills/ and the loader registers them.' },
