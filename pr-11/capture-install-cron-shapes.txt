@@ -1,0 +1,29 @@
+# install-cron.sh shapes @ 757f7fe141ab404902192475dd64a09b7ddc5b95  2026-09-01T17:49:55Z
+# fake systemctl + stub claude on the launcher runtime PATH, env -i, throwaway HOME. Expected: only 'valid' installs.
+
+===== shape: claude-off =====
+  claude is not on the launcher's runtime PATH (/tmp/cron-claude-off.ynajyU/home/.local/bin:/usr/local/bin:/usr/bin:/bin); the jobs run as headless Claude sessions and the launcher fires under this PATH, not your shell's - install Claude Code so its binary lands there (e.g. $HOME/.local/bin)
+  --- real exit=1
+  launcher: absent | units enabled: 0
+0 | cron.env: no
+
+===== shape: unregistered =====
+  flow@jakub is not installed at user scope; these are machine-wide timers
+  launcher dry-run failed for lint; nothing was installed - the candidate launcher is deleted, no units, no env file, no timer enabled, and a launcher that was already there is untouched.
+  The jobs are Claude-hosted (each one is a headless claude -p session), so flow@jakub has to be installed at Claude USER scope no matter which host you conduct the pipeline from: the launcher reads /tmp/cron-unregistered.Y9GQVZ/home/.claude/plugins/installed_plugins.json for a user-scope entry and nothing else.
+  Fix: claude plugin install flow@jakub --scope user   (then re-run this installer)
+  --- real exit=1
+  launcher: absent | units enabled: 0
+0 | cron.env: no
+
+===== shape: valid =====
+  installed: /tmp/cron-valid.mwxzYv/home/.local/libexec/flow-cron, /tmp/cron-valid.mwxzYv/home/.config/systemd/user/flow-{lint,doc-sweep}.{service,timer}, /tmp/cron-valid.mwxzYv/home/.config/flow/cron.env; reports in /tmp/cron-valid.mwxzYv/state/reports
+  --- real exit=0
+  launcher: regular-file | units enabled: 2 | cron.env: yes
+
+===== shape: dir-at-launcher =====
+  cron launcher promotion failed: could not rename /tmp/cron-dir-at-launcher.h6iS7g/home/.local/libexec/flow-cron.candidate.2050156 onto /tmp/cron-dir-at-launcher.h6iS7g/home/.local/libexec/flow-cron; nothing was installed - the candidate is deleted, no units, no env file, no timer enabled, and any launcher already at that path is untouched.
+  --- real exit=1
+  launcher: still-a-directory | units enabled: 0
+0 | cron.env: no
+

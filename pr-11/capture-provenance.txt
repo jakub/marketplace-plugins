@@ -1,0 +1,7 @@
+=== provenance AFTER (staged tree still matches head?) ===
+bin/shim.mjs still matches 2f36b47b6452a1d2c331cf9429af206d19cd172a: yes
+bin/gripe still matches 2f36b47b6452a1d2c331cf9429af206d19cd172a: yes
+lib/shim.mjs still matches 2f36b47b6452a1d2c331cf9429af206d19cd172a: yes
+lib/install.mjs still matches 2f36b47b6452a1d2c331cf9429af206d19cd172a: yes
+.claude-plugin/plugin.json still matches 2f36b47b6452a1d2c331cf9429af206d19cd172a: yes
+shim marker: // gripe-shim-epoch: 1

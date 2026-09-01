@@ -1,0 +1,130 @@
+# plugins/gripe/scripts/smoke-shim.mjs  @ 757f7fe141ab404902192475dd64a09b7ddc5b95
+# v26.7.0, 2026-09-01T17:48:58Z
+
+resolver: the confirmed tier
+  ok: 1. claude 0.2.0 exact vs codex 0.2.1 enabled resolves codex - /tmp/gripe-shim-Dp7Ce7/home-1/.codex/plugins/cache/jakub/gripe/0.2.1
+  ok: 2. the same skew reversed resolves claude 0.3.0
+  ok: 3. equal versions prefer the manager-supplied root over the cache-derived one
+  ok: 4. readable-empty claude registry blocks only the claude cache - /tmp/gripe-shim-Dp7Ce7/home-4/.codex/plugins/cache/jakub/gripe/0.2.1
+  ok: 5. enabled = false blocks only the codex cache, claude falls back to 0.1.0 - /tmp/gripe-shim-Dp7Ce7/home-5/.claude/plugins/cache/jakub/gripe/0.1.0
+  ok: 6. both manifests unreadable, the highest cache across both wins numerically - /tmp/gripe-shim-Dp7Ce7/home-6/.codex/plugins/cache/jakub/gripe/0.10.0
+  ok: 7. a bare table is a registration and resolves
+  ok: 7b. a well-formed non-enabled key leaves the bare table enabled - /tmp/gripe-shim-Dp7Ce7/home-8/.codex/plugins/cache/jakub/gripe/0.2.1
+  ok: 7c. a well-formed other key next to `enabled = true` resolves - /tmp/gripe-shim-Dp7Ce7/home-9/.codex/plugins/cache/jakub/gripe/0.2.1
+  ok: 8. the same table twice is absence
+  ok: 9. two marketplaces are absence
+  ok: 10a. enabled = "true" is absence
+  ok: 10b. enabled = 1 is absence
+  ok: 10c. a duplicate enabled key is absence
+  ok: 23a. a `..` marketplace is rejected
+  ok: 23b. an `a/b` marketplace is rejected
+  ok: F7a. a basic-escape enabled key set false is absence
+  ok: F7b. a dotted enabled key is absence
+  ok: F7c. a quoted enabled key set false is absence
+  ok: G3a. a hostile out-of-range \U escape key is absence, not a throw
+  ok: R3a. an unterminated basic-string key is absence
+  ok: R3b. a dangling-escape key that swallows its close is absence
+  ok: R5a. a bare `enabled` with no `=` is absence
+  ok: R5b. `"enabled"x = false` is absence
+  ok: R5c. `enabled! = false` is absence
+  ok: R5d. `enabled other = false` is absence
+  ok: R5e. `'enabled'x = false` is absence
+  ok: R5f. a trailing-backslash quoted key is absence
+  ok: R5g. a bare word then a comment, no `=`, is absence
+  ok: R5h. an `=` with an empty key is absence
+  ok: R5i. `priority =` with an empty value is absence
+  ok: R5j. `priority = @` is absence
+  ok: R5k. `priority = ]` is absence
+  ok: R5l. a dotted, bad-escape other key is absence
+  ok: R5m. a dotted, out-of-range-escape other key is absence
+  ok: R5n. a quoted key with a raw control char is absence
+  ok: R5o. a bare `[` line inside the table is absence, not a silent end
+  ok: R5p. a bracket line with trailing junk is absence
+  ok: G3b. a hostile codex \U escape never sinks a valid claude filing - /tmp/gripe-shim-Dp7Ce7/home-39/.claude/plugins/cache/jakub/gripe/1.0.0
+  ok: 11. prerelease and malformed cache names are not versions - /tmp/gripe-shim-Dp7Ce7/home-40/.codex/plugins/cache/jakub/gripe/0.2.0
+  ok: 12. a semver directory with no bin/gripe is skipped for the next best - /tmp/gripe-shim-Dp7Ce7/home-41/.codex/plugins/cache/jakub/gripe/0.2.0
+  ok: 13. a registry entry at a deleted path is absence, not an outage
+  ok: 14a. a junk registry version falls back to the path basename - /tmp/gripe-shim-Dp7Ce7/home-43/.claude/plugins/cache/jakub/gripe/1.4.0
+  ok: 14b. an unknown version still resolves when it is the only candidate - /tmp/gripe-shim-Dp7Ce7/home-44/checkout
+resolver: hostile and oversized manifests
+  ok: 15a. a 200 KiB unterminated line is absence
+  ok: 15b. a header inside a multi-line string is absence
+  ok: 15c. a NUL byte is absence
+  ok: 15d. invalid UTF-8 is absence
+  ok: 15e. CRLF around a real table resolves - /tmp/gripe-shim-Dp7Ce7/home-49/.codex/plugins/cache/jakub/gripe/0.2.1
+  ok: 15f. whitespace and a trailing comment on the header resolves - /tmp/gripe-shim-Dp7Ce7/home-50/.codex/plugins/cache/jakub/gripe/0.2.1
+  ok: 16a. a 2 MiB codex config is unreadable and the codex cache fallback runs - /tmp/gripe-shim-Dp7Ce7/home-51/.codex/plugins/cache/jakub/gripe/0.6.0
+  ok: 16b. a 2 MiB claude registry is unreadable and the claude cache fallback runs - /tmp/gripe-shim-Dp7Ce7/home-52/.claude/plugins/cache/jakub/gripe/0.6.0
+  ok: 17. malformed registry JSON is an outage and the claude fallback runs - /tmp/gripe-shim-Dp7Ce7/home-53/.claude/plugins/cache/jakub/gripe/0.5.0
+  ok: 18a. CODEX_HOME redirects both the config read and the cache scan - /tmp/gripe-shim-Dp7Ce7/codex-elsewhere-54/plugins/cache/jakub/gripe/0.8.0
+  ok: 18b. a relative CODEX_HOME resolves once and is recorded absolute - /tmp/gripe-shim-Dp7Ce7/home-54/.claude/plugins/installed_plugins.json /tmp/gripe-shim-Dp7Ce7/codex-elsewhere-54/config.toml /tmp/gripe-shim-Dp7Ce7/codex-elsewhere-54/plugins/cache
+resolver: the override and the total miss
+  ok: 19. a valid GRIPE_HOME beats every install and reads no registry - /tmp/gripe-shim-Dp7Ce7/override-55
+  ok: 20a. a broken GRIPE_HOME stops instead of falling through - override
+  ok: 20a. a empty GRIPE_HOME stops instead of falling through - override
+  ok: 20b. the broken-override diagnostic names GRIPE_HOME and nothing else - "gripe: GRIPE_HOME is set to \"/tmp/gripe-shim-Dp7Ce7/broken-override-56\" but its bin/gripe is not a readable file; refusing to fall through to an installed gripe\n"
+  ok: 21. the total miss names every surface checked, in one bounded line - "gripe: no installation found (set GRIPE_HOME or install gripe@jakub); checked: /tmp/gripe-shim-Dp7Ce7/home-57/.claude/plugins/installed_plugins.json, /tmp/gripe-shim-Dp7Ce7/home-57/.claude/plugins/cache, /tmp/gripe-shim-Dp7Ce7/home-57/.codex/config.toml, /tmp/gripe-shim-Dp7Ce7/home-57/.codex/plugins/cache\n"
+  ok: F8. a confirmed but empty codex cache is named in the miss diagnostic - "gripe: no installation found (set GRIPE_HOME or install gripe@jakub); checked: /tmp/gripe-shim-Dp7Ce7/home-58/.claude/plugins/installed_plugins.json, /tmp/gripe-shim-Dp7Ce7/home-58/.codex/config.toml, /tmp/gripe-shim-Dp7Ce7/home-58/.codex/plugins/cache\n"
+  ok: 22. version components compare as BigInt, past 2^53 - /tmp/gripe-shim-Dp7Ce7/home-59/.codex/plugins/cache/jakub/gripe/9007199254740993.0.0
+  ok: 23c. an equal-version tie at two paths is broken deterministically - /tmp/gripe-shim-Dp7Ce7/home-60/a-install then /tmp/gripe-shim-Dp7Ce7/home-60/a-install
+resolver: cache confinement
+  ok: F1a. a cache version dir symlinked outside its root is rejected - /tmp/gripe-shim-Dp7Ce7/home-61/.codex/plugins/cache/jakub/gripe/0.2.0
+  ok: F1b. GRIPE_HOME outside any cache still resolves - /tmp/gripe-shim-Dp7Ce7/f1-override-62
+  ok: F2c. a cross-version in-cache bin symlink is rejected, the real 0.5.0 wins and spawns - root /tmp/gripe-shim-Dp7Ce7/home-63/.codex/plugins/cache/jakub/gripe/0.5.0 spoofed=false bin /tmp/gripe-shim-Dp7Ce7/home-63/.codex/plugins/cache/jakub/gripe/0.5.0/bin/gripe spawned /tmp/gripe-shim-Dp7Ce7/home-63/.codex/plugins/cache/jakub/gripe/0.5.0/bin/gripe
+  ok: F2a. a symlinked-out marketplace escape is rejected, the real 0.1.0 wins by true version - /tmp/gripe-shim-Dp7Ce7/home-64/.codex/plugins/cache/inside/gripe/0.1.0 spoofed=false
+  ok: F2b. a real cache candidate resolves and ranks by its true version - /tmp/gripe-shim-Dp7Ce7/home-66/.codex/plugins/cache/jakub/gripe/0.7.0 0.7.0
+  ok: bounded diagnostics: one line, one newline, at most 2048 bytes - 2048 bytes
+  ok: version parsing admits leading zeros and compares them numerically
+  ok: an unrecognized codex table shape reports no registration
+the honesty split
+  ok: exit matrix: spawn error (ENOENT) - [] 0, [add] 0, [doctor] 1, [dump] 1
+  ok: exit matrix: an error alongside a status (the error wins) - [] 0, [add] 0, [doctor] 1, [dump] 1
+  ok: exit matrix: a signal, named and never turned into 128+n - [] 0, [add] 0, [doctor] 1, [dump] 1
+  ok: exit matrix: a real child status of 7 - [] 0, [add] 0, [doctor] 7, [dump] 7
+  ok: exit matrix: a real child status of 0 - [] 0, [add] 0, [doctor] 0, [dump] 0
+  ok: exit matrix: no installation at all - [] 0, [add] 0, [doctor] 1, [dump] 1
+  ok: exit matrix: the resolver throwing - [] 0, [add] 0, [doctor] 1, [dump] 1
+  ok: the shim never touches process.stdin
+the honesty split, end to end
+  ok: add on a total miss exits 0 with an open unwritten stdin pipe - exit 0 after 22ms
+  ok: doctor on a total miss exits 1 and says what it checked - "gripe: no installation found (set GRIPE_HOME or install gripe@jakub); checked: /tmp/gripe-shim-Dp7Ce7/home-71/.claude/plugins/installed_plugins.json, /tmp/gripe-shim-Dp7Ce7/home-71/.claude/plugins/cache, /tmp/gripe-shim-Dp7Ce7/home-71/.codex/config.toml, /tmp/gripe-shim-Dp7Ce7/home-71/.codex/plugins/cache\n"
+  ok: an invocation through a symlink still runs - "ROOT=/tmp/gripe-shim-Dp7Ce7/symlink-target-72"
+  ok: a human command passes a real child status through - exit 7
+  ok: filing swallows the same status - exit 0
+the epoch ratchet
+  ok: a missing shim is written, executable - written, mode 755
+  ok: a byte-identical shim is left alone
+  ok: F6a. a symlink with the source bytes is rewritten to a regular 0755 file - written
+  ok: F6b. an identical 0644 file is rewritten 0755 - written
+  ok: a lower epoch is upgraded - written
+  ok: equal-epoch byte drift is repaired - written
+  ok: a strictly higher epoch is kept, byte for byte - kept-newer
+  ok: G2a. a higher-epoch symlink dest becomes a regular 0755 file, bytes kept - kept-newer, mode 755
+  ok: G2b. a higher-epoch 0644 dest is re-materialized 0755, bytes unchanged - kept-newer, mode 755
+  ok: R2. a failed re-materialize of a higher-epoch entry reports failed, not kept-newer - failed, still a symlink
+  ok: an unparseable marker is overwritten, so corruption repairs itself - written
+  ok: a directory at the shim path fails without throwing - failed
+  ok: a source with no marker is refused and nothing is written - refused
+  ok: eight concurrent writers leave the source bytes and no temp files - written,unchanged,unchanged,unchanged,unchanged,unchanged,unchanged,unchanged
+  ok: F4. an epoch that rises to strictly-higher before the pre-rename re-read is kept - kept-newer, epoch 3
+  ok: a symlink at the shim path is replaced, not followed - written
+  ok: shimEpoch: absent, doubled, and out-of-range markers all read null
+special files never hang
+  ok: F3a. gripe add with a fifo codex config exits 0 without hanging - 0 
+  ok: F3b. gripe add with a fifo claude registry exits 0 without hanging - 0 
+  ok: F3c. a fifo codex config reads unreadable and a non-filing command still reports - 1 
+  ok: F3d. a fifo bin/gripe is not a usable root and never blocks - 1 
+  ok: F3e. pointShim over a fifo shim path never hangs and replaces it - written 
+  ok: F3f. pointShim over a fifo source path fails closed without hanging - failed 
+structure and install identity
+  ok: bin/shim.mjs carries exactly one parseable epoch marker - // gripe-shim-epoch: 1
+  ok: bin/shim.mjs imports node builtins only - node:fs node:path node:os node:child_process node:url
+  ok: installFacts: the claude manifest supplies the version
+  ok: installFacts: a missing claude manifest falls through to the codex one
+  ok: installFacts: malformed JSON falls back to the cache directory name - /tmp/gripe-shim-Dp7Ce7/facts/malformed/2.1.0
+  ok: installFacts: a non-semver manifest version loses to a semver directory name
+  ok: installFacts: with neither, the version is null and the root is still reported - /tmp/gripe-shim-Dp7Ce7/facts/neither
+  ok: installFacts: a fifo manifest reads unreadable without hanging, version null - {"plugin_root":"/tmp/gripe-shim-Dp7Ce7/facts/fifo-manifest","plugin_version":null} 
+  ok: gripe doctor names the running install and keeps its health verdict - /home/jakub/code/marketplace-plugins-issue-6-slice5/plugins/gripe @ 0.3.0
+
+gripe shim: ALL PASS (116 checks)

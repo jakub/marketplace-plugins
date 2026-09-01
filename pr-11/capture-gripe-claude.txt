@@ -1,0 +1,23 @@
+(1)
+
+```
+// gripe-shim-epoch: 1
+```
+
+(2)
+
+```
+{
+  "plugin_root": "/home/jakub/.codex/plugins/cache/jakub/gripe/0.3.0",
+  "plugin_version": "0.3.0",
+  "db": "/home/jakub/.local/state/gripe/gripe.db",
+  "schema_version": 1,
+  "journal_mode": "wal",
+  "write_lock": true,
+  "rows": 118,
+  "sessions": 150,
+  "unseen": 118,
+  "newest": "2026-09-01T17:41:04.919Z",
+  "healthy": true
+}
+```

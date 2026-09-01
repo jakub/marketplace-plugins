@@ -1,0 +1,17 @@
+# plugins/flow/scripts/smoke-label-contract.mjs  @ 757f7fe141ab404902192475dd64a09b7ddc5b95
+# v26.7.0, 2026-09-01T17:48:58Z
+
+the real contract
+  ok: the taxonomy parses as 9 lifecycle rows and 3 type modifiers: needs-triage, agent-found, ready-for-agent, in-progress, needs-info, needs-human, needs-rebase, wontfix, deferred
+  ok: every tuple validates: names, six-hex colors, one color per lane, and descriptions with no slash, the longest 68 of 100 code points
+  ok: 5 lanes, one color each: intake fbca04, staging 0e8a16, active 1d76db, blocked b60205, buried 6e6e6e
+the checker can still fail
+  ok: the checker fails too-long and names the defect: label "mini-ready" has a description of 119 code points, over the 100-point ceiling
+  ok: the checker fails slash-command and names the defect: label "mini-triage" has a description containing "/", which is how a host's command spelling reaches GitHub: "Untriaged intake; exits only through /flow:prep"
+  ok: the checker fails bad-color and names the defect: label "mini-ready" carries color "0e8a1g", which is not six lowercase hex digits
+  ok: the checker fails duplicate-name and names the defect: label "mini-human" appears more than once in the taxonomy
+  ok: the checker fails lane-color conflict and names the defect: lane "blocked" carries 2 colors (b60205, b6020a); one lane is one color
+  ok: the checker fails no table at all and names the defect: the taxonomy did not parse: 0 table rows and 3 type modifiers under "## Taxonomy (the state machine)", at least 9 and 3 expected
+  ok: the checker fails non-closing fence and names the defect: the taxonomy did not parse: 0 table rows and 0 type modifiers under "## Taxonomy (the state machine)", at least 9 and 3 expected
+
+label contract: ALL PASS (10 checks)

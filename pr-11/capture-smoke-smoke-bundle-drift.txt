@@ -1,0 +1,4 @@
+# plugins/flow/scripts/smoke-bundle-drift.mjs  @ 757f7fe141ab404902192475dd64a09b7ddc5b95
+# v26.7.0, 2026-09-01T17:48:58Z
+
+committed delegation bundle: ALL PASS (2570731 bytes, byte-identical to a fresh build)
