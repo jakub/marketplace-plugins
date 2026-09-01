@@ -46,17 +46,27 @@ const DESCRIPTION_LIMIT = 100
 // Fenced blocks are quotation: the state-machine diagram sits in one, directly under the
 // heading. Inline code spans stay, unlike the binding engine's prose() view, because the table
 // writes every name and color in backticks and stripping the spans would delete the tuple.
+//
+// An opening fence may carry an info string (```toml); a CLOSING fence may not - it is the
+// delimiter run and only optional trailing whitespace, anchored. So ```still-code does not
+// close a block: matching it as a close would let the taxonomy table leak out of an
+// unterminated diagram fence and parse as if the block were properly closed, a green check on
+// text that is actually all quotation. Leaving the block open instead drops the table, the
+// parse comes back short, and the run goes red where it should.
+const OPEN_FENCE = /^ {0,3}(`{3,}|~{3,})/
+const CLOSE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
 const unfenced = (lines) => {
   const kept = []
   let open = null
   for (const line of lines) {
-    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
     if (open === null) {
-      if (fence) open = fence[1]
+      const opener = OPEN_FENCE.exec(line)
+      if (opener) open = opener[1]
       else kept.push(line)
       continue
     }
-    if (fence && fence[1][0] === open[0] && fence[1].length >= open.length) open = null
+    const closer = CLOSE_FENCE.exec(line)
+    if (closer && closer[1][0] === open[0] && closer[1].length >= open.length) open = null
   }
   return kept
 }
@@ -238,6 +248,18 @@ const CASES = [
     label: 'no table at all',
     text: () => mutate('the empty-table case', /^\|.*$/gm, ''),
     name: '0 table rows and 3 type modifiers',
+    count: 1,
+  },
+  {
+    // The real file with the diagram's closing fence turned into ```still-code, an opener
+    // shape a close may not carry. A prefix-only fence match would read it as a close, let the
+    // whole table out of the still-open block, and parse nine rows off quotation - green on
+    // text where nothing after the heading is real. The anchored close leaves the fence open,
+    // drops the table and the modifiers, and the parse comes back short.
+    label: 'non-closing fence',
+    text: () => mutate('the non-closing-fence case', '(never resurrected by agents)\n```',
+      '(never resurrected by agents)\n```still-code'),
+    name: 'did not parse: 0 table rows and 0 type modifiers',
     count: 1,
   },
 ]
