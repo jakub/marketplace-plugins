@@ -56,8 +56,9 @@
 // failing run in the 1001st suite invisible however far --paginate walks. Enumerating the suites
 // would see past that and costs two more paginated reads on every land for a shape no repository
 // here has, so this read proves itself instead and stops on `ci-unknown` when the run count it
-// collected differs from the total_count the first page reported, or when the runs it collected
-// span 1000 distinct check suites.
+// collected differs from the total_count the first page reported, or when one unpaginated read of
+// the commit's check-suites collection reports 1000 suites or more, a count taken from that
+// collection because a check suite that has no runs in it is real and never shows up in the runs.
 //
 // The two check sources are partitioned differently because they report differently. A check run
 // carries `status` - queued, in_progress, completed - beside `conclusion`, so it is pending until
@@ -204,8 +205,8 @@ const EXIT_STOP = 1
 const EXIT_USAGE = 2
 const EXIT_UNKNOWN = 4
 
-// The check-runs endpoint serves from at most the most recent 1000 check suites on a ref, so a
-// list that reaches this many distinct suites can no longer be shown to be the whole list.
+// The check-runs endpoint serves from at most the most recent 1000 check suites on a ref, so once
+// the commit carries this many suites its runs can no longer be shown to be the whole list.
 const MAX_CHECK_SUITES = 1000
 
 // A thread page is 100 threads. Twenty pages is 2000 threads on one pull request, which is not a
@@ -783,11 +784,11 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     const runPages = readPages(commitPath('check-runs'), '`gh api` over the check runs')
     if (runPages === null) checksReadable = false
     else {
-      // Every page arrived and read as a page. False after a page that did not, so the two
-      // completeness rules below are not applied to a list that already stopped short.
+      // Every page arrived, read as a page, and named the suite each run belongs to. False after
+      // any of that failed, so the two completeness rules below never run against a list that has
+      // already stopped short.
       let pagesWhole = true
       let collected = 0
-      const suites = new Set()
       for (const page of runPages) {
         // Each page of this endpoint is an object with the runs inside it, not a bare array.
         if (!Array.isArray(page?.check_runs)) {
@@ -798,8 +799,19 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
         }
         for (const run of page.check_runs) {
           collected++
+          // The suite a run belongs to is what the completeness read below is about, so a run that
+          // names no suite is an answer this program cannot reason over rather than one entry to
+          // skip past. Skipping it is what let a truncated list look whole.
           const suite = run?.check_suite?.id
-          if (typeof suite === 'number' || (typeof suite === 'string' && suite.trim() !== '')) suites.add(String(suite))
+          if (typeof suite !== 'number' && !(typeof suite === 'string' && suite.trim() !== '')) {
+            const detail = `a check run on ${headSha} (${nonEmpty(run?.name) ?? 'unnamed'}) came back with no ` +
+              'check_suite.id, so this read cannot be placed against the suites GitHub says are on the commit'
+            stop('ci-unknown', detail)
+            noteFailure(detail)
+            checksReadable = false
+            pagesWhole = false
+            break
+          }
           entries.push({
             kind: 'check-run',
             name: nonEmpty(run?.name),
@@ -808,6 +820,7 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
             conclusion: run?.conclusion ?? null,
           })
         }
+        if (!pagesWhole) break
       }
       if (pagesWhole) {
         // The count GitHub says is there, off the first page. A total_count that is not a count
@@ -825,13 +838,34 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
           stop('ci-unknown', detail)
           noteFailure(detail)
           checksReadable = false
-        } else if (suites.size >= MAX_CHECK_SUITES) {
-          const detail = `the ${collected} check run(s) on ${headSha} span ${suites.size} check suites, at or past ` +
-            `the ${MAX_CHECK_SUITES}-suite window this endpoint serves from, so a failing run in an older suite ` +
-            'would not appear in this read at all. Enumerate the check suites if a repository ever lands here'
-          stop('ci-unknown', detail)
-          noteFailure(detail)
-          checksReadable = false
+        } else {
+          // How many check suites the commit carries, counted by GitHub. Deriving it from the
+          // check_suite ids on the runs undercounts, because a suite with no runs in it still
+          // occupies a place in the 1000 the check-runs endpoint serves from. One page of one is
+          // enough, because nothing here reads the suites themselves, only how many there are.
+          const suitePath = `repos/${identity.owner}/${identity.repo}/commits/${headSha}/check-suites?per_page=1`
+          const suiteRead = runGh(['api', '--hostname', identity.host, suitePath], READ_TIMEOUT_MS)
+          const suiteBody = suiteRead.code === 0 ? parseObject(suiteRead.stdout) : null
+          const suiteTotal = Number.isSafeInteger(suiteBody?.total_count) && suiteBody.total_count >= 0
+            ? suiteBody.total_count
+            : null
+          if (suiteTotal === null) {
+            const why = suiteRead.code !== 0
+              ? `the read failed (${redact(firstLine(suiteRead.stderr)) || `exit ${suiteRead.code}`})`
+              : `it answered no total_count (found ${JSON.stringify(suiteBody?.total_count ?? null)})`
+            const detail = `the check-suite count on ${headSha} could not be read, so the ${collected} check ` +
+              `run(s) that did arrive cannot be shown to be every one on the commit, because ${why}`
+            stop('ci-unknown', detail)
+            noteFailure(detail)
+            checksReadable = false
+          } else if (suiteTotal >= MAX_CHECK_SUITES) {
+            const detail = `${headSha} carries ${suiteTotal} check suites, at or past the ${MAX_CHECK_SUITES}-suite ` +
+              'window the check-runs endpoint serves from, so a failing run in an older suite would not appear in ' +
+              'this read at all. Enumerate the check suites if a repository ever lands here'
+            stop('ci-unknown', detail)
+            noteFailure(detail)
+            checksReadable = false
+          }
         }
       }
     }
