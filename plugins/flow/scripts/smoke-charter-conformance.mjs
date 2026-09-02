@@ -46,6 +46,9 @@ const quoteless = (text) => text
   .replace(/^ {0,3}(```|~~~)[\s\S]*?^ {0,3}\1[^\n]*$/gm, '')
   .replace(/`[^`\n]*`/g, '')
 const uncommented = (text) => text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+// Fenced blocks only, inline code kept: a stage names a role in backticks, and an example in
+// a fence is an example.
+const unfenced = (text) => text.replace(/^ {0,3}(```|~~~)[\s\S]*?^ {0,3}\1[^\n]*$/gm, '')
 const repeats = (list) => [...new Set(list.filter((v, i) => list.indexOf(v) !== i))]
 const idsOf = (re, text) => [...text.matchAll(new RegExp(re.source, re.flags))].map((m) => m[1])
 
@@ -259,7 +262,7 @@ const floorProblems = (charterText, profiles) => {
 // model on its own and the profile's decision is decoration. Takes the stage files as pairs.
 const unusedRoles = (roles, stages) => [...roles]
   .filter(([, floors]) => floors.length > 0)
-  .filter(([id]) => !stages.some(([, text]) => uncommented(text).includes('`' + id + '`')))
+  .filter(([id]) => !stages.some(([, text]) => unfenced(uncommented(text)).includes('`' + id + '`')))
   .map(([id]) => `no stage names the seat role ${id}, so its binding spawns nothing`)
 
 const markdownUnder = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -430,6 +433,11 @@ const CASES = [
   {
     label: 'a floored role named only inside a stage comment',
     problems: () => unusedRoles(new Map([['mini-seat', [{ criterion: 'taste', value: '5' }]]]), [['skills/mini-stage/SKILL.md', '<!-- spawn `mini-seat` -->\nSpawn the usual seat.\n']]),
+    name: 'no stage names the seat role mini-seat',
+  },
+  {
+    label: 'a floored role named only inside a fenced example',
+    problems: () => unusedRoles(new Map([['mini-seat', [{ criterion: 'taste', value: '5' }]]]), [['skills/mini-stage/SKILL.md', 'Spawn the usual seat.\n\n```markdown\n- seat: `mini-seat`\n```\n']]),
     name: 'no stage names the seat role mini-seat',
   },
   {

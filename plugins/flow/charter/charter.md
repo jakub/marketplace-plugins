@@ -70,27 +70,27 @@ These are defaults, not limits. You have further permission to re-run or escalat
 
 General rule: intelligence > taste > cost, and anything user-facing (UI, text) *must* have taste >= 7. Lower efforts follow instructions more literally and call fewer tools; higher efforts verify more and wander more.
 
-Every seat the pipeline spawns is one of the roles below. This table gives each role its floors against the rankings above. Your host profile binds each role to one model and one effort, and the conformance lint fails a binding that sits under its floor. A floor is the written default, never a ceiling. `family: other` is the model family your host does not run natively. `classifiers: none` is a model that runs no cyber classifiers. A binding is scored at the effort it names, so Luna counts 7 only at max.
+Every seat the pipeline spawns is one of the roles below. Each role has floors against the rankings above; your host profile binds it to one model and effort, and the conformance lint fails a binding under its floor. A floor is the written default, never a ceiling. `family: other` is the model family your host does not run natively. `classifiers: none` is a model that runs no cyber classifiers. A binding is scored at the effort it names, so Luna counts 7 only at max.
 
 | role | floors | what it is for |
 |------|--------|----------------|
 | [[role:search-seat]] | cheapness >= 5, intelligence >= 4 | locate files and seams: eyes, not judgment |
 | [[role:outside-scout]] | intelligence >= 6, family: other | the other family's read of the codebase during prep |
 | [[role:design-leg-native]] | intelligence >= 8 | a blind design proposal from your own family |
-| [[role:design-leg-bridge]] | intelligence >= 8, family: other | the rival blind proposal; two seats of one family is one opinion said twice |
+| [[role:design-leg-bridge]] | intelligence >= 8, family: other | the rival blind proposal, from the other family |
 | [[role:taste-leg]] | taste >= 9 | user-facing UI and copy, public APIs, reconciling rival designs, any taste call |
 | [[role:write-seat-mechanical]] | intelligence >= 6, effort >= medium | transcribing a spec whose shape is already decided |
 | [[role:write-seat-standard]] | intelligence >= 8, effort >= medium | the default write seat: anything with a code-design decision left in it |
 | [[role:write-seat-hard]] | intelligence >= 8, effort >= high | work where a miss ships |
-| [[role:bulk-seat]] | cheapness >= 7 | mechanical sweeps at max effort: comment rot, evidence collection, transcript reads; never the decorrelation seat |
+| [[role:bulk-seat]] | cheapness >= 7 | mechanical sweeps at max effort; never the decorrelation seat |
 | [[role:review-seat-native]] | intelligence >= 8, effort >= high | code review of a diff the other family wrote |
 | [[role:review-seat-bridge]] | intelligence >= 8, effort >= high, family: other | the mandatory review of a diff your own family wrote, adversarial by default |
 | [[role:security-seat]] | intelligence >= 8, classifiers: none | vulnerability finding and defensive work, and the first retry for any refused seat |
-| [[role:adjudicator]] | intelligence >= 8, effort >= max | settling conflicting reviewers or decisions; a taste disagreement goes to the taste leg instead |
+| [[role:adjudicator]] | intelligence >= 8, effort >= max | settling conflicting reviewers or decisions; taste disagreements go to the taste leg |
 
 Model notes. Luna at max competes with Opus and Sol at medium to high. Sonnet drives tools at low effort and returns verdicts at medium and up. Opus at xhigh writes code about as well as Fable, and is never the taste call. Sol writes slightly uglier code and is the decorrelated opinion by default. Daybreak Blue is Sol without cyber classifiers. Fable is depth and taste, and the most expensive seat.
 
-A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry on the security seat first; a refusal from the security seat itself goes to the rest of the other family, then Fable last. A double refusal is reported to the user, never swallowed.
+A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on the security seat; when the security seat is the one that refused, that single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.
 
 ## Rules of Engagement - Model Contracts
 Worker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.
