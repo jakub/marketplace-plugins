@@ -11,23 +11,35 @@
 // that is pending, failed or unreadable stops it, and so does a nameless check however green it
 // looks. A failure the base branch's known-flakes allowlist names is merged through, and the same
 // entry added on the pull request side is not, because a branch does not get to approve its own
-// failures. Review threads are paged to the end and a page that never arrives is unreadable
-// rather than clean. An armed auto-merge and a merge queue both stop. Children based on this
-// branch, a follow-up draft comment, an allowlist entry added on the branch and an ambiguous set
-// of linked issues are reported as attention rather than as stops. And through all of it the
+// failures. Check runs, commit statuses, top-level comments and review threads are all read to
+// the end, and a page that never arrived is unreadable rather than a short list. An armed
+// auto-merge and a merge queue both stop. Children based on this branch, a follow-up draft
+// comment, an allowlist entry added on the branch and an ambiguous set of linked issues are
+// reported as attention rather than as stops. And through all of it the
 // executor calls nothing that mutates: the whole point of splitting it out of land-merge.mjs is
 // that running it can never change anything, which now includes the local clone - the allowlist
 // arrives over the contents API, and the two git reads left are `git remote get-url origin` and,
 // only on the run that was given no number, `git rev-parse --abbrev-ref HEAD`.
 //
 // The last sections are one case per finding from the reviews of 2026-09-01, kept together and
-// named by finding so that a regression says which rule came back. G1 to G7 are the first two
-// reviews; J1 to J3 are the third, and they are the ones that cost a real green: a details url
-// that two checks share, a repository identity that swallowed a query string, and a per-test
-// flake entry that could never reach the pass the merge needs. S2 is the fourth review's: the
-// pull request gh resolves from the current branch, which was taken on trust and could belong to
-// another repository entirely. P1 and P2 are the two smaller ones beside it, both about a check
-// whose name this program then wrote down wrong.
+// named by finding so that a regression says which rule came back. G2 to G7 are the first two
+// reviews; J2 and J3 are the third: a repository identity that swallowed a query string, and a
+// per-test flake entry that could never reach the pass the merge needs. S2 is the fourth
+// review's: the pull request gh resolves from the current branch, which was taken on trust and
+// could belong to another repository entirely. P1 and P2 are the two smaller ones beside it, both
+// about a check whose name this program then wrote down wrong. T1 is the last, and it is the one
+// that exited 0 on a red pull request: `gh pr view` answered with the first hundred checks and
+// the first hundred comments and no page after either.
+//
+// G1, J1 and O2 went with the mechanism they guarded. All three were ways the `gh pr checks`
+// cross-read could put a passing name on a failing check, and there is no cross-read now, because
+// every entry is named by the endpoint that served it.
+//
+// The fake gh answers the three paginated endpoints in the shape `gh api --paginate --slurp`
+// really prints: an outer array with one element per page walked, a page of check runs an object
+// carrying a check_runs array, a page of statuses or of comments the array itself. It pages at
+// the 100 the endpoints ask for, so a case that hands it 101 check runs gets two pages without
+// saying so, which is the whole of the T1 section.
 //
 // Run: node plugins/flow/scripts/smoke-land-gates.mjs
 
@@ -52,9 +64,34 @@ const PR_URL = `https://github.com/${SLUG}/pull/${PR}`
 const FLAKES_PATH = '.github/known-flakes.txt'
 
 // ------------------------------------------------------------------ the fixtures, per case
+// The REST shapes, spelled the way GitHub serves them. A check run has name, status and
+// conclusion, all lowercase, with details_url beside them. A commit status has context, state and
+// target_url, and no conclusion at all. A comment has id, body and both urls, the html one being
+// the one a human opens.
 const checkRun = (name, conclusion, extra = {}) => ({
-  name, status: conclusion === null ? 'IN_PROGRESS' : 'COMPLETED', conclusion, detailsUrl: `https://ci.example/${name}`, ...extra,
+  name, status: conclusion === null ? 'in_progress' : 'completed', conclusion, details_url: `https://ci.example/${name}`, ...extra,
 })
+
+const commitStatus = (context, state, extra = {}) => ({
+  context, state, target_url: `https://cr.example/${context}`, ...extra,
+})
+
+const comment = (id, body) => ({
+  id, body,
+  url: `https://api.github.com/repos/${SLUG}/issues/comments/${id}`,
+  html_url: `${PR_URL}#issuecomment-${id}`,
+})
+
+const many = (n, make) => Array.from({ length: n }, (unused, i) => make(i))
+
+// The page size the three endpoints are asked for. gh walks the pages itself under --paginate, so
+// a hundred and first entry is a second page here exactly as it is against GitHub.
+const PAGE = 100
+const pagesOf = (list) => {
+  const pages = []
+  for (let i = 0; i < list.length; i += PAGE) pages.push(list.slice(i, i + PAGE))
+  return pages.length === 0 ? [[]] : pages
+}
 
 const thread = (id, overrides = {}) => {
   const o = { resolved: true, outdated: false, path: 'plugins/flow/scripts/land-gates.mjs', author: 'reviewer', body: 'this needs a word', ...overrides }
@@ -74,10 +111,11 @@ const thread = (id, overrides = {}) => {
 const freshState = (overrides = {}) => ({
   origin: ORIGIN,
   defaultBranch: 'main',
-  rollup: [checkRun('unit', 'SUCCESS'), checkRun('lint', 'SKIPPED')],
-  checks: [],            // what `gh pr checks --json` answers; null means the subcommand fails
-  checksExit: 0,
-  checksStderr: '',      // what it says alongside, which is where "no checks reported" arrives
+  checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')],
+  statuses: [],          // the commit statuses on the head, newest first, as the endpoint serves them
+  apiFail: null,         // 'check-runs', 'statuses' or 'comments': that read fails with a 500
+  apiShape: null,        // 'not-pages' or 'no-check-runs-key': that read answers something unreadable
+  pagesServed: [],       // one record per paginated read, so a case can prove two pages were walked
   children: [],
   comments: [],
   threadPages: [[thread('T_resolved')]],
@@ -150,7 +188,7 @@ const makeRunGh = (st) => (args) => {
       })
     }
     if (st.viewFails) return { code: 1, stdout: '', stderr: 'fake gh: could not read the pull request\n' }
-    return ok({ ...st.pr, statusCheckRollup: st.rollup, comments: st.comments })
+    return ok({ ...st.pr })
   }
   if (args[0] === 'repo' && args[1] === 'view') {
     return st.defaultBranch === null
@@ -158,12 +196,6 @@ const makeRunGh = (st) => (args) => {
       : ok({ defaultBranchRef: { name: st.defaultBranch } })
   }
   if (args[0] === 'pr' && args[1] === 'list') return ok(st.children)
-  if (args[0] === 'pr' && args[1] === 'checks') {
-    // The real `gh pr checks` exits non-zero whenever a check is failing or pending, and still
-    // prints its JSON. The executor has to read the body regardless of the exit code.
-    if (st.checks === null) return { code: 1, stdout: '', stderr: 'fake gh: unknown flag --json\n' }
-    return { code: st.checksExit, stdout: JSON.stringify(st.checks), stderr: st.checksStderr }
-  }
   if (args[0] === 'api' && args[1] !== 'graphql') {
     // `gh api repos/{owner}/{repo}/contents/<path>?ref=<ref>`: a JSON object whose base64 content
     // is the file, a 404 when the path is absent at that ref, and gh's own message on stderr for
@@ -184,6 +216,36 @@ const makeRunGh = (st) => (args) => {
         encoding: st.flakesEncoding,
         content: st.flakesEncoding === 'base64' ? Buffer.from(content, 'utf8').toString('base64') : '',
       })
+    }
+
+    // The three reads that have to be paged: the check runs and the commit statuses on the head
+    // commit, and the pull request's top-level comments. `gh api --paginate --slurp` walks every
+    // page and prints one outer array with a page in each slot, and that is what is served here.
+    const endpoint = path === undefined ? null
+      : path.includes('/check-runs?') ? 'check-runs'
+        : path.includes('/statuses?') ? 'statuses'
+          : path.includes('/comments?') ? 'comments' : null
+    if (endpoint !== null) {
+      // --paginate alone prints one document per page and two adjacent documents are not JSON, so
+      // a read missing either flag is a failure of the executor, not a gap in this fake.
+      if (!args.includes('--paginate') || !args.includes('--slurp')) {
+        return { code: 3, stdout: '', stderr: `fake gh: ${endpoint} was read without --paginate --slurp\n` }
+      }
+      if (st.apiFail === endpoint) {
+        return { code: 1, stdout: '{"message":"Internal Server Error"}', stderr: 'gh: Internal Server Error (HTTP 500)\n' }
+      }
+      if (endpoint === 'check-runs' && st.apiShape === 'not-pages') {
+        return ok({ total_count: 1, check_runs: [checkRun('unit', 'success')] })
+      }
+      if (endpoint === 'check-runs' && st.apiShape === 'no-check-runs-key') {
+        return ok([{ total_count: 1 }])
+      }
+      const list = endpoint === 'check-runs' ? st.checkRuns : endpoint === 'statuses' ? st.statuses : st.comments
+      const pages = pagesOf(Array.isArray(list) ? list : [])
+      st.pagesServed.push({ endpoint, pages: pages.length })
+      return ok(endpoint === 'check-runs'
+        ? pages.map((page) => ({ total_count: list.length, check_runs: page }))
+        : pages)
     }
     return { code: 3, stdout: '', stderr: `fake gh: unexpected ${args.join(' ')}\n` }
   }
@@ -302,9 +364,25 @@ check('every gh call is pinned to the origin repository', clean.st.calls.every(i
 check('every git call names the working directory', clean.st.gitCalls.every((a) => a[0] === '-C' && a[1] === CWD), JSON.stringify(clean.st.gitCalls))
 check('it mutates nothing through gh', mutatingGh(clean.st.calls).length === 0, JSON.stringify(mutatingGh(clean.st.calls)))
 check('and nothing through git', mutatingGit(clean.st.gitCalls).length === 0, JSON.stringify(mutatingGit(clean.st.gitCalls)))
-check('it read the pull request, the repo, the children and the checks', ['pr view', 'repo view', 'pr list', 'pr checks'].every(
+check('it read the pull request, the repository and the children', ['pr view', 'repo view', 'pr list'].every(
   (pair) => clean.st.calls.some((a) => `${a[0]} ${a[1]}` === pair),
 ), JSON.stringify(clean.st.calls.map((a) => `${a[0]} ${a[1]}`)))
+check('and asked for the check runs, the statuses and the comments a page at a time',
+  ['check-runs', 'statuses', 'comments'].every((what) => clean.st.calls.some(
+    (a) => a[0] === 'api' && a.includes('--paginate') && a.includes('--slurp') &&
+      a.some((word) => String(word).endsWith(`/${what}?per_page=100`)))),
+  JSON.stringify(clean.st.calls.filter((a) => a[0] === 'api')))
+check('the two check reads are keyed on the head the merge gets pinned to',
+  ['check-runs', 'statuses'].every((what) => clean.st.calls.some(
+    (a) => a[0] === 'api' && a.some((word) => String(word) === `repos/${SLUG}/commits/${HEAD}/${what}?per_page=100`))),
+  JSON.stringify(clean.st.calls.filter((a) => a[0] === 'api')))
+check('and gh pr checks is not called at all, because nothing needs a second naming of a check',
+  !clean.st.calls.some((a) => a[0] === 'pr' && a[1] === 'checks'), JSON.stringify(clean.st.calls.map((a) => `${a[0]} ${a[1]}`)))
+check('gh pr view is no longer asked for the rollup or the comments', (() => {
+  const view = clean.st.calls.find((a) => a[0] === 'pr' && a[1] === 'view' && a.includes('--repo'))
+  const fields = String(argValue(view || [], '--json'))
+  return !fields.includes('statusCheckRollup') && !fields.includes('comments')
+})(), JSON.stringify(clean.st.calls.find((a) => a[0] === 'pr' && a[1] === 'view' && a.includes('--repo'))))
 check('and read the flake allowlist off the base branch through the contents API', clean.st.calls.some(
   (a) => a[0] === 'api' && a.some((word) => String(word) === `repos/${SLUG}/contents/${FLAKES_PATH}?ref=main`),
 ), JSON.stringify(clean.st.calls.filter((a) => a[0] === 'api')))
@@ -337,16 +415,18 @@ check('and it says what the default branch is', detailOf(stacked.json?.stops, 's
 check('and reports the base as not default', stacked.json?.base?.isDefault === false)
 
 const pending = stopsOn('a check that has not finished', 'ci-pending', {
-  st: freshState({ rollup: [checkRun('unit', 'SUCCESS'), checkRun('e2e', null)] }),
+  st: freshState({ checkRuns: [checkRun('unit', 'success'), checkRun('e2e', null)] }),
 })
 check('the pending check is named', JSON.stringify(pending.json?.ci?.pending) === '["e2e"]', JSON.stringify(pending.json?.ci))
 
 const failed = stopsOn('a failed check', 'ci-failed', {
-  st: freshState({ rollup: [checkRun('unit', 'SUCCESS'), checkRun('e2e', 'FAILURE')] }),
+  st: freshState({ checkRuns: [checkRun('unit', 'success'), checkRun('e2e', 'failure')] }),
 })
 check('the failure carries its link', failed.json?.ci?.failed?.[0]?.link === 'https://ci.example/e2e', JSON.stringify(failed.json?.ci?.failed))
-stopsOn('a timed-out check', 'ci-failed', { st: freshState({ rollup: [checkRun('e2e', 'TIMED_OUT')] }) })
-stopsOn('an errored commit status', 'ci-failed', { st: freshState({ rollup: [{ name: 'coderabbit', state: 'ERROR', targetUrl: 'https://cr.example/1' }] }) })
+stopsOn('a timed-out check', 'ci-failed', { st: freshState({ checkRuns: [checkRun('e2e', 'timed_out')] }) })
+stopsOn('an errored commit status', 'ci-failed', {
+  st: freshState({ checkRuns: [], statuses: [commitStatus('coderabbit', 'error')] }),
+})
 
 const armed = stopsOn('an armed auto-merge', 'auto-merge-armed', {
   st: freshState({ pr: { autoMergeRequest: { enabledBy: { login: 'bot' } } } }),
@@ -358,42 +438,30 @@ check('and the queue is reported', queued.json?.arming?.mergeQueue === true)
 const enqueued = stopsOn('a pull request already in the queue', 'merge-queue', { st: freshState({ isInMergeQueue: true }) })
 check('and that also reads as a queue', enqueued.json?.arming?.mergeQueue === true)
 
-// A commit status a passing state cannot be attributed to any check name is unknown, not green.
+// Both endpoints name their own entries, so a nameless one is a malformed answer rather than the
+// ordinary case the cross-read used to cover. It still has to stop the land: a check nobody can
+// name is not a check anyone reviewed, however green its own field says it is.
 console.log('\na check nobody can name is unknown, never green')
-const nameless = { name: null, state: null, conclusion: null, targetUrl: 'https://cr.example/status' }
-const unnamed = stopsOn('a nameless rollup entry the cross-read cannot place', 'ci-unknown', {
-  st: freshState({ rollup: [checkRun('unit', 'SUCCESS'), nameless], checks: null }),
-})
-check('it is reported with a null name', unnamed.json?.ci?.unknown?.[0]?.name === null, JSON.stringify(unnamed.json?.ci?.unknown))
-check('and keeps the link it had', unnamed.json?.ci?.unknown?.[0]?.link === 'https://cr.example/status', JSON.stringify(unnamed.json?.ci?.unknown))
-
-const crossed = run([String(PR)], {
+const unnamedRun = stopsOn('a check run with no name', 'ci-unknown', {
   st: freshState({
-    rollup: [checkRun('unit', 'SUCCESS'), nameless],
-    checks: [
-      { name: 'unit', state: 'SUCCESS', bucket: 'pass', link: 'https://ci.example/unit' },
-      { name: 'CodeRabbit', state: 'SUCCESS', bucket: 'pass', link: 'https://cr.example/status' },
-    ],
+    checkRuns: [checkRun('unit', 'success'), { name: '', status: 'completed', conclusion: 'success', details_url: 'https://ci.example/anon' }],
   }),
 })
-check('the checks cross-read gives it a name and a state', crossed.code === 0 && crossed.json?.ci?.success?.includes('CodeRabbit'),
-  `code ${crossed.code}: ${JSON.stringify(crossed.json?.ci)}`)
-check('and nothing is left unknown', JSON.stringify(crossed.json?.ci?.unknown) === '[]', JSON.stringify(crossed.json?.ci?.unknown))
+check('it is reported with a null name', unnamedRun.json?.ci?.unknown?.[0]?.name === null, JSON.stringify(unnamedRun.json?.ci?.unknown))
+check('and keeps the link it had', unnamedRun.json?.ci?.unknown?.[0]?.link === 'https://ci.example/anon', JSON.stringify(unnamedRun.json?.ci?.unknown))
 
-const ambiguous = run([String(PR)], {
-  st: freshState({
-    rollup: [nameless, { name: null, state: null, conclusion: null }],
-    checks: [{ name: 'one', state: 'SUCCESS', bucket: 'pass', link: null }],
-  }),
+const unnamedStatus = stopsOn('a commit status with no context', 'ci-unknown', {
+  st: freshState({ statuses: [{ state: 'success', target_url: 'https://cr.example/status' }] }),
 })
-check('two nameless entries and one leftover name are not guessed at',
-  ambiguous.code === 1 && ambiguous.json?.ci?.unknown?.length === 2 && has(ambiguous.json?.stops, 'ci-unknown'),
-  JSON.stringify(ambiguous.json?.ci))
+check('it is unknown however green its state', unnamedStatus.json?.ci?.unknown?.[0]?.name === null,
+  JSON.stringify(unnamedStatus.json?.ci?.unknown))
+check('and the named checks beside it are still counted', JSON.stringify(unnamedStatus.json?.ci?.success) === '["unit","lint"]',
+  JSON.stringify(unnamedStatus.json?.ci))
 
 // ------------------------------------------------------------------------------ known flakes
 console.log('\nthe base branch decides what counts as a known flake')
 const flakeState = (base, pr = null) => freshState({
-  rollup: [checkRun('unit', 'SUCCESS'), checkRun('e2e', 'FAILURE')],
+  checkRuns: [checkRun('unit', 'success'), checkRun('e2e', 'failure')],
   baseFlakes: base,
   prFlakes: pr,
 })
@@ -520,17 +588,19 @@ check('the child query asked for pull requests based on this branch',
 const draft = run([String(PR)], {
   st: freshState({
     comments: [
-      { id: 'C1', url: `${PR_URL}#issuecomment-1`, body: 'looks good to me' },
-      { id: 'C2', url: `${PR_URL}#issuecomment-2`, body: '## Follow-up draft\n\nThe resolver wants its own issue.' },
+      comment(1, 'looks good to me'),
+      comment(2, '## Follow-up draft\n\nThe resolver wants its own issue.'),
     ],
   }),
 })
-check('a follow-up draft comment is found', draft.json?.followUpDraft?.id === 'C2', JSON.stringify(draft.json?.followUpDraft))
+check('a follow-up draft comment is found', draft.json?.followUpDraft?.id === 2, JSON.stringify(draft.json?.followUpDraft))
+check('with the url a human can open, not the API one',
+  draft.json?.followUpDraft?.url === `${PR_URL}#issuecomment-2`, JSON.stringify(draft.json?.followUpDraft))
 check('with its body kept whole', String(draft.json?.followUpDraft?.body).includes('resolver wants its own issue'), JSON.stringify(draft.json?.followUpDraft))
 check('and is attention, not a stop', draft.code === 0 && has(draft.json?.attention, 'follow-up-draft'),
   `${draft.code}: ${JSON.stringify(draft.json?.attention)}`)
 check('an ordinary comment is not a draft', run([String(PR)], {
-  st: freshState({ comments: [{ id: 'C1', url: PR_URL, body: 'we should follow up on this draft later' }] }),
+  st: freshState({ comments: [comment(1, 'we should follow up on this draft later')] }),
 }).json?.followUpDraft === null)
 
 // --------------------------------------------------------------------- arguments and refusals
@@ -564,44 +634,16 @@ check('a token in the origin URL is out of the output', !leaky.stdout.includes('
 check('and the repository is still derived from it', leaky.json?.pr === PR, JSON.stringify(leaky.json?.pr))
 
 // ------------------------------------------------------------- the findings of the two reviews
-console.log('\nG1: a name is never guessed by position')
-// Both reads list two entries, so the counts agree and the old code paired them by index. The
-// order of a rollup and the order of `gh pr checks` are unrelated, so the failure drew the name
-// on the allowlist and the whole land went green.
-const positional = run([String(PR)], {
-  st: freshState({
-    rollup: [
-      { name: null, conclusion: 'FAILURE', status: 'COMPLETED', detailsUrl: null },
-      { name: null, conclusion: 'SUCCESS', status: 'COMPLETED', detailsUrl: null },
-    ],
-    checks: [
-      { name: 'unit', state: 'FAILURE', bucket: 'fail', link: null },
-      { name: 'e2e', state: 'SUCCESS', bucket: 'pass', link: null },
-    ],
-    baseFlakes: 'unit\n',
-  }),
-})
-check('nameless entries with no url stay unknown', positional.json?.ci?.unknown?.length === 2, JSON.stringify(positional.json?.ci))
-check('and stop the land', positional.code === 1 && has(positional.json?.stops, 'ci-unknown'),
-  `${positional.code}: ${JSON.stringify(codes(positional.json?.stops))}`)
-check('and no failure is excused as flaky', JSON.stringify(positional.json?.ci?.flaky) === '[]', JSON.stringify(positional.json?.ci?.flaky))
-check('and nothing was named unit', !JSON.stringify(positional.json?.ci).includes('unit'), JSON.stringify(positional.json?.ci))
-
 console.log('\nG1b: a commit status names itself in context, not name')
-const statusContext = run([String(PR)], {
-  st: freshState({
-    rollup: [checkRun('unit', 'SUCCESS'), { context: 'coderabbit', state: 'SUCCESS', targetUrl: 'https://cr.example/status' }],
-    checks: null,
-  }),
-})
+const statusContext = run([String(PR)], { st: freshState({ statuses: [commitStatus('coderabbit', 'success')] }) })
 check('the context is read as the name', statusContext.json?.ci?.success?.includes('coderabbit'), JSON.stringify(statusContext.json?.ci))
-check('so it needs no cross-read to place it', statusContext.code === 0 && JSON.stringify(statusContext.json?.ci?.unknown) === '[]',
+check('so nothing has to join two reads to place it', statusContext.code === 0 && JSON.stringify(statusContext.json?.ci?.unknown) === '[]',
   `${statusContext.code}: ${JSON.stringify(statusContext.json?.ci?.unknown)}`)
 
 console.log('\nG2: an allowlist read that failed is unknown, not empty')
 const flakesDown = run([String(PR)], {
   st: freshState({
-    rollup: [checkRun('unit', 'SUCCESS'), checkRun('e2e', 'FAILURE')],
+    checkRuns: [checkRun('unit', 'success'), checkRun('e2e', 'failure')],
     baseFlakes: 'e2e\n',
     flakesHttp: 500,
   }),
@@ -617,7 +659,7 @@ check('and the failure is not excused by an allowlist nobody read',
 // is a file nobody read, and it must not read as an allowlist with nothing in it.
 const flakesUnencoded = run([String(PR)], {
   st: freshState({
-    rollup: [checkRun('unit', 'SUCCESS'), checkRun('e2e', 'FAILURE')],
+    checkRuns: [checkRun('unit', 'success'), checkRun('e2e', 'failure')],
     baseFlakes: 'e2e\n',
     flakesEncoding: 'none',
   }),
@@ -640,20 +682,14 @@ check('and both allowlist copies still arrived', JSON.stringify(gitOnly.json?.ci
   JSON.stringify(gitOnly.json?.ci?.flaky) === '["e2e"]', JSON.stringify(gitOnly.json?.ci))
 
 console.log('\nG4: no checks at all is unknown, not green')
-const noChecks = run([String(PR)], { st: freshState({ rollup: [] }) })
-check('an empty rollup stops on ci-unknown', noChecks.code === 1 && has(noChecks.json?.stops, 'ci-unknown'),
+const noChecks = run([String(PR)], { st: freshState({ checkRuns: [], statuses: [] }) })
+check('zero check runs and zero statuses stops on ci-unknown', noChecks.code === 1 && has(noChecks.json?.stops, 'ci-unknown'),
   `${noChecks.code}: ${JSON.stringify(codes(noChecks.json?.stops))}`)
-check('and says no checks reported', detailOf(noChecks.json?.stops, 'ci-unknown').includes('no checks reported'),
+check('and says both sources came back empty',
+  detailOf(noChecks.json?.stops, 'ci-unknown').includes('no check runs and no commit statuses'),
   detailOf(noChecks.json?.stops, 'ci-unknown'))
-const missingRollup = run([String(PR)], { st: freshState({ rollup: undefined }) })
-check('a missing rollup key reads the same way', missingRollup.code === 1 && has(missingRollup.json?.stops, 'ci-unknown'),
-  `${missingRollup.code}: ${JSON.stringify(codes(missingRollup.json?.stops))}`)
-const noChecksSaid = run([String(PR)], {
-  st: freshState({ rollup: [], checksExit: 1, checksStderr: 'no checks reported on the feat/issue-6-land-gates branch\n' }),
-})
-check('and what gh pr checks said is carried into the detail',
-  detailOf(noChecksSaid.json?.stops, 'ci-unknown').includes('feat/issue-6-land-gates branch'),
-  detailOf(noChecksSaid.json?.stops, 'ci-unknown'))
+check('and it is a stop and not a failed read, because both reads succeeded',
+  noChecks.json?.error === undefined, noChecks.json?.error)
 
 console.log('\nG5: the default branch is in the payload')
 check('base.default names it', clean.json?.base?.default === 'main', JSON.stringify(clean.json?.base))
@@ -670,8 +706,7 @@ console.log('\nG7: a check name may contain a colon')
 const colonName = 'ci/circleci: build'
 const colonCheck = run([String(PR)], {
   st: freshState({
-    rollup: [checkRun('unit', 'SUCCESS'), { context: colonName, state: 'FAILURE', targetUrl: 'https://circleci.example/1' }],
-    checks: null,
+    statuses: [commitStatus(colonName, 'failure', { target_url: 'https://circleci.example/1' })],
     baseFlakes: `${colonName}\n`,
   }),
 })
@@ -688,49 +723,6 @@ check('a check:test line that matches no check name still splits',
   JSON.stringify(stillSplits.json?.ci?.flakeCandidates))
 check('and moves nothing', has(stillSplits.json?.stops, 'ci-failed') && stillSplits.code === 1,
   `${stillSplits.code}: ${JSON.stringify(codes(stillSplits.json?.stops))}`)
-
-console.log('\nJ1: a url joins only where it identifies one check on both sides')
-// The collision a status provider produces for free. Every context it reports links to the one
-// build page, so two nameless rollup entries and two cross-read names all carry one url. Joining
-// on it gave the FAILURE whichever name came first; when that name was on the allowlist the
-// failure was excused and the other check's failure was never reported at all.
-const SHARED = 'https://ci.example/build/7'
-const collision = run([String(PR)], {
-  st: freshState({
-    rollup: [
-      { name: null, conclusion: 'FAILURE', status: 'COMPLETED', detailsUrl: SHARED },
-      { name: null, conclusion: 'SUCCESS', status: 'COMPLETED', detailsUrl: SHARED },
-    ],
-    checks: [
-      { name: 'known-flake', state: 'FAILURE', bucket: 'fail', link: SHARED },
-      { name: 'e2e', state: 'SUCCESS', bucket: 'pass', link: SHARED },
-    ],
-    baseFlakes: 'known-flake\n',
-  }),
-})
-check('both entries sharing one url stay unknown', collision.json?.ci?.unknown?.length === 2, JSON.stringify(collision.json?.ci))
-check('and keep a null name', collision.json?.ci?.unknown?.every((c) => c.name === null), JSON.stringify(collision.json?.ci?.unknown))
-check('and stop the land', collision.code === 1 && has(collision.json?.stops, 'ci-unknown'),
-  `${collision.code}: ${JSON.stringify(codes(collision.json?.stops))}`)
-check('nothing is named known-flake', !JSON.stringify(collision.json?.ci).includes('known-flake'), JSON.stringify(collision.json?.ci))
-check('and no failure is excused as flaky', JSON.stringify(collision.json?.ci?.flaky) === '[]', JSON.stringify(collision.json?.ci?.flaky))
-
-// The same join, on a url only one check on each side carries, still names the entry - including
-// when naming it is what turns the land red.
-const uniqueJoin = run([String(PR)], {
-  st: freshState({
-    rollup: [checkRun('unit', 'SUCCESS'), { name: null, conclusion: 'FAILURE', status: 'COMPLETED', detailsUrl: 'https://ci.example/build/9' }],
-    checks: [
-      { name: 'unit', state: 'SUCCESS', bucket: 'pass', link: 'https://ci.example/unit' },
-      { name: 'e2e', state: 'FAILURE', bucket: 'fail', link: 'https://ci.example/build/9' },
-    ],
-  }),
-})
-check('a unique url still joins', JSON.stringify(uniqueJoin.json?.ci?.failed?.map((c) => c.name)) === '["e2e"]',
-  JSON.stringify(uniqueJoin.json?.ci))
-check('and nothing is left unknown', JSON.stringify(uniqueJoin.json?.ci?.unknown) === '[]', JSON.stringify(uniqueJoin.json?.ci?.unknown))
-check('and the named failure stops the land', uniqueJoin.code === 1 && has(uniqueJoin.json?.stops, 'ci-failed'),
-  `${uniqueJoin.code}: ${JSON.stringify(codes(uniqueJoin.json?.stops))}`)
 
 console.log('\nJ2: the remote is parsed as a URL, and a refused one is never quoted')
 const TOKEN = 'ghp_sekrettoken'
@@ -772,8 +764,8 @@ check('without quoting the credential it carried', !noPathRemote.stderr.includes
 check('and says the path is why', noPathRemote.stderr.includes('exactly one owner and one repository'), noPathRemote.stderr)
 
 console.log('\nJ3: --accept-flake is the only way a check:test entry moves a check')
-const perTestState = (base, conclusion = 'FAILURE') => freshState({
-  rollup: [checkRun('unit', 'SUCCESS'), checkRun('suite', conclusion)],
+const perTestState = (base, conclusion = 'failure') => freshState({
+  checkRuns: [checkRun('unit', 'success'), checkRun('suite', conclusion)],
   baseFlakes: base,
 })
 
@@ -807,7 +799,7 @@ check('the --accept-flake=entry spelling works the same way', (() => {
 refuses('an entry the base allowlist does not declare is refused', ['--accept-flake', 'suite:test_x', String(PR)],
   '--accept-flake suite:test_x is not an entry', { st: perTestState('other:test_y\n') })
 refuses('and so is one for a check that is not failing', ['--accept-flake', 'suite:test_x', String(PR)],
-  'which is not among the failed checks', { st: perTestState('suite:test_x\n', 'SUCCESS') })
+  'which is not among the failed checks', { st: perTestState('suite:test_x\n', 'success') })
 refuses('a bare check name is refused, because the allowlist moves those itself',
   ['--accept-flake', 'suite', String(PR)], '--accept-flake suite names no test', { st: perTestState('suite:test_x\nsuite\n') })
 refuses('and the flag with no value is refused', ['--accept-flake'], 'takes one check-name:test_name entry')
@@ -823,46 +815,16 @@ check('and still points at the job log', detailOf(unaccepted.json?.attention, 'f
   detailOf(unaccepted.json?.attention, 'flaky-merged-through'))
 
 
-console.log('\nO2: a cross-read name is handed out at most once')
-// Both urls are unique on both sides, so the join is legitimate on each entry taken alone. What
-// was missing is that the two entries are then the same check: the set of names already spoken
-// for was built once, before the loop, so the second entry took `e2e` too. With `e2e` on the
-// allowlist the failure was excused and the pull request went green on a check nobody could name.
-const reusedName = run([String(PR)], {
-  st: freshState({
-    rollup: [
-      { name: null, conclusion: 'SUCCESS', status: 'COMPLETED', detailsUrl: 'https://ci.example/build/1' },
-      { name: null, conclusion: 'FAILURE', status: 'COMPLETED', detailsUrl: 'https://ci.example/build/2' },
-    ],
-    checks: [
-      { name: 'e2e', state: 'SUCCESS', bucket: 'pass', link: 'https://ci.example/build/1' },
-      { name: 'e2e', state: 'FAILURE', bucket: 'fail', link: 'https://ci.example/build/2' },
-    ],
-    baseFlakes: 'e2e\n',
-  }),
-})
-check('the first entry takes the name', JSON.stringify(reusedName.json?.ci?.success) === '["e2e"]',
-  JSON.stringify(reusedName.json?.ci))
-check('the second one does not take it again', reusedName.json?.ci?.unknown?.length === 1 &&
-  reusedName.json?.ci?.unknown?.[0]?.name === null, JSON.stringify(reusedName.json?.ci?.unknown))
-check('and keeps the url it had', reusedName.json?.ci?.unknown?.[0]?.link === 'https://ci.example/build/2',
-  JSON.stringify(reusedName.json?.ci?.unknown))
-check('so the land stops on ci-unknown', reusedName.code === 1 && has(reusedName.json?.stops, 'ci-unknown'),
-  `${reusedName.code}: ${JSON.stringify(codes(reusedName.json?.stops))}`)
-check('and the allowlist excuses no failure it could not name',
-  JSON.stringify(reusedName.json?.ci?.flaky) === '[]' && JSON.stringify(reusedName.json?.ci?.failed) === '[]',
-  JSON.stringify(reusedName.json?.ci))
-
 console.log('\nJ4: one accepted test moves one check, and only where the name is unambiguous')
 // Two CheckRuns can report the same name against two different jobs, and GitHub is happy to serve
 // both. Acceptance used to be keyed on a set of check names and removed every failed entry whose
 // name was in it, so one --accept-flake suite:test_x deleted both failures on the strength of one
 // job log, which can only ever have been about one of them.
 const twinSuite = (extra = {}) => freshState({
-  rollup: [
-    checkRun('unit', 'SUCCESS'),
-    { name: 'suite', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/suite/1' },
-    { name: 'suite', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/suite/2' },
+  checkRuns: [
+    checkRun('unit', 'success'),
+    { name: 'suite', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/suite/1' },
+    { name: 'suite', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/suite/2' },
   ],
   baseFlakes: 'suite:test_x\n',
   ...extra,
@@ -903,7 +865,7 @@ refuses('two accepted tests for one check are refused',
 // One test each for two failing checks is not the same thing, and still works.
 const twoChecks = run(['--accept-flake', 'suite:test_a', '--accept-flake', 'other:test_b', String(PR)], {
   st: freshState({
-    rollup: [checkRun('suite', 'FAILURE'), checkRun('other', 'FAILURE')],
+    checkRuns: [checkRun('suite', 'failure'), checkRun('other', 'failure')],
     baseFlakes: 'suite:test_a\nother:test_b\n',
   }),
 })
@@ -1027,8 +989,7 @@ console.log('\nP1: a per-test entry splits after the longest reported check name
 // line verbatim off the allowlist it had been copied from.
 const CIRCLE = 'ci/circleci: build'
 const circleState = (base) => freshState({
-  rollup: [checkRun('unit', 'SUCCESS'), { context: CIRCLE, state: 'FAILURE', targetUrl: 'https://circleci.example/1' }],
-  checks: null,
+  statuses: [commitStatus(CIRCLE, 'failure', { target_url: 'https://circleci.example/1' })],
   baseFlakes: base,
 })
 
@@ -1069,8 +1030,8 @@ check('a line whose prefix matches no reported check still splits at the first c
 // `suite:slow:test_x` is the second one's test and not the first one's `slow:test_x`.
 const bothPrefixes = run(['--accept-flake', 'suite:slow:test_x', String(PR)], {
   st: freshState({
-    rollup: [checkRun('suite', 'SUCCESS'), { context: 'suite:slow', state: 'FAILURE', targetUrl: 'https://ci.example/slow' }],
-    checks: null,
+    checkRuns: [checkRun('suite', 'success')],
+    statuses: [commitStatus('suite:slow', 'failure', { target_url: 'https://ci.example/slow' })],
     baseFlakes: 'suite:slow:test_x\n',
   }),
 })
@@ -1088,10 +1049,10 @@ console.log('\nP2: a flaky name is listed once, however many jobs reported it')
 // read "e2e, e2e failed and .github/known-flakes.txt lists it as flaky".
 const twinFlaky = run([String(PR)], {
   st: freshState({
-    rollup: [
-      checkRun('unit', 'SUCCESS'),
-      { name: 'e2e', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/e2e/1' },
-      { name: 'e2e', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/e2e/2' },
+    checkRuns: [
+      checkRun('unit', 'success'),
+      { name: 'e2e', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/e2e/1' },
+      { name: 'e2e', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/e2e/2' },
     ],
     baseFlakes: 'e2e\n',
   }),
@@ -1106,11 +1067,121 @@ check('and named once in the attention detail',
 check('two different flaky names are both still named',
   (() => {
     const two = run([String(PR)], {
-      st: freshState({ rollup: [checkRun('e2e', 'FAILURE'), checkRun('flow', 'FAILURE')], baseFlakes: 'e2e\nflow\n' }),
+      st: freshState({ checkRuns: [checkRun('e2e', 'failure'), checkRun('flow', 'failure')], baseFlakes: 'e2e\nflow\n' }),
     })
     return two.code === 0 && JSON.stringify(two.json?.ci?.flaky) === '["e2e","flow"]' &&
       detailOf(two.json?.attention, 'flaky-merged-through').startsWith('e2e, flow failed')
   })())
+
+
+console.log('\nT1: the checks and the comments are read to the end, not to the first hundred')
+// `gh pr view --json statusCheckRollup,comments` asks GraphQL for statusCheckRollup.contexts(first:
+// 100) and comments(first: 100) and pages neither (gh 2.98.0). A hundred green checks with a
+// hundred and first failing one exited 0 pass, and a `## follow-up draft` in the hundred and
+// first comment was invisible. Both are read over the REST API now, paginated to exhaustion, so
+// the size of a pull request no longer decides what the gate can see.
+const past100 = run([String(PR)], {
+  st: freshState({
+    checkRuns: [...many(100, (i) => checkRun(`green-${i}`, 'success')), checkRun('e2e', 'failure')],
+  }),
+})
+check('the hundred and first check run stops the land', past100.code === 1 && has(past100.json?.stops, 'ci-failed'),
+  `${past100.code}: ${JSON.stringify(codes(past100.json?.stops))}`)
+check('and it is named as the failure it is',
+  JSON.stringify(past100.json?.ci?.failed) === '[{"name":"e2e","link":"https://ci.example/e2e"}]',
+  JSON.stringify(past100.json?.ci?.failed))
+check('with all hundred passing ones still counted', past100.json?.ci?.success?.length === 100,
+  JSON.stringify(past100.json?.ci?.success?.length))
+check('and the fake really served two pages, so the flattening is what was measured',
+  past100.st.pagesServed.find((p) => p.endpoint === 'check-runs')?.pages === 2, JSON.stringify(past100.st.pagesServed))
+
+const draftPage2 = run([String(PR)], {
+  st: freshState({
+    comments: [...many(100, (i) => comment(i, 'looks good to me')), comment(100, '## Follow-up draft\n\nThe resolver wants its own issue.')],
+  }),
+})
+check('a follow-up draft in the hundred and first comment is found',
+  draftPage2.code === 0 && has(draftPage2.json?.attention, 'follow-up-draft'),
+  `${draftPage2.code}: ${JSON.stringify(draftPage2.json?.attention)}`)
+check('and it is that comment', draftPage2.json?.followUpDraft?.id === 100, JSON.stringify(draftPage2.json?.followUpDraft))
+check('and the comments read walked two pages too',
+  draftPage2.st.pagesServed.find((p) => p.endpoint === 'comments')?.pages === 2, JSON.stringify(draftPage2.st.pagesServed))
+
+// The statuses endpoint serves every status ever posted for a context, newest first. Counting the
+// older one would stop the land on a failure the repository has already superseded with a rerun.
+const rerun = run([String(PR)], {
+  st: freshState({
+    statuses: [
+      commitStatus('coderabbit', 'success', { target_url: 'https://cr.example/2', created_at: '2026-09-01T10:20:00Z' }),
+      commitStatus('coderabbit', 'failure', { target_url: 'https://cr.example/1', created_at: '2026-09-01T10:00:00Z' }),
+    ],
+  }),
+})
+check('the newest status of a context is the one that counts',
+  rerun.code === 0 && rerun.json?.ci?.success?.includes('coderabbit'), `${rerun.code}: ${JSON.stringify(rerun.json?.ci)}`)
+check('and the superseded failure is not reported beside it', JSON.stringify(rerun.json?.ci?.failed) === '[]',
+  JSON.stringify(rerun.json?.ci?.failed))
+check('and the context is counted once', rerun.json?.ci?.success?.filter((name) => name === 'coderabbit').length === 1,
+  JSON.stringify(rerun.json?.ci?.success))
+
+const mixed = run([String(PR)], {
+  st: freshState({
+    checkRuns: [
+      checkRun('unit', 'success'),
+      checkRun('e2e', 'failure'),
+      { name: 'slow', status: 'queued', conclusion: null, details_url: 'https://ci.example/slow' },
+    ],
+    statuses: [commitStatus('coderabbit', 'success'), commitStatus('deploy', 'pending'), commitStatus('scan', 'error')],
+  }),
+})
+check('a check run is partitioned on its conclusion and a commit status on its state',
+  JSON.stringify(mixed.json?.ci?.success) === '["unit","coderabbit"]' &&
+  JSON.stringify(mixed.json?.ci?.pending) === '["slow","deploy"]' &&
+  JSON.stringify(mixed.json?.ci?.failed?.map((c) => c.name)) === '["e2e","scan"]',
+  JSON.stringify(mixed.json?.ci))
+check('and nothing from either source is left unknown', JSON.stringify(mixed.json?.ci?.unknown) === '[]',
+  JSON.stringify(mixed.json?.ci?.unknown))
+
+const inFlight = run([String(PR)], {
+  st: freshState({
+    checkRuns: [checkRun('unit', 'success'), { name: 'e2e', status: 'in_progress', conclusion: 'failure', details_url: 'https://ci.example/e2e' }],
+  }),
+})
+check('a check run that has not completed is pending, whatever conclusion it still carries',
+  has(inFlight.json?.stops, 'ci-pending') && !has(inFlight.json?.stops, 'ci-failed'),
+  JSON.stringify(codes(inFlight.json?.stops)))
+
+// A page that failed is a failed read, the same rule the review threads follow. None of these may
+// come back as a short list, because a short list of checks is what a green verdict is made of.
+const checkRunsDown = run([String(PR)], { st: freshState({ apiFail: 'check-runs' }) })
+check('a check-runs read that failed exits 4', checkRunsDown.code === 4, `${checkRunsDown.code}: ${checkRunsDown.stderr}`)
+check('and says which read it was', String(checkRunsDown.json?.error).includes('check runs'), checkRunsDown.json?.error)
+check('and never reads as a pass', checkRunsDown.json?.verdict === 'stop', checkRunsDown.json?.verdict)
+
+const statusesDown = run([String(PR)], { st: freshState({ apiFail: 'statuses' }) })
+check('so does a statuses read that failed',
+  statusesDown.code === 4 && String(statusesDown.json?.error).includes('commit statuses'),
+  `${statusesDown.code}: ${statusesDown.json?.error}`)
+check('and the check runs it did read are not a verdict on their own', statusesDown.json?.verdict === 'stop',
+  statusesDown.json?.verdict)
+
+const commentsDown = run([String(PR)], { st: freshState({ apiFail: 'comments' }) })
+check('and a comments read that failed', commentsDown.code === 4 && String(commentsDown.json?.error).includes('comments'),
+  `${commentsDown.code}: ${commentsDown.json?.error}`)
+check('because comments nobody read cannot say there is no follow-up draft', commentsDown.json?.verdict === 'stop',
+  commentsDown.json?.verdict)
+
+const notPages = run([String(PR)], { st: freshState({ apiShape: 'not-pages' }) })
+check('a document that is not an array of pages is a failed read too',
+  notPages.code === 4 && String(notPages.json?.error).includes('array of pages'),
+  `${notPages.code}: ${notPages.json?.error}`)
+const noRunsKey = run([String(PR)], { st: freshState({ apiShape: 'no-check-runs-key' }) })
+check('and so is a page with no check_runs array in it',
+  noRunsKey.code === 4 && String(noRunsKey.json?.error).includes('check_runs'),
+  `${noRunsKey.code}: ${noRunsKey.json?.error}`)
+check('and neither is mistaken for a pull request with no checks',
+  !has(notPages.json?.stops, 'ci-unknown') && !has(noRunsKey.json?.stops, 'ci-unknown'),
+  JSON.stringify([codes(notPages.json?.stops), codes(noRunsKey.json?.stops)]))
 
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
