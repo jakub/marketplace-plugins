@@ -114,12 +114,34 @@
 // model to skip a scan or branch off a stale origin/main. It is one command now, and one JSON
 // line back: read the issue and refuse unless it is open, carries ready-for-agent and carries
 // none of the blocking labels; digest the acceptance criteria; scan for a run already live;
-// acquire; scan again while holding the tag; add the worktree at the object the acquire
-// verified; push the branch; move the labels; release.
+// acquire; scan again while holding the tag; read the issue again while holding it; add the
+// worktree at the object the acquire verified; push the branch; move the labels; confirm they
+// moved; release.
 //
 // Everything up to the acquire is a read. A closed issue, a missing label, a title with no slug
 // in it, a worktree path already on disk: all of them are decided before anything is written, so
 // a refusal there has changed nothing anywhere.
+//
+// That read is stale the moment it is taken, which is why the issue is read twice more. Once
+// while the tag is held and before the worktree is added, because a human can close the issue,
+// pull the ready label or add a blocker in the seconds since the first read, and this is the last
+// point at which standing down costs one tag and nothing else. Once after the labels move,
+// because gh exiting 0 says the request was accepted rather than that the issue now reads the way
+// the next run needs it to; that one cannot be undone, so a disagreement there is an unknown that
+// keeps the branch and the tag.
+//
+// Three things the claim asks of the outside world are pinned rather than trusted. Every gh call
+// names the repository origin's URL parsed to, because gh otherwise picks a default out of
+// remote.<name>.gh-resolved or, in a clone with several GitHub remotes, out of a preference over
+// remote names in which upstream beats origin: on a fork clone that reads and labels one
+// repository while the tag and the branch land on another. The pull request scan is
+// `gh api --paginate` over repos/<owner>/<repo>/pulls rather than `gh pr list --limit 100`,
+// because a fork's head branch lives in the fork and no ref under refs/heads/* on origin
+// advertises it, so the branch scan does not cover the same run, and because a hundredth open
+// pull request is a bound nobody chose. And the boundary a worktree has to stay inside is
+// compared as real paths: /safe/repo/.git can be a symlink to /outside/repo.git, git answers
+// `.git` when asked for the common directory, and the lexical comparison that used to sit here
+// read a path under the parent while every write through it landed outside.
 //
 // The order of the last three steps is the part worth explaining, because the obvious order is
 // the wrong one. The branch reaches origin before the labels move. A pushed branch is the marker
@@ -187,7 +209,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { accessSync, constants, existsSync } from 'node:fs'
+import { accessSync, constants, existsSync, realpathSync } from 'node:fs'
 import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -215,6 +237,7 @@ const MAIN_REF = 'refs/heads/main'
 const AC_HEADING = '## Acceptance Criteria'
 const KINDS = new Set(['feat', 'fix', 'chore'])
 const READY_LABEL = 'ready-for-agent'
+const IN_PROGRESS_LABEL = 'in-progress'
 const BLOCKING_LABELS = ['needs-human', 'needs-info', 'needs-rebase']
 // Long enough to read, short enough that the branch and the sibling directory both stay typable.
 const SLUG_MAX = 40
@@ -248,27 +271,38 @@ left standing is an unknown that keeps its reason and names the cleanup step tha
 confirm under cleanup. A live-run result puts what the scan saw under found, grouped as
 worktrees, localBranches, remoteBranches and pullRequests.
 
-A claim refusal names one of: usage, no-origin, push-fetch-mismatch, issue-closed, not-ready,
-blocked, no-acceptance-criteria, bad-slug, live-run, worktree-path, outside-parent,
-acquire-refused, worktree-add, push. An unknown names one of those, or one of:
+A claim refusal names one of: usage, no-origin, push-fetch-mismatch, origin-unparseable,
+issue-closed, not-ready, blocked, no-acceptance-criteria, bad-slug, live-run, worktree-path,
+outside-parent, acquire-refused, worktree-add, push. An unknown names one of those, or one of:
 issue-unreadable, repo-unreadable, scan-unreadable, acquire-unknown, acquire-ambiguous,
-issue-edit, release. Everything before the acquire is a read, so a refusal there changed nothing;
-after it, a failure before the branch reaches origin gives the tag back when the remote lets it,
-and a failure after it leaves the branch and the tag standing for a human to finish or unwind.
+acquire-refused-by-remote, issue-edit, issue-edit-unconfirmed, release. Everything before the
+acquire is a read, so a refusal there changed nothing; after it, a failure before the branch
+reaches origin gives the tag back when the remote lets it, and a failure after it leaves the
+branch and the tag standing for a human to finish or unwind.
+
+The issue is read three times: before the acquire, again while the tag is held, and once more
+after the labels move. The second read is what stops a run relabelling an issue a human closed
+or blocked in between, and the third is what stops it reporting a label move gh accepted and
+never made. Every gh call names the repository origin's URL parsed to, so a fork clone cannot
+read and label one repository while the tag and the branch land on another.
 
 held means the tag was on origin before this run pushed anything, so it is a rival's and this run
 left nothing. A tag that turned up only after this run's own push is a different answer, because
 it might be this run's own tag from a push whose response was lost: that is acquire-ambiguous, an
 unknown at phase acquired retaining claim-tag, and it needs a human to read the tag before the
 issue can be claimed again. acquire-unknown splits on the same fact, at phase pre-acquire when
-the acquire failed before pushing and at phase acquired when it failed after.
+the acquire failed before pushing and at phase acquired when it failed after. A push that failed
+and left no tag on the remote, which is what a hook refusing tag creation does, is
+acquire-refused-by-remote at phase pre-acquire with nothing retained.
 
 acquire takes the claim on an issue by creating refs/tags/flow-claim-issue-<N> on origin, at
 the head of refs/heads/main. Creating a ref is atomic on the remote, so exactly one racer wins.
 Exits 0 when it created the tag, 3 when someone already holds it, 4 when the outcome could not
-be established, 2 on a usage error or a refusal. A held or unknown result also carries observed,
-pre-push when the hold or the failure was read before any push went out and post-push when a
-push was attempted and its outcome is ambiguous. Only post-push can have left a tag behind.
+be established, 2 on a usage error or a refusal. A held or unknown result also carries observed:
+pre-push when the hold or the failure was read before any push went out, post-push when a push
+was attempted and its outcome is ambiguous, and absent when a push was attempted and the re-read
+positively found no tag, which is what a remote refusing tag creation looks like. Only post-push
+can have left a tag behind.
 
 release gives the claim back. The branch has to be named for the issue being released, matching
 feat/issue-<N>-, fix/issue-<N>- or chore/issue-<N>-, and refs/heads/<branch> on origin has to
@@ -389,6 +423,66 @@ const safeIdentity = (remote) => {
 }
 
 /**
+ * The owner and repository at the end of a path, and nothing else from it. `exact` is for a
+ * scheme URL and an scp-like remote, where anything but two segments is a remote this cannot
+ * name a repository from; a local filesystem path is allowed the directories above it.
+ */
+const slugFromPath = (path, exact) => {
+  const parts = String(path).split('/').filter((part) => part !== '')
+  if (exact ? parts.length !== 2 : parts.length < 2) return null
+  const owner = parts[parts.length - 2]
+  const repo = parts[parts.length - 1].replace(/\.git$/, '')
+  return repo === '' ? null : { owner, repo }
+}
+
+/**
+ * The host, owner and repository the origin URL names, or a typed problem the caller refuses on.
+ * This is the parse scripts/land-merge.mjs performs, for the same reason: left to itself gh
+ * resolves a default repository from remote.<name>.gh-resolved or, in a clone with several
+ * GitHub remotes, from a preference over remote names where upstream beats origin. On a fork
+ * clone that default is the upstream, and an unpinned call reads and labels the wrong issue.
+ *
+ * A scheme URL goes through new URL() and the owner and repository come from its pathname alone,
+ * so a query string or a fragment is refused outright rather than carried into an API path. The
+ * scp-like form has no scheme for new URL() to work with and is still how most people spell a
+ * GitHub remote, so it keeps a regular expression over the part after the colon. A local
+ * filesystem path has no host to pin at all, and the last two components stand in for the owner
+ * and the repository: that is the shape a bare repository on disk takes, which is what the smoke
+ * pushes to and something gh could never talk to anyway.
+ *
+ * No branch returns any part of the input, because the problem string is printed.
+ */
+const remoteSlug = (remote) => {
+  const raw = String(remote ?? '').trim()
+  if (raw === '') return { problem: 'is empty' }
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    let url = null
+    try { url = new URL(raw) } catch { return { problem: 'does not read as a URL' } }
+    if (url.search !== '' || url.hash !== '') {
+      return { problem: 'carries a query string or a fragment, and an API path must never be built out of one' }
+    }
+    // file:///srv/repo.git and friends: no host, so what is left is a filesystem path.
+    const named = slugFromPath(url.pathname, url.hostname !== '')
+    if (named === null) return { problem: 'does not name exactly one owner and one repository' }
+    return { host: url.hostname, ...named }
+  }
+
+  // scp-like, with or without a user in front: [user@]host:owner/repo.
+  const scp = raw.match(/^(?:[^@\s]+@)?([^@:/\s]+):(.+)$/)
+  if (scp !== null) {
+    const named = slugFromPath(scp[2], true)
+    if (named === null) return { problem: 'does not name exactly one owner and one repository' }
+    return { host: scp[1], ...named }
+  }
+
+  if (raw.includes('@')) return { problem: 'does not read as a URL' }
+  const named = slugFromPath(raw, false)
+  if (named === null) return { problem: 'names no directory inside another one, so there is no owner and repository to read out of it' }
+  return { host: '', ...named }
+}
+
+/**
  * The repository this run reads from and writes to, which have to be the same one. Git reads
  * from remote.origin.url and pushes to remote.origin.pushurl when that is set, so a divergent
  * pushurl would put the claim tag in a repository no read here ever looks at. Both lists are
@@ -420,7 +514,14 @@ const repoIdentity = (cwd) => {
     }
   }
   const identity = safeIdentity(fetchUrls[0])
-  return { identity, redact: makeRedactor([...fetchUrls, ...pushUrls], identity) }
+  // The raw URL stops here. What leaves is the safe identity, a redactor built from the raw URLs,
+  // and the host, owner and repository parsed out of one, so no caller downstream holds a string
+  // that could carry a credential into its output.
+  return {
+    identity,
+    redact: makeRedactor([...fetchUrls, ...pushUrls], identity),
+    slug: remoteSlug(fetchUrls[0]),
+  }
 }
 
 /**
@@ -508,7 +609,7 @@ const resolveOrigin = (command, cwd, facts) => {
         `${resolved.detail}. Nothing was read and nothing was pushed. Settle remote.origin.pushurl before claiming anything here.`),
     }
   }
-  return { repo: resolved.identity, redact: resolved.redact }
+  return { repo: resolved.identity, redact: resolved.redact, slug: resolved.slug }
 }
 
 // ------------------------------------------------------------------------------------ acquire
@@ -526,11 +627,12 @@ const acquire = ({ argv, cwd }) => {
   const repo = origin.repo
   const redact = origin.redact
   const base = { command: 'acquire', repo, issue, tag, ref }
-  // observed says whether this run had pushed anything when it learned what it is reporting.
-  // pre-push: the hold or the failure was read before any push was attempted, so no tag of this
-  // run's can be on the remote. post-push: a push went out and its outcome is ambiguous, so one
-  // might be. The caller cannot recover that from the detail string, and it decides whether a
-  // stand-down is clean.
+  // observed says whether this run had pushed anything when it learned what it is reporting, and
+  // whether a tag of its own can be on the remote. pre-push: the hold or the failure was read
+  // before any push was attempted. post-push: a push went out and its outcome is ambiguous, so a
+  // tag might be there. absent: a push went out, failed, and the re-read positively found no tag,
+  // which is what a remote that refuses tag creation looks like. The caller cannot recover any of
+  // that from the detail string, and it decides whether a stand-down is clean.
   const held = (sha, observed, detail) => line({ ...base, result: 'held', sha, observed, detail }, EXIT_HELD,
     `issue #${issue} is already claimed on ${repo} (${ref} at ${sha.slice(0, 12)}). ${detail}. Leave it alone; the run that holds it releases it, or a human breaks the tag.`)
   const unknown = (observed, detail) => line({ ...base, result: 'unknown', observed, detail }, EXIT_UNKNOWN,
@@ -616,7 +718,10 @@ const acquire = ({ argv, cwd }) => {
     const why = `the push did not create the ref (git said ${describeStatus(status, redact)}, exit ${push.code})`
     if (after.state === 'present') return held(after.sha, 'post-push', why)
     if (after.state === 'absent') {
-      return unknown('post-push', `${why}, and ${ref} is not on the remote either. ` +
+      // The remote positively does not hold the tag. A pre-receive hook refusing to create
+      // anything under refs/tags/ is the ordinary cause, and reporting that as post-push had the
+      // caller retain a claim tag this run had just proved absent and send a human hunting it.
+      return unknown('absent', `${why}, and ${ref} is not on the remote either. ` +
         `git's stderr was: ${firstLine(redact(push.stderr)) || '(empty)'}`)
     }
     return unknown('post-push', `${why}, and the re-read could not settle it: ${after.detail}`)
@@ -778,10 +883,15 @@ const labelNames = (labels) => (Array.isArray(labels) ? labels : [])
  * concession is a carriage return: GitHub hands back CRLF bodies, so the match ignores a
  * trailing \r while the digest keeps it.
  *
- * Returns null when the heading is absent.
+ * Returns null when the heading is absent, and when nothing but blank lines sits under it.
  */
 const acceptanceCriteria = (body) => {
   const text = String(body ?? '')
+  // A heading with nothing under it is not a section. `## Acceptance Criteria` as the last line
+  // of a body, or with the next `## ` heading directly beneath it, leaves a run nothing to be
+  // judged against, so it reads the same as a heading that was never written.
+  const withContent = (section) =>
+    section.split('\n').slice(1).some((raw) => raw.trim() !== '') ? section : null
   let offset = 0
   let start = -1
   for (const raw of text.split('\n')) {
@@ -789,11 +899,11 @@ const acceptanceCriteria = (body) => {
     if (start < 0) {
       if (bare === AC_HEADING) start = offset
     } else if (bare.startsWith('## ')) {
-      return text.slice(start, offset)
+      return withContent(text.slice(start, offset))
     }
     offset += raw.length + 1
   }
-  return start < 0 ? null : text.slice(start)
+  return start < 0 ? null : withContent(text.slice(start))
 }
 
 const sha256 = (text) => createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex')
@@ -960,28 +1070,70 @@ const claim = ({ argv, cwd, runGh }) => {
     settle('unknown', reason, detail, { phase: 'pre-acquire', extra, human: human ?? `${detail}. Find out what the remote actually holds before running this again.` })
   const failureOf = (what, run) => `${what} failed: ${firstLine(redact(run.stderr)) || `exit ${run.code}`}`
 
-  // ---- the issue itself. Three refusals, in the order the stage states them.
-  const view = runGh(['issue', 'view', String(issue), '--json', 'number,title,state,labels,assignees,body,url'], { cwd })
-  if (view.code !== 0) return unknown('issue-unreadable', failureOf(`\`gh issue view ${issue}\``, view))
-  const found = parseJson(view.stdout)
-  if (found === null) return unknown('issue-unreadable', `\`gh issue view ${issue}\` printed something this could not read as a JSON object`)
+  // gh picks a default repository of its own whenever a command does not name one, out of
+  // remote.<name>.gh-resolved or, in a clone with several GitHub remotes, out of a preference
+  // over remote names where upstream beats origin. Deleting GH_REPO and GH_HOST from the child
+  // environment does not close that route. On a fork clone an unpinned call would then read and
+  // label the upstream issue while this run's tag and branch land on origin, so every gh call
+  // below names the repository origin's URL parsed to. `gh api` takes no --repo, so its pin is
+  // the owner and repository inside the endpoint path together with --hostname.
+  //
+  // A local filesystem origin has no host to pin. That is the shape a bare repository on disk
+  // takes, which is what the smoke pushes to, and there the stripped environment is the only
+  // thing between gh and a default repository of its own choosing.
+  const ghRepo = origin.slug
+  if (ghRepo.problem) {
+    return refuse('origin-unparseable',
+      `the origin remote of this directory ${ghRepo.problem}, so no gh call here can be pinned to the repository this run's tag and branch would land on`)
+  }
+  const repoPin = ghRepo.host === '' ? [] : ['--repo', `${ghRepo.host}/${ghRepo.owner}/${ghRepo.repo}`]
+  const hostPin = ghRepo.host === '' ? [] : ['--hostname', ghRepo.host]
 
-  const state = String(found.state ?? '').toUpperCase()
-  if (state !== 'OPEN') {
-    return refuse('issue-closed', `issue #${issue} on ${repo} is ${state || 'in no state this could read'}, and a claim is only taken on an open issue`)
+  /** The issue as gh hands it back, or the sentence saying why it could not be read. */
+  const readIssue = () => {
+    const view = runGh(['issue', 'view', String(issue), ...repoPin, '--json', 'number,title,state,labels,assignees,body,url'], { cwd })
+    if (view.code !== 0) return { problem: failureOf(`\`gh issue view ${issue}\``, view) }
+    const parsed = parseJson(view.stdout)
+    if (parsed === null) return { problem: `\`gh issue view ${issue}\` printed something this could not read as a JSON object` }
+    return { issue: parsed, state: String(parsed.state ?? '').toUpperCase(), labels: labelNames(parsed.labels) }
   }
-  const labels = labelNames(found.labels)
-  if (!labels.includes(READY_LABEL)) {
-    return refuse('not-ready', `issue #${issue} does not carry ${READY_LABEL}, so nobody has validated the spec this run would work from`)
+
+  /**
+   * The three conditions a claim needs of an issue, in the order the stage states them. They run
+   * twice on every claim: once before anything is written, and once while the tag is held, since
+   * a human can close the issue, pull the ready label or add a blocker in the seconds in between
+   * and the second read is the last point at which standing down costs nothing but the tag.
+   */
+  const readiness = (read) => {
+    if (read.state !== 'OPEN') {
+      return { reason: 'issue-closed', detail: `issue #${issue} on ${repo} is ${read.state || 'in no state this could read'}, and a claim is only taken on an open issue` }
+    }
+    if (!read.labels.includes(READY_LABEL)) {
+      return { reason: 'not-ready', detail: `issue #${issue} does not carry ${READY_LABEL}, so nobody has validated the spec this run would work from` }
+    }
+    const blocking = BLOCKING_LABELS.filter((label) => read.labels.includes(label))
+    if (blocking.length > 0) {
+      return {
+        reason: 'blocked',
+        detail: `issue #${issue} carries ${blocking.join(', ')} beside ${READY_LABEL}, so the ready label is stale and only a human clears the blocker`,
+        extra: { blocking },
+      }
+    }
+    return null
   }
-  const blocking = BLOCKING_LABELS.filter((label) => labels.includes(label))
-  if (blocking.length > 0) {
-    return refuse('blocked', `issue #${issue} carries ${blocking.join(', ')} beside ${READY_LABEL}, so the ready label is stale and only a human clears the blocker`, { blocking })
-  }
+
+  // ---- the issue itself. Three refusals, in the order the stage states them.
+  const firstRead = readIssue()
+  if (firstRead.problem) return unknown('issue-unreadable', firstRead.problem)
+  const found = firstRead.issue
+  const labels = firstRead.labels
+  const wrong = readiness(firstRead)
+  if (wrong !== null) return refuse(wrong.reason, wrong.detail, wrong.extra ?? {})
 
   const section = acceptanceCriteria(found.body)
   if (section === null) {
-    return refuse('no-acceptance-criteria', `issue #${issue} has no line that is exactly "${AC_HEADING}", so there is nothing to judge the run against`)
+    return refuse('no-acceptance-criteria',
+      `issue #${issue} has no line that is exactly "${AC_HEADING}" with anything written under it, so there is nothing to judge the run against`)
   }
   const acDigest = sha256(section)
 
@@ -998,8 +1150,19 @@ const claim = ({ argv, cwd, runGh }) => {
   if (repoRoot === '') {
     return unknown('repo-unreadable', `\`git rev-parse --show-toplevel\` gave no repository root for this directory: ${firstLine(redact(topRead.stderr)) || `exit ${topRead.code}`}`)
   }
-  const parent = dirname(repoRoot)
-  const worktree = join(parent, `${basename(repoRoot)}-issue-${issue}-${slug}`)
+  // The boundary a worktree has to stay inside, canonicalized before anything is compared against
+  // it. A lexical resolve is not a boundary: /safe/repo/.git can be a symlink to
+  // /outside/repo.git, `git rev-parse --git-common-dir` answers `.git`, and that resolves to a
+  // path under the parent while every write through it lands outside. realpathSync is what makes
+  // the two strings comparable, and a path that will not resolve is refused rather than compared.
+  const canonical = (path) => { try { return realpathSync(path) } catch { return '' } }
+  const canonicalRoot = canonical(repoRoot)
+  const parent = canonicalRoot === '' ? '' : canonical(dirname(canonicalRoot))
+  if (parent === '') {
+    return refuse('outside-parent',
+      'the real path of this repository, or of the directory above it, could not be resolved, so there is no boundary to keep a worktree inside')
+  }
+  const worktree = join(parent, `${basename(canonicalRoot)}-issue-${issue}-${slug}`)
   const names = { kind, branch, worktree, acDigest, title: found.title ?? null, url: found.url ?? null }
 
   // ---- is a run already live? The four places one leaves a mark: this clone's worktrees, this
@@ -1038,15 +1201,20 @@ const claim = ({ argv, cwd, runGh }) => {
       if (branchForIssue(issue).test(shortBranch(name))) hits.push({ where: 'remote-branch', ref: name, sha })
     }
 
-    // A bounded read: a repository with more than 100 open pull requests can hide one from this.
-    // The remote branch scan above is the one that cannot miss, and it covers the same run.
-    const prs = runGh(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,title,url', '--limit', '100'], { cwd })
-    if (prs.code !== 0) return { problem: failureOf('`gh pr list --state open`', prs) }
+    // Every open pull request, because the branch scan above does not cover the same ground. A
+    // pull request opened from a fork keeps its head branch in the fork, so nothing under
+    // refs/heads/* on origin advertises it, and `gh pr list --limit 100` drops the oldest of them
+    // on a repository busier than that. --paginate walks the pages to exhaustion and merges the
+    // arrays it gets back into one.
+    const endpoint = `repos/${ghRepo.owner}/${ghRepo.repo}/pulls?state=open&per_page=100`
+    const prs = runGh(['api', ...hostPin, '--paginate', endpoint], { cwd })
+    if (prs.code !== 0) return { problem: failureOf('`gh api` over the open pull requests', prs) }
     const open = parseJson(prs.stdout)
-    if (!Array.isArray(open)) return { problem: '`gh pr list --state open` printed something this could not read as a JSON array' }
+    if (!Array.isArray(open)) return { problem: '`gh api` over the open pull requests printed something this could not read as a JSON array' }
     for (const pr of open) {
-      if (branchForIssue(issue).test(String(pr?.headRefName ?? ''))) {
-        hits.push({ where: 'pull-request', number: pr?.number ?? null, headRefName: pr?.headRefName ?? null, title: pr?.title ?? null, url: pr?.url ?? null })
+      const headRef = String(pr?.head?.ref ?? '')
+      if (branchForIssue(issue).test(headRef)) {
+        hits.push({ where: 'pull-request', number: pr?.number ?? null, headRefName: headRef, title: pr?.title ?? null, url: pr?.html_url ?? null })
       }
     }
     return { hits }
@@ -1074,9 +1242,16 @@ const claim = ({ argv, cwd, runGh }) => {
   // `git worktree add`, after the claim, because git writes the new registration into that
   // out-of-bounds common directory.
   const commonRead = runGit(['rev-parse', '--git-common-dir'], cwd, LOCAL_GIT_TIMEOUT_MS)
-  const common = commonRead.code === 0 ? resolve(cwd, commonRead.stdout.trim()) : ''
-  if (common === '') {
+  const commonRaw = commonRead.code === 0 ? resolve(cwd, commonRead.stdout.trim()) : ''
+  if (commonRaw === '') {
     return unknown('repo-unreadable', `\`git rev-parse --git-common-dir\` gave no git directory for this repository: ${firstLine(redact(commonRead.stderr)) || `exit ${commonRead.code}`}`, names)
+  }
+  // git answers `.git` for the common directory of an ordinary clone, and a `.git` that is a
+  // symlink to a directory outside the parent resolves to a path inside it until the links are
+  // followed. So both sides of this comparison are real paths.
+  const common = canonical(commonRaw)
+  if (common === '') {
+    return refuse('outside-parent', 'this repository\'s git directory does not resolve to a real path, so whether a worktree added here would register itself out of bounds cannot be established', names)
   }
   if (common !== parent && !common.startsWith(parent + sep)) {
     return refuse('outside-parent', `this repository's git directory is ${common}, outside ${parent}, so a worktree added here would register itself out of bounds`, names)
@@ -1086,11 +1261,13 @@ const claim = ({ argv, cwd, runGh }) => {
   const acquired = acquire({ argv: [String(issue)], cwd })
   const receipt = parseJson(acquired.stdout)
   const verdict = receipt?.result
-  // Whether the acquire had pushed anything when it decided what to report. Only acquire knows
-  // it, and it decides the phase: a hold or a failure read before the push leaves nothing of this
-  // run anywhere, and one read after it may have left the tag. Anything but the exact string
-  // pre-push is read as post-push, so a receipt this could not parse keeps the tag on the list.
-  const observed = receipt?.observed === 'pre-push' ? 'pre-push' : 'post-push'
+  // Whether the acquire had pushed anything when it decided what to report, and whether a tag of
+  // its own can be on the remote. Only acquire knows it, and it decides the phase: a hold or a
+  // failure read before the push leaves nothing of this run anywhere, one read after it may have
+  // left the tag, and absent is a push that went out and was then proved to have created no tag.
+  // Anything but those exact strings is read as post-push, so a receipt this could not parse
+  // keeps the tag on the retained list.
+  const observed = receipt?.observed === 'pre-push' || receipt?.observed === 'absent' ? receipt.observed : 'post-push'
   if (verdict === 'held' && observed === 'pre-push') {
     // Someone else's tag, read before this run pushed anything, so nothing of ours is out there.
     const holder = String(receipt.sha ?? '')
@@ -1117,6 +1294,13 @@ const claim = ({ argv, cwd, runGh }) => {
     // in those, so there is no tag to retain and no recovery for a human to do. Only an unknown
     // that came after the push may have left one.
     const detail = `the claim on issue #${issue} could not be taken: ${receipt?.detail ?? acquired.stdout.trim()}`
+    if (observed === 'absent') {
+      // The push went out, failed, and the re-read found no tag on the remote, which is what a
+      // hook refusing to create anything under refs/tags/ looks like. There is nothing to retain
+      // and nothing for a human to unwind, and reporting it as an ordinary post-push unknown sent
+      // one looking for a tag this run had just proved does not exist.
+      return settle('unknown', 'acquire-refused-by-remote', detail, { phase: 'pre-acquire', retained: [], extra: names })
+    }
     return observed === 'pre-push'
       ? settle('unknown', 'acquire-unknown', detail, { phase: 'pre-acquire', retained: [], extra: names })
       : settle('unknown', 'acquire-unknown', detail, { phase: 'acquired', retained: ['claim-tag'], extra: names })
@@ -1186,6 +1370,26 @@ const claim = ({ argv, cwd, runGh }) => {
     })
   }
 
+  // ---- the issue, read again while the tag is held. The read that authorized this run happened
+  // before the acquire, and a human can close the issue, pull the ready label or add a blocker in
+  // the seconds between the two. Without this, such a run pushes a branch, relabels a closed or
+  // blocked issue and reports itself claimed. This is the last point where standing down costs
+  // one tag and nothing else, so it goes here rather than after the worktree add.
+  const again = readIssue()
+  const changed = again.problem === undefined ? readiness(again) : null
+  if (again.problem !== undefined || changed !== null) {
+    const swept = unwind({ worktreeAdded: false, branchCreated: false })
+    const detail = changed === null
+      ? `issue #${issue} could not be read again while this run held the claim: ${again.problem}`
+      : `${changed.detail}, and it changed while this run held the claim`
+    return settle(changed === null ? 'unknown' : 'refused', changed === null ? 'issue-unreadable' : changed.reason, detail, {
+      phase: 'acquired',
+      retained: swept.retained,
+      cleanup: swept.cleanup,
+      extra: { ...claimed, ...(changed?.extra ?? {}), abandon: swept.abandon },
+    })
+  }
+
   // ---- the worktree, at the object the acquire verified on the remote. Never at this clone's
   // own origin/main, which is as old as its last fetch.
   const added = runGit(['worktree', 'add', worktree, '-b', branch, baseSha], cwd, WORKTREE_TIMEOUT_MS)
@@ -1228,15 +1432,21 @@ const claim = ({ argv, cwd, runGh }) => {
         { phase: 'acquired', retained: everything, extra: { ...claimed, head } })
     }
     if (remote.state === 'present') {
-      // A branch under this run's name at some other object. It is not what this run pushed, so
-      // this run published nothing, but it is not this run's to take away either.
+      // A branch under this run's name at some other object: a rival took the name between the
+      // second scan and this push. This run published nothing, and that branch is not its to take
+      // away. So it is reported under found, where the caller reads what the scans saw, and never
+      // under retained, which is the list a human is told to clear by hand. Naming someone else's
+      // branch there is how their work gets deleted.
       const swept = unwind({ worktreeAdded: true, branchCreated: true })
+      const rival = { where: 'remote-branch', ref: branchRef, sha: remote.sha }
       return settle('unknown', 'push',
         `${detail}, and ${branchRef} on ${repo} is at ${remote.sha.slice(0, 12)} rather than the ${head.slice(0, 12)} this run pushed`, {
           phase: 'acquired',
-          retained: [...swept.retained, 'remote-branch'],
+          retained: swept.retained,
           cleanup: swept.cleanup,
-          extra: { ...claimed, head, abandon: swept.abandon },
+          extra: { ...claimed, head, found: groupHits([rival]), abandon: swept.abandon },
+          human: `${detail}, and ${branchRef} is on ${repo} at ${remote.sha.slice(0, 12)}, which is not the object this run pushed. ` +
+            `${leftovers(swept.retained)} That branch belongs to whoever pushed it and is not this run's to touch.`,
         })
     }
     // Absent: nothing of this run reached origin, so the ordinary unwind runs.
@@ -1255,9 +1465,23 @@ const claim = ({ argv, cwd, runGh }) => {
     human: `${detail}. ${branch} is on ${repo} at ${head.slice(0, 12)} and ${ref} is still there; finish or unwind this by hand, and do not re-run the claim.`,
   })
 
-  const edited = runGh(['issue', 'edit', String(issue), '--add-assignee', '@me', '--remove-label', READY_LABEL, '--add-label', 'in-progress'], { cwd })
+  const edited = runGh(['issue', 'edit', String(issue), ...repoPin, '--add-assignee', '@me', '--remove-label', READY_LABEL, '--add-label', IN_PROGRESS_LABEL], { cwd })
   if (edited.code !== 0) {
     return stuck('issue-edit', failureOf(`\`gh issue edit ${issue}\``, edited))
+  }
+
+  // gh exiting 0 says the request was accepted, not that the issue now reads the way the next run
+  // needs it to. A label the repository does not have, an automation that puts the ready label
+  // straight back, a human closing the issue mid-edit: each of those leaves a claimed run whose
+  // issue does not say a run is on it. The branch is already on origin and none of this can be
+  // undone, so the honest answer names the branch and the tag and keeps both.
+  const confirmed = readIssue()
+  const moved = confirmed.problem === undefined && confirmed.state === 'OPEN' &&
+    confirmed.labels.includes(IN_PROGRESS_LABEL) && !confirmed.labels.includes(READY_LABEL)
+  if (!moved) {
+    return stuck('issue-edit-unconfirmed', confirmed.problem === undefined
+      ? `\`gh issue edit ${issue}\` reported success and issue #${issue} reads back as ${confirmed.state || 'no state at all'} carrying ${confirmed.labels.join(', ') || 'no labels'}, so the assignment and the label move are not confirmed`
+      : `\`gh issue edit ${issue}\` reported success and the issue could not be read back to confirm it: ${confirmed.problem}`)
   }
 
   const released = parseJson(release({ argv: [String(issue), branch, head], cwd }).stdout)
