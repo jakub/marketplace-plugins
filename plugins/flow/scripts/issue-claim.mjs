@@ -446,17 +446,19 @@ const parseJson = (text) => {
 
 /**
  * A printable identity that cannot carry a credential, whatever the remote looks like. Unlike
- * land-merge, an unparseable remote is not fatal here: acquire, release and abandon are git alone
- * and work on any remote git can push to, so for them the identity is for the reader and the log
- * and a bare repository on disk is a legitimate origin. Only the claim, which calls gh, needs a
- * remote it can pin an API call to, and it refuses on its own. What is fatal is passing the raw
- * URL through, so every branch below ends at a host and path, a bare local path, or a fixed
- * placeholder. Nothing returns the input.
+ * the land executors, an unparseable remote is not fatal here: acquire, release and abandon are
+ * git alone and work on any remote git can push to, so for them the identity is for the reader
+ * and the log and a bare repository on disk is a legitimate origin. Only the claim, which calls
+ * gh, needs a remote it can pin an API call to, and it refuses on its own. What is fatal is
+ * passing the raw URL through, so every branch below ends at a host and path, a bare local path,
+ * or a fixed placeholder. Nothing returns the input.
  *
- * This is stricter than land-merge's regular expressions, which keep whatever follows the repo
- * name: they read https://host/owner/repo.git?redirect=1 as owner/repo.git?redirect=1. Handing
- * a scheme to a real URL parser drops the userinfo, the query and the fragment by construction
- * rather than by a character class, which is the property this needs.
+ * Not ../lib/remote-identity.mjs, which land-gates and land-merge share: that one answers a
+ * refusal where this answers a string, so it cannot serve a verb that goes on working against
+ * the remote it could not name. https://host/owner/repo.git?redirect=1 and a bare repository at
+ * a filesystem path are both refusals there and both still acquire here. Handing a scheme to a
+ * real URL parser is the part both do the same way, and it is what drops the userinfo, the query
+ * and the fragment by construction rather than by a character class.
  */
 const safeIdentity = (remote) => {
   const raw = String(remote ?? '').trim()
@@ -504,10 +506,15 @@ const slugFromPath = (path, exact) => {
 
 /**
  * The host, owner and repository the origin URL names, or a typed problem the caller refuses on.
- * This is the parse scripts/land-merge.mjs performs, for the same reason: left to itself gh
- * resolves a default repository from remote.<name>.gh-resolved or, in a clone with several
- * GitHub remotes, from a preference over remote names where upstream beats origin. On a fork
- * clone that default is the upstream, and an unpinned call reads and labels the wrong issue.
+ * This is the parse ../lib/remote-identity.mjs performs for the land executors, for the same
+ * reason: left to itself gh resolves a default repository from remote.<name>.gh-resolved or, in a
+ * clone with several GitHub remotes, from a preference over remote names where upstream beats
+ * origin. On a fork clone that default is the upstream, and an unpinned call reads and labels the
+ * wrong issue. It is not that module, because a hostless origin has to come back parsed here,
+ * with an empty host and the owner and repository read off the path: the claim turns that into a
+ * refusal naming the missing host, and the three git-only verbs act on it. The shared parse
+ * refuses a hostless remote as unreadable, which is the right answer for a land and the wrong one
+ * for an acquire.
  *
  * A scheme URL goes through new URL() and the owner and repository come from its pathname alone,
  * so a query string or a fragment is refused outright rather than carried into an API path. The

@@ -204,6 +204,11 @@ import { accessSync, constants } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// The origin parse is shared with scripts/land-merge.mjs. It used to be a copy in each file,
+// identical but for the word the refusals use for what they are refusing to do, which is now the
+// purpose this one passes: a fix to the parse is a fix to both halves of the land.
+import { identityOfRemote } from '../lib/remote-identity.mjs'
+
 const READ_TIMEOUT_MS = 60_000
 const GIT_TIMEOUT_MS = 5_000
 
@@ -362,65 +367,6 @@ const makeRedactor = (rawUrl, identity) => (text) => {
   const raw = String(rawUrl ?? '').trim()
   if (raw !== '') out = out.split(raw).join(identity)
   return scrubUserinfo(out)
-}
-
-// Why the refusals below never quote the remote they refused: the remote is exactly the string
-// that can hold the credential, so a message about it describes it instead.
-const REMOTE_ABSENT = 'this directory has no readable origin remote, so there is no repository to gate'
-const REMOTE_UNREADABLE = 'the origin remote of this directory does not read as a URL naming a host, an owner and ' +
-  'a repository, so there is no repository to gate (it is not quoted here, because a remote can carry a credential)'
-const REMOTE_QUERY = 'the origin remote of this directory carries a query string or a fragment, which no repository ' +
-  'URL needs and a credential often is, so it is refused unread (it is not quoted here, for the same reason)'
-const REMOTE_PATH = 'the path of the origin remote does not name exactly one owner and one repository, so there is ' +
-  'no repository to gate (it is not quoted here, because a remote can carry a credential)'
-
-const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
-// git@host:owner/repo.git and host:owner/repo, the two spellings new URL() cannot parse.
-const SCP_LIKE = /^(?:[^@\s/]+@)?([^:/\s]+):(.+)$/
-
-/**
- * The repository to gate, derived from the origin remote. Returns { identity } or { refusal }.
- *
- * A scheme URL is parsed with new URL() and owner and repo come from its pathname alone. The
- * regex this replaced stripped a `.git` suffix off the whole string and then took what followed
- * the last slash, so https://host/owner/repo.git?access_token=sekret yielded the repository name
- * `repo.git?access_token=sekret`, and that string went on to be the --repo argument, the
- * contents-API path and identity.slug in a journalled stop detail. A query or a fragment is a
- * refusal now rather than something to strip, because no remote that names a repository has one.
- *
- * The scp-like form has no scheme for new URL() to work with and is still how most people spell
- * a GitHub remote, so it keeps a regex, with the same owner/repo rule applied to its path.
- *
- * Not shared with scripts/land-merge.mjs: these executors are invoked one at a time by path, and
- * a module between them would be a third file to keep in step.
- */
-const identityOfRemote = (url) => {
-  const raw = typeof url === 'string' ? url.trim() : ''
-  if (raw === '') return { refusal: REMOTE_ABSENT }
-
-  const fromPath = (host, path) => {
-    const segments = String(path).split('/').filter((part) => part !== '')
-    if (segments.length !== 2) return { refusal: REMOTE_PATH }
-    const owner = segments[0]
-    const repo = segments[1].replace(/\.git$/, '')
-    if (host === '' || owner === '' || repo === '') return { refusal: REMOTE_PATH }
-    return { identity: { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` } }
-  }
-
-  if (SCHEME.test(raw)) {
-    let parsed
-    try { parsed = new URL(raw) } catch { return { refusal: REMOTE_UNREADABLE } }
-    if (parsed.search !== '' || parsed.hash !== '') return { refusal: REMOTE_QUERY }
-    // The pathname is left percent-encoded on purpose: decodeURIComponent throws on a lone %, and
-    // nothing downstream needs the decoded form of an owner or a repository name.
-    return fromPath(parsed.hostname, parsed.pathname)
-  }
-
-  const scp = raw.match(SCP_LIKE)
-  if (scp === null) return { refusal: REMOTE_UNREADABLE }
-  const [, host, path] = scp
-  if (path.includes('?') || path.includes('#')) return { refusal: REMOTE_QUERY }
-  return fromPath(host, path)
 }
 
 /**
@@ -645,7 +591,7 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     const read = runGit(['-C', cwd, 'remote', 'get-url', 'origin'], GIT_TIMEOUT_MS)
     return read.code === 0 ? read.stdout.trim() : ''
   })()
-  const remote = identityOfRemote(originUrl)
+  const remote = identityOfRemote(originUrl, { purpose: 'gate' })
   // The refusal describes the remote and never quotes it, and nothing has been built from it yet,
   // so a remote refused here reaches no output at all.
   if (remote.identity === undefined) return refuse(remote.refusal)
