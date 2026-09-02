@@ -84,15 +84,64 @@ const parseJson = (text) => {
   } catch { return null }
 }
 
-// git@host:owner/repo, ssh://git@host/owner/repo, https://host/owner/repo - keep the host.
+// Why the refusals below never quote the remote they refused: the remote is exactly the string
+// that can hold the credential, so a message about it describes it instead.
+const REMOTE_ABSENT = 'this directory has no readable origin remote, so there is no repository to merge in'
+const REMOTE_UNREADABLE = 'the origin remote of this directory does not read as a URL naming a host, an owner and ' +
+  'a repository, so there is no repository to merge in (it is not quoted here, because a remote can carry a credential)'
+const REMOTE_QUERY = 'the origin remote of this directory carries a query string or a fragment, which no repository ' +
+  'URL needs and a credential often is, so it is refused unread (it is not quoted here, for the same reason)'
+const REMOTE_PATH = 'the path of the origin remote does not name exactly one owner and one repository, so there is ' +
+  'no repository to merge in (it is not quoted here, because a remote can carry a credential)'
+
+const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
+// git@host:owner/repo.git and host:owner/repo, the two spellings new URL() cannot parse.
+const SCP_LIKE = /^(?:[^@\s/]+@)?([^:/\s]+):(.+)$/
+
+/**
+ * The repository to merge in, derived from the origin remote. Returns { identity } or { refusal }.
+ *
+ * A scheme URL is parsed with new URL() and owner and repo come from its pathname alone. The
+ * regex this replaced stripped a `.git` suffix off the whole string and then took what followed
+ * the last slash, so https://host/owner/repo.git?access_token=sekret yielded the repository name
+ * `repo.git?access_token=sekret`, and that string went on to be the --repo argument and the
+ * identity quoted in a refusal. A query or a fragment is a refusal now rather than something to
+ * strip, because no remote that names a repository has one.
+ *
+ * The scp-like form has no scheme for new URL() to work with and is still how most people spell
+ * a GitHub remote, so it keeps a regex, with the same owner/repo rule applied to its path.
+ *
+ * Not shared with scripts/land-gates.mjs: these executors are invoked one at a time by path, and
+ * a module between them would be a third file to keep in step. The two copies are meant to stay
+ * identical in behaviour, so a fix to one is a fix to both.
+ */
 const identityOfRemote = (url) => {
-  if (typeof url !== 'string' || url.trim() === '') return null
-  const s = url.trim().replace(/\.git$/, '')
-  let m = s.match(/^[^@\s]+@([^:/\s]+):([^/\s]+)\/([^/\s]+)$/)
-  if (!m) m = s.match(/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/\s]+@)?([^/:\s]+)(?::\d+)?\/([^/\s]+)\/([^/\s]+)$/i)
-  if (!m) return null
-  const [, host, owner, repo] = m
-  return { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` }
+  const raw = typeof url === 'string' ? url.trim() : ''
+  if (raw === '') return { refusal: REMOTE_ABSENT }
+
+  const fromPath = (host, path) => {
+    const segments = String(path).split('/').filter((part) => part !== '')
+    if (segments.length !== 2) return { refusal: REMOTE_PATH }
+    const owner = segments[0]
+    const repo = segments[1].replace(/\.git$/, '')
+    if (host === '' || owner === '' || repo === '') return { refusal: REMOTE_PATH }
+    return { identity: { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` } }
+  }
+
+  if (SCHEME.test(raw)) {
+    let parsed
+    try { parsed = new URL(raw) } catch { return { refusal: REMOTE_UNREADABLE } }
+    if (parsed.search !== '' || parsed.hash !== '') return { refusal: REMOTE_QUERY }
+    // The pathname is left percent-encoded on purpose: decodeURIComponent throws on a lone %, and
+    // nothing downstream needs the decoded form of an owner or a repository name.
+    return fromPath(parsed.hostname, parsed.pathname)
+  }
+
+  const scp = raw.match(SCP_LIKE)
+  if (scp === null) return { refusal: REMOTE_UNREADABLE }
+  const [, host, path] = scp
+  if (path.includes('?') || path.includes('#')) return { refusal: REMOTE_QUERY }
+  return fromPath(host, path)
 }
 
 // The url GitHub returns on a pull request read, e.g. https://github.com/owner/repo/pull/12.
@@ -159,10 +208,11 @@ export function landMerge({ argv, env, cwd, runGh }) {
     return refuse(`${JSON.stringify(argv[1])} is not a full 40-character lowercase commit SHA.\n\n${USAGE}`)
   }
 
-  const identity = identityOfRemote(tryGit(['remote', 'get-url', 'origin'], cwd))
-  if (identity === null) {
-    return refuse('this directory has no readable origin remote, so there is no repository to merge in')
-  }
+  // The refusal describes the remote and never quotes it, and nothing has been built from it yet,
+  // so a remote refused here reaches no output and no gh call at all.
+  const remote = identityOfRemote(tryGit(['remote', 'get-url', 'origin'], cwd))
+  if (remote.identity === undefined) return refuse(remote.refusal)
+  const identity = remote.identity
 
   const view = ghJson(
     ['pr', 'view', String(prNumber), '--repo', identity.full,

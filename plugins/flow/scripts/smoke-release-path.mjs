@@ -52,12 +52,17 @@ const plain = join(tmp, 'plain')     // no marker, one commit so HEAD is readabl
 const muntr = join(tmp, 'muntr')     // .flow/managed exists only untracked: NOT enrolled
 const nohead = join(tmp, 'nohead')   // a repository with no commit yet: the marker probe errors
 const ghe = join(tmp, 'ghe')         // origin on a GitHub Enterprise host, same owner/name slug
+const web = join(tmp, 'web')         // the plain https spelling of the same repository
+const qry = join(tmp, 'qry')         // an https origin carrying ?access_token=<token>
+const frag = join(tmp, 'frag')       // an https origin carrying a #fragment
 const norepo = join(tmp, 'norepo')   // not a git repository at all
-for (const dir of [repo, mdel, plain, muntr, nohead, ghe, norepo]) mkdirSync(dir)
+for (const dir of [repo, mdel, plain, muntr, nohead, ghe, web, qry, frag, norepo]) mkdirSync(dir)
 
 const SLUG = 'jakub/marketplace-plugins'
 const IDENTITY = 'github.com/jakub/marketplace-plugins'
 const GHE_HOST = 'ghe.example.com'
+const TOKEN = 'ghp_sekrettoken'
+const FRAGMENT = 'sekretfragment'
 const PR = 12
 const BRANCH = 'feat/thing'
 
@@ -130,6 +135,23 @@ noheadGit('remote', 'add', 'origin', 'git@github.com:someone/nohead.git')
 const gheGit = gitIn(ghe)
 gheGit('init', '-q', '-b', 'main')
 gheGit('remote', 'add', 'origin', `git@${GHE_HOST}:${SLUG}.git`)
+
+// web: the same repository written the other ordinary way. `repo` is the scp-like
+// git@host:owner/repo.git; this one is the https spelling, and both must resolve to one identity.
+const webGit = gitIn(web)
+webGit('init', '-q', '-b', 'main')
+webGit('remote', 'add', 'origin', `https://github.com/${SLUG}.git`)
+
+// qry and frag: git stores whatever remote URL it is handed, including a query string and a
+// fragment. A query string is how a credential arrives in a remote, and the executor never has to
+// read one to merge, so both are refused unread rather than stripped.
+const qryGit = gitIn(qry)
+qryGit('init', '-q', '-b', 'main')
+qryGit('remote', 'add', 'origin', `https://github.com/${SLUG}.git?access_token=${TOKEN}`)
+
+const fragGit = gitIn(frag)
+fragGit('init', '-q', '-b', 'main')
+fragGit('remote', 'add', 'origin', `https://github.com/${SLUG}.git#${FRAGMENT}`)
 
 // ---------------------------------------------------------- the fake gh, injected in process
 const freshState = (overrides = {}) => ({
@@ -438,6 +460,34 @@ check('a github.com url against a GHE origin is refused', (() => {
   const crossed = runExecutor(ARGS, { cwd: ghe })
   return crossed.code === 1 && crossed.stderr.includes('was redirected') && crossed.merges.length === 0
 })())
+
+// The origin remote is parsed as a URL, and the repository name comes from the path alone. The
+// regex this replaced stripped `.git` off the end of the whole string and took what followed the
+// last slash, so https://github.com/owner/repo.git?access_token=sekret named the repository
+// `repo.git?access_token=sekret` and carried the token into --repo and into any printed detail.
+console.log('\nan origin remote carrying a query string or a fragment is refused unread')
+const tainted = (name, dir, secret) => {
+  const run = runExecutor(ARGS, { cwd: dir })
+  const streams = `${run.stdout}${run.stderr}`
+  check(`${name} is refused`, run.code === 1 && run.stderr.includes('query string or a fragment'), streams)
+  check(`${name}: gh was never called`, run.calls.length === 0, JSON.stringify(run.calls))
+  check(`${name}: nothing merged`, run.merges.length === 0, JSON.stringify(run.merges))
+  check(`${name}: the secret is in neither stream`, !streams.includes(secret), streams)
+}
+tainted('an ?access_token remote', qry, TOKEN)
+tainted('a #fragment remote', frag, FRAGMENT)
+
+console.log('\nboth ordinary spellings of the origin remote still merge')
+for (const [name, dir] of [['the scp-like git@host:owner/repo form', repo], ['the https form', web]]) {
+  const spelling = runExecutor(ARGS, { cwd: dir })
+  check(`${name} merges`, spelling.code === 0, `${spelling.stdout}${spelling.stderr}`)
+  check(`${name}: merged once`, spelling.merges.length === 1, JSON.stringify(spelling.merges))
+  check(
+    `${name}: every call is pinned to ${IDENTITY}`,
+    spelling.calls.every(isPinned),
+    JSON.stringify(spelling.calls.filter((a) => !isPinned(a))),
+  )
+}
 
 console.log('\nthe executor refuses what should not merge, before mutating anything')
 const executorRefuses = (name, args, substring, { st, env, cwd, merges = 0 } = {}) => {
