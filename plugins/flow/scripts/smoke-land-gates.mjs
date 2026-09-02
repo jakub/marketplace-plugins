@@ -35,7 +35,8 @@
 // or exit 4, and the suite count it proves itself against comes from the suite collection. T3 is
 // the last, and it is what T2's counts could not see on their own. The collection and the count
 // that proves it whole are two snapshots, so the counts now bracket the collection and any
-// movement between them stops the land.
+// movement between them stops the land. T4 is the hole left in T3. A count cannot see a run that
+// changed where it stood, so the closing bracket reads the runs in full and compares their state.
 //
 // G1, J1 and O2 went with the mechanism they guarded. All three were ways the `gh pr checks`
 // cross-read could put a passing name on a failing check, and there is no cross-read now, because
@@ -75,12 +76,15 @@ const FLAKES_PATH = '.github/known-flakes.txt'
 // commit status has context, state and target_url, and no conclusion at all. A comment has id,
 // body and both urls, the html one being the one a human opens.
 //
-// Every run here belongs to suite 1 unless a case says otherwise, which is what one workflow run
-// on a commit really looks like. How many suites the commit carries is not derived from these
+// Every run here has an id that goes up and belongs to suite 1 unless a case says otherwise,
+// which is what one workflow run on a commit really looks like. The id is what the closing
+// bracket compares a run's status and conclusion against, so a case that changes a run in place
+// spreads the first one and overrides those two fields. How many suites the commit carries is not derived from these
 // ids, it is the checkSuites total the check-suites collection reports, so a case that wants a
 // crowded commit sets that and leaves the runs alone.
+let nextRunId = 1000
 const checkRun = (name, conclusion, extra = {}) => ({
-  name, status: conclusion === null ? 'in_progress' : 'completed', conclusion,
+  id: nextRunId++, name, status: conclusion === null ? 'in_progress' : 'completed', conclusion,
   details_url: `https://ci.example/${name}`, check_suite: { id: 1 }, ...extra,
 })
 
@@ -137,6 +141,7 @@ const freshState = (overrides = {}) => ({
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')],
   checkRunsTotal: null,  // the total_count the check-runs reads report; null serves the honest count
   checkSuites: 1,        // the total_count the check-suites collection reports; an array is one value per read
+  checkRunsAfter: null,  // the check runs served on every read after the first; null keeps them steady
   statusesAfter: null,   // the statuses served on every read after the first; null keeps them steady
   reads: {},             // how many times each commit endpoint has been read, so a sequence can advance
   commitReads: [],       // every commit-scoped read in order, which is what proves the bracketing
@@ -282,8 +287,9 @@ const makeRunGh = (st) => (args) => {
       if (endpoint === 'check-runs' && st.apiShape === 'no-check-runs-key') {
         return ok([{ total_count: 1 }])
       }
-      const list = endpoint === 'check-runs' ? st.checkRuns
-        : endpoint === 'statuses' ? (readIndex > 0 && st.statusesAfter !== null ? st.statusesAfter : st.statuses)
+      const after = (first, later) => (readIndex > 0 && later !== null ? later : first)
+      const list = endpoint === 'check-runs' ? after(st.checkRuns, st.checkRunsAfter)
+        : endpoint === 'statuses' ? after(st.statuses, st.statusesAfter)
           : st.comments
       const pages = pagesOf(Array.isArray(list) ? list : [])
       // GitHub reports total_count on every page of the check runs. It is the honest count here
@@ -1339,9 +1345,9 @@ const order = ['check-suites', 'check-runs', 'statuses', 'check-runs', 'check-su
 check('the commit reads bracket the collection, suites first and statuses last',
   JSON.stringify(clean.st.commitReads.map((r) => r.endpoint)) === JSON.stringify(order),
   JSON.stringify(clean.st.commitReads))
-check('the collection is paginated and the brackets are not',
+check('the runs are read in full on both sides, and the suite counts are one page of one',
   JSON.stringify(clean.st.commitReads.map((r) => `${r.paginated ? 'paged' : 'one'}:${r.perPage}`)) ===
-    JSON.stringify(['one:1', 'paged:100', 'paged:100', 'one:1', 'one:1', 'one:100']),
+    JSON.stringify(['one:1', 'paged:100', 'paged:100', 'paged:100', 'one:1', 'one:100']),
   JSON.stringify(clean.st.commitReads))
 
 const suiteAppeared = run([String(PR)], { st: freshState({ checkSuites: [1, 2] }) })
@@ -1354,7 +1360,12 @@ check('and stops on ci-unknown naming both counts',
 check('and the two green runs it collected are not a verdict on their own',
   suiteAppeared.json?.verdict === 'stop', suiteAppeared.json?.verdict)
 
-const runAppeared = run([String(PR)], { st: freshState({ checkRunsTotal: [2, 3] }) })
+const runAppeared = run([String(PR)], {
+  st: (() => {
+    const st = freshState()
+    return { ...st, checkRunsAfter: [...st.checkRuns, checkRun('e2e', 'success')] }
+  })(),
+})
 check('a check-run count that answers 2 and then 3 exits 4', runAppeared.code === 4,
   `${runAppeared.code}: ${runAppeared.stderr}`)
 check('and stops on ci-unknown naming both counts',
@@ -1384,6 +1395,71 @@ const steady = run([String(PR)], { st: freshState({ checkSuites: [2, 2], checkRu
 check('counts that hold still across the brackets pass', steady.code === 0, `${steady.code}: ${steady.stderr}`)
 check('and stop on nothing', JSON.stringify(steady.json?.stops) === '[]', JSON.stringify(steady.json?.stops))
 check('and no read failed', steady.json?.error === undefined, steady.json?.error)
+
+console.log('\nT4: a check run that changed where it stood between the brackets stops the land')
+// The counts held still and the gate still had it wrong. GitHub PATCHes a check run in place, so
+// a run someone re-requested goes back to in_progress under the same id, and a run that was green
+// when the pages were walked can be red a second later. Neither moves the number of runs or the
+// number of suites. So the closing bracket reads the runs in full and compares every one of them
+// on id, status and conclusion, and a run whose state moved is ci-unknown with its id named.
+
+const rerunning = checkRun('unit', 'success')
+const steadyMate = checkRun('lint', 'skipped')
+
+const requeued = run([String(PR)], {
+  st: freshState({
+    checkRuns: [rerunning, steadyMate],
+    checkRunsAfter: [{ ...rerunning, status: 'in_progress', conclusion: null }, steadyMate],
+  }),
+})
+check('a run re-requested back to in_progress under the same id exits 4', requeued.code === 4,
+  `${requeued.code}: ${requeued.stderr}`)
+check('and stops on ci-unknown naming that run id',
+  has(requeued.json?.stops, 'ci-unknown') &&
+    detailOf(requeued.json?.stops, 'ci-unknown').includes(`run id ${rerunning.id}`),
+  detailOf(requeued.json?.stops, 'ci-unknown'))
+check('and says one run changed state, not that a count moved',
+  detailOf(requeued.json?.stops, 'ci-unknown').startsWith('1 check run(s)') &&
+    detailOf(requeued.json?.stops, 'ci-unknown').includes('changed state'),
+  detailOf(requeued.json?.stops, 'ci-unknown'))
+check('and the run that held still is not named',
+  !detailOf(requeued.json?.stops, 'ci-unknown').includes(`run id ${steadyMate.id}`),
+  detailOf(requeued.json?.stops, 'ci-unknown'))
+check('and the green it read first is never the verdict', requeued.json?.verdict === 'stop', requeued.json?.verdict)
+check('and the closing read of the runs is paginated, the same read as the collection',
+  requeued.st.commitReads.filter((r) => r.endpoint === 'check-runs')
+    .every((r) => r.paginated && r.perPage === '100') &&
+    requeued.st.commitReads.filter((r) => r.endpoint === 'check-runs').length === 2,
+  JSON.stringify(requeued.st.commitReads))
+
+const wentRed = run([String(PR)], {
+  st: freshState({
+    checkRuns: [rerunning, steadyMate],
+    checkRunsAfter: [{ ...rerunning, conclusion: 'failure' }, steadyMate],
+  }),
+})
+check('a run that flipped from success to failure in place exits 4', wentRed.code === 4,
+  `${wentRed.code}: ${wentRed.stderr}`)
+check('and stops on ci-unknown naming that run id',
+  has(wentRed.json?.stops, 'ci-unknown') &&
+    detailOf(wentRed.json?.stops, 'ci-unknown').includes(`run id ${rerunning.id}`),
+  detailOf(wentRed.json?.stops, 'ci-unknown'))
+check('and never reports the stale success as a pass', wentRed.json?.verdict === 'stop', wentRed.json?.verdict)
+
+const steadyRuns = run([String(PR)], {
+  st: freshState({ checkRuns: [rerunning, steadyMate], checkRunsAfter: [rerunning, steadyMate] }),
+})
+check('two reads of the same runs pass', steadyRuns.code === 0, `${steadyRuns.code}: ${steadyRuns.stderr}`)
+check('and stop on nothing', JSON.stringify(steadyRuns.json?.stops) === '[]', JSON.stringify(steadyRuns.json?.stops))
+check('and no read failed', steadyRuns.json?.error === undefined, steadyRuns.json?.error)
+
+// The closing read has to prove itself the same way the collection does.
+const secondShort = run([String(PR)], { st: freshState({ checkRunsTotal: [2, 3] }) })
+check('a closing read that collected 2 while reporting total_count 3 exits 4', secondShort.code === 4,
+  `${secondShort.code}: ${secondShort.stderr}`)
+check('and says it was the second read that came back short',
+  detailOf(secondShort.json?.stops, 'ci-unknown').startsWith('the second check-run read'),
+  detailOf(secondShort.json?.stops, 'ci-unknown'))
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
 process.exit(bad === 0 ? 0 : 1)
