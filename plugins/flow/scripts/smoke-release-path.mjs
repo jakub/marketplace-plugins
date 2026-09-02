@@ -55,8 +55,10 @@ const ghe = join(tmp, 'ghe')         // origin on a GitHub Enterprise host, same
 const web = join(tmp, 'web')         // the plain https spelling of the same repository
 const qry = join(tmp, 'qry')         // an https origin carrying ?access_token=<token>
 const frag = join(tmp, 'frag')       // an https origin carrying a #fragment
+const port = join(tmp, 'port')       // an https origin naming an explicit port
+const sshport = join(tmp, 'sshport') // an ssh:// origin naming an explicit port
 const norepo = join(tmp, 'norepo')   // not a git repository at all
-for (const dir of [repo, mdel, plain, muntr, nohead, ghe, web, qry, frag, norepo]) mkdirSync(dir)
+for (const dir of [repo, mdel, plain, muntr, nohead, ghe, web, qry, frag, port, sshport, norepo]) mkdirSync(dir)
 
 const SLUG = 'jakub/marketplace-plugins'
 const IDENTITY = 'github.com/jakub/marketplace-plugins'
@@ -152,6 +154,17 @@ qryGit('remote', 'add', 'origin', `https://github.com/${SLUG}.git?access_token=$
 const fragGit = gitIn(frag)
 fragGit('init', '-q', '-b', 'main')
 fragGit('remote', 'add', 'origin', `https://github.com/${SLUG}.git#${FRAGMENT}`)
+
+// port and sshport: the same repository on the same host, reached through an explicit port.
+// git honours the port; the --hostname and --repo pins gh takes cannot carry one, so the two
+// would talk to different servers and the executor refuses rather than guess which was meant.
+const portGit = gitIn(port)
+portGit('init', '-q', '-b', 'main')
+portGit('remote', 'add', 'origin', `https://github.com:8443/${SLUG}.git`)
+
+const sshportGit = gitIn(sshport)
+sshportGit('init', '-q', '-b', 'main')
+sshportGit('remote', 'add', 'origin', `ssh://git@github.com:2222/${SLUG}.git`)
 
 // ---------------------------------------------------------- the fake gh, injected in process
 const freshState = (overrides = {}) => ({
@@ -448,6 +461,7 @@ check('and merged nothing', wrongUrl.merges.length === 0, JSON.stringify(wrongUr
 console.log('\na GitHub Enterprise origin pins the GHE identity, not github.com')
 const gheRun = runExecutor(ARGS, {
   cwd: ghe,
+  env: { FLOW_GH_HOSTS: GHE_HOST },
   st: freshState({ pr: { url: `https://${GHE_HOST}/${SLUG}/pull/${PR}` } }),
 })
 check('it merges against the GHE host', gheRun.code === 0, `${gheRun.stdout}${gheRun.stderr}`)
@@ -457,7 +471,7 @@ check(
   JSON.stringify(gheRun.calls.filter((a) => !pinnedTo(`${GHE_HOST}/${SLUG}`, GHE_HOST)(a))),
 )
 check('a github.com url against a GHE origin is refused', (() => {
-  const crossed = runExecutor(ARGS, { cwd: ghe })
+  const crossed = runExecutor(ARGS, { cwd: ghe, env: { FLOW_GH_HOSTS: GHE_HOST } })
   return crossed.code === 1 && crossed.stderr.includes('was redirected') && crossed.merges.length === 0
 })())
 
@@ -595,6 +609,28 @@ argRefusal('an abbreviated expected head', [String(PR), head.slice(0, 12)])
 argRefusal('an uppercase expected head', [String(PR), head.toUpperCase()])
 const help = runExecutor(['--help'])
 check('--help still prints the usage and exits 0', help.code === 0 && help.stdout.includes('<pull-request-number> <expected-head-sha>'), `${help.code}: ${help.stdout}`)
+
+// C1: an origin that names a port. gh takes a bare host in --hostname and in --repo, so the port
+// is dropped and the merge would be asked of a different endpoint than the one git pushes to.
+console.log('\nan origin remote that names a port is refused')
+const portRefuses = (name, dir) => {
+  const run = runExecutor(ARGS, { cwd: dir })
+  check(`${name} is refused`, run.code === 1 && run.stderr.includes('names a port'), `${run.code}: ${run.stderr}`)
+  check(`${name}: gh was never called`, run.calls.length === 0, JSON.stringify(run.calls))
+  check(`${name}: nothing merged`, run.merges.length === 0, JSON.stringify(run.merges))
+  check(`${name}: the remote is not quoted back`, !run.stderr.includes(SLUG), run.stderr)
+}
+portRefuses('an https origin with a port', port)
+portRefuses('an ssh:// origin with a port', sshport)
+
+// C2: the host allowlist. A merge is the one command that spends the token, and .git/config is a
+// file any branch can rewrite, so which hosts may be handed to gh is read from the environment.
+console.log('\nonly a host on the allowlist is handed to gh')
+const gheDefault = runExecutor(ARGS, { cwd: ghe })
+check('a GHE origin is refused when nothing named that host', gheDefault.code === 1 && gheDefault.stderr.includes(GHE_HOST), gheDefault.stderr)
+check('and gh was never called', gheDefault.calls.length === 0, JSON.stringify(gheDefault.calls))
+check('and nothing merged', gheDefault.merges.length === 0, JSON.stringify(gheDefault.merges))
+check('and the refusal names the variable that widens the list', gheDefault.stderr.includes('FLOW_GH_HOSTS'), gheDefault.stderr)
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(bad === 0 ? '\nrelease path: ALL PASS' : `\nrelease path: ${bad} FAILURE(S)`)

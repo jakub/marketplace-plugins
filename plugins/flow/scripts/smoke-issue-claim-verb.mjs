@@ -294,11 +294,11 @@ const loginCalls = (st) => apiCalls(st).filter((c) => c.args[c.args.length - 1] 
  * Run a claim with this world's fake ssh in place, and put the environment back afterwards. The
  * hostless world has no ssh script, and nothing in it reaches a remote that needs one.
  */
-const run = (world, args, st = freshState(), cwd = world.repo) => {
+const run = (world, args, st = freshState(), cwd = world.repo, env = {}) => {
   const saved = process.env.GIT_SSH_COMMAND
   if (world.ssh) process.env.GIT_SSH_COMMAND = world.ssh
   try {
-    const result = issueClaim({ argv: args, cwd, runGh: makeRunGh(st) })
+    const result = issueClaim({ argv: args, cwd: cwd ?? world.repo, env, runGh: makeRunGh(st) })
     let json = null
     try { json = JSON.parse(result.stdout) } catch {}
     return { ...result, json, st }
@@ -1057,6 +1057,102 @@ console.log('\nan acceptance criteria heading with nothing under it')
     refSha(atEndWorld.origin, TAG_REF) === null && refSha(nextWorld.origin, TAG_REF) === null,
     `${allRefs(atEndWorld.origin)} | ${allRefs(nextWorld.origin)}`)
   check('and neither edited the issue', callsTo(atEnd.st, 'edit').length === 0 && callsTo(nextHeading.st, 'edit').length === 0, 'an edit went out')
+}
+
+// ------------------------------------------------------- C1: an origin that names a port
+console.log('\nthe origin remote names a port')
+{
+  // git honours the port and talks to it. gh cannot: --hostname and --repo take a bare host, so
+  // every gh call would go to the default port of the same name while the tag and the branch went
+  // to the port git was given. One claim, two endpoints, and nothing in the JSON line says so.
+  const spellings = [
+    ['an https origin with a port', 'https://github.com:8443/jakub/demo.git'],
+    ['an ssh:// origin with a port', 'ssh://git@github.com:2222/jakub/demo.git'],
+    ['an scp-like origin whose path opens with a port', 'git@github.com:2222/jakub/demo.git'],
+  ]
+  spellings.forEach(([label, url], index) => {
+    const w = makeWorld(`origin-with-a-port-${index}`)
+    const before = allRefs(w.origin)
+    git(w.repo, 'remote', 'set-url', 'origin', url)
+    const r = run(w, ['claim', String(ISSUE)])
+    check(`${label} refuses with origin-unparseable`, r.code === 2 && r.json?.reason === 'origin-unparseable', `exit ${r.code} ${r.stdout}`)
+    check(`${label}: the detail names the port as the cause`, /port/.test(String(r.json?.detail)), String(r.json?.detail))
+    check(`${label}: at phase pre-acquire, with nothing retained`,
+      r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
+    check(`${label}: gh was never called`, r.st.calls.length === 0, JSON.stringify(r.st.calls.map((c) => c.args)))
+    check(`${label}: origin is unchanged and no claim tag was taken`,
+      allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
+  })
+}
+
+// ------------------------------------------- C2: an origin host nobody put on the allowlist
+console.log('\nthe origin remote names a host the allowlist does not')
+{
+  // gh sends the credential it holds for a host to whatever host it is pinned to, and the pin is
+  // derived from .git/config, a file any branch of any pull request can rewrite. So the hosts
+  // worth a token come from the environment, and a repository cannot add one to the list.
+  const HOST = 'ghe.example'
+  const w = makeWorld('foreign-host')
+  const before = allRefs(w.origin)
+  git(w.repo, 'remote', 'set-url', 'origin', `git@${HOST}:jakub/demo.git`)
+  const r = run(w, ['claim', String(ISSUE)])
+  check('it refuses with origin-host-not-allowed', r.code === 2 && r.json?.reason === 'origin-host-not-allowed', `exit ${r.code} ${r.stdout}`)
+  check('the detail names the host', String(r.json?.detail).includes(HOST), String(r.json?.detail))
+  check('and the variable that widens the list', /FLOW_GH_HOSTS/.test(String(r.json?.detail)), String(r.json?.detail))
+  check('at phase pre-acquire, with nothing retained', r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
+  check('gh was never called', r.st.calls.length === 0, JSON.stringify(r.st.calls.map((c) => c.args)))
+  check('origin is unchanged and no claim tag was taken',
+    allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
+  check('and no worktree was added', worktreePaths(w.repo).length === 1, worktreePaths(w.repo).join(','))
+
+  // The same clone, with the host named in the environment the executor was handed. This world's
+  // fake ssh ignores the host it is given, so the claim runs end to end against the same bare
+  // repository, and what it proves is that the allowlist is the only thing that stopped it.
+  const allowed = run(w, ['claim', String(ISSUE)], freshState(), w.repo, { FLOW_GH_HOSTS: HOST })
+  check('FLOW_GH_HOSTS admits the host and the claim goes through', allowed.code === 0 && allowed.json?.result === 'claimed', `exit ${allowed.code} ${allowed.stdout}`)
+  check('and every gh call is pinned to that host', allowed.st.calls.every((c) => {
+    const repoAt = c.args.indexOf('--repo')
+    const hostAt = c.args.indexOf('--hostname')
+    return (repoAt < 0 || c.args[repoAt + 1] === `${HOST}/jakub/demo`) && (hostAt < 0 || c.args[hostAt + 1] === HOST)
+  }), JSON.stringify(allowed.st.calls.map((c) => c.args)))
+  check('and github.com is still admitted with that variable set',
+    run(makeWorld('default-host-stands'), ['claim', String(ISSUE)], freshState(), undefined, { FLOW_GH_HOSTS: HOST }).json?.result === 'claimed',
+    'the default host was unseated')
+}
+
+// ------------------------------------------------- C3: a title with no ASCII in it at all
+console.log('\nan issue title that no ASCII slug can be read out of')
+{
+  // A title written in Chinese collapses to the empty string under [^a-z0-9], and the claim used
+  // to refuse it as bad-slug: an issue nobody could ever claim. The branch name only has to be
+  // deterministic and safe, so the fallback is the first 12 hex of the sha256 of the title.
+  const TITLE_CJK = '修复登录'
+  const hashed = `t-${createHash('sha256').update(Buffer.from(TITLE_CJK, 'utf8')).digest('hex').slice(0, 12)}`
+  const branch = `feat/issue-${ISSUE}-${hashed}`
+  const w = makeWorld('non-ascii-title')
+  const r = run(w, ['claim', String(ISSUE)], freshState({ issue: { title: TITLE_CJK } }))
+  check('it claims rather than refusing', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout}`)
+  check('on a branch whose slug is the hash of the title', r.json?.branch === branch, String(r.json?.branch))
+  check('and the branch is on origin at the base', refSha(w.origin, `refs/heads/${branch}`) === w.mainSha, String(refSha(w.origin, `refs/heads/${branch}`)))
+  check('and the worktree is the sibling named after that slug',
+    r.json?.worktree === w.pathFor(hashed) && existsSync(w.pathFor(hashed)), String(r.json?.worktree))
+  check('and the title itself still comes back whole', r.json?.title === TITLE_CJK, String(r.json?.title))
+
+  const again = run(makeWorld('non-ascii-title-again'), ['claim', String(ISSUE)], freshState({ issue: { title: TITLE_CJK } }))
+  check('the same title twice derives the same slug', again.json?.branch === branch && r.json?.branch === branch, `${again.json?.branch} vs ${r.json?.branch}`)
+}
+{
+  // An empty title has nothing to hash and nothing to read, so it is still a refusal.
+  const w = makeWorld('empty-title')
+  const before = allRefs(w.origin)
+  const r = run(w, ['claim', String(ISSUE)], freshState({ issue: { title: '' } }))
+  check('an empty title still refuses with bad-slug', r.code === 2 && r.json?.reason === 'bad-slug', `exit ${r.code} ${r.stdout}`)
+  check('and one made of whitespace alone refuses too',
+    run(makeWorld('blank-title'), ['claim', String(ISSUE)], freshState({ issue: { title: '   ' } })).json?.reason === 'bad-slug',
+    'a blank title claimed something')
+  check('origin is unchanged and no claim tag was taken',
+    allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
+  check('and no worktree was added', worktreePaths(w.repo).length === 1, worktreePaths(w.repo).join(','))
 }
 
 rmSync(tmp, { recursive: true, force: true })

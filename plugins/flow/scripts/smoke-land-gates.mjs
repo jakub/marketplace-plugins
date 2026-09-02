@@ -1495,5 +1495,53 @@ check('and no count moved, so it is the name that stopped it',
   renamed.json?.ci?.failed?.length === 0 && !has(renamed.json?.stops, 'ci-failed'),
   JSON.stringify(codes(renamed.json?.stops)))
 
+console.log('\nC1: an origin that names a port is refused, because the gh pin cannot carry one')
+// `gh --hostname` and `--repo host/owner/repo` both take a bare host: everything after the colon
+// is dropped. A clone whose origin is https://github.com:8443/owner/repo therefore has git
+// talking to port 8443 while every gate here reads port 443, and no line of the verdict says the
+// two answers came from different servers. Refused, in all three spellings a port arrives in.
+const ported = (label, origin) => {
+  const result = run([String(PR)], { st: freshState({ origin }) })
+  check(`${label} is refused`, result.code === 2 && result.stderr.includes('names a port'),
+    `${result.code}: ${result.stderr}`)
+  check(`${label}: printed no verdict`, result.stdout === '', result.stdout.slice(0, 120))
+  check(`${label}: gh was never called`, result.st.calls.length === 0, JSON.stringify(result.st.calls))
+  check(`${label}: the remote is not quoted back`, !result.stderr.includes(SLUG), result.stderr)
+}
+ported('an https origin with a port', `https://github.com:8443/${SLUG}.git`)
+ported('an ssh:// origin with a port', `ssh://git@github.com:2222/${SLUG}.git`)
+ported('an scp-like origin whose path opens with a port', `git@github.com:2222/${SLUG}.git`)
+
+console.log('\nC2: only a host on the allowlist is handed to gh')
+// gh sends whatever credential it holds for a host, GH_ENTERPRISE_TOKEN included, to the host it
+// is pinned to. That pin comes from .git/config, which is a file any branch of any pull request
+// can rewrite, so the set of hosts worth sending a token to is read from the environment instead.
+const GHE = 'ghe.example'
+const gheOrigin = `git@${GHE}:${SLUG}.git`
+const pinnedElsewhere = (host) => (args) => {
+  if (args[0] === 'repo' && args[1] === 'view') return args[2] === `${host}/${SLUG}`
+  if (args[0] === 'api') return argValue(args, '--hostname') === host
+  return argValue(args, '--repo') === `${host}/${SLUG}`
+}
+const foreign = run([String(PR)], { st: freshState({ origin: gheOrigin }) })
+check('a host the allowlist does not name is refused', foreign.code === 2 && foreign.stderr.includes(GHE),
+  `${foreign.code}: ${foreign.stderr}`)
+check('and gh was never called with it', foreign.st.calls.length === 0, JSON.stringify(foreign.st.calls))
+check('and the refusal says which variable widens the list', foreign.stderr.includes('FLOW_GH_HOSTS'), foreign.stderr)
+check('and quotes no other part of the remote', !foreign.stderr.includes(SLUG), foreign.stderr)
+
+const widened = run([String(PR)], { st: freshState({ origin: gheOrigin }), env: { FLOW_GH_HOSTS: GHE } })
+check('FLOW_GH_HOSTS admits that host', widened.st.calls.length > 0 && !widened.stderr.includes('FLOW_GH_HOSTS'),
+  `${widened.code}: ${widened.stderr}`)
+check('and every call is pinned to it', widened.st.calls.every(pinnedElsewhere(GHE)),
+  JSON.stringify(widened.st.calls.filter((a) => !pinnedElsewhere(GHE)(a))))
+
+const alsoDefault = run([String(PR)], { env: { FLOW_GH_HOSTS: GHE } })
+check('and naming another host does not unseat github.com', alsoDefault.code === 0 && alsoDefault.st.calls.every(isPinned),
+  `${alsoDefault.code}: ${alsoDefault.stderr}`)
+const commaHosts = run([String(PR)], { st: freshState({ origin: gheOrigin }), env: { FLOW_GH_HOSTS: ` other.example , ${GHE.toUpperCase()} ` } })
+check('the list splits on commas, trims, and is read case-insensitively',
+  commaHosts.st.calls.length > 0, `${commaHosts.code}: ${commaHosts.stderr}`)
+
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
 process.exit(bad === 0 ? 0 : 1)
