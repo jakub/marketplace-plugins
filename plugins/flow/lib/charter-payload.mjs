@@ -54,3 +54,21 @@ export function profileBlock({ host, text }) {
   const separator = body.endsWith('\n') ? '' : '\n'
   return `<flow-profile host="${host}" bindings="${bindings}">\n${body}${separator}</flow-profile>\n`
 }
+
+/**
+ * One `## <heading>` section of the charter, heading line included, or `null` when the
+ * charter has no such heading.
+ *
+ * The section runs from its heading to the character before the next `## ` line or the
+ * closing `</flow-charter>` tag, so a seat handed one section reads the same bytes a session
+ * reads under that heading. Same shape as universalContainment in seat-contract.mjs, for the
+ * same reason: no trimming and no rewording between the one copy and its reader.
+ */
+export function charterSection(text, heading) {
+  const lines = text.split('\n')
+  const start = lines.indexOf(`## ${heading}`)
+  if (start === -1) return null
+  const next = lines.findIndex((line, at) => at > start && (line.startsWith('## ') || line === '</flow-charter>'))
+  if (next === -1) return lines.slice(start).join('\n')
+  return `${lines.slice(start, next).join('\n')}\n`
+}
