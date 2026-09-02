@@ -52,6 +52,11 @@ import { accessSync, constants } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// The origin parse is shared with scripts/land-gates.mjs. It used to be a copy in each file,
+// identical but for the word the refusals use for what they are refusing to do, which is now the
+// purpose this one passes: a fix to the parse is a fix to both halves of the land.
+import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
+
 const READ_TIMEOUT_MS = 60_000
 const MERGE_TIMEOUT_MS = 120_000
 const GIT_TIMEOUT_MS = 5_000
@@ -63,6 +68,13 @@ against; if GitHub reports a different head, nothing merges. The host, the repos
 branch, the pull request state and the merge target are all re-read from the origin remote and
 GitHub, the merge is pinned to the verified head with --match-head-commit, and the outcome is
 confirmed by re-reading the pull request.
+
+The origin remote has to name github.com, or a host listed in FLOW_GH_HOSTS in this program's own
+environment, as a comma-separated list of hostnames. gh sends the credential it holds for a host to
+whichever host it is pinned to, and the pin is derived from .git/config, which is a file the
+repository itself can rewrite, so the list of hosts worth a token is never read from the
+repository. An origin that names a port is refused for a related reason: gh's --hostname and
+--repo take a bare host, so the merge would be asked of one endpoint while git pushes to another.
 `
 
 const SHA = /^[0-9a-f]{40}$/
@@ -82,17 +94,6 @@ const parseJson = (text) => {
     const value = JSON.parse(text)
     return value && typeof value === 'object' ? value : null
   } catch { return null }
-}
-
-// git@host:owner/repo, ssh://git@host/owner/repo, https://host/owner/repo - keep the host.
-const identityOfRemote = (url) => {
-  if (typeof url !== 'string' || url.trim() === '') return null
-  const s = url.trim().replace(/\.git$/, '')
-  let m = s.match(/^[^@\s]+@([^:/\s]+):([^/\s]+)\/([^/\s]+)$/)
-  if (!m) m = s.match(/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/\s]+@)?([^/:\s]+)(?::\d+)?\/([^/\s]+)\/([^/\s]+)$/i)
-  if (!m) return null
-  const [, host, owner, repo] = m
-  return { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` }
 }
 
 // The url GitHub returns on a pull request read, e.g. https://github.com/owner/repo/pull/12.
@@ -159,10 +160,12 @@ export function landMerge({ argv, env, cwd, runGh }) {
     return refuse(`${JSON.stringify(argv[1])} is not a full 40-character lowercase commit SHA.\n\n${USAGE}`)
   }
 
-  const identity = identityOfRemote(tryGit(['remote', 'get-url', 'origin'], cwd))
-  if (identity === null) {
-    return refuse('this directory has no readable origin remote, so there is no repository to merge in')
-  }
+  // The refusal describes the remote and never quotes it, and nothing has been built from it yet,
+  // so a remote refused here reaches no output and no gh call at all.
+  const remote = identityOfRemote(tryGit(['remote', 'get-url', 'origin'], cwd),
+    { purpose: 'merge in', allowedHosts: allowedHostsFrom(env) })
+  if (remote.identity === undefined) return refuse(remote.refusal)
+  const identity = remote.identity
 
   const view = ghJson(
     ['pr', 'view', String(prNumber), '--repo', identity.full,

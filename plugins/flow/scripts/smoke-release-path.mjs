@@ -52,12 +52,23 @@ const plain = join(tmp, 'plain')     // no marker, one commit so HEAD is readabl
 const muntr = join(tmp, 'muntr')     // .flow/managed exists only untracked: NOT enrolled
 const nohead = join(tmp, 'nohead')   // a repository with no commit yet: the marker probe errors
 const ghe = join(tmp, 'ghe')         // origin on a GitHub Enterprise host, same owner/name slug
+const web = join(tmp, 'web')         // the plain https spelling of the same repository
+const qry = join(tmp, 'qry')         // an https origin carrying ?access_token=<token>
+const frag = join(tmp, 'frag')       // an https origin carrying a #fragment
+const port = join(tmp, 'port')       // an https origin naming an explicit port
+const scpat = join(tmp, 'scpat')     // an scp-like origin with a token and a second @ in the host
+const scpfrag = join(tmp, 'scpfrag') // an scp-like origin with a #fragment inside the host
+const sshport = join(tmp, 'sshport') // an ssh:// origin naming an explicit port
 const norepo = join(tmp, 'norepo')   // not a git repository at all
-for (const dir of [repo, mdel, plain, muntr, nohead, ghe, norepo]) mkdirSync(dir)
+for (const dir of [repo, mdel, plain, muntr, nohead, ghe, web, qry, frag, port, sshport, scpat, scpfrag, norepo]) mkdirSync(dir)
 
 const SLUG = 'jakub/marketplace-plugins'
 const IDENTITY = 'github.com/jakub/marketplace-plugins'
 const GHE_HOST = 'ghe.example.com'
+const TOKEN = 'ghp_sekrettoken'
+const FRAGMENT = 'sekretfragment'
+const SCP_TOKEN = 'ghp_scphostsekret'
+const SCP_FRAGMENT = 'ghp_scpfragsekret'
 const PR = 12
 const BRANCH = 'feat/thing'
 
@@ -130,6 +141,45 @@ noheadGit('remote', 'add', 'origin', 'git@github.com:someone/nohead.git')
 const gheGit = gitIn(ghe)
 gheGit('init', '-q', '-b', 'main')
 gheGit('remote', 'add', 'origin', `git@${GHE_HOST}:${SLUG}.git`)
+
+// web: the same repository written the other ordinary way. `repo` is the scp-like
+// git@host:owner/repo.git; this one is the https spelling, and both must resolve to one identity.
+const webGit = gitIn(web)
+webGit('init', '-q', '-b', 'main')
+webGit('remote', 'add', 'origin', `https://github.com/${SLUG}.git`)
+
+// qry and frag: git stores whatever remote URL it is handed, including a query string and a
+// fragment. A query string is how a credential arrives in a remote, and the executor never has to
+// read one to merge, so both are refused unread rather than stripped.
+const qryGit = gitIn(qry)
+qryGit('init', '-q', '-b', 'main')
+qryGit('remote', 'add', 'origin', `https://github.com/${SLUG}.git?access_token=${TOKEN}`)
+
+const fragGit = gitIn(frag)
+fragGit('init', '-q', '-b', 'main')
+fragGit('remote', 'add', 'origin', `https://github.com/${SLUG}.git#${FRAGMENT}`)
+
+// port and sshport: the same repository on the same host, reached through an explicit port.
+// git honours the port; the --hostname and --repo pins gh takes cannot carry one, so the two
+// would talk to different servers and the executor refuses rather than guess which was meant.
+const portGit = gitIn(port)
+portGit('init', '-q', '-b', 'main')
+portGit('remote', 'add', 'origin', `https://github.com:8443/${SLUG}.git`)
+
+const sshportGit = gitIn(sshport)
+sshportGit('init', '-q', '-b', 'main')
+sshportGit('remote', 'add', 'origin', `ssh://git@github.com:2222/${SLUG}.git`)
+
+// scpat and scpfrag: the scp-like form ends the host at the colon that opens the path and
+// nowhere else, so a second @ and a # both used to land inside the host, which the allowlist
+// refusal prints. Whatever is parked there is a credential often enough to treat it as one.
+const scpatGit = gitIn(scpat)
+scpatGit('init', '-q', '-b', 'main')
+scpatGit('remote', 'add', 'origin', `git@${SCP_TOKEN}?x@github.com:${SLUG}.git`)
+
+const scpfragGit = gitIn(scpfrag)
+scpfragGit('init', '-q', '-b', 'main')
+scpfragGit('remote', 'add', 'origin', `git@github.com#${SCP_FRAGMENT}:${SLUG}.git`)
 
 // ---------------------------------------------------------- the fake gh, injected in process
 const freshState = (overrides = {}) => ({
@@ -426,6 +476,7 @@ check('and merged nothing', wrongUrl.merges.length === 0, JSON.stringify(wrongUr
 console.log('\na GitHub Enterprise origin pins the GHE identity, not github.com')
 const gheRun = runExecutor(ARGS, {
   cwd: ghe,
+  env: { FLOW_GH_HOSTS: GHE_HOST },
   st: freshState({ pr: { url: `https://${GHE_HOST}/${SLUG}/pull/${PR}` } }),
 })
 check('it merges against the GHE host', gheRun.code === 0, `${gheRun.stdout}${gheRun.stderr}`)
@@ -435,9 +486,37 @@ check(
   JSON.stringify(gheRun.calls.filter((a) => !pinnedTo(`${GHE_HOST}/${SLUG}`, GHE_HOST)(a))),
 )
 check('a github.com url against a GHE origin is refused', (() => {
-  const crossed = runExecutor(ARGS, { cwd: ghe })
+  const crossed = runExecutor(ARGS, { cwd: ghe, env: { FLOW_GH_HOSTS: GHE_HOST } })
   return crossed.code === 1 && crossed.stderr.includes('was redirected') && crossed.merges.length === 0
 })())
+
+// The origin remote is parsed as a URL, and the repository name comes from the path alone. The
+// regex this replaced stripped `.git` off the end of the whole string and took what followed the
+// last slash, so https://github.com/owner/repo.git?access_token=sekret named the repository
+// `repo.git?access_token=sekret` and carried the token into --repo and into any printed detail.
+console.log('\nan origin remote carrying a query string or a fragment is refused unread')
+const tainted = (name, dir, secret) => {
+  const run = runExecutor(ARGS, { cwd: dir })
+  const streams = `${run.stdout}${run.stderr}`
+  check(`${name} is refused`, run.code === 1 && run.stderr.includes('query string or a fragment'), streams)
+  check(`${name}: gh was never called`, run.calls.length === 0, JSON.stringify(run.calls))
+  check(`${name}: nothing merged`, run.merges.length === 0, JSON.stringify(run.merges))
+  check(`${name}: the secret is in neither stream`, !streams.includes(secret), streams)
+}
+tainted('an ?access_token remote', qry, TOKEN)
+tainted('a #fragment remote', frag, FRAGMENT)
+
+console.log('\nboth ordinary spellings of the origin remote still merge')
+for (const [name, dir] of [['the scp-like git@host:owner/repo form', repo], ['the https form', web]]) {
+  const spelling = runExecutor(ARGS, { cwd: dir })
+  check(`${name} merges`, spelling.code === 0, `${spelling.stdout}${spelling.stderr}`)
+  check(`${name}: merged once`, spelling.merges.length === 1, JSON.stringify(spelling.merges))
+  check(
+    `${name}: every call is pinned to ${IDENTITY}`,
+    spelling.calls.every(isPinned),
+    JSON.stringify(spelling.calls.filter((a) => !isPinned(a))),
+  )
+}
 
 console.log('\nthe executor refuses what should not merge, before mutating anything')
 const executorRefuses = (name, args, substring, { st, env, cwd, merges = 0 } = {}) => {
@@ -545,6 +624,43 @@ argRefusal('an abbreviated expected head', [String(PR), head.slice(0, 12)])
 argRefusal('an uppercase expected head', [String(PR), head.toUpperCase()])
 const help = runExecutor(['--help'])
 check('--help still prints the usage and exits 0', help.code === 0 && help.stdout.includes('<pull-request-number> <expected-head-sha>'), `${help.code}: ${help.stdout}`)
+
+// C1: an origin that names a port. gh takes a bare host in --hostname and in --repo, so the port
+// is dropped and the merge would be asked of a different endpoint than the one git pushes to.
+console.log('\nan origin remote that names a port is refused')
+const portRefuses = (name, dir) => {
+  const run = runExecutor(ARGS, { cwd: dir })
+  check(`${name} is refused`, run.code === 1 && run.stderr.includes('names a port'), `${run.code}: ${run.stderr}`)
+  check(`${name}: gh was never called`, run.calls.length === 0, JSON.stringify(run.calls))
+  check(`${name}: nothing merged`, run.merges.length === 0, JSON.stringify(run.merges))
+  check(`${name}: the remote is not quoted back`, !run.stderr.includes(SLUG), run.stderr)
+}
+portRefuses('an https origin with a port', port)
+portRefuses('an ssh:// origin with a port', sshport)
+
+// C2: the host allowlist. A merge is the one command that spends the token, and .git/config is a
+// file any branch can rewrite, so which hosts may be handed to gh is read from the environment.
+console.log('\nonly a host on the allowlist is handed to gh')
+const gheDefault = runExecutor(ARGS, { cwd: ghe })
+check('a GHE origin is refused when nothing named that host', gheDefault.code === 1 && gheDefault.stderr.includes(GHE_HOST), gheDefault.stderr)
+check('and gh was never called', gheDefault.calls.length === 0, JSON.stringify(gheDefault.calls))
+check('and nothing merged', gheDefault.merges.length === 0, JSON.stringify(gheDefault.merges))
+check('and the refusal names the variable that widens the list', gheDefault.stderr.includes('FLOW_GH_HOSTS'), gheDefault.stderr)
+
+// C1b: the scp-like host component, which has no delimiter but the colon in front of the path.
+// `[^:/\s]+` took a second @, a ? or a # as part of the host, and the allowlist refusal prints
+// the host it refuses, so a token parked there was echoed to stderr.
+console.log('\na token smuggled into the scp host component is never printed')
+const smuggled = (name, dir, secret) => {
+  const run = runExecutor(ARGS, { cwd: dir })
+  const streams = `${run.stdout}${run.stderr}`
+  check(`${name} is refused as unreadable`, run.code === 1 && run.stderr.includes('does not read as a URL naming a host'), streams)
+  check(`${name}: the secret is in neither stream`, !streams.includes(secret), streams)
+  check(`${name}: gh was never called`, run.calls.length === 0, JSON.stringify(run.calls))
+  check(`${name}: nothing merged`, run.merges.length === 0, JSON.stringify(run.merges))
+}
+smuggled('a second @ inside the host', scpat, SCP_TOKEN)
+smuggled('a fragment inside the host', scpfrag, SCP_FRAGMENT)
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(bad === 0 ? '\nrelease path: ALL PASS' : `\nrelease path: ${bad} FAILURE(S)`)
