@@ -1401,7 +1401,8 @@ console.log('\nT4: a check run that changed where it stood between the brackets 
 // a run someone re-requested goes back to in_progress under the same id, and a run that was green
 // when the pages were walked can be red a second later. Neither moves the number of runs or the
 // number of suites. So the closing bracket reads the runs in full and compares every one of them
-// on id, status and conclusion, and a run whose state moved is ci-unknown with its id named.
+// on id, name, status and conclusion, and a run that moved is ci-unknown with its id named. The
+// name is in there because the flake allowlist keys on it, so a rename can launder an excuse.
 
 const rerunning = checkRun('unit', 'success')
 const steadyMate = checkRun('lint', 'skipped')
@@ -1460,6 +1461,39 @@ check('a closing read that collected 2 while reporting total_count 3 exits 4', s
 check('and says it was the second read that came back short',
   detailOf(secondShort.json?.stops, 'ci-unknown').startsWith('the second check-run read'),
   detailOf(secondShort.json?.stops, 'ci-unknown'))
+
+// The name is in the fingerprint because GitHub's update endpoint accepts a new one and the
+// allowlist keys on it. A failed run called e2e that the base branch excuses, renamed to
+// security-scan under the same id and the same conclusion, would otherwise carry the excuse it
+// earned under the old name straight into a pass.
+const unitRun = checkRun('unit', 'success')
+const excused = checkRun('e2e', 'failure')
+
+const excusedSteady = run([String(PR)], {
+  st: freshState({ checkRuns: [unitRun, excused], checkRunsAfter: [unitRun, excused], baseFlakes: 'e2e\n' }),
+})
+check('a failed run the base allowlist names is merged through when it holds still',
+  excusedSteady.code === 0 && has(excusedSteady.json?.attention, 'flaky-merged-through'),
+  `${excusedSteady.code}: ${JSON.stringify(excusedSteady.json?.attention)}`)
+
+const renamed = run([String(PR)], {
+  st: freshState({
+    checkRuns: [unitRun, excused],
+    checkRunsAfter: [unitRun, { ...excused, name: 'security-scan' }],
+    baseFlakes: 'e2e\n',
+  }),
+})
+check('the same run renamed between the reads exits 4', renamed.code === 4, `${renamed.code}: ${renamed.stderr}`)
+check('and stops on ci-unknown naming that run id',
+  has(renamed.json?.stops, 'ci-unknown') &&
+    detailOf(renamed.json?.stops, 'ci-unknown').includes(`run id ${excused.id}`),
+  detailOf(renamed.json?.stops, 'ci-unknown'))
+check('and the excuse it earned under the old name is never a pass',
+  renamed.json?.verdict === 'stop' && renamed.json?.ci?.flaky?.includes('e2e'),
+  `${renamed.json?.verdict}: ${JSON.stringify(renamed.json?.ci?.flaky)}`)
+check('and no count moved, so it is the name that stopped it',
+  renamed.json?.ci?.failed?.length === 0 && !has(renamed.json?.stops, 'ci-failed'),
+  JSON.stringify(codes(renamed.json?.stops)))
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
 process.exit(bad === 0 ? 0 : 1)
