@@ -890,6 +890,43 @@ for (const [label, url, secret] of [
   check('no worktree was added', worktreePaths(w.repo).length === 1, worktreePaths(w.repo).join(','))
 }
 
+// --------------------------------------------------- a remote URL with a credential in it
+console.log('\nthe origin URL carries a token')
+{
+  // What git prints is not what was configured. Handed
+  // user:ghp_sekrettoken@github.com:jakub/demo.git, git takes the first colon as the host
+  // separator, tries to reach a host called user, and answers
+  // `fatal: 'ghp_sekrettoken@github.com:jakub/demo.git' does not appear to be a git repository`.
+  // The token has moved into the ssh user position and there is no colon left in front of it, so
+  // neither the configured string nor a pattern for user:password@ matches that line, and the
+  // token went into the detail of the JSON the stage journals.
+  //
+  // The pre-receive hook that refuses tag creation is armed here for the same reason it is armed
+  // two cases down, and it never fires: git cannot reach this remote at all, so the run stops at
+  // the first ls-remote of the scan. That failure is the one that leaks, which is why the
+  // assertion is about the streams and not about the reason.
+  const w = makeWorld('credential-in-the-url')
+  const secret = 'ghp_sekrettoken'
+  writeHook(w.origin, 'pre-receive', REFUSE_TAGS)
+  git(w.repo, 'remote', 'set-url', 'origin', `user:${secret}@github.com:jakub/demo.git`)
+
+  const claimed = run(w, ['claim', String(ISSUE)])
+  check('the claim path reports a failure rather than a win', claimed.code !== 0, `exit ${claimed.code} ${claimed.stdout}`)
+  check('and the token is in neither stream',
+    !claimed.stdout.includes(secret) && !claimed.stderr.includes(secret), `${claimed.stdout} ${claimed.stderr}`)
+  check('the identity it prints instead is the parsed host and repository',
+    claimed.json?.repo === 'github.com/jakub/demo', String(claimed.json?.repo))
+
+  // acquire, release and abandon build the same redactor and print the same kind of message, so
+  // the standalone verbs get the assertion too rather than inheriting it from the claim.
+  const acquired = run(w, ['acquire', String(ISSUE)])
+  check('a direct acquire reports a failure too', acquired.code !== 0, `exit ${acquired.code} ${acquired.stdout}`)
+  check('and its token is in neither stream',
+    !acquired.stdout.includes(secret) && !acquired.stderr.includes(secret), `${acquired.stdout} ${acquired.stderr}`)
+  check('with the same parsed identity in the JSON', acquired.json?.repo === 'github.com/jakub/demo', String(acquired.json?.repo))
+  check('nothing reached origin', refSha(w.origin, TAG_REF) === null && worktreePaths(w.repo).length === 1, 'something was mutated')
+}
+
 // ------------------------------------------------------------ a remote that refuses the tag
 console.log('\norigin will not have a claim tag created on it')
 {
