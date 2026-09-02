@@ -102,7 +102,9 @@ guess an answer to keep a run moving, and do not stack two questions into one su
 No slash commands - this host ignores a plugin's commands directory. All three stages run
 here: the human names the plugin's `prep-stage`, `issue-stage` or `land-stage` skill, or
 asks for that stage in words. A discovered defect, adjacent discussion, or a PR that merely
-looks ready is never an invocation. Do not slide into implementing inline after the
+looks ready is never an invocation, and the stages' `allow_implicit_invocation: false` is
+unverified on this host's plugin-loader path (`capabilities.json`), so the human's message is
+the only gate. Do not slide into implementing inline after the
 triviality gate declined it - a stage without its body skips the claim rules and the
 containment that make it safe.
 

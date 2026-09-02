@@ -93,18 +93,13 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
 - `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-delegation.mjs` passes. The smoke test uses a local
   fake App Server. Run a separate live Claude-to-Codex call when authentication or protocol
   compatibility may have changed.
-- `node plugins/flow/scripts/smoke-bundle-drift.mjs` passes: the committed
-  `dist/delegation.mjs` still rebuilds byte-identically from `src/delegation`, so the bundle
-  every install runs is the source anyone reads. This check is dev-tree-only. It rebuilds
-  with esbuild, so it needs a repo checkout with `npm ci` already run in `plugins/flow/deps`,
-  and it cannot run against `${CLAUDE_PLUGIN_ROOT}` or from the nightly lint. Where the tree
-  cannot support it, report it as not run rather than folding it into a clean line.
 - Every `smoke-*.mjs` under `plugins/flow/scripts/` passes, plus `scripts/smoke-plugin-manifests.mjs`
   at the repo root. Take the list from `ls`, never from memory, so a new smoke is picked up and
   a deleted one is not reported. A smoke that lints a document builds its broken examples as
   inline strings, so a checked-in fixture tree is itself drift. Running them is dev-checkout
   work, not the nightly lint's: `smoke-bundle-drift` and `smoke-claude-delegation` need
   `npm ci` in `plugins/flow/deps`, and only `smoke-delegation.mjs` is on the cron's allowlist.
+  Where the tree cannot run one, report it as not run rather than folding it into a clean line.
 
 ## Output format
 

@@ -20,7 +20,7 @@ Everything up to `## Host mechanics` is the same on every host. That section, at
 
 ## 1. Resolve
 
-The argument is a PR number, or nothing at all: with no argument, resolve the PR from the current branch (`gh pr view --json number`). Abort with usage if neither resolves. Three origins authorize the number: the argument, the entry point the human invoked resolving the current branch, or the human naming the PR in words. Anything else is a stop. This stage never picks its own PR out of a survey, a green build, or whatever work sits next to it.
+The argument is a PR number, or nothing at all: with no argument, resolve the PR from the current branch (`gh pr view --json number`). Abort with usage if neither resolves. Three origins authorize the number: the argument, the entry point the human invoked resolving the current branch, or the human naming the PR in words. Anything else is a stop.
 
 ```bash
 gh pr view $PR --json number,title,body,state,headRefName,headRefOid,baseRefName,url,isDraft,isCrossRepository,mergeable,mergeStateStatus,autoMergeRequest,closingIssuesReferences,statusCheckRollup,comments
@@ -158,7 +158,7 @@ Everything above is host-neutral. Two steps differ by host; everything else runs
 
 ### Codex
 
-**Argument.** There is no slash command; this host ignores a plugin's `commands/` directory. The PR number comes out of the human's message naming the plugin's `land-stage` skill or asking for the land in words. `agents/openai.yaml` sets `allow_implicit_invocation: false`, but that suppression is unverified on Codex's plugin-loader path, so do not lean on it: the human is the gate, and a PR that merely looks ready is never an invocation.
+**Argument.** The PR number in the human's message naming the plugin's `land-stage` skill or asking for the land in words; there is no slash command here.
 
 **Merge.** You do not write the merge command. In a repository that carries a committed `.flow/managed` file, the publish guard denies every raw merge spelling it recognizes and points at flow's executor:
 
