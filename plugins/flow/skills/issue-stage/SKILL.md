@@ -28,13 +28,13 @@ The argument is an issue number; abort with usage if it is not a positive intege
 
 Read the issue. If it is closed, or the `ready-for-agent` label is missing, stop and route the human back through the prep stage. The label contract is the safety case, so don't run cold on a spec nobody validated.
 
-A blocking label sitting next to `ready-for-agent` is a stop too. `needs-human`, `needs-info`, or `needs-rebase` on an issue that still reads `ready-for-agent` means the ready label is stale, not that the issue is ready twice over. Both get there honestly: a failed preflight leaves `ready-for-agent` alone and adds `needs-human`, and a re-prep can add `needs-info` beside it. Route the human to the blocker instead of around it. A blocking label is a human's unfinished decision, and the human is the only one who clears it.
+A blocking label (`needs-human`, `needs-info`, `needs-rebase`) beside `ready-for-agent` is a stop too: the ready label is stale, and only the human clears the blocker. Route them to it.
 
 All work happens in a worktree at `../<repo>-issue-N-<slug>`, a sibling of the repository, on branch `feat|fix|chore/issue-$N-<slug>`, based at the head the claim verified rather than at whatever this clone last fetched. The claim protocol in §3 is what puts it there.
 
 **Workspace boundary.** That worktree has to sit inside the boundary the host enforces for this session, and your host's subsection says what the boundary is and how to read it. Check the INTENDED path at preflight, before anything exists: its parent directory is a place this session may write, and the repository's common git directory (`git rev-parse --git-common-dir`) resolves inside the boundary. A repository that is itself a linked worktree of something outside the boundary passes every other check and then fails at `git worktree add`, after the claim, because git writes the new registration into that out-of-bounds directory. A prospective path you cannot place inside the boundary is a stop before the first mutation, not something to route around.
 
-The bridge has its own check, later and mechanical. The delegation service accepts a job's `cwd` only when it resolves inside the session's roots or an approved repository lists it as a linked worktree, with the two proofs DELEGATION.md names under Workspace trust; anything else fails closed with `OUTSIDE_ROOTS`. Creating the worktree is what completes the linked-worktree proof, so this check cannot run at preflight and every bridge call runs it afterwards against the real path. Passing it says a delegation job may run there. It never says your own shell or a native seat can write there, and those two answers come apart exactly when the host's roots diverge (see your host's subsection).
+The bridge runs its own workspace check on every call, after the worktree exists (DELEGATION.md, Workspace trust; `OUTSIDE_ROOTS` on failure). Passing it says a delegation job may run there, never that your own shell or a native seat may write there.
 
 **Out**: an open PR, pushed, reviewed, evidenced, and `Closes #N`-linked. Or a clean escalation: `needs-info`, `needs-human`, or `needs-rebase`, labeled, with a comment saying what is blocking, and the escalation notice of §9. A run that never got past the preflight leaves through that same door and leaves nothing else behind it (§2). Never merge.
 
@@ -48,14 +48,9 @@ Read the host capabilities with the `delegation_doctor` tool. Its `hostCapabilit
 - `newer`: the host has moved past the last verified version. Proceed, and journal a `host newer than verified` event with both versions so the human knows the table wants a re-check. Re-verifying is a one-line edit to `capabilities.json` with no rebuild, and the nightly lint reports a `newer` host so it gets done. The exposure this accepts is under Known gaps.
 - `older` or `unknown`: stop. Every capability the run depends on reads `unverified`.
 
-For every write-seat class this run will use, the host has to name a containment answer on three dimensions - workspace, descendants, hooks - and each answer is one of exactly three words: `mechanism`, `contract`, `unverified`. `mechanism` means something outside the model's control enforces it. `contract` means the seat was told and nothing checks. `unverified` means nobody knows. Your host's subsection maps each class's dimensions to the capability ids that decide them; the answers come from the doctor read, never from memory.
+One more condition: the canonical seat contract must be readable. It is `seat-contract.md` at the plugin root, two directories above this file in the installed plugin. Unreadable means a spawn prompt going out with no contract in it, so it is a stop.
 
-Two more conditions, both hard:
-
-- The canonical seat contract must be readable. It is `seat-contract.md` at the plugin root, two directories above this file in the installed plugin. An unreadable contract is not a formatting problem, it is a spawn prompt going out with no contract in it.
-- `unverified` on a dimension a needed write-seat class depends on is a stop.
-
-A failed preflight stops the run, and the stop is not silent: the `needs-human` label, one comment naming what failed (the drift status, the capability id and dimension, or the unreadable contract path), and the escalation notice of §9. Those three writes are the whole exemption. None of them needs a claim or says this run holds the issue, and without them the next run walks into the same wall with no record that this one tried. Nothing else moves: no assignment, no `in-progress`, no claim tag, no branch, no worktree, no spawn, and no inline edits for the rest of the run. Writing the code yourself because no seat can be contained is the forbidden fallback the preflight exists to catch.
+A failed preflight stops the run with exactly three writes: the `needs-human` label, one comment naming what failed (the drift status or the unreadable contract path), and the escalation notice of §9. Nothing else moves: no assignment, no `in-progress`, no claim tag, no branch, no worktree, no spawn, and no inline edits for the rest of the run. Writing the code yourself because no seat can be spawned is the fallback the preflight exists to catch.
 
 A passed preflight leaves the charter's latitude exactly as ratified. Minor inline edits and scratch scripts are orchestrating; substantial writing goes only to contained seats.
 
@@ -81,7 +76,7 @@ On a hit, abandon. `issue-claim.mjs abandon <N> <sha>` takes the acquire receipt
 
 Abandon covers a single case: the tag this run provably created seconds ago and can name by its object. Every other tag on the remote stays human-only, including one a crash left five minutes back.
 
-Then, in this order: assign the issue, remove `ready-for-agent`, and apply `in-progress`, which is one lifecycle transition rather than two labels sitting on one issue; snapshot `## Acceptance Criteria`, where the digest is the sha256 of the exact bytes of that section; post the launch journal comment, opening with the claim ledger of §4; create the work branch and push it; then release the tag through the same helper. The helper verifies the remote branch is at the head it expects before deleting the tag, and refuses if it isn't - the tag is what keeps a second run out during the window where the branch does not yet exist remotely, so it comes down only once that window has closed.
+Then, in this order: assign the issue, remove `ready-for-agent`, and apply `in-progress`, which is one lifecycle transition rather than two labels sitting on one issue; snapshot `## Acceptance Criteria`, where the digest is the sha256 of the exact bytes of that section; post the launch journal comment of §4; create the work branch and push it; then release the tag through the same helper. The helper verifies the remote branch is at the head it expects before deleting the tag, and refuses if it isn't - the tag is what keeps a second run out during the window where the branch does not yet exist remotely, so it comes down only once that window has closed.
 
 The label move is one transition and the claim step owns it. `label-contract.md` gives `ready-for-agent` to prep and has the claim step clear it, and every open issue carries exactly one lifecycle label. An issue left holding both reads as two states at once, and the nightly lint has to guess which one is true.
 
@@ -95,23 +90,13 @@ The run is judged against the AC snapshot. A body that moves mid-run is flagged,
 
 Three kinds of issue comment, and no more:
 
-1. *Launch*: the claim ledger, then the composed fabric - which seats, which modes, why - before work starts. The human audits the composition, not just the outcome.
+1. *Launch*: the anchors and the composed fabric, before work starts.
 2. *Events*, appended as they happen: tripwire fired, fabric widened or narrowed, fork guessed, seat re-run on a stronger model, breaker tripped, answer rejected as stale, host newer than verified.
 3. *Final*: outcomes plus coverage.
 
 Quiet runs have exactly two comments. Eventful runs show their history.
 
-The launch comment OPENS with the claim ledger, and the ledger has a fixed grammar so a reader can grep it out of a long thread. A host line first: the host, the versions it reports, and a one-line summary of the sandbox posture. Then the anchors line: the AC snapshot digest and the base sha. Then one line per write-seat CLASS:
-
-```text
-seat-class: <name> | workspace: <answer> | descendants: <answer> | hooks: <answer>
-```
-
-The only permitted answers are `mechanism`, `contract`, and `unverified`, the same three words §2 read from the capability table. Classes, not instances: individual seats are journaled at spawn, in an event or in the launch composition. If the run reaches for a write-seat class that is not already in the ledger, that class gets its own preflight read and an appended journal event BEFORE its first spawn.
-
-The ledger is a record. At any recovery every authority claim in it is re-derived live, the preflight read again and the state read again, so a ledger line never authorizes a later action by itself.
-
-State the assurance and move on; two `contract` answers on a native writer are the posture settled at design time. Do not round a `contract` up to `mechanism` because the seat has never misbehaved.
+The launch comment opens with the anchors, the base sha and the AC snapshot digest, and then the composed fabric: which seats, which modes, why. The human audits the composition, not just the outcome. At any recovery, state is re-read live; a journal line never authorizes a later action by itself.
 
 **Coverage is a deliverable.** The final journal states what actually looked at the diff: seats composed against seats delivered, by name. A thinned fabric that reads as a clean pass is the failure mode this whole system exists to prevent.
 
@@ -177,7 +162,7 @@ Yours to flex, per issue and mid-run.
   - fix rounds churn on the same area, a fix spawning findings where it landed;
   - cross-family reviewers disagree hard on the same code.
   Beyond the tripwires you have standing permission to widen on any hunch. Narrowing is also legal, a "medium" that turned out mechanical; journal that too.
-- **Seat assignment, one ladder**: the design pass names a difficulty per milestone - `mechanical`, `standard`, `hard` - judged on what could break, never counted from file totals. Difficulty routes both the model and the effort on the write seat. The three rungs are the charter's three write-seat roles (`write-seat-mechanical`, `write-seat-standard`, `write-seat-hard`), each with its floors in the charter and its model and effort in your profile. `mechanical` is only for a seat transcribing a complete spec whose shape is already decided. `standard` is the default for a reason: anything with a code-design decision left in it, a new test harness, or an unfamiliar toolchain is standard. `hard` is for work where a miss ships. When torn between two rungs, take the higher. Dropping a write seat below the default code writer is an exception you justify in the launch journal. Non-writing seats are charter roles too, bound in the same profile.
+- **Seat assignment**: the design pass names a difficulty per milestone, judged on what could break, never counted from file totals, and difficulty picks the write-seat role: `write-seat-mechanical`, `write-seat-standard` (the default), `write-seat-hard`. The charter says what each is for. When torn, take the higher; a write seat below `standard` is justified in the launch comment.
 - **Orchestration medium, per fan-out**: drive the seats directly when a stage is adaptive or small. When a fan-out is deterministic, wide, and worth resume plus a progress readout - a four-lens review fabric, parallel disjoint fixes - use whatever this host offers for a scripted fan-out. Your host's subsection says what that is, or says the host has none and direct calls are the answer.
 - **Mode selection**: parallel-blind, collaborative (propose, then critique, then revise across families), or adversarial (red team against blue team), picked per stage. Cross-model disagreement is signal: resolve it explicitly, never average it.
 
@@ -234,17 +219,7 @@ Everything above is host-neutral. The subsections name the seats, calls and cont
 
 **Workspace boundary.** The session's workspace roots: the directory the session was opened in plus anything the human added. `mcp-client-roots` is true with assurance `mechanism`, so the delegation server reads those roots over `roots/list`, and the sibling worktree is inside the boundary whenever the repository is.
 
-**Write-seat classes.**
-
-`native-writer`, the `flow:implementer` agent definition:
-- workspace: `contract`. `per-seat-tool-allowlist` is true with assurance `mechanism`, but what it fixes is the seat's TOOL LIST, not where its tools may write. Staying inside the worktree is the seat contract plus the repository's git hooks.
-- descendants: `contract`. `agent-depth-limit` is true with assurance `mechanism` and covers the Agent tool only: the definition omits it, so a native subagent call is impossible. The seat still holds Bash and no hook denies a raw provider launch from a shell, so the contract's no-delegation line is the only thing in front of `claude -p` or `codex exec`.
-- hooks: `mechanism`. `hooks-in-native-children` is true with assurance `mechanism`: git-guard and the no-backlog guard fire inside the seat.
-
-`bridge-writer`, `delegate_to_codex` at `access: "workspace-write"` with the worktree as `cwd`:
-- workspace: `mechanism`. The delegation sandbox grants write on the job's workspace and nothing else, network off.
-- descendants: `mechanism`. Service policy rejects a delegation started from inside a job with `NESTED_DELEGATION`, and a nested provider launched from the job's shell has no credentials and no network.
-- hooks: `mechanism`, read narrowly. The plugin's own guards do not travel into the delegated job; what holds is the delegation permission profile (minimal read, write on the workspace only, `.git`, `.agents` and `.codex` read-only, network disabled), which is enforcement and not prompt text.
+**Write seats.** The native writer's definition (`flow:implementer`) has no Agent tool, so a native subagent is impossible, and git-guard and the no-backlog guard fire inside it. It still holds Bash, and no hook denies `claude -p` or `codex exec` from a shell, so the contract's no-delegation line is what stands in front of that. Its worktree confinement is the contract plus the repository's git hooks, not a sandbox. A bridge writer is `delegate_to_codex` at `access: "workspace-write"` with the worktree as `cwd`; its confinement is the delegation sandbox (DELEGATION.md, Sandbox), which the plugin's hooks do not reach.
 
 **Contract delivery.** A native writer is always `flow:implementer`; the canonical contract rides its definition as a byte-equal tail, so the spawn prompt carries the worktree path and the milestones and no contract text. A `general-purpose` seat holding Edit is a containment violation whatever its prompt says. A bridge writer gets the ENTIRE contract pasted into its task text (the delegated payload carries the Containment section alone).
 
@@ -268,19 +243,7 @@ Everything above is host-neutral. The subsections name the seats, calls and cont
 
 **Workspace boundary.** Two roots can diverge on this host. The bridge root is the launch shell's PWD, because the Codex MCP client advertises no roots (`mcp-client-roots` reads `supported: false` with assurance `mechanism`; DELEGATION.md, Route policy). The session root is the cwd this session runs in, which `codex -C` sets; it is the sandbox root for your own writes and for every native `spawn_agent` child. `cd parent; codex -C repo` splits them: the sibling worktree under `parent` then passes every delegation check while no native seat can write a byte in it, so preflight goes green and the run dies at `git worktree add`. Read the session root from the session's own cwd, never from PWD, and treat diverged roots as a stop. The intended worktree sits inside the session root only when the session was launched from the directory HOLDING the repository with no `-C`; launched at the repository root, `git worktree add` writes outside the sandbox. Say that at preflight, name the directory to relaunch from, and stop: do not claim the issue first, and do not move the worktree inside the repository to get around it.
 
-**Write-seat classes.**
-
-`native-writer`, a multi-agent v2 seat started with `spawn_agent`:
-- workspace: `contract`. `per-seat-authority-narrowing` reads `supported: false` with assurance `mechanism`: `spawn_agent` accepts only a model, a reasoning effort and a fork policy, and the child inherits your cwd, approval policy and sandbox. Nothing narrows it below the session.
-- descendants: `contract`. `agent-depth-limit` reads `supported: false` with assurance `mechanism`: `agents.max_depth` is v1-only and ignored by v2, and the v2 spawn path has no depth check. A no-spawn prohibition here is prompt text.
-- hooks: `mechanism`. `hooks-in-native-children` reads `supported: true` with assurance `mechanism`: a v2 child gets a Config derived from the parent's turn and the plugin's PreToolUse guards fire inside it, confirmed by a live capture.
-
-A `supported: false` entry carrying `assurance: mechanism` means the absence was verified in the provider source: the thing it describes is genuinely not there, and what is left holding that dimension is the spawn prompt, which is `contract`.
-
-`bridge-writer`, `delegate_to_claude` at `access: "workspace-write"` with the worktree as `cwd`:
-- workspace: `mechanism`. The delegated worker's sandbox has one write path, the job's workspace, and an empty network allowlist.
-- descendants: `mechanism`. Service policy rejects `NESTED_DELEGATION`, and a nested provider launched from the job's shell has no credentials and no network.
-- hooks: `mechanism`, read narrowly. git-guard and the no-backlog guard do not run inside a delegated worker; what holds is the delegation permission profile plus the delegated-worker policy, both enforcement: writes on the workspace alone, credential paths and provider executables unreadable, network off, a tool outside the job's access set denied, protected-file writes and publication commands denied.
+**Write seats.** A native writer is a `spawn_agent` seat. `spawn_agent` narrows nothing below the session and has no depth cap, so the contract's no-spawn line is prompt text; the plugin's PreToolUse guards do fire in the child. A bridge writer is `delegate_to_claude` at `access: "workspace-write"` with the worktree as `cwd`; its confinement is the delegation sandbox (DELEGATION.md, Sandbox), which the plugin's hooks do not reach.
 
 **Contract delivery.** A native writer carries the ENTIRE canonical contract pasted verbatim into its spawn prompt - a path reference is a spawn prompt with no contract in it, because the seat gets no second fetch. Above the paste, one host line: the plugin's hooks fire inside this seat, so git-guard and the no-backlog guard deny there exactly as they deny here, and a spawn from this seat is a contract breach with nothing to stop it. Every pipeline seat gets `fork_turns: "none"`, so it starts from its own prompt and not from a copy of your turn. Scouts, reviewers and transports carry the read-only prohibitions instead. A bridge writer gets the same full paste in its delegation task text.
 
@@ -296,4 +259,4 @@ A `supported: false` entry carrying `assurance: mechanism` means the absence was
 
 **Escalation ping.** `notify-send`, one line naming the issue number and what is blocking, fired after the label and the comment are on the issue. Best effort and silent over SSH, where there is no session bus; that gap is documented, not worked around.
 
-**Seat ladder.** `mechanical`, `standard` and `hard` are the three write-seat roles, each a native `spawn_agent` seat at the model and effort the profile binds; `standard` is the default, and when torn take the higher rung. Bulk sweeps are the bulk seat (`bulk-seat`), native. A Claude-family writer at any rung is `delegate_to_claude` at `access: "workspace-write"`, a `bridge-writer` in the ledger.
+**Seat ladder.** `mechanical`, `standard` and `hard` are the three write-seat roles, each a native `spawn_agent` seat at the model and effort the profile binds; `standard` is the default, and when torn take the higher rung. Bulk sweeps are the bulk seat (`bulk-seat`), native. A Claude-family writer at any rung is `delegate_to_claude` at `access: "workspace-write"`.
