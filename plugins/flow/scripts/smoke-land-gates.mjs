@@ -27,9 +27,11 @@
 // per-test flake entry that could never reach the pass the merge needs. S2 is the fourth
 // review's: the pull request gh resolves from the current branch, which was taken on trust and
 // could belong to another repository entirely. P1 and P2 are the two smaller ones beside it, both
-// about a check whose name this program then wrote down wrong. T1 is the last, and it is the one
-// that exited 0 on a red pull request: `gh pr view` answered with the first hundred checks and
-// the first hundred comments and no page after either.
+// about a check whose name this program then wrote down wrong. T1 is the one that exited 0 on a
+// red pull request: `gh pr view` answered with the first hundred checks and the first hundred
+// comments and no page after either. T2 is the last, and it is T1's other half. Paging the
+// check-runs endpoint to exhaustion still does not prove the list is whole, because the endpoint
+// serves from a bounded window of check suites, so the read now has to prove itself or exit 4.
 //
 // G1, J1 and O2 went with the mechanism they guarded. All three were ways the `gh pr checks`
 // cross-read could put a passing name on a failing check, and there is no cross-read now, because
@@ -112,6 +114,7 @@ const freshState = (overrides = {}) => ({
   origin: ORIGIN,
   defaultBranch: 'main',
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')],
+  checkRunsTotal: null,  // the total_count the check-runs pages report; null serves the honest count
   statuses: [],          // the commit statuses on the head, newest first, as the endpoint serves them
   apiFail: null,         // 'check-runs', 'statuses' or 'comments': that read fails with a 500
   apiShape: null,        // 'not-pages' or 'no-check-runs-key': that read answers something unreadable
@@ -243,8 +246,12 @@ const makeRunGh = (st) => (args) => {
       const list = endpoint === 'check-runs' ? st.checkRuns : endpoint === 'statuses' ? st.statuses : st.comments
       const pages = pagesOf(Array.isArray(list) ? list : [])
       st.pagesServed.push({ endpoint, pages: pages.length })
+      // GitHub reports total_count on every page of the check runs. It is the honest count here
+      // unless a case sets checkRunsTotal, which is how a read that came back short of what
+      // GitHub says is on the commit is served without any page failing.
+      const totalCount = st.checkRunsTotal === null ? list.length : st.checkRunsTotal
       return ok(endpoint === 'check-runs'
-        ? pages.map((page) => ({ total_count: list.length, check_runs: page }))
+        ? pages.map((page) => ({ total_count: totalCount, check_runs: page }))
         : pages)
     }
     return { code: 3, stdout: '', stderr: `fake gh: unexpected ${args.join(' ')}\n` }
@@ -1183,6 +1190,59 @@ check('and neither is mistaken for a pull request with no checks',
   !has(notPages.json?.stops, 'ci-unknown') && !has(noRunsKey.json?.stops, 'ci-unknown'),
   JSON.stringify([codes(notPages.json?.stops), codes(noRunsKey.json?.stops)]))
 
+
+console.log('\nT2: a check-run read that cannot be proven complete fails closed')
+// The check-runs endpoint serves a ref's runs from at most the most recent 1000 check suites on
+// it and truncates in silence, so walking every page it offers is not proof that the list is
+// whole. Two facts about the read stand in for that proof: the number of runs collected has to
+// equal the total_count the first page reported, and the runs have to span fewer than 1000 check
+// suites. Failing either is ci-unknown and exit 4, because a list of checks that is short in a
+// way nothing can see reads exactly like a list of checks that all passed.
+const suited = (name, conclusion, suite) => checkRun(name, conclusion, { check_suite: { id: suite } })
+
+const shortRead = run([String(PR)], {
+  st: freshState({ checkRuns: many(100, (i) => checkRun(`green-${i}`, 'success')), checkRunsTotal: 101 }),
+})
+check('a first page reporting 101 runs when 100 arrived exits 4', shortRead.code === 4,
+  `${shortRead.code}: ${shortRead.stderr}`)
+check('and stops on ci-unknown', has(shortRead.json?.stops, 'ci-unknown'), JSON.stringify(codes(shortRead.json?.stops)))
+check('and the detail names the count it collected and the count GitHub reported',
+  /\b100\b/.test(detailOf(shortRead.json?.stops, 'ci-unknown')) && /\b101\b/.test(detailOf(shortRead.json?.stops, 'ci-unknown')),
+  detailOf(shortRead.json?.stops, 'ci-unknown'))
+check('and it never reads as a pass', shortRead.json?.verdict === 'stop', shortRead.json?.verdict)
+check('and the hundred green runs it did read are not a verdict on their own',
+  shortRead.json?.ci?.success?.length === 100, JSON.stringify(shortRead.json?.ci?.success?.length))
+
+const atSuiteCap = run([String(PR)], {
+  st: freshState({ checkRuns: many(1000, (i) => suited(`green-${i}`, 'success', 5000 + i)) }),
+})
+check('a thousand distinct check suites, every run green, exits 4 anyway', atSuiteCap.code === 4,
+  `${atSuiteCap.code}: ${atSuiteCap.stderr}`)
+check('and stops on ci-unknown', has(atSuiteCap.json?.stops, 'ci-unknown'), JSON.stringify(codes(atSuiteCap.json?.stops)))
+check('and the detail names the window and points at enumerating the suites',
+  /\b1000\b/.test(detailOf(atSuiteCap.json?.stops, 'ci-unknown')) &&
+    /suites/.test(detailOf(atSuiteCap.json?.stops, 'ci-unknown')),
+  detailOf(atSuiteCap.json?.stops, 'ci-unknown'))
+check('and nothing calls it a pass', atSuiteCap.json?.verdict === 'stop', atSuiteCap.json?.verdict)
+
+const underSuiteCap = run([String(PR)], {
+  st: freshState({ checkRuns: many(999, (i) => suited(`green-${i}`, 'success', 5000 + i)) }),
+})
+check('999 distinct suites is still a pass', underSuiteCap.code === 0, `${underSuiteCap.code}: ${underSuiteCap.stderr}`)
+check('and stops on nothing', JSON.stringify(underSuiteCap.json?.stops) === '[]', JSON.stringify(underSuiteCap.json?.stops))
+check('with every run counted', underSuiteCap.json?.ci?.success?.length === 999,
+  JSON.stringify(underSuiteCap.json?.ci?.success?.length))
+
+const wholeRead = run([String(PR)], {
+  st: freshState({ checkRuns: many(150, (i) => suited(`green-${i}`, 'success', i % 3)) }),
+})
+check('a total_count that matches what arrived passes', wholeRead.code === 0, `${wholeRead.code}: ${wholeRead.stderr}`)
+check('over two pages, so the count is of the flattened list',
+  wholeRead.st.pagesServed.find((p) => p.endpoint === 'check-runs')?.pages === 2,
+  JSON.stringify(wholeRead.st.pagesServed))
+check('and repeated suite ids are counted once, not per run',
+  wholeRead.json?.verdict === 'pass' && wholeRead.json?.ci?.success?.length === 150,
+  JSON.stringify(wholeRead.json?.stops))
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
 process.exit(bad === 0 ? 0 : 1)
