@@ -348,6 +348,44 @@ console.log('\na claim on a ready issue')
   check('and the issue reads back assigned to it', r.st.issue.assignees.some((who) => who.login === 'jakub'), JSON.stringify(r.st.issue.assignees))
 }
 
+// ------------------------------------------------------- claim called with no gh runner
+console.log('\nclaim called with no gh runner')
+{
+  // runGh is optional because acquire, release and abandon are git alone. claim is not: it calls
+  // the runner to read the issue before it touches anything, so a caller that leaves it out used
+  // to get a TypeError thrown out of the middle of the run in place of the one JSON line every
+  // other refusal prints. The dispatcher answers it as a usage error instead, in the shape the
+  // stage already reads.
+  const w = makeWorld('no-gh-runner')
+  const before = allRefs(w.origin)
+  let threw = null
+  let result = null
+  try { result = issueClaim({ argv: ['claim', String(ISSUE)], cwd: w.repo }) } catch (error) { threw = error }
+  check('it refuses instead of throwing', threw === null, String(threw))
+  let json = null
+  try { json = JSON.parse(String(result?.stdout)) } catch {}
+  check('exit 2 with reason usage', result?.code === 2 && json?.reason === 'usage', `exit ${result?.code} ${result?.stdout}`)
+  check('the line names the command it refused', json?.command === 'claim' && json?.result === 'refused', String(result?.stdout))
+  check('at phase pre-acquire, retaining nothing, with no cleanup to report',
+    json?.phase === 'pre-acquire' && JSON.stringify(json?.retained) === '[]' && json?.cleanup === null, String(result?.stdout))
+  check('stdout is one JSON line and nothing else',
+    typeof result?.stdout === 'string' && result.stdout.endsWith('\n') && result.stdout.trimEnd().split('\n').length === 1,
+    JSON.stringify(result?.stdout))
+  check('the detail says claim is the verb that needs a runner', /gh runner/.test(String(json?.detail)), String(json?.detail))
+  check('stderr carries a sentence for a human', /gh runner/.test(String(result?.stderr)), JSON.stringify(result?.stderr))
+  check('origin is unchanged', allRefs(w.origin) === before, allRefs(w.origin))
+  check('no worktree was added', worktreePaths(w.repo).length === 1, worktreePaths(w.repo).join(','))
+
+  // The guard is on the claim verb alone. The three git-only verbs take no runner and never did.
+  const saved = process.env.GIT_SSH_COMMAND
+  process.env.GIT_SSH_COMMAND = w.ssh
+  const acquired = issueClaim({ argv: ['acquire', String(ISSUE)], cwd: w.repo })
+  process.env.GIT_SSH_COMMAND = saved
+  check('acquire with no runner still takes the claim',
+    acquired.code === 0 && JSON.parse(acquired.stdout).result === 'acquired' && refSha(w.origin, TAG_REF) === w.mainSha,
+    `exit ${acquired.code} ${acquired.stdout}`)
+}
+
 // ------------------------------------------------------------ refusals that mutate nothing
 console.log('\nrefusals before the first write')
 {

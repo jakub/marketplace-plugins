@@ -1625,12 +1625,15 @@ const claim = ({ argv, cwd, runGh }) => {
  * gh is injected the way scripts/land-merge.mjs injects it, as a plain function across the
  * module boundary, which is what lets the smoke answer GitHub reads from a state object without
  * an environment variable that selects the binary this program trusts. The three git-only
- * subcommands never call it.
+ * subcommands never call it, which is why it is optional. claim is the exception: it reads and
+ * labels the issue over gh, so a claim with no runner is refused in the dispatcher rather than
+ * thrown out of the middle of the run, where the caller would get a stack trace in place of the
+ * JSON line it parses.
  *
  * @param {object} args
  * @param {string[]} args.argv the argument vector after the script name
  * @param {string} args.cwd the directory whose origin remote this run claims on
- * @param {(ghArgs: string[], options: {cwd: string}) => {code: number, stdout: string, stderr: string}} [args.runGh]
+ * @param {(ghArgs: string[], options: {cwd: string}) => {code: number, stdout: string, stderr: string}} [args.runGh] required by claim, unused by the other three
  * @returns {{code: number, stdout: string, stderr: string}}
  */
 export function issueClaim({ argv, cwd, runGh }) {
@@ -1638,6 +1641,12 @@ export function issueClaim({ argv, cwd, runGh }) {
     return { code: EXIT_OK, stdout: USAGE, stderr: '' }
   }
   const [subcommand, ...rest] = argv
+  if (subcommand === 'claim' && typeof runGh !== 'function') {
+    const detail = 'claim was called with no gh runner, and it reads and labels the issue over gh before it writes ' +
+      'anything, so there is nothing it can do without one; acquire, release and abandon are git alone and take none'
+    return line({ command: 'claim', result: 'refused', reason: 'usage', phase: 'pre-acquire', retained: [], cleanup: null, detail },
+      EXIT_REFUSED, `${detail}. Nothing was read and nothing was pushed.`)
+  }
   if (subcommand === 'claim') return claim({ argv: rest, cwd, runGh })
   if (subcommand === 'acquire') return acquire({ argv: rest, cwd })
   if (subcommand === 'release') return release({ argv: rest, cwd })
