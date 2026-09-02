@@ -207,7 +207,7 @@ import { fileURLToPath } from 'node:url'
 // The origin parse is shared with scripts/land-merge.mjs. It used to be a copy in each file,
 // identical but for the word the refusals use for what they are refusing to do, which is now the
 // purpose this one passes: a fix to the parse is a fix to both halves of the land.
-import { identityOfRemote } from '../lib/remote-identity.mjs'
+import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
 
 const READ_TIMEOUT_MS = 60_000
 const GIT_TIMEOUT_MS = 5_000
@@ -296,6 +296,13 @@ With no argument the pull request gh resolves from the current branch has to be 
 repository's: its url has to name that number under the host, owner and repository the origin
 remote gives, and its head branch has to be the branch checked out here. Anything else is a
 refusal, and the number can always be passed explicitly instead.
+
+The origin remote has to name github.com, or a host listed in FLOW_GH_HOSTS in this program's own
+environment, as a comma-separated list of hostnames. gh sends the credential it holds for a host to
+whichever host it is pinned to, and the pin is derived from .git/config, which is a file the
+repository itself can rewrite, so the list of hosts worth a token is never read from the repository.
+An origin that names a port is refused for a related reason: gh's --hostname and --repo take a bare
+host, so the gates would read one endpoint while git pushes to another.
 
 It mutates nothing, in the repository or in the clone: \`git remote get-url origin\` and, on the run
 that was given no number, \`git rev-parse --abbrev-ref HEAD\` are the only git commands it runs.
@@ -546,8 +553,9 @@ const readLinkedIssues = ({ closing, headRef, title, body }) => {
  * process with a fake gh across the module boundary.
  *
  * There is no FLOW_CRON_JOB refusal here, unlike its merging sibling. Reading the gates changes
- * nothing, so an unattended job may do it; `env` is taken for the runners' sake and for that
- * absence to be a deliberate line rather than an omission.
+ * nothing, so an unattended job may do it, and that absence is a deliberate line rather than an
+ * omission. What `env` is read for is FLOW_GH_HOSTS, the allowlist of hosts gh may be pinned to:
+ * it comes from the environment of whoever ran this and never from the repository being gated.
  *
  * @param {object} args
  * @param {string[]} args.argv the argument vector after the script name
@@ -558,7 +566,6 @@ const readLinkedIssues = ({ closing, headRef, title, body }) => {
  * @returns {{code: number, stdout: string, stderr: string}}
  */
 export function landGates({ argv, env, cwd, runGh, runGit }) {
-  void env
   const refuse = (reason) => ({ code: EXIT_USAGE, stdout: '', stderr: `land-gates: ${reason}\n` })
 
   if (argv.some((arg) => arg === '--help' || arg === '-h')) {
@@ -591,7 +598,7 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     const read = runGit(['-C', cwd, 'remote', 'get-url', 'origin'], GIT_TIMEOUT_MS)
     return read.code === 0 ? read.stdout.trim() : ''
   })()
-  const remote = identityOfRemote(originUrl, { purpose: 'gate' })
+  const remote = identityOfRemote(originUrl, { purpose: 'gate', allowedHosts: allowedHostsFrom(env) })
   // The refusal describes the remote and never quotes it, and nothing has been built from it yet,
   // so a remote refused here reaches no output at all.
   if (remote.identity === undefined) return refuse(remote.refusal)

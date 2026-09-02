@@ -231,6 +231,11 @@ import { accessSync, constants, existsSync, realpathSync } from 'node:fs'
 import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// Only the allowlist, not the parse. The comment at remoteSlug says why this file parses an
+// origin of its own; which hosts flow may hand a credential to is one list all the same, and a
+// second copy of it is a second thing to keep in step.
+import { allowedHostsFrom, hostIsAllowed } from '../lib/remote-identity.mjs'
+
 const LOCAL_GIT_TIMEOUT_MS = 5_000
 const REMOTE_GIT_TIMEOUT_MS = 30_000
 const PUSH_TIMEOUT_MS = 60_000
@@ -290,6 +295,7 @@ confirm under cleanup. A live-run result puts what the scan saw under found, gro
 worktrees, localBranches, remoteBranches and pullRequests.
 
 A claim refusal names one of: usage, no-origin, push-fetch-mismatch, origin-unparseable,
+origin-host-not-allowed,
 issue-closed, not-ready, blocked, no-acceptance-criteria, bad-slug, live-run, worktree-path,
 outside-parent, acquire-refused, worktree-add, push. An unknown names one of those, or one of:
 issue-unreadable, repo-unreadable, scan-unreadable, acquire-unknown, acquire-ambiguous,
@@ -306,6 +312,14 @@ it reads once; anything else is issue-edit-unconfirmed and keeps the branch and 
 call names the repository origin's URL parsed to, so a fork clone cannot read and label one
 repository while the tag and the branch land on another, and an origin with no host to name is
 refused rather than left for gh to resolve.
+
+That host has to be github.com, or one named in FLOW_GH_HOSTS in this program's own environment,
+as a comma-separated list of hostnames. gh sends the credential it holds for a host to whichever
+host it is pinned to, and the pin comes from .git/config, a file this repository can rewrite, so
+the list of hosts worth a token is read from the environment and never from the repository. An
+origin that names a port is refused for a related reason: gh's --hostname and --repo take a bare
+host, so the issue would be read and labelled on one endpoint while the tag and the branch went
+to another. The three git-only verbs take neither check, because they never call gh.
 
 held means the tag was on origin before this run pushed anything, so it is a rival's and this run
 left nothing. A tag that turned up only after this run's own push is a different answer, because
@@ -523,12 +537,26 @@ const slugFromPath = (path, exact) => {
  * query or a fragment there by hand: nothing drops them for it, and
  * git@github.com:owner/repo.git?access_token=sekret otherwise names a repository called
  * `repo.git?access_token=sekret` that goes on to be a --repo argument and a journalled field.
+ * A port is refused in both spellings. gh takes a bare host in --hostname and in
+ * --repo host/owner/repo, so an origin of https://github.com:8443/owner/repo would have the tag
+ * and the branch pushed to 8443 while the issue was read and labelled on 443. new URL() drops a
+ * port that is the scheme's default, so https://host:443/owner/repo is not refused, which is
+ * right: gh reaches exactly that endpoint. The scp-like form has no port syntax at all, so
+ * git@host:2222/owner/repo.git is a port written where git reads a path, and it is recognised as
+ * one only when the rest of the path names exactly one owner and one repository, which leaves an
+ * owner made entirely of digits parsing as an owner.
+ *
  * A local filesystem path has no host, and the last two components stand in for the owner and the
  * repository. The claim refuses that shape rather than call gh unpinned, but the identity is
  * still worth reading, because acquire, release and abandon are git alone and work there.
  *
  * No branch returns any part of the input, because the problem string is printed.
  */
+// The one problem string that is about the port. It reads on from "the origin remote of this
+// directory", the way every other problem here does.
+const PORT_PROBLEM = 'names a port, and the --hostname and --repo pins gh takes carry a bare host, ' +
+  'so gh would reach the default port of that name while git talks to the one configured'
+
 const remoteSlug = (remote) => {
   const raw = String(remote ?? '').trim()
   if (raw === '') return { problem: 'is empty' }
@@ -539,6 +567,7 @@ const remoteSlug = (remote) => {
     if (url.search !== '' || url.hash !== '') {
       return { problem: 'carries a query string or a fragment, and an API path must never be built out of one' }
     }
+    if (url.port !== '') return { problem: PORT_PROBLEM }
     // file:///srv/repo.git and friends: no host, so what is left is a filesystem path.
     const named = slugFromPath(url.pathname, url.hostname !== '')
     if (named === null) return { problem: 'does not name exactly one owner and one repository' }
@@ -551,6 +580,8 @@ const remoteSlug = (remote) => {
     if (scp[2].includes('?') || scp[2].includes('#')) {
       return { problem: 'carries a query string or a fragment, and an API path must never be built out of one' }
     }
+    const ported = scp[2].match(/^\d+\/(.+)$/)
+    if (ported !== null && slugFromPath(ported[1], true) !== null) return { problem: PORT_PROBLEM }
     const named = slugFromPath(scp[2], true)
     if (named === null) return { problem: 'does not name exactly one owner and one repository' }
     return { host: scp[1], ...named }
@@ -1092,7 +1123,7 @@ const groupHits = (hits) => ({
   pullRequests: hits.filter((hit) => hit.where === 'pull-request'),
 })
 
-const claim = ({ argv, cwd, runGh }) => {
+const claim = ({ argv, cwd, env, runGh }) => {
   const usage = (detail) => line({ command: 'claim', result: 'refused', reason: 'usage', phase: 'pre-acquire', retained: [], cleanup: null, detail },
     EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
 
@@ -1181,6 +1212,15 @@ const claim = ({ argv, cwd, runGh }) => {
     return refuse('origin-unparseable',
       'the origin remote of this directory names no host, so gh cannot be pinned to it and would resolve a repository of its own: ' +
       'the claim tag and the branch would land on this origin while the issue edit went somewhere else')
+  }
+  // Which hosts are worth a credential is read from this program's environment and never from
+  // the repository: .git/config is a file a branch can rewrite, and gh hands whatever token it
+  // holds for a host to whichever host it is pinned to.
+  if (!hostIsAllowed(ghRepo.host, allowedHostsFrom(env))) {
+    return refuse('origin-host-not-allowed',
+      `the origin remote of this directory names the host ${JSON.stringify(ghRepo.host)}, which is not one flow may hand to gh: ` +
+      'gh sends the credential it holds for a host to whichever host it is pinned to, and that pin would come from this ' +
+      "repository's own config. Set FLOW_GH_HOSTS in the environment to a comma-separated list of hostnames to widen it")
   }
   const repoPin = ['--repo', `${ghRepo.host}/${ghRepo.owner}/${ghRepo.repo}`]
   const hostPin = ['--hostname', ghRepo.host]
@@ -1640,10 +1680,12 @@ const claim = ({ argv, cwd, runGh }) => {
  * @param {object} args
  * @param {string[]} args.argv the argument vector after the script name
  * @param {string} args.cwd the directory whose origin remote this run claims on
+ * @param {Record<string,string|undefined>} [args.env] read for FLOW_GH_HOSTS alone, the allowlist
+ *   of hosts gh may be pinned to; an absent environment is the default list, github.com only
  * @param {(ghArgs: string[], options: {cwd: string}) => {code: number, stdout: string, stderr: string}} [args.runGh] required by claim, unused by the other three
  * @returns {{code: number, stdout: string, stderr: string}}
  */
-export function issueClaim({ argv, cwd, runGh }) {
+export function issueClaim({ argv, cwd, env, runGh }) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
     return { code: EXIT_OK, stdout: USAGE, stderr: '' }
   }
@@ -1654,7 +1696,7 @@ export function issueClaim({ argv, cwd, runGh }) {
     return line({ command: 'claim', result: 'refused', reason: 'usage', phase: 'pre-acquire', retained: [], cleanup: null, detail },
       EXIT_REFUSED, `${detail}. Nothing was read and nothing was pushed.`)
   }
-  if (subcommand === 'claim') return claim({ argv: rest, cwd, runGh })
+  if (subcommand === 'claim') return claim({ argv: rest, cwd, env, runGh })
   if (subcommand === 'acquire') return acquire({ argv: rest, cwd })
   if (subcommand === 'release') return release({ argv: rest, cwd })
   if (subcommand === 'abandon') return abandon({ argv: rest, cwd })
@@ -1696,7 +1738,7 @@ if (isMain) {
       return { code: error?.status ?? 1, stdout: String(error?.stdout || ''), stderr: String(error?.stderr || error?.message || error) }
     }
   }
-  const result = issueClaim({ argv: process.argv.slice(2), cwd: process.cwd(), runGh })
+  const result = issueClaim({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env, runGh })
   if (result.stdout) process.stdout.write(result.stdout)
   if (result.stderr) process.stderr.write(result.stderr)
   process.exit(result.code)

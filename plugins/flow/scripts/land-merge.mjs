@@ -55,7 +55,7 @@ import { fileURLToPath } from 'node:url'
 // The origin parse is shared with scripts/land-gates.mjs. It used to be a copy in each file,
 // identical but for the word the refusals use for what they are refusing to do, which is now the
 // purpose this one passes: a fix to the parse is a fix to both halves of the land.
-import { identityOfRemote } from '../lib/remote-identity.mjs'
+import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
 
 const READ_TIMEOUT_MS = 60_000
 const MERGE_TIMEOUT_MS = 120_000
@@ -68,6 +68,13 @@ against; if GitHub reports a different head, nothing merges. The host, the repos
 branch, the pull request state and the merge target are all re-read from the origin remote and
 GitHub, the merge is pinned to the verified head with --match-head-commit, and the outcome is
 confirmed by re-reading the pull request.
+
+The origin remote has to name github.com, or a host listed in FLOW_GH_HOSTS in this program's own
+environment, as a comma-separated list of hostnames. gh sends the credential it holds for a host to
+whichever host it is pinned to, and the pin is derived from .git/config, which is a file the
+repository itself can rewrite, so the list of hosts worth a token is never read from the
+repository. An origin that names a port is refused for a related reason: gh's --hostname and
+--repo take a bare host, so the merge would be asked of one endpoint while git pushes to another.
 `
 
 const SHA = /^[0-9a-f]{40}$/
@@ -155,7 +162,8 @@ export function landMerge({ argv, env, cwd, runGh }) {
 
   // The refusal describes the remote and never quotes it, and nothing has been built from it yet,
   // so a remote refused here reaches no output and no gh call at all.
-  const remote = identityOfRemote(tryGit(['remote', 'get-url', 'origin'], cwd), { purpose: 'merge in' })
+  const remote = identityOfRemote(tryGit(['remote', 'get-url', 'origin'], cwd),
+    { purpose: 'merge in', allowedHosts: allowedHostsFrom(env) })
   if (remote.identity === undefined) return refuse(remote.refusal)
   const identity = remote.identity
 
