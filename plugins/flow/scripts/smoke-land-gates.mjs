@@ -17,13 +17,16 @@
 // of linked issues are reported as attention rather than as stops. And through all of it the
 // executor calls nothing that mutates: the whole point of splitting it out of land-merge.mjs is
 // that running it can never change anything, which now includes the local clone - the allowlist
-// arrives over the contents API and the only git command left is `git remote get-url`.
+// arrives over the contents API, and the two git reads left are `git remote get-url origin` and,
+// only on the run that was given no number, `git rev-parse --abbrev-ref HEAD`.
 //
 // The last sections are one case per finding from the reviews of 2026-09-01, kept together and
 // named by finding so that a regression says which rule came back. G1 to G7 are the first two
 // reviews; J1 to J3 are the third, and they are the ones that cost a real green: a details url
 // that two checks share, a repository identity that swallowed a query string, and a per-test
-// flake entry that could never reach the pass the merge needs.
+// flake entry that could never reach the pass the merge needs. S2 is the fourth review's: the
+// pull request gh resolves from the current branch, which was taken on trust and could belong to
+// another repository entirely.
 //
 // Run: node plugins/flow/scripts/smoke-land-gates.mjs
 
@@ -86,7 +89,10 @@ const freshState = (overrides = {}) => ({
   flakesHttp: null,      // an HTTP status the contents API fails with instead of answering
   flakesEncoding: 'base64', // what the contents API says the body is encoded as
   viewFails: false,
-  currentBranchPr: null, // what `gh pr view --json number` answers with no argument
+  currentBranchPr: null,       // the number `gh pr view` answers with when the run was given none
+  currentBranchUrl: undefined, // its url: undefined serves the honest one, null omits it, a string is served as is
+  currentBranchHeadRef: undefined, // its head branch; undefined is the branch this clone has checked out
+  currentBranch: BRANCH,       // what `git rev-parse --abbrev-ref HEAD` answers; null is a read that failed
   calls: [],
   gitCalls: [],
   cursors: [],
@@ -126,11 +132,21 @@ const makeRunGh = (st) => (args) => {
   const ok = (value) => ({ code: 0, stdout: JSON.stringify(value), stderr: '' })
 
   if (args[0] === 'pr' && args[1] === 'view') {
-    const fields = argValue(args, '--json') || ''
-    if (fields === 'number') {
-      return st.currentBranchPr === null
-        ? { code: 1, stdout: '', stderr: 'fake gh: no pull request found for the current branch\n' }
-        : ok({ number: st.currentBranchPr })
+    // The resolution read is the one with no number in it, and it is recognized by that rather
+    // than by its field list. A case that drives an executor asking for fewer fields still gets
+    // this answer, so it measures what the executor does with the answer.
+    if (args[2] === undefined || String(args[2]).startsWith('--')) {
+      if (st.currentBranchPr === null) {
+        return { code: 1, stdout: '', stderr: 'fake gh: no pull request found for the current branch\n' }
+      }
+      const url = st.currentBranchUrl === undefined
+        ? `https://github.com/${SLUG}/pull/${st.currentBranchPr}`
+        : st.currentBranchUrl
+      return ok({
+        number: st.currentBranchPr,
+        headRefName: st.currentBranchHeadRef === undefined ? BRANCH : st.currentBranchHeadRef,
+        ...(url === null ? {} : { url }),
+      })
     }
     if (st.viewFails) return { code: 1, stdout: '', stderr: 'fake gh: could not read the pull request\n' }
     return ok({ ...st.pr, statusCheckRollup: st.rollup, comments: st.comments })
@@ -206,8 +222,14 @@ const makeRunGit = (st) => (args) => {
       ? { code: 128, stdout: '', stderr: 'fatal: No such remote \'origin\'\n' }
       : { code: 0, stdout: `${st.origin}\n`, stderr: '' }
   }
-  // No fetch and no show. The clone is shared with other sessions, so the executor is allowed
-  // exactly one git command and anything else is a failure of this smoke, not a fixture gap.
+  if (rest[0] === 'rev-parse' && rest[1] === '--abbrev-ref' && rest[2] === 'HEAD') {
+    return st.currentBranch === null
+      ? { code: 128, stdout: '', stderr: "fatal: ambiguous argument 'HEAD': unknown revision\n" }
+      : { code: 0, stdout: `${st.currentBranch}\n`, stderr: '' }
+  }
+  // No fetch and no show. The clone is shared with other sessions, so the executor is allowed two
+  // reads, the origin remote and the checked-out branch, and anything else is a failure of this
+  // smoke, not a fixture gap.
   return { code: 1, stdout: '', stderr: `fake git: unexpected ${rest.join(' ')}\n` }
 }
 
@@ -223,15 +245,17 @@ const codes = (list) => (Array.isArray(list) ? list.map((item) => item.code) : [
 const has = (list, code) => codes(list).includes(code)
 const detailOf = (list, code) => (list || []).find((item) => item.code === code)?.detail || ''
 
-// Every gh call must name the repository derived from origin. The one exception is the read that
-// resolves a pull request from the current branch, which gh refuses to do once --repo is given.
+// Every gh call must name the repository derived from origin. The read that resolves a pull
+// request from the current branch is the one that cannot, because gh refuses a branch once
+// --repo is given. It used to be allowlisted here, which is another way of saying nothing checked
+// what it came back with, so it fails this predicate now and the S2 cases prove the answer belongs
+// to origin instead.
 const isPinned = (args) => {
   if (args[0] === 'api' && args[1] === 'graphql') {
     return argValue(args, '--hostname') === 'github.com' &&
       formField(args, 'owner') === 'jakub' && formField(args, 'repo') === 'marketplace-plugins'
   }
   if (args[0] === 'repo' && args[1] === 'view') return args[2] === IDENTITY
-  if (args[0] === 'pr' && args[1] === 'view' && argValue(args, '--json') === 'number') return true
   if (args[0] === 'api') {
     return argValue(args, '--hostname') === 'github.com' &&
       args.some((a) => String(a).startsWith(`repos/${SLUG}/`))
@@ -249,9 +273,9 @@ const MUTATIONS = [
   (a) => a[0] === 'api' && (a.includes('-X') || a.includes('--method')),
 ]
 const mutatingGh = (calls) => calls.filter((args) => MUTATIONS.some((shape) => shape(args)))
-// `git remote get-url` and nothing else. A fetch writes objects, FETCH_HEAD and remote-tracking
-// refs into a checkout other sessions share, so it counts as a mutation here.
-const READ_ONLY_GIT = new Set(['remote'])
+// `git remote get-url` and `git rev-parse`, and nothing else. A fetch writes objects, FETCH_HEAD
+// and remote-tracking refs into a checkout other sessions share, so it counts as a mutation here.
+const READ_ONLY_GIT = new Set(['remote', 'rev-parse'])
 const mutatingGit = (calls) => calls.filter((args) => !READ_ONLY_GIT.has((args[0] === '-C' ? args.slice(2) : args)[0]))
 
 // ------------------------------------------------------------------------------- a clean pass
@@ -513,7 +537,7 @@ console.log('\nresolving the pull request number')
 const fromBranch = run([], { st: freshState({ currentBranchPr: PR }) })
 check('no argument resolves from the current branch', fromBranch.code === 0 && fromBranch.json?.pr === PR, `${fromBranch.code}: ${fromBranch.stderr}`)
 check('and that read names no repository, because gh refuses one there',
-  fromBranch.st.calls.some((a) => a[0] === 'pr' && a[1] === 'view' && argValue(a, '--json') === 'number' && !a.includes('--repo')),
+  fromBranch.st.calls.some((a) => a[0] === 'pr' && a[1] === 'view' && argValue(a, '--json') === 'number,url,headRefName' && !a.includes('--repo')),
   JSON.stringify(fromBranch.st.calls[0]))
 
 const refuses = (name, argv, substring, options = {}) => {
@@ -927,6 +951,72 @@ check('the recovered one is named as the candidate', detailOf(strayClose.json?.a
   detailOf(strayClose.json?.attention, 'linked-issues-ambiguous'))
 check('and it is attention, not a stop', strayClose.code === 0 && !has(strayClose.json?.stops, 'linked-issues-ambiguous'),
   `${strayClose.code}: ${JSON.stringify(codes(strayClose.json?.stops))}`)
+
+
+console.log("\nS2: the pull request resolved from the branch is proved to be this repository's")
+// The one gh read this program cannot pin. In a fork checkout with an upstream remote, gh answers
+// this from upstream, so the number could be upstream's; every read after it was pinned to origin,
+// so an unrelated origin pull request wearing that number was gated and handed to the merge.
+const branchState = (overrides = {}) => freshState({ currentBranchPr: PR, ...overrides })
+
+const resolvedHere = run([], { st: branchState() })
+check('the matching case still resolves', resolvedHere.code === 0 && resolvedHere.json?.pr === PR,
+  `${resolvedHere.code}: ${resolvedHere.stderr}`)
+check('and the resolution read asks for the url and the head branch too',
+  resolvedHere.st.calls.some((a) => a[0] === 'pr' && a[1] === 'view' && argValue(a, '--json') === 'number,url,headRefName'),
+  JSON.stringify(resolvedHere.st.calls[0]))
+check('and it is the only gh call that names no repository',
+  resolvedHere.st.calls.filter((a) => !isPinned(a)).length === 1 && !isPinned(resolvedHere.st.calls[0]),
+  JSON.stringify(resolvedHere.st.calls.filter((a) => !isPinned(a))))
+check('the branch it is checked against is read from git, and nothing else is',
+  JSON.stringify(resolvedHere.st.gitCalls.map((a) => a.slice(2).join(' '))) ===
+    '["remote get-url origin","rev-parse --abbrev-ref HEAD"]',
+  JSON.stringify(resolvedHere.st.gitCalls))
+check('and that read mutates nothing', mutatingGit(resolvedHere.st.gitCalls).length === 0,
+  JSON.stringify(mutatingGit(resolvedHere.st.gitCalls)))
+
+// Host, owner and repository are compared case-insensitively, because GitHub serves the owner and
+// the repository in whatever case they were registered and a remote can spell them another way.
+const casedUrl = run([], { st: branchState({ currentBranchUrl: `https://GitHub.com/Jakub/Marketplace-Plugins/pull/${PR}` }) })
+check('a url differing only in case still resolves', casedUrl.code === 0 && casedUrl.json?.pr === PR,
+  `${casedUrl.code}: ${casedUrl.stderr}`)
+
+refuses('a url on another owner is refused', [], `not to ${IDENTITY}`,
+  { st: branchState({ currentBranchUrl: `https://github.com/upstream/marketplace-plugins/pull/${PR}` }) })
+refuses('a url on another repository is refused', [], `not to ${IDENTITY}`,
+  { st: branchState({ currentBranchUrl: `https://github.com/jakub/some-other-repo/pull/${PR}` }) })
+refuses('a url on another host is refused', [], `not to ${IDENTITY}`,
+  { st: branchState({ currentBranchUrl: `https://ghe.example.com/jakub/marketplace-plugins/pull/${PR}` }) })
+refuses('a url for another number is refused', [], 'is not the url of that pull request',
+  { st: branchState({ currentBranchUrl: `https://github.com/${SLUG}/pull/${PR + 1}` }) })
+refuses('a url that is not a pull request path is refused', [], 'is not the url of that pull request',
+  { st: branchState({ currentBranchUrl: `https://github.com/${SLUG}/issues/${PR}` }) })
+refuses('a url that does not read as a URL is refused', [], 'is not the url of that pull request',
+  { st: branchState({ currentBranchUrl: 'not-a-url' }) })
+refuses('a missing url is refused', [], 'reported no url for it',
+  { st: branchState({ currentBranchUrl: null }) })
+
+// The head branch is the second half of the proof: the right repository is not enough if gh
+// answered from some other branch of it.
+refuses('a head branch that is not the checked-out one is refused', [], 'head branch',
+  { st: branchState({ currentBranchHeadRef: 'feat/issue-99-something-else' }) })
+refuses('a branch that does not read back is refused', [], 'did not read back as a branch name',
+  { st: branchState({ currentBranch: null }) })
+refuses('and so is a detached HEAD', [], 'did not read back as a branch name',
+  { st: branchState({ currentBranch: 'HEAD' }) })
+
+const elsewhere = run([], {
+  st: branchState({
+    origin: 'https://jakub:ghp_secrettoken@github.com/jakub/marketplace-plugins.git',
+    currentBranchUrl: `https://github.com/upstream/marketplace-plugins/pull/${PR}`,
+  }),
+})
+check('the refusal names the repository the url pointed at',
+  elsewhere.stderr.includes('github.com/upstream/marketplace-plugins'), elsewhere.stderr)
+check('and quotes no part of the remote it refused for',
+  !elsewhere.stderr.includes('ghp_secrettoken') && !elsewhere.stderr.includes('jakub:'), elsewhere.stderr)
+check('and nothing after the refusal was read',
+  elsewhere.st.calls.length === 1, JSON.stringify(elsewhere.st.calls.map((a) => `${a[0]} ${a[1]}`)))
 
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
