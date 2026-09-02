@@ -41,13 +41,23 @@
 // falling back to a non-terminal `status` to catch a run still in progress.
 //
 // An entry with no name is unknown however green it looks, because a check nobody can name is not
-// a check anyone reviewed. `gh pr checks` renders CheckRuns and commit statuses through one
-// formatter and names both, so it is cross-read and merged into the rollup: by the details url
-// where both sides carry one, and otherwise by pairing the leftover names against the nameless
-// entries when the two counts agree. An entry still nameless after that stays unknown. That
-// cross-read is optional - an older gh with no --json on this subcommand is not a failed gate -
-// and its output is parsed whatever the exit code is, because `gh pr checks` exits non-zero when
-// checks are failing or pending, which is exactly when this program most wants to read it.
+// a check anyone reviewed. The two kinds of entry spell their name in different fields as well as
+// their outcome: a CheckRun has `name` and `detailsUrl`, a commit status has `context` and
+// `targetUrl`, so both fields are read and most commit statuses name themselves. What is left
+// nameless is looked up in a `gh pr checks` cross-read, which renders both kinds through one
+// formatter, and the join is the details url and nothing else. Two reads of the same pull request
+// come back in no guaranteed order, so pairing leftovers by position is a coin toss that can put
+// a passing name on a failing check; an entry that does not join by url stays unknown and stops
+// the land. That cross-read is optional - an older gh with no --json on this subcommand is not a
+// failed gate - and its output is parsed whatever the exit code is, because `gh pr checks` exits
+// non-zero when checks are failing or pending, which is exactly when this program most wants to
+// read it.
+//
+// An empty rollup is unknown too, not a pass. Zero checks is the state a pull request is in for
+// the first seconds after a fix push, before GitHub has registered the runs, and it is
+// indistinguishable from a repository that has no CI at all. Reporting it green would make the
+// most common moment of the land the one moment the gate says nothing. Whether a repository
+// genuinely has no CI is the human's call.
 //
 // Known flakes are read from the base branch and never from the pull request. The pull request's
 // copy of .github/known-flakes.txt is part of what is under review, so an entry that exists only
@@ -55,8 +65,17 @@
 // name in the base copy moves that check from failed to flaky. A `check-name:test_name` entry
 // moves nothing, because only the job log can say whether that one test was the sole failure, and
 // this program does not read job logs; the entry is surfaced under `flakeCandidates` so the stage
-// knows there is a log worth reading. A missing allowlist is an empty allowlist and never an
-// error - most repositories have none.
+// knows there is a log worth reading. Which of the two a line is cannot be decided by the first
+// colon, because a commit status context like `ci/circleci: build` has one: a line that equals a
+// check name reported on this pull request is a bare entry, and only a line that matches no check
+// name splits.
+//
+// Both copies are read over the contents API, at the base ref and at the head SHA, and never out
+// of the local clone. A `git fetch` would write objects, FETCH_HEAD and remote-tracking refs into
+// a checkout other sessions share, and reading `origin/<base>` without one silently gates against
+// whatever that stale ref happens to point at. A 404 is a proven-absent file and means an empty
+// allowlist, which is the ordinary case. Any other failure sets `error`: an allowlist nobody could
+// read must never excuse a failing check.
 //
 // Review threads are paged to exhaustion, and a page the query could not deliver is
 // `threads-unreadable` rather than a short list. Comments come back as the last 20 rather than the
@@ -74,8 +93,9 @@
 // programs are separate. Everything reported here was read at that commit; a pull request that
 // moves afterwards fails land-merge's --match-head-commit instead of landing on gates nobody ran.
 //
-// This is not a guardrail. It mutates nothing, so there is nothing here to bypass and no reason
-// to. What it buys is one place where the rules live and one shape the stage reads them in.
+// This is not a guardrail. It mutates nothing, in the repository or in the clone - `git remote
+// get-url origin` is the only git command it runs - so there is nothing here to bypass and no
+// reason to. What it buys is one place where the rules live and one shape the stage reads them in.
 //
 // Nothing printed carries a credential. A remote URL can hold userinfo, as in
 // https://user:token@host/owner/repo, and git quotes the remote it was handed word for word in
@@ -89,7 +109,6 @@ import { fileURLToPath } from 'node:url'
 
 const READ_TIMEOUT_MS = 60_000
 const GIT_TIMEOUT_MS = 5_000
-const FETCH_TIMEOUT_MS = 120_000
 
 const EXIT_PASS = 0
 const EXIT_STOP = 1
@@ -109,6 +128,11 @@ const PR_FIELDS = 'number,title,body,state,headRefName,headRefOid,baseRefName,ur
   'statusCheckRollup,comments'
 
 const FLAKES_PATH = '.github/known-flakes.txt'
+
+// gh's own rendering of a 404 response, as in `gh: Not Found (HTTP 404)`. By the time the
+// allowlist is read, `gh pr view` has already succeeded against this repository, so a 404 on a
+// path inside it is the file being absent at that ref and nothing else.
+const HTTP_404 = /\(HTTP 404\)|\bNot Found\b/
 
 const CHECK_SUCCESS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
 const CHECK_FAILED = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'ERROR', 'STARTUP_FAILURE'])
@@ -132,7 +156,14 @@ against the base branch's known-flakes allowlist, unresolved review threads, lin
 follow-up draft comment, and whether an auto-merge or a merge queue is armed. With no argument the
 pull request is resolved from the current branch.
 
-It mutates nothing. Exit 0 when nothing stops the land, 1 when something does, 2 on a usage error
+Both copies of ${FLAKES_PATH} are read over the GitHub contents API, at the base ref and at the
+head SHA. A line in that file is one entry: a line that equals a check name this pull request
+reported moves that whole check from failed to flaky, and any other line splits on its first colon
+into check-name:test_name, which moves nothing and is reported as a job log worth reading. The
+name-first rule is what keeps a commit status context like \`ci/circleci: build\` readable.
+
+It mutates nothing, in the repository or in the clone: \`git remote get-url origin\` is the only
+git command it runs. Exit 0 when nothing stops the land, 1 when something does, 2 on a usage error
 or a refusal, 4 when a read failed and the answer is genuinely unknown.
 `
 
@@ -230,8 +261,14 @@ const bucketOf = (entry) => {
 /**
  * Parse .github/known-flakes.txt. One entry per line: a bare check name, or check-name:test_name
  * for a single flaky test inside a suite check. Blank lines and # comments are not entries.
+ *
+ * `names` is every check name this pull request reported, and it decides which of the two a line
+ * is. Splitting on the first colon unconditionally mangles a commit status context that contains
+ * one - `ci/circleci: build` became the check `ci/circleci` and the test `build`, matched nothing,
+ * and quietly excused no failure it was written to excuse. A line that equals a reported check
+ * name is that check; only a line matching no name splits.
  */
-const parseFlakes = (text) => {
+const parseFlakes = (text, names = new Set()) => {
   const bare = new Set()
   const tests = new Map()
   const lines = []
@@ -239,6 +276,7 @@ const parseFlakes = (text) => {
     const line = raw.trim()
     if (line === '' || line.startsWith('#')) continue
     lines.push(line)
+    if (names.has(line)) { bare.add(line); continue }
     const colon = line.indexOf(':')
     if (colon < 0) { bare.add(line); continue }
     const check = line.slice(0, colon).trim()
@@ -252,9 +290,12 @@ const parseFlakes = (text) => {
 
 /**
  * Give the nameless rollup entries their names from the `gh pr checks` cross-read. The details
- * url is the real join key and is used first. What is left over is paired positionally, and only
- * when both sides have the same number of leftovers - an unequal count means there is no way to
- * say which entry is which, and guessing a name onto a check is worse than reporting it unknown.
+ * url is the only join key. Both reads list the same checks in no guaranteed order, so pairing
+ * the leftovers by position is a guess, and the way it fails is the way that matters: with a
+ * rollup of one FAILURE and one SUCCESS, both nameless, and a cross-read naming `unit` and `e2e`,
+ * the counts agreed and the failure took whichever name came first. If that name was on the flake
+ * allowlist, the land went green over a real failure. An entry that does not join by url keeps a
+ * null name and is reported unknown, which stops the land.
  */
 const nameFromCrossRead = (entries, checks) => {
   const nameless = entries.filter((entry) => entry.name === null)
@@ -262,19 +303,13 @@ const nameFromCrossRead = (entries, checks) => {
   const known = new Set(entries.map((entry) => entry.name).filter((name) => name !== null))
   let leftovers = checks.filter((check) => check.name !== null && !known.has(check.name))
 
-  const still = []
   for (const entry of nameless) {
     const match = entry.url === null ? undefined : leftovers.find((check) => check.url === entry.url)
-    if (match === undefined) { still.push(entry); continue }
+    if (match === undefined) continue
     leftovers = leftovers.filter((check) => check !== match)
     entry.name = match.name
     if (tokenOf(entry) === '') entry.state = match.state
   }
-  if (still.length === 0 || still.length !== leftovers.length) return
-  still.forEach((entry, index) => {
-    entry.name = leftovers[index].name
-    if (tokenOf(entry) === '') entry.state = leftovers[index].state
-  })
 }
 
 /**
@@ -410,8 +445,13 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
   const headRef = nonEmpty(view.headRefName)
   const headSha = nonEmpty(view.headRefOid)
   if (headSha === null || !SHA.test(headSha)) {
-    stop('head-unreadable', `the head of #${prNumber} did not read back as a 40-character lowercase SHA ` +
-      `(found ${JSON.stringify(view.headRefOid ?? null)}), so there is no commit to pin the merge to`)
+    // A stop code and a failed read at once. The stop names what is wrong, and the failed read is
+    // what sets the exit code, because this is a value that did not arrive rather than a fact
+    // about the pull request.
+    const detail = `the head of #${prNumber} did not read back as a 40-character lowercase SHA ` +
+      `(found ${JSON.stringify(view.headRefOid ?? null)}), so there is no commit to pin the merge to`
+    stop('head-unreadable', detail)
+    noteFailure(detail)
   }
   const baseRef = nonEmpty(view.baseRefName)
 
@@ -442,8 +482,10 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
 
   // ------------------------------------------------------------------------------ 5. the CI gate
   const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : []
+  // A CheckRun carries name/detailsUrl; a commit status carries context/targetUrl. Reading both
+  // pairs is what lets a CodeRabbit status name itself instead of waiting on the cross-read.
   const entries = rollup.map((raw) => ({
-    name: nonEmpty(raw?.name),
+    name: nonEmpty(raw?.name) ?? nonEmpty(raw?.context),
     url: nonEmpty(raw?.detailsUrl) ?? nonEmpty(raw?.targetUrl) ?? null,
     conclusion: raw?.conclusion ?? null,
     status: raw?.status ?? null,
@@ -463,23 +505,44 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     : []
   nameFromCrossRead(entries, crossRead)
 
+  const reportedNames = new Set([
+    ...entries.map((entry) => entry.name),
+    ...crossRead.map((check) => check.name),
+  ].filter((name) => name !== null))
+
   // The allowlist that governs is the base branch's copy. The pull request's own copy is part of
-  // the diff under review, so it is read only to report what the branch added to it.
-  const showFile = (rev) => {
-    const read = runGit(['-C', cwd, 'show', `${rev}:${FLAKES_PATH}`], GIT_TIMEOUT_MS)
-    return read.code === 0 ? read.stdout : ''
+  // the diff under review, so it is read only to report what the branch added to it. Both come
+  // from the contents API at an explicit ref, so nothing here touches the clone and no stale
+  // remote-tracking ref can stand in for the base branch.
+  const readFlakes = (ref, what) => {
+    const path = `repos/${identity.owner}/${identity.repo}/contents/${FLAKES_PATH}?ref=${encodeURIComponent(ref)}`
+    const result = runGh(['api', '--hostname', identity.host, path], READ_TIMEOUT_MS)
+    if (result.code === 0) {
+      const body = parseObject(result.stdout)
+      // An empty file comes back as empty content with encoding "base64"; a file over the API's
+      // inline size limit comes back as empty content with encoding "none", and that is a file
+      // this program could not read rather than an empty allowlist. So the encoding decides.
+      if (typeof body?.content === 'string' && body.encoding === 'base64') {
+        return Buffer.from(body.content, 'base64').toString('utf8')
+      }
+      noteFailure(`${what} gave no readable file contents`)
+      return null
+    }
+    if (HTTP_404.test(result.stderr) || HTTP_404.test(result.stdout)) return ''
+    noteFailure(`${what}: ${redact(firstLine(result.stderr)) || `exit ${result.code}`}`)
+    return null
   }
-  let baseFlakes = parseFlakes('')
+
+  let baseFlakes = parseFlakes('', reportedNames)
   if (baseRef !== null) {
-    runGit(['-C', cwd, 'fetch', 'origin', baseRef], FETCH_TIMEOUT_MS)
-    baseFlakes = parseFlakes(showFile(`origin/${baseRef}`))
+    baseFlakes = parseFlakes(readFlakes(baseRef, `\`gh api\` for ${FLAKES_PATH} on ${baseRef}`), reportedNames)
   }
   let prFlakeLines = []
   if (headSha !== null && SHA.test(headSha)) {
-    // A fork's head ref does not exist on origin, so this fetch fails there and the pull request
-    // side reads empty. That is a missing comparison, not a failed gate.
-    if (headRef !== null) runGit(['-C', cwd, 'fetch', 'origin', headRef], FETCH_TIMEOUT_MS)
-    prFlakeLines = parseFlakes(showFile(headSha)).lines
+    // A fork's head commit is reachable in the base repository through refs/pull, and where it is
+    // not the read is a 404 and the pull request side reads empty. That is a missing comparison,
+    // not a failed gate.
+    prFlakeLines = parseFlakes(readFlakes(headSha, `\`gh api\` for ${FLAKES_PATH} at the head`), reportedNames).lines
   }
   const flakesAddedOnPr = prFlakeLines.filter((line) => !baseFlakes.lines.includes(line))
   if (flakesAddedOnPr.length > 0) {
@@ -500,6 +563,12 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     if (candidates !== undefined) ci.flakeCandidates[entry.name] = candidates
   }
 
+  if (entries.length === 0) {
+    const said = firstLine(checksRead.stderr)
+    stop('ci-unknown', `#${prNumber} reported no checks at all, which is also how a pull request looks in the ` +
+      'seconds after a push, before GitHub registers its check runs: no checks reported' +
+      (said === '' ? '' : ` (\`gh pr checks\` said: ${redact(said)})`))
+  }
   if (ci.pending.length > 0) stop('ci-pending', `${ci.pending.length} check(s) have not finished: ${ci.pending.join(', ')}`)
   if (ci.failed.length > 0) {
     stop('ci-failed', `${ci.failed.length} check(s) failed: ${ci.failed.map((c) => c.name).join(', ')}`)
@@ -632,7 +701,10 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     isDraft: view.isDraft ?? null,
     isCrossRepository: view.isCrossRepository ?? null,
     head: { ref: headRef, sha: headSha },
-    base: { ref: baseRef, isDefault: baseIsDefault },
+    // `default` is here because the stage retargets this pull request's children onto it, and a
+    // stage that hard-codes a branch name is wrong on every repository that named it something
+    // else. Null when `gh repo view` could not be read.
+    base: { ref: baseRef, isDefault: baseIsDefault, default: defaultBranch },
     stacked: { children },
     ci,
     threads,
