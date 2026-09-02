@@ -40,6 +40,15 @@
 //     response: receive-pack updated the branch and the client still saw a failure. Treating that
 //     as "nothing was published" would delete the marker that keeps the next run out.
 //
+// That same hook, armed before the run starts, fires on the claim tag instead of the branch, and
+// that is the acquire's own ambiguity: the tag is on origin and the client was told the push
+// failed, so it might be this run's tag or a rival's. Two cases sit on either side of it. A tag
+// planted before the run is a rival's beyond doubt and the stand-down is clean, at phase
+// pre-acquire. A tag first seen after this run's own push is an unknown that keeps the tag. The
+// third case is the other half of the same field: an acquire that fails before it pushes
+// anything, made by breaking origin's URL in the clone once the scan has finished with it, has no
+// tag to report and must not send a human looking for one.
+//
 // Run: node plugins/flow/scripts/smoke-issue-claim-verb.mjs
 
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -326,6 +335,11 @@ console.log('\nthe claim tag is already on origin')
   const before = allRefs(w.origin)
   const r = run(w, ['claim', String(ISSUE)])
   check('exits 3 with result held', r.code === 3 && r.json?.result === 'held', `exit ${r.code} ${r.stdout}`)
+  // The tag was there before this run pushed anything, so it is a rival's and the stand-down is
+  // clean. The ambiguous case further down looks like this one and is not.
+  check('at phase pre-acquire, with nothing retained',
+    r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
+  check('and nothing for a human to clean up', r.json?.cleanup === null && /Leave it alone/.test(r.stderr), `${r.json?.cleanup} ${JSON.stringify(r.stderr)}`)
   check('the tag is left exactly where it was', allRefs(w.origin) === before, allRefs(w.origin))
   check('no worktree, no branch, no issue edit',
     worktreePaths(w.repo).length === 1 && refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && callsTo(r.st, 'edit').length === 0,
@@ -483,6 +497,52 @@ console.log('\nwhat a failed worktree add tells the caller')
   check('so the result is an unknown that retains it', r.code === 4 && r.json?.result === 'unknown' && (r.json?.retained ?? []).includes('local-branch'), `exit ${r.code} ${r.stdout}`)
   check('naming the delete as the step that did not confirm', String(r.json?.cleanup).includes('local-branch-delete'), String(r.json?.cleanup))
   check('the claim tag still went back', r.json?.abandon === 'abandoned' && refSha(w.origin, TAG_REF) === null, `${r.json?.abandon} ${refSha(w.origin, TAG_REF)}`)
+}
+
+// ------------------------------------------------------- the tag push whose answer was lost
+console.log('\nthe tag lands on origin and the push still fails')
+{
+  // The hook is armed before the run starts, so it fires on the claim tag rather than on the
+  // branch: origin ends up holding refs/tags/flow-claim-issue-7 and the acquire is told its push
+  // failed. Its re-read finds the tag and cannot say whose it is, because both racers push the
+  // same object. Reporting that as a clean hold would tell the stage this run left nothing while
+  // its own tag sits on origin refusing every later claim on the issue.
+  const w = makeWorld('acquire-answer-lost')
+  writeHook(w.origin, 'pre-receive', PLANT_THEN_REFUSE)
+  const r = run(w, ['claim', String(ISSUE)])
+  check('exits 4 with result unknown, not 3 with a clean hold', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
+  check('the reason separates it from a rival\'s tag', r.json?.reason === 'acquire-ambiguous', String(r.json?.reason))
+  check('at phase acquired, retaining the claim tag',
+    r.json?.phase === 'acquired' && JSON.stringify(r.json?.retained) === JSON.stringify(['claim-tag']), r.stdout)
+  check('the tag really is on origin, at the object the acquire pushed', refSha(w.origin, TAG_REF) === w.mainSha, String(refSha(w.origin, TAG_REF)))
+  check('the stderr names where it is', r.stderr.includes(TAG_REF), JSON.stringify(r.stderr))
+  check('this run published no branch and added no worktree',
+    refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && worktreePaths(w.repo).length === 1, 'something was published')
+  check('the issue was not touched', callsTo(r.st, 'edit').length === 0, 'an edit went out')
+}
+
+// ----------------------------------------------------- an acquire that fails before it pushes
+console.log('\nthe acquire cannot read origin at all')
+{
+  // Origin's URL in the clone is broken from the fake gh's `pr list`, which is the last read of
+  // the scan, so the scan finishes against the real remote and the acquire fails on its first
+  // read, refs/heads/main, having pushed nothing. Every acquire failure used to come back as a
+  // tag that may exist, which sends an issue to manual recovery over a remote that was briefly
+  // unreachable.
+  const w = makeWorld('acquire-unreadable')
+  const st = freshState()
+  st.onPrList = () => { git(w.repo, 'remote', 'set-url', 'origin', join(w.dir, 'no-such-origin.git')) }
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check('exits 4 with result unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
+  check('naming the acquire as the step that failed', r.json?.reason === 'acquire-unknown', String(r.json?.reason))
+  check('at phase pre-acquire, because no push was ever attempted',
+    r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
+  check('with no cleanup step to report', r.json?.cleanup === null, String(r.json?.cleanup))
+  check('and the human is not sent looking for a tag', /Nothing of this run is left anywhere/.test(r.stderr), JSON.stringify(r.stderr))
+  check('origin holds no claim tag', refSha(w.origin, TAG_REF) === null, String(refSha(w.origin, TAG_REF)))
+  check('no branch, no worktree, no issue edit',
+    refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0,
+    'something was mutated')
 }
 
 rmSync(tmp, { recursive: true, force: true })
