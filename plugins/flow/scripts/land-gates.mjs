@@ -59,11 +59,13 @@
 // collected differs from the total_count the first page reported, or when one unpaginated read of
 // the commit's check-suites collection reports 1000 suites or more, a count taken from that
 // collection because a check suite that has no runs in it is real and never shows up in the runs.
-// Those counts bracket the collection, once before the check-runs pages and once after both them
-// and the statuses, and a count that moved between the two brackets is `ci-unknown` rather than a
-// pass, while a check that registers after the second bracket stops being this program's problem,
-// because the merge pins the head with --match-head-commit and the stage runs it only on a pass
-// run with no mutation since.
+// Those reads bracket the collection, a suite count and the check-runs pages taken before it and
+// again after both them and the statuses, and the closing read of the runs is a second full read
+// compared run by run on id, status and conclusion, so a run re-requested or flipped in place
+// between the two reads is caught as movement instead of counted as unchanged. Only a change that
+// lands after the closing read is outside what a point-in-time gate can see, and that one is the
+// merge's problem, pinned with --match-head-commit and run by the stage only on a pass with no
+// mutation since.
 //
 // The two check sources are partitioned differently because they report differently. A check run
 // carries `status` - queued, in_progress, completed - beside `conclusion`, so it is pending until
@@ -817,6 +819,11 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
       noteFailure(detail)
       checksReadable = false
     }
+    // What a check run is compared by across the bracket. The count alone cannot see a run that
+    // was re-requested back to queued or flipped to failed in place, because neither moves it.
+    const markOf = (run) => `${run?.id ?? null}:${run?.status ?? null}:${run?.conclusion ?? null}`
+    const stateOf = (run) => `${run?.status ?? null}:${run?.conclusion ?? null}`
+
     const overSuiteCap = (total) => {
       const detail = `${headSha} carries ${total} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the ` +
         'check-runs endpoint serves from, so a failing run in an older suite would not appear in this read at ' +
@@ -835,6 +842,8 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     let pagesWhole = true
     let collected = 0
     let runsTotal = null
+    const runMarks = []
+    const runStates = new Map()
     const runPages = readPages(commitPath('check-runs', 100), '`gh api` over the check runs')
     if (runPages === null) checksReadable = false
     else {
@@ -864,6 +873,8 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
             pagesWhole = false
             break
           }
+          runMarks.push(markOf(run))
+          runStates.set(String(run?.id ?? null), stateOf(run))
           entries.push({
             kind: 'check-run',
             name: nonEmpty(run?.name),
@@ -940,15 +951,63 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     }
 
     // ------------------------------------------------------------------------ the closing bracket
-    // Every read the collection is made of has succeeded, so the same counts are taken again. A
-    // count that moved means a check suite, a check run or a commit status arrived while the pages
-    // were being walked, and what this gate holds is then two moments mixed rather than the state
-    // of one. The closing suite count needs no cap check of its own: it has to equal an opening
-    // count that already passed the cap.
+    // Every read the collection is made of has succeeded, so it is taken again and compared. The
+    // check runs are read in full a second time, because a count cannot see a run that changed
+    // where it stood: a re-requested run goes back to queued under the same id, and a run that
+    // was green when the pages were walked can be red by the time this gate reports. So the
+    // comparison is every run's id, status and conclusion, and the counts do the same job for the
+    // suites and the statuses, which this gate reads for how many there are rather than for what
+    // each one says. The closing suite count needs no cap check of its own, because it has to
+    // equal an opening count that already passed the cap.
     if (checksReadable) {
-      const runsAfter = countOf('check-runs')
-      if (runsAfter.total === null) unreadable('the check-run count', runsAfter.why)
-      else if (runsAfter.total !== runsTotal) moved('the check-run count', runsTotal, runsAfter.total)
+      const afterPages = readPages(commitPath('check-runs', 100), '`gh api` over the check runs a second time')
+      if (afterPages === null) checksReadable = false
+      else {
+        const afterMarks = []
+        const afterStates = new Map()
+        let afterCollected = 0
+        let afterWhole = true
+        for (const page of afterPages) {
+          if (!Array.isArray(page?.check_runs)) {
+            noteFailure('the second `gh api` over the check runs returned a page with no check_runs array in it')
+            checksReadable = false
+            afterWhole = false
+            break
+          }
+          for (const run of page.check_runs) {
+            afterCollected++
+            afterMarks.push(markOf(run))
+            afterStates.set(String(run?.id ?? null), stateOf(run))
+          }
+        }
+        if (afterWhole) {
+          const reported = afterPages[0]?.total_count
+          const total = Number.isSafeInteger(reported) && reported >= 0 ? reported : null
+          if (total === null || total !== afterCollected) {
+            const detail = `the second check-run read on ${headSha} collected ${afterCollected} run(s) and its ` +
+              `first page reported total_count ${total === null ? JSON.stringify(reported ?? null) : total}, so ` +
+              'that read is short of what GitHub says is on the commit and proves nothing about the first one'
+            stop('ci-unknown', detail)
+            noteFailure(detail)
+            checksReadable = false
+          } else if (afterCollected !== runsTotal) {
+            moved('the check-run count', runsTotal, afterCollected)
+          } else if (JSON.stringify([...afterMarks].sort()) !== JSON.stringify([...runMarks].sort())) {
+            // Same runs, different state on at least one of them. The ids say which, and five is
+            // as many as a stop detail can name before it stops being read.
+            const ids = []
+            for (const [id, state] of runStates) if (afterStates.get(id) !== state) ids.push(id)
+            for (const id of afterStates.keys()) if (!runStates.has(id)) ids.push(id)
+            const named = ids.slice(0, 5).join(', ')
+            const detail = `${ids.length} check run(s) on ${headSha} changed state while this gate was reading ` +
+              `(run id ${named}${ids.length > 5 ? ` and ${ids.length - 5} more` : ''}), so the runs it collected ` +
+              'are two moments mixed together and a pass on them would be a pass on a state that is already gone'
+            stop('ci-unknown', detail)
+            noteFailure(detail)
+            checksReadable = false
+          }
+        }
+      }
     }
     if (checksReadable) {
       const suitesAfter = countOf('check-suites')
