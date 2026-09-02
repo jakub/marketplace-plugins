@@ -247,7 +247,9 @@ const applyEdit = (st, args) => {
       if (at >= 0) labels.splice(at, 1)
     }
     if (args[i] === '--add-label' && !labels.includes(args[i + 1])) labels.push(args[i + 1])
-    if (args[i] === '--add-assignee') st.issue.assignees = [{ login: 'jakub' }]
+    // Whoever the token belongs to, which is what GitHub resolves `@me` to and what `gh api user`
+    // answers with, so the fixture cannot name a third party here.
+    if (args[i] === '--add-assignee') st.issue.assignees = [{ login: st.login }]
   }
   st.issue.labels = labels.map((name) => ({ name }))
 }
@@ -346,6 +348,21 @@ console.log('\na claim on a ready issue')
     loginCalls(r.st).length === 1 && loginCalls(r.st)[0].args[loginCalls(r.st)[0].args.indexOf('--hostname') + 1] === 'github.com' &&
     loginCalls(r.st)[0].args.includes('.login'), JSON.stringify(loginCalls(r.st).map((c) => c.args)))
   check('and the issue reads back assigned to it', r.st.issue.assignees.some((who) => who.login === 'jakub'), JSON.stringify(r.st.issue.assignees))
+}
+
+// ------------------------------------------- a token that belongs to somebody else's login
+console.log('\nthe token behind @me belongs to another login')
+{
+  // GitHub resolves `--add-assignee @me` to whoever the token belongs to, which is why the
+  // executor reads that login rather than assuming one. The fake wrote 'jakub' into the assignee
+  // list whatever `gh api user` had just answered, so a fixture with any other login described a
+  // state GitHub cannot produce and the confirming read would have failed on the fixture's own
+  // contradiction rather than on anything the executor did.
+  const w = makeWorld('another-login')
+  const r = run(w, ['claim', String(ISSUE)], freshState({ login: 'octocat' }))
+  check('the claim goes through', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout}`)
+  check('and the issue reads back assigned to that login',
+    r.st.issue.assignees.some((who) => who.login === 'octocat'), JSON.stringify(r.st.issue.assignees))
 }
 
 // ------------------------------------------------------- claim called with no gh runner
