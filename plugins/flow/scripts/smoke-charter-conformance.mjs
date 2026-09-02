@@ -527,4 +527,6 @@ assert.equal(charterSection('# x\n\n## A\nbody\n', 'B'), null, 'a missing headin
 assert.equal(charterSection('## A\na\n## B\nb\n</flow-charter>\n', 'B'), '## B\nb\n', 'the section must stop at the closing tag')
 assert.equal(charterSection('## A\na\n## B\nb\n', 'A'), '## A\na\n', 'the section must stop at the next heading')
 assert.equal(charterSection('## A\na\n', 'A'), '## A\na\n', 'the last section runs to the end of the text')
-ok('charterSection reads null for a missing heading and stops at the next heading or the closing tag')
+assert.equal(charterSection('## A\na\n```markdown\n## not a heading\n```\nb\n## B\nc\n', 'A'), '## A\na\n```markdown\n## not a heading\n```\nb\n', 'a heading inside a fenced example must not end the section')
+assert.equal(charterSection('## A\na\n~~~\n## not a heading\n```\n## still fenced\n~~~\nb\n## B\n', 'A'), '## A\na\n~~~\n## not a heading\n```\n## still fenced\n~~~\nb\n', 'only a matching fence closes a fenced example')
+ok('charterSection reads null for a missing heading, stops at the next heading or the closing tag, and reads through a fenced example')

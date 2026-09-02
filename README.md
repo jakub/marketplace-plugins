@@ -74,7 +74,7 @@ The same reasoning is why the shim running the newest install it can find is mit
 ## flow
 **flow** is my attempt at an agentic development framework. It consists of a charter, three commands, and a couple of hooks. It's by no means perfect, but produces code I can live with.
 
-The charter is injected into the main session at `SessionStart`, and defines *how* we work together. Worker seats don't inherit it: the orchestrator carries the rules a seat needs into its prompt, and a seat reached across the bridge gets the charter's engineering-rules section plus the containment contract. It attempts to give the agent guidance on how to delegate and pick models for subagent calls, some general rules of engagement, and some requirements that must be met.
+The charter is injected into the main session at `SessionStart`, and defines *how* we work together. A fresh worker seat doesn't inherit it (only a fork of the orchestrator's own context does): the orchestrator carries the rules a seat needs into its prompt, and a seat reached across the bridge gets the charter's engineering-rules section plus the containment contract. It attempts to give the agent guidance on how to delegate and pick models for subagent calls, some general rules of engagement, and some requirements that must be met.
 
 The orchestrator (whichever model the session was launched with) is then allowed to flex what resources it allocates to what problem, and when, instead of running a hard-coded pipeline. The agent scoring table idea is stolen from @Theo.
 

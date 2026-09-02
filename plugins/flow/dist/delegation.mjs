@@ -56560,7 +56560,24 @@ function charterSection(text, heading) {
   const lines = text.split("\n");
   const start = lines.indexOf(`## ${heading}`);
   if (start === -1) return null;
-  const next = lines.findIndex((line, at2) => at2 > start && (line.startsWith("## ") || line === "</flow-charter>"));
+  let fence = null;
+  let next = -1;
+  for (let at2 = start + 1; at2 < lines.length; at2 += 1) {
+    const line = lines[at2];
+    const opener = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence === null && opener) {
+      fence = opener[1];
+      continue;
+    }
+    if (fence !== null) {
+      if (opener && opener[1][0] === fence[0] && opener[1].length >= fence.length) fence = null;
+      continue;
+    }
+    if (line.startsWith("## ") || line === "</flow-charter>") {
+      next = at2;
+      break;
+    }
+  }
   if (next === -1) return lines.slice(start).join("\n");
   return `${lines.slice(start, next).join("\n")}
 `;
