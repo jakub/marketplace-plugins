@@ -1,5 +1,5 @@
-Note to agents: this charter outlines how we use `flow` to work on bigger projects. 
-If we're working on a smaller project that *isn't* using `flow`, don't ignore this file! 
+Note to agents: this charter outlines how we use `flow` to work on bigger projects.
+If we're working on a smaller project that *isn't* using `flow`, don't ignore this file!
 There's good stuff here that I want you to follow, so skip the ceremony but apply the principles: follow everything except the `flow` pipeline section.
 Orchestration, delegation, model selection, and rules of engagement ALWAYS apply.
 
@@ -13,7 +13,7 @@ Use this as a guide for all development tasks.
 This charter is host-neutral: wherever it names a role in `[[role:…]]` brackets, the `<flow-profile>` block injected beside it says what that role binds to on your host. Charter present but no profile block? Say so once, keep every rule here that is still true, invent no host mechanism, and don't start the pipeline stages until the human fixes the install.
 
 ## Orchestration with Delegation to Worker Seats
-The overall operating model for `flow` is a main-thread conductor that spawns and monitors worker seats [[role:sub-seat]]. The model the human launched the session with conducts; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.
+The overall operating model for `flow` is a main-thread orchestrator that spawns and monitors worker seats [[role:sub-seat]]. A seat is one spawned model instance with its own model, effort, tools and prompt. The model the human launched the session with orchestrates; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.
 
 The orchestrator has standing permission to spawn seats at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by worker seats.
 
@@ -22,14 +22,14 @@ Delegation is not free however: each seat re-establishes context and reports bac
 Never spawn more than ~20 parallel seats without the user's confirmation first.
 
 Permissions scale with how reversible the change is. Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
- 
+
 ## Cross-Family Delegation
 Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses `delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to inspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either provider through shell commands.
 
 Set the model and effort explicitly every time. Always use the `default` service tier. The server rejects same-family calls and nested cross-family calls. Codex supports live steering and crash reconciliation. Claude supports cancellation and session continuation, but not live steering or post-crash result recovery; read the reported capabilities instead of assuming symmetry.
 
 ## The `flow` pipeline
-The pipeline is three stages that run in order: prep → issue → land [[role:pipeline-entry]]; your host profile says how each one is invoked. Where a stage needs a decision from the human, it goes through the human-choice binding [[role:human-choice]], and whether that binding answers inside the turn or ends it is a fact about your host, not a preference.
+The pipeline is three stages that run in order: prep → issue → land [[role:pipeline-entry]]; your host profile says how each one is invoked. Where a stage needs a decision from the human, it goes through the human-choice binding [[role:human-choice]], and whether that binding answers inside the turn or ends it is a fact about your host.
 
 `prep` is the front door, and nothing enters the issue tracker otherwise.
 `issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.
@@ -40,7 +40,7 @@ The issue is the record of events. The issue body is a living spec that should b
 Issues must contain acceptance criteria, including what evidence is required to satisfy.
 PRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher [[role:artifact-publish]] (the plans client).
 
-`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything I didn't say or that changes the proposed shape for the better, then interview me one question at a time, prioritizing answers that change the architecture.
+`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything the human didn't say or that changes the proposed shape for the better, then interview them one question at a time, prioritizing answers that change the architecture.
 
 ## Model Rankings
 As of 2026-09. Higher is better, on every axis.
@@ -57,7 +57,7 @@ Classifiers says whether the model runs cyber classifiers that can refuse securi
 | gpt-5.6-sol              | 7         | 8            | 5     | standard    |
 | gpt-daybreak-blue-latest | 7         | 8            | 5     | none        |
 | fable-5-1                | 2         | 10           | 9     | standard    |
- 
+
 ## Rules of Engagement - Model Selection
 These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
 
@@ -111,18 +111,18 @@ Avoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, 
 
 A backgrounded task, monitor, or worker seat that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.
 
-Green verdicts on anything that ships need a confirming cross-model read. 
+Green verdicts on anything that ships need a confirming cross-model read.
 
 When structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.
 
 When adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through the artifact publisher with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.
 
-We are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix. 
+We are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix.
 
 No unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.
 
 Comments are documentation - preserve and update while working, drop only if provably wrong.
-Real dependencies over mocks. 
+Real dependencies over mocks.
 Design against races/TOCTOU up front for check-then-act code.
 Redact implementation details (db errors, stack traces, internal paths) at trust boundaries.
 When asked for a secret, surface ONLY the credential requested and avoid log pollution.

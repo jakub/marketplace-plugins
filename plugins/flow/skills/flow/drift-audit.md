@@ -3,7 +3,7 @@
 Re-run the framework's invariants against reality. Report findings ranked by severity;
 fix only when asked (or when running as the ambient cron with standing instructions).
 Delegate each numbered section to a scoped agent (sonnet unless noted); reconcile and
-judge the combined report on the conductor.
+judge the combined report on the orchestrator.
 
 Scope: the current repo when run inside one; the whole workspace when run from the
 workspace root (the directory holding the project checkouts, e.g. `~/code`).
@@ -42,7 +42,7 @@ Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
 
 ## 4. Repo state hygiene
 
-The operator is the owner of the marketplace repo's `origin` (the repo whose
+The human is the owner of the marketplace repo's `origin` (the repo whose
 `.claude-plugin/marketplace.json` names marketplace `jakub`). A repo whose `origin` owner is
 someone else is third-party: it gets one report line saying so, and neither the label
 taxonomy check in section 3 nor any branch or worktree proposal here runs against it. Flow's

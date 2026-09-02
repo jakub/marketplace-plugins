@@ -56,7 +56,7 @@ Rules:
 
 An issue may hold `ready-for-agent` only while ALL of these validate. The nightly lint
 removes the label (and comments why) from any issue that stops conforming - the label is a
-contract, not a vibe. This contract is the safety case for eventual unattended
+contract. This contract is the safety case for eventual unattended
 auto-implementation; keep it strict.
 
 1. **Restated why**: the body opens with goal + why, current enough that a cold reader
@@ -91,7 +91,7 @@ auto-implementation; keep it strict.
    drifted colors, rewrite drifted descriptions. Delete nothing; labels outside the closed
    taxonomy are reported as drift for a human to remove.
 2. For every open `ready-for-agent` issue: validate the six contract points (a scoped
-   sonnet agent per issue; judgment calls escalate to the conductor). Non-conforming →
+   sonnet agent per issue; judgment calls escalate to the orchestrator). Non-conforming →
    remove label, add `needs-triage`, comment the specific failures.
 3. For every `in-progress` issue: verify a live worktree/branch/PR actually exists;
    orphaned claims → clear back to `ready-for-agent` with a comment.

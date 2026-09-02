@@ -1,6 +1,6 @@
 ---
 name: land-stage
-description: Land one named pull request through the flow gates - the CI and unresolved-thread checks, the escape-hatch ack, the squash-merge, explicit issue closure, worktree retirement, and a survey of what to do next. The only merge path. MUST only run when the operator explicitly asks to land a specific PR; never start it from adjacent work, a finished review, or a green build.
+description: Land one named pull request through the flow gates - the CI and unresolved-thread checks, the escape-hatch ack, the squash-merge, explicit issue closure, worktree retirement, and a survey of what to do next. The only merge path. MUST only run when the human explicitly asks to land a specific PR; never start it from adjacent work, a finished review, or a green build.
 disable-model-invocation: true
 ---
 
@@ -12,11 +12,11 @@ Everything up to `## Host mechanics` is the same on every host. That section, at
 
 ## Core principles
 
-1) You are the gate, not another autonomous stage. A merge is the hardest thing in this pipeline to reverse, so anything that looks off gets presented to the human instead of resolved by you.
+1) You are the gate. A merge is the hardest thing in this pipeline to reverse, so anything that looks off gets presented to the human instead of resolved by you.
 2) A check that errored, went stale, or is still pending is UNKNOWN - never a pass. Read the rollup yourself.
 3) Prove outcomes, don't infer them. The merge and every issue closure get confirmed by re-reading state afterwards, because a failed command and a silent no-op both look like success from here.
 4) Nothing external is lost. An unresolved reviewer thread blocks the merge even when it arrived after the run had already finished.
-5) Housekeeping never blocks the land, and the survey at the end takes NO action - it is a menu, not a plan.
+5) Housekeeping never blocks the land, and the survey at the end takes NO action - it is a menu.
 
 ## 1. Resolve
 
@@ -44,10 +44,10 @@ The JSON rollup mixes CheckRuns with commit statuses, which is how external revi
 
 - **All SUCCESS / NEUTRAL / SKIPPED**: proceed.
 - **Anything pending**: wait briefly and re-read. Still pending → report it and stop.
-- **A failure listed in the repo's `.github/known-flakes.txt`**: note it and merge through. Read the allowlist from the base branch, never from the PR: `git fetch origin $BASE_REF && git show origin/$BASE_REF:.github/known-flakes.txt`. The PR's own copy is part of what is being reviewed, and a branch that adds its failing check to the allowlist must not get to wave itself through - an entry that exists only on the PR side is a diff to flag, not an allowance. Entries are one per line in two forms - a bare check name means the whole check is flaky, while `check-name:test_name` means one flaky test inside a suite check, and merging through then requires the job log (`gh run view --log-failed`) to show THAT test as the sole failure.
+- **A failure listed in the repo's `.github/known-flakes.txt`**: note it and merge through. Read the allowlist from the base branch, never from the PR: `git fetch origin $BASE_REF && git show origin/$BASE_REF:.github/known-flakes.txt`. The PR's own copy is part of what is being reviewed, so an entry that exists only on the PR side is a diff to flag. Entries are one per line in two forms. A bare check name means the whole check is flaky. `check-name:test_name` means one flaky test inside a suite check, and merging through then requires the job log (`gh run view --log-failed`) to show THAT test as the sole failure.
 - **Anything else**, including an errored or stale check: abort and show it. The one exception is the valve below.
 
-**The rerun-once valve** covers a suite check failing on a single test. All three of these have to hold: the failing test predates this PR (`git log origin/$BASE_REF..HEAD -S <test_name>` finds no commit - the range matters, because an unbounded `git log -S` walks all of history and finds the commit that originally introduced the test on main, which proves nothing about this PR), its file and paths don't overlap the PR diff, and the failure is timing-shaped - a timeout, an elapsed-time assertion, pool starvation - rather than an assertion on values. Then rerun the failed job ONCE (`gh run rerun <id> --failed`), re-read the rollup, and note the rerun in the land report.
+**The rerun-once valve** covers a suite check failing on a single test. All three of these have to hold. The failing test predates this PR: `git log origin/$BASE_REF..HEAD -S <test_name>` finds no commit (bound the range, since an unbounded `git log -S` finds the commit that introduced the test on main and proves nothing about this PR). Its file and paths don't overlap the PR diff. And the failure is timing-shaped (a timeout, an elapsed-time assertion, pool starvation) rather than an assertion on values. Then rerun the failed job ONCE (`gh run rerun <id> --failed`), re-read the rollup, and note the rerun in the land report.
 
 Red twice on identical code is real: abort. Never rerun an assertion failure - that one is telling you the truth.
 
@@ -108,7 +108,7 @@ On decline, reply to the draft comment saying it was consciously dropped, so the
 
 ## 6. Merge and close
 
-1) First, two arming checks: if the step-1 read showed `autoMergeRequest` set, stop - someone armed an auto-merge that will land this PR out of sight, and that gets surfaced to the human, not merged over. If the base branch uses a merge queue, stop the same way: this stage performs an immediate merge, and a command that quietly enqueues instead leaves an armed future merge behind the moment your gate observations go stale.
+1) First, two arming checks. If the step-1 read showed `autoMergeRequest` set, stop: someone armed an auto-merge that will land this PR out of sight, and that goes to the human. If the base branch uses a merge queue, stop the same way: this stage performs an immediate merge, and a command that quietly enqueues leaves an armed future merge behind once your gate observations go stale.
 
 Then merge, the way your host's subsection below says. Both paths are a squash-merge pinned with `--match-head-commit $HEAD_SHA`, deliberately WITHOUT `--delete-branch`. The issue run's worktree still holds the local branch, so the local delete fails - and a non-zero exit would mask a merge that actually succeeded. `--match-head-commit` is GitHub's own re-check that the head is still the commit every gate above inspected; a push that raced the gates fails the merge instead of landing unreviewed, and the answer to that failure is to re-run the gates, never to re-issue the merge with a fresh SHA.
 
@@ -166,6 +166,6 @@ Everything above is host-neutral. Two steps differ by host; everything else runs
 node <plugin-root>/scripts/land-merge.mjs <pr> $HEAD_SHA
 ```
 
-It takes the PR number and the head every gate above inspected, and nothing else: it derives the host-qualified repository from the origin remote, reads the head SHA, state, draft flag and base from GitHub, refuses when GitHub's head is not the one you passed (the PR moved after the gates, so re-run them), refuses a closed or draft PR, a non-default base, an armed auto-merge or a merge queue, merges with `--squash --match-head-commit` pinned to that verified head, and re-reads the PR. Without the second argument the executor would pin the merge to whatever head it read itself, after the gates, which proves nothing. Its exit code is the gate. Exit 0 means the re-read confirmed the merge. Exit 1 with `refused` on stderr means nothing landed; read the reason and fix what it names. Any other exit 1 is neither a clean success nor a clean failure: a lost confirming read, a PR that reads `MERGED` but no longer matches what was verified, or an armed state that may still land later. Look at the PR yourself, do not re-run the executor blindly, and do not report it as either merged or failed. Never route around a guard denial with another spelling; the denial means take the executor path.
+It takes the PR number and the head every gate above inspected, and nothing else. It reads the PR from GitHub, refuses when GitHub's head is not the one you passed (the PR moved after the gates, so re-run them), refuses a closed or draft PR, a non-default base, an armed auto-merge or a merge queue, merges with `--squash --match-head-commit` pinned to that verified head, and re-reads the PR. Its exit code is the gate. Exit 0 means the re-read confirmed the merge. Exit 1 with `refused` on stderr means nothing landed; read the reason and fix what it names. Any other exit 1 is neither a clean success nor a clean failure (a lost confirming read, a PR that reads `MERGED` but no longer matches, an armed state that may still land): look at the PR yourself, do not re-run the executor blindly, and do not report it as either merged or failed. Never route around a guard denial with another spelling; the denial means take the executor path.
 
 **Allowance notes.** There is no per-skill tool allowance on this host; the session's sandbox and approval policy apply as they are. The memory stamp is an ordinary file edit.
