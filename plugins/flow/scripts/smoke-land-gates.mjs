@@ -31,7 +31,8 @@
 // red pull request: `gh pr view` answered with the first hundred checks and the first hundred
 // comments and no page after either. T2 is the last, and it is T1's other half. Paging the
 // check-runs endpoint to exhaustion still does not prove the list is whole, because the endpoint
-// serves from a bounded window of check suites, so the read now has to prove itself or exit 4.
+// serves from a window of the 1000 most recent check suites, so the read now has to prove itself
+// or exit 4, and the suite count it proves itself against comes from the suite collection.
 //
 // G1, J1 and O2 went with the mechanism they guarded. All three were ways the `gh pr checks`
 // cross-read could put a passing name on a failing check, and there is no cross-read now, because
@@ -67,12 +68,26 @@ const FLAKES_PATH = '.github/known-flakes.txt'
 
 // ------------------------------------------------------------------ the fixtures, per case
 // The REST shapes, spelled the way GitHub serves them. A check run has name, status and
-// conclusion, all lowercase, with details_url beside them. A commit status has context, state and
-// target_url, and no conclusion at all. A comment has id, body and both urls, the html one being
-// the one a human opens.
+// conclusion, all lowercase, with details_url and the check suite it belongs to beside them. A
+// commit status has context, state and target_url, and no conclusion at all. A comment has id,
+// body and both urls, the html one being the one a human opens.
+//
+// Every run here belongs to suite 1 unless a case says otherwise, which is what one workflow run
+// on a commit really looks like. How many suites the commit carries is not derived from these
+// ids, it is the checkSuites total the check-suites collection reports, so a case that wants a
+// crowded commit sets that and leaves the runs alone.
 const checkRun = (name, conclusion, extra = {}) => ({
-  name, status: conclusion === null ? 'in_progress' : 'completed', conclusion, details_url: `https://ci.example/${name}`, ...extra,
+  name, status: conclusion === null ? 'in_progress' : 'completed', conclusion,
+  details_url: `https://ci.example/${name}`, check_suite: { id: 1 }, ...extra,
 })
+
+// A run GitHub served without naming its suite. The executor cannot place it against the suite
+// count, so it is an unreadable check response rather than one entry to skip.
+const suitelessRun = (name, conclusion) => {
+  const run = checkRun(name, conclusion)
+  delete run.check_suite
+  return run
+}
 
 const commitStatus = (context, state, extra = {}) => ({
   context, state, target_url: `https://cr.example/${context}`, ...extra,
@@ -115,8 +130,9 @@ const freshState = (overrides = {}) => ({
   defaultBranch: 'main',
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')],
   checkRunsTotal: null,  // the total_count the check-runs pages report; null serves the honest count
+  checkSuites: 1,        // the total_count the check-suites collection reports for the head commit
   statuses: [],          // the commit statuses on the head, newest first, as the endpoint serves them
-  apiFail: null,         // 'check-runs', 'statuses' or 'comments': that read fails with a 500
+  apiFail: null,         // 'check-runs', 'check-suites', 'statuses' or 'comments': that read fails with a 500
   apiShape: null,        // 'not-pages' or 'no-check-runs-key': that read answers something unreadable
   pagesServed: [],       // one record per paginated read, so a case can prove two pages were walked
   children: [],
@@ -219,6 +235,16 @@ const makeRunGh = (st) => (args) => {
         encoding: st.flakesEncoding,
         content: st.flakesEncoding === 'base64' ? Buffer.from(content, 'utf8').toString('base64') : '',
       })
+    }
+
+    // How many check suites the head commit carries. One page of one, no --paginate, because the
+    // executor uses the total_count and nothing else. checkSuites set to something that is not a
+    // count is served as it is, which is how the unreadable answer is driven.
+    if (path !== undefined && path.includes('/check-suites?')) {
+      if (st.apiFail === 'check-suites') {
+        return { code: 1, stdout: '{"message":"Internal Server Error"}', stderr: 'gh: Internal Server Error (HTTP 500)\n' }
+      }
+      return ok({ total_count: st.checkSuites, check_suites: [] })
     }
 
     // The three reads that have to be paged: the check runs and the commit statuses on the head
@@ -451,7 +477,7 @@ check('and that also reads as a queue', enqueued.json?.arming?.mergeQueue === tr
 console.log('\na check nobody can name is unknown, never green')
 const unnamedRun = stopsOn('a check run with no name', 'ci-unknown', {
   st: freshState({
-    checkRuns: [checkRun('unit', 'success'), { name: '', status: 'completed', conclusion: 'success', details_url: 'https://ci.example/anon' }],
+    checkRuns: [checkRun('unit', 'success'), { name: '', status: 'completed', conclusion: 'success', details_url: 'https://ci.example/anon', check_suite: { id: 1 } }],
   }),
 })
 check('it is reported with a null name', unnamedRun.json?.ci?.unknown?.[0]?.name === null, JSON.stringify(unnamedRun.json?.ci?.unknown))
@@ -830,8 +856,8 @@ console.log('\nJ4: one accepted test moves one check, and only where the name is
 const twinSuite = (extra = {}) => freshState({
   checkRuns: [
     checkRun('unit', 'success'),
-    { name: 'suite', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/suite/1' },
-    { name: 'suite', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/suite/2' },
+    { name: 'suite', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/suite/1', check_suite: { id: 1 } },
+    { name: 'suite', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/suite/2', check_suite: { id: 1 } },
   ],
   baseFlakes: 'suite:test_x\n',
   ...extra,
@@ -1058,8 +1084,8 @@ const twinFlaky = run([String(PR)], {
   st: freshState({
     checkRuns: [
       checkRun('unit', 'success'),
-      { name: 'e2e', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/e2e/1' },
-      { name: 'e2e', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/e2e/2' },
+      { name: 'e2e', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/e2e/1', check_suite: { id: 1 } },
+      { name: 'e2e', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example/e2e/2', check_suite: { id: 1 } },
     ],
     baseFlakes: 'e2e\n',
   }),
@@ -1136,7 +1162,7 @@ const mixed = run([String(PR)], {
     checkRuns: [
       checkRun('unit', 'success'),
       checkRun('e2e', 'failure'),
-      { name: 'slow', status: 'queued', conclusion: null, details_url: 'https://ci.example/slow' },
+      { name: 'slow', status: 'queued', conclusion: null, details_url: 'https://ci.example/slow', check_suite: { id: 1 } },
     ],
     statuses: [commitStatus('coderabbit', 'success'), commitStatus('deploy', 'pending'), commitStatus('scan', 'error')],
   }),
@@ -1151,7 +1177,7 @@ check('and nothing from either source is left unknown', JSON.stringify(mixed.jso
 
 const inFlight = run([String(PR)], {
   st: freshState({
-    checkRuns: [checkRun('unit', 'success'), { name: 'e2e', status: 'in_progress', conclusion: 'failure', details_url: 'https://ci.example/e2e' }],
+    checkRuns: [checkRun('unit', 'success'), { name: 'e2e', status: 'in_progress', conclusion: 'failure', details_url: 'https://ci.example/e2e', check_suite: { id: 1 } }],
   }),
 })
 check('a check run that has not completed is pending, whatever conclusion it still carries',
@@ -1194,11 +1220,16 @@ check('and neither is mistaken for a pull request with no checks',
 console.log('\nT2: a check-run read that cannot be proven complete fails closed')
 // The check-runs endpoint serves a ref's runs from at most the most recent 1000 check suites on
 // it and truncates in silence, so walking every page it offers is not proof that the list is
-// whole. Two facts about the read stand in for that proof: the number of runs collected has to
-// equal the total_count the first page reported, and the runs have to span fewer than 1000 check
-// suites. Failing either is ci-unknown and exit 4, because a list of checks that is short in a
-// way nothing can see reads exactly like a list of checks that all passed.
-const suited = (name, conclusion, suite) => checkRun(name, conclusion, { check_suite: { id: suite } })
+// whole. Two facts stand in for that proof. The number of runs collected has to equal the
+// total_count the first page reported, and the commit has to carry fewer than 1000 check suites,
+// counted by one read of its check-suites collection. Failing either is ci-unknown and exit 4,
+// because a list of checks that is short in a way nothing can see reads exactly like a list of
+// checks that all passed.
+//
+// The suite count comes from the suite collection and never from the check_suite ids on the runs.
+// A check suite can exist with no runs in it, and it takes up one of the 1000 places all the
+// same, so counting ids off the runs undercounts and the undercount always reads green. That is
+// also why a run GitHub served without a check_suite.id stops this read instead of being skipped.
 
 const shortRead = run([String(PR)], {
   st: freshState({ checkRuns: many(100, (i) => checkRun(`green-${i}`, 'success')), checkRunsTotal: 101 }),
@@ -1213,35 +1244,64 @@ check('and it never reads as a pass', shortRead.json?.verdict === 'stop', shortR
 check('and the hundred green runs it did read are not a verdict on their own',
   shortRead.json?.ci?.success?.length === 100, JSON.stringify(shortRead.json?.ci?.success?.length))
 
+// 1000 suites on the commit, 999 of which served a green run. The thousandth is the empty one,
+// and the failing run in the suite past it is what this read cannot see.
 const atSuiteCap = run([String(PR)], {
-  st: freshState({ checkRuns: many(1000, (i) => suited(`green-${i}`, 'success', 5000 + i)) }),
+  st: freshState({ checkRuns: many(999, (i) => checkRun(`green-${i}`, 'success')), checkSuites: 1000 }),
 })
-check('a thousand distinct check suites, every run green, exits 4 anyway', atSuiteCap.code === 4,
-  `${atSuiteCap.code}: ${atSuiteCap.stderr}`)
+check('a commit carrying a thousand check suites exits 4 with every run it served green',
+  atSuiteCap.code === 4, `${atSuiteCap.code}: ${atSuiteCap.stderr}`)
 check('and stops on ci-unknown', has(atSuiteCap.json?.stops, 'ci-unknown'), JSON.stringify(codes(atSuiteCap.json?.stops)))
 check('and the detail names the window and points at enumerating the suites',
   /\b1000\b/.test(detailOf(atSuiteCap.json?.stops, 'ci-unknown')) &&
-    /suites/.test(detailOf(atSuiteCap.json?.stops, 'ci-unknown')),
+    /Enumerate the check suites/.test(detailOf(atSuiteCap.json?.stops, 'ci-unknown')),
   detailOf(atSuiteCap.json?.stops, 'ci-unknown'))
 check('and nothing calls it a pass', atSuiteCap.json?.verdict === 'stop', atSuiteCap.json?.verdict)
 
 const underSuiteCap = run([String(PR)], {
-  st: freshState({ checkRuns: many(999, (i) => suited(`green-${i}`, 'success', 5000 + i)) }),
+  st: freshState({ checkRuns: many(999, (i) => checkRun(`green-${i}`, 'success')), checkSuites: 999 }),
 })
-check('999 distinct suites is still a pass', underSuiteCap.code === 0, `${underSuiteCap.code}: ${underSuiteCap.stderr}`)
+check('999 suites is still a pass', underSuiteCap.code === 0, `${underSuiteCap.code}: ${underSuiteCap.stderr}`)
 check('and stops on nothing', JSON.stringify(underSuiteCap.json?.stops) === '[]', JSON.stringify(underSuiteCap.json?.stops))
 check('with every run counted', underSuiteCap.json?.ci?.success?.length === 999,
   JSON.stringify(underSuiteCap.json?.ci?.success?.length))
 
-const wholeRead = run([String(PR)], {
-  st: freshState({ checkRuns: many(150, (i) => suited(`green-${i}`, 'success', i % 3)) }),
+const suitesDown = run([String(PR)], { st: freshState({ apiFail: 'check-suites' }) })
+check('a check-suite read that failed exits 4', suitesDown.code === 4, `${suitesDown.code}: ${suitesDown.stderr}`)
+check('and stops on ci-unknown', has(suitesDown.json?.stops, 'ci-unknown'), JSON.stringify(codes(suitesDown.json?.stops)))
+check('and the two green runs it did read are not a verdict on their own', suitesDown.json?.verdict === 'stop',
+  suitesDown.json?.verdict)
+
+const suitesNoTotal = run([String(PR)], { st: freshState({ checkSuites: null }) })
+check('so does a check-suite answer with no total_count in it',
+  suitesNoTotal.code === 4 && has(suitesNoTotal.json?.stops, 'ci-unknown'),
+  `${suitesNoTotal.code}: ${JSON.stringify(codes(suitesNoTotal.json?.stops))}`)
+
+const suiteless = run([String(PR)], {
+  st: freshState({ checkRuns: [checkRun('unit', 'success'), suitelessRun('e2e', 'success')] }),
 })
+check('a check run served with no check_suite.id exits 4', suiteless.code === 4,
+  `${suiteless.code}: ${suiteless.stderr}`)
+check('and stops on ci-unknown naming the run', has(suiteless.json?.stops, 'ci-unknown') &&
+  detailOf(suiteless.json?.stops, 'ci-unknown').includes('e2e'), detailOf(suiteless.json?.stops, 'ci-unknown'))
+check('and is never a pass on the run that did name its suite', suiteless.json?.verdict === 'stop',
+  suiteless.json?.verdict)
+
+const suiteCalls = clean.st.calls.filter((a) => a[0] === 'api' && a.some((word) => String(word).includes('/check-suites?')))
+check('the suite count is one read of the check-suites collection', suiteCalls.length === 1,
+  JSON.stringify(suiteCalls))
+check('pinned to the host, asking for one page of one, and never paginated',
+  suiteCalls[0]?.includes('--hostname') && argValue(suiteCalls[0], '--hostname') === 'github.com' &&
+    suiteCalls[0].some((word) => String(word) === `repos/${SLUG}/commits/${HEAD}/check-suites?per_page=1`) &&
+    !suiteCalls[0].includes('--paginate'),
+  JSON.stringify(suiteCalls[0]))
+
+const wholeRead = run([String(PR)], { st: freshState({ checkRuns: many(150, (i) => checkRun(`green-${i}`, 'success')) }) })
 check('a total_count that matches what arrived passes', wholeRead.code === 0, `${wholeRead.code}: ${wholeRead.stderr}`)
 check('over two pages, so the count is of the flattened list',
   wholeRead.st.pagesServed.find((p) => p.endpoint === 'check-runs')?.pages === 2,
   JSON.stringify(wholeRead.st.pagesServed))
-check('and repeated suite ids are counted once, not per run',
-  wholeRead.json?.verdict === 'pass' && wholeRead.json?.ci?.success?.length === 150,
+check('with all 150 runs counted', wholeRead.json?.verdict === 'pass' && wholeRead.json?.ci?.success?.length === 150,
   JSON.stringify(wholeRead.json?.stops))
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
