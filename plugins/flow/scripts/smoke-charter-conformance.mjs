@@ -42,14 +42,13 @@ const CANONICAL_HEADING = /^### role: [a-z][a-z0-9-]*$/
 // `[[role:…]]` in a code span, and a scan that reads that as a marker fails a file for
 // documenting itself. An HTML comment is the other direction: it reaches no session, so a
 // commented-out heading binds nothing and a section whose whole body is a comment is empty.
-const FENCE = /^ {0,3}(`{3,}|~{3,})[^\n]*$[\s\S]*?^ {0,3}\1[^\n]*$/gm
-const quoteless = (text) => text
-  .replace(FENCE, '')
-  .replace(/`[^`\n]*`/g, '')
-const uncommented = (text) => text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
-// Fenced blocks only, inline code kept: a stage names a role in backticks, and an example in
-// a fence is an example.
+// A fence closes only on a delimiter at least as long as the one that opened it, followed by
+// nothing but whitespace. Fences come out before comments, so an unclosed <!-- inside an
+// example cannot swallow the live text after it.
+const FENCE = /^ {0,3}(`{3,}|~{3,})[^\n]*$[\s\S]*?^ {0,3}\1[ \t]*$/gm
 const unfenced = (text) => text.replace(FENCE, '')
+const uncommented = (text) => unfenced(text).replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+const quoteless = (text) => uncommented(text).replace(/`[^`\n]*`/g, '')
 const repeats = (list) => [...new Set(list.filter((v, i) => list.indexOf(v) !== i))]
 const idsOf = (re, text) => [...text.matchAll(new RegExp(re.source, re.flags))].map((m) => m[1])
 
@@ -362,6 +361,10 @@ const MINI = (floor, binding) => [
   + '## Rules of Engagement - Model Selection\n\n| role | floors | what it is for |\n|---|---|---|\n| [[role:mini-seat]] | ' + floor + ' | a seat |\n',
   { 'claude.md': '### role: mini-seat\n\n' + binding + '\n' },
 ]
+const fencedComment = roleProblems('The charter marks [[role:mini-seat]].\n',
+  { 'mini.md': 'For example:\n\n```markdown\n<!-- an example that never closes\n```\n\n### role: mini-seat\n\n`gpt-mini` at high effort.\n' }).problems
+assert.deepEqual(fencedComment, [], fencedComment.join('\n'))
+ok('an unclosed comment inside a fenced example does not swallow the live binding after it')
 const scoredAtMax = floorProblems(...MINI('intelligence >= 6', '`mini-cheap` at max effort.')).problems
 assert.deepEqual(scoredAtMax, [], scoredAtMax.join('\n'))
 ok('a 4/7 model bound at max effort meets an intelligence floor of 6')
@@ -451,6 +454,11 @@ const CASES = [
     problems: () => roleProblems('The charter marks [[role:mini-seat]].\n',
       { 'mini.md': 'For example:\n\n```markdown\n### role: mini-seat\n\n`gpt-mini` at high effort.\n```\n' }).problems,
     name: 'mini.md has no "### role: mini-seat" section',
+  },
+  {
+    label: 'a fence whose closing line carries trailing text',
+    problems: () => unusedRoles(new Map([['mini-seat', [{ criterion: 'taste', value: '5' }]]]), [['skills/mini-stage/SKILL.md', 'Spawn the usual seat.\n\n```markdown\nexample\n``` explanation\n- seat: `mini-seat`\n```\n']]),
+    name: 'no stage names the seat role mini-seat',
   },
   {
     label: 'a floored role no stage names',
