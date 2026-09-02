@@ -25,11 +25,26 @@
 // other run scans for and a claim that reads as never-taken would be a lie. The run exits 4 with
 // the branch and the tag both still there for a human.
 //
+// The failure paths are the second half, and each one is a defect two reviewers reproduced by
+// hand before it was fixed. Git hooks are what make them happen on demand, since they are the one
+// way to fail a real git command at a chosen moment:
+//
+//   post-checkout in the clone, exiting 1 after deleting itself, makes the first `git worktree
+//     add` fail after git has already created both the worktree and the branch, and lets the
+//     second run through untouched. The branch used to survive that cleanup and refuse every
+//     retry with `a branch named ... already exists`, forever.
+//   pre-receive on origin, refusing anything that deletes a ref, lets the claim tag be created
+//     and then refuses to let it be given back. A refusal that reports itself as clean while the
+//     tag is still on the remote is the lie this checks for.
+//   pre-receive on origin, planting the pushed ref itself and then exiting 1, is a lost push
+//     response: receive-pack updated the branch and the client still saw a failure. Treating that
+//     as "nothing was published" would delete the marker that keeps the next run out.
+//
 // Run: node plugins/flow/scripts/smoke-issue-claim-verb.mjs
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -85,6 +100,31 @@ const allRefs = (dir) => tryGit(dir, 'show-ref') ?? ''
 const worktreePaths = (repo) => git(repo, 'worktree', 'list', '--porcelain')
   .split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length))
 
+/**
+ * A hook, executable, in a repository's hooks directory. Both directories already exist: git init
+ * writes them, bare or not.
+ */
+const writeHook = (gitDir, name, body) => {
+  const path = join(gitDir, 'hooks', name)
+  writeFileSync(path, body)
+  chmodSync(path, 0o755)
+}
+
+// Exits 1 after removing itself, so the first `git worktree add` in a clone fails and the next
+// one does not. git 2.55 leaves the worktree and the new branch behind when this fires.
+const FAIL_FIRST_CHECKOUT = '#!/bin/sh\nrm -f "$0"\nexit 1\n'
+// Refuses any update whose new value is the null SHA, which is every delete. A tag can be created
+// through this and cannot be given back, which is what makes a failed abandon reproducible.
+const REFUSE_DELETES = '#!/bin/sh\nwhile read -r old new ref; do\n' +
+  '  case "$new" in 0000000000000000000000000000000000000000) echo "no deletes here" >&2; exit 1;; esac\n' +
+  'done\nexit 0\n'
+// A lost push response. The hook writes the ref itself, outside the quarantine environment that
+// would otherwise refuse the update, and then declines: the branch is on origin at the pushed
+// head and the client's `git push` still exits non-zero.
+const PLANT_THEN_REFUSE = '#!/bin/sh\nwhile read -r old new ref; do\n' +
+  '  env -u GIT_QUARANTINE_PATH git update-ref "$ref" "$new"\n' +
+  'done\necho "the answer went missing" >&2\nexit 1\n'
+
 /** A bare origin with one commit on main, and a clone of it to claim from. */
 const makeWorld = (name) => {
   const dir = join(tmp, name)
@@ -98,7 +138,7 @@ const makeWorld = (name) => {
   git(repo, 'commit', '-q', '-m', 'first')
   git(repo, 'remote', 'add', 'origin', origin)
   git(repo, 'push', '-q', 'origin', 'main')
-  const world = { name, dir, origin, repo, mainSha: git(repo, 'rev-parse', 'HEAD') }
+  const world = { name, dir, origin, repo, gitDir: join(repo, '.git'), mainSha: git(repo, 'rev-parse', 'HEAD') }
   world.pathFor = (slug) => join(dir, `repo-issue-${ISSUE}-${slug}`)
   return world
 }
@@ -317,6 +357,132 @@ console.log('\nthe worktree path already exists')
   check('origin is unchanged', allRefs(w.origin) === before, allRefs(w.origin))
   check('no claim tag was taken', refSha(w.origin, TAG_REF) === null, String(refSha(w.origin, TAG_REF)))
   check('the issue was not touched', callsTo(r.st, 'edit').length === 0, 'an edit went out')
+}
+
+// ------------------------------------------------ a worktree add that fails after it made both
+console.log('\na worktree add that fails after git created the branch')
+{
+  // The strand. `git worktree add` runs post-checkout in the new checkout, and a hook that fails
+  // there leaves git with both the directory and the branch already created and an exit code of
+  // 1. The cleanup has to take the branch as well, or every retry for the rest of the day meets
+  // `a branch named ... already exists` for a branch nobody ever published.
+  const w = makeWorld('worktree-add-strands')
+  const branch = `feat/issue-${ISSUE}-${SLUG}`
+  writeHook(w.gitDir, 'post-checkout', FAIL_FIRST_CHECKOUT)
+
+  const first = run(w, ['claim', String(ISSUE)])
+  check('the first run refuses with worktree-add', first.code === 2 && first.json?.reason === 'worktree-add', `exit ${first.code} ${first.stdout}`)
+  check('at phase acquired, with an empty retained list', first.json?.phase === 'acquired' && (first.json?.retained ?? null)?.length === 0, first.stdout)
+  check('and no cleanup step to report', first.json?.cleanup === null, String(first.json?.cleanup))
+  check('the branch git created is deleted again', refSha(w.repo, `refs/heads/${branch}`) === null, String(refSha(w.repo, `refs/heads/${branch}`)))
+  check('the worktree is gone', !existsSync(w.pathFor(SLUG)) && worktreePaths(w.repo).length === 1, worktreePaths(w.repo).join(','))
+  check('the claim tag was given back', first.json?.abandon === 'abandoned' && refSha(w.origin, TAG_REF) === null, `${first.json?.abandon} ${refSha(w.origin, TAG_REF)}`)
+  check('and the issue was never touched', callsTo(first.st, 'edit').length === 0, 'an edit went out')
+
+  const second = run(w, ['claim', String(ISSUE)])
+  check('the retry claims, instead of meeting the branch the first run left', second.code === 0 && second.json?.result === 'claimed', `exit ${second.code} ${second.stdout}`)
+  check('and its branch is on origin at the base', refSha(w.origin, `refs/heads/${branch}`) === w.mainSha, String(refSha(w.origin, `refs/heads/${branch}`)))
+}
+
+// ------------------------------------------------------------------- a stale branch in the clone
+console.log('\na branch for the issue already in this clone')
+{
+  // Wreckage of a run that died, or a run working here right now. Either way it is a human's
+  // call, and the pre-scan has to see it: this clone's branches are the one place a run leaves a
+  // mark that no ls-remote and no pull request read will ever show.
+  const w = makeWorld('stale-local-branch')
+  const stale = `refs/heads/fix/issue-${ISSUE}-a-dead-run`
+  git(w.repo, 'update-ref', stale, w.mainSha)
+  const before = allRefs(w.origin)
+  const r = run(w, ['claim', String(ISSUE)])
+  check('the pre-scan refuses with live-run', r.code === 2 && r.json?.reason === 'live-run', `exit ${r.code} ${r.stdout}`)
+  check('at phase pre-acquire', r.json?.phase === 'pre-acquire' && (r.json?.retained ?? null)?.length === 0, r.stdout)
+  check('and names it under found.localBranches', (r.json?.found?.localBranches ?? []).some((hit) => hit.ref === stale), r.stdout)
+  check('the stale branch is left exactly where it was', refSha(w.repo, stale) === w.mainSha, String(refSha(w.repo, stale)))
+  check('origin is unchanged and no tag was taken', allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
+  check('no worktree, no issue edit', worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0, worktreePaths(w.repo).join(','))
+}
+
+// --------------------------------------------------------------------- a push whose answer was lost
+console.log('\nthe push fails after origin already took the branch')
+{
+  // receive-pack updated the ref and the client still exited non-zero. Reading that as "nothing
+  // was published" would delete the branch every other run scans for and hand the tag back on
+  // top of it, so the executor asks origin what it holds before it undoes anything.
+  const w = makeWorld('push-answer-lost')
+  const branch = `feat/issue-${ISSUE}-${SLUG}`
+  const st = freshState()
+  let scans = 0
+  // `pr list` is the last read of a scan, so arming here is invisible to the scan that just
+  // finished. The second scan is the one that runs while the tag is held; the push comes after it.
+  st.onPrList = () => { if (scans++ === 1) writeHook(w.origin, 'pre-receive', PLANT_THEN_REFUSE) }
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check('exits 4 with result unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
+  check('naming the push as the step that failed', r.json?.reason === 'push', String(r.json?.reason))
+  check('at phase published, because the branch did reach origin', r.json?.phase === 'published', String(r.json?.phase))
+  check('retaining all four artifacts', ['claim-tag', 'worktree', 'local-branch', 'remote-branch'].every((a) => (r.json?.retained ?? []).includes(a)), JSON.stringify(r.json?.retained))
+  check('origin holds the branch at the head this run pushed', refSha(w.origin, `refs/heads/${branch}`) === w.mainSha, String(refSha(w.origin, `refs/heads/${branch}`)))
+  check('the claim tag was NOT given back', refSha(w.origin, TAG_REF) === w.mainSha, String(refSha(w.origin, TAG_REF)))
+  check('the worktree is left in place', existsSync(w.pathFor(SLUG)) && worktreePaths(w.repo).includes(w.pathFor(SLUG)), worktreePaths(w.repo).join(','))
+  check('and so is the local branch', refSha(w.repo, `refs/heads/${branch}`) === w.mainSha, String(refSha(w.repo, `refs/heads/${branch}`)))
+  check('the issue was not touched', callsTo(r.st, 'edit').length === 0, 'an edit went out')
+  check('the human is told not to re-run it', /do not re-run the claim/.test(r.stderr), JSON.stringify(r.stderr))
+}
+
+// ------------------------------------------------------------------------ a cleanup that failed
+console.log('\nthe claim tag cannot be given back')
+{
+  // A refusal has to mean nothing of this run is left anywhere. Here the second scan says stand
+  // down and origin refuses the tag delete, so the honest answer is an unknown that names the tag.
+  const w = makeWorld('abandon-refused-rescan')
+  writeHook(w.origin, 'pre-receive', REFUSE_DELETES)
+  const rival = `refs/heads/fix/issue-${ISSUE}-a-rival-run`
+  const st = freshState()
+  let scans = 0
+  st.onPrList = () => { if (scans++ === 0) git(w.origin, 'update-ref', rival, w.mainSha) }
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check('the stand-down is reported as unknown, not as a clean refusal', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
+  check('the reason is still the live run it found', r.json?.reason === 'live-run', String(r.json?.reason))
+  check('at phase acquired, retaining the claim tag', r.json?.phase === 'acquired' && JSON.stringify(r.json?.retained) === JSON.stringify(['claim-tag']), r.stdout)
+  check('and naming the cleanup step that would not go', r.json?.cleanup === 'abandon' && r.json?.abandon !== 'abandoned', `${r.json?.cleanup} ${r.json?.abandon}`)
+  check('the tag really is still on origin', refSha(w.origin, TAG_REF) === w.mainSha, String(refSha(w.origin, TAG_REF)))
+  check('the stderr names where the tag is', r.stderr.includes(TAG_REF), JSON.stringify(r.stderr))
+  check('this run published nothing', refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && worktreePaths(w.repo).length === 1, 'something was published')
+}
+{
+  // Same rule one step further in: the worktree add fails and the tag cannot go back either.
+  const w = makeWorld('abandon-refused-worktree-add')
+  writeHook(w.origin, 'pre-receive', REFUSE_DELETES)
+  writeHook(w.gitDir, 'post-checkout', FAIL_FIRST_CHECKOUT)
+  const r = run(w, ['claim', String(ISSUE)])
+  check('a worktree-add failure with a stuck tag is an unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
+  check('the reason is still worktree-add', r.json?.reason === 'worktree-add', String(r.json?.reason))
+  check('the retained list is the claim tag alone', JSON.stringify(r.json?.retained) === JSON.stringify(['claim-tag']), JSON.stringify(r.json?.retained))
+  check('the local parts of the cleanup did go through',
+    refSha(w.repo, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && !existsSync(w.pathFor(SLUG)), 'something local was left behind')
+  check('and the tag is on origin, as the answer says', refSha(w.origin, TAG_REF) === w.mainSha, String(refSha(w.origin, TAG_REF)))
+}
+
+// --------------------------------------------------------- what a worktree-add refusal is worth
+console.log('\nwhat a failed worktree add tells the caller')
+{
+  // `git worktree add` prints `Preparing worktree ...` to stderr before it fails, so a detail
+  // built from the first line names nothing. The branch here is planted between the second scan
+  // and the add, at an object this run did not create it at, so the guarded delete leaves it
+  // alone and says so.
+  const w = makeWorld('worktree-add-detail')
+  const branch = `feat/issue-${ISSUE}-${SLUG}`
+  const other = git(w.repo, 'commit-tree', '-m', 'not this run\'s object', '-p', w.mainSha, `${w.mainSha}^{tree}`)
+  const st = freshState()
+  let scans = 0
+  st.onPrList = () => { if (scans++ === 1) git(w.repo, 'update-ref', `refs/heads/${branch}`, other) }
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check('the detail carries git\'s fatal line, not its progress line',
+    /fatal: a branch named/.test(String(r.json?.detail)) && !String(r.json?.detail).includes('Preparing worktree'), String(r.json?.detail))
+  check('a branch this run did not create is left alone', refSha(w.repo, `refs/heads/${branch}`) === other, String(refSha(w.repo, `refs/heads/${branch}`)))
+  check('so the result is an unknown that retains it', r.code === 4 && r.json?.result === 'unknown' && (r.json?.retained ?? []).includes('local-branch'), `exit ${r.code} ${r.stdout}`)
+  check('naming the delete as the step that did not confirm', String(r.json?.cleanup).includes('local-branch-delete'), String(r.json?.cleanup))
+  check('the claim tag still went back', r.json?.abandon === 'abandoned' && refSha(w.origin, TAG_REF) === null, `${r.json?.abandon} ${refSha(w.origin, TAG_REF)}`)
 }
 
 rmSync(tmp, { recursive: true, force: true })
