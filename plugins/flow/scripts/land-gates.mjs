@@ -59,6 +59,11 @@
 // collected differs from the total_count the first page reported, or when one unpaginated read of
 // the commit's check-suites collection reports 1000 suites or more, a count taken from that
 // collection because a check suite that has no runs in it is real and never shows up in the runs.
+// Those counts bracket the collection, once before the check-runs pages and once after both them
+// and the statuses, and a count that moved between the two brackets is `ci-unknown` rather than a
+// pass, while a check that registers after the second bracket stops being this program's problem,
+// because the merge pins the head with --match-head-commit and the stage runs it only on a pass
+// run with no mutation since.
 //
 // The two check sources are partitioned differently because they report differently. A check run
 // carries `status` - queued, in_progress, completed - beside `conclusion`, so it is pending until
@@ -779,16 +784,63 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
   let checksReadable = false
   if (headSha !== null && SHA.test(headSha)) {
     checksReadable = true
-    const commitPath = (kind) => `repos/${identity.owner}/${identity.repo}/commits/${headSha}/${kind}?per_page=100`
+    const commitPath = (kind, perPage) => `repos/${identity.owner}/${identity.repo}/commits/${headSha}/${kind}?per_page=${perPage}`
 
-    const runPages = readPages(commitPath('check-runs'), '`gh api` over the check runs')
+    // One page of one, read for its total_count and nothing else. Both of these endpoints report
+    // the total on every page size, so this is the cheapest honest count either one gives.
+    const countOf = (kind) => {
+      const result = runGh(['api', '--hostname', identity.host, commitPath(kind, 1)], READ_TIMEOUT_MS)
+      if (result.code !== 0) {
+        return { total: null, why: `the read failed (${redact(firstLine(result.stderr)) || `exit ${result.code}`})` }
+      }
+      const body = parseObject(result.stdout)
+      const total = Number.isSafeInteger(body?.total_count) && body.total_count >= 0 ? body.total_count : null
+      return total === null
+        ? { total: null, why: `it answered no total_count (found ${JSON.stringify(body?.total_count ?? null)})` }
+        : { total, why: null }
+    }
+    // Both of these are a stop and a failed read at once, the same pair the unreadable head uses.
+    // The stop says what is wrong with this pull request's checks, and the failed read is what
+    // makes the exit code 4, because a list of checks that is short in a way nothing can see reads
+    // exactly like a list of checks that all passed.
+    const unreadable = (what, why) => {
+      const detail = `${what} on ${headSha} could not be read, so the checks this gate collected cannot be shown ` +
+        `to be every check on the commit, because ${why}`
+      stop('ci-unknown', detail)
+      noteFailure(detail)
+      checksReadable = false
+    }
+    const moved = (what, before, after) => {
+      const detail = `${what} on ${headSha} moved from ${before} to ${after} while this gate was reading, so what ` +
+        'it collected is two moments mixed together and a check that arrived in between is in neither'
+      stop('ci-unknown', detail)
+      noteFailure(detail)
+      checksReadable = false
+    }
+    const overSuiteCap = (total) => {
+      const detail = `${headSha} carries ${total} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the ` +
+        'check-runs endpoint serves from, so a failing run in an older suite would not appear in this read at ' +
+        'all. Enumerate the check suites if a repository ever lands here'
+      stop('ci-unknown', detail)
+      noteFailure(detail)
+      checksReadable = false
+    }
+
+    // ------------------------------------------------------------------------ the opening bracket
+    const suitesBefore = countOf('check-suites')
+    if (suitesBefore.total === null) unreadable('the check-suite count', suitesBefore.why)
+    else if (suitesBefore.total >= MAX_CHECK_SUITES) overSuiteCap(suitesBefore.total)
+
+    // --------------------------------------------------------------------------- the check runs
+    let pagesWhole = true
+    let collected = 0
+    let runsTotal = null
+    const runPages = readPages(commitPath('check-runs', 100), '`gh api` over the check runs')
     if (runPages === null) checksReadable = false
     else {
       // Every page arrived, read as a page, and named the suite each run belongs to. False after
-      // any of that failed, so the two completeness rules below never run against a list that has
+      // any of that failed, so the completeness rules below never run against a list that has
       // already stopped short.
-      let pagesWhole = true
-      let collected = 0
       for (const page of runPages) {
         // Each page of this endpoint is an object with the runs inside it, not a bare array.
         if (!Array.isArray(page?.check_runs)) {
@@ -799,7 +851,7 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
         }
         for (const run of page.check_runs) {
           collected++
-          // The suite a run belongs to is what the completeness read below is about, so a run that
+          // The suite a run belongs to is what the bracketing counts are about, so a run that
           // names no suite is an answer this program cannot reason over rather than one entry to
           // skip past. Skipping it is what let a truncated list look whole.
           const suite = run?.check_suite?.id
@@ -824,13 +876,10 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
       }
       if (pagesWhole) {
         // The count GitHub says is there, off the first page. A total_count that is not a count
-        // is the same problem as one that disagrees: nothing here can show the list is whole.
+        // is the same problem as one that disagrees, because nothing here can then show the list
+        // is whole.
         const reported = runPages[0]?.total_count
         const total = Number.isSafeInteger(reported) && reported >= 0 ? reported : null
-        // Both of these are stops and failed reads at once, the same pair the unreadable head
-        // uses. The stop says what is wrong with the pull request's checks, and the failed read
-        // is what makes the exit code 4, because an incomplete list of checks and a complete
-        // list of passing checks are the same shape from the caller's side.
         if (total === null || total !== collected) {
           const detail = `the check-run read on ${headSha} collected ${collected} run(s) and its first page ` +
             `reported total_count ${total === null ? JSON.stringify(reported ?? null) : total}, so the read is ` +
@@ -838,39 +887,28 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
           stop('ci-unknown', detail)
           noteFailure(detail)
           checksReadable = false
-        } else {
-          // How many check suites the commit carries, counted by GitHub. Deriving it from the
-          // check_suite ids on the runs undercounts, because a suite with no runs in it still
-          // occupies a place in the 1000 the check-runs endpoint serves from. One page of one is
-          // enough, because nothing here reads the suites themselves, only how many there are.
-          const suitePath = `repos/${identity.owner}/${identity.repo}/commits/${headSha}/check-suites?per_page=1`
-          const suiteRead = runGh(['api', '--hostname', identity.host, suitePath], READ_TIMEOUT_MS)
-          const suiteBody = suiteRead.code === 0 ? parseObject(suiteRead.stdout) : null
-          const suiteTotal = Number.isSafeInteger(suiteBody?.total_count) && suiteBody.total_count >= 0
-            ? suiteBody.total_count
-            : null
-          if (suiteTotal === null) {
-            const why = suiteRead.code !== 0
-              ? `the read failed (${redact(firstLine(suiteRead.stderr)) || `exit ${suiteRead.code}`})`
-              : `it answered no total_count (found ${JSON.stringify(suiteBody?.total_count ?? null)})`
-            const detail = `the check-suite count on ${headSha} could not be read, so the ${collected} check ` +
-              `run(s) that did arrive cannot be shown to be every one on the commit, because ${why}`
-            stop('ci-unknown', detail)
-            noteFailure(detail)
-            checksReadable = false
-          } else if (suiteTotal >= MAX_CHECK_SUITES) {
-            const detail = `${headSha} carries ${suiteTotal} check suites, at or past the ${MAX_CHECK_SUITES}-suite ` +
-              'window the check-runs endpoint serves from, so a failing run in an older suite would not appear in ' +
-              'this read at all. Enumerate the check suites if a repository ever lands here'
-            stop('ci-unknown', detail)
-            noteFailure(detail)
-            checksReadable = false
-          }
-        }
+        } else runsTotal = total
       }
     }
 
-    const statusPages = readPages(commitPath('statuses'), '`gh api` over the commit statuses')
+    // ----------------------------------------------------------------------- the commit statuses
+    // What the first page of statuses held, kept so the closing bracket can tell whether one
+    // moved. This endpoint reports no total_count, so the mark is the page itself: how many
+    // entries it carries and the newest id under each context, which is the entry this gate
+    // counts and every later one supersedes.
+    const statusMark = (page) => {
+      const newest = []
+      const seen = new Set()
+      page.forEach((status, index) => {
+        const key = nonEmpty(status?.context) ?? `#${index}`
+        if (seen.has(key)) return
+        seen.add(key)
+        newest.push([key, status?.id ?? null])
+      })
+      return JSON.stringify({ length: page.length, newest })
+    }
+    let statusesMark = null
+    const statusPages = readPages(commitPath('statuses', 100), '`gh api` over the commit statuses')
     if (statusPages === null) checksReadable = false
     else {
       // Newest first, so the first entry of a context is the one that counts and every later one
@@ -881,8 +919,10 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
         if (!Array.isArray(page)) {
           noteFailure('`gh api` over the commit statuses returned a page that is not a list of statuses')
           checksReadable = false
+          statusesMark = null
           break
         }
+        if (statusesMark === null) statusesMark = statusMark(page)
         for (const status of page) {
           const context = nonEmpty(status?.context)
           if (context !== null) {
@@ -895,6 +935,37 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
             url: nonEmpty(status?.target_url) ?? null,
             state: status?.state ?? null,
           })
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------------ the closing bracket
+    // Every read the collection is made of has succeeded, so the same counts are taken again. A
+    // count that moved means a check suite, a check run or a commit status arrived while the pages
+    // were being walked, and what this gate holds is then two moments mixed rather than the state
+    // of one. The closing suite count needs no cap check of its own: it has to equal an opening
+    // count that already passed the cap.
+    if (checksReadable) {
+      const runsAfter = countOf('check-runs')
+      if (runsAfter.total === null) unreadable('the check-run count', runsAfter.why)
+      else if (runsAfter.total !== runsTotal) moved('the check-run count', runsTotal, runsAfter.total)
+    }
+    if (checksReadable) {
+      const suitesAfter = countOf('check-suites')
+      if (suitesAfter.total === null) unreadable('the check-suite count', suitesAfter.why)
+      else if (suitesAfter.total !== suitesBefore.total) moved('the check-suite count', suitesBefore.total, suitesAfter.total)
+    }
+    if (checksReadable && statusesMark !== null) {
+      const reread = runGh(['api', '--hostname', identity.host, commitPath('statuses', 100)], READ_TIMEOUT_MS)
+      const page = reread.code === 0 ? parseJson(reread.stdout) : null
+      if (!Array.isArray(page)) {
+        unreadable('the first page of commit statuses', reread.code !== 0
+          ? `the read failed (${redact(firstLine(reread.stderr)) || `exit ${reread.code}`})`
+          : 'it answered something that is not a list of statuses')
+      } else {
+        const after = statusMark(page)
+        if (after !== statusesMark) {
+          moved('the first page of commit statuses', truncate(statusesMark, 160), truncate(after, 160))
         }
       }
     }
