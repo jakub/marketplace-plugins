@@ -22,9 +22,9 @@ Everything up to `## Host mechanics` is the same on every host. That section, at
 
 The argument is a PR number, or nothing at all: with no argument the PR is resolved from the current branch. Three origins authorize the number: the argument, the entry point the human invoked resolving the current branch, or the human naming the PR in words. Anything else is a stop.
 
-Run `node <plugin-root>/scripts/land-gates.mjs [<pr>]` from the repository root. It is read-only. It re-reads the PR; whether the base is the default branch and which open PRs are stacked on this one; the CI rollup, cross-read against `gh pr checks` and partitioned with the base branch's `.github/known-flakes.txt` applied and the PR's own copy of that file diffed against it; every review thread, over paged GraphQL; linked issues, recovered from the branch name and from closing phrases; a `## follow-up draft` comment; and the auto-merge and merge-queue state. It prints one JSON object with `verdict`, `stops` and `attention`. Exit 0 is `pass`, 1 is `stop`, 4 is a read that failed, which is never a pass.
+Run `node <plugin-root>/scripts/land-gates.mjs [<pr>]` from the repository root. It is read-only: its one git call reads the origin remote's URL, and everything else comes from GitHub. It re-reads the PR; whether the base is the default branch and which open PRs are stacked on this one; the CI rollup, cross-read against `gh pr checks` and partitioned with the base branch's `.github/known-flakes.txt` (read through the API at the base ref) applied and the PR's own copy of that file diffed against it; every review thread, over paged GraphQL; linked issues, recovered from the branch name and from closing phrases; a `## follow-up draft` comment; and the auto-merge and merge-queue state. It prints one JSON object with `verdict`, `stops` and `attention`. Exit 0 is `pass`, 1 is `stop`, 4 is a read that failed, which is never a pass.
 
-Record from it `HEAD_SHA` (`head.sha`, the commit every gate inspected and the merge is pinned to), `HEAD_REF`, `BASE_REF`, `isCrossRepository` and `linkedIssues`.
+Record from it `HEAD_SHA` (`head.sha`, the commit every gate inspected and the merge is pinned to), `HEAD_REF`, `BASE_REF`, `BASE_DEFAULT` (`base.default`, the repository's default branch), `isCrossRepository` and `linkedIssues`.
 
 **`stops`.** Each entry is a gate that failed, and the answer to each is fixed:
 
@@ -32,14 +32,14 @@ Record from it `HEAD_SHA` (`head.sha`, the commit every gate inspected and the m
 - `stacked-on-non-default`: this PR is stacked on another one. Land the parent first or retarget this PR, and stop either way.
 - `ci-pending`: wait briefly and re-run the executor. Still pending → report it and stop.
 - `ci-failed`: abort and show it. The one exception is the rerun-once valve below.
-- `ci-unknown`: an errored, stale or nameless check is UNKNOWN, never a pass. Abort and show it.
+- `ci-unknown`: an errored, stale or nameless check is UNKNOWN, never a pass, and so is an empty rollup: a PR with no checks registered yet, which is the state right after a push, is not green. Abort and show it.
 - `threads-unresolved`: §2.
 - `auto-merge-armed`, `merge-queue`: someone armed a merge that will land this PR out of sight. Surface it to the human; never merge over it.
-- `threads-unreadable` or any exit 4: the read failed. A failed read is not a clean one; fix the read and re-run.
+- `head-unreadable`, `threads-unreadable`, or any exit 4: a read failed. A failed read is not a clean one; fix the read and re-run.
 
 **`attention`.** Facts that are not gates, each with a fixed answer too:
 
-- `children`: other open PRs are based on this branch. Retarget them to the default branch FIRST (`gh pr edit <child> --base main`), surface the rebase sequence they will need, then re-run the executor.
+- `children`: other open PRs are based on this branch. Retarget them to the default branch FIRST (`gh pr edit <child> --base $BASE_DEFAULT`), surface the rebase sequence they will need, then re-run the executor.
 - `flaky-merged-through`: a failure the base branch's allowlist covers, as a bare check name. Note it in the land report and continue. For a `check-name:test_name` entry the executor only lists the candidate under `ci.flakeCandidates`: read the job log (`gh run view --log-failed`) and merge through only when THAT test is the sole failure; otherwise treat it as `ci-failed`.
 - `flakes-added-on-pr`: the PR's own copy of the allowlist carries entries the base does not. A branch that adds its failing check to the allowlist must not wave itself through: a diff to flag, never an allowance.
 - `linked-issues-ambiguous`: `linkedIssues.linked` is what GitHub parsed; `recovered` came from the branch name or an explicit closing phrase and carries enough intent to close; `mentions` are bare `#N` references ("Part of #6", "follow-up in #42") and must never close anything on their own. When there are recovered candidates but no clear answer, ask the human, listing the candidates with an explicit "close none": closing nothing is the silent failure mode here, and closing a bystander issue is the loud one. When all three are empty there is nothing to decide: note "no linked issues" in the land report and continue. A quick fix that never had an issue is normal, not a question.
