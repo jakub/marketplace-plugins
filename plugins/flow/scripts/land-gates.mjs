@@ -51,6 +51,14 @@
 // `error` is set and the run exits 4, the same rule the review threads follow. `gh pr view` still
 // answers for the pull request's own fields, which are single values with no page size in them.
 //
+// One limit survives all that paging, because GitHub serves a ref's check runs from at most the
+// 1000 most recent check suites on that ref and says nothing when it truncates, which leaves a
+// failing run in the 1001st suite invisible however far --paginate walks. Enumerating the suites
+// would see past that and costs two more paginated reads on every land for a shape no repository
+// here has, so this read proves itself instead and stops on `ci-unknown` when the run count it
+// collected differs from the total_count the first page reported, or when the runs it collected
+// span 1000 distinct check suites.
+//
 // The two check sources are partitioned differently because they report differently. A check run
 // carries `status` - queued, in_progress, completed - beside `conclusion`, so it is pending until
 // its status says completed and is bucketed on its conclusion after that; a conclusion left over
@@ -195,6 +203,10 @@ const EXIT_PASS = 0
 const EXIT_STOP = 1
 const EXIT_USAGE = 2
 const EXIT_UNKNOWN = 4
+
+// The check-runs endpoint serves from at most the most recent 1000 check suites on a ref, so a
+// list that reaches this many distinct suites can no longer be shown to be the whole list.
+const MAX_CHECK_SUITES = 1000
 
 // A thread page is 100 threads. Twenty pages is 2000 threads on one pull request, which is not a
 // pull request anyone is landing; past that the paging is looping and the read is unreadable.
@@ -771,14 +783,23 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     const runPages = readPages(commitPath('check-runs'), '`gh api` over the check runs')
     if (runPages === null) checksReadable = false
     else {
+      // Every page arrived and read as a page. False after a page that did not, so the two
+      // completeness rules below are not applied to a list that already stopped short.
+      let pagesWhole = true
+      let collected = 0
+      const suites = new Set()
       for (const page of runPages) {
         // Each page of this endpoint is an object with the runs inside it, not a bare array.
         if (!Array.isArray(page?.check_runs)) {
           noteFailure('`gh api` over the check runs returned a page with no check_runs array in it')
           checksReadable = false
+          pagesWhole = false
           break
         }
         for (const run of page.check_runs) {
+          collected++
+          const suite = run?.check_suite?.id
+          if (typeof suite === 'number' || (typeof suite === 'string' && suite.trim() !== '')) suites.add(String(suite))
           entries.push({
             kind: 'check-run',
             name: nonEmpty(run?.name),
@@ -786,6 +807,31 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
             status: run?.status ?? null,
             conclusion: run?.conclusion ?? null,
           })
+        }
+      }
+      if (pagesWhole) {
+        // The count GitHub says is there, off the first page. A total_count that is not a count
+        // is the same problem as one that disagrees: nothing here can show the list is whole.
+        const reported = runPages[0]?.total_count
+        const total = Number.isSafeInteger(reported) && reported >= 0 ? reported : null
+        // Both of these are stops and failed reads at once, the same pair the unreadable head
+        // uses. The stop says what is wrong with the pull request's checks, and the failed read
+        // is what makes the exit code 4, because an incomplete list of checks and a complete
+        // list of passing checks are the same shape from the caller's side.
+        if (total === null || total !== collected) {
+          const detail = `the check-run read on ${headSha} collected ${collected} run(s) and its first page ` +
+            `reported total_count ${total === null ? JSON.stringify(reported ?? null) : total}, so the read is ` +
+            'short of what GitHub says is on the commit and cannot be shown to have seen every check'
+          stop('ci-unknown', detail)
+          noteFailure(detail)
+          checksReadable = false
+        } else if (suites.size >= MAX_CHECK_SUITES) {
+          const detail = `the ${collected} check run(s) on ${headSha} span ${suites.size} check suites, at or past ` +
+            `the ${MAX_CHECK_SUITES}-suite window this endpoint serves from, so a failing run in an older suite ` +
+            'would not appear in this read at all. Enumerate the check suites if a repository ever lands here'
+          stop('ci-unknown', detail)
+          noteFailure(detail)
+          checksReadable = false
         }
       }
     }
