@@ -54,52 +54,50 @@ Higher is better, on every axis.
 Cheapness is inverted - Luna is effectively free and Fable is expensive.
 Intelligence is how hard a problem the model can handle unsupervised.
 Taste covers UI/UX, code quality assessments, API and architecture design, and copy text.
+Classifiers says whether the model runs cyber classifiers that can refuse security work. A cell written `a/b` is the score at default effort and at max effort.
 
-| model                    | cheapness | intelligence        | taste |
-|--------------------------|-----------|---------------------|-------|
-| gpt-5.6-luna             | 9         | 4 (7 at max effort) | 4     |
-| sonnet-5                 | 5         | 6                   | 6     |
-| opus-5                   | 4         | 8                   | 8     |
-| gpt-5.6-sol              | 7         | 8                   | 5     |
-| gpt-daybreak-blue-latest | 7         | 8                   | 5     |
-| fable-5-1                | 2         | 9                   | 9     |
+| model                    | cheapness | intelligence | taste | classifiers |
+|--------------------------|-----------|--------------|-------|-------------|
+| gpt-5.6-luna             | 9         | 4/7          | 4     | standard    |
+| sonnet-5                 | 5         | 6            | 6     | standard    |
+| opus-5                   | 4         | 8            | 8     | standard    |
+| gpt-5.6-sol              | 7         | 8            | 5     | standard    |
+| gpt-daybreak-blue-latest | 7         | 8            | 5     | none        |
+| fable-5-1                | 2         | 9            | 9     | standard    |
  
 ## Rules of Engagement - Model Selection
 These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
 
-General rule: intelligence > taste > cost, and anything user-facing (UI, text) *must* have taste >= 7.
-The flip side is that lower efforts wander less and follow instructions more literally.
+General rule: intelligence > taste > cost, and anything user-facing (UI, text) *must* have taste >= 7. Lower efforts follow instructions more literally and call fewer tools; higher efforts verify more and wander more.
 
-### GPT-5.6 Luna
-Luna is basically free, and at max effort competes with Opus and Sol at medium-high efforts. It can handle low-to-moderate complexity tasks, lightweight code exploration, and anything that just needs a cheap but decent model.
+Every seat the pipeline spawns is one of the roles below. Each role has floors against the rankings above; your host profile binds it to one model and effort, and the conformance lint fails a binding under its floor. A floor is the written default, never a ceiling. `family: other` is the model family your host does not run natively. `classifiers: none` is a model that runs no cyber classifiers. A binding is scored at the effort it names, so Luna counts 7 only at max.
 
-### Sonnet
-Sonnet is primarily for mechanical work: invoking Sol or Luna through Flow's MCP tools, codebase exploration, writing ledgers, running deep test suites and gates. Use low effort for tool-driving work, medium/high/xhigh for anything needing to return a verdict.
+| role | floors | what it is for |
+|------|--------|----------------|
+| [[role:search-seat]] | cheapness >= 5, intelligence >= 4 | locate files and seams: eyes, not judgment |
+| [[role:outside-scout]] | intelligence >= 6, family: other | the other family's read of the codebase during prep |
+| [[role:design-leg-native]] | intelligence >= 8 | a blind design proposal from your own family |
+| [[role:design-leg-bridge]] | intelligence >= 8, family: other | the rival blind proposal, from the other family |
+| [[role:taste-leg]] | taste >= 9 | user-facing UI and copy, public APIs, reconciling rival designs, any taste call |
+| [[role:write-seat-mechanical]] | intelligence >= 6, effort >= medium | transcribing a spec whose shape is already decided |
+| [[role:write-seat-standard]] | intelligence >= 8, effort >= medium | the default write seat: anything with a code-design decision left in it |
+| [[role:write-seat-hard]] | intelligence >= 8, effort >= high | work where a miss ships |
+| [[role:bulk-seat]] | cheapness >= 7 | mechanical sweeps at max effort; never the decorrelation seat |
+| [[role:review-seat-native]] | intelligence >= 8, effort >= high | code review of a diff the other family wrote |
+| [[role:review-seat-bridge]] | intelligence >= 8, effort >= high, family: other | the mandatory review of a diff your own family wrote, adversarial by default |
+| [[role:security-seat]] | intelligence >= 8, classifiers: none | vulnerability finding and defensive work, and the first retry for any refused seat |
+| [[role:adjudicator]] | intelligence >= 8, effort >= max | settling conflicting reviewers or decisions; taste disagreements go to the taste leg |
 
-### Opus
-The workhorse. Used for implementation, fixes, code review, and adjudication. High effort by default, xhigh for code and security reviews, max for adjudicating conflicting decisions. Opus xhigh is roughly similar to Fable for code writing tasks.
+Model notes. Luna at max competes with Opus and Sol at medium to high. Sonnet drives tools at low effort and returns verdicts at medium and up. Opus at xhigh writes code about as well as Fable, and is never the taste call. Sol writes slightly uglier code and is the decorrelated opinion by default. Daybreak Blue is Sol without cyber classifiers. Fable is depth and taste, and the most expensive seat.
 
-Opus runs cyber classifiers. On the delegation path a refusal comes back as a typed `REFUSAL` with its category, and the harness's own silent model fallback is switched off for delegated seats; a native Agent seat surfaces it as a fallback notice on the response. Either way a refusal is a refusal, never a quieter answer from a different model. Retry on the other family first: Daybreak Blue, then Sol. Fable shares the classifiers and is the last resort, not the first.
-
-Do not use Opus for taste calls - Fable is always used here.
-
-### GPT-5.6 Sol
-Sol is in between Opus and Fable. It's an extremely competent, hard working, persistent model that writes code slightly uglier than Anthropic models. Sol is your default option for an outside or decorrelated opinion, adversarial reviews, and competing designs. Use it to review and challenge both Opus and Fable.
-
-### Daybreak Blue
-Daybreak Blue is a version of Sol without cyber classifiers, intended for vulnerability finding and defensive work by approved security researchers. Prefer Daybreak Blue over Sol for cyber or security-sensitive tasks.
-
-### Fable
-Fable is the most powerful available model, but is expensive. Best used for work requiring depth and taste: deep architectural decisions, grilling, synthesizing, reconciling rival designs, planning the best long-term shape, adjudication for conflicted reviewers, text copy that users can see, and UI.
-
-Fable runs the same cyber classifiers as Opus. A refusal is a typed result, not a weaker answer. Retry on Daybreak Blue first, then Opus; a double refusal is reported to the user, never swallowed.
+A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on the security seat; when the security seat is the one that refused, that single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.
 
 ## Rules of Engagement - Model Contracts
 Worker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.
 
 Worker seats do **NOT** inherit this charter - only a context-inheriting spawn does [[role:context-inheritance]], by copying your context. A fresh seat gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.
 
-Pure locate/search fan-outs run on the search seat [[role:search-seat]] - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.
+Pure locate/search fan-outs run on the search seat - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.
 
 Review non-trivial changes before assuming they're done, and monitor every backgrounded command.
 
