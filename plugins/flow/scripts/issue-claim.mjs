@@ -105,13 +105,43 @@
 // uid a model with a shell can push whatever it likes. What this buys is that the ordinary path
 // cannot start a duplicate run by accident.
 //
+// claim is the fourth subcommand and the only one that composes the other three. The issue stage
+// used to run this procedure by hand, nine prose steps deep, and every step was a place for a
+// model to skip a scan or branch off a stale origin/main. It is one command now, and one JSON
+// line back: read the issue and refuse unless it is open, carries ready-for-agent and carries
+// none of the blocking labels; digest the acceptance criteria; scan for a run already live;
+// acquire; scan again while holding the tag; add the worktree at the object the acquire
+// verified; push the branch; move the labels; release.
+//
+// Everything up to the acquire is a read. A closed issue, a missing label, a title with no slug
+// in it, a worktree path already on disk: all of them are decided before anything is written, so
+// a refusal there has changed nothing anywhere.
+//
+// The order of the last three steps is the part worth explaining, because the obvious order is
+// the wrong one. The branch reaches origin before the labels move. A pushed branch is the marker
+// every other run scans for, since the pre-scan asks the server for refs/heads/<kind>/issue-N-*,
+// and that ref is what keeps a second run out once the claim tag is gone. No scan anywhere reads
+// a label. Move the labels first and a crash in between leaves an issue wearing in-progress with
+// no branch behind it, which stops nothing and tells a human nothing about whether work started.
+//
+// So a failure after the acquire splits at the push. Before it, this run has published nothing:
+// the worktree comes out, the branch it just created is deleted while it still points at the
+// base commit, the tag is abandoned on its receipt, and the caller gets a refusal that is true.
+// After it, the branch is on origin where every other run can see it, and giving the tag back
+// would understate what this run has already done. That case exits 4, unknown, naming the branch
+// and the tag and leaving both alone. A label that did not move is a minute of a human's time.
+// A second autonomous run on the same issue is not.
+//
 // Every remote interaction is an argv array, never a shell string, so there is no quoting to
 // get wrong. stdout is always exactly one JSON object, one line, including for refusals; the
 // only exception is --help. stderr carries a sentence for a human whenever the result is not a
-// win. Exit codes: 0 acquired, released or abandoned, 2 usage or refusal, 3 held by someone
-// else, 4 unknown.
+// win. Exit codes: 0 acquired, released, abandoned or claimed, 2 usage or refusal, 3 held by
+// someone else, 4 unknown.
 
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { accessSync, constants, existsSync } from 'node:fs'
+import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const LOCAL_GIT_TIMEOUT_MS = 5_000
@@ -119,6 +149,9 @@ const REMOTE_GIT_TIMEOUT_MS = 30_000
 const PUSH_TIMEOUT_MS = 60_000
 // A stale clone's catch-up fetch carries real history, unlike every other remote call here.
 const FETCH_TIMEOUT_MS = 120_000
+// A worktree add writes a whole checkout, so it costs nearer a clone than a ref read.
+const WORKTREE_TIMEOUT_MS = 60_000
+const GH_TIMEOUT_MS = 60_000
 
 const EXIT_OK = 0
 const EXIT_REFUSED = 2
@@ -131,15 +164,40 @@ const SHA = /^[0-9a-f]{40}$/
 const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/
 const MAIN_REF = 'refs/heads/main'
 
+// The claim verb's vocabulary. The heading is matched as this exact string, in this casing.
+const AC_HEADING = '## Acceptance Criteria'
+const KINDS = new Set(['feat', 'fix', 'chore'])
+const READY_LABEL = 'ready-for-agent'
+const BLOCKING_LABELS = ['needs-human', 'needs-info', 'needs-rebase']
+// Long enough to read, short enough that the branch and the sibling directory both stay typable.
+const SLUG_MAX = 40
+
 /**
  * The branch names that authorize releasing issue N's claim. The number is interpolated from a
  * validated integer, so there is nothing in it that a regular expression reads as syntax.
  */
 const branchForIssue = (issue) => new RegExp(`^(feat|fix|chore)/issue-${issue}-`)
 
-const USAGE = `issue-claim.mjs acquire <issue-number>
+const USAGE = `issue-claim.mjs claim <issue-number> [--kind feat|fix|chore]
+issue-claim.mjs acquire <issue-number>
 issue-claim.mjs release <issue-number> <branch> <expected-head-sha>
 issue-claim.mjs abandon <issue-number> <acquired-sha>
+
+claim is the whole start-of-run procedure as one command, and the one most callers want. It
+reads the issue and refuses unless it is open, carries ${READY_LABEL} and carries no blocking
+label; digests the "${AC_HEADING}" section; scans this clone's worktrees, origin's branches
+for the issue and open pull requests for a run already live; acquires the tag; scans again
+while holding it; adds a worktree at the object the acquire verified, on branch
+<kind>/issue-<N>-<slug>; pushes it; assigns the issue and moves ${READY_LABEL} to in-progress;
+and releases the tag. The kind comes from --kind, or from a bug or documentation label, or is
+feat. Exits 0 claimed, 2 refused, 3 held, 4 unknown, and prints one JSON line either way.
+
+A claim refusal names one of: usage, issue-closed, not-ready, blocked, no-acceptance-criteria,
+bad-slug, live-run, worktree-path, outside-parent, acquire-refused, worktree-add, push. An
+unknown names one of: issue-unreadable, repo-unreadable, scan-unreadable, acquire-unknown,
+issue-edit, release. Everything before the acquire is a read, so a refusal there changed
+nothing; after it, a failure before the branch reaches origin gives the tag back, and a failure
+after it leaves the branch and the tag standing for a human to finish or unwind.
 
 acquire takes the claim on an issue by creating refs/tags/flow-claim-issue-<N> on origin, at
 the head of refs/heads/main. Creating a ref is atomic on the remote, so exactly one racer wins.
@@ -157,7 +215,7 @@ the tag is on origin at exactly that object, and deletes it under a --force-with
 the same SHA, so the remote rechecks too. A tag at any other object stays: this is not a way to
 break a stale claim, and a claim nobody holds a receipt for is a job for a human.
 
-All three refuse when origin's fetch and push URLs disagree. Nothing here overwrites a ref or
+All four refuse when origin's fetch and push URLs disagree. Nothing here overwrites a ref or
 breaks a stale tag, and nothing it prints carries a credential from a remote URL.
 `
 
@@ -203,6 +261,15 @@ const makeRedactor = (rawUrls, identity) => (text) => {
 }
 
 const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 200)
+
+/** JSON from a command's stdout, or null when it printed something else. */
+const parseJson = (text) => {
+  if (typeof text !== 'string') return null
+  try {
+    const value = JSON.parse(text)
+    return value !== null && typeof value === 'object' ? value : null
+  } catch { return null }
+}
 
 /**
  * A printable identity that cannot carry a credential, whatever the remote looks like. Unlike
@@ -608,32 +675,397 @@ const abandon = ({ argv, cwd }) => {
   return unknown(`the delete ran (git said ${describeStatus(status, redact)}, exit ${push.code}) but ${after.detail}`)
 }
 
+// -------------------------------------------------------------------------------------- claim
+
+/** The bare label names on an issue read, whatever shape gh handed back. */
+const labelNames = (labels) => (Array.isArray(labels) ? labels : [])
+  .map((label) => (typeof label === 'string' ? label : String(label?.name ?? '')))
+  .filter((name) => name !== '')
+
 /**
- * Decide and act. Takes the argument vector and a working directory and returns a
+ * The exact bytes of the acceptance criteria section: from the first byte of the heading line
+ * through the byte before the next `## ` heading, or the end of the body. Taken as written, with
+ * no trimming and no normalising, because the digest is what the run is judged against later and
+ * a whitespace fix in the issue is a change the stage is supposed to notice.
+ *
+ * The heading has to be that string in that casing. A body that writes `## Acceptance criteria`
+ * has no section here, and the run stops rather than digest a heading it guessed at. The one
+ * concession is a carriage return: GitHub hands back CRLF bodies, so the match ignores a
+ * trailing \r while the digest keeps it.
+ *
+ * Returns null when the heading is absent.
+ */
+const acceptanceCriteria = (body) => {
+  const text = String(body ?? '')
+  let offset = 0
+  let start = -1
+  for (const raw of text.split('\n')) {
+    const bare = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    if (start < 0) {
+      if (bare === AC_HEADING) start = offset
+    } else if (bare.startsWith('## ')) {
+      return text.slice(start, offset)
+    }
+    offset += raw.length + 1
+  }
+  return start < 0 ? null : text.slice(start)
+}
+
+const sha256 = (text) => createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex')
+
+/**
+ * A branch-safe slug from an issue title. Everything outside [a-z0-9] becomes a hyphen, runs
+ * collapse, and the ends are trimmed, so a title made entirely of punctuation produces the empty
+ * string and the caller refuses rather than build `feat/issue-8-`. The cut back to a hyphen
+ * boundary keeps the last word whole instead of ending a branch mid-syllable; a first word longer
+ * than the limit has no boundary to cut at and gets truncated where it falls.
+ */
+const slugify = (title) => {
+  const flat = String(title ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  if (flat.length <= SLUG_MAX) return flat
+  const cut = flat.slice(0, SLUG_MAX)
+  const boundary = cut.lastIndexOf('-')
+  return (boundary > 0 ? cut.slice(0, boundary) : cut).replace(/-+$/, '')
+}
+
+/**
+ * The kind an issue's labels ask for. `bug` wins outright; `documentation` only names a chore
+ * when nothing on the issue claims it is a feature, because an issue labelled both is a feature
+ * that happens to touch docs. Everything else is a feat, which is also what an unlabelled issue
+ * gets. `--kind` overrides all of it.
+ */
+const kindFromLabels = (labels) => {
+  if (labels.includes('bug')) return 'fix'
+  if (labels.includes('documentation') && !labels.includes('enhancement')) return 'chore'
+  return 'feat'
+}
+
+/** The worktrees this clone has registered, as { path, branch } in the order git listed them. */
+const parseWorktrees = (stdout) => {
+  const entries = []
+  let current = null
+  for (const raw of String(stdout).split('\n')) {
+    const text = raw.trimEnd()
+    if (text.startsWith('worktree ')) {
+      current = { path: text.slice('worktree '.length), branch: null }
+      entries.push(current)
+      continue
+    }
+    if (current !== null && text.startsWith('branch ')) current.branch = text.slice('branch '.length)
+  }
+  return entries
+}
+
+const shortBranch = (ref) => (typeof ref === 'string' && ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref)
+
+/** One sentence naming what a scan turned up, in the order it found it. */
+const describeHits = (hits) => hits.map((hit) => {
+  if (hit.where === 'worktree') return `a worktree at ${hit.path}${hit.branch ? ` on ${hit.branch}` : ''}`
+  if (hit.where === 'remote-branch') return `${hit.ref} on origin at ${String(hit.sha).slice(0, 12)}`
+  return `pull request #${hit.number} from ${hit.headRefName}`
+}).join('; ')
+
+const claim = ({ argv, cwd, runGh }) => {
+  const usage = (detail) => line({ command: 'claim', result: 'refused', reason: 'usage', detail }, EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
+
+  let issueArg = null
+  let kindArg = null
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--kind') {
+      if (kindArg !== null) return usage('--kind was given twice')
+      kindArg = argv[i + 1]
+      i += 1
+      if (kindArg === undefined) return usage('--kind needs a value, one of feat, fix or chore')
+      if (!KINDS.has(kindArg)) return usage(`${JSON.stringify(kindArg)} is not a kind; expected feat, fix or chore`)
+      continue
+    }
+    if (issueArg !== null) return usage(`${JSON.stringify(arg)} is an extra argument; claim takes one issue number and an optional --kind`)
+    issueArg = arg
+  }
+  if (issueArg === null) return usage('claim expects one argument, the issue number')
+  const issue = Number(issueArg)
+  if (!Number.isInteger(issue) || issue <= 0) return usage(`${JSON.stringify(issueArg)} is not an issue number`)
+
+  const tag = `flow-claim-issue-${issue}`
+  const ref = `refs/tags/${tag}`
+  const origin = resolveOrigin('claim', cwd, { issue, tag, ref })
+  if (origin.refusal) return origin.refusal
+  const repo = origin.repo
+  const redact = origin.redact
+  const base = { command: 'claim', repo, issue, tag, ref }
+  const refuse = (reason, detail, extra = {}, human = null) =>
+    line({ ...base, ...extra, result: 'refused', reason, detail }, EXIT_REFUSED, human ?? `${detail}. Nothing was claimed and nothing was changed.`)
+  const unknown = (reason, detail, extra = {}, human = null) =>
+    line({ ...base, ...extra, result: 'unknown', reason, detail }, EXIT_UNKNOWN, human ?? `${detail}. Find out what the remote actually holds before running this again.`)
+  const failureOf = (what, run) => `${what} failed: ${firstLine(redact(run.stderr)) || `exit ${run.code}`}`
+
+  // ---- the issue itself. Three refusals, in the order the stage states them.
+  const view = runGh(['issue', 'view', String(issue), '--json', 'number,title,state,labels,assignees,body,url'], { cwd })
+  if (view.code !== 0) return unknown('issue-unreadable', failureOf(`\`gh issue view ${issue}\``, view))
+  const found = parseJson(view.stdout)
+  if (found === null) return unknown('issue-unreadable', `\`gh issue view ${issue}\` printed something this could not read as a JSON object`)
+
+  const state = String(found.state ?? '').toUpperCase()
+  if (state !== 'OPEN') {
+    return refuse('issue-closed', `issue #${issue} on ${repo} is ${state || 'in no state this could read'}, and a claim is only taken on an open issue`)
+  }
+  const labels = labelNames(found.labels)
+  if (!labels.includes(READY_LABEL)) {
+    return refuse('not-ready', `issue #${issue} does not carry ${READY_LABEL}, so nobody has validated the spec this run would work from`)
+  }
+  const blocking = BLOCKING_LABELS.filter((label) => labels.includes(label))
+  if (blocking.length > 0) {
+    return refuse('blocked', `issue #${issue} carries ${blocking.join(', ')} beside ${READY_LABEL}, so the ready label is stale and only a human clears the blocker`, { blocking })
+  }
+
+  const section = acceptanceCriteria(found.body)
+  if (section === null) {
+    return refuse('no-acceptance-criteria', `issue #${issue} has no line that is exactly "${AC_HEADING}", so there is nothing to judge the run against`)
+  }
+  const acDigest = sha256(section)
+
+  // ---- the names. Everything but --kind is derived, so two runs on one issue build the same
+  // branch and the same path and the scans below can recognise each other's work.
+  const kind = kindArg ?? kindFromLabels(labels)
+  const slug = slugify(found.title)
+  if (slug === '') {
+    return refuse('bad-slug', `the title of issue #${issue} has no letters or digits in it, so there is no slug to name a branch after`)
+  }
+  const branch = `${kind}/issue-${issue}-${slug}`
+  const topRead = runGit(['rev-parse', '--show-toplevel'], cwd, LOCAL_GIT_TIMEOUT_MS)
+  const repoRoot = topRead.code === 0 ? topRead.stdout.trim() : ''
+  if (repoRoot === '') {
+    return unknown('repo-unreadable', `\`git rev-parse --show-toplevel\` gave no repository root for this directory: ${firstLine(redact(topRead.stderr)) || `exit ${topRead.code}`}`)
+  }
+  const parent = dirname(repoRoot)
+  const worktree = join(parent, `${basename(repoRoot)}-issue-${issue}-${slug}`)
+  const names = { kind, branch, worktree, acDigest, title: found.title ?? null, url: found.url ?? null }
+
+  // ---- is a run already live? All three places one leaves a mark: this clone's worktrees, the
+  // issue's branches on the server, and open pull requests. The server is asked for the branches
+  // rather than this clone, because a clone's refs are only as fresh as its last fetch and the
+  // branch is the marker that outlives the claim tag.
+  const scan = () => {
+    const hits = []
+    const listed = runGit(['worktree', 'list', '--porcelain'], cwd, LOCAL_GIT_TIMEOUT_MS)
+    if (listed.code !== 0) return { problem: failureOf('`git worktree list --porcelain`', listed) }
+    for (const entry of parseWorktrees(listed.stdout)) {
+      const name = shortBranch(entry.branch)
+      const byPath = basename(entry.path).includes(`-issue-${issue}-`)
+      if (byPath || (typeof name === 'string' && branchForIssue(issue).test(name))) {
+        hits.push({ where: 'worktree', path: entry.path, branch: entry.branch })
+      }
+    }
+
+    const patterns = ['feat', 'fix', 'chore'].map((k) => `refs/heads/${k}/issue-${issue}-*`)
+    const remote = runGit(['ls-remote', 'origin', ...patterns], cwd, REMOTE_GIT_TIMEOUT_MS)
+    if (remote.code !== 0) return { problem: failureOf('`git ls-remote origin` with the three issue patterns', remote) }
+    for (const text of remote.stdout.split('\n')) {
+      const [sha, name] = text.split('\t')
+      if (!SHA.test(sha ?? '') || typeof name !== 'string' || !name.startsWith('refs/heads/')) continue
+      if (branchForIssue(issue).test(shortBranch(name))) hits.push({ where: 'remote-branch', ref: name, sha })
+    }
+
+    // A bounded read: a repository with more than 100 open pull requests can hide one from this.
+    // The remote branch scan above is the one that cannot miss, and it covers the same run.
+    const prs = runGh(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,title,url', '--limit', '100'], { cwd })
+    if (prs.code !== 0) return { problem: failureOf('`gh pr list --state open`', prs) }
+    const open = parseJson(prs.stdout)
+    if (!Array.isArray(open)) return { problem: '`gh pr list --state open` printed something this could not read as a JSON array' }
+    for (const pr of open) {
+      if (branchForIssue(issue).test(String(pr?.headRefName ?? ''))) {
+        hits.push({ where: 'pull-request', number: pr?.number ?? null, headRefName: pr?.headRefName ?? null, title: pr?.title ?? null, url: pr?.url ?? null })
+      }
+    }
+    return { hits }
+  }
+
+  const first = scan()
+  if (first.problem) return unknown('scan-unreadable', `the scan for a run already working issue #${issue} could not be completed: ${first.problem}`, names)
+  if (first.hits.length > 0) {
+    return refuse('live-run', `issue #${issue} already has a run on it`, { ...names, live: first.hits },
+      `issue #${issue} already has a run on it: ${describeHits(first.hits)}. Nothing was claimed. Look at that run before starting another.`)
+  }
+
+  // ---- the path this run would write to. Checked before the first mutation, because a worktree
+  // add that fails after the claim is a tag to give back and a half-made directory to clear up.
+  if (existsSync(worktree)) {
+    return refuse('worktree-path', `${worktree} already exists, so there is nowhere to put this run's worktree`, names)
+  }
+  try {
+    accessSync(parent, constants.W_OK)
+  } catch {
+    return refuse('worktree-path', `${parent} is not writable, so the worktree beside this repository cannot be created`, names)
+  }
+  // The boundary check the stage states. A repository that is itself a linked worktree of
+  // something outside this directory's parent passes everything else and then fails at
+  // `git worktree add`, after the claim, because git writes the new registration into that
+  // out-of-bounds common directory.
+  const commonRead = runGit(['rev-parse', '--git-common-dir'], cwd, LOCAL_GIT_TIMEOUT_MS)
+  const common = commonRead.code === 0 ? resolve(cwd, commonRead.stdout.trim()) : ''
+  if (common === '') {
+    return unknown('repo-unreadable', `\`git rev-parse --git-common-dir\` gave no git directory for this repository: ${firstLine(redact(commonRead.stderr)) || `exit ${commonRead.code}`}`, names)
+  }
+  if (common !== parent && !common.startsWith(parent + sep)) {
+    return refuse('outside-parent', `this repository's git directory is ${common}, outside ${parent}, so a worktree added here would register itself out of bounds`, names)
+  }
+
+  // ---- the claim. Everything above was a read.
+  const acquired = acquire({ argv: [String(issue)], cwd })
+  const receipt = parseJson(acquired.stdout)
+  const verdict = receipt?.result
+  if (verdict === 'held') {
+    const holder = String(receipt.sha ?? '')
+    return line({ ...base, ...names, result: 'held', sha: receipt.sha ?? null, detail: receipt.detail ?? null }, EXIT_HELD,
+      `issue #${issue} is already claimed on ${repo} (${ref}${SHA.test(holder) ? ` at ${holder.slice(0, 12)}` : ''}). ` +
+      'Leave it alone; the run that holds it releases it, or a human breaks the tag.')
+  }
+  if (verdict === 'refused') {
+    return refuse('acquire-refused', `the claim on issue #${issue} was refused (${receipt.reason ?? 'no reason'}): ${receipt.detail ?? 'no detail'}`, names)
+  }
+  if (verdict !== 'acquired' || !SHA.test(String(receipt.sha ?? ''))) {
+    return unknown('acquire-unknown', `the claim on issue #${issue} could not be taken: ${receipt?.detail ?? acquired.stdout.trim()}`, names)
+  }
+  const baseSha = receipt.sha
+  const claimed = { ...names, base: baseSha }
+
+  const giveBack = () => parseJson(abandon({ argv: [String(issue), baseSha], cwd }).stdout)?.result ?? 'unknown'
+  const afterGiveBack = (result) => result === 'abandoned'
+    ? 'The claim tag was given back, so nothing of this run is left anywhere.'
+    : `The claim tag could NOT be given back (abandon said ${result}), so ${ref} on ${repo} needs a human.`
+
+  // ---- the second scan, the one that catches a contender who scanned before this run took the
+  // tag and is still on its way to claiming. Race-free by construction: holding the tag blocks
+  // every new contender, and any earlier winner released only after its branch reached origin.
+  const second = scan()
+  if (second.problem) {
+    const gave = giveBack()
+    return unknown('scan-unreadable', `the second scan for a live run on issue #${issue} could not be completed: ${second.problem}`, { ...claimed, abandon: gave },
+      `the second scan for a live run on issue #${issue} could not be completed: ${second.problem}. ${afterGiveBack(gave)}`)
+  }
+  if (second.hits.length > 0) {
+    const gave = giveBack()
+    return refuse('live-run', `issue #${issue} already has a run on it, found while holding the claim`, { ...claimed, live: second.hits, abandon: gave },
+      `issue #${issue} already has a run on it: ${describeHits(second.hits)}. ${afterGiveBack(gave)} Look at that run before starting another.`)
+  }
+
+  // ---- the worktree, at the object the acquire verified on the remote. Never at this clone's
+  // own origin/main, which is as old as its last fetch.
+  const added = runGit(['worktree', 'add', worktree, '-b', branch, baseSha], cwd, WORKTREE_TIMEOUT_MS)
+  if (added.code !== 0) {
+    // An add that failed part way can still leave a registration and a directory behind, and
+    // both would refuse the next run at the worktree-path check. remove without --force, then
+    // prune: the checkout is seconds old and has nothing in it worth forcing past, and a remove
+    // that does refuse leaves the path for a human rather than deleting work nobody expected.
+    runGit(['worktree', 'remove', worktree], cwd, WORKTREE_TIMEOUT_MS)
+    runGit(['worktree', 'prune'], cwd, LOCAL_GIT_TIMEOUT_MS)
+    const gave = giveBack()
+    const detail = `\`git worktree add ${worktree} -b ${branch}\` failed: ${firstLine(redact(added.stderr)) || `exit ${added.code}`}`
+    return refuse('worktree-add', detail, { ...claimed, abandon: gave }, `${detail}. ${afterGiveBack(gave)}`)
+  }
+
+  // Nothing is committed between the branch creation and this push, so the head is the base. The
+  // release below re-reads origin and refuses unless the remote branch is exactly this object,
+  // which is what proves the push landed; a local rev-parse would only prove what git did here.
+  const head = baseSha
+  const pushed = runGit(['push', '-u', 'origin', branch], worktree, PUSH_TIMEOUT_MS)
+  if (pushed.code !== 0) {
+    runGit(['worktree', 'remove', worktree], cwd, WORKTREE_TIMEOUT_MS)
+    runGit(['worktree', 'prune'], cwd, LOCAL_GIT_TIMEOUT_MS)
+    // The branch goes too, but only while it still points at the base this run created it at, so
+    // a name that turned out to belong to someone else is left alone. Without this the retry
+    // after the abandon walks into `a branch named ... already exists` and needs a human for a
+    // branch nobody ever published.
+    const local = runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], cwd, LOCAL_GIT_TIMEOUT_MS)
+    if (local.code === 0 && local.stdout.trim() === baseSha) runGit(['branch', '-D', branch], cwd, LOCAL_GIT_TIMEOUT_MS)
+    const gave = giveBack()
+    const detail = `\`git push -u origin ${branch}\` failed: ${firstLine(redact(pushed.stderr)) || `exit ${pushed.code}`}`
+    return refuse('push', detail, { ...claimed, head, abandon: gave }, `${detail}. ${afterGiveBack(gave)}`)
+  }
+
+  // ---- past here the branch is on origin, where every other run's scan can see it, and the tag
+  // is no longer the only thing keeping a second run out. Nothing below gives it back.
+  const published = { ...claimed, head }
+  const stuck = (reason, detail) => unknown(reason, detail, published,
+    `${detail}. ${branch} is on ${repo} at ${head.slice(0, 12)} and ${ref} is still there; finish or unwind this by hand, and do not re-run the claim.`)
+
+  const edited = runGh(['issue', 'edit', String(issue), '--add-assignee', '@me', '--remove-label', READY_LABEL, '--add-label', 'in-progress'], { cwd })
+  if (edited.code !== 0) {
+    return stuck('issue-edit', failureOf(`\`gh issue edit ${issue}\``, edited))
+  }
+
+  const released = parseJson(release({ argv: [String(issue), branch, head], cwd }).stdout)
+  if (released?.result !== 'released') {
+    return stuck('release', `the claim on issue #${issue} could not be released (${released?.result ?? 'no result'}: ${released?.detail ?? 'no detail'})`)
+  }
+
+  return line({ command: 'claim', result: 'claimed', issue, title: found.title ?? null, kind, branch, worktree, base: baseSha, head, acDigest, url: found.url ?? null }, EXIT_OK, '')
+}
+
+/**
+ * Decide and act. Takes the argument vector, a working directory and a gh runner, and returns a
  * { code, stdout, stderr } result instead of exiting, so a caller can drive it in process.
+ *
+ * gh is injected the way scripts/land-merge.mjs injects it, as a plain function across the
+ * module boundary, which is what lets the smoke answer GitHub reads from a state object without
+ * an environment variable that selects the binary this program trusts. The three git-only
+ * subcommands never call it.
  *
  * @param {object} args
  * @param {string[]} args.argv the argument vector after the script name
  * @param {string} args.cwd the directory whose origin remote this run claims on
+ * @param {(ghArgs: string[], options: {cwd: string}) => {code: number, stdout: string, stderr: string}} [args.runGh]
  * @returns {{code: number, stdout: string, stderr: string}}
  */
-export function issueClaim({ argv, cwd }) {
+export function issueClaim({ argv, cwd, runGh }) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
     return { code: EXIT_OK, stdout: USAGE, stderr: '' }
   }
   const [subcommand, ...rest] = argv
+  if (subcommand === 'claim') return claim({ argv: rest, cwd, runGh })
   if (subcommand === 'acquire') return acquire({ argv: rest, cwd })
   if (subcommand === 'release') return release({ argv: rest, cwd })
   if (subcommand === 'abandon') return abandon({ argv: rest, cwd })
   const detail = argv.length === 0
-    ? 'expected a subcommand, one of acquire, release or abandon'
-    : `${JSON.stringify(subcommand)} is not a subcommand; expected acquire, release or abandon`
+    ? 'expected a subcommand, one of claim, acquire, release or abandon'
+    : `${JSON.stringify(subcommand)} is not a subcommand; expected claim, acquire, release or abandon`
   return line({ command: null, result: 'refused', reason: 'usage', detail }, EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
+}
+
+// The production gh, resolved once from PATH and remembered as an absolute path, exactly as
+// scripts/land-merge.mjs resolves it and for the same reason: at one uid this is cooperative,
+// and what the one-time resolution buys is that a PATH change mid-run cannot swap the binary out
+// from under a claim that is half done. There is no variable whose only job is to pick this
+// binary. GH_REPO and GH_HOST come out of the child environment because every call here means
+// the repository this working directory is in, and an ambient redirect would read the issue from
+// one repository and label another.
+const resolveGh = () => {
+  for (const dir of String(process.env.PATH || '').split(delimiter)) {
+    if (dir === '') continue
+    const candidate = join(dir, 'gh')
+    try { accessSync(candidate, constants.X_OK); return candidate } catch {}
+  }
+  return 'gh'
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
-  const result = issueClaim({ argv: process.argv.slice(2), cwd: process.cwd() })
+  const ghBin = resolveGh()
+  const ghEnv = { ...process.env }
+  delete ghEnv.GH_REPO
+  delete ghEnv.GH_HOST
+  const runGh = (ghArgs, options) => {
+    try {
+      const stdout = execFileSync(ghBin, ghArgs, {
+        encoding: 'utf8', timeout: GH_TIMEOUT_MS, cwd: options.cwd, env: ghEnv, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      return { code: 0, stdout: String(stdout), stderr: '' }
+    } catch (error) {
+      return { code: error?.status ?? 1, stdout: String(error?.stdout || ''), stderr: String(error?.stderr || error?.message || error) }
+    }
+  }
+  const result = issueClaim({ argv: process.argv.slice(2), cwd: process.cwd(), runGh })
   if (result.stdout) process.stdout.write(result.stdout)
   if (result.stderr) process.stderr.write(result.stderr)
   process.exit(result.code)
