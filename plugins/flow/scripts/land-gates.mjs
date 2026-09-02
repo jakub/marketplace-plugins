@@ -45,11 +45,22 @@
 // their outcome: a CheckRun has `name` and `detailsUrl`, a commit status has `context` and
 // `targetUrl`, so both fields are read and most commit statuses name themselves. What is left
 // nameless is looked up in a `gh pr checks` cross-read, which renders both kinds through one
-// formatter, and the join is the details url and nothing else. Two reads of the same pull request
-// come back in no guaranteed order, so pairing leftovers by position is a coin toss that can put
-// a passing name on a failing check; an entry that does not join by url stays unknown and stops
-// the land. That cross-read is optional - an older gh with no --json on this subcommand is not a
-// failed gate - and its output is parsed whatever the exit code is, because `gh pr checks` exits
+// formatter, and the join is the details url, on one condition. The url has to identify a single
+// check on both sides, meaning exactly one rollup entry and exactly one cross-read entry carry
+// it. Equal cardinality is not identity, and neither is a shared url.
+//
+// Two reads of the same pull request come back in no guaranteed order, so pairing leftovers by
+// position is a coin toss that can put a passing name on a failing check. Joining on a url that
+// two checks share is the same coin toss, and a status provider that links every context it
+// reports to the one build page deals it every run: two nameless rollup entries, [FAILURE,
+// SUCCESS], both linking to that build, and a cross-read naming `known-flake` and `e2e`, both
+// linking to it too. Whichever name the failure took decided whether the allowlist excused it,
+// and either way `e2e`'s failure was never reported. So a url that more than one entry carries
+// on either side joins nothing, every entry carrying it stays unknown, and unknown stops the
+// land.
+//
+// That cross-read is optional - an older gh with no --json on this subcommand is not a failed
+// gate - and its output is parsed whatever the exit code is, because `gh pr checks` exits
 // non-zero when checks are failing or pending, which is exactly when this program most wants to
 // read it.
 //
@@ -69,6 +80,19 @@
 // colon, because a commit status context like `ci/circleci: build` has one: a line that equals a
 // check name reported on this pull request is a bare entry, and only a line that matches no check
 // name splits.
+//
+// `--accept-flake check-name:test_name` is the one way such an entry moves anything, and it is a
+// statement rather than a reading: whoever passes the flag is saying they read the job log and
+// that the named test was the only failure in that check. Without it the per-test path could
+// never end anywhere useful, because the stage requires a `pass` before it merges and the
+// executor could only ever report `ci-failed` with a candidate beside it. The flag accepts only
+// what the base branch already declared, in that exact `check:test` spelling, and only for a
+// check that is failing right now; anything else is a usage refusal naming the flag, because a
+// flag that can invent an allowlist entry is not an override, it is the allowlist. A bare check
+// name is refused too - the allowlist moves those on its own, so a bare name through the flag
+// could only mean the caller misunderstood it. What is accepted is recorded under
+// `ci.acceptedFlakes` and again as a `flaky-merged-through` attention item saying it was accepted
+// by flag, and the land report has to name every one.
 //
 // Both copies are read over the contents API, at the base ref and at the head SHA, and never out
 // of the local clone. A `git fetch` would write objects, FETCH_HEAD and remote-tracking refs into
@@ -101,6 +125,15 @@
 // https://user:token@host/owner/repo, and git quotes the remote it was handed word for word in
 // its errors, so every message quoted from git or gh goes through a redactor built from the
 // configured origin URL, with a userinfo pattern behind it as a backstop.
+//
+// The remote itself is parsed as a URL and never scanned with a regex that trims a suffix. A
+// credential travels in a query string as often as in userinfo, and
+// https://host/owner/repo.git?access_token=... under a suffix-stripping regex yields the repo
+// name `repo.git?access_token=...`, which is then the `--repo` argument, the contents-API path,
+// the redactor's own replacement text and `identity.slug` in a stop detail, so the token lands in
+// the JSON the stage journals. So owner and repo come from `new URL().pathname` and nowhere else,
+// a remote carrying a query or a fragment is refused unread, and every refusal about the remote
+// describes it instead of quoting it.
 
 import { execFileSync } from 'node:child_process'
 import { accessSync, constants } from 'node:fs'
@@ -148,7 +181,7 @@ const CLOSING_PHRASE = /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi
 const BARE_ISSUE = /(^|[^\w#])#(\d+)\b/g
 const FOLLOW_UP_DRAFT = /^##\s*follow-up draft/im
 
-const USAGE = `land-gates.mjs [<pull-request-number>]
+const USAGE = `land-gates.mjs [--accept-flake <check-name>:<test_name>]... [<pull-request-number>]
 
 Re-derives every fact flow's land gates inspect and prints one JSON object on stdout: the pull
 request, its head and base, open pull requests stacked on this branch, the check rollup partitioned
@@ -161,6 +194,15 @@ head SHA. A line in that file is one entry: a line that equals a check name this
 reported moves that whole check from failed to flaky, and any other line splits on its first colon
 into check-name:test_name, which moves nothing and is reported as a job log worth reading. The
 name-first rule is what keeps a commit status context like \`ci/circleci: build\` readable.
+
+--accept-flake is how a check-name:test_name entry moves anything. It takes one entry in that
+exact spelling, and it is the caller's statement that they read the job log and that the named
+test was the only failure in that check. The named check moves from failed to flaky, it is
+recorded under ci.acceptedFlakes, and it is reported as a flaky-merged-through attention item
+that says it was accepted by flag. The land report has to name every entry accepted this way.
+Repeat the flag for more than one entry. It is refused when the entry is not on the base
+branch's allowlist, when the check it names is not currently failing, and when it names a bare
+check name, which the allowlist already moves on its own.
 
 It mutates nothing, in the repository or in the clone: \`git remote get-url origin\` is the only
 git command it runs. Exit 0 when nothing stops the land, 1 when something does, 2 on a usage error
@@ -233,17 +275,63 @@ const makeRedactor = (rawUrl, identity) => (text) => {
   return scrubUserinfo(out)
 }
 
-// git@host:owner/repo, ssh://git@host/owner/repo, https://host/owner/repo - keep the host.
-// Copied from scripts/land-merge.mjs rather than imported: these executors are invoked one at a
-// time by path, and a shared module between them would be a third file to keep in step.
+// Why the refusals below never quote the remote they refused: the remote is exactly the string
+// that can hold the credential, so a message about it describes it instead.
+const REMOTE_ABSENT = 'this directory has no readable origin remote, so there is no repository to gate'
+const REMOTE_UNREADABLE = 'the origin remote of this directory does not read as a URL naming a host, an owner and ' +
+  'a repository, so there is no repository to gate (it is not quoted here, because a remote can carry a credential)'
+const REMOTE_QUERY = 'the origin remote of this directory carries a query string or a fragment, which no repository ' +
+  'URL needs and a credential often is, so it is refused unread (it is not quoted here, for the same reason)'
+const REMOTE_PATH = 'the path of the origin remote does not name exactly one owner and one repository, so there is ' +
+  'no repository to gate (it is not quoted here, because a remote can carry a credential)'
+
+const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
+// git@host:owner/repo.git and host:owner/repo, the two spellings new URL() cannot parse.
+const SCP_LIKE = /^(?:[^@\s/]+@)?([^:/\s]+):(.+)$/
+
+/**
+ * The repository to gate, derived from the origin remote. Returns { identity } or { refusal }.
+ *
+ * A scheme URL is parsed with new URL() and owner and repo come from its pathname alone. The
+ * regex this replaced stripped a `.git` suffix off the whole string and then took what followed
+ * the last slash, so https://host/owner/repo.git?access_token=sekret yielded the repository name
+ * `repo.git?access_token=sekret`, and that string went on to be the --repo argument, the
+ * contents-API path and identity.slug in a journalled stop detail. A query or a fragment is a
+ * refusal now rather than something to strip, because no remote that names a repository has one.
+ *
+ * The scp-like form has no scheme for new URL() to work with and is still how most people spell
+ * a GitHub remote, so it keeps a regex, with the same owner/repo rule applied to its path.
+ *
+ * Not shared with scripts/land-merge.mjs: these executors are invoked one at a time by path, and
+ * a module between them would be a third file to keep in step.
+ */
 const identityOfRemote = (url) => {
-  if (typeof url !== 'string' || url.trim() === '') return null
-  const s = url.trim().replace(/\.git$/, '')
-  let m = s.match(/^[^@\s]+@([^:/\s]+):([^/\s]+)\/([^/\s]+)$/)
-  if (!m) m = s.match(/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/\s]+@)?([^/:\s]+)(?::\d+)?\/([^/\s]+)\/([^/\s]+)$/i)
-  if (!m) return null
-  const [, host, owner, repo] = m
-  return { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` }
+  const raw = typeof url === 'string' ? url.trim() : ''
+  if (raw === '') return { refusal: REMOTE_ABSENT }
+
+  const fromPath = (host, path) => {
+    const segments = String(path).split('/').filter((part) => part !== '')
+    if (segments.length !== 2) return { refusal: REMOTE_PATH }
+    const owner = segments[0]
+    const repo = segments[1].replace(/\.git$/, '')
+    if (host === '' || owner === '' || repo === '') return { refusal: REMOTE_PATH }
+    return { identity: { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` } }
+  }
+
+  if (SCHEME.test(raw)) {
+    let parsed
+    try { parsed = new URL(raw) } catch { return { refusal: REMOTE_UNREADABLE } }
+    if (parsed.search !== '' || parsed.hash !== '') return { refusal: REMOTE_QUERY }
+    // The pathname is left percent-encoded on purpose: decodeURIComponent throws on a lone %, and
+    // nothing downstream needs the decoded form of an owner or a repository name.
+    return fromPath(parsed.hostname, parsed.pathname)
+  }
+
+  const scp = raw.match(SCP_LIKE)
+  if (scp === null) return { refusal: REMOTE_UNREADABLE }
+  const [, host, path] = scp
+  if (path.includes('?') || path.includes('#')) return { refusal: REMOTE_QUERY }
+  return fromPath(host, path)
 }
 
 /** The verdict token for one check entry: its conclusion, or the state a commit status uses. */
@@ -288,25 +376,46 @@ const parseFlakes = (text, names = new Set()) => {
   return { bare, tests, lines }
 }
 
+/** How many entries of a list carry each url, so a url shared by two of them can be recognized. */
+const urlCounts = (items) => {
+  const counts = new Map()
+  for (const item of items) {
+    if (item.url === null || item.url === undefined) continue
+    counts.set(item.url, (counts.get(item.url) ?? 0) + 1)
+  }
+  return counts
+}
+
 /**
  * Give the nameless rollup entries their names from the `gh pr checks` cross-read. The details
- * url is the only join key. Both reads list the same checks in no guaranteed order, so pairing
- * the leftovers by position is a guess, and the way it fails is the way that matters: with a
- * rollup of one FAILURE and one SUCCESS, both nameless, and a cross-read naming `unit` and `e2e`,
- * the counts agreed and the failure took whichever name came first. If that name was on the flake
- * allowlist, the land went green over a real failure. An entry that does not join by url keeps a
- * null name and is reported unknown, which stops the land.
+ * url is the only join key, and it joins only where it identifies a single check on both sides.
+ *
+ * Two ways of getting this wrong both end with a passing name on a failing check. Pairing the
+ * leftovers by position is one: with a rollup of one FAILURE and one SUCCESS, both nameless, and
+ * a cross-read naming `unit` and `e2e`, the counts agreed and the failure took whichever name
+ * came first. Joining on a url that more than one check carries is the other, and status
+ * providers that link every context they report to the one build url produce it as a matter of
+ * course: two nameless entries, [FAILURE, SUCCESS], both linking to that build, a cross-read
+ * naming `known-flake` and `e2e`, and the failure takes `known-flake`, is excused by the
+ * allowlist, and `e2e`'s failure is never reported at all. Equal cardinality is not identity, and
+ * neither is a shared url.
+ *
+ * So a url is a join key only when exactly one rollup entry and exactly one cross-read entry
+ * carry it. Everything else keeps a null name and is reported unknown, which stops the land.
  */
 const nameFromCrossRead = (entries, checks) => {
   const nameless = entries.filter((entry) => entry.name === null)
   if (nameless.length === 0 || checks.length === 0) return
   const known = new Set(entries.map((entry) => entry.name).filter((name) => name !== null))
-  let leftovers = checks.filter((check) => check.name !== null && !known.has(check.name))
+  const inRollup = urlCounts(entries)
+  const inCrossRead = urlCounts(checks)
 
   for (const entry of nameless) {
-    const match = entry.url === null ? undefined : leftovers.find((check) => check.url === entry.url)
+    if (entry.url === null) continue
+    if (inRollup.get(entry.url) !== 1 || inCrossRead.get(entry.url) !== 1) continue
+    // A cross-read name another rollup entry already carries is not a name for this one either.
+    const match = checks.find((check) => check.url === entry.url && check.name !== null && !known.has(check.name))
     if (match === undefined) continue
-    leftovers = leftovers.filter((check) => check !== match)
     entry.name = match.name
     if (tokenOf(entry) === '') entry.state = match.state
   }
@@ -373,10 +482,29 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
   void env
   const refuse = (reason) => ({ code: EXIT_USAGE, stdout: '', stderr: `land-gates: ${reason}\n` })
 
-  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
+  if (argv.some((arg) => arg === '--help' || arg === '-h')) {
     return { code: EXIT_PASS, stdout: USAGE, stderr: '' }
   }
-  if (argv.length > 1) {
+
+  // --accept-flake is repeatable and its values are checked against the base branch's allowlist
+  // further down, once there is one to check against. Only the shape is decided here.
+  const acceptFlakes = []
+  const positional = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = String(argv[i])
+    if (arg === '--accept-flake' || arg.startsWith('--accept-flake=')) {
+      const value = arg === '--accept-flake'
+        ? (i + 1 < argv.length ? String(argv[++i]) : '')
+        : arg.slice('--accept-flake='.length)
+      if (value.trim() === '') {
+        return refuse(`--accept-flake takes one check-name:test_name entry and was given nothing.\n\n${USAGE}`)
+      }
+      if (!acceptFlakes.includes(value.trim())) acceptFlakes.push(value.trim())
+      continue
+    }
+    positional.push(arg)
+  }
+  if (positional.length > 1) {
     return refuse(`expected at most one argument, the pull request number.\n\n${USAGE}`)
   }
 
@@ -384,10 +512,11 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     const read = runGit(['-C', cwd, 'remote', 'get-url', 'origin'], GIT_TIMEOUT_MS)
     return read.code === 0 ? read.stdout.trim() : ''
   })()
-  const identity = identityOfRemote(originUrl)
-  if (identity === null) {
-    return refuse('this directory has no readable origin remote, so there is no repository to gate')
-  }
+  const remote = identityOfRemote(originUrl)
+  // The refusal describes the remote and never quotes it, and nothing has been built from it yet,
+  // so a remote refused here reaches no output at all.
+  if (remote.identity === undefined) return refuse(remote.refusal)
+  const identity = remote.identity
   const redact = makeRedactor(originUrl, identity.full)
 
   const failures = []
@@ -403,10 +532,10 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
 
   // ------------------------------------------------------------------------------ 1. the number
   let prNumber
-  if (argv.length === 1) {
-    const raw = String(argv[0]).trim()
+  if (positional.length === 1) {
+    const raw = positional[0].trim()
     if (!PR_NUMBER.test(raw) || Number(raw) <= 0) {
-      return refuse(`${JSON.stringify(argv[0])} is not a pull request number.\n\n${USAGE}`)
+      return refuse(`${JSON.stringify(positional[0])} is not a pull request number.\n\n${USAGE}`)
     }
     prNumber = Number(raw)
   } else {
@@ -534,8 +663,14 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
   }
 
   let baseFlakes = parseFlakes('', reportedNames)
+  // Whether the base copy was read at all, which is what --accept-flake is validated against. An
+  // allowlist nobody could read has already set `error` and the run exits 4; refusing the flag
+  // against an empty parse on top of that would blame the caller for a failed read.
+  let baseFlakesReadable = false
   if (baseRef !== null) {
-    baseFlakes = parseFlakes(readFlakes(baseRef, `\`gh api\` for ${FLAKES_PATH} on ${baseRef}`), reportedNames)
+    const baseText = readFlakes(baseRef, `\`gh api\` for ${FLAKES_PATH} on ${baseRef}`)
+    baseFlakesReadable = baseText !== null
+    baseFlakes = parseFlakes(baseText, reportedNames)
   }
   let prFlakeLines = []
   if (headSha !== null && SHA.test(headSha)) {
@@ -550,7 +685,7 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
       `(${flakesAddedOnPr.join(', ')}); the base copy is what this gate applied`)
   }
 
-  const ci = { success: [], pending: [], flaky: [], failed: [], unknown: [], flakeCandidates: {}, flakesAddedOnPr }
+  const ci = { success: [], pending: [], flaky: [], failed: [], unknown: [], flakeCandidates: {}, acceptedFlakes: [], flakesAddedOnPr }
   for (const entry of entries) {
     if (entry.name === null) { ci.unknown.push({ name: null, link: entry.url }); continue }
     const bucket = bucketOf(entry)
@@ -561,6 +696,41 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     ci.failed.push({ name: entry.name, link: entry.url })
     const candidates = baseFlakes.tests.get(entry.name)
     if (candidates !== undefined) ci.flakeCandidates[entry.name] = candidates
+  }
+
+  // ------------------------------------------------------------------------ 5b. --accept-flake
+  // Validated in full before anything moves, so two entries of one check do not make the second
+  // flag refuse a check the first already moved.
+  const flakyByBare = [...ci.flaky]
+  const acceptedChecks = new Set()
+  if (acceptFlakes.length > 0 && baseFlakesReadable) {
+    const declared = new Map()
+    for (const [check, tests] of baseFlakes.tests) {
+      for (const test of tests) declared.set(`${check}:${test}`, { check, test })
+    }
+    const failing = new Set(ci.failed.map((entry) => entry.name))
+    const accepted = []
+    for (const value of acceptFlakes) {
+      const entry = declared.get(value)
+      if (entry === undefined) {
+        return refuse(value.includes(':')
+          ? `--accept-flake ${value} is not an entry of ${FLAKES_PATH} on ${baseRef}; the flag accepts only what ` +
+            'the repository already declared flaky, in that exact check-name:test_name spelling'
+          : `--accept-flake ${value} names no test. A bare check name on the allowlist moves its check on its own, ` +
+            'so the flag takes a check-name:test_name entry and nothing else')
+      }
+      if (!failing.has(entry.check)) {
+        return refuse(`--accept-flake ${value} names ${entry.check}, which is not among the failed checks of ` +
+          `#${prNumber}; the flag accepts a failure and there is none to accept`)
+      }
+      accepted.push(entry)
+    }
+    for (const { check, test } of accepted) {
+      acceptedChecks.add(check)
+      ci.acceptedFlakes.push({ check, test })
+    }
+    ci.failed = ci.failed.filter((entry) => !acceptedChecks.has(entry.name))
+    for (const check of acceptedChecks) if (!ci.flaky.includes(check)) ci.flaky.push(check)
   }
 
   if (entries.length === 0) {
@@ -577,13 +747,20 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     stop('ci-unknown', `${ci.unknown.length} check(s) could not be read as pass or fail: ` +
       ci.unknown.map((c) => c.name ?? '(unnamed)').join(', '))
   }
-  if (ci.flaky.length > 0) {
-    attend('flaky-merged-through', `${ci.flaky.join(', ')} failed and ${FLAKES_PATH} on ${baseRef} lists it as flaky; ` +
+  if (flakyByBare.length > 0) {
+    attend('flaky-merged-through', `${flakyByBare.join(', ')} failed and ${FLAKES_PATH} on ${baseRef} lists it as flaky; ` +
       'note it in the land report')
   }
+  for (const { check, test } of ci.acceptedFlakes) {
+    attend('flaky-merged-through', `${check} failed and ${FLAKES_PATH} on ${baseRef} lists ${test} as flaky inside it; ` +
+      `accepted by flag as --accept-flake ${check}:${test}, which is the caller's statement that the job log shows ` +
+      'that test was the only failure. Name it in the land report')
+  }
   for (const [check, tests] of Object.entries(ci.flakeCandidates)) {
+    // The accepted ones already have their own item, and it says more than this one would.
+    if (acceptedChecks.has(check)) continue
     attend('flaky-merged-through', `${check} failed and ${FLAKES_PATH} lists only ${tests.join(', ')} as flaky inside it; ` +
-      'read the job log before merging through')
+      'read the job log before merging through, and pass --accept-flake to merge on what it says')
   }
 
   // ------------------------------------------------------------------------- 6. review threads
