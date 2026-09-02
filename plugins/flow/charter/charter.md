@@ -131,6 +131,8 @@ No commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Gener
 
 Conventional commits, imperative, present tense; each commit is one atomic logical change.
 
+Never bump a version, cut a tag, or publish a release unless the human asks for it by name.
+
 Not in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.
 
 `gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.

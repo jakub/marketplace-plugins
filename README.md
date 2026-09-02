@@ -103,7 +103,7 @@ Two timers run in the background once `/flow:flow setup` has armed them: a night
 | `plugins/flow/skills/flow/` | `/flow:flow setup`, `/flow:flow drift`, `/flow:flow labels`, `/flow:flow charter`, `/flow:flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
 | `plugins/flow/hooks/` | Claude and Codex hook registrations and adapters: charter injection, unsanctioned-issue prevention, protected-file checks, publication gates, and destructive Git guards. |
-| `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs - a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow cron` installs and reports on them. |
+| `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs - a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow:flow cron` installs and reports on them. |
 
 flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction preferences and all engineering doctrine arrives through the charter, where it's versioned and auditable. `docs/claude-md-split.md` explains the split.
 

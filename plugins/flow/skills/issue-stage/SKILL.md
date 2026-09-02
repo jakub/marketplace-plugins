@@ -149,7 +149,7 @@ The standard is a blind pair plus your own synthesis:
 - **The bridge leg**, blind and parallel, through the cross-family delegation tool. This is not "ask the other family for an approach". It is a decorrelated design sheet with two jobs: propose its own shape independently, and hunt spec gaps, naming what the issue didn't say that the writer would otherwise decide silently. The outside brain finds different holes, and decorrelation is cheapest per finding at design time.
 - **Your synthesis, inline**, with no extra seat: resolve disagreements explicitly, never average. A disagreement here costs a paragraph. The same disagreement at review time costs a fix round.
 
-Launch the native leg first, then run the bridge attached, so both sheets land in the same turn. The roles' floors keep the two legs in different families, and your profile binds each to a model and effort.
+The two legs MUST be different families: the native leg is your own family, and the bridge leg's `family: other` floor puts it in the other one. Launch the native leg first, then run the bridge attached, so both sheets land in the same turn.
 
 Required outputs. A pass without these didn't happen:
 
@@ -284,7 +284,7 @@ A `supported: false` entry carrying `assurance: mechanism` means the absence was
 
 **Contract delivery.** A native writer carries the ENTIRE canonical contract pasted verbatim into its spawn prompt - a path reference is a spawn prompt with no contract in it, because the seat gets no second fetch. Above the paste, one host line: the plugin's hooks fire inside this seat, so git-guard and the no-backlog guard deny there exactly as they deny here, and a spawn from this seat is a contract breach with nothing to stop it. Every pipeline seat gets `fork_turns: "none"`, so it starts from its own prompt and not from a copy of your turn. Scouts, reviewers and transports carry the read-only prohibitions instead. A bridge writer gets the same full paste in its delegation task text.
 
-**Design legs.** Native: the native design leg (`design-leg-native`) as a `spawn_agent` seat, `fork_turns: "none"`, read-only by its prompt. Bridge: the bridge design leg (`design-leg-bridge`) through `delegate_to_claude`, `access: "read-only"`, the repository root as `cwd`; the delegation tools take the provider's own model ids, which the profile spells beside each binding. The outside opinion here is a Claude model. Widen to the taste leg (`taste-leg`) through the bridge.
+**Design legs.** Native: the native design leg (`design-leg-native`) as a `spawn_agent` seat, `fork_turns: "none"`, read-only by its prompt. Bridge: the bridge design leg (`design-leg-bridge`) through `delegate_to_claude`, `access: "read-only"`, the repository root as `cwd`. The outside opinion here is a Claude model. Widen to the taste leg (`taste-leg`) through the bridge.
 
 **Review fabric.** A Codex-family seat is a native `spawn_agent`; a Claude-family seat is `delegate_to_claude`. A diff from a native writer is Codex-written, so its mandatory review is the bridge review seat (`review-seat-bridge`) through `delegate_to_claude` in `mode: "adversarial-review"` against an immutable `base`, `access: "read-only"` - the common case here. A diff from a bridge writer is Claude-written, so its mandatory review is the native review seat (`review-seat-native`); do not send that one across the bridge. Security-flavored seats go to the security seat (`security-seat`) first.
 
