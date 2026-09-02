@@ -47,7 +47,11 @@
 //
 // Two limitations are accepted rather than fixed, and both end with a human. The first is a lost
 // push response, above: win the race, lose the answer, and the re-read cannot tell our own tag
-// from a rival's, so we stand down and the claim needs breaking by hand. The second is a
+// from a rival's, so we stand down and the claim needs breaking by hand. Standing down is not the
+// same as having left nothing, though, and the caller cannot work out which it was from a
+// sentence of English. So every held and every unknown carries observed: pre-push when the hold
+// or the failure was read before any push went out, post-push when a push was attempted and its
+// outcome is ambiguous. Only a post-push result can have left a tag on the remote. The second is a
 // generation race between two releasers on one issue. Both can pass the branch check, both can
 // reach the delete, and a claim taken by a third run in between the two deletes is what the
 // second delete removes. That successor then believes it holds a claim that is gone. Every claim
@@ -146,6 +150,16 @@
 // also separates the two scans, which used to share their reason codes with nothing to tell them
 // apart: live-run before the acquire mutated nothing, live-run after it may have left the tag.
 //
+// The acquire is the one step whose phase claim cannot work out for itself, which is what the
+// observed field above is for. A hold acquire read before pushing is a rival's tag and this run
+// is clean: held, pre-acquire, nothing retained. A hold it read after its own push might be its
+// own tag, so calling that a clean stand-down would say nothing is left while a tag of ours sits
+// on origin blocking every later claim on the issue; it comes back as an unknown at phase
+// acquired, retaining the tag, under its own reason acquire-ambiguous rather than a shared one.
+// The unknowns split the same way and used to not: the read of main failing, the preflight tag
+// read failing and the catch-up fetch failing all happen before any push, and reporting those as
+// a tag that may exist sent an issue to manual recovery over a remote that was briefly down.
+//
 // A non-zero push is not proof that nothing was published. receive-pack can update the ref and
 // the client can still exit non-zero, on a dropped connection or a hook that fails after the
 // update, so the push-failure path re-reads refs/heads/<branch> on origin before it undoes
@@ -237,15 +251,24 @@ worktrees, localBranches, remoteBranches and pullRequests.
 A claim refusal names one of: usage, no-origin, push-fetch-mismatch, issue-closed, not-ready,
 blocked, no-acceptance-criteria, bad-slug, live-run, worktree-path, outside-parent,
 acquire-refused, worktree-add, push. An unknown names one of those, or one of:
-issue-unreadable, repo-unreadable, scan-unreadable, acquire-unknown, issue-edit, release.
-Everything before the acquire is a read, so a refusal there changed nothing; after it, a failure
-before the branch reaches origin gives the tag back when the remote lets it, and a failure after
-it leaves the branch and the tag standing for a human to finish or unwind.
+issue-unreadable, repo-unreadable, scan-unreadable, acquire-unknown, acquire-ambiguous,
+issue-edit, release. Everything before the acquire is a read, so a refusal there changed nothing;
+after it, a failure before the branch reaches origin gives the tag back when the remote lets it,
+and a failure after it leaves the branch and the tag standing for a human to finish or unwind.
+
+held means the tag was on origin before this run pushed anything, so it is a rival's and this run
+left nothing. A tag that turned up only after this run's own push is a different answer, because
+it might be this run's own tag from a push whose response was lost: that is acquire-ambiguous, an
+unknown at phase acquired retaining claim-tag, and it needs a human to read the tag before the
+issue can be claimed again. acquire-unknown splits on the same fact, at phase pre-acquire when
+the acquire failed before pushing and at phase acquired when it failed after.
 
 acquire takes the claim on an issue by creating refs/tags/flow-claim-issue-<N> on origin, at
 the head of refs/heads/main. Creating a ref is atomic on the remote, so exactly one racer wins.
 Exits 0 when it created the tag, 3 when someone already holds it, 4 when the outcome could not
-be established, 2 on a usage error or a refusal.
+be established, 2 on a usage error or a refusal. A held or unknown result also carries observed,
+pre-push when the hold or the failure was read before any push went out and post-push when a
+push was attempted and its outcome is ambiguous. Only post-push can have left a tag behind.
 
 release gives the claim back. The branch has to be named for the issue being released, matching
 feat/issue-<N>-, fix/issue-<N>- or chore/issue-<N>-, and refs/heads/<branch> on origin has to
@@ -503,9 +526,14 @@ const acquire = ({ argv, cwd }) => {
   const repo = origin.repo
   const redact = origin.redact
   const base = { command: 'acquire', repo, issue, tag, ref }
-  const held = (sha, detail) => line({ ...base, result: 'held', sha, detail }, EXIT_HELD,
+  // observed says whether this run had pushed anything when it learned what it is reporting.
+  // pre-push: the hold or the failure was read before any push was attempted, so no tag of this
+  // run's can be on the remote. post-push: a push went out and its outcome is ambiguous, so one
+  // might be. The caller cannot recover that from the detail string, and it decides whether a
+  // stand-down is clean.
+  const held = (sha, observed, detail) => line({ ...base, result: 'held', sha, observed, detail }, EXIT_HELD,
     `issue #${issue} is already claimed on ${repo} (${ref} at ${sha.slice(0, 12)}). ${detail}. Leave it alone; the run that holds it releases it, or a human breaks the tag.`)
-  const unknown = (detail) => line({ ...base, result: 'unknown', detail }, EXIT_UNKNOWN,
+  const unknown = (observed, detail) => line({ ...base, result: 'unknown', observed, detail }, EXIT_UNKNOWN,
     `could not establish whether issue #${issue} is claimed on ${repo}. ${detail}. Do not start work on the strength of this; find out what the remote actually holds.`)
 
   // The object the claim hangs on. Every racer resolves the same head of main, which is exactly
@@ -514,7 +542,7 @@ const acquire = ({ argv, cwd }) => {
   if (mainRead.code !== 0) {
     // The remote could not be read at all. Operationally unknown, not a lost race: nothing has
     // been learned about the tag, and nothing has been pushed.
-    return unknown(`\`git ls-remote origin ${MAIN_REF}\` failed: ${firstLine(redact(mainRead.stderr)) || `exit ${mainRead.code}`}`)
+    return unknown('pre-push', `\`git ls-remote origin ${MAIN_REF}\` failed: ${firstLine(redact(mainRead.stderr)) || `exit ${mainRead.code}`}`)
   }
   const mainSha = shaOfRef(mainRead.stdout, MAIN_REF)
   if (mainSha === null) {
@@ -525,8 +553,8 @@ const acquire = ({ argv, cwd }) => {
   // Preflight. Cheap, and it keeps the common "someone claimed this an hour ago" case from
   // touching the remote's refs at all. It is not the lock: the lock is the push.
   const before = readRef(cwd, ref, redact)
-  if (before.state === 'present') return held(before.sha, 'the tag was already there before this run pushed anything')
-  if (before.state === 'unknown') return unknown(before.detail)
+  if (before.state === 'present') return held(before.sha, 'pre-push', 'the tag was already there before this run pushed anything')
+  if (before.state === 'unknown') return unknown('pre-push', before.detail)
 
   // A push builds its pack locally, so the object on the left of the refspec has to be one this
   // clone holds. A clone that has not fetched since origin's main moved does not hold it, and
@@ -551,14 +579,14 @@ const acquire = ({ argv, cwd }) => {
     )
     if (fetch.code !== 0) {
       dropTempRef()
-      return unknown(`\`git fetch origin ${MAIN_REF}\` failed, so this clone does not hold the object a claim would ` +
+      return unknown('pre-push', `\`git fetch origin ${MAIN_REF}\` failed, so this clone does not hold the object a claim would ` +
         `hang on: ${firstLine(redact(fetch.stderr)) || `exit ${fetch.code}`}`)
     }
     const resolved = runGit(['rev-parse', '--verify', '--quiet', `${tempRef}^{commit}`], cwd, LOCAL_GIT_TIMEOUT_MS)
     const got = resolved.code === 0 ? resolved.stdout.trim() : ''
     if (!SHA.test(got)) {
       dropTempRef()
-      return unknown(`${MAIN_REF} was fetched but did not resolve to a commit locally, so there is no object to hang a claim on`)
+      return unknown('pre-push', `${MAIN_REF} was fetched but did not resolve to a commit locally, so there is no object to hang a claim on`)
     }
     // The tag points at what this clone actually holds. If origin's main moved between the
     // ls-remote above and this fetch, the fetched object is the newer one, and pushing the
@@ -586,12 +614,12 @@ const acquire = ({ argv, cwd }) => {
     // object. Standing down on both is the safe direction.
     const after = readRef(cwd, ref, redact)
     const why = `the push did not create the ref (git said ${describeStatus(status, redact)}, exit ${push.code})`
-    if (after.state === 'present') return held(after.sha, why)
+    if (after.state === 'present') return held(after.sha, 'post-push', why)
     if (after.state === 'absent') {
-      return unknown(`${why}, and ${ref} is not on the remote either. ` +
+      return unknown('post-push', `${why}, and ${ref} is not on the remote either. ` +
         `git's stderr was: ${firstLine(redact(push.stderr)) || '(empty)'}`)
     }
-    return unknown(`${why}, and the re-read could not settle it: ${after.detail}`)
+    return unknown('post-push', `${why}, and the re-read could not settle it: ${after.detail}`)
   }
 
   // The temp ref is what keeps the fetched object referenced across the push, so it goes only
@@ -1058,21 +1086,40 @@ const claim = ({ argv, cwd, runGh }) => {
   const acquired = acquire({ argv: [String(issue)], cwd })
   const receipt = parseJson(acquired.stdout)
   const verdict = receipt?.result
-  if (verdict === 'held') {
-    // Someone else's tag, and this run pushed nothing that stuck, so nothing of ours is out there.
+  // Whether the acquire had pushed anything when it decided what to report. Only acquire knows
+  // it, and it decides the phase: a hold or a failure read before the push leaves nothing of this
+  // run anywhere, and one read after it may have left the tag. Anything but the exact string
+  // pre-push is read as post-push, so a receipt this could not parse keeps the tag on the list.
+  const observed = receipt?.observed === 'pre-push' ? 'pre-push' : 'post-push'
+  if (verdict === 'held' && observed === 'pre-push') {
+    // Someone else's tag, read before this run pushed anything, so nothing of ours is out there.
     const holder = String(receipt.sha ?? '')
     return line({ ...base, ...names, result: 'held', phase: 'pre-acquire', retained: [], cleanup: null, sha: receipt.sha ?? null, detail: receipt.detail ?? null }, EXIT_HELD,
       `issue #${issue} is already claimed on ${repo} (${ref}${SHA.test(holder) ? ` at ${holder.slice(0, 12)}` : ''}). ` +
       'Leave it alone; the run that holds it releases it, or a human breaks the tag.')
   }
+  if (verdict === 'held') {
+    // A tag that appeared while this run's own push was in flight. acquire stands down on it
+    // because it cannot tell a rival's tag from its own whose response was lost, and both racers
+    // push the same object, so the SHA cannot separate them either. Reporting that as a clean
+    // hold would tell the caller this run left nothing while its tag may be blocking every later
+    // claim on the issue. It is an unknown, and the tag is retained.
+    return settle('unknown', 'acquire-ambiguous',
+      `the claim tag for issue #${issue} was on ${repo} after this run's own push, and whose it is cannot be established: ${receipt.detail ?? 'no detail'}`,
+      { phase: 'acquired', retained: ['claim-tag'], extra: names })
+  }
   if (verdict === 'refused') {
     return refuse('acquire-refused', `the claim on issue #${issue} was refused (${receipt.reason ?? 'no reason'}): ${receipt.detail ?? 'no detail'}`, names)
   }
   if (verdict !== 'acquired' || !SHA.test(String(receipt.sha ?? ''))) {
-    // The acquire's own header says what this case is: a push whose answer was lost may have
-    // created the tag. So this is not a read that changed nothing, and the tag is retained.
-    return settle('unknown', 'acquire-unknown', `the claim on issue #${issue} could not be taken: ${receipt?.detail ?? acquired.stdout.trim()}`,
-      { phase: 'acquired', retained: ['claim-tag'], extra: names })
+    // Several of the acquire's unknowns happen before it pushes anything: the read of main
+    // failing, the preflight tag read failing, the catch-up fetch failing. Nothing was attempted
+    // in those, so there is no tag to retain and no recovery for a human to do. Only an unknown
+    // that came after the push may have left one.
+    const detail = `the claim on issue #${issue} could not be taken: ${receipt?.detail ?? acquired.stdout.trim()}`
+    return observed === 'pre-push'
+      ? settle('unknown', 'acquire-unknown', detail, { phase: 'pre-acquire', retained: [], extra: names })
+      : settle('unknown', 'acquire-unknown', detail, { phase: 'acquired', retained: ['claim-tag'], extra: names })
   }
   const baseSha = receipt.sha
   const claimed = { ...names, base: baseSha }
