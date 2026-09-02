@@ -89,9 +89,16 @@
 // So the identity is always parsed down to host and path, never passed through, and a shape that
 // will not parse becomes the literal unparseable-origin rather than the bytes that came back.
 // Quoting git is the other half of that, and it needs more than a pattern, because git repeats
-// the remote it was handed word for word: `fatal: 'user@host' does not appear to be a git
-// repository`. So every message from git goes through a redactor built from the URLs configured
-// on origin, which swaps those exact strings for the safe identity before anything is printed.
+// the remote it was handed: `fatal: 'user@host' does not appear to be a git repository`. So every
+// message from git goes through a redactor built from the URLs configured on origin, which swaps
+// those exact strings for the safe identity before anything is printed. Not word for word,
+// though, which is the part that took a second look. git rewrites a remote before it prints it,
+// two ways. A failed push reports `error: failed to push some refs to 'github.com:jakub/demo.git'`
+// for a remote configured as git@github.com:jakub/demo.git, dropping the userinfo. And handed
+// user:ghp_token@github.com:jakub/demo.git it reads the first colon as the host separator, fails
+// to reach a host called user, and prints the rest, token included, as the repository it could
+// not find. So the redactor also holds the userinfo-stripped spelling of every configured URL,
+// and scrubs an scp-like userinfo run wherever it appears, before the spellings are swapped.
 //
 // Nothing here overwrites a ref, and nothing here breaks a stale tag on its own. There is no
 // bare --force in any spelling, no -f, and no + refspec, because each of those turns the single
@@ -356,23 +363,60 @@ const runGit = (args, cwd, timeoutMs) => {
 // error text, but that is behaviour rather than a promise, and every string below is on its way
 // into JSON the stage journals.
 const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi
-const scrubUserinfo = (text) => String(text || '').replace(USERINFO, '$1')
+// The same thing in the scp-like spelling, which has no scheme in front of its userinfo:
+// user:ghp_token@github.com:jakub/demo.git. This takes everything up to the @ and not only a run
+// with a colon in it, because git rewrites what it prints and the colon does not survive. Handed
+// that remote, git reads the first colon as the host separator, tries to reach a host called
+// user, and reports
+// `fatal: 'ghp_token@github.com:jakub/demo.git' does not appear to be a git repository`: the
+// token is now sitting where the ssh user goes, with no colon left to recognise it by. The
+// lookahead keeps this to something shaped like a remote, an @ followed by a host and a colon,
+// and the bias is deliberate. Cutting the user out of git@github.com:owner/repo costs a reader
+// nothing, and the identity is printed beside it anyway.
+const SCP_USERINFO = /[^\s@/'"]*@(?=[^\s@/'"]+:)/g
+const scrubUserinfo = (text) => String(text || '').replace(USERINFO, '$1').replace(SCP_USERINFO, '')
+
+/**
+ * Every spelling of one configured remote a message can turn up carrying. git does not always
+ * echo the URL as it was configured: `git push` reports
+ * `error: failed to push some refs to 'github.com:jakub/demo.git'` for a remote written
+ * git@github.com:jakub/demo.git, having dropped the userinfo on the way, and matching only the
+ * configured string leaves that line unredacted. So the userinfo-stripped forms are registered
+ * too: host:path for the scp-like spelling, and scheme://host/path and host/path for a URL.
+ */
+const remoteSpellings = (url) => {
+  const raw = String(url ?? '').trim()
+  if (raw === '') return []
+  const scheme = raw.match(/^([a-z][a-z0-9+.-]*:\/\/)(?:[^/@\s]*@)?(.+)$/i)
+  if (scheme !== null) return [raw, `${scheme[1]}${scheme[2]}`, scheme[2]]
+  const scp = raw.match(/^[^/\s]*@(.+)$/)
+  return scp === null ? [raw] : [raw, scp[1]]
+}
 
 /**
  * Redact git's own words before quoting them. Pattern matching alone is not enough: git quotes
- * the remote it was handed, verbatim, in messages like
+ * the remote it was handed in messages like
  * `fatal: 'user@host' does not appear to be a git repository`, and a shape it reads as a local
  * path keeps whatever was in it. So the redactor is built from the URLs actually configured on
- * origin and swaps those exact strings for the safe identity, which needs no guessing about
- * which run of characters is a secret. The userinfo pattern stays behind it as a backstop for
- * URLs that reach the output some other way.
+ * origin, and from the spellings git rewrites them into, and swaps those exact strings for the
+ * safe identity, which needs no guessing about which run of characters is a secret. The two
+ * userinfo patterns stay behind it as a backstop for URLs that reach the output some other way.
+ *
+ * The userinfo goes first and the spellings second, which is the only order that works. A line
+ * reading `'ghp_token@github.com:jakub/demo.git'` loses its colon the moment the host and path
+ * become the identity, and the scp pattern then has nothing left to recognise.
  */
-const makeRedactor = (rawUrls, identity) => (text) => {
-  let out = String(text || '')
-  for (const url of rawUrls) {
-    if (url !== '') out = out.split(url).join(identity)
+const makeRedactor = (rawUrls, identity) => {
+  // Longest first, so a stripped spelling cannot take the tail of a longer one and leave its head
+  // standing in the output.
+  const spellings = [...new Set(rawUrls.flatMap(remoteSpellings))]
+    .filter((spelling) => spelling !== '')
+    .sort((a, b) => b.length - a.length)
+  return (text) => {
+    let out = scrubUserinfo(text)
+    for (const spelling of spellings) out = out.split(spelling).join(identity)
+    return out
   }
-  return scrubUserinfo(out)
 }
 
 const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 200)
