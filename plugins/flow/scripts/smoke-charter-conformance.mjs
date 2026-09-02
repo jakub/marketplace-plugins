@@ -42,13 +42,14 @@ const CANONICAL_HEADING = /^### role: [a-z][a-z0-9-]*$/
 // `[[role:…]]` in a code span, and a scan that reads that as a marker fails a file for
 // documenting itself. An HTML comment is the other direction: it reaches no session, so a
 // commented-out heading binds nothing and a section whose whole body is a comment is empty.
+const FENCE = /^ {0,3}(`{3,}|~{3,})[^\n]*$[\s\S]*?^ {0,3}\1[^\n]*$/gm
 const quoteless = (text) => text
-  .replace(/^ {0,3}(```|~~~)[\s\S]*?^ {0,3}\1[^\n]*$/gm, '')
+  .replace(FENCE, '')
   .replace(/`[^`\n]*`/g, '')
 const uncommented = (text) => text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
 // Fenced blocks only, inline code kept: a stage names a role in backticks, and an example in
 // a fence is an example.
-const unfenced = (text) => text.replace(/^ {0,3}(```|~~~)[\s\S]*?^ {0,3}\1[^\n]*$/gm, '')
+const unfenced = (text) => text.replace(FENCE, '')
 const repeats = (list) => [...new Set(list.filter((v, i) => list.indexOf(v) !== i))]
 const idsOf = (re, text) => [...text.matchAll(new RegExp(re.source, re.flags))].map((m) => m[1])
 
@@ -73,7 +74,7 @@ const roleProblems = (charterText, profiles) => {
   if (marked.length === 0) problems.push('the charter marks no roles at all')
 
   for (const [name, raw] of Object.entries(profiles)) {
-    const text = uncommented(raw.replace(/\r\n/g, '\n'))
+    const text = unfenced(uncommented(raw.replace(/\r\n/g, '\n')))
     for (const miss of nearMisses(text, /^ {0,3}###\s*role[^\n]*/gim, CANONICAL_HEADING)) {
       problems.push(`${name} writes "${miss}", which is not a canonical "### role: <id>" heading`)
     }
@@ -198,7 +199,7 @@ const floorsOf = (charterText) => {
 }
 
 const sectionOf = (profileText, id) => {
-  const lines = uncommented(profileText).split('\n')
+  const lines = unfenced(uncommented(profileText)).split('\n')
   const at = lines.findIndex((line) => line === `### role: ${id}`)
   if (at === -1) return null
   const rest = lines.slice(at + 1)
@@ -439,6 +440,17 @@ const CASES = [
     label: 'a floored role named only inside a fenced example',
     problems: () => unusedRoles(new Map([['mini-seat', [{ criterion: 'taste', value: '5' }]]]), [['skills/mini-stage/SKILL.md', 'Spawn the usual seat.\n\n```markdown\n- seat: `mini-seat`\n```\n']]),
     name: 'no stage names the seat role mini-seat',
+  },
+  {
+    label: 'a four-backtick fence holding a three-backtick line',
+    problems: () => unusedRoles(new Map([['mini-seat', [{ criterion: 'taste', value: '5' }]]]), [['skills/mini-stage/SKILL.md', 'Spawn the usual seat.\n\n````markdown\n```\n- seat: `mini-seat`\n````\n']]),
+    name: 'no stage names the seat role mini-seat',
+  },
+  {
+    label: 'a profile whose only binding sits in a fenced example',
+    problems: () => roleProblems('The charter marks [[role:mini-seat]].\n',
+      { 'mini.md': 'For example:\n\n```markdown\n### role: mini-seat\n\n`gpt-mini` at high effort.\n```\n' }).problems,
+    name: 'mini.md has no "### role: mini-seat" section',
   },
   {
     label: 'a floored role no stage names',
