@@ -132,6 +132,39 @@
 // and the tag and leaving both alone. A label that did not move is a minute of a human's time.
 // A second autonomous run on the same issue is not.
 //
+// What a refusal has to be worth, since the stage reads this JSON line and never the stderr. It
+// has to mean one thing: nothing this run made is left anywhere. The first version could not
+// promise that, because it returned refused whatever the cleanup did, so `abandon: "unknown"`
+// could sit beside `reason: "live-run"` with the tag still on origin and the stage would read a
+// clean stand-down. Every result but a win now carries two more fields. `phase` says how far the
+// run got: pre-acquire, nothing was written; acquired, the claim tag may be on origin; published,
+// the branch reached origin, which is the marker every other run scans for. `retained` lists what
+// may still exist, drawn from claim-tag, worktree, local-branch and remote-branch, and an
+// artifact only leaves that list when this run read it back as positively gone or kept it on
+// purpose. The rule is then mechanical: refused when retained is empty, and otherwise an unknown
+// that keeps its original reason and names under `cleanup` the step that would not confirm. phase
+// also separates the two scans, which used to share their reason codes with nothing to tell them
+// apart: live-run before the acquire mutated nothing, live-run after it may have left the tag.
+//
+// A non-zero push is not proof that nothing was published. receive-pack can update the ref and
+// the client can still exit non-zero, on a dropped connection or a hook that fails after the
+// update, so the push-failure path re-reads refs/heads/<branch> on origin before it undoes
+// anything. At the head this run pushed, the branch was published and only the answer was lost:
+// the tag, the worktree and the branch all stay and the result is an unknown at phase published.
+// Absent, nothing reached origin and the ordinary unwind runs. Unreadable is an unknown too, with
+// everything kept, because deleting a branch that might be on origin is how the marker that keeps
+// the next run out disappears.
+//
+// The local branch scan and the guarded branch delete are one defect seen from two sides. A
+// worktree add can exit non-zero after creating both the directory and the branch, which is what
+// a failing post-checkout hook does on git 2.55, and the cleanup used to take the worktree out
+// and leave the branch. Every retry then met `a branch named ... already exists` forever, and no
+// scan anywhere looked at local branches. So the unwind deletes the branch while it still points
+// at the base this run cut it at, and only when this run is the one that created it, and the scan
+// reads this clone's branches for the issue as well: a stale one is either a live run in this
+// clone or the wreckage of a dead one, and both are a human's call rather than something to write
+// over.
+//
 // Every remote interaction is an argv array, never a shell string, so there is no quoting to
 // get wrong. stdout is always exactly one JSON object, one line, including for refusals; the
 // only exception is --help. stderr carries a sentence for a human whenever the result is not a
@@ -185,19 +218,29 @@ issue-claim.mjs abandon <issue-number> <acquired-sha>
 
 claim is the whole start-of-run procedure as one command, and the one most callers want. It
 reads the issue and refuses unless it is open, carries ${READY_LABEL} and carries no blocking
-label; digests the "${AC_HEADING}" section; scans this clone's worktrees, origin's branches
-for the issue and open pull requests for a run already live; acquires the tag; scans again
-while holding it; adds a worktree at the object the acquire verified, on branch
+label; digests the "${AC_HEADING}" section; scans this clone's worktrees and branches, origin's
+branches for the issue and open pull requests for a run already live; acquires the tag; scans
+again while holding it; adds a worktree at the object the acquire verified, on branch
 <kind>/issue-<N>-<slug>; pushes it; assigns the issue and moves ${READY_LABEL} to in-progress;
 and releases the tag. The kind comes from --kind, or from a bug or documentation label, or is
 feat. Exits 0 claimed, 2 refused, 3 held, 4 unknown, and prints one JSON line either way.
 
-A claim refusal names one of: usage, issue-closed, not-ready, blocked, no-acceptance-criteria,
-bad-slug, live-run, worktree-path, outside-parent, acquire-refused, worktree-add, push. An
-unknown names one of: issue-unreadable, repo-unreadable, scan-unreadable, acquire-unknown,
-issue-edit, release. Everything before the acquire is a read, so a refusal there changed
-nothing; after it, a failure before the branch reaches origin gives the tag back, and a failure
-after it leaves the branch and the tag standing for a human to finish or unwind.
+Every claim result but a win carries phase and retained, because the caller reads the JSON and
+not the stderr. phase is pre-acquire (nothing was written), acquired (the claim tag may be on
+origin) or published (the branch reached origin). retained lists what may still exist, from
+claim-tag, worktree, local-branch and remote-branch, and it is empty only when this run read
+every one of them back as gone. So a result is refused only when retained is empty: anything
+left standing is an unknown that keeps its reason and names the cleanup step that would not
+confirm under cleanup. A live-run result puts what the scan saw under found, grouped as
+worktrees, localBranches, remoteBranches and pullRequests.
+
+A claim refusal names one of: usage, no-origin, push-fetch-mismatch, issue-closed, not-ready,
+blocked, no-acceptance-criteria, bad-slug, live-run, worktree-path, outside-parent,
+acquire-refused, worktree-add, push. An unknown names one of those, or one of:
+issue-unreadable, repo-unreadable, scan-unreadable, acquire-unknown, issue-edit, release.
+Everything before the acquire is a read, so a refusal there changed nothing; after it, a failure
+before the branch reaches origin gives the tag back when the remote lets it, and a failure after
+it leaves the branch and the tag standing for a human to finish or unwind.
 
 acquire takes the claim on an issue by creating refs/tags/flow-claim-issue-<N> on origin, at
 the head of refs/heads/main. Creating a ref is atomic on the remote, so exactly one racer wins.
@@ -261,6 +304,20 @@ const makeRedactor = (rawUrls, identity) => (text) => {
 }
 
 const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 200)
+
+/**
+ * The line where git said what went wrong. Taking the first line is wrong for anything that
+ * reports progress on stderr: a failed `git worktree add` opens with
+ * `Preparing worktree (new branch 'feat/issue-7-x')` and the `fatal: a branch named ... already
+ * exists` arrives two lines later, so a refusal built from the first line names nothing at all.
+ * Prefer the line git marked as the failure, and fall back to the last thing it said rather than
+ * the first, because progress lines come first and complaints come last.
+ */
+const gitComplaint = (text) => {
+  const lines = String(text || '').split('\n').map((raw) => raw.trim()).filter((raw) => raw !== '')
+  const named = lines.find((raw) => raw.startsWith('fatal:') || raw.startsWith('error:'))
+  return (named ?? lines[lines.length - 1] ?? '').slice(0, 200)
+}
 
 /** JSON from a command's stdout, or null when it printed something else. */
 const parseJson = (text) => {
@@ -758,15 +815,61 @@ const parseWorktrees = (stdout) => {
 
 const shortBranch = (ref) => (typeof ref === 'string' && ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref)
 
+/**
+ * Whether a path is still a worktree of this clone, read back rather than inferred from the exit
+ * code of the remove that was supposed to take it away. `absent` is the only answer that lets a
+ * caller drop the worktree from its retained list, so a list that will not read is `unknown` and
+ * the path stays on the list.
+ */
+const worktreeState = (cwd, path) => {
+  if (existsSync(path)) return 'present'
+  const listed = runGit(['worktree', 'list', '--porcelain'], cwd, LOCAL_GIT_TIMEOUT_MS)
+  if (listed.code !== 0) return 'unknown'
+  return parseWorktrees(listed.stdout).some((entry) => entry.path === path) ? 'present' : 'absent'
+}
+
+/**
+ * The object a local branch points at, as one of present, absent or unknown. This asks
+ * for-each-ref rather than `rev-parse --verify`, because rev-parse answers in its exit code and
+ * that code is not one this program can read: 1 is both "no such ref" and, through runGit, a
+ * child that was killed on its timeout. for-each-ref exits 0 either way and says what it found in
+ * its output, so absent is a ref list that came back and did not have the branch in it. That
+ * matters because absent is the answer that lets a caller call a cleanup done.
+ *
+ * The refname is compared rather than assumed, since a for-each-ref pattern also matches a ref
+ * whose name continues after a slash: refs/heads/feat/issue-7-x matches refs/heads/feat/issue-7-x/2.
+ */
+const localBranchHead = (cwd, branch) => {
+  const ref = `refs/heads/${branch}`
+  const read = runGit(['for-each-ref', '--format=%(objectname)\t%(refname)', ref], cwd, LOCAL_GIT_TIMEOUT_MS)
+  if (read.code !== 0) return { state: 'unknown' }
+  const sha = shaOfRef(read.stdout, ref)
+  return sha === null ? { state: 'absent' } : { state: 'present', sha }
+}
+
 /** One sentence naming what a scan turned up, in the order it found it. */
 const describeHits = (hits) => hits.map((hit) => {
   if (hit.where === 'worktree') return `a worktree at ${hit.path}${hit.branch ? ` on ${hit.branch}` : ''}`
+  if (hit.where === 'local-branch') return `${hit.ref} in this clone at ${String(hit.sha).slice(0, 12)}`
   if (hit.where === 'remote-branch') return `${hit.ref} on origin at ${String(hit.sha).slice(0, 12)}`
   return `pull request #${hit.number} from ${hit.headRefName}`
 }).join('; ')
 
+/**
+ * The same hits grouped by where they were found, which is the shape the caller reads. A stale
+ * local branch and a rival's pull request both mean stop, but they are different problems and one
+ * of them the caller can clear itself, so the JSON keeps them apart.
+ */
+const groupHits = (hits) => ({
+  worktrees: hits.filter((hit) => hit.where === 'worktree'),
+  localBranches: hits.filter((hit) => hit.where === 'local-branch'),
+  remoteBranches: hits.filter((hit) => hit.where === 'remote-branch'),
+  pullRequests: hits.filter((hit) => hit.where === 'pull-request'),
+})
+
 const claim = ({ argv, cwd, runGh }) => {
-  const usage = (detail) => line({ command: 'claim', result: 'refused', reason: 'usage', detail }, EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
+  const usage = (detail) => line({ command: 'claim', result: 'refused', reason: 'usage', phase: 'pre-acquire', retained: [], cleanup: null, detail },
+    EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
 
   let issueArg = null
   let kindArg = null
@@ -789,15 +892,44 @@ const claim = ({ argv, cwd, runGh }) => {
 
   const tag = `flow-claim-issue-${issue}`
   const ref = `refs/tags/${tag}`
-  const origin = resolveOrigin('claim', cwd, { issue, tag, ref })
+  // resolveOrigin is shared with the three older subcommands, so the claim shape rides in as
+  // facts rather than being bolted onto a refusal every caller has to know about.
+  const origin = resolveOrigin('claim', cwd, { issue, tag, ref, phase: 'pre-acquire', retained: [], cleanup: null })
   if (origin.refusal) return origin.refusal
   const repo = origin.repo
   const redact = origin.redact
   const base = { command: 'claim', repo, issue, tag, ref }
+
+  /** What a retained artifact is, named where a human has to go and look for it. */
+  const whereItIs = {
+    'claim-tag': () => `${ref} on ${repo}`,
+    worktree: () => worktree,
+    'local-branch': () => `${branch} in this clone`,
+    'remote-branch': () => `${branch} on ${repo}`,
+  }
+  const leftovers = (retained) => retained.length === 0
+    ? 'Nothing of this run is left anywhere.'
+    : `This run may have left ${retained.map((what) => `${what} (${whereItIs[what]()})`).join(', ')} behind; settle that by hand before running this again.`
+
+  /**
+   * One shape for every result but a win. The caller reads this line and not the stderr, so
+   * "refused" has to mean nothing of this run is left anywhere: a non-empty retained list turns a
+   * refusal into an unknown, keeping the reason that was true and adding the cleanup that was
+   * not. `want` is therefore what the run would have said had the cleanup gone through.
+   */
+  const settle = (want, reason, detail, { phase, retained = [], cleanup = null, extra = {}, human = null }) => {
+    const result = retained.length === 0 ? want : 'unknown'
+    return line({ ...base, ...extra, result, reason, phase, retained, cleanup, detail },
+      result === 'refused' ? EXIT_REFUSED : EXIT_UNKNOWN,
+      human ?? `${detail}. ${leftovers(retained)}`)
+  }
+  // The two pre-acquire shapes. Everything above the acquire is a read, so there is nothing to
+  // leave behind and the phase is fixed. Every call site below the acquire uses settle directly
+  // and has to name its own phase.
   const refuse = (reason, detail, extra = {}, human = null) =>
-    line({ ...base, ...extra, result: 'refused', reason, detail }, EXIT_REFUSED, human ?? `${detail}. Nothing was claimed and nothing was changed.`)
+    settle('refused', reason, detail, { phase: 'pre-acquire', extra, human: human ?? `${detail}. Nothing was claimed and nothing was changed.` })
   const unknown = (reason, detail, extra = {}, human = null) =>
-    line({ ...base, ...extra, result: 'unknown', reason, detail }, EXIT_UNKNOWN, human ?? `${detail}. Find out what the remote actually holds before running this again.`)
+    settle('unknown', reason, detail, { phase: 'pre-acquire', extra, human: human ?? `${detail}. Find out what the remote actually holds before running this again.` })
   const failureOf = (what, run) => `${what} failed: ${firstLine(redact(run.stderr)) || `exit ${run.code}`}`
 
   // ---- the issue itself. Three refusals, in the order the stage states them.
@@ -842,10 +974,13 @@ const claim = ({ argv, cwd, runGh }) => {
   const worktree = join(parent, `${basename(repoRoot)}-issue-${issue}-${slug}`)
   const names = { kind, branch, worktree, acDigest, title: found.title ?? null, url: found.url ?? null }
 
-  // ---- is a run already live? All three places one leaves a mark: this clone's worktrees, the
-  // issue's branches on the server, and open pull requests. The server is asked for the branches
-  // rather than this clone, because a clone's refs are only as fresh as its last fetch and the
-  // branch is the marker that outlives the claim tag.
+  // ---- is a run already live? The four places one leaves a mark: this clone's worktrees, this
+  // clone's branches for the issue, the issue's branches on the server, and open pull requests.
+  // The server is asked for the branches as well as this clone, because a clone's remote refs are
+  // only as fresh as its last fetch and the pushed branch is the marker that outlives the claim
+  // tag. The local branch read is the other half: it catches a run working in this clone, and it
+  // catches a branch stranded by a run that died before it published, which is the wreckage a
+  // human has to look at rather than something to write over.
   const scan = () => {
     const hits = []
     const listed = runGit(['worktree', 'list', '--porcelain'], cwd, LOCAL_GIT_TIMEOUT_MS)
@@ -859,6 +994,14 @@ const claim = ({ argv, cwd, runGh }) => {
     }
 
     const patterns = ['feat', 'fix', 'chore'].map((k) => `refs/heads/${k}/issue-${issue}-*`)
+    const local = runGit(['for-each-ref', '--format=%(objectname)\t%(refname)', ...patterns], cwd, LOCAL_GIT_TIMEOUT_MS)
+    if (local.code !== 0) return { problem: failureOf('`git for-each-ref` over this clone\'s branches for the issue', local) }
+    for (const text of local.stdout.split('\n')) {
+      const [sha, name] = text.split('\t')
+      if (!SHA.test(sha ?? '') || typeof name !== 'string' || !name.startsWith('refs/heads/')) continue
+      if (branchForIssue(issue).test(shortBranch(name))) hits.push({ where: 'local-branch', ref: name, sha })
+    }
+
     const remote = runGit(['ls-remote', 'origin', ...patterns], cwd, REMOTE_GIT_TIMEOUT_MS)
     if (remote.code !== 0) return { problem: failureOf('`git ls-remote origin` with the three issue patterns', remote) }
     for (const text of remote.stdout.split('\n')) {
@@ -884,7 +1027,7 @@ const claim = ({ argv, cwd, runGh }) => {
   const first = scan()
   if (first.problem) return unknown('scan-unreadable', `the scan for a run already working issue #${issue} could not be completed: ${first.problem}`, names)
   if (first.hits.length > 0) {
-    return refuse('live-run', `issue #${issue} already has a run on it`, { ...names, live: first.hits },
+    return refuse('live-run', `issue #${issue} already has a run on it`, { ...names, found: groupHits(first.hits) },
       `issue #${issue} already has a run on it: ${describeHits(first.hits)}. Nothing was claimed. Look at that run before starting another.`)
   }
 
@@ -916,8 +1059,9 @@ const claim = ({ argv, cwd, runGh }) => {
   const receipt = parseJson(acquired.stdout)
   const verdict = receipt?.result
   if (verdict === 'held') {
+    // Someone else's tag, and this run pushed nothing that stuck, so nothing of ours is out there.
     const holder = String(receipt.sha ?? '')
-    return line({ ...base, ...names, result: 'held', sha: receipt.sha ?? null, detail: receipt.detail ?? null }, EXIT_HELD,
+    return line({ ...base, ...names, result: 'held', phase: 'pre-acquire', retained: [], cleanup: null, sha: receipt.sha ?? null, detail: receipt.detail ?? null }, EXIT_HELD,
       `issue #${issue} is already claimed on ${repo} (${ref}${SHA.test(holder) ? ` at ${holder.slice(0, 12)}` : ''}). ` +
       'Leave it alone; the run that holds it releases it, or a human breaks the tag.')
   }
@@ -925,70 +1069,144 @@ const claim = ({ argv, cwd, runGh }) => {
     return refuse('acquire-refused', `the claim on issue #${issue} was refused (${receipt.reason ?? 'no reason'}): ${receipt.detail ?? 'no detail'}`, names)
   }
   if (verdict !== 'acquired' || !SHA.test(String(receipt.sha ?? ''))) {
-    return unknown('acquire-unknown', `the claim on issue #${issue} could not be taken: ${receipt?.detail ?? acquired.stdout.trim()}`, names)
+    // The acquire's own header says what this case is: a push whose answer was lost may have
+    // created the tag. So this is not a read that changed nothing, and the tag is retained.
+    return settle('unknown', 'acquire-unknown', `the claim on issue #${issue} could not be taken: ${receipt?.detail ?? acquired.stdout.trim()}`,
+      { phase: 'acquired', retained: ['claim-tag'], extra: names })
   }
   const baseSha = receipt.sha
   const claimed = { ...names, base: baseSha }
 
-  const giveBack = () => parseJson(abandon({ argv: [String(issue), baseSha], cwd }).stdout)?.result ?? 'unknown'
-  const afterGiveBack = (result) => result === 'abandoned'
-    ? 'The claim tag was given back, so nothing of this run is left anywhere.'
-    : `The claim tag could NOT be given back (abandon said ${result}), so ${ref} on ${repo} needs a human.`
+  /**
+   * Give the tag back, and say whether the remote agrees it is gone. abandon refusing with
+   * tag-absent is a positive answer, since it read the remote and found no tag; every other answer
+   * leaves the tag on the retained list, because a claim tag whose state nobody knows is exactly
+   * what stops the next run.
+   */
+  const giveBack = () => {
+    const said = parseJson(abandon({ argv: [String(issue), baseSha], cwd }).stdout)
+    const result = said?.result ?? 'unknown'
+    return { result, gone: result === 'abandoned' || (result === 'refused' && said?.reason === 'tag-absent') }
+  }
+
+  /**
+   * Undo what this run made, and report honestly what would not go. Nothing leaves the retained
+   * list on the strength of a command's exit code: the worktree, the branch and the tag are each
+   * read back afterwards, and whatever does not come back positively gone stays on the list and
+   * turns the caller's refusal into an unknown.
+   */
+  const unwind = ({ worktreeAdded, branchCreated }) => {
+    const retained = []
+    const cleanup = []
+    if (worktreeAdded) {
+      // remove without --force, then prune: the checkout is seconds old and holds nothing worth
+      // forcing past, and a remove that does refuse leaves the path for a human rather than
+      // deleting work nobody expected.
+      runGit(['worktree', 'remove', worktree], cwd, WORKTREE_TIMEOUT_MS)
+      runGit(['worktree', 'prune'], cwd, LOCAL_GIT_TIMEOUT_MS)
+      if (worktreeState(cwd, worktree) !== 'absent') { retained.push('worktree'); cleanup.push('worktree-remove') }
+    }
+    if (branchCreated) {
+      // Only while it still points at the base this run cut it at, so a name that turned out to
+      // belong to someone else is left alone. And only on a path where this run is the one that
+      // created it, so a rival who took the same name between the scans keeps its branch.
+      const before = localBranchHead(cwd, branch)
+      if (before.state === 'present' && before.sha === baseSha) runGit(['branch', '-D', branch], cwd, LOCAL_GIT_TIMEOUT_MS)
+      if (localBranchHead(cwd, branch).state !== 'absent') { retained.push('local-branch'); cleanup.push('local-branch-delete') }
+    }
+    const gave = giveBack()
+    if (!gave.gone) { retained.push('claim-tag'); cleanup.push('abandon') }
+    return { retained, cleanup: cleanup.length === 0 ? null : cleanup.join(', '), abandon: gave.result }
+  }
 
   // ---- the second scan, the one that catches a contender who scanned before this run took the
   // tag and is still on its way to claiming. Race-free by construction: holding the tag blocks
   // every new contender, and any earlier winner released only after its branch reached origin.
   const second = scan()
   if (second.problem) {
-    const gave = giveBack()
-    return unknown('scan-unreadable', `the second scan for a live run on issue #${issue} could not be completed: ${second.problem}`, { ...claimed, abandon: gave },
-      `the second scan for a live run on issue #${issue} could not be completed: ${second.problem}. ${afterGiveBack(gave)}`)
+    const swept = unwind({ worktreeAdded: false, branchCreated: false })
+    return settle('unknown', 'scan-unreadable', `the second scan for a live run on issue #${issue} could not be completed: ${second.problem}`,
+      { phase: 'acquired', retained: swept.retained, cleanup: swept.cleanup, extra: { ...claimed, abandon: swept.abandon } })
   }
   if (second.hits.length > 0) {
-    const gave = giveBack()
-    return refuse('live-run', `issue #${issue} already has a run on it, found while holding the claim`, { ...claimed, live: second.hits, abandon: gave },
-      `issue #${issue} already has a run on it: ${describeHits(second.hits)}. ${afterGiveBack(gave)} Look at that run before starting another.`)
+    const swept = unwind({ worktreeAdded: false, branchCreated: false })
+    return settle('refused', 'live-run', `issue #${issue} already has a run on it, found while holding the claim`, {
+      phase: 'acquired',
+      retained: swept.retained,
+      cleanup: swept.cleanup,
+      extra: { ...claimed, found: groupHits(second.hits), abandon: swept.abandon },
+      human: `issue #${issue} already has a run on it: ${describeHits(second.hits)}. ${leftovers(swept.retained)} Look at that run before starting another.`,
+    })
   }
 
   // ---- the worktree, at the object the acquire verified on the remote. Never at this clone's
   // own origin/main, which is as old as its last fetch.
   const added = runGit(['worktree', 'add', worktree, '-b', branch, baseSha], cwd, WORKTREE_TIMEOUT_MS)
   if (added.code !== 0) {
-    // An add that failed part way can still leave a registration and a directory behind, and
-    // both would refuse the next run at the worktree-path check. remove without --force, then
-    // prune: the checkout is seconds old and has nothing in it worth forcing past, and a remove
-    // that does refuse leaves the path for a human rather than deleting work nobody expected.
-    runGit(['worktree', 'remove', worktree], cwd, WORKTREE_TIMEOUT_MS)
-    runGit(['worktree', 'prune'], cwd, LOCAL_GIT_TIMEOUT_MS)
-    const gave = giveBack()
-    const detail = `\`git worktree add ${worktree} -b ${branch}\` failed: ${firstLine(redact(added.stderr)) || `exit ${added.code}`}`
-    return refuse('worktree-add', detail, { ...claimed, abandon: gave }, `${detail}. ${afterGiveBack(gave)}`)
+    // An add that failed part way can still leave a registration, a directory and the new branch
+    // behind. All three would refuse the next run, the branch forever, so the unwind takes all
+    // three and says which of them it could not confirm gone.
+    const swept = unwind({ worktreeAdded: true, branchCreated: true })
+    const detail = `\`git worktree add ${worktree} -b ${branch}\` failed (exit ${added.code}): ${gitComplaint(redact(added.stderr)) || 'git said nothing'}`
+    return settle('refused', 'worktree-add', detail,
+      { phase: 'acquired', retained: swept.retained, cleanup: swept.cleanup, extra: { ...claimed, abandon: swept.abandon } })
   }
 
   // Nothing is committed between the branch creation and this push, so the head is the base. The
   // release below re-reads origin and refuses unless the remote branch is exactly this object,
   // which is what proves the push landed; a local rev-parse would only prove what git did here.
   const head = baseSha
+  const branchRef = `refs/heads/${branch}`
   const pushed = runGit(['push', '-u', 'origin', branch], worktree, PUSH_TIMEOUT_MS)
   if (pushed.code !== 0) {
-    runGit(['worktree', 'remove', worktree], cwd, WORKTREE_TIMEOUT_MS)
-    runGit(['worktree', 'prune'], cwd, LOCAL_GIT_TIMEOUT_MS)
-    // The branch goes too, but only while it still points at the base this run created it at, so
-    // a name that turned out to belong to someone else is left alone. Without this the retry
-    // after the abandon walks into `a branch named ... already exists` and needs a human for a
-    // branch nobody ever published.
-    const local = runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], cwd, LOCAL_GIT_TIMEOUT_MS)
-    if (local.code === 0 && local.stdout.trim() === baseSha) runGit(['branch', '-D', branch], cwd, LOCAL_GIT_TIMEOUT_MS)
-    const gave = giveBack()
-    const detail = `\`git push -u origin ${branch}\` failed: ${firstLine(redact(pushed.stderr)) || `exit ${pushed.code}`}`
-    return refuse('push', detail, { ...claimed, head, abandon: gave }, `${detail}. ${afterGiveBack(gave)}`)
+    const detail = `\`git push -u origin ${branch}\` failed (exit ${pushed.code}): ${gitComplaint(redact(pushed.stderr)) || 'git said nothing'}`
+    const everything = ['claim-tag', 'worktree', 'local-branch', 'remote-branch']
+    // A non-zero push is not proof that nothing was published: receive-pack can update the ref
+    // and the answer can still be lost on the way back. Ask the remote what it holds before
+    // undoing anything, because the branch on origin is what keeps the next run out.
+    const remote = readRef(cwd, branchRef, redact)
+    if (remote.state === 'present' && remote.sha === head) {
+      return settle('unknown', 'push',
+        `${detail}, but ${branchRef} on ${repo} is at ${head.slice(0, 12)}, so the branch was published and only the answer was lost`, {
+          phase: 'published',
+          retained: everything,
+          extra: { ...claimed, head },
+          human: `${detail}, but ${branchRef} is on ${repo} at ${head.slice(0, 12)}, so this run published after all. ` +
+            `Nothing was given back and ${ref} is still there; finish or unwind this by hand, and do not re-run the claim.`,
+        })
+    }
+    if (remote.state === 'unknown') {
+      return settle('unknown', 'push',
+        `${detail}, and ${branchRef} on ${repo} could not be read afterwards, so whether the branch was published is not known: ${remote.detail}`,
+        { phase: 'acquired', retained: everything, extra: { ...claimed, head } })
+    }
+    if (remote.state === 'present') {
+      // A branch under this run's name at some other object. It is not what this run pushed, so
+      // this run published nothing, but it is not this run's to take away either.
+      const swept = unwind({ worktreeAdded: true, branchCreated: true })
+      return settle('unknown', 'push',
+        `${detail}, and ${branchRef} on ${repo} is at ${remote.sha.slice(0, 12)} rather than the ${head.slice(0, 12)} this run pushed`, {
+          phase: 'acquired',
+          retained: [...swept.retained, 'remote-branch'],
+          cleanup: swept.cleanup,
+          extra: { ...claimed, head, abandon: swept.abandon },
+        })
+    }
+    // Absent: nothing of this run reached origin, so the ordinary unwind runs.
+    const swept = unwind({ worktreeAdded: true, branchCreated: true })
+    return settle('refused', 'push', detail,
+      { phase: 'acquired', retained: swept.retained, cleanup: swept.cleanup, extra: { ...claimed, head, abandon: swept.abandon } })
   }
 
   // ---- past here the branch is on origin, where every other run's scan can see it, and the tag
   // is no longer the only thing keeping a second run out. Nothing below gives it back.
   const published = { ...claimed, head }
-  const stuck = (reason, detail) => unknown(reason, detail, published,
-    `${detail}. ${branch} is on ${repo} at ${head.slice(0, 12)} and ${ref} is still there; finish or unwind this by hand, and do not re-run the claim.`)
+  const stuck = (reason, detail) => settle('unknown', reason, detail, {
+    phase: 'published',
+    retained: ['claim-tag', 'worktree', 'local-branch', 'remote-branch'],
+    extra: published,
+    human: `${detail}. ${branch} is on ${repo} at ${head.slice(0, 12)} and ${ref} is still there; finish or unwind this by hand, and do not re-run the claim.`,
+  })
 
   const edited = runGh(['issue', 'edit', String(issue), '--add-assignee', '@me', '--remove-label', READY_LABEL, '--add-label', 'in-progress'], { cwd })
   if (edited.code !== 0) {
