@@ -8,9 +8,9 @@
 // it exits. What to do about a stop stays with the stage, because that is where the human is.
 //
 // Why this is code rather than the stage's prose. The land gates are six or seven readings whose
-// rules are all small and all easy to get wrong in the same direction. A check rollup mixes
-// CheckRuns with commit statuses and the two spell their outcome in different fields. A thread
-// query that stopped at page one looks exactly like a pull request with no unresolved threads. A
+// rules are all small and all easy to get wrong in the same direction. Check runs and commit
+// statuses arrive from two endpoints and spell their outcome in different fields. A read that
+// stopped at page one looks exactly like a pull request with no unresolved threads. A
 // flake allowlist read from the pull request instead of from the base lets a branch approve its
 // own failures. Every one of those mistakes reads as green, and the reader who makes them is a
 // model that has just been told the work is finished. So the rules live here, applied the same
@@ -33,44 +33,52 @@
 // `threads-unreadable`, an unreadable merge queue is `merge-queue`. Where none fits, the error
 // alone makes the verdict `stop`. Exit codes: 0 pass, 1 stop, 2 usage or refusal, 4 unknown.
 //
-// The check partition, and why it reads two fields. A CheckRun reports `conclusion` with `status`
-// alongside it; a commit status, which is how external reviewers like CodeRabbit report, has no
-// conclusion at all and reports `state`. Reading only `conclusion` would drop every passing
-// commit status into the unknown bucket and stop every land on a repository that has one, so the
-// verdict token is the conclusion when there is one and the state otherwise, with a null token
-// falling back to a non-terminal `status` to catch a run still in progress.
+// Why `gh pr view` cannot be the source for the checks or the comments. Its --json rollup is a
+// GraphQL query for `statusCheckRollup.contexts(first: 100)` and its comments are
+// `comments(first: 100)`, and gh pages neither of them (observed on gh 2.98.0). A pull request
+// with a hundred green checks and a hundred and first failing one came back a pass, exit 0, with
+// nothing in the failed list, and a `## follow-up draft` in the hundred and first comment was
+// invisible the same way. A gate that reads the first hundred of anything is a gate a busy pull
+// request walks straight past, and it fails green, which is the one direction that matters here.
+//
+// So all three lists are read over the REST API with `gh api --paginate --slurp`, keyed on the
+// head SHA for the checks and on the pull request number for the comments:
+// repos/<owner>/<repo>/commits/<head>/check-runs, .../statuses, and
+// repos/<owner>/<repo>/issues/<n>/comments. --paginate walks every page; --slurp is what wraps
+// them in one outer array, because on its own --paginate prints one JSON document per page and
+// two adjacent documents are not JSON. What arrives is therefore an array of pages to flatten. A
+// page that failed, or that did not read as a page, is a failed read and never a short list:
+// `error` is set and the run exits 4, the same rule the review threads follow. `gh pr view` still
+// answers for the pull request's own fields, which are single values with no page size in them.
+//
+// The two check sources are partitioned differently because they report differently. A check run
+// carries `status` - queued, in_progress, completed - beside `conclusion`, so it is pending until
+// its status says completed and is bucketed on its conclusion after that; a conclusion left over
+// from an earlier attempt says nothing about a run that is going again. A commit status, which is
+// how an external reviewer like CodeRabbit reports, has no conclusion at all and carries `state`:
+// success, pending, failure, error. Reading one field for both would drop every passing commit
+// status into the unknown bucket and stop every land on a repository that has one.
+//
+// The check-runs endpoint is left on its default filter=latest, which serves the latest attempt of
+// each run: an attempt someone has already rerun is not a check anyone is waiting on. The statuses
+// endpoint has no such filter and serves every status ever posted for a context, newest first, so
+// only the first occurrence of a context counts. A context that failed at 10:00 and passed on a rerun at
+// 10:20 is passing, and counting the older entry would stop the land on a failure the repository
+// has already superseded.
 //
 // An entry with no name is unknown however green it looks, because a check nobody can name is not
-// a check anyone reviewed. The two kinds of entry spell their name in different fields as well as
-// their outcome: a CheckRun has `name` and `detailsUrl`, a commit status has `context` and
-// `targetUrl`, so both fields are read and most commit statuses name themselves. What is left
-// nameless is looked up in a `gh pr checks` cross-read, which renders both kinds through one
-// formatter, and the join is the details url, on one condition. The url has to identify a single
-// check on both sides, meaning exactly one rollup entry and exactly one cross-read entry carry
-// it. Equal cardinality is not identity, and neither is a shared url.
+// a check anyone reviewed. Both endpoints name their own entries - a check run in `name`, a
+// commit status in `context` - so nothing joins one list to another here. The version this
+// replaced filled in nameless rollup entries from a `gh pr checks` cross-read joined on the
+// details url, and that join put a passing name on a failing check twice: once by pairing
+// leftovers by position, once on the single build url every context of one provider shared.
+// Reading each list from the endpoint that owns it costs one more call and removes the guess.
 //
-// Two reads of the same pull request come back in no guaranteed order, so pairing leftovers by
-// position is a coin toss that can put a passing name on a failing check. Joining on a url that
-// two checks share is the same coin toss, and a status provider that links every context it
-// reports to the one build page deals it every run: two nameless rollup entries, [FAILURE,
-// SUCCESS], both linking to that build, and a cross-read naming `known-flake` and `e2e`, both
-// linking to it too. Whichever name the failure took decided whether the allowlist excused it,
-// and either way `e2e`'s failure was never reported. So a url that more than one entry carries
-// on either side joins nothing, every entry carrying it stays unknown, and unknown stops the
-// land. A name is handed out at most once for the same reason: a cross-read that lists `e2e`
-// twice is two checks, and letting a second entry take the name it already gave away is the
-// same guess by another route.
-//
-// That cross-read is optional - an older gh with no --json on this subcommand is not a failed
-// gate - and its output is parsed whatever the exit code is, because `gh pr checks` exits
-// non-zero when checks are failing or pending, which is exactly when this program most wants to
-// read it.
-//
-// An empty rollup is unknown too, not a pass. Zero checks is the state a pull request is in for
-// the first seconds after a fix push, before GitHub has registered the runs, and it is
-// indistinguishable from a repository that has no CI at all. Reporting it green would make the
-// most common moment of the land the one moment the gate says nothing. Whether a repository
-// genuinely has no CI is the human's call.
+// No checks at all is unknown too, not a pass. Zero check runs and zero commit statuses is the
+// state a pull request is in for the first seconds after a fix push, before GitHub has registered
+// the runs, and it is indistinguishable from a repository that has no CI at all. Reporting it
+// green would make the most common moment of the land the one moment the gate says nothing.
+// Whether a repository genuinely has no CI is the human's call.
 //
 // Known flakes are read from the base branch and never from the pull request. The pull request's
 // copy of .github/known-flakes.txt is part of what is under review, so an entry that exists only
@@ -119,8 +127,8 @@
 // read must never excuse a failing check.
 //
 // Review threads are paged to exhaustion, and a page the query could not deliver is
-// `threads-unreadable` rather than a short list. Comments come back as the last 20 rather than the
-// first, because the newest reply is what says whether a thread still stands. The merge queue is
+// `threads-unreadable` rather than a short list. Thread comments come back as the last 20 rather
+// than the first, because the newest reply is what says whether a thread still stands. The merge queue is
 // read in a second query rather than folded into the thread query: the two facts have nothing to
 // do with each other, and a schema that does not know one field would take down a read of the
 // other. An unreadable queue is the string "unknown", never false.
@@ -196,9 +204,10 @@ const THREAD_BODY_LIMIT = 400
 const SHA = /^[0-9a-f]{40}$/
 const PR_NUMBER = /^[0-9]+$/
 
+// Single values only. statusCheckRollup and comments used to be here, and both were served as the
+// first 100 of a list gh does not page.
 const PR_FIELDS = 'number,title,body,state,headRefName,headRefOid,baseRefName,url,isDraft,' +
-  'isCrossRepository,mergeable,mergeStateStatus,autoMergeRequest,closingIssuesReferences,' +
-  'statusCheckRollup,comments'
+  'isCrossRepository,mergeable,mergeStateStatus,autoMergeRequest,closingIssuesReferences'
 
 const FLAKES_PATH = '.github/known-flakes.txt'
 
@@ -207,14 +216,13 @@ const FLAKES_PATH = '.github/known-flakes.txt'
 // path inside it is the file being absent at that ref and nothing else.
 const HTTP_404 = /\(HTTP 404\)|\bNot Found\b/
 
-const CHECK_SUCCESS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
-const CHECK_FAILED = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'ERROR', 'STARTUP_FAILURE'])
-// Non-terminal, whether it arrives as a CheckRun status, a commit status state, or a bucket.
-const CHECK_PENDING = new Set(['PENDING', 'QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED', 'EXPECTED'])
-
-// `gh pr checks --json bucket` collapses the vocabulary above; this maps it back so a cross-read
-// entry with a bucket and no state can still classify.
-const BUCKET_TOKEN = { pass: 'SUCCESS', fail: 'FAILURE', pending: 'PENDING', skipping: 'SKIPPED', cancel: 'CANCELLED' }
+// A check run's conclusion, read only once its status says the run completed. REST serves these
+// lowercase and GraphQL served them upper, so every token is uppercased before it is looked up.
+// A conclusion in neither set, `stale` among them, is unknown, and unknown stops the land.
+const RUN_SUCCESS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
+const RUN_FAILED = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'ERROR', 'STARTUP_FAILURE'])
+// A commit status has one field and these are all four of its values.
+const STATUS_BUCKET = { SUCCESS: 'success', PENDING: 'pending', FAILURE: 'failed', ERROR: 'failed' }
 
 const BRANCH_ISSUE = /^(feat|fix|chore)\/issue-(\d+)-/
 const CLOSING_PHRASE = /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi
@@ -230,10 +238,15 @@ const FOLLOW_UP_DRAFT = /^##\s*follow-up draft/im
 const USAGE = `land-gates.mjs [--accept-flake <check-name>:<test_name>]... [<pull-request-number>]
 
 Re-derives every fact flow's land gates inspect and prints one JSON object on stdout: the pull
-request, its head and base, open pull requests stacked on this branch, the check rollup partitioned
-against the base branch's known-flakes allowlist, unresolved review threads, linked issues, a
-follow-up draft comment, and whether an auto-merge or a merge queue is armed. With no argument the
-pull request is resolved from the current branch.
+request, its head and base, open pull requests stacked on this branch, the check runs and commit
+statuses on the head partitioned against the base branch's known-flakes allowlist, unresolved
+review threads, linked issues, a follow-up draft comment, and whether an auto-merge or a merge
+queue is armed. With no argument the pull request is resolved from the current branch.
+
+The check runs, the commit statuses and the top-level comments are read over the REST API with
+\`gh api --paginate --slurp\`, so every one of them is gated however many there are. \`gh pr view\`
+answers for the pull request's own fields alone: its --json rollup and comments stop at the first
+100 and page nothing after them, which is a pass on a pull request whose 101st check failed.
 
 Both copies of ${FLAKES_PATH} are read over the GitHub contents API, at the base ref and at the
 head SHA. A line in that file is one entry: a line that equals a check name this pull request
@@ -423,16 +436,22 @@ const resolvedElsewhere = (view, number, identity) => {
   return null
 }
 
-/** The verdict token for one check entry: its conclusion, or the state a commit status uses. */
-const tokenOf = (entry) => upper(entry.conclusion) || upper(entry.state)
-
+/**
+ * Which bucket one entry belongs in, by the rules of the endpoint it came from.
+ *
+ * A check run is pending until its status says `completed`, and only then does its conclusion
+ * mean anything: a run that is going again still carries the conclusion of the attempt before it.
+ * A commit status has no status field and no conclusion, only `state`.
+ */
 const bucketOf = (entry) => {
-  const token = tokenOf(entry)
-  if (CHECK_SUCCESS.has(token)) return 'success'
-  if (CHECK_FAILED.has(token)) return 'failed'
-  if (CHECK_PENDING.has(token)) return 'pending'
-  if (token === '' && CHECK_PENDING.has(upper(entry.status))) return 'pending'
-  return 'unknown'
+  if (entry.kind === 'check-run') {
+    if (upper(entry.status) !== 'COMPLETED') return 'pending'
+    const token = upper(entry.conclusion)
+    if (RUN_SUCCESS.has(token)) return 'success'
+    if (RUN_FAILED.has(token)) return 'failed'
+    return 'unknown'
+  }
+  return STATUS_BUCKET[upper(entry.state)] ?? 'unknown'
 }
 
 /**
@@ -489,58 +508,6 @@ const parseFlakes = (text, names = new Set()) => {
     tests.get(split.check).push(split.test)
   }
   return { bare, tests, lines }
-}
-
-/** How many entries of a list carry each url, so a url shared by two of them can be recognized. */
-const urlCounts = (items) => {
-  const counts = new Map()
-  for (const item of items) {
-    if (item.url === null || item.url === undefined) continue
-    counts.set(item.url, (counts.get(item.url) ?? 0) + 1)
-  }
-  return counts
-}
-
-/**
- * Give the nameless rollup entries their names from the `gh pr checks` cross-read. The details
- * url is the only join key, and it joins only where it identifies a single check on both sides.
- *
- * Two ways of getting this wrong both end with a passing name on a failing check. Pairing the
- * leftovers by position is one: with a rollup of one FAILURE and one SUCCESS, both nameless, and
- * a cross-read naming `unit` and `e2e`, the counts agreed and the failure took whichever name
- * came first. Joining on a url that more than one check carries is the other, and status
- * providers that link every context they report to the one build url produce it as a matter of
- * course: two nameless entries, [FAILURE, SUCCESS], both linking to that build, a cross-read
- * naming `known-flake` and `e2e`, and the failure takes `known-flake`, is excused by the
- * allowlist, and `e2e`'s failure is never reported at all. Equal cardinality is not identity, and
- * neither is a shared url.
- *
- * So a url is a join key only when exactly one rollup entry and exactly one cross-read entry
- * carry it, and a name joins at most one entry. Everything else keeps a null name and is reported
- * unknown, which stops the land.
- */
-const nameFromCrossRead = (entries, checks) => {
-  const nameless = entries.filter((entry) => entry.name === null)
-  if (nameless.length === 0 || checks.length === 0) return
-  const known = new Set(entries.map((entry) => entry.name).filter((name) => name !== null))
-  const inRollup = urlCounts(entries)
-  const inCrossRead = urlCounts(checks)
-
-  for (const entry of nameless) {
-    if (entry.url === null) continue
-    if (inRollup.get(entry.url) !== 1 || inCrossRead.get(entry.url) !== 1) continue
-    // A cross-read name another rollup entry already carries is not a name for this one either,
-    // and that includes a name this loop handed out a moment ago. `known` was built once before
-    // the loop, so two nameless entries whose urls were each unique on both sides could both take
-    // `e2e` off a cross-read that listed it twice: one passed, one failed, the allowlist excused
-    // the failure under that name, and the land went green on a check nobody could name. A name
-    // identifies one check, so it is handed out at most once.
-    const match = checks.find((check) => check.url === entry.url && check.name !== null && !known.has(check.name))
-    if (match === undefined) continue
-    entry.name = match.name
-    known.add(match.name)
-    if (tokenOf(entry) === '') entry.state = match.state
-  }
 }
 
 /**
@@ -775,34 +742,85 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
   }
 
   // ------------------------------------------------------------------------------ 5. the CI gate
-  const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : []
-  // A CheckRun carries name/detailsUrl; a commit status carries context/targetUrl. Reading both
-  // pairs is what lets a CodeRabbit status name itself instead of waiting on the cross-read.
-  const entries = rollup.map((raw) => ({
-    name: nonEmpty(raw?.name) ?? nonEmpty(raw?.context),
-    url: nonEmpty(raw?.detailsUrl) ?? nonEmpty(raw?.targetUrl) ?? null,
-    conclusion: raw?.conclusion ?? null,
-    status: raw?.status ?? null,
-    state: raw?.state ?? null,
-  }))
+  // Every page of both check sources, off the head SHA. `gh pr view --json statusCheckRollup`
+  // stops at the first 100 entries and pages nothing after them, so a hundred and first failing
+  // check used to leave this program reporting a pass.
+  const readPages = (path, what) => {
+    const result = runGh(['api', '--hostname', identity.host, '--paginate', '--slurp', path], READ_TIMEOUT_MS)
+    if (result.code !== 0) {
+      noteFailure(`${what}: ${redact(firstLine(result.stderr)) || `exit ${result.code}`}`)
+      return null
+    }
+    const pages = parseJson(result.stdout)
+    if (!Array.isArray(pages)) {
+      noteFailure(`${what} printed something this could not read as an array of pages`)
+      return null
+    }
+    return pages
+  }
 
-  // Parsed whatever gh's exit code was: `gh pr checks` exits non-zero on failing or pending
-  // checks, which is precisely when a nameless rollup entry most needs a name.
-  const checksRead = runGh(['pr', 'checks', String(prNumber), '--repo', identity.full, '--json', 'name,state,bucket,link'], READ_TIMEOUT_MS)
-  const checksJson = parseJson(checksRead.stdout)
-  const crossRead = Array.isArray(checksJson)
-    ? checksJson.map((check) => ({
-      name: nonEmpty(check?.name),
-      url: nonEmpty(check?.link) ?? null,
-      state: nonEmpty(check?.state) ?? BUCKET_TOKEN[String(check?.bucket ?? '').toLowerCase()] ?? null,
-    }))
-    : []
-  nameFromCrossRead(entries, crossRead)
+  const entries = []
+  // False as soon as any part of either read failed. It is what separates "this pull request has
+  // no checks", which is a stop the human decides about, from "the checks could not be read",
+  // which is already an error and exits 4 on its own.
+  let checksReadable = false
+  if (headSha !== null && SHA.test(headSha)) {
+    checksReadable = true
+    const commitPath = (kind) => `repos/${identity.owner}/${identity.repo}/commits/${headSha}/${kind}?per_page=100`
 
-  const reportedNames = new Set([
-    ...entries.map((entry) => entry.name),
-    ...crossRead.map((check) => check.name),
-  ].filter((name) => name !== null))
+    const runPages = readPages(commitPath('check-runs'), '`gh api` over the check runs')
+    if (runPages === null) checksReadable = false
+    else {
+      for (const page of runPages) {
+        // Each page of this endpoint is an object with the runs inside it, not a bare array.
+        if (!Array.isArray(page?.check_runs)) {
+          noteFailure('`gh api` over the check runs returned a page with no check_runs array in it')
+          checksReadable = false
+          break
+        }
+        for (const run of page.check_runs) {
+          entries.push({
+            kind: 'check-run',
+            name: nonEmpty(run?.name),
+            url: nonEmpty(run?.details_url) ?? nonEmpty(run?.html_url) ?? null,
+            status: run?.status ?? null,
+            conclusion: run?.conclusion ?? null,
+          })
+        }
+      }
+    }
+
+    const statusPages = readPages(commitPath('statuses'), '`gh api` over the commit statuses')
+    if (statusPages === null) checksReadable = false
+    else {
+      // Newest first, so the first entry of a context is the one that counts and every later one
+      // is a superseded run of the same check. A nameless status is kept as it comes: it is
+      // unknown, and one unknown does not stand in for another.
+      const seen = new Set()
+      for (const page of statusPages) {
+        if (!Array.isArray(page)) {
+          noteFailure('`gh api` over the commit statuses returned a page that is not a list of statuses')
+          checksReadable = false
+          break
+        }
+        for (const status of page) {
+          const context = nonEmpty(status?.context)
+          if (context !== null) {
+            if (seen.has(context)) continue
+            seen.add(context)
+          }
+          entries.push({
+            kind: 'status',
+            name: context,
+            url: nonEmpty(status?.target_url) ?? null,
+            state: status?.state ?? null,
+          })
+        }
+      }
+    }
+  }
+
+  const reportedNames = new Set(entries.map((entry) => entry.name).filter((name) => name !== null))
 
   // The allowlist that governs is the base branch's copy. The pull request's own copy is part of
   // the diff under review, so it is read only to report what the branch added to it. Both come
@@ -931,11 +949,10 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     for (const check of acceptedChecks) if (!ci.flaky.includes(check)) ci.flaky.push(check)
   }
 
-  if (entries.length === 0) {
-    const said = firstLine(checksRead.stderr)
+  if (checksReadable && entries.length === 0) {
     stop('ci-unknown', `#${prNumber} reported no checks at all, which is also how a pull request looks in the ` +
-      'seconds after a push, before GitHub registers its check runs: no checks reported' +
-      (said === '' ? '' : ` (\`gh pr checks\` said: ${redact(said)})`))
+      'seconds after a push, before GitHub registers its check runs: no check runs and no commit statuses ' +
+      `on ${headSha}`)
   }
   if (ci.pending.length > 0) stop('ci-pending', `${ci.pending.length} check(s) have not finished: ${ci.pending.join(', ')}`)
   if (ci.failed.length > 0) {
@@ -1062,13 +1079,30 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
       'Ask the human which to close, with an explicit close-none')
   }
 
-  let followUpDraft = null
-  for (const comment of Array.isArray(view.comments) ? view.comments : []) {
-    if (typeof comment?.body === 'string' && FOLLOW_UP_DRAFT.test(comment.body)) {
-      followUpDraft = { id: comment?.id ?? null, url: scrubUserinfo(comment?.url ?? '') || null, body: comment.body }
-      break
+  // Every page of the top-level comments, for the same reason as the checks: `gh pr view --json
+  // comments` served the first 100 and paged nothing, so a draft filed after a long review was
+  // never seen. The url kept is html_url, the one a human can open; `url` is the API's own.
+  const findFollowUpDraft = (pages) => {
+    for (const page of pages) {
+      if (!Array.isArray(page)) {
+        noteFailure('`gh api` over the top-level comments returned a page that is not a list of comments')
+        return null
+      }
+      for (const comment of page) {
+        if (typeof comment?.body === 'string' && FOLLOW_UP_DRAFT.test(comment.body)) {
+          return {
+            id: comment?.id ?? null,
+            url: scrubUserinfo(comment?.html_url ?? comment?.url ?? '') || null,
+            body: comment.body,
+          }
+        }
+      }
     }
+    return null
   }
+  const commentPages = readPages(`repos/${identity.owner}/${identity.repo}/issues/${prNumber}/comments?per_page=100`,
+    '`gh api` over the top-level comments')
+  const followUpDraft = commentPages === null ? null : findFollowUpDraft(commentPages)
   if (followUpDraft !== null) {
     attend('follow-up-draft', 'the pull request carries a `## follow-up draft` comment; file it or drop it before the land closes')
   }
