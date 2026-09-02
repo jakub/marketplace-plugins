@@ -759,8 +759,9 @@ check('an entry on the base for a failing check passes the land',
 check('the check moves from failed to flaky',
   JSON.stringify(acceptedFlake.json?.ci?.failed) === '[]' && JSON.stringify(acceptedFlake.json?.ci?.flaky) === '["suite"]',
   JSON.stringify(acceptedFlake.json?.ci))
-check('and the acceptance is on the record',
-  JSON.stringify(acceptedFlake.json?.ci?.acceptedFlakes) === '[{"check":"suite","test":"test_x"}]',
+check('and the acceptance is on the record, with the url of the job it moved',
+  JSON.stringify(acceptedFlake.json?.ci?.acceptedFlakes) ===
+    '[{"check":"suite","test":"test_x","link":"https://ci.example/suite"}]',
   JSON.stringify(acceptedFlake.json?.ci?.acceptedFlakes))
 check('with an attention item saying it was accepted by flag',
   has(acceptedFlake.json?.attention, 'flaky-merged-through') &&
@@ -774,7 +775,8 @@ check('and the read-the-log item is not also raised for it',
   JSON.stringify(acceptedFlake.json?.attention))
 check('the --accept-flake=entry spelling works the same way', (() => {
   const equals = run(['--accept-flake=suite:test_x', String(PR)], { st: perTestState('suite:test_x\n') })
-  return equals.code === 0 && JSON.stringify(equals.json?.ci?.acceptedFlakes) === '[{"check":"suite","test":"test_x"}]'
+  return equals.code === 0 && JSON.stringify(equals.json?.ci?.acceptedFlakes) ===
+    '[{"check":"suite","test":"test_x","link":"https://ci.example/suite"}]'
 })())
 
 refuses('an entry the base allowlist does not declare is refused', ['--accept-flake', 'suite:test_x', String(PR)],
@@ -794,6 +796,137 @@ check('and records no acceptance', JSON.stringify(unaccepted.json?.ci?.acceptedF
   JSON.stringify(unaccepted.json?.ci?.acceptedFlakes))
 check('and still points at the job log', detailOf(unaccepted.json?.attention, 'flaky-merged-through').includes('job log'),
   detailOf(unaccepted.json?.attention, 'flaky-merged-through'))
+
+
+console.log('\nO2: a cross-read name is handed out at most once')
+// Both urls are unique on both sides, so the join is legitimate on each entry taken alone. What
+// was missing is that the two entries are then the same check: the set of names already spoken
+// for was built once, before the loop, so the second entry took `e2e` too. With `e2e` on the
+// allowlist the failure was excused and the pull request went green on a check nobody could name.
+const reusedName = run([String(PR)], {
+  st: freshState({
+    rollup: [
+      { name: null, conclusion: 'SUCCESS', status: 'COMPLETED', detailsUrl: 'https://ci.example/build/1' },
+      { name: null, conclusion: 'FAILURE', status: 'COMPLETED', detailsUrl: 'https://ci.example/build/2' },
+    ],
+    checks: [
+      { name: 'e2e', state: 'SUCCESS', bucket: 'pass', link: 'https://ci.example/build/1' },
+      { name: 'e2e', state: 'FAILURE', bucket: 'fail', link: 'https://ci.example/build/2' },
+    ],
+    baseFlakes: 'e2e\n',
+  }),
+})
+check('the first entry takes the name', JSON.stringify(reusedName.json?.ci?.success) === '["e2e"]',
+  JSON.stringify(reusedName.json?.ci))
+check('the second one does not take it again', reusedName.json?.ci?.unknown?.length === 1 &&
+  reusedName.json?.ci?.unknown?.[0]?.name === null, JSON.stringify(reusedName.json?.ci?.unknown))
+check('and keeps the url it had', reusedName.json?.ci?.unknown?.[0]?.link === 'https://ci.example/build/2',
+  JSON.stringify(reusedName.json?.ci?.unknown))
+check('so the land stops on ci-unknown', reusedName.code === 1 && has(reusedName.json?.stops, 'ci-unknown'),
+  `${reusedName.code}: ${JSON.stringify(codes(reusedName.json?.stops))}`)
+check('and the allowlist excuses no failure it could not name',
+  JSON.stringify(reusedName.json?.ci?.flaky) === '[]' && JSON.stringify(reusedName.json?.ci?.failed) === '[]',
+  JSON.stringify(reusedName.json?.ci))
+
+console.log('\nJ4: one accepted test moves one check, and only where the name is unambiguous')
+// Two CheckRuns can report the same name against two different jobs, and GitHub is happy to serve
+// both. Acceptance used to be keyed on a set of check names and removed every failed entry whose
+// name was in it, so one --accept-flake suite:test_x deleted both failures on the strength of one
+// job log, which can only ever have been about one of them.
+const twinSuite = (extra = {}) => freshState({
+  rollup: [
+    checkRun('unit', 'SUCCESS'),
+    { name: 'suite', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/suite/1' },
+    { name: 'suite', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/suite/2' },
+  ],
+  baseFlakes: 'suite:test_x\n',
+  ...extra,
+})
+
+const twinUnaccepted = run([String(PR)], { st: twinSuite() })
+check('both failures of one name are reported separately', JSON.stringify(twinUnaccepted.json?.ci?.failed) ===
+  '[{"name":"suite","link":"https://ci.example/suite/1"},{"name":"suite","link":"https://ci.example/suite/2"}]',
+  JSON.stringify(twinUnaccepted.json?.ci?.failed))
+
+const twinAccept = run(['--accept-flake', 'suite:test_x', String(PR)], { st: twinSuite() })
+check('accepting a name two failed checks carry is refused', twinAccept.code === 2,
+  `${twinAccept.code}: ${(twinAccept.stderr || twinAccept.stdout).trim().split('\n')[0]}`)
+check('and no verdict is printed, so nothing reads as accepted', twinAccept.stdout === '', twinAccept.stdout.slice(0, 120))
+check('the refusal names both job urls', twinAccept.stderr.includes('https://ci.example/suite/1') &&
+  twinAccept.stderr.includes('https://ci.example/suite/2'), twinAccept.stderr)
+check('and says the acceptance is ambiguous', twinAccept.stderr.includes('ambiguous'), twinAccept.stderr)
+// The refusal prints nothing, so what became of the checks is read from the same state run without
+// the flag: both are still failed and the land still stops.
+check('and the same pull request without the flag still stops on both',
+  twinUnaccepted.code === 1 && has(twinUnaccepted.json?.stops, 'ci-failed') &&
+  twinUnaccepted.json?.ci?.failed?.length === 2 && JSON.stringify(twinUnaccepted.json?.ci?.flaky) === '[]',
+  `${twinUnaccepted.code}: ${JSON.stringify(twinUnaccepted.json?.ci)}`)
+
+// One entry of that name is the ordinary case and still moves, with the url of the job it moved.
+const oneSuite = run(['--accept-flake', 'suite:test_x', String(PR)], { st: perTestState('suite:test_x\n') })
+check('one failed check of that name still accepts', oneSuite.code === 0 && oneSuite.json?.verdict === 'pass',
+  `${oneSuite.code}: ${JSON.stringify(codes(oneSuite.json?.stops))}`)
+check('and the acceptance carries the url of the job it moved',
+  oneSuite.json?.ci?.acceptedFlakes?.[0]?.link === 'https://ci.example/suite',
+  JSON.stringify(oneSuite.json?.ci?.acceptedFlakes))
+
+// Two tests of one check cannot each have been that check's only failure.
+refuses('two accepted tests for one check are refused',
+  ['--accept-flake', 'suite:test_a', '--accept-flake', 'suite:test_b', String(PR)],
+  'both name suite', { st: perTestState('suite:test_a\nsuite:test_b\n') })
+
+// One test each for two failing checks is not the same thing, and still works.
+const twoChecks = run(['--accept-flake', 'suite:test_a', '--accept-flake', 'other:test_b', String(PR)], {
+  st: freshState({
+    rollup: [checkRun('suite', 'FAILURE'), checkRun('other', 'FAILURE')],
+    baseFlakes: 'suite:test_a\nother:test_b\n',
+  }),
+})
+check('but one test each for two failing checks is accepted', twoChecks.code === 0 && twoChecks.json?.verdict === 'pass',
+  `${twoChecks.code}: ${JSON.stringify(codes(twoChecks.json?.stops))}`)
+check('with both on the record and both checks flaky',
+  JSON.stringify(twoChecks.json?.ci?.acceptedFlakes?.map((a) => `${a.check}:${a.test}`)) === '["suite:test_a","other:test_b"]' &&
+  JSON.stringify(twoChecks.json?.ci?.failed) === '[]',
+  JSON.stringify(twoChecks.json?.ci))
+
+console.log('\nJ5: a closing phrase counts only where it reads as one')
+// `does not fix #17` matched the same regex as `fixes #17`, so the gate recovered the issue the
+// sentence said it was not closing, and with a linked issue beside it nothing asked the human.
+const negated = issuesOf({
+  headRefName: 'quickfix',
+  title: 'fix: the thing',
+  body: 'Closes #6.\nThis does not fix #17.\nIt doesn\'t close #18.\nIt never resolves #19.\n' +
+    'It no longer fixes #20.\nLanded without closes #21.',
+})
+check('a negated closing phrase recovers nothing', JSON.stringify(negated?.recovered) === '[6]', JSON.stringify(negated))
+check('and every negated number falls through to mentions', JSON.stringify(negated?.mentions) === '[17,18,19,20,21]',
+  JSON.stringify(negated))
+
+const afterNegation = issuesOf({ headRefName: 'quickfix', title: 'fix: the thing', body: 'This does not fix #17. Closes #22.' })
+check('the negation reaches only its own sentence', JSON.stringify(afterNegation?.recovered) === '[22]', JSON.stringify(afterNegation))
+check('and the negated one is still a mention', JSON.stringify(afterNegation?.mentions) === '[17]', JSON.stringify(afterNegation))
+
+const quoted = issuesOf({
+  headRefName: 'quickfix',
+  title: 'docs: how the land stage writes a closing phrase',
+  body: 'The stage writes `Closes #6` into the body.\n\n```\nFixes #17\n```\n',
+})
+check('a closing phrase in backticks or a fence recovers nothing', JSON.stringify(quoted?.recovered) === '[]', JSON.stringify(quoted))
+check('and both numbers read as mentions instead', JSON.stringify(quoted?.mentions) === '[6,17]', JSON.stringify(quoted))
+
+// The rule that made the negated phrase dangerous: the question was asked only when GitHub had
+// parsed nothing, so one real link plus one stray phrase closed both without asking.
+const strayClose = run([String(PR)], {
+  st: freshState({ pr: { closingIssuesReferences: [{ number: 6 }], headRefName: 'quickfix', body: 'Also fixes #17.' } }),
+})
+check('a recovered number GitHub did not link is a question even beside a parsed link',
+  has(strayClose.json?.attention, 'linked-issues-ambiguous'), JSON.stringify(strayClose.json?.attention))
+check('the parsed link is still reported as linked', JSON.stringify(strayClose.json?.linkedIssues?.linked) === '[6]',
+  JSON.stringify(strayClose.json?.linkedIssues))
+check('the recovered one is named as the candidate', detailOf(strayClose.json?.attention, 'linked-issues-ambiguous').includes('#17'),
+  detailOf(strayClose.json?.attention, 'linked-issues-ambiguous'))
+check('and it is attention, not a stop', strayClose.code === 0 && !has(strayClose.json?.stops, 'linked-issues-ambiguous'),
+  `${strayClose.code}: ${JSON.stringify(codes(strayClose.json?.stops))}`)
 
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
