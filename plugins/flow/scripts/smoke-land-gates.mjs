@@ -26,7 +26,8 @@
 // that two checks share, a repository identity that swallowed a query string, and a per-test
 // flake entry that could never reach the pass the merge needs. S2 is the fourth review's: the
 // pull request gh resolves from the current branch, which was taken on trust and could belong to
-// another repository entirely.
+// another repository entirely. P1 and P2 are the two smaller ones beside it, both about a check
+// whose name this program then wrote down wrong.
 //
 // Run: node plugins/flow/scripts/smoke-land-gates.mjs
 
@@ -1017,6 +1018,99 @@ check('and quotes no part of the remote it refused for',
   !elsewhere.stderr.includes('ghp_secrettoken') && !elsewhere.stderr.includes('jakub:'), elsewhere.stderr)
 check('and nothing after the refusal was read',
   elsewhere.st.calls.length === 1, JSON.stringify(elsewhere.st.calls.map((a) => `${a[0]} ${a[1]}`)))
+
+
+console.log('\nP1: a per-test entry splits after the longest reported check name')
+// CircleCI reports its contexts as `ci/circleci: build`, so the allowlist line
+// `ci/circleci: build:flaky_test` split at the first colon into a check nobody reported. The
+// entry then matched no failure, flakeCandidates came back empty, and --accept-flake refused the
+// line verbatim off the allowlist it had been copied from.
+const CIRCLE = 'ci/circleci: build'
+const circleState = (base) => freshState({
+  rollup: [checkRun('unit', 'SUCCESS'), { context: CIRCLE, state: 'FAILURE', targetUrl: 'https://circleci.example/1' }],
+  checks: null,
+  baseFlakes: base,
+})
+
+const circleCandidate = run([String(PR)], { st: circleState(`${CIRCLE}:flaky_test\n`) })
+check('the check whose own name holds a colon owns the entry',
+  JSON.stringify(circleCandidate.json?.ci?.flakeCandidates) === `{"${CIRCLE}":["flaky_test"]}`,
+  JSON.stringify(circleCandidate.json?.ci?.flakeCandidates))
+check('and unaccepted it still stops, which is the per-test rule',
+  circleCandidate.code === 1 && has(circleCandidate.json?.stops, 'ci-failed'),
+  `${circleCandidate.code}: ${JSON.stringify(codes(circleCandidate.json?.stops))}`)
+
+const circleAccepted = run(['--accept-flake', `${CIRCLE}:flaky_test`, String(PR)], { st: circleState(`${CIRCLE}:flaky_test\n`) })
+check('the line accepts in the spelling the allowlist wrote it',
+  circleAccepted.code === 0 && circleAccepted.json?.verdict === 'pass',
+  `${circleAccepted.code}: ${circleAccepted.stderr}`)
+check('and the acceptance names the whole check',
+  JSON.stringify(circleAccepted.json?.ci?.acceptedFlakes) ===
+    `[{"check":"${CIRCLE}","test":"flaky_test","link":"https://circleci.example/1"}]`,
+  JSON.stringify(circleAccepted.json?.ci?.acceptedFlakes))
+check('which is flaky now and no longer failed',
+  JSON.stringify(circleAccepted.json?.ci?.flaky) === `["${CIRCLE}"]` &&
+  JSON.stringify(circleAccepted.json?.ci?.failed) === '[]',
+  JSON.stringify(circleAccepted.json?.ci))
+
+// A bare colonless name is still the whole check, and a plain check:test entry still splits at
+// the colon it has.
+const plainStill = run(['--accept-flake', 'suite:test_x', String(PR)], { st: perTestState('suite:test_x\n') })
+check('a check name with no colon in it is unaffected',
+  plainStill.code === 0 && JSON.stringify(plainStill.json?.ci?.acceptedFlakes?.map((a) => `${a.check}:${a.test}`)) === '["suite:test_x"]',
+  `${plainStill.code}: ${JSON.stringify(plainStill.json?.ci?.acceptedFlakes)}`)
+
+const noPrefix = run([String(PR)], { st: circleState('other/job: build:flaky_test\n') })
+check('a line whose prefix matches no reported check still splits at the first colon',
+  JSON.stringify(noPrefix.json?.ci?.flakeCandidates) === '{}' && JSON.stringify(noPrefix.json?.ci?.flaky) === '[]',
+  JSON.stringify(noPrefix.json?.ci))
+
+// Longest wins, and it has to: a repository can report both `suite` and `suite:slow`, and then
+// `suite:slow:test_x` is the second one's test and not the first one's `slow:test_x`.
+const bothPrefixes = run(['--accept-flake', 'suite:slow:test_x', String(PR)], {
+  st: freshState({
+    rollup: [checkRun('suite', 'SUCCESS'), { context: 'suite:slow', state: 'FAILURE', targetUrl: 'https://ci.example/slow' }],
+    checks: null,
+    baseFlakes: 'suite:slow:test_x\n',
+  }),
+})
+check('the longer of two reported names that both fit takes the entry',
+  bothPrefixes.code === 0 &&
+  JSON.stringify(bothPrefixes.json?.ci?.acceptedFlakes) === '[{"check":"suite:slow","test":"test_x","link":"https://ci.example/slow"}]',
+  `${bothPrefixes.code}: ${JSON.stringify(bothPrefixes.json?.ci?.acceptedFlakes)}`)
+
+refuses('and a bare name that holds a colon is still refused as a bare name',
+  ['--accept-flake', CIRCLE, String(PR)], `--accept-flake ${CIRCLE} names no test`,
+  { st: circleState(`${CIRCLE}\n`) })
+
+console.log('\nP2: a flaky name is listed once, however many jobs reported it')
+// Two check runs of one name are two jobs, and the allowlist excuses the name, so the land report
+// read "e2e, e2e failed and .github/known-flakes.txt lists it as flaky".
+const twinFlaky = run([String(PR)], {
+  st: freshState({
+    rollup: [
+      checkRun('unit', 'SUCCESS'),
+      { name: 'e2e', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/e2e/1' },
+      { name: 'e2e', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://ci.example/e2e/2' },
+    ],
+    baseFlakes: 'e2e\n',
+  }),
+})
+check('both jobs of that name are excused', twinFlaky.code === 0 && twinFlaky.json?.verdict === 'pass',
+  `${twinFlaky.code}: ${JSON.stringify(codes(twinFlaky.json?.stops))}`)
+check('and the name is listed once', JSON.stringify(twinFlaky.json?.ci?.flaky) === '["e2e"]',
+  JSON.stringify(twinFlaky.json?.ci?.flaky))
+check('and named once in the attention detail',
+  detailOf(twinFlaky.json?.attention, 'flaky-merged-through').split('e2e').length - 1 === 1,
+  detailOf(twinFlaky.json?.attention, 'flaky-merged-through'))
+check('two different flaky names are both still named',
+  (() => {
+    const two = run([String(PR)], {
+      st: freshState({ rollup: [checkRun('e2e', 'FAILURE'), checkRun('flow', 'FAILURE')], baseFlakes: 'e2e\nflow\n' }),
+    })
+    return two.code === 0 && JSON.stringify(two.json?.ci?.flaky) === '["e2e","flow"]' &&
+      detailOf(two.json?.attention, 'flaky-merged-through').startsWith('e2e, flow failed')
+  })())
 
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
