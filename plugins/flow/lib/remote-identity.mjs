@@ -79,11 +79,39 @@ export function hostIsAllowed(host, allowedHosts) {
 }
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
-// git@host:owner/repo.git and host:owner/repo, the two spellings new URL() cannot parse.
-const SCP_LIKE = /^(?:[^@\s/]+@)?([^:/\s]+):(.+)$/
+// git@host:owner/repo.git and host:owner/repo, the two spellings new URL() cannot parse. The user
+// is captured rather than skipped, because both halves are checked before either is used.
+const SCP_LIKE = /^(?:([^@\s/]+)@)?([^:/\s]+):(.+)$/
 // The scp-like spelling has no place to put a port, so `git@host:2222/owner/repo.git` is a port
 // written into a form that cannot hold one. See the note in identityOfRemote.
 const SCP_PORT = /^(\d+)\/(.+)$/
+
+// A hostname: labels of letters, digits and hyphens, joined by dots, no label starting or ending
+// in a hyphen, and nothing else. Deliberately narrow. An IPv6 literal, which new URL() hands back
+// bracketed as [::1], does not match and is refused, which is fail-closed and no loss: nobody
+// reaches a GitHub host that way.
+const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/i
+// The ssh user in front of it, git in every remote anyone writes by hand. Same idea, plus the
+// underscore and the plus a few forges use.
+const SCP_USER = /^[a-z0-9._+-]+$/i
+
+/**
+ * Whether a string is a hostname and nothing else. This is what stands between a remote and a
+ * refusal that names its host. The scp-like form ends the host at the colon that opens the path
+ * and has no other delimiter, so `[^:/\s]+` counted a second @, a ? and a # as part of the host:
+ * git@ghp_sekret?x@github.com:owner/repo.git parsed with the host ghp_sekret?x@github.com, and the
+ * allowlist refusal below prints the host it refuses. The token went to stderr and into whatever
+ * journalled it. So the host is matched against this before any diagnostic can name it, and one
+ * that fails is an unreadable remote, described and never quoted.
+ */
+export function isHostname(host) {
+  return typeof host === 'string' && host !== '' && HOSTNAME.test(host)
+}
+
+/** Whether a string is an ssh user and nothing else. The other half of an scp-like remote. */
+export function isScpUser(user) {
+  return typeof user === 'string' && user !== '' && SCP_USER.test(user)
+}
 
 /** The owner and repository a path names, or null when it does not name exactly those two. */
 const namesRepo = (path) => {
@@ -146,6 +174,11 @@ export function identityOfRemote(url, { purpose, allowedHosts }) {
     try { parsed = new URL(raw) } catch { return { refusal: REMOTE_UNREADABLE(purpose) } }
     if (parsed.search !== '' || parsed.hash !== '') return { refusal: REMOTE_QUERY }
     if (parsed.port !== '') return { refusal: REMOTE_PORT(purpose) }
+    // Belt and braces. new URL() already rejects most of what the scp-like branch has to catch by
+    // hand, but the host is about to be printable and one grammar for both branches is one rule to
+    // reason about. A hostless URL, file:///srv/repo.git, keeps falling through to the path
+    // refusal, which is the honest thing to say about it.
+    if (parsed.hostname !== '' && !isHostname(parsed.hostname)) return { refusal: REMOTE_UNREADABLE(purpose) }
     // The pathname is left percent-encoded on purpose: decodeURIComponent throws on a lone %, and
     // nothing downstream needs the decoded form of an owner or a repository name.
     return fromPath(parsed.hostname, parsed.pathname)
@@ -153,7 +186,10 @@ export function identityOfRemote(url, { purpose, allowedHosts }) {
 
   const scp = raw.match(SCP_LIKE)
   if (scp === null) return { refusal: REMOTE_UNREADABLE(purpose) }
-  const [, host, path] = scp
+  const [, user, host, path] = scp
+  // First, before anything can print the host or judge it. See isHostname.
+  if (!isHostname(host)) return { refusal: REMOTE_UNREADABLE(purpose) }
+  if (user !== undefined && !SCP_USER.test(user)) return { refusal: REMOTE_UNREADABLE(purpose) }
   if (path.includes('?') || path.includes('#')) return { refusal: REMOTE_QUERY }
   const ported = path.match(SCP_PORT)
   if (ported !== null && namesRepo(ported[2]) !== null) return { refusal: REMOTE_PORT(purpose) }

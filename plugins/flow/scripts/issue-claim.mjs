@@ -234,7 +234,7 @@ import { fileURLToPath } from 'node:url'
 // Only the allowlist, not the parse. The comment at remoteSlug says why this file parses an
 // origin of its own; which hosts flow may hand a credential to is one list all the same, and a
 // second copy of it is a second thing to keep in step.
-import { allowedHostsFrom, hostIsAllowed } from '../lib/remote-identity.mjs'
+import { allowedHostsFrom, hostIsAllowed, isHostname, isScpUser } from '../lib/remote-identity.mjs'
 
 const LOCAL_GIT_TIMEOUT_MS = 5_000
 const REMOTE_GIT_TIMEOUT_MS = 30_000
@@ -484,6 +484,7 @@ const safeIdentity = (remote) => {
       const path = url.pathname.replace(/^\/+/, '')
       // file:///srv/repo.git and friends: no host, so what is left is a filesystem path.
       if (url.hostname === '') return path === '' ? 'unparseable-origin' : `/${path}`
+      if (!isHostname(url.hostname)) return 'unparseable-origin'
       const repo = path.replace(/\.git$/, '')
       return repo === '' ? url.hostname : `${url.hostname}/${repo}`
     } catch { return 'unparseable-origin' }
@@ -494,10 +495,18 @@ const safeIdentity = (remote) => {
   // otherwise taken whole, so git@github.com:owner/repo.git?access_token=sekret would print the
   // token. A remote that names a repository carries neither, so both are unparseable rather than
   // something to strip and go on using.
-  const scp = raw.match(/^(?:[^@\s]+@)?([^@:/\s]+):(.+)$/)
+  const scp = raw.match(/^(?:([^@\s]+)@)?([^@:/\s]+):(.+)$/)
   if (scp !== null) {
-    if (scp[2].includes('?') || scp[2].includes('#')) return 'unparseable-origin'
-    return `${scp[1]}/${scp[2].replace(/^\/+/, '').replace(/\.git$/, '')}`
+    // The host first. This function exists to print, and the scp-like form ends its host at the
+    // colon that opens the path, so a ? or a # in front of that colon is part of the host as far
+    // as the regex is concerned and would be printed with it.
+    if (!isHostname(scp[2])) return 'unparseable-origin'
+    // The user is not checked here, unlike remoteSlug and the shared parse. Nothing prints it, and
+    // this function has to keep describing a remote that carries a credential: git is handed
+    // user:ghp_sekrettoken@github.com:jakub/demo.git often enough, and the useful answer for the
+    // log is github.com/jakub/demo rather than a refusal to say anything at all.
+    if (scp[3].includes('?') || scp[3].includes('#')) return 'unparseable-origin'
+    return `${scp[2]}/${scp[3].replace(/^\/+/, '').replace(/\.git$/, '')}`
   }
 
   // A local filesystem path: no scheme, no scp colon, and no userinfo to strip.
@@ -568,6 +577,7 @@ const remoteSlug = (remote) => {
       return { problem: 'carries a query string or a fragment, and an API path must never be built out of one' }
     }
     if (url.port !== '') return { problem: PORT_PROBLEM }
+    if (url.hostname !== '' && !isHostname(url.hostname)) return { problem: 'does not read as a URL' }
     // file:///srv/repo.git and friends: no host, so what is left is a filesystem path.
     const named = slugFromPath(url.pathname, url.hostname !== '')
     if (named === null) return { problem: 'does not name exactly one owner and one repository' }
@@ -575,16 +585,22 @@ const remoteSlug = (remote) => {
   }
 
   // scp-like, with or without a user in front: [user@]host:owner/repo.
-  const scp = raw.match(/^(?:[^@\s]+@)?([^@:/\s]+):(.+)$/)
+  const scp = raw.match(/^(?:([^@\s]+)@)?([^@:/\s]+):(.+)$/)
   if (scp !== null) {
-    if (scp[2].includes('?') || scp[2].includes('#')) {
+    // The host is checked before anything else reads it, because the caller's refusal names it.
+    // Ending the host at the path colon and nowhere else meant a # or a ? in front of that colon
+    // counted as part of the host, and git@github.com#sekret:owner/repo.git put that word into a
+    // refusal and into the journal. A host that is not a hostname is an unreadable remote instead.
+    if (!isHostname(scp[2])) return { problem: 'does not read as a URL' }
+    if (scp[1] !== undefined && !isScpUser(scp[1])) return { problem: 'does not read as a URL' }
+    if (scp[3].includes('?') || scp[3].includes('#')) {
       return { problem: 'carries a query string or a fragment, and an API path must never be built out of one' }
     }
-    const ported = scp[2].match(/^\d+\/(.+)$/)
+    const ported = scp[3].match(/^\d+\/(.+)$/)
     if (ported !== null && slugFromPath(ported[1], true) !== null) return { problem: PORT_PROBLEM }
-    const named = slugFromPath(scp[2], true)
+    const named = slugFromPath(scp[3], true)
     if (named === null) return { problem: 'does not name exactly one owner and one repository' }
-    return { host: scp[1], ...named }
+    return { host: scp[2], ...named }
   }
 
   if (raw.includes('@')) return { problem: 'does not read as a URL' }
