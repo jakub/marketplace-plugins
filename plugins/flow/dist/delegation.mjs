@@ -57761,7 +57761,7 @@ var DelegationService = class {
 
 // src/delegation/mcp.mjs
 var jobId = string2().uuid().describe("Durable Flow delegation job ID");
-var model = string2().regex(MODEL_PATTERN).describe("Provider model id or alias as listed by delegation_models. Claude takes an alias (sonnet, opus, fable) or a full id (claude-fable-5-1); Codex takes its own ids (gpt-5.6-sol). Never the charter table's short names.");
+var model = string2().regex(MODEL_PATTERN).describe("Provider model id or alias. Claude takes an alias (sonnet, opus, fable) or a full id (claude-fable-5-1); Codex takes its own ids (gpt-5.6-sol). Never the charter table's short names.");
 var access2 = _enum([...ACCESS_MODES]);
 var delivery = _enum([...DELIVERIES]);
 function toolResult(value, isError = false) {

@@ -9,7 +9,7 @@
 // waiting on a prompt nobody will answer. SessionStart hooks fire under `claude -p`,
 // so the job sees the charter and both guards like any other session.
 //
-// Output: the session's report goes to $FLOW_STATE/reports/<job>-<date>.md
+// Output: the session's report goes to $FLOW_STATE/reports/<job>-<timestamp>.md
 // (default ~/.local/state/flow), the last 30 reports are kept, and a desktop
 // notification carries the report's first line. The report is the last main-thread
 // assistant message starting with `# flow `, not the session's last message - see

@@ -8,7 +8,7 @@ import { VERSION } from './version.mjs'
 import { canonicalRoots, canonicalWorkspace } from './workspace.mjs'
 
 const jobId = z.string().uuid().describe('Durable Flow delegation job ID')
-const model = z.string().regex(MODEL_PATTERN).describe('Provider model id or alias as listed by delegation_models. Claude takes an alias (sonnet, opus, fable) or a full id (claude-fable-5-1); Codex takes its own ids (gpt-5.6-sol). Never the charter table\'s short names.')
+const model = z.string().regex(MODEL_PATTERN).describe('Provider model id or alias. Claude takes an alias (sonnet, opus, fable) or a full id (claude-fable-5-1); Codex takes its own ids (gpt-5.6-sol). Never the charter table\'s short names.')
 const access = z.enum([...ACCESS_MODES])
 const delivery = z.enum([...DELIVERIES])
 

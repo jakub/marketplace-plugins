@@ -51,7 +51,7 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
 
 - `bash ${CLAUDE_PLUGIN_ROOT}/scripts/worktree-audit.sh <repo>`: include the TSV; `safe` rows
   are candidates the nightly lint routes through `scripts/lint-actions.mjs` (which re-checks
-  everything and refuses on any doubt), `review` rows need a human, and `hold-*` rows are fine. Squash merges mean the MERGED column is usually `no`
+  everything and refuses on any doubt), `review` rows need a human, `verify-recent-session` rows are a human's call until the session ages out, and `hold-*` rows are fine. Squash merges mean the MERGED column is usually `no`
   for landed branches; PR state is the signal.
 - **Local** branches are the only class any flow job can act on: permission 2 routes them
   through `lint-actions.mjs`, which runs `git branch -D` and nothing else. That executor

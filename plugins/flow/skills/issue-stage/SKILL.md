@@ -43,7 +43,7 @@ This runs before any mutation, and "any" is literal: no assignment, no label, no
 Read the host capabilities with the `delegation_doctor` tool. Its `hostCapabilities` block carries one entry per capability id with `supported`, `verifiedAt`, `assurance` and a note, and a `drift` block the service computes: `installed`, the host CLI version the doctor observed; `verifiedAgainst`, the version the table was last checked on; and `status`, one of `match`, `newer`, `older`, `unknown`. Do not compute drift yourself from the strings.
 
 - `match`: proceed.
-- `newer`: the host has moved past the last verified version. Proceed, and journal a `host newer than verified` event with both versions so the human knows the table wants a re-check. Re-verifying is a one-line edit to `capabilities.json` with no rebuild, and the nightly lint reports a `newer` host so it gets done. The exposure this accepts is under Known gaps.
+- `newer`: the host has moved past the last verified version. Proceed, and journal a `host newer than verified` event with both versions so the human knows the table wants a re-check. Re-verifying is a one-line edit to `capabilities.json` with no rebuild, and it is manual: nothing scheduled reads the drift status, so the journal event is the only reminder. The exposure this accepts is under Known gaps.
 - `older` or `unknown`: stop. Every capability the run depends on reads `unverified`.
 
 One more condition: the canonical seat contract must be readable. It is `seat-contract.md` at the plugin root, two directories above this file in the installed plugin. Unreadable means a spawn prompt going out with no contract in it, so it is a stop.
