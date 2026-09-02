@@ -81,7 +81,11 @@
 // knows there is a log worth reading. Which of the two a line is cannot be decided by the first
 // colon, because a commit status context like `ci/circleci: build` has one: a line that equals a
 // check name reported on this pull request is a bare entry, and only a line that matches no check
-// name splits.
+// name splits. Where it splits is decided the same way. The line
+// `ci/circleci: build:flaky_test` split at its first colon named the check `ci/circleci`, which
+// nothing reported, so it excused nothing and `--accept-flake` refused the line verbatim off the
+// allowlist it came from. So a line splits after the longest reported check name it starts with,
+// and at its first colon only where no reported name fits.
 //
 // `--accept-flake check-name:test_name` is the one way such an entry moves anything, and it is a
 // statement rather than a reading: whoever passes the flag is saying they read the job log and
@@ -93,6 +97,10 @@
 // flag that can invent an allowlist entry is not an override, it is the allowlist. A bare check
 // name is refused too - the allowlist moves those on its own, so a bare name through the flag
 // could only mean the caller misunderstood it.
+//
+// A name reaches `ci.flaky` once however many jobs carry it. Two failed check runs of one name
+// are two jobs, and the allowlist excuses the name, so listing it per entry only made the land
+// report say "e2e, e2e failed".
 //
 // An acceptance is a statement about one job log, so it moves one check run. Two failed entries
 // reporting the same name are two jobs, and one log cannot have shown the named test was the sole
@@ -229,9 +237,11 @@ pull request is resolved from the current branch.
 
 Both copies of ${FLAKES_PATH} are read over the GitHub contents API, at the base ref and at the
 head SHA. A line in that file is one entry: a line that equals a check name this pull request
-reported moves that whole check from failed to flaky, and any other line splits on its first colon
-into check-name:test_name, which moves nothing and is reported as a job log worth reading. The
-name-first rule is what keeps a commit status context like \`ci/circleci: build\` readable.
+reported moves that whole check from failed to flaky, and any other line splits into
+check-name:test_name, which moves nothing and is reported as a job log worth reading. A line
+splits after the longest reported check name it starts with, and at its first colon only where no
+reported name fits, which is what keeps a commit status context like \`ci/circleci: build\`
+readable on both sides of the colon.
 
 --accept-flake is how a check-name:test_name entry moves anything. It takes one entry in that
 exact spelling, and it is the caller's statement that they read the job log and that the named
@@ -426,6 +436,32 @@ const bucketOf = (entry) => {
 }
 
 /**
+ * Split one allowlist entry into the check it names and the test inside it, or null when it names
+ * no test.
+ *
+ * The first colon is the wrong place to split whenever the check's own name has one. CircleCI
+ * reports its contexts as `ci/circleci: build`, so `ci/circleci: build:flaky_test` became the
+ * check `ci/circleci` and the test `build:flaky_test`, which named nothing this pull request
+ * reported: no candidate was recorded, and the flag refused the line in the spelling the
+ * allowlist itself used. So the longest reported check name the entry starts with, followed by a
+ * colon, decides the split, and the first colon is only the fallback. Longest and not first,
+ * because a repository can report `suite` and `suite:slow` both, and then `suite:slow:test_x` is
+ * the second one's test rather than the first one's `slow:test_x`.
+ */
+const splitEntry = (line, names) => {
+  let matched = null
+  for (const name of names) {
+    if (!line.startsWith(`${name}:`)) continue
+    if (matched === null || name.length > matched.length) matched = name
+  }
+  const colon = matched === null ? line.indexOf(':') : matched.length
+  if (colon < 0) return null
+  const check = line.slice(0, colon).trim()
+  const test = line.slice(colon + 1).trim()
+  return check === '' || test === '' ? null : { check, test }
+}
+
+/**
  * Parse .github/known-flakes.txt. One entry per line: a bare check name, or check-name:test_name
  * for a single flaky test inside a suite check. Blank lines and # comments are not entries.
  *
@@ -444,13 +480,13 @@ const parseFlakes = (text, names = new Set()) => {
     if (line === '' || line.startsWith('#')) continue
     lines.push(line)
     if (names.has(line)) { bare.add(line); continue }
-    const colon = line.indexOf(':')
-    if (colon < 0) { bare.add(line); continue }
-    const check = line.slice(0, colon).trim()
-    const test = line.slice(colon + 1).trim()
-    if (check === '' || test === '') continue
-    if (!tests.has(check)) tests.set(check, [])
-    tests.get(check).push(test)
+    const split = splitEntry(line, names)
+    // A line with no colon at all is a check name this pull request did not report, which is an
+    // ordinary allowlist entry for a check that is not running today. A line that has a colon and
+    // still splits into nothing, like `suite:`, is neither and is dropped.
+    if (split === null) { if (!line.includes(':')) bare.add(line); continue }
+    if (!tests.has(split.check)) tests.set(split.check, [])
+    tests.get(split.check).push(split.test)
   }
   return { bare, tests, lines }
 }
@@ -821,7 +857,12 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     if (bucket === 'success') { ci.success.push(entry.name); continue }
     if (bucket === 'pending') { ci.pending.push(entry.name); continue }
     if (bucket === 'unknown') { ci.unknown.push({ name: entry.name, link: entry.url }); continue }
-    if (baseFlakes.bare.has(entry.name)) { ci.flaky.push(entry.name); continue }
+    // Once per name, not once per entry: two failed check runs of one name are two jobs, and the
+    // allowlist excuses the name they share.
+    if (baseFlakes.bare.has(entry.name)) {
+      if (!ci.flaky.includes(entry.name)) ci.flaky.push(entry.name)
+      continue
+    }
     ci.failed.push({ name: entry.name, link: entry.url })
     const candidates = baseFlakes.tests.get(entry.name)
     if (candidates !== undefined) ci.flakeCandidates[entry.name] = candidates
@@ -847,9 +888,14 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     const accepted = []
     const claimedBy = new Map()
     for (const value of acceptFlakes) {
-      const entry = declared.get(value)
+      // The flag's value is split by the same rule as the file's lines, so a line copied out of
+      // the allowlist is accepted in the spelling it was written in even when the check's own
+      // name holds a colon. A value that is itself a reported check name is a bare name, whatever
+      // colons it contains.
+      const split = reportedNames.has(value) ? null : splitEntry(value, reportedNames)
+      const entry = split === null ? undefined : declared.get(`${split.check}:${split.test}`)
       if (entry === undefined) {
-        return refuse(value.includes(':')
+        return refuse(split !== null
           ? `--accept-flake ${value} is not an entry of ${FLAKES_PATH} on ${baseRef}; the flag accepts only what ` +
             'the repository already declared flaky, in that exact check-name:test_name spelling'
           : `--accept-flake ${value} names no test. A bare check name on the allowlist moves its check on its own, ` +
