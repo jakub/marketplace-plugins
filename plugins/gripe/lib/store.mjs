@@ -2,8 +2,9 @@
 // directly so the observed lane never transits a shell.
 //
 // node:sqlite exists from 22.5 but throws on import without a flag until 23.4, so the
-// floor is 24 and enforced here: on an older node this module fails to import, and every
-// entry point catches that and exits 0 with one stderr line, per invariant 1.
+// floor is 24 and enforced here: on an older node this module fails to import, `gripe add`
+// catches that and exits 0 with one stderr line per invariant 1, and every other entry
+// point reports it and exits 1.
 
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
