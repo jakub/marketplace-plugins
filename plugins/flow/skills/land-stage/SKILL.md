@@ -24,7 +24,7 @@ The argument is a PR number, or nothing at all: with no argument the PR is resol
 
 Run `node <plugin-root>/scripts/land-gates.mjs [<pr>]` from the repository root. It is read-only: its git calls read the origin remote's URL and, with no argument, the current branch name; everything else comes from GitHub. With no argument it also proves the resolved PR lives in the origin repository and heads the checked-out branch, and refuses otherwise (pass the number when a renamed local branch trips that). It re-reads the PR; whether the base is the default branch and which open PRs are stacked on this one; every check run and commit status on the head, read exhaustively over paginated REST (never `gh pr view`, which caps both at 100 and pages neither) and partitioned with the base branch's `.github/known-flakes.txt` (read through the API at the base ref) applied and the PR's own copy of that file diffed against it; every top-level comment, paginated the same way; every review thread, over paged GraphQL; linked issues, recovered from the branch name and from closing phrases; a `## follow-up draft` comment; and the auto-merge and merge-queue state. It prints one JSON object with `verdict`, `stops` and `attention`. Exit 0 is `pass`, 1 is `stop`, 4 is a read that failed, which is never a pass, and 2 is a usage refusal with no JSON at all (a bad argument, an unparseable origin remote, or an `--accept-flake` the base allowlist does not declare or that names an ambiguous check); read its stderr and fix the call.
 
-Record from it `HEAD_SHA` (`head.sha`, the commit every gate inspected and the merge is pinned to), `HEAD_REF`, `BASE_REF`, `BASE_DEFAULT` (`base.default`, the repository's default branch), `isCrossRepository` and `linkedIssues`.
+Record from it `HEAD_SHA` (`head.sha`, the commit every gate inspected and the merge is pinned to), `HEAD_REF`, `BASE_REF`, `BASE_DEFAULT` (`base.default`, the repository's default branch), `isCrossRepository` and `linkedIssues` (its `linked` list is what closes; `recovered` and `mentions` are candidates).
 
 **`stops`.** Each entry is a gate that failed, and the answer to each is fixed:
 
@@ -93,7 +93,7 @@ Confirm with `gh pr view $PR --json state,mergeCommit,autoMergeRequest` that `st
 
 2) Delete the remote branch: `git push origin --delete $HEAD_REF` - but only when the executor reported `isCrossRepository: false`. On a fork PR, `origin` is the base repo and `HEAD_REF` is a name in someone else's repo; the same spelling would delete an unrelated base-repo branch that happens to share the name. A fork's branch is theirs to clean up - skip and say so. Otherwise best effort - the repo's auto-delete may have raced you, and "remote ref does not exist" is a fine outcome. The LOCAL branch waits for step 5, after the worktree is gone.
 
-3) For every issue in `LINKED_ISSUES`, plus any recovered candidate the human confirmed: `gh issue view <N> --json state`. A squash-ref with a parenthetical `(#N)` auto-closes nothing. Still OPEN → `gh issue close <N> --comment "Landed via PR #$PR (<url>)."`. Report the final state of every linked issue, closed or not.
+3) For every issue in `linkedIssues.linked`, plus any recovered candidate the human confirmed: `gh issue view <N> --json state`. A squash-ref with a parenthetical `(#N)` auto-closes nothing. Still OPEN → `gh issue close <N> --comment "Landed via PR #$PR (<url>)."`. Report the final state of every linked issue, closed or not.
 
 ## 5. Local cleanup
 
