@@ -16,7 +16,11 @@
 // branch, a follow-up draft comment, an allowlist entry added on the branch and an ambiguous set
 // of linked issues are reported as attention rather than as stops. And through all of it the
 // executor calls nothing that mutates: the whole point of splitting it out of land-merge.mjs is
-// that running it can never change anything.
+// that running it can never change anything, which now includes the local clone - the allowlist
+// arrives over the contents API and the only git command left is `git remote get-url`.
+//
+// The last section is one case per finding from the two reviews of 2026-09-01, kept together and
+// named by finding so that a regression says which rule came back.
 //
 // Run: node plugins/flow/scripts/smoke-land-gates.mjs
 
@@ -38,6 +42,7 @@ const PR = 12
 const BRANCH = 'feat/issue-6-land-gates'
 const HEAD = 'a'.repeat(40)
 const PR_URL = `https://github.com/${SLUG}/pull/${PR}`
+const FLAKES_PATH = '.github/known-flakes.txt'
 
 // ------------------------------------------------------------------ the fixtures, per case
 const checkRun = (name, conclusion, extra = {}) => ({
@@ -65,6 +70,7 @@ const freshState = (overrides = {}) => ({
   rollup: [checkRun('unit', 'SUCCESS'), checkRun('lint', 'SKIPPED')],
   checks: [],            // what `gh pr checks --json` answers; null means the subcommand fails
   checksExit: 0,
+  checksStderr: '',      // what it says alongside, which is where "no checks reported" arrives
   children: [],
   comments: [],
   threadPages: [[thread('T_resolved')]],
@@ -72,8 +78,10 @@ const freshState = (overrides = {}) => ({
   queueFails: false,
   mergeQueue: null,
   isInMergeQueue: false,
-  baseFlakes: null,      // file content on the base branch; null means the file is absent
+  baseFlakes: null,      // file content on the base branch; null means the contents API answers 404
   prFlakes: null,        // the pull request's own copy
+  flakesHttp: null,      // an HTTP status the contents API fails with instead of answering
+  flakesEncoding: 'base64', // what the contents API says the body is encoded as
   viewFails: false,
   currentBranchPr: null, // what `gh pr view --json number` answers with no argument
   calls: [],
@@ -134,7 +142,30 @@ const makeRunGh = (st) => (args) => {
     // The real `gh pr checks` exits non-zero whenever a check is failing or pending, and still
     // prints its JSON. The executor has to read the body regardless of the exit code.
     if (st.checks === null) return { code: 1, stdout: '', stderr: 'fake gh: unknown flag --json\n' }
-    return { code: st.checksExit, stdout: JSON.stringify(st.checks), stderr: '' }
+    return { code: st.checksExit, stdout: JSON.stringify(st.checks), stderr: st.checksStderr }
+  }
+  if (args[0] === 'api' && args[1] !== 'graphql') {
+    // `gh api repos/{owner}/{repo}/contents/<path>?ref=<ref>`: a JSON object whose base64 content
+    // is the file, a 404 when the path is absent at that ref, and gh's own message on stderr for
+    // anything else. gh exits non-zero on every HTTP error and prints the response body anyway.
+    const path = args.find((a) => String(a).startsWith('repos/'))
+    if (path !== undefined && path.includes('/contents/')) {
+      if (st.flakesHttp !== null) {
+        const label = st.flakesHttp === 404 ? 'Not Found' : 'Internal Server Error'
+        return { code: 1, stdout: `{"message":"${label}"}`, stderr: `gh: ${label} (HTTP ${st.flakesHttp})\n` }
+      }
+      const ref = decodeURIComponent(String(path).split('ref=')[1] || '')
+      const content = ref === st.pr.baseRefName ? st.baseFlakes : st.prFlakes
+      if (content === null) {
+        return { code: 1, stdout: '{"message":"Not Found"}', stderr: 'gh: Not Found (HTTP 404)\n' }
+      }
+      return ok({
+        name: 'known-flakes.txt', path: FLAKES_PATH, type: 'file',
+        encoding: st.flakesEncoding,
+        content: st.flakesEncoding === 'base64' ? Buffer.from(content, 'utf8').toString('base64') : '',
+      })
+    }
+    return { code: 3, stdout: '', stderr: `fake gh: unexpected ${args.join(' ')}\n` }
   }
   if (args[0] === 'api' && args[1] === 'graphql') {
     const query = formField(args, 'query') || ''
@@ -172,14 +203,8 @@ const makeRunGit = (st) => (args) => {
       ? { code: 128, stdout: '', stderr: 'fatal: No such remote \'origin\'\n' }
       : { code: 0, stdout: `${st.origin}\n`, stderr: '' }
   }
-  if (rest[0] === 'fetch') return { code: 0, stdout: '', stderr: '' }
-  if (rest[0] === 'show') {
-    const spec = String(rest[1] || '')
-    const content = spec.startsWith('origin/') ? st.baseFlakes : st.prFlakes
-    return content === null
-      ? { code: 128, stdout: '', stderr: `fatal: path '.github/known-flakes.txt' does not exist in '${spec.split(':')[0]}'\n` }
-      : { code: 0, stdout: content, stderr: '' }
-  }
+  // No fetch and no show. The clone is shared with other sessions, so the executor is allowed
+  // exactly one git command and anything else is a failure of this smoke, not a fixture gap.
   return { code: 1, stdout: '', stderr: `fake git: unexpected ${rest.join(' ')}\n` }
 }
 
@@ -204,6 +229,10 @@ const isPinned = (args) => {
   }
   if (args[0] === 'repo' && args[1] === 'view') return args[2] === IDENTITY
   if (args[0] === 'pr' && args[1] === 'view' && argValue(args, '--json') === 'number') return true
+  if (args[0] === 'api') {
+    return argValue(args, '--hostname') === 'github.com' &&
+      args.some((a) => String(a).startsWith(`repos/${SLUG}/`))
+  }
   return argValue(args, '--repo') === IDENTITY
 }
 
@@ -217,7 +246,9 @@ const MUTATIONS = [
   (a) => a[0] === 'api' && (a.includes('-X') || a.includes('--method')),
 ]
 const mutatingGh = (calls) => calls.filter((args) => MUTATIONS.some((shape) => shape(args)))
-const READ_ONLY_GIT = new Set(['remote', 'fetch', 'show'])
+// `git remote get-url` and nothing else. A fetch writes objects, FETCH_HEAD and remote-tracking
+// refs into a checkout other sessions share, so it counts as a mutation here.
+const READ_ONLY_GIT = new Set(['remote'])
 const mutatingGit = (calls) => calls.filter((args) => !READ_ONLY_GIT.has((args[0] === '-C' ? args.slice(2) : args)[0]))
 
 // ------------------------------------------------------------------------------- a clean pass
@@ -246,9 +277,12 @@ check('and nothing through git', mutatingGit(clean.st.gitCalls).length === 0, JS
 check('it read the pull request, the repo, the children and the checks', ['pr view', 'repo view', 'pr list', 'pr checks'].every(
   (pair) => clean.st.calls.some((a) => `${a[0]} ${a[1]}` === pair),
 ), JSON.stringify(clean.st.calls.map((a) => `${a[0]} ${a[1]}`)))
-check('and read the flake allowlist off the base branch', clean.st.gitCalls.some(
-  (a) => a.includes('show') && a.includes('origin/main:.github/known-flakes.txt'),
-), JSON.stringify(clean.st.gitCalls))
+check('and read the flake allowlist off the base branch through the contents API', clean.st.calls.some(
+  (a) => a[0] === 'api' && a.some((word) => String(word) === `repos/${SLUG}/contents/${FLAKES_PATH}?ref=main`),
+), JSON.stringify(clean.st.calls.filter((a) => a[0] === 'api')))
+check('and asked git for the origin remote and nothing else',
+  clean.st.gitCalls.length === 1 && clean.st.gitCalls[0].slice(2).join(' ') === 'remote get-url origin',
+  JSON.stringify(clean.st.gitCalls))
 
 // -------------------------------------------------------------------------- what stops a land
 console.log('\nthe closed list of stops')
@@ -263,7 +297,9 @@ stopsOn('a closed pull request', 'not-open', { st: freshState({ pr: { state: 'CL
 stopsOn('an already merged one', 'not-open', { st: freshState({ pr: { state: 'MERGED' } }) })
 stopsOn('a draft', 'draft', { st: freshState({ pr: { isDraft: true } }) })
 stopsOn('an unreadable draft flag', 'draft', { st: freshState({ pr: { isDraft: null } }) })
-stopsOn('an unreadable head', 'head-unreadable', { st: freshState({ pr: { headRefOid: 'short' } }) })
+// head-unreadable keeps its stop code, but it is a failed read, so it exits 4 like every other
+// one. See the G6 case at the bottom.
+stopsOn('an unreadable head', 'head-unreadable', { st: freshState({ pr: { headRefOid: 'short' } }), exit: 4 })
 
 const stacked = stopsOn('a base that is not the default branch', 'stacked-on-non-default', {
   st: freshState({ pr: { baseRefName: 'feat/parent' } }),
@@ -498,6 +534,132 @@ const leaky = run([String(PR)], { st: freshState({ origin: 'https://jakub:ghp_se
 check('a token in the origin URL is out of the output', !leaky.stdout.includes('ghp_secrettoken') && !leaky.stderr.includes('ghp_secrettoken'),
   `${leaky.stdout}${leaky.stderr}`)
 check('and the repository is still derived from it', leaky.json?.pr === PR, JSON.stringify(leaky.json?.pr))
+
+// ------------------------------------------------------------- the findings of the two reviews
+console.log('\nG1: a name is never guessed by position')
+// Both reads list two entries, so the counts agree and the old code paired them by index. The
+// order of a rollup and the order of `gh pr checks` are unrelated, so the failure drew the name
+// on the allowlist and the whole land went green.
+const positional = run([String(PR)], {
+  st: freshState({
+    rollup: [
+      { name: null, conclusion: 'FAILURE', status: 'COMPLETED', detailsUrl: null },
+      { name: null, conclusion: 'SUCCESS', status: 'COMPLETED', detailsUrl: null },
+    ],
+    checks: [
+      { name: 'unit', state: 'FAILURE', bucket: 'fail', link: null },
+      { name: 'e2e', state: 'SUCCESS', bucket: 'pass', link: null },
+    ],
+    baseFlakes: 'unit\n',
+  }),
+})
+check('nameless entries with no url stay unknown', positional.json?.ci?.unknown?.length === 2, JSON.stringify(positional.json?.ci))
+check('and stop the land', positional.code === 1 && has(positional.json?.stops, 'ci-unknown'),
+  `${positional.code}: ${JSON.stringify(codes(positional.json?.stops))}`)
+check('and no failure is excused as flaky', JSON.stringify(positional.json?.ci?.flaky) === '[]', JSON.stringify(positional.json?.ci?.flaky))
+check('and nothing was named unit', !JSON.stringify(positional.json?.ci).includes('unit'), JSON.stringify(positional.json?.ci))
+
+console.log('\nG1b: a commit status names itself in context, not name')
+const statusContext = run([String(PR)], {
+  st: freshState({
+    rollup: [checkRun('unit', 'SUCCESS'), { context: 'coderabbit', state: 'SUCCESS', targetUrl: 'https://cr.example/status' }],
+    checks: null,
+  }),
+})
+check('the context is read as the name', statusContext.json?.ci?.success?.includes('coderabbit'), JSON.stringify(statusContext.json?.ci))
+check('so it needs no cross-read to place it', statusContext.code === 0 && JSON.stringify(statusContext.json?.ci?.unknown) === '[]',
+  `${statusContext.code}: ${JSON.stringify(statusContext.json?.ci?.unknown)}`)
+
+console.log('\nG2: an allowlist read that failed is unknown, not empty')
+const flakesDown = run([String(PR)], {
+  st: freshState({
+    rollup: [checkRun('unit', 'SUCCESS'), checkRun('e2e', 'FAILURE')],
+    baseFlakes: 'e2e\n',
+    flakesHttp: 500,
+  }),
+})
+check('a 500 from the contents API exits 4', flakesDown.code === 4, `${flakesDown.code}: ${flakesDown.stderr}`)
+check('and sets error', String(flakesDown.json?.error).includes('known-flakes'), flakesDown.json?.error)
+check('and the verdict is stop', flakesDown.json?.verdict === 'stop', flakesDown.json?.verdict)
+check('and the failure is not excused by an allowlist nobody read',
+  JSON.stringify(flakesDown.json?.ci?.flaky) === '[]' && has(flakesDown.json?.stops, 'ci-failed'),
+  JSON.stringify(flakesDown.json?.ci))
+
+// The API answers a file over its inline size limit with empty content and encoding "none". That
+// is a file nobody read, and it must not read as an allowlist with nothing in it.
+const flakesUnencoded = run([String(PR)], {
+  st: freshState({
+    rollup: [checkRun('unit', 'SUCCESS'), checkRun('e2e', 'FAILURE')],
+    baseFlakes: 'e2e\n',
+    flakesEncoding: 'none',
+  }),
+})
+check('an unencoded body is a failed read too', flakesUnencoded.code === 4 &&
+  String(flakesUnencoded.json?.error).includes('no readable file contents'),
+  `${flakesUnencoded.code}: ${flakesUnencoded.json?.error}`)
+
+const flakesAbsent = run([String(PR)], { st: freshState({ baseFlakes: null, prFlakes: null }) })
+check('G2b: a 404 is a proven-absent file and passes', flakesAbsent.code === 0 && flakesAbsent.json?.error === undefined,
+  `${flakesAbsent.code}: ${flakesAbsent.json?.error}`)
+
+console.log('\nG3: the executor never writes to the clone')
+const gitOnly = run([String(PR)], { st: flakeState('e2e\n', 'e2e\nunit\n') })
+const gitWords = gitOnly.st.gitCalls.map((a) => (a[0] === '-C' ? a.slice(2) : a)[0])
+check('no git fetch is issued', !gitWords.includes('fetch'), JSON.stringify(gitOnly.st.gitCalls))
+check('and no git show', !gitWords.includes('show'), JSON.stringify(gitOnly.st.gitCalls))
+check('only the origin remote is read', JSON.stringify(gitWords) === '["remote"]', JSON.stringify(gitOnly.st.gitCalls))
+check('and both allowlist copies still arrived', JSON.stringify(gitOnly.json?.ci?.flakesAddedOnPr) === '["unit"]' &&
+  JSON.stringify(gitOnly.json?.ci?.flaky) === '["e2e"]', JSON.stringify(gitOnly.json?.ci))
+
+console.log('\nG4: no checks at all is unknown, not green')
+const noChecks = run([String(PR)], { st: freshState({ rollup: [] }) })
+check('an empty rollup stops on ci-unknown', noChecks.code === 1 && has(noChecks.json?.stops, 'ci-unknown'),
+  `${noChecks.code}: ${JSON.stringify(codes(noChecks.json?.stops))}`)
+check('and says no checks reported', detailOf(noChecks.json?.stops, 'ci-unknown').includes('no checks reported'),
+  detailOf(noChecks.json?.stops, 'ci-unknown'))
+const missingRollup = run([String(PR)], { st: freshState({ rollup: undefined }) })
+check('a missing rollup key reads the same way', missingRollup.code === 1 && has(missingRollup.json?.stops, 'ci-unknown'),
+  `${missingRollup.code}: ${JSON.stringify(codes(missingRollup.json?.stops))}`)
+const noChecksSaid = run([String(PR)], {
+  st: freshState({ rollup: [], checksExit: 1, checksStderr: 'no checks reported on the feat/issue-6-land-gates branch\n' }),
+})
+check('and what gh pr checks said is carried into the detail',
+  detailOf(noChecksSaid.json?.stops, 'ci-unknown').includes('feat/issue-6-land-gates branch'),
+  detailOf(noChecksSaid.json?.stops, 'ci-unknown'))
+
+console.log('\nG5: the default branch is in the payload')
+check('base.default names it', clean.json?.base?.default === 'main', JSON.stringify(clean.json?.base))
+check('and it is there when the base is something else', stacked.json?.base?.default === 'main', JSON.stringify(stacked.json?.base))
+check('and null when gh repo view failed', repoDown.json?.base?.default === null, JSON.stringify(repoDown.json?.base))
+
+console.log('\nG6: an unreadable head is a failed read')
+const headDown = run([String(PR)], { st: freshState({ pr: { headRefOid: 'short' } }) })
+check('it exits 4', headDown.code === 4, `${headDown.code}: ${headDown.stderr}`)
+check('with error set', String(headDown.json?.error).includes('head'), headDown.json?.error)
+check('and keeps the stop code for the record', has(headDown.json?.stops, 'head-unreadable'), JSON.stringify(codes(headDown.json?.stops)))
+
+console.log('\nG7: a check name may contain a colon')
+const colonName = 'ci/circleci: build'
+const colonCheck = run([String(PR)], {
+  st: freshState({
+    rollup: [checkRun('unit', 'SUCCESS'), { context: colonName, state: 'FAILURE', targetUrl: 'https://circleci.example/1' }],
+    checks: null,
+    baseFlakes: `${colonName}\n`,
+  }),
+})
+check('a line that is the whole check name is a bare entry', JSON.stringify(colonCheck.json?.ci?.flaky) === `["${colonName}"]`,
+  JSON.stringify(colonCheck.json?.ci))
+check('so the land passes', colonCheck.code === 0 && colonCheck.json?.verdict === 'pass',
+  `${colonCheck.code}: ${JSON.stringify(codes(colonCheck.json?.stops))}`)
+check('and no phantom flakeCandidates were recorded', JSON.stringify(colonCheck.json?.ci?.flakeCandidates) === '{}',
+  JSON.stringify(colonCheck.json?.ci?.flakeCandidates))
+
+const stillSplits = run([String(PR)], { st: flakeState('e2e:renders_under_load\n') })
+check('a check:test line that matches no check name still splits',
+  JSON.stringify(stillSplits.json?.ci?.flakeCandidates) === '{"e2e":["renders_under_load"]}',
+  JSON.stringify(stillSplits.json?.ci?.flakeCandidates))
+check('and moves nothing', has(stillSplits.json?.stops, 'ci-failed') && stillSplits.code === 1,
+  `${stillSplits.code}: ${JSON.stringify(codes(stillSplits.json?.stops))}`)
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
 process.exit(bad === 0 ? 0 : 1)
