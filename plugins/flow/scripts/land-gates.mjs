@@ -136,8 +136,22 @@
 // moves afterwards fails land-merge's --match-head-commit instead of landing on gates nobody ran.
 //
 // This is not a guardrail. It mutates nothing, in the repository or in the clone - `git remote
-// get-url origin` is the only git command it runs - so there is nothing here to bypass and no
-// reason to. What it buys is one place where the rules live and one shape the stage reads them in.
+// get-url origin` and `git rev-parse --abbrev-ref HEAD` are the only two git commands it runs,
+// and both only read - so there is nothing here to bypass and no reason to. What it buys is one
+// place where the rules live and one shape the stage reads them in.
+//
+// The pull request resolved from the current branch is proved to belong here before it is used.
+// Every other read names the repository derived from origin, but `gh pr view` refuses to resolve
+// a branch once --repo is given, so that one read answers from whatever repository gh picked. In
+// a fork checkout with an upstream remote it picks upstream, and then the number is upstream's:
+// the gates that follow read an origin pull request wearing the same number, pass on it, and hand
+// its head to the merge. So the resolution asks for the url and the head branch alongside the
+// number, the url has to be that number's pull request under the origin host, owner and
+// repository, compared without regard to case, and the head branch has to be the branch this
+// clone has checked out. Anything else is a usage refusal naming the mismatch, and the caller
+// still has the explicit number argument, which is pinned like everything else. A local branch
+// renamed away from the head branch of its own pull request refuses here too. That is the price
+// of a mechanical check, it costs one argument, and the refusal says which argument.
 //
 // Nothing printed carries a credential. A remote URL can hold userinfo, as in
 // https://user:token@host/owner/repo, and git quotes the remote it was handed word for word in
@@ -230,9 +244,15 @@ which the allowlist already moves on its own, when more than one failed check re
 gives, because one job log cannot speak for two jobs, and when a second flag names a check an
 earlier one already claimed.
 
-It mutates nothing, in the repository or in the clone: \`git remote get-url origin\` is the only
-git command it runs. Exit 0 when nothing stops the land, 1 when something does, 2 on a usage error
-or a refusal, 4 when a read failed and the answer is genuinely unknown.
+With no argument the pull request gh resolves from the current branch has to be one of this
+repository's: its url has to name that number under the host, owner and repository the origin
+remote gives, and its head branch has to be the branch checked out here. Anything else is a
+refusal, and the number can always be passed explicitly instead.
+
+It mutates nothing, in the repository or in the clone: \`git remote get-url origin\` and, on the run
+that was given no number, \`git rev-parse --abbrev-ref HEAD\` are the only git commands it runs.
+Exit 0 when nothing stops the land, 1 when something does, 2 on a usage error or a refusal, 4 when
+a read failed and the answer is genuinely unknown.
 `
 
 const THREADS_QUERY = `
@@ -358,6 +378,39 @@ const identityOfRemote = (url) => {
   const [, host, path] = scp
   if (path.includes('?') || path.includes('#')) return { refusal: REMOTE_QUERY }
   return fromPath(host, path)
+}
+
+/**
+ * Whether the pull request gh resolved from the current branch is one of `identity`'s. Returns
+ * null when it is, and the mismatch as a sentence when it is not.
+ *
+ * The url is the whole proof, because it is the only thing in that answer that names a
+ * repository. It has to be the given number's pull request path under the origin host, owner and
+ * repository. Host, owner and repository are compared lowercased: GitHub serves them in whatever
+ * case they were registered, and a remote may spell them another way, so case is not a mismatch.
+ * The number is compared as text, since it is what the rest of the run gates on.
+ */
+const resolvedElsewhere = (view, number, identity) => {
+  const raw = nonEmpty(view?.url)
+  if (raw === null) {
+    return `gh resolved #${number} from the current branch and reported no url for it, so there is nothing ` +
+      `to show it is a pull request of ${identity.full}; pass the number explicitly to gate it`
+  }
+  let parsed = null
+  try { parsed = new URL(raw) } catch { parsed = null }
+  const segments = parsed === null ? [] : parsed.pathname.split('/').filter((part) => part !== '')
+  if (segments.length !== 4 || segments[2].toLowerCase() !== 'pull' || segments[3] !== String(number)) {
+    return `gh resolved #${number} from the current branch and its url ${raw} is not the url of that pull ` +
+      `request, so there is nothing to show it is one of ${identity.full}; pass the number explicitly to gate it`
+  }
+  const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase()
+  if (!same(parsed.hostname, identity.host) || !same(segments[0], identity.owner) || !same(segments[1], identity.repo)) {
+    return `gh resolved #${number} from the current branch and it belongs to ` +
+      `${parsed.hostname}/${segments[0]}/${segments[1]}, not to ${identity.full}, which is the repository the ` +
+      'origin remote of this directory names. That is what a fork checkout with an upstream remote looks like; ' +
+      'pass the number explicitly to gate a pull request of the repository origin names'
+  }
+  return null
 }
 
 /** The verdict token for one check entry: its conclusion, or the state a commit status uses. */
@@ -597,11 +650,30 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     prNumber = Number(raw)
   } else {
     // No --repo here on purpose: gh resolves the pull request from the current branch, and it
-    // refuses to do that once the repository is named explicitly.
-    const current = ghJson(['pr', 'view', '--json', 'number'], null)
+    // refuses to do that once the repository is named explicitly. That leaves this the one read
+    // that answers from a repository nobody pinned, so the url and the head branch come back with
+    // the number and the answer is proved to be this clone's before anything is gated on it.
+    const current = ghJson(['pr', 'view', '--json', 'number,url,headRefName'], null)
     const n = Number(current?.number)
     if (!Number.isInteger(n) || n <= 0) {
       return refuse(`no pull request number was given and none resolves from the current branch of ${cwd}.\n\n${USAGE}`)
+    }
+    const elsewhere = resolvedElsewhere(current, n, identity)
+    if (elsewhere !== null) return refuse(redact(elsewhere))
+    const branch = (() => {
+      const read = runGit(['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], GIT_TIMEOUT_MS)
+      return read.code === 0 ? read.stdout.trim() : ''
+    })()
+    // `HEAD` is what a detached checkout answers, and it names no branch for gh to have resolved.
+    if (branch === '' || branch === 'HEAD') {
+      return refuse(`the current branch of ${cwd} did not read back as a branch name, so the pull request gh ` +
+        'resolved from it cannot be shown to be this branch\'s; pass the number explicitly to gate it')
+    }
+    const resolvedRef = nonEmpty(current.headRefName)
+    if (resolvedRef !== branch) {
+      return refuse(redact(`gh resolved #${n} from the current branch and reports its head branch as ` +
+        `${resolvedRef ?? 'nothing readable'}, which is not ${branch}, the branch checked out in ${cwd}; ` +
+        'pass the number explicitly to gate it'))
     }
     prNumber = n
   }
