@@ -31,7 +31,7 @@ const read = (...parts) => readFileSync(join(...parts), 'utf8').replace(/\r\n/g,
 // A host name in the charter means a role got bound in the file every host reads. Three sections
 // are exempt because their whole job is naming models and families.
 const HOST_WORDS = ['Claude', 'Codex', 'Anthropic', 'OpenAI', 'AskUserQuestion', 'Explore', 'PushNotification', 'subagent', 'fork']
-const ALLOWED_SECTIONS = ['Cross-Family Delegation', 'Model Rankings (as of 2026-08)', 'Rules of Engagement - Model Selection']
+const ALLOWED_SECTIONS = ['Cross-Family Delegation', 'Model Rankings', 'Rules of Engagement - Model Selection']
 
 const MARKER = /\[\[role:([a-z][a-z0-9-]*)\]\]/g
 const HEADING = /^### role: ([a-z][a-z0-9-]*)$/gm
@@ -357,7 +357,7 @@ ok('a root with no profiles emits bindings="none" and the no-bindings note')
 
 // A two-model rankings table and one role, for the floor cases below.
 const MINI = (floor, binding) => [
-  '## Model Rankings (as of 2026-08)\n\n| model | cheapness | intelligence | taste | classifiers |\n|---|---|---|---|---|\n| mini-cheap | 9 | 4/7 | 4 | standard |\n| gpt-mini | 7 | 8 | 5 | none |\n\n'
+  '## Model Rankings\n\n| model | cheapness | intelligence | taste | classifiers |\n|---|---|---|---|---|\n| mini-cheap | 9 | 4/7 | 4 | standard |\n| gpt-mini | 7 | 8 | 5 | none |\n\n'
   + '## Rules of Engagement - Model Selection\n\n| role | floors | what it is for |\n|---|---|---|\n| [[role:mini-seat]] | ' + floor + ' | a seat |\n',
   { 'claude.md': '### role: mini-seat\n\n' + binding + '\n' },
 ]

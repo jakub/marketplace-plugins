@@ -10,7 +10,7 @@ Prep hardened the issue. This stage drives it, hands-off, to a pushed, reviewed,
 
 Everything up to `## Host mechanics` is the same on every host. That section, at the end, names the seats, models, calls and containment answers for the host you are running on. Read your host's subsection before step 1. Where a step needs a decision from the human, it goes through the human-choice binding your charter profile declares; whether that binding answers inside the turn or ends it decides which forks get asked at all (§9).
 
-There is no fixed pipeline here and no stage list. You are the conductor, in the main session, inline. You compose the run to fit the issue and flex seats, models, and rounds as the work reveals itself. The charter gives you the model table and the rules of engagement; this file gives you the contract and a short list of things you cannot trade away. Everything else is your call, and every call gets journaled.
+There is no fixed pipeline here and no stage list. You are the orchestrator, in the main session, inline. You compose the run to fit the issue and flex seats, models, and rounds as the work reveals itself. The charter gives you the model table and the rules of engagement; this file gives you the contract and a short list of things you cannot trade away. Everything else is your call, and every call gets journaled.
 
 ## Core principles
 
@@ -232,7 +232,7 @@ Everything above is host-neutral. The subsections name the seats, calls and cont
 
 ### Claude Code
 
-**Argument.** `$ARGUMENTS` from the `/flow:issue` invocation. Empty, or anything that is not a positive integer, aborts with usage and mutates nothing. `Bash(node:*)` is in the alias's allowance for the claim helper, the tree snapshot, and the conductor's own scratch scripts; there is no Edit, so minor inline edits go through Write.
+**Argument.** `$ARGUMENTS` from the `/flow:issue` invocation. Empty, or anything that is not a positive integer, aborts with usage and mutates nothing. `Bash(node:*)` is in the alias's allowance for the claim helper, the tree snapshot, and the conductor's own scratch scripts.
 
 **Workspace boundary.** The session's workspace roots: the directory the session was opened in plus anything the human added. `mcp-client-roots` is true with assurance `mechanism`, so the delegation server reads those roots over `roots/list`, and the sibling worktree is inside the boundary whenever the repository is.
 

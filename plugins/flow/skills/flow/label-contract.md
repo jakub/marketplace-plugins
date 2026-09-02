@@ -9,7 +9,7 @@
  agent-found   ─┘          │  ▲                  │
                  (via the prep stage only)       │
                                                  ▼
-                 blocked lane (wait on human, ping phone):
+                 blocked lane (wait on human, escalation ping):
                  needs-info · needs-human · needs-rebase
 
                  terminal-buried: wontfix · deferred  (never resurrected by agents)

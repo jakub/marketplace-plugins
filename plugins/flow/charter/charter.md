@@ -24,16 +24,9 @@ Never spawn more than ~20 parallel seats without the user's confirmation first.
 Permissions scale with how reversible the change is. Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
  
 ## Cross-Family Delegation
-Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses
-`delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to
-inspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either
-provider through shell commands.
+Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses `delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to inspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either provider through shell commands.
 
-Set the model and effort explicitly every time. Always use the `default` service tier. The
-server rejects same-family calls and nested cross-family calls. Codex supports live steering
-and crash reconciliation. Claude supports cancellation and session continuation, but not live
-steering or post-crash result recovery; read the reported capabilities instead of assuming
-symmetry.
+Set the model and effort explicitly every time. Always use the `default` service tier. The server rejects same-family calls and nested cross-family calls. Codex supports live steering and crash reconciliation. Claude supports cancellation and session continuation, but not live steering or post-crash result recovery; read the reported capabilities instead of assuming symmetry.
 
 ## The `flow` pipeline
 The pipeline is three stages that run in order: prep → issue → land [[role:pipeline-entry]]; your host profile says how each one is invoked. Where a stage needs a decision from the human, it goes through the human-choice binding [[role:human-choice]], and whether that binding answers inside the turn or ends it is a fact about your host, not a preference.
@@ -49,8 +42,8 @@ PRs contain the evidence: tests, transcripts, screenshots - inline, or hosted th
 
 `flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything I didn't say or that changes the proposed shape for the better, then interview me one question at a time, prioritizing answers that change the architecture.
 
-## Model Rankings (as of 2026-08)
-Higher is better, on every axis. 
+## Model Rankings
+As of 2026-09. Higher is better, on every axis.
 Cheapness is inverted - Luna is effectively free and Fable is expensive.
 Intelligence is how hard a problem the model can handle unsupervised.
 Taste covers UI/UX, code quality assessments, API and architecture design, and copy text.
@@ -63,12 +56,12 @@ Classifiers says whether the model runs cyber classifiers that can refuse securi
 | opus-5                   | 4         | 8            | 8     | standard    |
 | gpt-5.6-sol              | 7         | 8            | 5     | standard    |
 | gpt-daybreak-blue-latest | 7         | 8            | 5     | none        |
-| fable-5-1                | 2         | 9            | 9     | standard    |
+| fable-5-1                | 2         | 10           | 9     | standard    |
  
 ## Rules of Engagement - Model Selection
 These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
 
-General rule: intelligence > taste > cost, and anything user-facing (UI, text) *must* have taste >= 7. Lower efforts follow instructions more literally and call fewer tools; higher efforts verify more and wander more.
+General rule: intelligence > taste > cost. Anything user-facing (UI, text) goes to the taste leg. Lower efforts follow instructions more literally and call fewer tools; higher efforts verify more and wander more.
 
 Every seat the pipeline spawns is one of the roles below. Each role has floors against the rankings above; your host profile binds it to one model and effort, and the conformance lint fails a binding under its floor. A floor is the written default, never a ceiling. `family: other` is the model family your host does not run natively. `classifiers: none` is a model that runs no cyber classifiers. A binding is scored at the effort it names, so Luna counts 7 only at max.
 
@@ -134,7 +127,7 @@ Design against races/TOCTOU up front for check-then-act code.
 Redact implementation details (db errors, stack traces, internal paths) at trust boundaries.
 When asked for a secret, surface ONLY the credential requested and avoid log pollution.
 
-No commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. Both rules are enforced by the `git-guard` hook anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.
+No commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. The `git-guard` hook enforces this anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.
 
 Conventional commits, imperative, present tense; each commit is one atomic logical change.
 

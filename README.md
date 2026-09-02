@@ -92,7 +92,7 @@ Three commands in order:
 
 All three run on Codex too. Each one is a single stage skill: one host-neutral body, then a `## Host mechanics` section at the end that names the seats, models and calls for the host in use. The slash command is a one-sentence alias to that file.
 
-Two timers run in the background once `/flow setup` has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly doc sweep. The sweep has no write tools at all, so it files nothing and opens nothing; it reports the doc drift it found and, for a small fix, the diff you can paste.
+Two timers run in the background once `/flow:flow setup` has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly doc sweep. The sweep has no write tools at all, so it files nothing and opens nothing; it reports the doc drift it found and, for a small fix, the diff you can paste.
 
 | Path | What's there |
 |---|---|
@@ -100,7 +100,7 @@ Two timers run in the background once `/flow setup` has armed them: a nightly li
 | `plugins/flow/commands/` | `prep.md`, `issue.md` and `land.md`, each only an alias to its stage. |
 | `plugins/flow/skills/prep-stage/`, `skills/issue-stage/`, `skills/land-stage/` | One `SKILL.md` per stage: the steps written once for both hosts, then a `## Host mechanics` section per host. |
 | `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool and a fixed schema output), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
-| `plugins/flow/skills/flow/` | `/flow setup`, `/flow drift`, `/flow labels`, `/flow charter`, `/flow cron` - not needed day-to-day, housekeeping tasks. |
+| `plugins/flow/skills/flow/` | `/flow:flow setup`, `/flow:flow drift`, `/flow:flow labels`, `/flow:flow charter`, `/flow:flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
 | `plugins/flow/hooks/` | Claude and Codex hook registrations and adapters: charter injection, unsanctioned-issue prevention, protected-file checks, publication gates, and destructive Git guards. |
 | `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs - a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. `/flow cron` installs and reports on them. |

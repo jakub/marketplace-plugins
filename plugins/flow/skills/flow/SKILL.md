@@ -42,14 +42,6 @@ Deploy flow to a project, in this order. Every step is idempotent: skip what alr
 7. **Known flakes**: create `.github/known-flakes.txt` (empty). The land stage reads it - one entry per line, either a bare CI check name or `check-name:test_name` for a single flaky test (the `land-stage` skill documents both forms), naming what the repo consciously merges through. Lore lives in the repo, not in command prompts.
 8. **Report**: what was created, what already conformed, what needs a human decision (e.g. which crates deserve domain files). A checklist, not an essay.
 
-### Host profile presence
-
-The charter names roles; the `<flow-profile>` block injected beside it says what each role binds to on this host. A session that gets the charter with no profile block is running on prose with no mechanisms behind it, and the model cannot notice that on its own. Copy this sentence into the user's outer instructions (their `CLAUDE.md` or `AGENTS.md`), beside the existing `<flow-charter>` presence check:
-
-```text
-If a <flow-charter> block is present without a matching <flow-profile> block, say so before substantive engineering work and do not run the flow pipeline stages.
-```
-
 ## Drift
 
 `drift` re-checks the framework's invariants against reality; `drift-audit.md` is the procedure. Run it on a schedule (the nightly/weekly crons), after large merges, or when the docs feel stale. It reports and doesn't fix unless asked. Delegate the scanning to cheap read-only seats and return a reconciled report with a judgment pass on top.
