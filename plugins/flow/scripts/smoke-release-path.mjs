@@ -56,15 +56,19 @@ const web = join(tmp, 'web')         // the plain https spelling of the same rep
 const qry = join(tmp, 'qry')         // an https origin carrying ?access_token=<token>
 const frag = join(tmp, 'frag')       // an https origin carrying a #fragment
 const port = join(tmp, 'port')       // an https origin naming an explicit port
+const scpat = join(tmp, 'scpat')     // an scp-like origin with a token and a second @ in the host
+const scpfrag = join(tmp, 'scpfrag') // an scp-like origin with a #fragment inside the host
 const sshport = join(tmp, 'sshport') // an ssh:// origin naming an explicit port
 const norepo = join(tmp, 'norepo')   // not a git repository at all
-for (const dir of [repo, mdel, plain, muntr, nohead, ghe, web, qry, frag, port, sshport, norepo]) mkdirSync(dir)
+for (const dir of [repo, mdel, plain, muntr, nohead, ghe, web, qry, frag, port, sshport, scpat, scpfrag, norepo]) mkdirSync(dir)
 
 const SLUG = 'jakub/marketplace-plugins'
 const IDENTITY = 'github.com/jakub/marketplace-plugins'
 const GHE_HOST = 'ghe.example.com'
 const TOKEN = 'ghp_sekrettoken'
 const FRAGMENT = 'sekretfragment'
+const SCP_TOKEN = 'ghp_scphostsekret'
+const SCP_FRAGMENT = 'ghp_scpfragsekret'
 const PR = 12
 const BRANCH = 'feat/thing'
 
@@ -165,6 +169,17 @@ portGit('remote', 'add', 'origin', `https://github.com:8443/${SLUG}.git`)
 const sshportGit = gitIn(sshport)
 sshportGit('init', '-q', '-b', 'main')
 sshportGit('remote', 'add', 'origin', `ssh://git@github.com:2222/${SLUG}.git`)
+
+// scpat and scpfrag: the scp-like form ends the host at the colon that opens the path and
+// nowhere else, so a second @ and a # both used to land inside the host, which the allowlist
+// refusal prints. Whatever is parked there is a credential often enough to treat it as one.
+const scpatGit = gitIn(scpat)
+scpatGit('init', '-q', '-b', 'main')
+scpatGit('remote', 'add', 'origin', `git@${SCP_TOKEN}?x@github.com:${SLUG}.git`)
+
+const scpfragGit = gitIn(scpfrag)
+scpfragGit('init', '-q', '-b', 'main')
+scpfragGit('remote', 'add', 'origin', `git@github.com#${SCP_FRAGMENT}:${SLUG}.git`)
 
 // ---------------------------------------------------------- the fake gh, injected in process
 const freshState = (overrides = {}) => ({
@@ -631,6 +646,21 @@ check('a GHE origin is refused when nothing named that host', gheDefault.code ==
 check('and gh was never called', gheDefault.calls.length === 0, JSON.stringify(gheDefault.calls))
 check('and nothing merged', gheDefault.merges.length === 0, JSON.stringify(gheDefault.merges))
 check('and the refusal names the variable that widens the list', gheDefault.stderr.includes('FLOW_GH_HOSTS'), gheDefault.stderr)
+
+// C1b: the scp-like host component, which has no delimiter but the colon in front of the path.
+// `[^:/\s]+` took a second @, a ? or a # as part of the host, and the allowlist refusal prints
+// the host it refuses, so a token parked there was echoed to stderr.
+console.log('\na token smuggled into the scp host component is never printed')
+const smuggled = (name, dir, secret) => {
+  const run = runExecutor(ARGS, { cwd: dir })
+  const streams = `${run.stdout}${run.stderr}`
+  check(`${name} is refused as unreadable`, run.code === 1 && run.stderr.includes('does not read as a URL naming a host'), streams)
+  check(`${name}: the secret is in neither stream`, !streams.includes(secret), streams)
+  check(`${name}: gh was never called`, run.calls.length === 0, JSON.stringify(run.calls))
+  check(`${name}: nothing merged`, run.merges.length === 0, JSON.stringify(run.merges))
+}
+smuggled('a second @ inside the host', scpat, SCP_TOKEN)
+smuggled('a fragment inside the host', scpfrag, SCP_FRAGMENT)
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(bad === 0 ? '\nrelease path: ALL PASS' : `\nrelease path: ${bad} FAILURE(S)`)

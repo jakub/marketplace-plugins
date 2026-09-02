@@ -1155,6 +1155,41 @@ console.log('\nan issue title that no ASCII slug can be read out of')
   check('and no worktree was added', worktreePaths(w.repo).length === 1, worktreePaths(w.repo).join(','))
 }
 
+// ---------------------------------------- C1b: a credential parked in the scp host component
+console.log('\nthe scp host component carries a token')
+{
+  // The scp-like spelling ends the host at the colon that opens the path, so a second @, a ? or
+  // a # all used to count as part of the host. That host is what the origin-host-not-allowed
+  // refusal names, so git@ghp_sekret?x@github.com:jakub/demo.git printed the token. The host is
+  // now matched against a hostname grammar before any refusal can name it, and one that fails it
+  // is unreadable rather than a host to describe.
+  const smuggled = [
+    ['a second @ inside the host', 'git@ghp_hostsekret?x@github.com:jakub/demo.git', 'ghp_hostsekret'],
+    ['a fragment inside the host', 'git@github.com#ghp_fragsekret:jakub/demo.git', 'ghp_fragsekret'],
+    ['a query string inside the host', 'github.com?token=ghp_querysekret:jakub/demo.git', 'ghp_querysekret'],
+  ]
+  smuggled.forEach(([label, url, secret], index) => {
+    const w = makeWorld(`scp-host-token-${index}`)
+    const before = allRefs(w.origin)
+    git(w.repo, 'remote', 'set-url', 'origin', url)
+    const r = run(w, ['claim', String(ISSUE)])
+    const streams = `${r.stdout}${r.stderr}`
+    check(`${label} refuses with origin-unparseable`, r.code === 2 && r.json?.reason === 'origin-unparseable', `exit ${r.code} ${r.stdout}`)
+    check(`${label}: the secret is in neither stream`, !streams.includes(secret), streams)
+    check(`${label}: at phase pre-acquire, with nothing retained`,
+      r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
+    check(`${label}: gh was never called`, r.st.calls.length === 0, JSON.stringify(r.st.calls.map((c) => c.args)))
+    check(`${label}: origin is unchanged and no claim tag was taken`,
+      allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
+  })
+
+  // And the grammar leaves the spelling every world here uses alone. Only the scp-like one is
+  // exercised here, because that is the one the fake ssh serves; the https spelling reaches a
+  // network from this fixture, and the land smokes cover it against a fake gh instead.
+  const ordinary = run(makeWorld('scp-host-ordinary'), ['claim', String(ISSUE)])
+  check('the ordinary git@github.com:owner/repo remote still claims', ordinary.code === 0 && ordinary.json?.result === 'claimed', `exit ${ordinary.code} ${ordinary.stdout}`)
+}
+
 rmSync(tmp, { recursive: true, force: true })
 
 console.log(bad === 0 ? `\nissue claim verb: ALL PASS (${checks} checks)` : `\nissue claim verb: ${bad} FAILURE(S) of ${checks} checks`)

@@ -1543,5 +1543,31 @@ const commaHosts = run([String(PR)], { st: freshState({ origin: gheOrigin }), en
 check('the list splits on commas, trims, and is read case-insensitively',
   commaHosts.st.calls.length > 0, `${commaHosts.code}: ${commaHosts.stderr}`)
 
+console.log('\nC1b: a token smuggled into the scp host component is never printed')
+// The scp-like form has no delimiter after the host but the colon, so `[^:/\s]+` swallowed a
+// second @, a ?, or a # and called the lot a host. git@ghp_sekret?x@github.com:owner/repo.git
+// then reached the allowlist refusal, which prints the host it is refusing, and the token went to
+// stderr. The host is validated against a hostname grammar before any refusal can name it.
+const smuggled = (label, origin, secret) => {
+  const result = run([String(PR)], { st: freshState({ origin }) })
+  const streams = `${result.stdout}${result.stderr}`
+  check(`${label} is refused as unreadable`, result.code === 2 && result.stderr.includes('does not read as a URL naming a host'),
+    `${result.code}: ${result.stderr}`)
+  check(`${label}: the secret is in neither stream`, !streams.includes(secret), streams)
+  check(`${label}: printed no verdict`, result.stdout === '', result.stdout.slice(0, 120))
+  check(`${label}: gh was never called`, result.st.calls.length === 0, JSON.stringify(result.st.calls))
+}
+smuggled('a second @ inside the host', `git@ghp_sekret?x@github.com:${SLUG}.git`, 'ghp_sekret')
+smuggled('a fragment inside the host', `git@github.com#ghp_fragsekret:${SLUG}.git`, 'ghp_fragsekret')
+smuggled('a query string inside the host, with no user in front', `github.com?token=ghp_querysekret:${SLUG}.git`, 'ghp_querysekret')
+
+// The grammar has to leave the two spellings anyone actually writes alone.
+const plainScp = run([String(PR)], { st: freshState({ origin: `git@github.com:${SLUG}.git` }) })
+check('the ordinary scp-like remote still resolves', plainScp.code === 0 && plainScp.st.calls.every(isPinned),
+  `${plainScp.code}: ${plainScp.stderr}`)
+const plainHttps = run([String(PR)], { st: freshState({ origin: `https://github.com/${SLUG}.git` }) })
+check('and so does the https one', plainHttps.code === 0 && plainHttps.st.calls.every(isPinned),
+  `${plainHttps.code}: ${plainHttps.stderr}`)
+
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
 process.exit(bad === 0 ? 0 : 1)
