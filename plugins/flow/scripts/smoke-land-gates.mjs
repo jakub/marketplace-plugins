@@ -32,7 +32,10 @@
 // comments and no page after either. T2 is the last, and it is T1's other half. Paging the
 // check-runs endpoint to exhaustion still does not prove the list is whole, because the endpoint
 // serves from a window of the 1000 most recent check suites, so the read now has to prove itself
-// or exit 4, and the suite count it proves itself against comes from the suite collection.
+// or exit 4, and the suite count it proves itself against comes from the suite collection. T3 is
+// the last, and it is what T2's counts could not see on their own. The collection and the count
+// that proves it whole are two snapshots, so the counts now bracket the collection and any
+// movement between them stops the land.
 //
 // G1, J1 and O2 went with the mechanism they guarded. All three were ways the `gh pr checks`
 // cross-read could put a passing name on a failing check, and there is no cross-read now, because
@@ -89,8 +92,11 @@ const suitelessRun = (name, conclusion) => {
   return run
 }
 
+// The id goes up with every status this file builds, the way GitHub's do. The closing bracket
+// compares the newest id under each context, so two statuses on one context are two ids here.
+let nextStatusId = 1
 const commitStatus = (context, state, extra = {}) => ({
-  context, state, target_url: `https://cr.example/${context}`, ...extra,
+  id: nextStatusId++, context, state, target_url: `https://cr.example/${context}`, ...extra,
 })
 
 const comment = (id, body) => ({
@@ -129,8 +135,11 @@ const freshState = (overrides = {}) => ({
   origin: ORIGIN,
   defaultBranch: 'main',
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')],
-  checkRunsTotal: null,  // the total_count the check-runs pages report; null serves the honest count
-  checkSuites: 1,        // the total_count the check-suites collection reports for the head commit
+  checkRunsTotal: null,  // the total_count the check-runs reads report; null serves the honest count
+  checkSuites: 1,        // the total_count the check-suites collection reports; an array is one value per read
+  statusesAfter: null,   // the statuses served on every read after the first; null keeps them steady
+  reads: {},             // how many times each commit endpoint has been read, so a sequence can advance
+  commitReads: [],       // every commit-scoped read in order, which is what proves the bracketing
   statuses: [],          // the commit statuses on the head, newest first, as the endpoint serves them
   apiFail: null,         // 'check-runs', 'check-suites', 'statuses' or 'comments': that read fails with a 500
   apiShape: null,        // 'not-pages' or 'no-check-runs-key': that read answers something unreadable
@@ -237,45 +246,58 @@ const makeRunGh = (st) => (args) => {
       })
     }
 
-    // How many check suites the head commit carries. One page of one, no --paginate, because the
-    // executor uses the total_count and nothing else. checkSuites set to something that is not a
-    // count is served as it is, which is how the unreadable answer is driven.
-    if (path !== undefined && path.includes('/check-suites?')) {
-      if (st.apiFail === 'check-suites') {
-        return { code: 1, stdout: '{"message":"Internal Server Error"}', stderr: 'gh: Internal Server Error (HTTP 500)\n' }
-      }
-      return ok({ total_count: st.checkSuites, check_suites: [] })
-    }
-
-    // The three reads that have to be paged: the check runs and the commit statuses on the head
-    // commit, and the pull request's top-level comments. `gh api --paginate --slurp` walks every
-    // page and prints one outer array with a page in each slot, and that is what is served here.
+    // Every read that hangs off the head commit, whether it is one of the paginated collections
+    // or one of the counts that bracket them. A case that hands a sequence instead of a number
+    // gets one element per read of that endpoint, which is how a count that moves mid-gate is
+    // served: checkSuites [1, 2] answers 1 to the opening bracket and 2 to the closing one.
     const endpoint = path === undefined ? null
-      : path.includes('/check-runs?') ? 'check-runs'
-        : path.includes('/statuses?') ? 'statuses'
-          : path.includes('/comments?') ? 'comments' : null
+      : path.includes('/check-suites?') ? 'check-suites'
+        : path.includes('/check-runs?') ? 'check-runs'
+          : path.includes('/statuses?') ? 'statuses'
+            : path.includes('/comments?') ? 'comments' : null
     if (endpoint !== null) {
+      const nth = (value, i) => (Array.isArray(value) ? value[Math.min(i, value.length - 1)] : value)
+      const paginated = args.includes('--paginate')
       // --paginate alone prints one document per page and two adjacent documents are not JSON, so
-      // a read missing either flag is a failure of the executor, not a gap in this fake.
-      if (!args.includes('--paginate') || !args.includes('--slurp')) {
-        return { code: 3, stdout: '', stderr: `fake gh: ${endpoint} was read without --paginate --slurp\n` }
+      // a paginated read missing --slurp is a failure of the executor, not a gap in this fake.
+      if (paginated && !args.includes('--slurp')) {
+        return { code: 3, stdout: '', stderr: `fake gh: ${endpoint} was read with --paginate and no --slurp\n` }
       }
+      const perPage = String(path).split('per_page=')[1] || null
+      const readIndex = st.reads[endpoint] || 0
+      st.reads[endpoint] = readIndex + 1
+      if (endpoint !== 'comments') st.commitReads.push({ endpoint, paginated, perPage })
+
       if (st.apiFail === endpoint) {
         return { code: 1, stdout: '{"message":"Internal Server Error"}', stderr: 'gh: Internal Server Error (HTTP 500)\n' }
       }
+      // The check-suites collection is never paged by the executor: it takes the total_count and
+      // reads no suite. checkSuites set to something that is not a count is served as it is,
+      // which is how the unreadable answer is driven.
+      if (endpoint === 'check-suites') return ok({ total_count: nth(st.checkSuites, readIndex), check_suites: [] })
+
       if (endpoint === 'check-runs' && st.apiShape === 'not-pages') {
         return ok({ total_count: 1, check_runs: [checkRun('unit', 'success')] })
       }
       if (endpoint === 'check-runs' && st.apiShape === 'no-check-runs-key') {
         return ok([{ total_count: 1 }])
       }
-      const list = endpoint === 'check-runs' ? st.checkRuns : endpoint === 'statuses' ? st.statuses : st.comments
+      const list = endpoint === 'check-runs' ? st.checkRuns
+        : endpoint === 'statuses' ? (readIndex > 0 && st.statusesAfter !== null ? st.statusesAfter : st.statuses)
+          : st.comments
       const pages = pagesOf(Array.isArray(list) ? list : [])
-      st.pagesServed.push({ endpoint, pages: pages.length })
       // GitHub reports total_count on every page of the check runs. It is the honest count here
       // unless a case sets checkRunsTotal, which is how a read that came back short of what
       // GitHub says is on the commit is served without any page failing.
-      const totalCount = st.checkRunsTotal === null ? list.length : st.checkRunsTotal
+      const totalCount = st.checkRunsTotal === null ? list.length : nth(st.checkRunsTotal, readIndex)
+      // A read with no --paginate is one of the closing bracket's: it gets the first page alone,
+      // trimmed to the page size it asked for, exactly as gh prints one page of one document.
+      if (!paginated) {
+        return ok(endpoint === 'check-runs'
+          ? { total_count: totalCount, check_runs: pages[0].slice(0, Number(perPage) || 100) }
+          : pages[0].slice(0, Number(perPage) || 100))
+      }
+      st.pagesServed.push({ endpoint, pages: pages.length })
       return ok(endpoint === 'check-runs'
         ? pages.map((page) => ({ total_count: totalCount, check_runs: page }))
         : pages)
@@ -1288,13 +1310,13 @@ check('and is never a pass on the run that did name its suite', suiteless.json?.
   suiteless.json?.verdict)
 
 const suiteCalls = clean.st.calls.filter((a) => a[0] === 'api' && a.some((word) => String(word).includes('/check-suites?')))
-check('the suite count is one read of the check-suites collection', suiteCalls.length === 1,
+check('the suite count is read twice, once on each side of the collection', suiteCalls.length === 2,
   JSON.stringify(suiteCalls))
-check('pinned to the host, asking for one page of one, and never paginated',
-  suiteCalls[0]?.includes('--hostname') && argValue(suiteCalls[0], '--hostname') === 'github.com' &&
-    suiteCalls[0].some((word) => String(word) === `repos/${SLUG}/commits/${HEAD}/check-suites?per_page=1`) &&
-    !suiteCalls[0].includes('--paginate'),
-  JSON.stringify(suiteCalls[0]))
+check('both pinned to the host, asking for one page of one, and never paginated',
+  suiteCalls.every((call) => argValue(call, '--hostname') === 'github.com' &&
+    call.some((word) => String(word) === `repos/${SLUG}/commits/${HEAD}/check-suites?per_page=1`) &&
+    !call.includes('--paginate')),
+  JSON.stringify(suiteCalls))
 
 const wholeRead = run([String(PR)], { st: freshState({ checkRuns: many(150, (i) => checkRun(`green-${i}`, 'success')) }) })
 check('a total_count that matches what arrived passes', wholeRead.code === 0, `${wholeRead.code}: ${wholeRead.stderr}`)
@@ -1303,6 +1325,65 @@ check('over two pages, so the count is of the flattened list',
   JSON.stringify(wholeRead.st.pagesServed))
 check('with all 150 runs counted', wholeRead.json?.verdict === 'pass' && wholeRead.json?.ci?.success?.length === 150,
   JSON.stringify(wholeRead.json?.stops))
+
+console.log('\nT3: the collection is bracketed by counts, and a count that moved stops the land')
+// The check-runs pages and the count that proves them whole are two snapshots, and GitHub does
+// not hold still between them. A suite plus a failing run created after the pages were walked
+// used to land: the two runs collected were green, the suite count agreed with itself, and the
+// verdict was pass. So the counts are taken twice, before the pages and after them, and anything
+// that moved in between is ci-unknown. A check that registers after the closing bracket is not
+// this program's to catch. The merge pins the head with --match-head-commit, and the stage runs
+// it only on a pass with no mutation since.
+
+const order = ['check-suites', 'check-runs', 'statuses', 'check-runs', 'check-suites', 'statuses']
+check('the commit reads bracket the collection, suites first and statuses last',
+  JSON.stringify(clean.st.commitReads.map((r) => r.endpoint)) === JSON.stringify(order),
+  JSON.stringify(clean.st.commitReads))
+check('the collection is paginated and the brackets are not',
+  JSON.stringify(clean.st.commitReads.map((r) => `${r.paginated ? 'paged' : 'one'}:${r.perPage}`)) ===
+    JSON.stringify(['one:1', 'paged:100', 'paged:100', 'one:1', 'one:1', 'one:100']),
+  JSON.stringify(clean.st.commitReads))
+
+const suiteAppeared = run([String(PR)], { st: freshState({ checkSuites: [1, 2] }) })
+check('a suite count that answers 1 and then 2 exits 4', suiteAppeared.code === 4,
+  `${suiteAppeared.code}: ${suiteAppeared.stderr}`)
+check('and stops on ci-unknown naming both counts',
+  has(suiteAppeared.json?.stops, 'ci-unknown') &&
+    /moved from 1 to 2/.test(detailOf(suiteAppeared.json?.stops, 'ci-unknown')),
+  detailOf(suiteAppeared.json?.stops, 'ci-unknown'))
+check('and the two green runs it collected are not a verdict on their own',
+  suiteAppeared.json?.verdict === 'stop', suiteAppeared.json?.verdict)
+
+const runAppeared = run([String(PR)], { st: freshState({ checkRunsTotal: [2, 3] }) })
+check('a check-run count that answers 2 and then 3 exits 4', runAppeared.code === 4,
+  `${runAppeared.code}: ${runAppeared.stderr}`)
+check('and stops on ci-unknown naming both counts',
+  has(runAppeared.json?.stops, 'ci-unknown') &&
+    /moved from 2 to 3/.test(detailOf(runAppeared.json?.stops, 'ci-unknown')),
+  detailOf(runAppeared.json?.stops, 'ci-unknown'))
+check('and it is the check-run count that is named, not the suites',
+  detailOf(runAppeared.json?.stops, 'ci-unknown').startsWith('the check-run count'),
+  detailOf(runAppeared.json?.stops, 'ci-unknown'))
+
+// The statuses endpoint reports no total_count, so the bracket re-reads its first page and
+// compares the newest id under each context. CodeRabbit posting again mid-gate is this case.
+const statusMoved = run([String(PR)], {
+  st: freshState({
+    statuses: [commitStatus('coderabbit', 'success')],
+    statusesAfter: [commitStatus('coderabbit', 'failure')],
+  }),
+})
+check('a commit status posted again while the gate was reading exits 4', statusMoved.code === 4,
+  `${statusMoved.code}: ${statusMoved.stderr}`)
+check('and stops on ci-unknown naming the statuses',
+  has(statusMoved.json?.stops, 'ci-unknown') &&
+    detailOf(statusMoved.json?.stops, 'ci-unknown').startsWith('the first page of commit statuses'),
+  detailOf(statusMoved.json?.stops, 'ci-unknown'))
+
+const steady = run([String(PR)], { st: freshState({ checkSuites: [2, 2], checkRunsTotal: [2, 2] }) })
+check('counts that hold still across the brackets pass', steady.code === 0, `${steady.code}: ${steady.stderr}`)
+check('and stop on nothing', JSON.stringify(steady.json?.stops) === '[]', JSON.stringify(steady.json?.stops))
+check('and no read failed', steady.json?.error === undefined, steady.json?.error)
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
 process.exit(bad === 0 ? 0 : 1)
