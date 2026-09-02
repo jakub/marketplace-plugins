@@ -1028,13 +1028,26 @@ const sha256 = (text) => createHash('sha256').update(Buffer.from(text, 'utf8')).
 
 /**
  * A branch-safe slug from an issue title. Everything outside [a-z0-9] becomes a hyphen, runs
- * collapse, and the ends are trimmed, so a title made entirely of punctuation produces the empty
- * string and the caller refuses rather than build `feat/issue-8-`. The cut back to a hyphen
- * boundary keeps the last word whole instead of ending a branch mid-syllable; a first word longer
- * than the limit has no boundary to cut at and gets truncated where it falls.
+ * collapse, and the ends are trimmed. The cut back to a hyphen boundary keeps the last word whole
+ * instead of ending a branch mid-syllable; a first word longer than the limit has no boundary to
+ * cut at and gets truncated where it falls.
+ *
+ * A title with nothing in [a-z0-9] collapses to the empty string, and the claim used to refuse it
+ * as bad-slug: an issue titled 修复登录 could never be claimed at all, which is a rule about the
+ * language a title is written in and not about anything a branch name needs. A branch name has to
+ * be deterministic, so that two runs on one issue build the same one and each can see the other's
+ * work, and safe in a ref. t-<first 12 hex of the sha256 of the title> is both, and it sits inside
+ * the (feat|fix|chore)/issue-N- shape the release verb matches on. Twelve hex is 48 bits, which is
+ * plenty for telling apart the titles of one repository's issues, and the issue number in front of
+ * it is what actually identifies the branch.
+ *
+ * A title that is empty once trimmed has nothing to hash and nothing to read, so it still comes
+ * back empty and the caller still refuses.
  */
 const slugify = (title) => {
-  const flat = String(title ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const text = String(title ?? '').trim()
+  const flat = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  if (flat === '') return text === '' ? '' : `t-${sha256(text).slice(0, 12)}`
   if (flat.length <= SLUG_MAX) return flat
   const cut = flat.slice(0, SLUG_MAX)
   const boundary = cut.lastIndexOf('-')
@@ -1278,7 +1291,7 @@ const claim = ({ argv, cwd, env, runGh }) => {
   const kind = kindArg ?? kindFromLabels(labels)
   const slug = slugify(found.title)
   if (slug === '') {
-    return refuse('bad-slug', `the title of issue #${issue} has no letters or digits in it, so there is no slug to name a branch after`)
+    return refuse('bad-slug', `the title of issue #${issue} is empty, so there is nothing to name a branch after`)
   }
   const branch = `${kind}/issue-${issue}-${slug}`
   const topRead = runGit(['rev-parse', '--show-toplevel'], cwd, LOCAL_GIT_TIMEOUT_MS)
