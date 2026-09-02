@@ -57,7 +57,9 @@
 // linking to it too. Whichever name the failure took decided whether the allowlist excused it,
 // and either way `e2e`'s failure was never reported. So a url that more than one entry carries
 // on either side joins nothing, every entry carrying it stays unknown, and unknown stops the
-// land.
+// land. A name is handed out at most once for the same reason: a cross-read that lists `e2e`
+// twice is two checks, and letting a second entry take the name it already gave away is the
+// same guess by another route.
 //
 // That cross-read is optional - an older gh with no --json on this subcommand is not a failed
 // gate - and its output is parsed whatever the exit code is, because `gh pr checks` exits
@@ -90,9 +92,16 @@
 // check that is failing right now; anything else is a usage refusal naming the flag, because a
 // flag that can invent an allowlist entry is not an override, it is the allowlist. A bare check
 // name is refused too - the allowlist moves those on its own, so a bare name through the flag
-// could only mean the caller misunderstood it. What is accepted is recorded under
-// `ci.acceptedFlakes` and again as a `flaky-merged-through` attention item saying it was accepted
-// by flag, and the land report has to name every one.
+// could only mean the caller misunderstood it.
+//
+// An acceptance is a statement about one job log, so it moves one check run. Two failed entries
+// reporting the same name are two jobs, and one log cannot have shown the named test was the sole
+// failure of both, so a name carried by more than one failed entry is a refusal that names their
+// urls and leaves all of them failed. For the same reason a check takes at most one accepted test:
+// a second flag naming a check an earlier flag already claimed is refused rather than counted.
+// What is accepted is recorded under `ci.acceptedFlakes`, with the url of the entry it moved so
+// the land report can name the job, and again as a `flaky-merged-through` attention item saying it
+// was accepted by flag, and the land report has to name every one.
 //
 // Both copies are read over the contents API, at the base ref and at the head SHA, and never out
 // of the local clone. A `git fetch` would write objects, FETCH_HEAD and remote-tracking refs into
@@ -112,6 +121,15 @@
 // parsed. `recovered` is what carries enough intent to act on: the issue number in a
 // feat/fix/chore branch name, and a closing phrase in the title or body. `mentions` is every other
 // bare #N, which never closes anything - "Part of #6" is a reference, not an instruction.
+//
+// A closing phrase counts only where it reads as one. `does not fix #17` matches the same regex as
+// `fixes #17`, and so does the `Closes #6` this repository writes inside a code fence to document
+// the rule, so a phrase with `not`, `n't`, `never`, `no longer` or `without` ahead of it in its own
+// sentence is dropped, and so is one inside a fence or a backtick span. The number still lands in
+// `mentions`: the pull request points at that issue, it just does not close it. And a recovered
+// number the pull request did not link is a question for the human whether or not GitHub parsed
+// some other issue. Asking only when `linked` was empty is what let `Closes #6` beside a negated
+// phrase about #17 close both.
 //
 // The head SHA in the output is the value the caller hands to land-merge, and it is why the two
 // programs are separate. Everything reported here was read at that commit; a pull request that
@@ -178,6 +196,12 @@ const BUCKET_TOKEN = { pass: 'SUCCESS', fail: 'FAILURE', pending: 'PENDING', ski
 
 const BRANCH_ISSUE = /^(feat|fix|chore)\/issue-(\d+)-/
 const CLOSING_PHRASE = /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi
+// A fenced block or a backtick span. Text in one is an example of a closing phrase, not a closing
+// phrase, and the land stage's own documentation is full of them.
+const CODE_SPAN = /```[\s\S]*?```|`[^`\n]*`/g
+// What turns a closing phrase into its opposite, anywhere earlier in the same sentence.
+const NEGATION = /\b(?:not|never|no longer|without)\b|n['\u2019]t\b/i
+const SENTENCE_END = /[.!?\n]/
 const BARE_ISSUE = /(^|[^\w#])#(\d+)\b/g
 const FOLLOW_UP_DRAFT = /^##\s*follow-up draft/im
 
@@ -200,9 +224,11 @@ exact spelling, and it is the caller's statement that they read the job log and 
 test was the only failure in that check. The named check moves from failed to flaky, it is
 recorded under ci.acceptedFlakes, and it is reported as a flaky-merged-through attention item
 that says it was accepted by flag. The land report has to name every entry accepted this way.
-Repeat the flag for more than one entry. It is refused when the entry is not on the base
-branch's allowlist, when the check it names is not currently failing, and when it names a bare
-check name, which the allowlist already moves on its own.
+Repeat the flag for a second check. It is refused when the entry is not on the base branch's
+allowlist, when the check it names is not currently failing, when it names a bare check name,
+which the allowlist already moves on its own, when more than one failed check reports the name it
+gives, because one job log cannot speak for two jobs, and when a second flag names a check an
+earlier one already claimed.
 
 It mutates nothing, in the repository or in the clone: \`git remote get-url origin\` is the only
 git command it runs. Exit 0 when nothing stops the land, 1 when something does, 2 on a usage error
@@ -401,7 +427,8 @@ const urlCounts = (items) => {
  * neither is a shared url.
  *
  * So a url is a join key only when exactly one rollup entry and exactly one cross-read entry
- * carry it. Everything else keeps a null name and is reported unknown, which stops the land.
+ * carry it, and a name joins at most one entry. Everything else keeps a null name and is reported
+ * unknown, which stops the land.
  */
 const nameFromCrossRead = (entries, checks) => {
   const nameless = entries.filter((entry) => entry.name === null)
@@ -413,18 +440,45 @@ const nameFromCrossRead = (entries, checks) => {
   for (const entry of nameless) {
     if (entry.url === null) continue
     if (inRollup.get(entry.url) !== 1 || inCrossRead.get(entry.url) !== 1) continue
-    // A cross-read name another rollup entry already carries is not a name for this one either.
+    // A cross-read name another rollup entry already carries is not a name for this one either,
+    // and that includes a name this loop handed out a moment ago. `known` was built once before
+    // the loop, so two nameless entries whose urls were each unique on both sides could both take
+    // `e2e` off a cross-read that listed it twice: one passed, one failed, the allowlist excused
+    // the failure under that name, and the land went green on a check nobody could name. A name
+    // identifies one check, so it is handed out at most once.
     const match = checks.find((check) => check.url === entry.url && check.name !== null && !known.has(check.name))
     if (match === undefined) continue
     entry.name = match.name
+    known.add(match.name)
     if (tokenOf(entry) === '') entry.state = match.state
   }
 }
 
 /**
+ * Blank out every backtick-quoted region, keeping the length so every index still points into the
+ * original string. A closing phrase quoted as an example is text about closing an issue.
+ */
+const maskCode = (text) => text.replace(CODE_SPAN, (span) => span.replace(/[^\n]/g, ' '))
+
+/** Whether anything from the start of this sentence up to `at` negates what follows it. */
+const isNegated = (text, at) => {
+  let from = 0
+  for (let i = at - 1; i >= 0; i--) {
+    if (SENTENCE_END.test(text[i])) { from = i + 1; break }
+  }
+  return NEGATION.test(text.slice(from, at))
+}
+
+/**
  * Read every issue number the pull request points at, split three ways. Nothing is decided here:
- * the stage asks the human when `recovered` turns up candidates and `linked` is empty, and a
- * `mentions` entry never closes anything on its own.
+ * the stage asks the human about every `recovered` candidate, and a `mentions` entry never closes
+ * anything on its own.
+ *
+ * A closing phrase is only one where it reads as one. `does not fix #17` matches the same regex as
+ * `fixes #17`, and so does a `Closes #6` written inside a code fence to document the rule, so a
+ * phrase with a negation ahead of it in its own sentence is dropped, and so is one inside backticks.
+ * Dropped means dropped from `recovered` only: the number stays in `mentions`, because the pull
+ * request does point at that issue, it just does not close it.
  */
 const readLinkedIssues = ({ closing, headRef, title, body }) => {
   const linked = []
@@ -440,10 +494,13 @@ const readLinkedIssues = ({ closing, headRef, title, body }) => {
   const branchMatch = String(headRef ?? '').match(BRANCH_ISSUE)
   if (branchMatch !== null) add(Number(branchMatch[2]))
 
-  // The ranges a closing phrase covers, so the same #N is not also counted as a bare mention.
+  // The ranges a closing phrase covers, so the same #N is not also counted as a bare mention. Only
+  // a phrase that counted claims its range; a negated or quoted one falls through to the mentions.
   const text = `${String(title ?? '')}\n${String(body ?? '')}`
+  const prose = maskCode(text)
   const claimed = []
-  for (const match of text.matchAll(CLOSING_PHRASE)) {
+  for (const match of prose.matchAll(CLOSING_PHRASE)) {
+    if (isNegated(prose, match.index)) continue
     add(Number(match[2]))
     claimed.push([match.index, match.index + match[0].length])
   }
@@ -708,8 +765,15 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     for (const [check, tests] of baseFlakes.tests) {
       for (const test of tests) declared.set(`${check}:${test}`, { check, test })
     }
-    const failing = new Set(ci.failed.map((entry) => entry.name))
+    // Failed entries grouped by name, not a set of the names. GitHub serves two CheckRuns of one
+    // name against two jobs without complaint, and an acceptance is a statement about one job log.
+    const failing = new Map()
+    for (const entry of ci.failed) {
+      if (!failing.has(entry.name)) failing.set(entry.name, [])
+      failing.get(entry.name).push(entry)
+    }
     const accepted = []
+    const claimedBy = new Map()
     for (const value of acceptFlakes) {
       const entry = declared.get(value)
       if (entry === undefined) {
@@ -719,17 +783,33 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
           : `--accept-flake ${value} names no test. A bare check name on the allowlist moves its check on its own, ` +
             'so the flag takes a check-name:test_name entry and nothing else')
       }
-      if (!failing.has(entry.check)) {
+      const failures = failing.get(entry.check) ?? []
+      if (failures.length === 0) {
         return refuse(`--accept-flake ${value} names ${entry.check}, which is not among the failed checks of ` +
           `#${prNumber}; the flag accepts a failure and there is none to accept`)
       }
-      accepted.push(entry)
+      if (failures.length > 1) {
+        return refuse(`--accept-flake ${value} names ${entry.check}, and ${failures.length} failed checks of ` +
+          `#${prNumber} report that name (${failures.map((f) => f.link ?? 'no job url').join(', ')}). One job log ` +
+          `cannot show ${entry.test} was the only failure in all of them, so the acceptance is ambiguous and every ` +
+          'one of them stays failed')
+      }
+      const earlier = claimedBy.get(entry.check)
+      if (earlier !== undefined) {
+        return refuse(`--accept-flake ${earlier} and --accept-flake ${value} both name ${entry.check}, and at most ` +
+          'one test can have been the only failure in one check; pass the one the job log shows and nothing else')
+      }
+      claimedBy.set(entry.check, value)
+      accepted.push({ ...entry, failure: failures[0] })
     }
-    for (const { check, test } of accepted) {
+    const moved = new Set()
+    for (const { check, test, failure } of accepted) {
       acceptedChecks.add(check)
-      ci.acceptedFlakes.push({ check, test })
+      moved.add(failure)
+      // The url goes on the record so the land report can name the job whose log was read.
+      ci.acceptedFlakes.push({ check, test, link: failure.link })
     }
-    ci.failed = ci.failed.filter((entry) => !acceptedChecks.has(entry.name))
+    ci.failed = ci.failed.filter((entry) => !moved.has(entry))
     for (const check of acceptedChecks) if (!ci.flaky.includes(check)) ci.flaky.push(check)
   }
 
@@ -850,9 +930,17 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     title: view.title,
     body: view.body,
   })
-  if (linkedIssues.linked.length === 0 && (linkedIssues.recovered.length > 0 || linkedIssues.mentions.length > 0)) {
-    attend('linked-issues-ambiguous', 'GitHub parsed no closing link; candidates are ' +
-      `${[...linkedIssues.recovered, ...linkedIssues.mentions].map((n) => `#${n}`).join(', ')}. ` +
+  // Every recovered candidate is a question, whether or not GitHub parsed a link of its own. The
+  // rule this replaced asked only when `linked` was empty, so `Closes #6` beside a stray phrase
+  // pointing at #17 closed both without anyone being asked which.
+  const strays = linkedIssues.recovered.filter((n) => !linkedIssues.linked.includes(n))
+  const noLink = linkedIssues.linked.length === 0
+  if (strays.length > 0 || (noLink && linkedIssues.mentions.length > 0)) {
+    const candidates = [...strays, ...(noLink ? linkedIssues.mentions : [])]
+    attend('linked-issues-ambiguous', (noLink
+      ? 'GitHub parsed no closing link'
+      : `GitHub parsed ${linkedIssues.linked.map((n) => `#${n}`).join(', ')} and the text points at more`) +
+      `; candidates are ${candidates.map((n) => `#${n}`).join(', ')}. ` +
       'Ask the human which to close, with an explicit close-none')
   }
 
