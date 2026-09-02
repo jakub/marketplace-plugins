@@ -19,8 +19,11 @@
 // that running it can never change anything, which now includes the local clone - the allowlist
 // arrives over the contents API and the only git command left is `git remote get-url`.
 //
-// The last section is one case per finding from the two reviews of 2026-09-01, kept together and
-// named by finding so that a regression says which rule came back.
+// The last sections are one case per finding from the reviews of 2026-09-01, kept together and
+// named by finding so that a regression says which rule came back. G1 to G7 are the first two
+// reviews; J1 to J3 are the third, and they are the ones that cost a real green: a details url
+// that two checks share, a repository identity that swallowed a query string, and a per-test
+// flake entry that could never reach the pass the merge needs.
 //
 // Run: node plugins/flow/scripts/smoke-land-gates.mjs
 
@@ -660,6 +663,138 @@ check('a check:test line that matches no check name still splits',
   JSON.stringify(stillSplits.json?.ci?.flakeCandidates))
 check('and moves nothing', has(stillSplits.json?.stops, 'ci-failed') && stillSplits.code === 1,
   `${stillSplits.code}: ${JSON.stringify(codes(stillSplits.json?.stops))}`)
+
+console.log('\nJ1: a url joins only where it identifies one check on both sides')
+// The collision a status provider produces for free. Every context it reports links to the one
+// build page, so two nameless rollup entries and two cross-read names all carry one url. Joining
+// on it gave the FAILURE whichever name came first; when that name was on the allowlist the
+// failure was excused and the other check's failure was never reported at all.
+const SHARED = 'https://ci.example/build/7'
+const collision = run([String(PR)], {
+  st: freshState({
+    rollup: [
+      { name: null, conclusion: 'FAILURE', status: 'COMPLETED', detailsUrl: SHARED },
+      { name: null, conclusion: 'SUCCESS', status: 'COMPLETED', detailsUrl: SHARED },
+    ],
+    checks: [
+      { name: 'known-flake', state: 'FAILURE', bucket: 'fail', link: SHARED },
+      { name: 'e2e', state: 'SUCCESS', bucket: 'pass', link: SHARED },
+    ],
+    baseFlakes: 'known-flake\n',
+  }),
+})
+check('both entries sharing one url stay unknown', collision.json?.ci?.unknown?.length === 2, JSON.stringify(collision.json?.ci))
+check('and keep a null name', collision.json?.ci?.unknown?.every((c) => c.name === null), JSON.stringify(collision.json?.ci?.unknown))
+check('and stop the land', collision.code === 1 && has(collision.json?.stops, 'ci-unknown'),
+  `${collision.code}: ${JSON.stringify(codes(collision.json?.stops))}`)
+check('nothing is named known-flake', !JSON.stringify(collision.json?.ci).includes('known-flake'), JSON.stringify(collision.json?.ci))
+check('and no failure is excused as flaky', JSON.stringify(collision.json?.ci?.flaky) === '[]', JSON.stringify(collision.json?.ci?.flaky))
+
+// The same join, on a url only one check on each side carries, still names the entry - including
+// when naming it is what turns the land red.
+const uniqueJoin = run([String(PR)], {
+  st: freshState({
+    rollup: [checkRun('unit', 'SUCCESS'), { name: null, conclusion: 'FAILURE', status: 'COMPLETED', detailsUrl: 'https://ci.example/build/9' }],
+    checks: [
+      { name: 'unit', state: 'SUCCESS', bucket: 'pass', link: 'https://ci.example/unit' },
+      { name: 'e2e', state: 'FAILURE', bucket: 'fail', link: 'https://ci.example/build/9' },
+    ],
+  }),
+})
+check('a unique url still joins', JSON.stringify(uniqueJoin.json?.ci?.failed?.map((c) => c.name)) === '["e2e"]',
+  JSON.stringify(uniqueJoin.json?.ci))
+check('and nothing is left unknown', JSON.stringify(uniqueJoin.json?.ci?.unknown) === '[]', JSON.stringify(uniqueJoin.json?.ci?.unknown))
+check('and the named failure stops the land', uniqueJoin.code === 1 && has(uniqueJoin.json?.stops, 'ci-failed'),
+  `${uniqueJoin.code}: ${JSON.stringify(codes(uniqueJoin.json?.stops))}`)
+
+console.log('\nJ2: the remote is parsed as a URL, and a refused one is never quoted')
+const TOKEN = 'ghp_sekrettoken'
+// mergeQueue is armed so that a repository identity carrying the query string would be printed:
+// the merge-queue stop is the one detail that quotes identity.slug.
+const queryRemote = run([String(PR)], {
+  st: freshState({ origin: `https://github.com/${SLUG}.git?access_token=${TOKEN}`, mergeQueue: { id: 'MQ_1' } }),
+})
+check('a remote with a query string is refused', queryRemote.code === 2, `${queryRemote.code}: ${queryRemote.stderr}`)
+check('and prints no verdict', queryRemote.stdout === '', queryRemote.stdout.slice(0, 120))
+check('the token is in neither stream', !queryRemote.stdout.includes(TOKEN) && !queryRemote.stderr.includes(TOKEN),
+  `${queryRemote.stdout}${queryRemote.stderr}`)
+check('and the refusal quotes no part of the remote', !queryRemote.stderr.includes('github.com'), queryRemote.stderr)
+check('and says a query string is why', queryRemote.stderr.includes('query string or a fragment'), queryRemote.stderr)
+check('and no gh call was made with it', queryRemote.st.calls.length === 0, JSON.stringify(queryRemote.st.calls))
+
+const fragmentRemote = run([String(PR)], {
+  st: freshState({ origin: `https://github.com/${SLUG}.git#${TOKEN}`, mergeQueue: { id: 'MQ_1' } }),
+})
+check('a remote with a fragment is refused too', fragmentRemote.code === 2, `${fragmentRemote.code}: ${fragmentRemote.stderr}`)
+check('with the token in neither stream', !fragmentRemote.stdout.includes(TOKEN) && !fragmentRemote.stderr.includes(TOKEN),
+  `${fragmentRemote.stdout}${fragmentRemote.stderr}`)
+
+const scpRemote = run([String(PR)], { st: freshState({ origin: `git@github.com:${SLUG}.git` }) })
+check('the scp-like form still yields owner and repo', scpRemote.code === 0 && scpRemote.st.calls.every(isPinned),
+  `${scpRemote.code}: ${JSON.stringify(scpRemote.st.calls.filter((a) => !isPinned(a)))}`)
+check('and reaches the contents API at repos/owner/repo', scpRemote.st.calls.some(
+  (a) => a[0] === 'api' && a.some((word) => String(word) === `repos/${SLUG}/contents/${FLAKES_PATH}?ref=main`),
+), JSON.stringify(scpRemote.st.calls.filter((a) => a[0] === 'api')))
+
+const httpsRemote = run([String(PR)], { st: freshState({ origin: `https://github.com/${SLUG}.git` }) })
+check('so does the https form with a .git suffix', httpsRemote.code === 0 && httpsRemote.st.calls.every(isPinned),
+  `${httpsRemote.code}: ${JSON.stringify(httpsRemote.st.calls.filter((a) => !isPinned(a)))}`)
+
+const noPathRemote = run([String(PR)], { st: freshState({ origin: `https://jakub:${TOKEN}@github.com/` }) })
+check('a remote whose path names no repository is refused', noPathRemote.code === 2, `${noPathRemote.code}: ${noPathRemote.stderr}`)
+check('without quoting the credential it carried', !noPathRemote.stderr.includes(TOKEN) && noPathRemote.stdout === '',
+  `${noPathRemote.stdout}${noPathRemote.stderr}`)
+check('and says the path is why', noPathRemote.stderr.includes('exactly one owner and one repository'), noPathRemote.stderr)
+
+console.log('\nJ3: --accept-flake is the only way a check:test entry moves a check')
+const perTestState = (base, conclusion = 'FAILURE') => freshState({
+  rollup: [checkRun('unit', 'SUCCESS'), checkRun('suite', conclusion)],
+  baseFlakes: base,
+})
+
+const acceptedFlake = run(['--accept-flake', 'suite:test_x', String(PR)], { st: perTestState('suite:test_x\n') })
+check('an entry on the base for a failing check passes the land',
+  acceptedFlake.code === 0 && acceptedFlake.json?.verdict === 'pass',
+  `${acceptedFlake.code}: ${JSON.stringify(codes(acceptedFlake.json?.stops))}`)
+check('the check moves from failed to flaky',
+  JSON.stringify(acceptedFlake.json?.ci?.failed) === '[]' && JSON.stringify(acceptedFlake.json?.ci?.flaky) === '["suite"]',
+  JSON.stringify(acceptedFlake.json?.ci))
+check('and the acceptance is on the record',
+  JSON.stringify(acceptedFlake.json?.ci?.acceptedFlakes) === '[{"check":"suite","test":"test_x"}]',
+  JSON.stringify(acceptedFlake.json?.ci?.acceptedFlakes))
+check('with an attention item saying it was accepted by flag',
+  has(acceptedFlake.json?.attention, 'flaky-merged-through') &&
+  detailOf(acceptedFlake.json?.attention, 'flaky-merged-through').includes('accepted by flag'),
+  JSON.stringify(acceptedFlake.json?.attention))
+check('and it names the entry for the land report',
+  detailOf(acceptedFlake.json?.attention, 'flaky-merged-through').includes('--accept-flake suite:test_x'),
+  detailOf(acceptedFlake.json?.attention, 'flaky-merged-through'))
+check('and the read-the-log item is not also raised for it',
+  acceptedFlake.json?.attention?.filter((item) => item.code === 'flaky-merged-through').length === 1,
+  JSON.stringify(acceptedFlake.json?.attention))
+check('the --accept-flake=entry spelling works the same way', (() => {
+  const equals = run(['--accept-flake=suite:test_x', String(PR)], { st: perTestState('suite:test_x\n') })
+  return equals.code === 0 && JSON.stringify(equals.json?.ci?.acceptedFlakes) === '[{"check":"suite","test":"test_x"}]'
+})())
+
+refuses('an entry the base allowlist does not declare is refused', ['--accept-flake', 'suite:test_x', String(PR)],
+  '--accept-flake suite:test_x is not an entry', { st: perTestState('other:test_y\n') })
+refuses('and so is one for a check that is not failing', ['--accept-flake', 'suite:test_x', String(PR)],
+  'which is not among the failed checks', { st: perTestState('suite:test_x\n', 'SUCCESS') })
+refuses('a bare check name is refused, because the allowlist moves those itself',
+  ['--accept-flake', 'suite', String(PR)], '--accept-flake suite names no test', { st: perTestState('suite:test_x\nsuite\n') })
+refuses('and the flag with no value is refused', ['--accept-flake'], 'takes one check-name:test_name entry')
+
+// Without the flag the per-test entry still moves nothing, which is the rule the flag overrides
+// rather than replaces.
+const unaccepted = run([String(PR)], { st: perTestState('suite:test_x\n') })
+check('the same entry unaccepted still stops on ci-failed', unaccepted.code === 1 && has(unaccepted.json?.stops, 'ci-failed'),
+  `${unaccepted.code}: ${JSON.stringify(codes(unaccepted.json?.stops))}`)
+check('and records no acceptance', JSON.stringify(unaccepted.json?.ci?.acceptedFlakes) === '[]',
+  JSON.stringify(unaccepted.json?.ci?.acceptedFlakes))
+check('and still points at the job log', detailOf(unaccepted.json?.attention, 'flaky-merged-through').includes('job log'),
+  detailOf(unaccepted.json?.attention, 'flaky-merged-through'))
+
 
 console.log(bad === 0 ? `\nland gates: ALL PASS (${total} checks)` : `\nland gates: ${bad} FAILURE(S) of ${total} checks`)
 process.exit(bad === 0 ? 0 : 1)
