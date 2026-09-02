@@ -16,13 +16,12 @@
 // wants the other thing GitHub can do, accepting the request and changing nothing, sets
 // applyEdit false.
 //
-// Two shapes of origin. Most worlds push to a bare repository at a filesystem path, which has no
-// host to pin a gh call to: there the stripped environment is all that stands between gh and a
-// default repository of its own choosing, and the assertion is that nothing is pinned. One world
-// has a host-qualified origin, git@github.com:jakub/demo.git, served locally through a
-// GIT_SSH_COMMAND script that ignores the host it is handed and runs upload-pack or receive-pack
-// against a bare repository on disk. That is the shape where the pin is real, and the assertion
-// is that every gh call carries it. Still no network.
+// Every world here has a host-qualified origin, git@github.com:jakub/demo.git, served locally
+// through a GIT_SSH_COMMAND script that ignores the host it is handed and runs upload-pack or
+// receive-pack against a bare repository on disk. Nothing leaves the machine, and every gh call
+// has a host, an owner and a repository to be pinned to. That is the only shape production
+// accepts: an origin with no host leaves gh resolving a repository of its own, so a bare
+// repository at a filesystem path gets one case of its own and it is a refusal.
 //
 // The two live-run cases are the ones worth reading. The first plants a rival branch on origin
 // before the run starts, which the pre-scan sees, and the assertion is that no claim tag was ever
@@ -153,8 +152,43 @@ const REFUSE_TAGS = '#!/bin/sh\nwhile read -r old new ref; do\n' +
   '  case "$ref" in refs/tags/*) echo "refs/tags/ is protected here" >&2; exit 1;; esac\n' +
   'done\nexit 0\n'
 
-/** A bare origin with one commit on main, and a clone of it to claim from. */
+/**
+ * A world whose origin is host-qualified and still entirely local. git talks to
+ * git@github.com:jakub/demo.git through a GIT_SSH_COMMAND script that ignores the host it is
+ * handed and runs the upload-pack or receive-pack command it was given against a bare repository
+ * under this directory, so every read of the remote URL sees a host, an owner and a repository
+ * while nothing leaves the machine. This is the shape production claims on, so it is the shape
+ * every case but the hostless refusal uses.
+ */
 const makeWorld = (name) => {
+  const dir = join(tmp, name)
+  const base = join(dir, 'base')
+  const origin = join(base, 'jakub', 'demo.git')
+  const repo = join(dir, 'repo')
+  mkdirSync(join(base, 'jakub'), { recursive: true })
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin])
+  execFileSync('git', ['init', '-q', '-b', 'main', repo])
+  writeFileSync(join(repo, 'file.txt'), 'first\n')
+  git(repo, 'add', 'file.txt')
+  git(repo, 'commit', '-q', '-m', 'first')
+  git(repo, 'remote', 'add', 'origin', 'git@github.com:jakub/demo.git')
+  const ssh = join(dir, 'fake-ssh')
+  writeFileSync(ssh, `#!/bin/sh\ncd ${base} || exit 1\nfor a; do last=$a; done\nexec /bin/sh -c "$last"\n`)
+  chmodSync(ssh, 0o755)
+  const saved = process.env.GIT_SSH_COMMAND
+  process.env.GIT_SSH_COMMAND = ssh
+  git(repo, 'push', '-q', 'origin', 'main')
+  process.env.GIT_SSH_COMMAND = saved
+  const world = { name, dir, origin, repo, ssh, gitDir: join(repo, '.git'), mainSha: git(repo, 'rev-parse', 'HEAD') }
+  world.pathFor = (slug) => join(dir, `repo-issue-${ISSUE}-${slug}`)
+  return world
+}
+
+/**
+ * The same fixture with a bare repository at a filesystem path for an origin, which has no host
+ * for a gh call to name. Production refuses it, so exactly one case builds one.
+ */
+const makeLocalWorld = (name) => {
   const dir = join(tmp, name)
   mkdirSync(dir)
   const origin = join(dir, 'origin.git')
@@ -175,7 +209,13 @@ const makeWorld = (name) => {
 const freshState = (overrides = {}) => ({
   viewExit: 0,
   editExit: 0,
+  loginExit: 0,
+  // Who `gh api user` says the token belongs to, which is the login `--add-assignee @me` puts on
+  // the issue, which is what the read-back has to find in the assignee list.
+  login: 'jakub',
   prs: [],
+  // Set to override prs with the exact shape gh's --slurp prints: one array per page walked.
+  prPages: null,
   onPrScan: null,
   // What GitHub does with an accepted edit. False is the other thing it can do: take the request
   // and leave the issue exactly as it was.
@@ -220,12 +260,19 @@ const makeRunGh = (st) => (args, options) => {
     if (st.viewExit) return { code: st.viewExit, stdout: '', stderr: 'fake gh: issue view failed\n' }
     return { code: 0, stdout: JSON.stringify(st.viewAt[nth] ?? st.issue), stderr: '' }
   }
-  // The pull request scan. `gh api --paginate` merges the pages it walks into one array, so one
-  // array is what the executor parses, and the objects are GitHub's REST shape: head.ref rather
-  // than the headRefName `gh pr list` invents.
   if (args[0] === 'api') {
+    // Who `@me` resolves to. The executor asks once, before it reads the issue back, because an
+    // assignment made server-side cannot be confirmed against a login nobody named.
+    if (args[args.length - 1] === 'user') {
+      if (st.loginExit) return { code: st.loginExit, stdout: '', stderr: 'fake gh: user read failed\n' }
+      return { code: 0, stdout: `${st.login}\n`, stderr: '' }
+    }
+    // The pull request scan. `gh api --paginate --slurp` wraps every page it walked in an outer
+    // array, so an endpoint that answers with arrays gives an array of arrays and the executor
+    // has to flatten it. The objects inside are GitHub's REST shape: head.ref rather than the
+    // headRefName `gh pr list` invents.
     if (st.onPrScan) st.onPrScan()
-    return { code: 0, stdout: JSON.stringify(st.prs), stderr: '' }
+    return { code: 0, stdout: JSON.stringify(st.prPages ?? [st.prs]), stderr: '' }
   }
   if (args[0] === 'issue' && args[1] === 'edit') {
     if (st.editExit) return { code: st.editExit, stdout: '', stderr: 'fake gh: issue edit failed\n' }
@@ -237,50 +284,23 @@ const makeRunGh = (st) => (args, options) => {
 
 const callsTo = (st, verb) => st.calls.filter((c) => c.args[0] === 'issue' && c.args[1] === verb)
 const apiCalls = (st) => st.calls.filter((c) => c.args[0] === 'api')
-
-const run = (world, args, st = freshState(), cwd = world.repo) => {
-  const result = issueClaim({ argv: args, cwd, runGh: makeRunGh(st) })
-  let json = null
-  try { json = JSON.parse(result.stdout) } catch {}
-  return { ...result, json, st }
-}
+/** The two api reads, kept apart: the paged pull request scan and the one login read. */
+const scanCalls = (st) => apiCalls(st).filter((c) => c.args[c.args.length - 1] !== 'user')
+const loginCalls = (st) => apiCalls(st).filter((c) => c.args[c.args.length - 1] === 'user')
 
 /**
- * A world whose origin is host-qualified and still entirely local. git talks to
- * git@github.com:jakub/demo.git through a GIT_SSH_COMMAND script that ignores the host it is
- * handed and runs the upload-pack or receive-pack command it was given against a bare repository
- * under this directory, so every read of the remote URL sees a host, an owner and a repository
- * while nothing leaves the machine. It is the only shape in which a gh --repo pin exists.
+ * Run a claim with this world's fake ssh in place, and put the environment back afterwards. The
+ * hostless world has no ssh script, and nothing in it reaches a remote that needs one.
  */
-const makeHostWorld = (name) => {
-  const dir = join(tmp, name)
-  const base = join(dir, 'base')
-  const origin = join(base, 'jakub', 'demo.git')
-  const repo = join(dir, 'repo')
-  mkdirSync(join(base, 'jakub'), { recursive: true })
-  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin])
-  execFileSync('git', ['init', '-q', '-b', 'main', repo])
-  writeFileSync(join(repo, 'file.txt'), 'first\n')
-  git(repo, 'add', 'file.txt')
-  git(repo, 'commit', '-q', '-m', 'first')
-  git(repo, 'remote', 'add', 'origin', 'git@github.com:jakub/demo.git')
-  const ssh = join(dir, 'fake-ssh')
-  writeFileSync(ssh, `#!/bin/sh\ncd ${base} || exit 1\nfor a; do last=$a; done\nexec /bin/sh -c "$last"\n`)
-  chmodSync(ssh, 0o755)
+const run = (world, args, st = freshState(), cwd = world.repo) => {
   const saved = process.env.GIT_SSH_COMMAND
-  process.env.GIT_SSH_COMMAND = ssh
-  git(repo, 'push', '-q', 'origin', 'main')
-  process.env.GIT_SSH_COMMAND = saved
-  const world = { name, dir, origin, repo, ssh, gitDir: join(repo, '.git'), mainSha: git(repo, 'rev-parse', 'HEAD') }
-  world.pathFor = (slug) => join(dir, `repo-issue-${ISSUE}-${slug}`)
-  return world
-}
-
-/** Run a claim with the fake ssh in place, and put the environment back afterwards. */
-const runOverSsh = (world, args, st = freshState()) => {
-  const saved = process.env.GIT_SSH_COMMAND
-  process.env.GIT_SSH_COMMAND = world.ssh
-  try { return run(world, args, st) } finally { process.env.GIT_SSH_COMMAND = saved }
+  if (world.ssh) process.env.GIT_SSH_COMMAND = world.ssh
+  try {
+    const result = issueClaim({ argv: args, cwd, runGh: makeRunGh(st) })
+    let json = null
+    try { json = JSON.parse(result.stdout) } catch {}
+    return { ...result, json, st }
+  } finally { process.env.GIT_SSH_COMMAND = saved }
 }
 
 // --------------------------------------------------------------------------- the happy path
@@ -315,10 +335,17 @@ console.log('\na claim on a ready issue')
   check('the issue is read three times: before the acquire, under the claim tag, and after the edit',
     callsTo(r.st, 'view').length === 3, `${callsTo(r.st, 'view').length} reads`)
   check('the pull request scan is the paged api read, once per scan, and gh pr list is never called',
-    apiCalls(r.st).length === 2 && apiCalls(r.st).every((c) => c.args.includes('--paginate')) &&
+    scanCalls(r.st).length === 2 && scanCalls(r.st).every((c) => c.args.includes('--paginate')) &&
     r.st.calls.every((c) => !(c.args[0] === 'pr' && c.args[1] === 'list')), JSON.stringify(r.st.calls.map((c) => c.args.slice(0, 2).join(' '))))
-  check('an origin with no host pins nothing, because there is no host to pin to',
-    r.st.calls.every((c) => !c.args.includes('--repo') && !c.args.includes('--hostname')), JSON.stringify(r.st.calls.map((c) => c.args)))
+  check('the scan asks for every page in one array, since --paginate alone prints one array per page',
+    scanCalls(r.st).every((c) => c.args.includes('--slurp')), JSON.stringify(scanCalls(r.st).map((c) => c.args)))
+  // `--add-assignee @me` is resolved by GitHub, so the read-back can only be checked against the
+  // login gh says the token belongs to. Confirming the assignment without asking would mean
+  // reading the list and hoping.
+  check('the login behind @me is read once, pinned to the host origin names',
+    loginCalls(r.st).length === 1 && loginCalls(r.st)[0].args[loginCalls(r.st)[0].args.indexOf('--hostname') + 1] === 'github.com' &&
+    loginCalls(r.st)[0].args.includes('.login'), JSON.stringify(loginCalls(r.st).map((c) => c.args)))
+  check('and the issue reads back assigned to it', r.st.issue.assignees.some((who) => who.login === 'jakub'), JSON.stringify(r.st.issue.assignees))
 }
 
 // ------------------------------------------------------------ refusals that mutate nothing
@@ -720,6 +747,32 @@ console.log('\nthe label move gh accepted and never made')
   check('the human is told not to re-run it', /do not re-run the claim/.test(r.stderr), JSON.stringify(r.stderr))
   check('the issue was read three times', callsTo(r.st, 'view').length === 3, `${callsTo(r.st, 'view').length} reads`)
 }
+for (const [label, readBack, why] of [
+  ['a blocker arrives with the label move',
+    { state: 'OPEN', labels: [{ name: 'in-progress' }, { name: 'needs-human' }], assignees: [] }, 'needs-human'],
+  ['the assignment did not land',
+    { state: 'OPEN', labels: [{ name: 'in-progress' }], assignees: [] }, 'nobody'],
+]) {
+  // The confirmation used to ask two questions: is it open, and does it carry in-progress without
+  // ready-for-agent. An issue reading back OPEN, in-progress, needs-human, assigned to nobody
+  // passed both and was reported as a clean claim, which is the state the whole readiness check
+  // exists to refuse. It now has to be open, in-progress, without ready-for-agent, without any
+  // blocking label, and assigned to the login gh says @me is.
+  const w = makeWorld(`confirm-${why}`)
+  const branch = `feat/issue-${ISSUE}-${SLUG}`
+  const st = freshState()
+  st.viewAt = { 2: { ...st.issue, ...readBack } }
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check(`${label}: exits 4 with issue-edit-unconfirmed`,
+    r.code === 4 && r.json?.result === 'unknown' && r.json?.reason === 'issue-edit-unconfirmed', `exit ${r.code} ${r.stdout}`)
+  check(`${label}: at phase published, retaining all four artifacts`,
+    r.json?.phase === 'published' && ['claim-tag', 'worktree', 'local-branch', 'remote-branch'].every((a) => (r.json?.retained ?? []).includes(a)), r.stdout)
+  check(`${label}: the detail says what it read back`, String(r.json?.detail).includes(why), String(r.json?.detail))
+  check(`${label}: the claim tag is kept`, refSha(w.origin, TAG_REF) === w.mainSha, String(refSha(w.origin, TAG_REF)))
+  check(`${label}: the branch stays on origin`, refSha(w.origin, `refs/heads/${branch}`) === w.mainSha, String(refSha(w.origin, `refs/heads/${branch}`)))
+  check(`${label}: the worktree is left in place`, existsSync(w.pathFor(SLUG)) && worktreePaths(w.repo).includes(w.pathFor(SLUG)), worktreePaths(w.repo).join(','))
+  check(`${label}: the human is told not to re-run it`, /do not re-run the claim/.test(r.stderr), JSON.stringify(r.stderr))
+}
 
 // ------------------------------------------------------------------ a pull request from a fork
 console.log('\nan open pull request from a fork')
@@ -744,11 +797,30 @@ console.log('\nan open pull request from a fork')
     String((r.json?.found?.pullRequests ?? [])[0]?.url).endsWith('/pull/42'), r.stdout)
   check('gh pr list was never called', r.st.calls.every((c) => !(c.args[0] === 'pr' && c.args[1] === 'list')), JSON.stringify(r.st.calls.map((c) => c.args.slice(0, 2).join(' '))))
   check('the scan walked the pages of the pulls endpoint of the repository origin names',
-    apiCalls(r.st).length === 1 && apiCalls(r.st)[0].args.includes('--paginate') &&
-    apiCalls(r.st)[0].args[apiCalls(r.st)[0].args.length - 1] === `repos/${w.name}/origin/pulls?state=open&per_page=100`,
-    JSON.stringify(apiCalls(r.st).map((c) => c.args)))
+    scanCalls(r.st).length === 1 && scanCalls(r.st)[0].args.includes('--paginate') &&
+    scanCalls(r.st)[0].args[scanCalls(r.st)[0].args.length - 1] === 'repos/jakub/demo/pulls?state=open&per_page=100',
+    JSON.stringify(scanCalls(r.st).map((c) => c.args)))
   check('no claim tag, no worktree, no issue edit',
     refSha(w.origin, TAG_REF) === null && worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0, 'something was mutated')
+}
+{
+  // `gh api --paginate` prints one JSON array per page, and two adjacent arrays are not JSON, so
+  // the parse used to fail on any repository with more than a hundred open pull requests and
+  // every claim there came back scan-unreadable. --slurp is what makes the pages one document,
+  // and the executor flattens what it gets. The rival is on the second page, where a reader that
+  // takes the first page for the whole answer cannot see it.
+  const w = makeWorld('paged-pull-requests')
+  const rival = { number: 101, head: { ref: `chore/issue-${ISSUE}-page-two` }, title: 'the second page run', html_url: 'https://github.com/jakub/demo/pull/101' }
+  const filler = Array.from({ length: 3 }, (unused, i) => ({ number: i + 1, head: { ref: `feat/issue-${ISSUE + 100 + i}-unrelated` }, title: 'unrelated', html_url: '' }))
+  const st = freshState({ prPages: [filler, [rival]] })
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check('the run refuses with live-run, so the second page was read', r.code === 2 && r.json?.reason === 'live-run', `exit ${r.code} ${r.stdout}`)
+  check('and names the pull request that was on it',
+    (r.json?.found?.pullRequests ?? []).some((hit) => hit.number === 101 && hit.headRefName === `chore/issue-${ISSUE}-page-two`), r.stdout)
+  check('the scan argv carries --slurp beside --paginate',
+    scanCalls(r.st).length === 1 && scanCalls(r.st)[0].args.includes('--slurp') && scanCalls(r.st)[0].args.includes('--paginate'),
+    JSON.stringify(scanCalls(r.st).map((c) => c.args)))
+  check('nothing was claimed', refSha(w.origin, TAG_REF) === null && worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0, 'something was mutated')
 }
 
 // ----------------------------------------------------------------- gh is pinned to one repository
@@ -757,17 +829,18 @@ console.log('\nevery gh call names the repository origin points at')
   // gh resolves a default repository of its own from remote.<name>.gh-resolved or, with several
   // GitHub remotes, from a preference in which upstream beats origin. On a fork clone an unpinned
   // call reads and labels the upstream issue while the tag and the branch land on origin.
-  const w = makeHostWorld('pinned-gh')
-  const r = runOverSsh(w, ['claim', String(ISSUE)])
+  const w = makeWorld('pinned-gh')
+  const r = run(w, ['claim', String(ISSUE)])
   check('the claim goes through against a host-qualified origin', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout} ${r.stderr}`)
   const issueCalls = r.st.calls.filter((c) => c.args[0] === 'issue')
   check('all four issue calls carry --repo github.com/jakub/demo',
     issueCalls.length === 4 && issueCalls.every((c) => c.args[c.args.indexOf('--repo') + 1] === 'github.com/jakub/demo'),
     JSON.stringify(issueCalls.map((c) => c.args)))
-  check('and the api read is pinned by its endpoint and --hostname, since gh api takes no --repo',
-    apiCalls(r.st).length === 2 && apiCalls(r.st).every((c) =>
+  check('and the api reads are pinned by their endpoint and --hostname, since gh api takes no --repo',
+    scanCalls(r.st).length === 2 && scanCalls(r.st).every((c) =>
       c.args[c.args.indexOf('--hostname') + 1] === 'github.com' &&
-      c.args[c.args.length - 1] === 'repos/jakub/demo/pulls?state=open&per_page=100'),
+      c.args[c.args.length - 1] === 'repos/jakub/demo/pulls?state=open&per_page=100') &&
+    loginCalls(r.st).every((c) => c.args[c.args.indexOf('--hostname') + 1] === 'github.com'),
     JSON.stringify(apiCalls(r.st).map((c) => c.args)))
   check('the branch really is on the origin the pin names', refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === w.mainSha, String(refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`)))
 }
@@ -782,17 +855,57 @@ console.log('\nevery gh call names the repository origin points at')
   check('nothing of the remote is echoed back', !r.stdout.includes('redirect=elsewhere') && !r.stderr.includes('redirect=elsewhere'), `${r.stdout} ${r.stderr}`)
   check('and gh was never called at all', r.st.calls.length === 0, JSON.stringify(r.st.calls.map((c) => c.args)))
 }
+for (const [label, url, secret] of [
+  ['a query string', 'git@github.com:jakub/demo.git?access_token=sekret', 'access_token=sekret'],
+  ['a fragment', 'git@github.com:jakub/demo.git#fragment-sekret', 'fragment-sekret'],
+]) {
+  // The scp-like spelling has no scheme for new URL() to strip a query off, and the regex over
+  // the part after the colon took the whole tail as the repository name. So
+  // git@github.com:jakub/demo.git?access_token=sekret named a repository called
+  // `demo.git?access_token=sekret`, and that string reached --repo, the repo field of the JSON
+  // line and the stage's journal. Both spellings are refused now, and neither is echoed.
+  const w = makeWorld(`scp-origin-with-${label.replace(/\s+/g, '-')}`)
+  const before = allRefs(w.origin)
+  git(w.repo, 'remote', 'set-url', 'origin', url)
+  const r = run(w, ['claim', String(ISSUE)])
+  check(`an scp-like remote carrying ${label} refuses with origin-unparseable`, r.code === 2 && r.json?.reason === 'origin-unparseable', `exit ${r.code} ${r.stdout}`)
+  check(`${label}: the secret is in neither stream`, !r.stdout.includes(secret) && !r.stderr.includes(secret), `${r.stdout} ${r.stderr}`)
+  check(`${label}: gh was never called`, r.st.calls.length === 0, JSON.stringify(r.st.calls.map((c) => c.args)))
+  check(`${label}: origin is unchanged`, allRefs(w.origin) === before, allRefs(w.origin))
+}
+{
+  // An origin with no host at all. gh cannot be pinned to one, and an unpinned gh picks its own
+  // repository out of remote.<name>.gh-resolved or a preference where upstream beats origin, so
+  // the tag and the branch would go to the local path while the issue edit landed in whatever
+  // GitHub repository gh settled on. There is nothing to check afterwards, so it is refused
+  // before the first gh call.
+  const w = makeLocalWorld('hostless-origin')
+  const before = allRefs(w.origin)
+  const r = run(w, ['claim', String(ISSUE)])
+  check('a bare repository at a filesystem path refuses with origin-unparseable', r.code === 2 && r.json?.reason === 'origin-unparseable', `exit ${r.code} ${r.stdout}`)
+  check('naming the missing host as the reason', /no host/.test(String(r.json?.detail)), String(r.json?.detail))
+  check('at phase pre-acquire, with nothing retained', r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
+  check('gh was never called', r.st.calls.length === 0, JSON.stringify(r.st.calls.map((c) => c.args)))
+  check('origin is unchanged and no claim tag was taken', allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
+  check('no worktree was added', worktreePaths(w.repo).length === 1, worktreePaths(w.repo).join(','))
+}
 
 // ------------------------------------------------------------ a remote that refuses the tag
 console.log('\norigin will not have a claim tag created on it')
 {
   // Protected tags. The push fails and the re-read positively finds no tag, which is a different
   // answer from the ambiguous one above it: there is nothing to retain and nothing to unwind.
+  // What it does not say is who refused. A pre-push hook in this clone and a transport that
+  // dropped the push look exactly the same from here, so the reason names the fact, that the tag
+  // was not created, and the sentence names all three candidates.
   const w = makeWorld('tags-protected')
   writeHook(w.origin, 'pre-receive', REFUSE_TAGS)
   const r = run(w, ['claim', String(ISSUE)])
   check('exits 4 with result unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
-  check('naming the remote as what refused it', r.json?.reason === 'acquire-refused-by-remote', String(r.json?.reason))
+  check('naming the fact it can prove, that the tag was not created', r.json?.reason === 'acquire-not-created', String(r.json?.reason))
+  check('the sentence does not pin it on the remote alone',
+    /The tag was not created; origin, a local hook, or the transport refused the push/.test(r.stderr), JSON.stringify(r.stderr))
+  check('and the line git marked as the failure is attached', /^.*error: failed to push/.test(String(r.json?.detail)), String(r.json?.detail))
   check('at phase pre-acquire, with nothing retained and no cleanup',
     r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]' && r.json?.cleanup === null, r.stdout)
   check('origin really holds no tag', refSha(w.origin, TAG_REF) === null, String(refSha(w.origin, TAG_REF)))
