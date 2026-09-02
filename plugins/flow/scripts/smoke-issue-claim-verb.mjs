@@ -8,14 +8,26 @@
 // claim's mutual exclusion is git's own, so faking git would test nothing.
 //
 // Everything GitHub is a fake gh injected in process, the same way scripts/smoke-release-path.mjs
-// injects one: a plain function across the module boundary, answering `issue view`, `pr list` and
-// `issue edit` from a per-case state object and recording every call it was handed. No
-// environment variable selects it, and nothing here needs a network or a GitHub account.
+// injects one: a plain function across the module boundary, answering `issue view`, the paged
+// `api` read of the open pull requests and `issue edit` from a per-case state object, and
+// recording every call it was handed. No environment variable selects it, and nothing here needs
+// a network or a GitHub account. The fake applies an `issue edit` to its own copy of the issue,
+// because the executor reads the issue back afterwards to confirm the labels moved; a case that
+// wants the other thing GitHub can do, accepting the request and changing nothing, sets
+// applyEdit false.
+//
+// Two shapes of origin. Most worlds push to a bare repository at a filesystem path, which has no
+// host to pin a gh call to: there the stripped environment is all that stands between gh and a
+// default repository of its own choosing, and the assertion is that nothing is pinned. One world
+// has a host-qualified origin, git@github.com:jakub/demo.git, served locally through a
+// GIT_SSH_COMMAND script that ignores the host it is handed and runs upload-pack or receive-pack
+// against a bare repository on disk. That is the shape where the pin is real, and the assertion
+// is that every gh call carries it. Still no network.
 //
 // The two live-run cases are the ones worth reading. The first plants a rival branch on origin
 // before the run starts, which the pre-scan sees, and the assertion is that no claim tag was ever
 // created. The second plants the rival between the first scan and the acquire, using the fake
-// gh's `pr list` call as the hook: `pr list` is the last read of a scan, so a branch planted
+// gh's pull request read as the hook: the paged pull request read is the last read of a scan, so a branch planted
 // there is invisible to the scan that just finished and visible to the one that runs while the
 // tag is held. That is the delayed contender the second scan exists for, and the assertions are
 // that the run stood down, gave the tag back, and left no worktree.
@@ -53,7 +65,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -134,6 +146,13 @@ const PLANT_THEN_REFUSE = '#!/bin/sh\nwhile read -r old new ref; do\n' +
   '  env -u GIT_QUARANTINE_PATH git update-ref "$ref" "$new"\n' +
   'done\necho "the answer went missing" >&2\nexit 1\n'
 
+// A remote that will not have refs/tags/ written at all, which is what a protected tag pattern
+// is. The claim tag push fails and origin positively holds no tag afterwards, so a run that
+// reports a tag it may have left sends a human hunting one that was never created.
+const REFUSE_TAGS = '#!/bin/sh\nwhile read -r old new ref; do\n' +
+  '  case "$ref" in refs/tags/*) echo "refs/tags/ is protected here" >&2; exit 1;; esac\n' +
+  'done\nexit 0\n'
+
 /** A bare origin with one commit on main, and a clone of it to claim from. */
 const makeWorld = (name) => {
   const dir = join(tmp, name)
@@ -157,7 +176,14 @@ const freshState = (overrides = {}) => ({
   viewExit: 0,
   editExit: 0,
   prs: [],
-  onPrList: null,
+  onPrScan: null,
+  // What GitHub does with an accepted edit. False is the other thing it can do: take the request
+  // and leave the issue exactly as it was.
+  applyEdit: true,
+  // An issue read that differs from the one before it, keyed by which read it is. Read 0 is the
+  // one before the acquire, read 1 the one under the claim tag, read 2 the one after the edit.
+  viewAt: {},
+  views: 0,
   calls: [],
   ...overrides,
   issue: {
@@ -172,30 +198,89 @@ const freshState = (overrides = {}) => ({
   },
 })
 
+/** The label and assignee moves an accepted `gh issue edit` makes, applied to the fake's issue. */
+const applyEdit = (st, args) => {
+  const labels = st.issue.labels.map((label) => label.name)
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--remove-label') {
+      const at = labels.indexOf(args[i + 1])
+      if (at >= 0) labels.splice(at, 1)
+    }
+    if (args[i] === '--add-label' && !labels.includes(args[i + 1])) labels.push(args[i + 1])
+    if (args[i] === '--add-assignee') st.issue.assignees = [{ login: 'jakub' }]
+  }
+  st.issue.labels = labels.map((name) => ({ name }))
+}
+
 const makeRunGh = (st) => (args, options) => {
   st.calls.push({ args, cwd: options?.cwd })
   if (args[0] === 'issue' && args[1] === 'view') {
+    const nth = st.views
+    st.views += 1
     if (st.viewExit) return { code: st.viewExit, stdout: '', stderr: 'fake gh: issue view failed\n' }
-    return { code: 0, stdout: JSON.stringify(st.issue), stderr: '' }
+    return { code: 0, stdout: JSON.stringify(st.viewAt[nth] ?? st.issue), stderr: '' }
   }
-  if (args[0] === 'pr' && args[1] === 'list') {
-    if (st.onPrList) st.onPrList()
+  // The pull request scan. `gh api --paginate` merges the pages it walks into one array, so one
+  // array is what the executor parses, and the objects are GitHub's REST shape: head.ref rather
+  // than the headRefName `gh pr list` invents.
+  if (args[0] === 'api') {
+    if (st.onPrScan) st.onPrScan()
     return { code: 0, stdout: JSON.stringify(st.prs), stderr: '' }
   }
   if (args[0] === 'issue' && args[1] === 'edit') {
     if (st.editExit) return { code: st.editExit, stdout: '', stderr: 'fake gh: issue edit failed\n' }
+    if (st.applyEdit) applyEdit(st, args)
     return { code: 0, stdout: '', stderr: '' }
   }
   return { code: 3, stdout: '', stderr: `fake gh: unexpected ${args.join(' ')}\n` }
 }
 
 const callsTo = (st, verb) => st.calls.filter((c) => c.args[0] === 'issue' && c.args[1] === verb)
+const apiCalls = (st) => st.calls.filter((c) => c.args[0] === 'api')
 
-const run = (world, args, st = freshState()) => {
-  const result = issueClaim({ argv: args, cwd: world.repo, runGh: makeRunGh(st) })
+const run = (world, args, st = freshState(), cwd = world.repo) => {
+  const result = issueClaim({ argv: args, cwd, runGh: makeRunGh(st) })
   let json = null
   try { json = JSON.parse(result.stdout) } catch {}
   return { ...result, json, st }
+}
+
+/**
+ * A world whose origin is host-qualified and still entirely local. git talks to
+ * git@github.com:jakub/demo.git through a GIT_SSH_COMMAND script that ignores the host it is
+ * handed and runs the upload-pack or receive-pack command it was given against a bare repository
+ * under this directory, so every read of the remote URL sees a host, an owner and a repository
+ * while nothing leaves the machine. It is the only shape in which a gh --repo pin exists.
+ */
+const makeHostWorld = (name) => {
+  const dir = join(tmp, name)
+  const base = join(dir, 'base')
+  const origin = join(base, 'jakub', 'demo.git')
+  const repo = join(dir, 'repo')
+  mkdirSync(join(base, 'jakub'), { recursive: true })
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin])
+  execFileSync('git', ['init', '-q', '-b', 'main', repo])
+  writeFileSync(join(repo, 'file.txt'), 'first\n')
+  git(repo, 'add', 'file.txt')
+  git(repo, 'commit', '-q', '-m', 'first')
+  git(repo, 'remote', 'add', 'origin', 'git@github.com:jakub/demo.git')
+  const ssh = join(dir, 'fake-ssh')
+  writeFileSync(ssh, `#!/bin/sh\ncd ${base} || exit 1\nfor a; do last=$a; done\nexec /bin/sh -c "$last"\n`)
+  chmodSync(ssh, 0o755)
+  const saved = process.env.GIT_SSH_COMMAND
+  process.env.GIT_SSH_COMMAND = ssh
+  git(repo, 'push', '-q', 'origin', 'main')
+  process.env.GIT_SSH_COMMAND = saved
+  const world = { name, dir, origin, repo, ssh, gitDir: join(repo, '.git'), mainSha: git(repo, 'rev-parse', 'HEAD') }
+  world.pathFor = (slug) => join(dir, `repo-issue-${ISSUE}-${slug}`)
+  return world
+}
+
+/** Run a claim with the fake ssh in place, and put the environment back afterwards. */
+const runOverSsh = (world, args, st = freshState()) => {
+  const saved = process.env.GIT_SSH_COMMAND
+  process.env.GIT_SSH_COMMAND = world.ssh
+  try { return run(world, args, st) } finally { process.env.GIT_SSH_COMMAND = saved }
 }
 
 // --------------------------------------------------------------------------- the happy path
@@ -227,6 +312,13 @@ console.log('\na claim on a ready issue')
     edit[edit.indexOf('--remove-label') + 1] === 'ready-for-agent' &&
     edit[edit.indexOf('--add-label') + 1] === 'in-progress', JSON.stringify(edit))
   check('every gh call ran in the repository', r.st.calls.every((c) => c.cwd === w.repo), JSON.stringify(r.st.calls.map((c) => c.cwd)))
+  check('the issue is read three times: before the acquire, under the claim tag, and after the edit',
+    callsTo(r.st, 'view').length === 3, `${callsTo(r.st, 'view').length} reads`)
+  check('the pull request scan is the paged api read, once per scan, and gh pr list is never called',
+    apiCalls(r.st).length === 2 && apiCalls(r.st).every((c) => c.args.includes('--paginate')) &&
+    r.st.calls.every((c) => !(c.args[0] === 'pr' && c.args[1] === 'list')), JSON.stringify(r.st.calls.map((c) => c.args.slice(0, 2).join(' '))))
+  check('an origin with no host pins nothing, because there is no host to pin to',
+    r.st.calls.every((c) => !c.args.includes('--repo') && !c.args.includes('--hostname')), JSON.stringify(r.st.calls.map((c) => c.args)))
 }
 
 // ------------------------------------------------------------ refusals that mutate nothing
@@ -280,16 +372,16 @@ console.log('\na run already live on the issue')
 }
 {
   // The delayed contender: a rival branch appears after the first scan and before the acquire.
-  // `pr list` is the last read of a scan, so planting there is invisible to the scan that just
+  // the paged pull request read is the last read of a scan, so planting there is invisible to the scan that just
   // finished and visible to the one that runs under the tag.
   const w = makeWorld('live-rescan')
   const rival = `refs/heads/fix/issue-${ISSUE}-a-rival-run`
   let seen = 0
   const st = freshState()
-  st.onPrList = () => { if (seen++ === 0) git(w.origin, 'update-ref', rival, w.mainSha) }
+  st.onPrScan = () => { if (seen++ === 0) git(w.origin, 'update-ref', rival, w.mainSha) }
   const r = run(w, ['claim', String(ISSUE)], st)
   check('the second scan catches it and refuses with live-run', r.code === 2 && r.json?.reason === 'live-run', `exit ${r.code} ${r.stdout}`)
-  check('the scan ran twice', seen === 2, `${seen} pr list calls`)
+  check('the scan ran twice', seen === 2, `${seen} pull request reads`)
   check('and names the branch that appeared under found.remoteBranches', (r.json?.found?.remoteBranches ?? []).some((hit) => hit.ref === rival), r.stdout)
   check('the phase says the tag had been taken, and the cleanup confirmed',
     r.json?.phase === 'acquired' && (r.json?.retained ?? null)?.length === 0 && r.json?.cleanup === null, r.stdout)
@@ -427,9 +519,9 @@ console.log('\nthe push fails after origin already took the branch')
   const branch = `feat/issue-${ISSUE}-${SLUG}`
   const st = freshState()
   let scans = 0
-  // `pr list` is the last read of a scan, so arming here is invisible to the scan that just
+  // the paged pull request read is the last read of a scan, so arming here is invisible to the scan that just
   // finished. The second scan is the one that runs while the tag is held; the push comes after it.
-  st.onPrList = () => { if (scans++ === 1) writeHook(w.origin, 'pre-receive', PLANT_THEN_REFUSE) }
+  st.onPrScan = () => { if (scans++ === 1) writeHook(w.origin, 'pre-receive', PLANT_THEN_REFUSE) }
   const r = run(w, ['claim', String(ISSUE)], st)
   check('exits 4 with result unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
   check('naming the push as the step that failed', r.json?.reason === 'push', String(r.json?.reason))
@@ -453,7 +545,7 @@ console.log('\nthe claim tag cannot be given back')
   const rival = `refs/heads/fix/issue-${ISSUE}-a-rival-run`
   const st = freshState()
   let scans = 0
-  st.onPrList = () => { if (scans++ === 0) git(w.origin, 'update-ref', rival, w.mainSha) }
+  st.onPrScan = () => { if (scans++ === 0) git(w.origin, 'update-ref', rival, w.mainSha) }
   const r = run(w, ['claim', String(ISSUE)], st)
   check('the stand-down is reported as unknown, not as a clean refusal', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
   check('the reason is still the live run it found', r.json?.reason === 'live-run', String(r.json?.reason))
@@ -489,7 +581,7 @@ console.log('\nwhat a failed worktree add tells the caller')
   const other = git(w.repo, 'commit-tree', '-m', 'not this run\'s object', '-p', w.mainSha, `${w.mainSha}^{tree}`)
   const st = freshState()
   let scans = 0
-  st.onPrList = () => { if (scans++ === 1) git(w.repo, 'update-ref', `refs/heads/${branch}`, other) }
+  st.onPrScan = () => { if (scans++ === 1) git(w.repo, 'update-ref', `refs/heads/${branch}`, other) }
   const r = run(w, ['claim', String(ISSUE)], st)
   check('the detail carries git\'s fatal line, not its progress line',
     /fatal: a branch named/.test(String(r.json?.detail)) && !String(r.json?.detail).includes('Preparing worktree'), String(r.json?.detail))
@@ -524,14 +616,14 @@ console.log('\nthe tag lands on origin and the push still fails')
 // ----------------------------------------------------- an acquire that fails before it pushes
 console.log('\nthe acquire cannot read origin at all')
 {
-  // Origin's URL in the clone is broken from the fake gh's `pr list`, which is the last read of
+  // Origin's URL in the clone is broken from the fake gh's pull request read, which is the last read of
   // the scan, so the scan finishes against the real remote and the acquire fails on its first
   // read, refs/heads/main, having pushed nothing. Every acquire failure used to come back as a
   // tag that may exist, which sends an issue to manual recovery over a remote that was briefly
   // unreachable.
   const w = makeWorld('acquire-unreadable')
   const st = freshState()
-  st.onPrList = () => { git(w.repo, 'remote', 'set-url', 'origin', join(w.dir, 'no-such-origin.git')) }
+  st.onPrScan = () => { git(w.repo, 'remote', 'set-url', 'origin', join(w.dir, 'no-such-origin.git')) }
   const r = run(w, ['claim', String(ISSUE)], st)
   check('exits 4 with result unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
   check('naming the acquire as the step that failed', r.json?.reason === 'acquire-unknown', String(r.json?.reason))
@@ -543,6 +635,223 @@ console.log('\nthe acquire cannot read origin at all')
   check('no branch, no worktree, no issue edit',
     refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0,
     'something was mutated')
+}
+
+// --------------------------------------------------------- the boundary a worktree stays inside
+console.log('\nthe git directory is a symlink out of the parent')
+{
+  // The check used to be lexical. `git rev-parse --git-common-dir` answers `.git` for an ordinary
+  // clone, and a `.git` that is a symlink to a directory outside the parent resolves to a path
+  // inside it, so the comparison passed and `git worktree add` then wrote its registration, and
+  // the new branch, through the link and out of bounds.
+  const w = makeWorld('outside-common-dir')
+  const outside = join(tmp, 'outside-git-of-outside-common-dir')
+  mkdirSync(outside)
+  const moved = join(outside, 'repo.git')
+  renameSync(join(w.repo, '.git'), moved)
+  symlinkSync(moved, join(w.repo, '.git'))
+  const before = allRefs(w.origin)
+  const r = run(w, ['claim', String(ISSUE)])
+  check('refuses with outside-parent', r.code === 2 && r.json?.reason === 'outside-parent', `exit ${r.code} ${r.stdout}`)
+  check('at phase pre-acquire, with nothing retained', r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
+  check('and names the real git directory it resolved to', String(r.json?.detail).includes(moved), String(r.json?.detail))
+  check('origin is unchanged and no claim tag was taken', allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
+  check('nothing was registered through the link', !existsSync(join(moved, 'worktrees')), join(moved, 'worktrees'))
+  check('no worktree was created beside the repository', !existsSync(w.pathFor(SLUG)), w.pathFor(SLUG))
+  check('no branch was created in the clone', refSha(w.repo, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null, 'a branch was created')
+  check('the issue was not touched', callsTo(r.st, 'edit').length === 0, 'an edit went out')
+}
+{
+  // The other half of the same rule: canonicalizing has to refuse only what actually leaves the
+  // parent. This link points at a directory beside the repository, inside the boundary, and the
+  // claim goes through with its worktree at the canonical sibling path.
+  const w = makeWorld('inside-common-dir')
+  const inside = join(w.dir, 'gitdirs')
+  mkdirSync(inside)
+  const moved = join(inside, 'repo.git')
+  renameSync(join(w.repo, '.git'), moved)
+  symlinkSync(moved, join(w.repo, '.git'))
+  const r = run(w, ['claim', String(ISSUE)])
+  check('a git directory symlinked to somewhere inside the parent still claims', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout}`)
+  check('and the worktree is the canonical sibling of the repository',
+    r.json?.worktree === w.pathFor(SLUG) && existsSync(w.pathFor(SLUG)), String(r.json?.worktree))
+}
+
+// ------------------------------------------------- the issue changes while the tag is held
+console.log('\nthe issue changes between the first read and the claim')
+for (const [label, mutate, reason] of [
+  ['a human closes it', (issue) => ({ ...issue, state: 'CLOSED' }), 'issue-closed'],
+  ['a human blocks it', (issue) => ({ ...issue, labels: [{ name: 'ready-for-agent' }, { name: 'needs-human' }] }), 'blocked'],
+  ['a human pulls the ready label', (issue) => ({ ...issue, labels: [{ name: 'enhancement' }] }), 'not-ready'],
+]) {
+  // The read that authorized the run happens before the acquire. Without a second one under the
+  // tag, this run pushed a branch, relabelled a closed or blocked issue and reported itself
+  // claimed. Read 1 is the one taken while the tag is held, immediately before the worktree add.
+  const w = makeWorld(`recheck-${reason}`)
+  const st = freshState()
+  st.viewAt = { 1: mutate(st.issue) }
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check(`${label}: refuses with ${reason}`, r.code === 2 && r.json?.reason === reason, `exit ${r.code} ${r.stdout}`)
+  check(`${label}: at phase acquired, with nothing retained`,
+    r.json?.phase === 'acquired' && JSON.stringify(r.json?.retained) === '[]' && r.json?.cleanup === null, r.stdout)
+  check(`${label}: the claim tag was given back`, r.json?.abandon === 'abandoned' && refSha(w.origin, TAG_REF) === null, `${r.json?.abandon} ${refSha(w.origin, TAG_REF)}`)
+  check(`${label}: no worktree and no branch on origin`,
+    !existsSync(w.pathFor(SLUG)) && worktreePaths(w.repo).length === 1 && refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null, 'something was published')
+  check(`${label}: the issue was read twice and never edited`,
+    callsTo(r.st, 'view').length === 2 && callsTo(r.st, 'edit').length === 0, `${callsTo(r.st, 'view').length} reads`)
+}
+
+console.log('\nthe label move gh accepted and never made')
+{
+  // gh exiting 0 says the request was accepted, not that the issue reads the way the next run
+  // needs it to. The branch is already on origin, so nothing here can be undone: the honest
+  // answer keeps all four artifacts and tells a human to finish it by hand.
+  const w = makeWorld('edit-unconfirmed')
+  const branch = `feat/issue-${ISSUE}-${SLUG}`
+  const r = run(w, ['claim', String(ISSUE)], freshState({ applyEdit: false }))
+  check('exits 4 with result unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
+  check('naming the confirmation as what did not hold', r.json?.reason === 'issue-edit-unconfirmed', String(r.json?.reason))
+  check('at phase published, retaining all four artifacts',
+    r.json?.phase === 'published' && ['claim-tag', 'worktree', 'local-branch', 'remote-branch'].every((a) => (r.json?.retained ?? []).includes(a)), r.stdout)
+  check('the claim tag is kept', refSha(w.origin, TAG_REF) === w.mainSha, String(refSha(w.origin, TAG_REF)))
+  check('the branch stays on origin', refSha(w.origin, `refs/heads/${branch}`) === w.mainSha, String(refSha(w.origin, `refs/heads/${branch}`)))
+  check('the worktree is left in place', existsSync(w.pathFor(SLUG)) && worktreePaths(w.repo).includes(w.pathFor(SLUG)), worktreePaths(w.repo).join(','))
+  check('the detail names the labels the issue actually reads back with', /ready-for-agent/.test(String(r.json?.detail)), String(r.json?.detail))
+  check('the human is told not to re-run it', /do not re-run the claim/.test(r.stderr), JSON.stringify(r.stderr))
+  check('the issue was read three times', callsTo(r.st, 'view').length === 3, `${callsTo(r.st, 'view').length} reads`)
+}
+
+// ------------------------------------------------------------------ a pull request from a fork
+console.log('\nan open pull request from a fork')
+{
+  // A fork's head branch is in the fork, so no ref under refs/heads/* on origin advertises it and
+  // the branch scan cannot see it. `gh pr list --limit 100` would also have dropped it on a busy
+  // repository. The paged api read over the pulls endpoint is what catches it.
+  const w = makeWorld('fork-pull-request')
+  const st = freshState({
+    prs: [{
+      number: 42,
+      head: { ref: `feat/issue-${ISSUE}-from-a-fork`, repo: { fork: true } },
+      title: 'the fork run',
+      html_url: 'https://github.com/someone/marketplace-plugins/pull/42',
+    }],
+  })
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check('the scan refuses with live-run', r.code === 2 && r.json?.reason === 'live-run', `exit ${r.code} ${r.stdout}`)
+  check('and names the pull request it found',
+    (r.json?.found?.pullRequests ?? []).some((hit) => hit.number === 42 && hit.headRefName === `feat/issue-${ISSUE}-from-a-fork`), r.stdout)
+  check('the hit carries the html url, not gh pr list\'s url field',
+    String((r.json?.found?.pullRequests ?? [])[0]?.url).endsWith('/pull/42'), r.stdout)
+  check('gh pr list was never called', r.st.calls.every((c) => !(c.args[0] === 'pr' && c.args[1] === 'list')), JSON.stringify(r.st.calls.map((c) => c.args.slice(0, 2).join(' '))))
+  check('the scan walked the pages of the pulls endpoint of the repository origin names',
+    apiCalls(r.st).length === 1 && apiCalls(r.st)[0].args.includes('--paginate') &&
+    apiCalls(r.st)[0].args[apiCalls(r.st)[0].args.length - 1] === `repos/${w.name}/origin/pulls?state=open&per_page=100`,
+    JSON.stringify(apiCalls(r.st).map((c) => c.args)))
+  check('no claim tag, no worktree, no issue edit',
+    refSha(w.origin, TAG_REF) === null && worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0, 'something was mutated')
+}
+
+// ----------------------------------------------------------------- gh is pinned to one repository
+console.log('\nevery gh call names the repository origin points at')
+{
+  // gh resolves a default repository of its own from remote.<name>.gh-resolved or, with several
+  // GitHub remotes, from a preference in which upstream beats origin. On a fork clone an unpinned
+  // call reads and labels the upstream issue while the tag and the branch land on origin.
+  const w = makeHostWorld('pinned-gh')
+  const r = runOverSsh(w, ['claim', String(ISSUE)])
+  check('the claim goes through against a host-qualified origin', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout} ${r.stderr}`)
+  const issueCalls = r.st.calls.filter((c) => c.args[0] === 'issue')
+  check('all four issue calls carry --repo github.com/jakub/demo',
+    issueCalls.length === 4 && issueCalls.every((c) => c.args[c.args.indexOf('--repo') + 1] === 'github.com/jakub/demo'),
+    JSON.stringify(issueCalls.map((c) => c.args)))
+  check('and the api read is pinned by its endpoint and --hostname, since gh api takes no --repo',
+    apiCalls(r.st).length === 2 && apiCalls(r.st).every((c) =>
+      c.args[c.args.indexOf('--hostname') + 1] === 'github.com' &&
+      c.args[c.args.length - 1] === 'repos/jakub/demo/pulls?state=open&per_page=100'),
+    JSON.stringify(apiCalls(r.st).map((c) => c.args)))
+  check('the branch really is on the origin the pin names', refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === w.mainSha, String(refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`)))
+}
+{
+  // A remote with a query string cannot be parsed into an owner and a repository without
+  // guessing, and guessing is how an API path gets built out of one. Nothing of the URL is
+  // echoed back.
+  const w = makeWorld('origin-with-a-query')
+  git(w.repo, 'remote', 'set-url', 'origin', 'https://github.com/jakub/demo.git?redirect=elsewhere')
+  const r = run(w, ['claim', String(ISSUE)])
+  check('a remote carrying a query string refuses with origin-unparseable', r.code === 2 && r.json?.reason === 'origin-unparseable', `exit ${r.code} ${r.stdout}`)
+  check('nothing of the remote is echoed back', !r.stdout.includes('redirect=elsewhere') && !r.stderr.includes('redirect=elsewhere'), `${r.stdout} ${r.stderr}`)
+  check('and gh was never called at all', r.st.calls.length === 0, JSON.stringify(r.st.calls.map((c) => c.args)))
+}
+
+// ------------------------------------------------------------ a remote that refuses the tag
+console.log('\norigin will not have a claim tag created on it')
+{
+  // Protected tags. The push fails and the re-read positively finds no tag, which is a different
+  // answer from the ambiguous one above it: there is nothing to retain and nothing to unwind.
+  const w = makeWorld('tags-protected')
+  writeHook(w.origin, 'pre-receive', REFUSE_TAGS)
+  const r = run(w, ['claim', String(ISSUE)])
+  check('exits 4 with result unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
+  check('naming the remote as what refused it', r.json?.reason === 'acquire-refused-by-remote', String(r.json?.reason))
+  check('at phase pre-acquire, with nothing retained and no cleanup',
+    r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]' && r.json?.cleanup === null, r.stdout)
+  check('origin really holds no tag', refSha(w.origin, TAG_REF) === null, String(refSha(w.origin, TAG_REF)))
+  check('and the human is not sent hunting one', /Nothing of this run is left anywhere/.test(r.stderr), JSON.stringify(r.stderr))
+  check('no branch, no worktree, no issue edit',
+    refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0,
+    'something was mutated')
+}
+
+// ------------------------------------------------------ a rival branch under this run's name
+console.log('\na rival takes the branch name before this run can push it')
+{
+  // The push is refused because origin already holds that branch at another object. This run
+  // published nothing, and the branch is not its to take away: it belongs under found, where the
+  // caller reads what the scans saw, and never under retained, which is the list a human is told
+  // to clear by hand.
+  const w = makeWorld('push-rival-branch')
+  const branch = `feat/issue-${ISSUE}-${SLUG}`
+  const other = git(w.repo, 'commit-tree', '-m', 'a rival run\'s work', '-p', w.mainSha, `${w.mainSha}^{tree}`)
+  const st = freshState()
+  let scans = 0
+  // The paged pull request read is the last read of a scan, so planting here is invisible to the
+  // scan that just finished. The push comes after the second one.
+  st.onPrScan = () => { if (scans++ === 1) tryGit(w.repo, 'push', 'origin', `${other}:refs/heads/${branch}`) }
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check('exits 4 with result unknown', r.code === 4 && r.json?.result === 'unknown', `exit ${r.code} ${r.stdout}`)
+  check('naming the push as the step that failed', r.json?.reason === 'push', String(r.json?.reason))
+  check('the rival branch is reported under found.remoteBranches, with its object',
+    (r.json?.found?.remoteBranches ?? []).some((hit) => hit.ref === `refs/heads/${branch}` && hit.sha === other), r.stdout)
+  check('and never under retained, which is the list a human is told to clear',
+    !(r.json?.retained ?? []).includes('remote-branch'), JSON.stringify(r.json?.retained))
+  check('the stderr says the branch is not this run\'s to touch', /not this run's to touch/.test(r.stderr), JSON.stringify(r.stderr))
+  check('the rival branch is left exactly where it was', refSha(w.origin, `refs/heads/${branch}`) === other, String(refSha(w.origin, `refs/heads/${branch}`)))
+  check('this run\'s own worktree and branch are gone', !existsSync(w.pathFor(SLUG)) && refSha(w.repo, `refs/heads/${branch}`) === null, worktreePaths(w.repo).join(','))
+  check('and the claim tag went back', r.json?.abandon === 'abandoned' && refSha(w.origin, TAG_REF) === null, `${r.json?.abandon} ${refSha(w.origin, TAG_REF)}`)
+  check('the issue was not touched', callsTo(r.st, 'edit').length === 0, 'an edit went out')
+}
+
+// ------------------------------------------------------- a heading with nothing underneath it
+console.log('\nan acceptance criteria heading with nothing under it')
+{
+  // A heading and no criteria gives a run nothing to be judged against, which is the same
+  // position as an issue with no heading at all.
+  // A world each, because a run that wrongly claims one of these bodies leaves a branch the next
+  // one would refuse over, and that is not the answer under test.
+  const atEndWorld = makeWorld('empty-criteria-at-end')
+  const beforeAtEnd = allRefs(atEndWorld.origin)
+  const atEnd = run(atEndWorld, ['claim', String(ISSUE)], freshState({ issue: { body: 'Two runs on one issue is the failure this closes.\n\n## Acceptance Criteria\n' } }))
+  check('a heading at the end of the body refuses', atEnd.code === 2 && atEnd.json?.reason === 'no-acceptance-criteria', `exit ${atEnd.code} ${atEnd.stdout}`)
+
+  const nextWorld = makeWorld('empty-criteria-next-heading')
+  const beforeNext = allRefs(nextWorld.origin)
+  const nextHeading = run(nextWorld, ['claim', String(ISSUE)], freshState({ issue: { body: 'Intro.\n\n## Acceptance Criteria\n\n## Notes\n\nThe criteria never got written.\n' } }))
+  check('a heading followed straight by the next one refuses too', nextHeading.code === 2 && nextHeading.json?.reason === 'no-acceptance-criteria', `exit ${nextHeading.code} ${nextHeading.stdout}`)
+  check('neither of them touched its origin',
+    allRefs(atEndWorld.origin) === beforeAtEnd && allRefs(nextWorld.origin) === beforeNext &&
+    refSha(atEndWorld.origin, TAG_REF) === null && refSha(nextWorld.origin, TAG_REF) === null,
+    `${allRefs(atEndWorld.origin)} | ${allRefs(nextWorld.origin)}`)
+  check('and neither edited the issue', callsTo(atEnd.st, 'edit').length === 0 && callsTo(nextHeading.st, 'edit').length === 0, 'an edit went out')
 }
 
 rmSync(tmp, { recursive: true, force: true })
