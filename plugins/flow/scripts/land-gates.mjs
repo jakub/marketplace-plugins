@@ -61,8 +61,8 @@
 // collection because a check suite that has no runs in it is real and never shows up in the runs.
 // Those reads bracket the collection, a suite count and the check-runs pages taken before it and
 // again after both them and the statuses, and the closing read of the runs is a second full read
-// compared run by run on id, status and conclusion, so a run re-requested or flipped in place
-// between the two reads is caught as movement instead of counted as unchanged. Only a change that
+// compared run by run on id, name, status and conclusion, so a run re-requested, flipped or
+// renamed in place between the two reads is caught as movement instead of counted as unchanged. Only a change that
 // lands after the closing read is outside what a point-in-time gate can see, and that one is the
 // merge's problem, pinned with --match-head-commit and run by the stage only on a pass with no
 // mutation since.
@@ -821,8 +821,13 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     }
     // What a check run is compared by across the bracket. The count alone cannot see a run that
     // was re-requested back to queued or flipped to failed in place, because neither moves it.
-    const markOf = (run) => `${run?.id ?? null}:${run?.status ?? null}:${run?.conclusion ?? null}`
-    const stateOf = (run) => `${run?.status ?? null}:${run?.conclusion ?? null}`
+    // The name is in here because GitHub's update endpoint accepts a new one and the flake
+    // allowlist keys on it, so a failed run called e2e that the base branch excuses, renamed to
+    // security-scan under the same id and the same conclusion, would otherwise keep the excuse.
+    // The separator is a NUL, which no check-run name can contain, so no name can forge a field
+    // boundary and look like a different run that has not moved.
+    const markOf = (run) => [run?.id ?? null, run?.name ?? null, run?.status ?? null, run?.conclusion ?? null].join('\u0000')
+    const stateOf = (run) => [run?.name ?? null, run?.status ?? null, run?.conclusion ?? null].join('\u0000')
 
     const overSuiteCap = (total) => {
       const detail = `${headSha} carries ${total} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the ` +
@@ -955,7 +960,7 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
     // check runs are read in full a second time, because a count cannot see a run that changed
     // where it stood: a re-requested run goes back to queued under the same id, and a run that
     // was green when the pages were walked can be red by the time this gate reports. So the
-    // comparison is every run's id, status and conclusion, and the counts do the same job for the
+    // comparison is every run's id, name, status and conclusion, and the counts do the same job for the
     // suites and the statuses, which this gate reads for how many there are rather than for what
     // each one says. The closing suite count needs no cap check of its own, because it has to
     // equal an opening count that already passed the cap.
