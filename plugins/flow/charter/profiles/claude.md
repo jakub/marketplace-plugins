@@ -72,7 +72,7 @@ writer produced.
 
 `gpt-5.6-sol` at high effort through `delegate_to_codex` in `mode: "adversarial-review"`
 against an immutable `base`, `access: read-only`, for a diff `flow:implementer` produced.
-Sol is flat-rate on this host, so extra lenses cost turnaround and not money: widen on a
+On a flat-rate Codex subscription extra lenses cost turnaround and not money: widen on a
 hunch.
 
 ### role: security-seat

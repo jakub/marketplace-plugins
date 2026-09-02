@@ -52,9 +52,6 @@ Rules:
 - No agent files into `agent-found`. The no-backlog guard knows two sanctions, `prep` and
   `land`, and neither of them writes that label.
 
-Retired labels are not named here on purpose: the set above is exhaustive, so anything else
-is drift and the lint never recreates it.
-
 ## The ready-for-agent contract
 
 An issue may hold `ready-for-agent` only while ALL of these validate. The nightly lint

@@ -53,7 +53,7 @@ Red twice on identical code is real: abort. Never rerun an assertion failure - t
 
 ## 4. External-threads gate
 
-Threads are not reachable through `gh pr view --json`. That field list rejects `reviewThreads` with "Unknown JSON field" (gh 2.98.0, checked 2026-08-29), so read them over GraphQL:
+Threads are not reachable through `gh pr view --json`. That field list rejects `reviewThreads`, so read them over GraphQL:
 
 ```bash
 gh api graphql -f query='

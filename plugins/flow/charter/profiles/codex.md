@@ -79,8 +79,8 @@ Do not send that one across the bridge.
 
 `opus-5` at xhigh effort through `delegate_to_claude` as `claude-opus-5` in
 `mode: "adversarial-review"` against an immutable `base`, `access: read-only`, for a diff
-a native writer produced. The outside family is metered on this host: trim optional
-lenses on a quiet diff, never this pass.
+a native writer produced. Where the Claude side is metered, trim optional lenses on a
+quiet diff, never this pass.
 
 ### role: security-seat
 
@@ -92,10 +92,9 @@ lenses on a quiet diff, never this pass.
 
 ### role: human-choice
 
-The suspended turn. There is no in-turn question tool, and a PreToolUse hook cannot ask:
-a hook's `ask` result reads as a failure and the command runs anyway. So write the
-question, list up to 4 numbered options with a one-line consequence each and the
-recommended one first, then end the turn. The human's next message is the answer. Do not
+The suspended turn. There is no in-turn question tool, so write the question, list up to 4
+numbered options with a one-line consequence each and the recommended one first, then end
+the turn. The human's next message is the answer. Do not
 guess an answer to keep a run moving, and do not stack two questions into one suspension.
 
 ### role: pipeline-entry
