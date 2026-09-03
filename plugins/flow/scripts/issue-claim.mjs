@@ -239,16 +239,18 @@
 // win. Exit codes: 0 acquired, released, abandoned or claimed, 2 usage or refusal, 3 held by
 // someone else, 4 unknown.
 
-import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { accessSync, constants, existsSync, realpathSync } from 'node:fs'
-import { basename, delimiter, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Only the allowlist, not the parse. The comment at remoteSlug says why this file parses an
-// origin of its own; which hosts flow may hand a credential to is one list all the same, and a
-// second copy of it is a second thing to keep in step.
-import { allowedHostsFrom, hostIsAllowed, isHostname, isScpUser } from '../lib/remote-identity.mjs'
+import { execCapture, parseJson, parseObject, pinnedGhEnv, resolveGh, runExecutor } from '../lib/gh-exec.mjs'
+import { firstLine, makeRedactor } from '../lib/redact.mjs'
+// The grammar of a remote, not the land executors' policy over it. The comment at remoteSlug says
+// why this file answers a different question with the same reading. The allowlist comes from here
+// too, because which hosts flow may hand a credential to is one list and a second copy of it is a
+// second thing to keep in step.
+import { allowedHostsFrom, hostIsAllowed, isHostname, parseRemoteShape } from '../lib/remote-identity.mjs'
 
 const LOCAL_GIT_TIMEOUT_MS = 5_000
 const REMOTE_GIT_TIMEOUT_MS = 30_000
@@ -373,85 +375,13 @@ All four refuse when origin's fetch and push URLs disagree. Nothing here overwri
 breaks a stale tag, and nothing it prints carries a credential from a remote URL.
 `
 
-/** Run git and report its exit code, rather than swallowing failures into null. */
-const runGit = (args, cwd, timeoutMs) => {
-  try {
-    const stdout = execFileSync('git', ['-C', cwd, ...args], {
-      encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    return { code: 0, stdout: String(stdout), stderr: '' }
-  } catch (error) {
-    // A killed child has a null status. That maps to 1, which is neither the 0 nor the 2 that
-    // `ls-remote --exit-code` uses, so a timeout reads as unknown and never as a decision.
-    return {
-      code: error?.status ?? 1,
-      stdout: String(error?.stdout || ''),
-      stderr: String(error?.stderr || error?.message || error),
-    }
-  }
-}
-
-// Userinfo in a URL, as in https://user:token@host/owner/repo. Git 2.55 redacts this from its own
-// error text, but that is behaviour rather than a promise, and every string below is on its way
-// into JSON the stage journals.
-const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi
-// The same thing in the scp-like spelling, which has no scheme in front of its userinfo:
-// user:ghp_token@github.com:jakub/demo.git. This takes everything up to the @ and not only a run
-// with a colon in it, because git rewrites what it prints and the colon does not survive. Handed
-// that remote, git reads the first colon as the host separator, tries to reach a host called
-// user, and reports
-// `fatal: 'ghp_token@github.com:jakub/demo.git' does not appear to be a git repository`: the
-// token is now sitting where the ssh user goes, with no colon left to recognise it by. The
-// lookahead keeps this to something shaped like a remote, an @ followed by a host and a colon,
-// and the bias is deliberate. Cutting the user out of git@github.com:owner/repo costs a reader
-// nothing, and the identity is printed beside it anyway.
-const SCP_USERINFO = /[^\s@/'"]*@(?=[^\s@/'"]+:)/g
-const scrubUserinfo = (text) => String(text || '').replace(USERINFO, '$1').replace(SCP_USERINFO, '')
-
 /**
- * Every spelling of one configured remote a message can turn up carrying. git does not always
- * echo the URL as it was configured: `git push` reports
- * `error: failed to push some refs to 'github.com:jakub/demo.git'` for a remote written
- * git@github.com:jakub/demo.git, having dropped the userinfo on the way, and matching only the
- * configured string leaves that line unredacted. So the userinfo-stripped forms are registered
- * too: host:path for the scp-like spelling, and scheme://host/path and host/path for a URL.
+ * Run git and report its exit code, rather than swallowing failures into null. A killed child has
+ * a null status, which execCapture maps to 1; that is neither the 0 nor the 2 that
+ * `ls-remote --exit-code` uses, so a timeout here reads as unknown and never as a decision.
  */
-const remoteSpellings = (url) => {
-  const raw = String(url ?? '').trim()
-  if (raw === '') return []
-  const scheme = raw.match(/^([a-z][a-z0-9+.-]*:\/\/)(?:[^/@\s]*@)?(.+)$/i)
-  if (scheme !== null) return [raw, `${scheme[1]}${scheme[2]}`, scheme[2]]
-  const scp = raw.match(/^[^/\s]*@(.+)$/)
-  return scp === null ? [raw] : [raw, scp[1]]
-}
+const runGit = (args, cwd, timeoutMs) => execCapture('git', ['-C', cwd, ...args], { timeoutMs })
 
-/**
- * Redact git's own words before quoting them. Pattern matching alone is not enough: git quotes
- * the remote it was handed in messages like
- * `fatal: 'user@host' does not appear to be a git repository`, and a shape it reads as a local
- * path keeps whatever was in it. So the redactor is built from the URLs actually configured on
- * origin, and from the spellings git rewrites them into, and swaps those exact strings for the
- * safe identity, which needs no guessing about which run of characters is a secret. The two
- * userinfo patterns stay behind it as a backstop for URLs that reach the output some other way.
- *
- * The userinfo goes first and the spellings second, which is the only order that works. A line
- * reading `'ghp_token@github.com:jakub/demo.git'` loses its colon the moment the host and path
- * become the identity, and the scp pattern then has nothing left to recognise.
- */
-const makeRedactor = (rawUrls, identity) => {
-  // Longest first, so a stripped spelling cannot take the tail of a longer one and leave its head
-  // standing in the output.
-  const spellings = [...new Set(rawUrls.flatMap(remoteSpellings))]
-    .filter((spelling) => spelling !== '')
-    .sort((a, b) => b.length - a.length)
-  return (text) => {
-    let out = scrubUserinfo(text)
-    for (const spelling of spellings) out = out.split(spelling).join(identity)
-    return out
-  }
-}
-
-const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 200)
 
 /**
  * The line where git said what went wrong. Taking the first line is wrong for anything that
@@ -465,15 +395,6 @@ const gitComplaint = (text) => {
   const lines = String(text || '').split('\n').map((raw) => raw.trim()).filter((raw) => raw !== '')
   const named = lines.find((raw) => raw.startsWith('fatal:') || raw.startsWith('error:'))
   return (named ?? lines[lines.length - 1] ?? '').slice(0, 200)
-}
-
-/** JSON from a command's stdout, or null when it printed something else. */
-const parseJson = (text) => {
-  if (typeof text !== 'string') return null
-  try {
-    const value = JSON.parse(text)
-    return value !== null && typeof value === 'object' ? value : null
-  } catch { return null }
 }
 
 /**
@@ -533,98 +454,44 @@ const safeIdentity = (remote) => {
 }
 
 /**
- * The owner and repository at the end of a path, and nothing else from it. `exact` is for a
- * scheme URL and an scp-like remote, where anything but two segments is a remote this cannot
- * name a repository from; a local filesystem path is allowed the directories above it.
+ * The host, owner and repository the origin URL names, or a typed problem the caller refuses on.
+ *
+ * The reading is ../lib/remote-identity.mjs's parseRemoteShape, the same grammar the land
+ * executors read their origin with, and for the same reason: left to itself gh resolves a default
+ * repository from remote.<name>.gh-resolved or, in a clone with several GitHub remotes, from a
+ * preference over remote names where upstream beats origin. On a fork clone that default is the
+ * upstream, and an unpinned call reads and labels the wrong issue.
+ *
+ * The policy on top of it is this file's own, and it is where the claim parts company with a
+ * land. A hostless origin comes back parsed here, with an empty host and the owner and repository
+ * read off the path: the claim turns that into a refusal naming the missing host, and the three
+ * git-only verbs act on it, because acquire, release and abandon are git alone and a bare
+ * repository on disk is a legitimate origin for them. identityOfRemote refuses the same remote,
+ * which is the right answer for a land and the wrong one for an acquire.
+ *
+ * The problem strings are this file's too. Each one reads on from "the origin remote of this
+ * directory", which is how the claim's refusals are worded, and none of them quotes the remote.
  */
-const slugFromPath = (path, exact) => {
-  const parts = String(path).split('/').filter((part) => part !== '')
-  if (exact ? parts.length !== 2 : parts.length < 2) return null
-  const owner = parts[parts.length - 2]
-  const repo = parts[parts.length - 1].replace(/\.git$/, '')
-  return repo === '' ? null : { owner, repo }
+const REMOTE_PROBLEMS = {
+  absent: 'is empty',
+  unreadable: 'does not read as a URL',
+  query: 'carries a query string or a fragment, and an API path must never be built out of one',
+  // gh takes a bare host in --hostname and in --repo host/owner/repo, so an origin of
+  // https://github.com:8443/owner/repo would have the tag and the branch pushed to 8443 while the
+  // issue was read and labelled on 443.
+  port: 'names a port, and the --hostname and --repo pins gh takes carry a bare host, ' +
+    'so gh would reach the default port of that name while git talks to the one configured',
+  path: 'does not name exactly one owner and one repository',
+  'local-path': 'names no directory inside another one, so there is no owner and repository to read out of it',
 }
 
-/**
- * The host, owner and repository the origin URL names, or a typed problem the caller refuses on.
- * This is the parse ../lib/remote-identity.mjs performs for the land executors, for the same
- * reason: left to itself gh resolves a default repository from remote.<name>.gh-resolved or, in a
- * clone with several GitHub remotes, from a preference over remote names where upstream beats
- * origin. On a fork clone that default is the upstream, and an unpinned call reads and labels the
- * wrong issue. It is not that module, because a hostless origin has to come back parsed here,
- * with an empty host and the owner and repository read off the path: the claim turns that into a
- * refusal naming the missing host, and the three git-only verbs act on it. The shared parse
- * refuses a hostless remote as unreadable, which is the right answer for a land and the wrong one
- * for an acquire.
- *
- * A scheme URL goes through new URL() and the owner and repository come from its pathname alone,
- * so a query string or a fragment is refused outright rather than carried into an API path. The
- * scp-like form has no scheme for new URL() to work with and is still how most people spell a
- * GitHub remote, so it keeps a regular expression over the part after the colon, and refuses a
- * query or a fragment there by hand: nothing drops them for it, and
- * git@github.com:owner/repo.git?access_token=sekret otherwise names a repository called
- * `repo.git?access_token=sekret` that goes on to be a --repo argument and a journalled field.
- * A port is refused in both spellings. gh takes a bare host in --hostname and in
- * --repo host/owner/repo, so an origin of https://github.com:8443/owner/repo would have the tag
- * and the branch pushed to 8443 while the issue was read and labelled on 443. new URL() drops a
- * port that is the scheme's default, so https://host:443/owner/repo is not refused, which is
- * right: gh reaches exactly that endpoint. The scp-like form has no port syntax at all, so
- * git@host:2222/owner/repo.git is a port written where git reads a path, and it is recognised as
- * one only when the rest of the path names exactly one owner and one repository, which leaves an
- * owner made entirely of digits parsing as an owner.
- *
- * A local filesystem path has no host, and the last two components stand in for the owner and the
- * repository. The claim refuses that shape rather than call gh unpinned, but the identity is
- * still worth reading, because acquire, release and abandon are git alone and work there.
- *
- * No branch returns any part of the input, because the problem string is printed.
- */
-// The one problem string that is about the port. It reads on from "the origin remote of this
-// directory", the way every other problem here does.
-const PORT_PROBLEM = 'names a port, and the --hostname and --repo pins gh takes carry a bare host, ' +
-  'so gh would reach the default port of that name while git talks to the one configured'
-
 const remoteSlug = (remote) => {
-  const raw = String(remote ?? '').trim()
-  if (raw === '') return { problem: 'is empty' }
-
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
-    let url = null
-    try { url = new URL(raw) } catch { return { problem: 'does not read as a URL' } }
-    if (url.search !== '' || url.hash !== '') {
-      return { problem: 'carries a query string or a fragment, and an API path must never be built out of one' }
-    }
-    if (url.port !== '') return { problem: PORT_PROBLEM }
-    if (url.hostname !== '' && !isHostname(url.hostname)) return { problem: 'does not read as a URL' }
-    // file:///srv/repo.git and friends: no host, so what is left is a filesystem path.
-    const named = slugFromPath(url.pathname, url.hostname !== '')
-    if (named === null) return { problem: 'does not name exactly one owner and one repository' }
-    return { host: url.hostname, ...named }
+  const shape = parseRemoteShape(remote)
+  if (shape.problem !== undefined) {
+    return { problem: REMOTE_PROBLEMS[shape.problem] ?? REMOTE_PROBLEMS.unreadable }
   }
-
-  // scp-like, with or without a user in front: [user@]host:owner/repo.
-  const scp = raw.match(/^(?:([^@\s]+)@)?([^@:/\s]+):(.+)$/)
-  if (scp !== null) {
-    // The host is checked before anything else reads it, because the caller's refusal names it.
-    // Ending the host at the path colon and nowhere else meant a # or a ? in front of that colon
-    // counted as part of the host, and git@github.com#sekret:owner/repo.git put that word into a
-    // refusal and into the journal. A host that is not a hostname is an unreadable remote instead.
-    if (!isHostname(scp[2])) return { problem: 'does not read as a URL' }
-    if (scp[1] !== undefined && !isScpUser(scp[1])) return { problem: 'does not read as a URL' }
-    if (scp[3].includes('?') || scp[3].includes('#')) {
-      return { problem: 'carries a query string or a fragment, and an API path must never be built out of one' }
-    }
-    const ported = scp[3].match(/^\d+\/(.+)$/)
-    if (ported !== null && slugFromPath(ported[1], true) !== null) return { problem: PORT_PROBLEM }
-    const named = slugFromPath(scp[3], true)
-    if (named === null) return { problem: 'does not name exactly one owner and one repository' }
-    return { host: scp[2], ...named }
-  }
-
-  if (raw.includes('@')) return { problem: 'does not read as a URL' }
-  const named = slugFromPath(raw, false)
-  if (named === null) return { problem: 'names no directory inside another one, so there is no owner and repository to read out of it' }
-  return { host: '', ...named }
+  const { host, owner, repo } = shape
+  return { host, owner, repo }
 }
 
 /**
@@ -1276,7 +1143,7 @@ const claim = ({ argv, cwd, env, runGh }) => {
   const readIssue = () => {
     const view = runGh(['issue', 'view', String(issue), ...repoPin, '--json', 'number,title,state,labels,assignees,body,url'], { cwd })
     if (view.code !== 0) return { problem: failureOf(`\`gh issue view ${issue}\``, view) }
-    const parsed = parseJson(view.stdout)
+    const parsed = parseObject(view.stdout)
     if (parsed === null) return { problem: `\`gh issue view ${issue}\` printed something this could not read as a JSON object` }
     return { issue: parsed, state: String(parsed.state ?? '').toUpperCase(), labels: labelNames(parsed.labels) }
   }
@@ -1456,7 +1323,7 @@ const claim = ({ argv, cwd, env, runGh }) => {
 
   // ---- the claim. Everything above was a read.
   const acquired = acquire({ argv: [String(issue)], cwd })
-  const receipt = parseJson(acquired.stdout)
+  const receipt = parseObject(acquired.stdout)
   const verdict = receipt?.result
   // Whether the acquire had pushed anything when it decided what to report, and whether a tag of
   // its own can be on the remote. Only acquire knows it, and it decides the phase: a hold or a
@@ -1519,7 +1386,7 @@ const claim = ({ argv, cwd, env, runGh }) => {
    * what stops the next run.
    */
   const giveBack = () => {
-    const said = parseJson(abandon({ argv: [String(issue), baseSha], cwd }).stdout)
+    const said = parseObject(abandon({ argv: [String(issue), baseSha], cwd }).stdout)
     const result = said?.result ?? 'unknown'
     return { result, gone: result === 'abandoned' || (result === 'refused' && said?.reason === 'tag-absent') }
   }
@@ -1715,7 +1582,7 @@ const claim = ({ argv, cwd, env, runGh }) => {
       `${confirmed.labels.join(', ') || 'no labels'} and assigned to ${assigned.join(', ') || 'nobody'}, so the assignment and the label move are not confirmed`)
   }
 
-  const released = parseJson(release({ argv: [String(issue), branch, head], cwd }).stdout)
+  const released = parseObject(release({ argv: [String(issue), branch, head], cwd }).stdout)
   if (released?.result !== 'released') {
     return stuck('release', `the claim on issue #${issue} could not be released (${released?.result ?? 'no result'}: ${released?.detail ?? 'no detail'})`)
   }
@@ -1764,40 +1631,16 @@ export function issueClaim({ argv, cwd, env, runGh }) {
   return line({ command: null, result: 'refused', reason: 'usage', detail }, EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
 }
 
-// The production gh, resolved once from PATH and remembered as an absolute path, exactly as
-// scripts/land-merge.mjs resolves it and for the same reason: at one uid this is cooperative,
-// and what the one-time resolution buys is that a PATH change mid-run cannot swap the binary out
-// from under a claim that is half done. There is no variable whose only job is to pick this
-// binary. GH_REPO and GH_HOST come out of the child environment because every call here means
-// the repository this working directory is in, and an ambient redirect would read the issue from
-// one repository and label another.
-const resolveGh = () => {
-  for (const dir of String(process.env.PATH || '').split(delimiter)) {
-    if (dir === '') continue
-    const candidate = join(dir, 'gh')
-    try { accessSync(candidate, constants.X_OK); return candidate } catch {}
-  }
-  return 'gh'
-}
+// The gh binary, the pinned child environment and the exit are ../lib/gh-exec.mjs, which holds
+// the reasoning for each. What stays here is the runner's shape, because it is this program's
+// contract with its smoke: the working directory per call, and one timeout for every gh call a
+// claim makes.
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
-  const ghBin = resolveGh()
-  const ghEnv = { ...process.env }
-  delete ghEnv.GH_REPO
-  delete ghEnv.GH_HOST
-  const runGh = (ghArgs, options) => {
-    try {
-      const stdout = execFileSync(ghBin, ghArgs, {
-        encoding: 'utf8', timeout: GH_TIMEOUT_MS, cwd: options.cwd, env: ghEnv, stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      return { code: 0, stdout: String(stdout), stderr: '' }
-    } catch (error) {
-      return { code: error?.status ?? 1, stdout: String(error?.stdout || ''), stderr: String(error?.stderr || error?.message || error) }
-    }
-  }
-  const result = issueClaim({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env, runGh })
-  if (result.stdout) process.stdout.write(result.stdout)
-  if (result.stderr) process.stderr.write(result.stderr)
-  process.exit(result.code)
+  const ghBin = resolveGh(process.env)
+  const ghEnv = pinnedGhEnv(process.env)
+  const runGh = (ghArgs, options) =>
+    execCapture(ghBin, ghArgs, { cwd: options.cwd, timeoutMs: GH_TIMEOUT_MS, env: ghEnv })
+  runExecutor(issueClaim({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env, runGh }))
 }

@@ -47,15 +47,15 @@
 // pull request already has auto-merge armed, the executor refuses rather than leave an armed
 // future merge behind: it only ever performs an immediate squash-merge.
 
-import { execFileSync } from 'node:child_process'
-import { accessSync, constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// The gh plumbing is shared with scripts/land-gates.mjs and scripts/issue-claim.mjs: finding gh,
+// taking GH_REPO and GH_HOST off the child environment, and reading what a command printed.
+import { execCapture, parseObject, pinnedGhEnv, resolveGh, runExecutor } from '../lib/gh-exec.mjs'
 // The origin parse is shared with scripts/land-gates.mjs. It used to be a copy in each file,
 // identical but for the word the refusals use for what they are refusing to do, which is now the
 // purpose this one passes: a fix to the parse is a fix to both halves of the land.
-import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
+import { allowedHostsFrom, identityOfRemote, prUrlMatches } from '../lib/remote-identity.mjs'
 
 const READ_TIMEOUT_MS = 60_000
 const MERGE_TIMEOUT_MS = 120_000
@@ -81,34 +81,9 @@ const SHA = /^[0-9a-f]{40}$/
 
 /** Read git output, or null when git fails. Reads are host-neutral and need no config. */
 const tryGit = (args, cwd) => {
-  try {
-    return execFileSync('git', ['-C', cwd, ...args], {
-      encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim()
-  } catch { return null }
+  const read = execCapture('git', ['-C', cwd, ...args], { timeoutMs: GIT_TIMEOUT_MS })
+  return read.code === 0 ? read.stdout.trim() : null
 }
-
-const parseJson = (text) => {
-  if (typeof text !== 'string') return null
-  try {
-    const value = JSON.parse(text)
-    return value && typeof value === 'object' ? value : null
-  } catch { return null }
-}
-
-// The url GitHub returns on a pull request read, e.g. https://github.com/owner/repo/pull/12.
-const identityOfPrUrl = (url) => {
-  const m = String(url).match(/^https?:\/\/([^/\s]+)\/([^/\s]+)\/([^/\s]+)\/pull\/\d+/i)
-  if (!m) return null
-  const [, host, owner, repo] = m
-  return { host, owner, repo }
-}
-
-const sameIdentity = (a, b) =>
-  a != null && b != null &&
-  a.host.toLowerCase() === b.host.toLowerCase() &&
-  a.owner.toLowerCase() === b.owner.toLowerCase() &&
-  a.repo.toLowerCase() === b.repo.toLowerCase()
 
 const MERGE_QUEUE_QUERY =
   'query($owner: String!, $name: String!, $base: String!) { ' +
@@ -132,7 +107,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
   const refuse = (reason) => ({ code: 1, stdout: '', stderr: `land-merge: refused, ${reason}\n` })
   const ghJson = (ghArgs, timeout) => {
     const result = runGh(ghArgs, timeout)
-    return result.code === 0 ? parseJson(result.stdout) : null
+    return result.code === 0 ? parseObject(result.stdout) : null
   }
 
   // Scheduled jobs run unattended, and a merge is the one thing nobody should discover after
@@ -177,7 +152,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
   // The pull request GitHub answered with must be the one the origin remote names. This is the
   // second lock on the repository, after pinning --repo: a redirect that somehow got past the
   // pin still cannot pass a url that names a different host, owner or repo.
-  if (!sameIdentity(identityOfPrUrl(view.url), identity)) {
+  if (!prUrlMatches(view.url, identity, prNumber)) {
     return refuse(`the pull request GitHub returned (${JSON.stringify(view.url ?? null)}) is not ${identity.full}, so the read was redirected`)
   }
 
@@ -281,7 +256,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
   // same host-qualified repository, same head, same base. If any of those moved, someone else
   // merged this number while we were working, and claiming it as our merge would be wrong.
   if (after.state === 'MERGED') {
-    const ours = sameIdentity(identityOfPrUrl(after.url), identity) &&
+    const ours = prUrlMatches(after.url, identity, prNumber) &&
       after.headRefOid === head &&
       after.baseRefName === base
     if (ours) {
@@ -345,39 +320,14 @@ export function landMerge({ argv, env, cwd, runGh }) {
 
 // ------------------------------------------------------------------------------- CLI entry
 //
-// The production runner resolves a real gh from PATH once, at startup, and remembers the
-// absolute path. At same-uid this is cooperative, not tamper-proof: whoever can set PATH could
-// put a different gh first, the same way they could ignore this program entirely. What the
-// one-time absolute resolution buys is that a PATH change mid-run cannot swap the binary, and
-// there is no env var whose only job is to select the gh this program trusts.
-
-const resolveGh = () => {
-  for (const dir of String(process.env.PATH || '').split(delimiter)) {
-    if (dir === '') continue
-    const candidate = join(dir, 'gh')
-    try { accessSync(candidate, constants.X_OK); return candidate } catch {}
-  }
-  return 'gh'
-}
+// The gh binary, the pinned child environment and the exit are lib/gh-exec.mjs, which holds the
+// reasoning for each. What stays here is the runner's shape, because it is this program's
+// contract with its smoke: a timeout per call, decided by the caller.
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
-  const ghBin = resolveGh()
-  const ghEnv = { ...process.env }
-  delete ghEnv.GH_REPO
-  delete ghEnv.GH_HOST
-  const runGh = (ghArgs, timeoutMs) => {
-    try {
-      const stdout = execFileSync(ghBin, ghArgs, {
-        encoding: 'utf8', timeout: timeoutMs, env: ghEnv, stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      return { code: 0, stdout: String(stdout), stderr: '' }
-    } catch (error) {
-      return { code: error?.status ?? 1, stdout: String(error?.stdout || ''), stderr: String(error?.stderr || error?.message || error) }
-    }
-  }
-  const result = landMerge({ argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), runGh })
-  if (result.stdout) process.stdout.write(result.stdout)
-  if (result.stderr) process.stderr.write(result.stderr)
-  process.exit(result.code)
+  const ghBin = resolveGh(process.env)
+  const ghEnv = pinnedGhEnv(process.env)
+  const runGh = (ghArgs, timeoutMs) => execCapture(ghBin, ghArgs, { timeoutMs, env: ghEnv })
+  runExecutor(landMerge({ argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), runGh }))
 }

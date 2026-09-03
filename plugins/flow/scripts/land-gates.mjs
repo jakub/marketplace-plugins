@@ -199,15 +199,17 @@
 // a remote carrying a query or a fragment is refused unread, and every refusal about the remote
 // describes it instead of quoting it.
 
-import { execFileSync } from 'node:child_process'
-import { accessSync, constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// The gh plumbing is shared with scripts/land-merge.mjs and scripts/issue-claim.mjs: finding gh,
+// taking GH_REPO and GH_HOST off the child environment, and reading what a command printed.
+import { execCapture, parseJson, parseObject, pinnedGhEnv, resolveGh, runExecutor } from '../lib/gh-exec.mjs'
+import { firstLine, makeRedactor, scrubUserinfo } from '../lib/redact.mjs'
 // The origin parse is shared with scripts/land-merge.mjs. It used to be a copy in each file,
 // identical but for the word the refusals use for what they are refusing to do, which is now the
 // purpose this one passes: a fix to the parse is a fix to both halves of the land.
-import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
+import { allowedHostsFrom, identityOfRemote, prUrlMismatch } from '../lib/remote-identity.mjs'
 
 const READ_TIMEOUT_MS = 60_000
 const GIT_TIMEOUT_MS = 5_000
@@ -337,18 +339,6 @@ query($owner: String!, $repo: String!, $pr: Int!, $base: String!) {
   }
 }`
 
-const parseJson = (text) => {
-  if (typeof text !== 'string') return null
-  try { return JSON.parse(text) } catch { return null }
-}
-
-const parseObject = (text) => {
-  const value = parseJson(text)
-  return value && typeof value === 'object' && !Array.isArray(value) ? value : null
-}
-
-const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 200)
-
 const nonEmpty = (value) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null)
 
 const upper = (value) => (typeof value === 'string' ? value.trim().toUpperCase() : '')
@@ -358,55 +348,30 @@ const truncate = (text, limit) => {
   return s.length <= limit ? s : `${s.slice(0, limit)}...`
 }
 
-// Userinfo in a URL. Recent git redacts this from its own error text, but that is behaviour and
-// not a promise, and every string below is on its way into JSON the stage journals.
-const USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi
-const scrubUserinfo = (text) => String(text ?? '').replace(USERINFO, '$1')
-
-/**
- * Swap the configured origin URL for the safe identity before quoting anything a command said.
- * Pattern matching alone is not enough: git repeats the remote it was handed verbatim, as in
- * `fatal: 'user@host' does not appear to be a git repository`, and that spelling has no scheme
- * for the userinfo pattern to anchor on.
- */
-const makeRedactor = (rawUrl, identity) => (text) => {
-  let out = String(text ?? '')
-  const raw = String(rawUrl ?? '').trim()
-  if (raw !== '') out = out.split(raw).join(identity)
-  return scrubUserinfo(out)
-}
-
 /**
  * Whether the pull request gh resolved from the current branch is one of `identity`'s. Returns
  * null when it is, and the mismatch as a sentence when it is not.
  *
- * The url is the whole proof, because it is the only thing in that answer that names a
- * repository. It has to be the given number's pull request path under the origin host, owner and
- * repository. Host, owner and repository are compared lowercased: GitHub serves them in whatever
- * case they were registered, and a remote may spell them another way, so case is not a mismatch.
- * The number is compared as text, since it is what the rest of the run gates on.
+ * The comparison is prUrlMismatch in ../lib/remote-identity.mjs, shared with the merge executor,
+ * which asks the same question of every url GitHub answers a read with. The sentences are this
+ * program's own, because this is the one read it makes without pinning --repo and the fix it
+ * suggests is particular to that: pass the number explicitly.
  */
 const resolvedElsewhere = (view, number, identity) => {
-  const raw = nonEmpty(view?.url)
-  if (raw === null) {
+  const mismatch = prUrlMismatch(nonEmpty(view?.url), identity, number)
+  if (mismatch === null) return null
+  if (mismatch.code === 'absent') {
     return `gh resolved #${number} from the current branch and reported no url for it, so there is nothing ` +
       `to show it is a pull request of ${identity.full}; pass the number explicitly to gate it`
   }
-  let parsed = null
-  try { parsed = new URL(raw) } catch { parsed = null }
-  const segments = parsed === null ? [] : parsed.pathname.split('/').filter((part) => part !== '')
-  if (segments.length !== 4 || segments[2].toLowerCase() !== 'pull' || segments[3] !== String(number)) {
-    return `gh resolved #${number} from the current branch and its url ${raw} is not the url of that pull ` +
+  if (mismatch.code === 'unreadable') {
+    return `gh resolved #${number} from the current branch and its url ${nonEmpty(view?.url)} is not the url of that pull ` +
       `request, so there is nothing to show it is one of ${identity.full}; pass the number explicitly to gate it`
   }
-  const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase()
-  if (!same(parsed.hostname, identity.host) || !same(segments[0], identity.owner) || !same(segments[1], identity.repo)) {
-    return `gh resolved #${number} from the current branch and it belongs to ` +
-      `${parsed.hostname}/${segments[0]}/${segments[1]}, not to ${identity.full}, which is the repository the ` +
-      'origin remote of this directory names. That is what a fork checkout with an upstream remote looks like; ' +
-      'pass the number explicitly to gate a pull request of the repository origin names'
-  }
-  return null
+  return `gh resolved #${number} from the current branch and it belongs to ` +
+    `${mismatch.host}/${mismatch.owner}/${mismatch.repo}, not to ${identity.full}, which is the repository the ` +
+    'origin remote of this directory names. That is what a fork checkout with an upstream remote looks like; ' +
+    'pass the number explicitly to gate a pull request of the repository origin names'
 }
 
 /**
@@ -1310,44 +1275,20 @@ export function landGates({ argv, env, cwd, runGh, runGit }) {
 
 // ------------------------------------------------------------------------------- CLI entry
 //
-// The production runner resolves a real gh from PATH once, at startup, and remembers the absolute
-// path, the same as scripts/land-merge.mjs: a PATH change mid-run cannot swap the binary, and no
-// environment variable selects the gh this program trusts. GH_REPO and GH_HOST come off the child
-// environment because every call already pins the repository derived from origin.
-
-const resolveGh = () => {
-  for (const dir of String(process.env.PATH || '').split(delimiter)) {
-    if (dir === '') continue
-    const candidate = join(dir, 'gh')
-    try { accessSync(candidate, constants.X_OK); return candidate } catch {}
-  }
-  return 'gh'
-}
+// The gh binary, the pinned child environment and the exit are ../lib/gh-exec.mjs, which holds
+// the reasoning for each. What stays here is the runner's shape, because it is this program's
+// contract with its smoke: a timeout per call, decided by the caller. git gets the parent
+// environment, since its reads are host-neutral and need no config.
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
 if (isMain) {
-  const ghBin = resolveGh()
-  const ghEnv = { ...process.env }
-  delete ghEnv.GH_REPO
-  delete ghEnv.GH_HOST
-  const run = (bin, args, timeoutMs, childEnv) => {
-    try {
-      const stdout = execFileSync(bin, args, {
-        encoding: 'utf8', timeout: timeoutMs, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      return { code: 0, stdout: String(stdout), stderr: '' }
-    } catch (error) {
-      return { code: error?.status ?? 1, stdout: String(error?.stdout || ''), stderr: String(error?.stderr || error?.message || error) }
-    }
-  }
-  const result = landGates({
+  const ghBin = resolveGh(process.env)
+  const ghEnv = pinnedGhEnv(process.env)
+  runExecutor(landGates({
     argv: process.argv.slice(2),
     env: process.env,
     cwd: process.cwd(),
-    runGh: (args, timeoutMs) => run(ghBin, args, timeoutMs, ghEnv),
-    runGit: (args, timeoutMs) => run('git', args, timeoutMs, process.env),
-  })
-  if (result.stdout) process.stdout.write(result.stdout)
-  if (result.stderr) process.stderr.write(result.stderr)
-  process.exit(result.code)
+    runGh: (args, timeoutMs) => execCapture(ghBin, args, { timeoutMs, env: ghEnv }),
+    runGit: (args, timeoutMs) => execCapture('git', args, { timeoutMs, env: process.env }),
+  }))
 }

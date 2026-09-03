@@ -1,4 +1,4 @@
-// The one parse of an origin remote the land executors share.
+// The one parse of an origin remote, and the policies the three executors put on top of it.
 //
 // scripts/land-gates.mjs and scripts/land-merge.mjs both have to answer the same question before
 // they call gh: which host, owner and repository does origin name, and is the URL a shape safe to
@@ -9,12 +9,12 @@
 // `purpose` is that word, and it is the only thing a caller varies: 'gate' in land-gates, 'merge
 // in' in land-merge. It reaches nothing but the English of the refusal.
 //
-// scripts/issue-claim.mjs does not use the parse, and the comment at its own parser says why: a
-// claim runs its git-only verbs against a bare repository at a filesystem path, so it needs a
-// hostless origin to come back parsed rather than refused. Refusing one is exactly what the land
-// executors want, since they have nothing to do without a host to pin gh to. It does import
-// allowedHostsFrom, because the set of hosts flow may hand a credential to is one list and not
-// three.
+// scripts/issue-claim.mjs reads the same remote and answers a different question with it: its
+// git-only verbs run against whatever git can push to, so a hostless origin has to come back
+// parsed there where the land executors want it refused. That is two policies, not two grammars,
+// and the grammar was written out twice before parseRemoteShape below split them apart. The claim
+// also shares allowedHostsFrom, because the set of hosts flow may hand a credential to is one
+// list and not three.
 //
 // Where the allowlist lives, and why it is not in the repository. Every call these executors make
 // carries whatever credential gh holds for the host it is pinned to, GH_ENTERPRISE_TOKEN and the
@@ -113,14 +113,138 @@ export function isScpUser(user) {
   return typeof user === 'string' && user !== '' && SCP_USER.test(user)
 }
 
-/** The owner and repository a path names, or null when it does not name exactly those two. */
-const namesRepo = (path) => {
+/**
+ * The owner and repository a path names, or null when it does not name them.
+ *
+ * `exact` is for a remote that names a host: there the path is the repository's path on a forge
+ * and anything but two segments is a remote this cannot name a repository from. A hostless
+ * remote is a filesystem path, and the repository is allowed directories above it, so the last
+ * two segments are the answer.
+ */
+const namesRepo = (path, exact = true) => {
   const segments = String(path).split('/').filter((part) => part !== '')
-  if (segments.length !== 2) return null
-  const owner = segments[0]
-  const repo = segments[1].replace(/\.git$/, '')
+  if (exact ? segments.length !== 2 : segments.length < 2) return null
+  const owner = segments[segments.length - 2]
+  const repo = segments[segments.length - 1].replace(/\.git$/, '')
   return owner === '' || repo === '' ? null : { owner, repo }
 }
+
+/**
+ * The grammar of an origin remote, with no policy in it. Returns the spelling it recognised and
+ * the host, owner and repository it read, or `{ problem }` naming what stopped it. The host is
+ * the empty string for a remote that names none, which is a fact about the remote and not yet a
+ * verdict on it.
+ *
+ * This is the reading half of what identityOfRemote does, split out because
+ * scripts/issue-claim.mjs needs the same reading with a different policy on top. A claim runs
+ * acquire, release and abandon against whatever git can push to, a bare repository at a
+ * filesystem path included, so a hostless remote has to come back parsed there; the land
+ * executors have nothing to do without a host to pin gh to, so the same remote is a refusal for
+ * them. Those are two policies over one grammar, and the grammar was written out twice before
+ * this: roughly eighty lines each of scheme-or-scp dispatch, query and fragment refusal, port
+ * refusal and hostname checking, with the port rule spelled two different ways.
+ *
+ * The problem codes are a closed list, and each caller words its own refusal from them, because
+ * the two speak to different readers: `absent`, `unreadable`, `query`, `port`, `path` (a hosted
+ * remote whose path is not exactly one owner and one repository) and `local-path` (a filesystem
+ * path with no directory inside another one).
+ *
+ * `spelling` is `url`, `scp` or `path`. A caller needs it to tell a hostless URL from a bare
+ * filesystem path: both parse, and they are not the same thing to refuse.
+ *
+ * No branch returns any part of the input. Everything a caller prints is built from the pieces
+ * this hands back, which is what keeps a credential in a remote URL out of a refusal.
+ *
+ * @param {string} url
+ * @returns {{spelling: 'url'|'scp'|'path', host: string, owner: string, repo: string} | {problem: string}}
+ */
+export function parseRemoteShape(url) {
+  const raw = typeof url === 'string' ? url.trim() : ''
+  if (raw === '') return { problem: 'absent' }
+
+  if (SCHEME.test(raw)) {
+    let parsed
+    try { parsed = new URL(raw) } catch { return { problem: 'unreadable' } }
+    // A query or a fragment is refused rather than stripped: no remote that names a repository
+    // has one, and a credential often is one. The parse that preceded this took what followed the
+    // last slash off the whole string, so https://host/owner/repo.git?access_token=sekret yielded
+    // a repository called `repo.git?access_token=sekret` that went on to be a --repo argument.
+    if (parsed.search !== '' || parsed.hash !== '') return { problem: 'query' }
+    if (parsed.port !== '') return { problem: 'port' }
+    // Belt and braces. new URL() already rejects most of what the scp-like branch has to catch by
+    // hand, but the host is about to be printable and one grammar for both branches is one rule
+    // to reason about.
+    if (parsed.hostname !== '' && !isHostname(parsed.hostname)) return { problem: 'unreadable' }
+    // The pathname is left percent-encoded on purpose: decodeURIComponent throws on a lone %, and
+    // nothing downstream needs the decoded form of an owner or a repository name.
+    const named = namesRepo(parsed.pathname, parsed.hostname !== '')
+    if (named === null) return { problem: 'path' }
+    return { spelling: 'url', host: parsed.hostname, ...named }
+  }
+
+  const scp = raw.match(SCP_LIKE)
+  if (scp !== null) {
+    const [, user, host, path] = scp
+    // The host first, before anything can print it or judge it. See isHostname.
+    if (!isHostname(host)) return { problem: 'unreadable' }
+    if (user !== undefined && !isScpUser(user)) return { problem: 'unreadable' }
+    // Nothing drops a query or a fragment for this spelling, so they are refused by hand.
+    if (path.includes('?') || path.includes('#')) return { problem: 'query' }
+    const ported = path.match(SCP_PORT)
+    if (ported !== null && namesRepo(ported[2]) !== null) return { problem: 'port' }
+    const named = namesRepo(path)
+    if (named === null) return { problem: 'path' }
+    return { spelling: 'scp', host, ...named }
+  }
+
+  // No scheme and no scp colon. An @ in what is left is a remote spelling this cannot read rather
+  // than a directory anyone meant to name.
+  if (raw.includes('@')) return { problem: 'unreadable' }
+  const named = namesRepo(raw, false)
+  if (named === null) return { problem: 'local-path' }
+  return { spelling: 'path', host: '', ...named }
+}
+
+/**
+ * Whether a pull request url is the one `identity` and `number` name, or how it is not.
+ *
+ * Both land executors ask this of the url GitHub answers a read with, and it is the second lock
+ * on the repository after pinning --repo: a redirect that somehow got past the pin still cannot
+ * hand back a url naming a different host, owner, repository or number. The url is the whole
+ * proof, because it is the only thing in that answer that names a repository.
+ *
+ * Host, owner and repository are compared lowercased, since GitHub serves them in whatever case
+ * they were registered and a remote may spell them another way. The number is compared as text.
+ *
+ * Returns null when the url matches. Otherwise `{ code, host, owner, repo }`, where code is
+ * `absent` (no url at all), `unreadable` (not a pull request url of that number) or `elsewhere`
+ * (a pull request of some other repository, which is what a fork checkout looks like). The
+ * caller words its own refusal, and on `elsewhere` the three fields say where it actually points.
+ *
+ * @param {unknown} url
+ * @param {{host: string, owner: string, repo: string}} identity
+ * @param {number|string} number
+ */
+export function prUrlMismatch(url, identity, number) {
+  const raw = typeof url === 'string' ? url.trim() : ''
+  if (raw === '') return { code: 'absent', host: '', owner: '', repo: '' }
+  let parsed = null
+  try { parsed = new URL(raw) } catch { parsed = null }
+  const segments = parsed === null ? [] : parsed.pathname.split('/').filter((part) => part !== '')
+  if (segments.length !== 4 || segments[2].toLowerCase() !== 'pull' || segments[3] !== String(number)) {
+    return { code: 'unreadable', host: '', owner: '', repo: '' }
+  }
+  const [owner, repo] = segments
+  const host = parsed.hostname
+  const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase()
+  if (!same(host, identity.host) || !same(owner, identity.owner) || !same(repo, identity.repo)) {
+    return { code: 'elsewhere', host, owner, repo }
+  }
+  return null
+}
+
+/** The same question as a predicate, for a caller with one sentence for every way of failing. */
+export const prUrlMatches = (url, identity, number) => prUrlMismatch(url, identity, number) === null
 
 /**
  * The repository an executor is about to act on, derived from the origin remote. Returns
@@ -158,40 +282,29 @@ const namesRepo = (path) => {
  *   'gate' or 'merge in', and the hosts gh may be pinned to; the default is github.com alone
  */
 export function identityOfRemote(url, { purpose, allowedHosts }) {
-  const raw = typeof url === 'string' ? url.trim() : ''
-  if (raw === '') return { refusal: REMOTE_ABSENT(purpose) }
+  const shape = parseRemoteShape(url)
 
-  const fromPath = (host, path) => {
-    const named = namesRepo(path)
-    if (named === null || host === '') return { refusal: REMOTE_PATH(purpose) }
-    if (!hostIsAllowed(host, allowedHosts)) return { refusal: REMOTE_HOST(purpose, host) }
-    const { owner, repo } = named
-    return { identity: { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` } }
+  if (shape.problem !== undefined) {
+    if (shape.problem === 'absent') return { refusal: REMOTE_ABSENT(purpose) }
+    if (shape.problem === 'query') return { refusal: REMOTE_QUERY }
+    if (shape.problem === 'port') return { refusal: REMOTE_PORT(purpose) }
+    if (shape.problem === 'path') return { refusal: REMOTE_PATH(purpose) }
+    // `local-path` and `unreadable` both mean this is not a remote naming a repository on a
+    // forge, which is the only kind these executors can do anything with.
+    return { refusal: REMOTE_UNREADABLE(purpose) }
   }
 
-  if (SCHEME.test(raw)) {
-    let parsed
-    try { parsed = new URL(raw) } catch { return { refusal: REMOTE_UNREADABLE(purpose) } }
-    if (parsed.search !== '' || parsed.hash !== '') return { refusal: REMOTE_QUERY }
-    if (parsed.port !== '') return { refusal: REMOTE_PORT(purpose) }
-    // Belt and braces. new URL() already rejects most of what the scp-like branch has to catch by
-    // hand, but the host is about to be printable and one grammar for both branches is one rule to
-    // reason about. A hostless URL, file:///srv/repo.git, keeps falling through to the path
-    // refusal, which is the honest thing to say about it.
-    if (parsed.hostname !== '' && !isHostname(parsed.hostname)) return { refusal: REMOTE_UNREADABLE(purpose) }
-    // The pathname is left percent-encoded on purpose: decodeURIComponent throws on a lone %, and
-    // nothing downstream needs the decoded form of an owner or a repository name.
-    return fromPath(parsed.hostname, parsed.pathname)
-  }
+  // A bare filesystem path parses, and it is still nothing to gate or merge in: there is no host
+  // to pin gh to. It is unreadable rather than a path refusal, because what is wrong with it is
+  // the spelling and not the number of directories in it. A hostless URL, file:///srv/repo.git,
+  // gets the path refusal, which is the honest thing to say about that one.
+  if (shape.spelling === 'path') return { refusal: REMOTE_UNREADABLE(purpose) }
+  if (shape.host === '') return { refusal: REMOTE_PATH(purpose) }
 
-  const scp = raw.match(SCP_LIKE)
-  if (scp === null) return { refusal: REMOTE_UNREADABLE(purpose) }
-  const [, user, host, path] = scp
-  // First, before anything can print the host or judge it. See isHostname.
-  if (!isHostname(host)) return { refusal: REMOTE_UNREADABLE(purpose) }
-  if (user !== undefined && !SCP_USER.test(user)) return { refusal: REMOTE_UNREADABLE(purpose) }
-  if (path.includes('?') || path.includes('#')) return { refusal: REMOTE_QUERY }
-  const ported = path.match(SCP_PORT)
-  if (ported !== null && namesRepo(ported[2]) !== null) return { refusal: REMOTE_PORT(purpose) }
-  return fromPath(host, path)
+  // The host is on the allowlist or it is not. Everything above this line is about reading the
+  // remote; this is about which hosts are worth a credential, and it is last because a remote
+  // that will not parse has no host to judge.
+  if (!hostIsAllowed(shape.host, allowedHosts)) return { refusal: REMOTE_HOST(purpose, shape.host) }
+  const { host, owner, repo } = shape
+  return { identity: { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` } }
 }
