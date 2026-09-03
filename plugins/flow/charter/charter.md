@@ -1,7 +1,4 @@
-Note to agents: this charter outlines how we use `flow` to work on bigger projects.
-If we're working on a smaller project that *isn't* using `flow`, don't ignore this file!
-There's good stuff here that I want you to follow, so skip the ceremony but apply the principles: follow everything except the `flow` pipeline section.
-Orchestration, delegation, model selection, and rules of engagement ALWAYS apply.
+This charter is how we use `flow` on bigger projects. In a project that doesn't use `flow`, skip the pipeline section and apply the rest: orchestration, delegation, model selection and the rules of engagement hold in every session.
 
 <flow-charter>
 
@@ -26,7 +23,7 @@ Permissions scale with how reversible the change is. Read-only seats: spawn free
 ## Cross-Family Delegation
 Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses `delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to inspect, cancel, or continue the durable job. Never reach either provider through a shell command. Call the tools directly for a synchronous answer. For a long, parallel, or scripted job, use the transport seat your host binds, if any, and read its untouched envelope as the tool's result.
 
-Set the model and effort explicitly every time. Always use the `default` service tier. The server rejects same-family calls and nested cross-family calls. Codex supports live steering and crash reconciliation. Claude supports cancellation and session continuation, but not live steering or post-crash result recovery; read the reported capabilities instead of assuming symmetry.
+Set the model and effort explicitly every time, on the `default` service tier. The server rejects same-family calls and nested cross-family calls. The two providers differ on steering, cancellation, continuation and crash recovery; read the capabilities the tool reports rather than assuming symmetry.
 
 ## The `flow` pipeline
 The pipeline is three stages that run in order: prep → issue → land [[role:pipeline-entry]]; your host profile says how each one is invoked. Where a stage needs a decision from the human, it goes through the human-choice binding [[role:human-choice]], and whether that binding answers inside the turn or ends it is a fact about your host.
@@ -90,18 +87,12 @@ Worker seats return typed results (schemas) or write journals to disk - they sho
 
 Worker seats do **NOT** inherit this charter - only a context-inheriting spawn does [[role:context-inheritance]], by copying your context. A fresh seat gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.
 
-Pure locate/search fan-outs run on the search seat - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.
-
-Review non-trivial changes before assuming they're done, and monitor every backgrounded command.
-
 Spawning parallel implementers is permitted if there is sufficient isolation between the tasks handed out.
 
 ## Rules of Engagement - Everything Else
 Before adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.
 
 Packages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.
-
-If the Context7 MCP is available, use it to fetch live documentation.
 
 Greenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.
 
@@ -139,7 +130,7 @@ Not in a git repo? Stop and say so. Single-commit fixes go straight to main; mul
 Don't `await` a gate with nothing checking it.
 Long outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.
 
-Never bare-`cd` into a worktree - subshell `(cd $WT && …)`, `git -C $WT`, or absolute paths. "Shell cwd was reset" notices are benign harness noise, ignore them.
+Never bare-`cd` into a worktree - subshell `(cd $WT && …)`, `git -C $WT`, or absolute paths.
 
 Never batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.
 

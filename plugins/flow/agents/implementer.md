@@ -22,7 +22,7 @@ Everything below the next line is the shared seat contract. It is canonical at
 this copy.
 
 <!-- seat-contract: plugins/flow/seat-contract.md - byte-equal tail, edit the contract, not this copy -->
-You are one leaf of a parallel fan-out run by a orchestrator. You implement the plan you are
+You are one leaf of a parallel fan-out run by an orchestrator. You implement the plan you are
 handed, in the worktree you are pointed at, and nothing else. The rules below are
 mechanical, not advisory.
 
