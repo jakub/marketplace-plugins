@@ -8,8 +8,12 @@
 //   lint-actions.mjs remove-worktree <repo> <worktree-path> [--check]
 //   lint-actions.mjs delete-branch  <repo> <branch> [--check]
 //   lint-actions.mjs clear-orphan       <repo> <issue-number> [--check]
-//   lint-actions.mjs demote-unready     <repo> <issue-number> <failed contract point...> [--check]
-//   lint-actions.mjs triage-unlabelled  <repo> <issue-number> [--check]
+//   lint-actions.mjs demote-unready     <repo> <issue-number> --seen <updatedAt> <failed contract point...> [--check]
+//   lint-actions.mjs triage-unlabelled  <repo> <issue-number> --seen <updatedAt> [--check]
+//
+// --seen is the issue's updatedAt as the lint read it. GitHub bumps it on every edit, label and
+// comment, so it is the compare-and-set a label move can be tied to: the executor refuses when
+// the issue moved since the judgment it is acting on was made.
 //
 // --check runs every gate and reports the verdict without acting.
 //
@@ -26,6 +30,8 @@
 // read back; a run that already holds the tag makes the verb stand down, and a run arriving while
 // the verb holds it stands down itself. The read-back is the last read before the tag goes back.
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import { issueClaim, repoIdentity } from "./issue-claim.mjs";
 import { allowedHostsFrom, hostIsAllowed } from "../lib/remote-identity.mjs";
 
@@ -45,6 +51,21 @@ const out = (ok, reason) => {
   console.log(JSON.stringify({ action, repo, target, ok, reason }));
   process.exit(ok ? 0 : 1);
 };
+// The repository has to be one the job enumerated: a direct child of the workspace root the cron
+// sweeps. Every verb trusts the path it is handed for its git reads and derives a GitHub
+// repository from it, so an unbounded path would turn the ambient token into write authority over
+// any checkout on the disk. A hand run without FLOW_WORKSPACE is unbounded on purpose; a cron
+// run without it refuses.
+{
+  const workspace = process.env.FLOW_WORKSPACE;
+  if (process.env.FLOW_CRON_JOB && !workspace) out(false, "FLOW_CRON_JOB is set and FLOW_WORKSPACE is not; refusing to act on an unbounded repository path");
+  if (workspace) {
+    let real = null, root = null;
+    try { real = realpathSync(repo); root = realpathSync(workspace); } catch { out(false, "the repository path or FLOW_WORKSPACE does not resolve"); }
+    if (dirname(real) !== root) out(false, `${real} is not a direct child of the workspace ${root}; the lint acts only on the repositories it enumerated`);
+  }
+}
+
 const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: ENV }).trim();
 const tryGit = (...args) => { try { return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: ENV, stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch { return null; } };
 // The same read with a ceiling. A remote that accepts the connection and then stalls would
@@ -151,15 +172,18 @@ if (action === "delete-branch") {
 // verb, since moving such an issue would hand a blocked or buried issue to an agent.
 //
 // The first two hold the claim tag: the checks run once for free and once more under the tag,
-// where no flow run can move the issue. gh's add and remove are two mutations, and either can
-// land while the other fails, so a failed edit is read back rather than assumed unmoved: the
-// original tuple means nothing moved and the tag goes back; the intended tuple means it landed;
-// anything else is a partial move or someone else's and the tag stays for a human, reported as
-// retained. On success the tag goes back straight after the read-back, before the comment.
+// where no flow run can move the issue. The tag serializes flow's runs and nobody else, so the
+// two verbs a prep run or a human could race also carry --seen, the updatedAt the lint read, and
+// refuse an issue that moved since. gh's add and remove are two mutations, and either can land
+// while the other fails, so every edit is read back rather than assumed: the original tuple means
+// nothing moved and the tag goes back; the intended tuple means it landed; anything else is a
+// partial move or someone else's, and a tag-holding verb keeps the tag for a human, reported as
+// retained, while the tagless triage verb removes the one label it added. On success the tag goes
+// back straight after the read-back, before the comment.
 const LABEL_VERBS = {
-  "clear-orphan":      { require: "in-progress",     add: "ready-for-agent", remove: "in-progress",     holdTag: true,  grace: true,  liveness: true,  past: "cleared" },
-  "demote-unready":    { require: "ready-for-agent", add: "needs-triage",    remove: "ready-for-agent", holdTag: true,  grace: false, liveness: true,  past: "demoted", reasonArg: true },
-  "triage-unlabelled": { require: null,              add: "needs-triage",    remove: null,              holdTag: false, grace: false, liveness: false, past: "triaged" },
+  "clear-orphan":      { require: "in-progress",     add: "ready-for-agent", remove: "in-progress",     holdTag: true,  grace: true,  liveness: true,  seen: false, past: "cleared" },
+  "demote-unready":    { require: "ready-for-agent", add: "needs-triage",    remove: "ready-for-agent", holdTag: true,  grace: false, liveness: true,  seen: true,  past: "demoted", reasonArg: true },
+  "triage-unlabelled": { require: null,              add: "needs-triage",    remove: null,              holdTag: false, grace: false, liveness: false, seen: true,  past: "triaged", undoOwnAdd: true },
 };
 if (action in LABEL_VERBS) {
   const spec = LABEL_VERBS[action];
@@ -168,7 +192,12 @@ if (action in LABEL_VERBS) {
   if (!/^[1-9]\d*$/.test(target)) out(false, "issue number must be a positive integer");
   const n = target;
   const TAG_REF = `refs/tags/flow-claim-issue-${n}`;
-  const reason = spec.reasonArg ? argv.filter((a) => a !== "--check").slice(3).join(" ").trim() : "";
+  const extra = argv.filter((a) => a !== "--check").slice(3);
+  const seenAt = extra.indexOf("--seen");
+  const seen = seenAt === -1 ? null : (extra[seenAt + 1] ?? null);
+  const reasonWords = seenAt === -1 ? extra : [...extra.slice(0, seenAt), ...extra.slice(seenAt + 2)];
+  const reason = spec.reasonArg ? reasonWords.join(" ").trim() : "";
+  if (spec.seen && (seen === null || !Number.isFinite(Date.parse(seen)))) out(false, `${action} needs --seen <updatedAt>, the timestamp the lint read the issue at`);
   if (spec.reasonArg && reason === "") out(false, `${action} needs the failed contract point after the issue number`);
 
   const identity = repoIdentity(repo);
@@ -209,6 +238,7 @@ if (action in LABEL_VERBS) {
         ? `issue carries lifecycle labels [${lc.join(", ")}] and ${action} needs ${wanted[0]} alone; a blocked, buried, or double-labelled issue is a human's to settle`
         : `issue carries lifecycle labels [${lc.join(", ")}]; ${action} is for an issue with none` };
     }
+    if (spec.seen && r.updatedAt !== seen) return { fail: `issue moved since the lint read it (updatedAt ${r.updatedAt}, seen ${seen}); the judgment is stale, re-read it next night` };
     if (!spec.grace) return { ageMs: null };
     const updated = Date.parse(r.updatedAt);
     if (!Number.isFinite(updated)) return { fail: "issue updatedAt is unreadable" };
@@ -307,9 +337,18 @@ if (action in LABEL_VERBS) {
     const lc = lifecycleOf(back.labels);
     const landed = back.state === "OPEN" && sameSet(lc, final);
     if (!landed) {
+      // The original tuple, whatever gh's exit said, is proof nothing moved: the tag goes back and
+      // the orphan is still an orphan next night. Keeping the tag here would strand it.
       if (back.state === "OPEN" && sameSet(lc, wanted)) {
-        if (!edited) settle(false, "gh issue edit failed and the read-back confirms nothing moved");
-        keep("the edit was accepted but the read-back shows the labels unchanged");
+        settle(false, edited ? "gh issue edit was accepted but the read-back shows the labels unchanged; nothing moved" : "gh issue edit failed and the read-back confirms nothing moved");
+      }
+      // The tagless verb can still undo the one thing it did: remove the label it added, and say
+      // whether that took. It never touches a label it did not add.
+      if (spec.undoOwnAdd && back.state === "OPEN" && lc.includes(spec.add)) {
+        const undone = gh("issue", "edit", n, ...repoPin, "--remove-label", spec.add) !== null;
+        const again = readIssue();
+        const gone = undone && !again.fail && !lifecycleOf(again.labels).includes(spec.add);
+        out(false, `after the edit the issue reads OPEN with lifecycle labels [${lc.join(", ")}]; another writer moved it in the same window, and the ${spec.add} this verb added was ${gone ? "removed again" : "NOT removed; a human repairs the labels"}`);
       }
       keep(`after the edit the issue reads ${back.state} with lifecycle labels [${lc.join(", ")}] instead of OPEN with ${spec.add} alone; ${edited ? "something else moved it in the same window" : "the edit failed part way"}`);
     }

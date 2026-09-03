@@ -807,6 +807,8 @@ for (const [label, readBack, why] of [
     { state: 'OPEN', labels: [{ name: 'in-progress' }, { name: 'needs-human' }], assignees: [] }, 'needs-human'],
   ['the assignment did not land',
     { state: 'OPEN', labels: [{ name: 'in-progress' }], assignees: [] }, 'nobody'],
+  ['a human buries it as the label lands',
+    { state: 'OPEN', labels: [{ name: 'in-progress' }, { name: 'wontfix' }], assignees: [] }, 'wontfix'],
 ]) {
   // The confirmation used to ask two questions: is it open, and does it carry in-progress without
   // ready-for-agent. An issue reading back OPEN, in-progress, needs-human, assigned to nobody

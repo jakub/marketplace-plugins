@@ -268,6 +268,13 @@ const cronScanTarget = (cmd) => {
   if (e) return e
 
   const root = pluginRoot()
+  // One command per call. The job's allowlist is a prefix over the whole command string, so any
+  // separator would carry a second, unlisted command under the first one's permission: a
+  // permitted `gh issue list ...; gh issue edit ...` is the whole label executor bypassed. A pipe
+  // into a read-only filter is the one join that is still a single command.
+  if (segments.slice(1).some((s) => !s.piped)) {
+    return stop('a command separator (;, && or ||); a cron command is one command, optionally piped into a read-only filter')
+  }
   const out = []
   for (const seg of segments) {
     const [head, ...args] = seg.words
@@ -284,13 +291,6 @@ const cronScanTarget = (cmd) => {
       if (positionals > (FILTER_POSITIONALS[base] ?? 0)) return stop(`a file operand on ${base}, which reads stdin only here`)
     }
     if (!seg.piped && !CRON_COMMANDS.has(base)) return stop(`${base} is not a command a cron job runs`)
-    // An executor runs alone. The job's allowlist is a prefix over the whole command string, so a
-    // permitted `node <root>/scripts/x.mjs verb ...` followed by `;` would carry any second segment
-    // the grammar accepts under the first one's permission. A pipe out of it into a read-only
-    // filter is still a single command and stays legal.
-    if ((base === 'node' || base === 'bash' || base === 'sh') && segments.slice(1).some((s) => !s.piped)) {
-      return stop(`${base} running a plugin script in a compound command; an executor runs alone`)
-    }
     if (base === 'bash' || base === 'sh') {
       const script = args[0]
       const runsPluginScript = script && !script.quoted && /\.sh$/.test(script.text)

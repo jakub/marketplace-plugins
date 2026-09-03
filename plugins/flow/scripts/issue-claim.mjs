@@ -1695,7 +1695,10 @@ const claim = ({ argv, cwd, env, runGh }) => {
   const login = me.code === 0 ? me.stdout.trim() : ''
   const confirmed = readIssue()
   const assigned = confirmed.problem === undefined ? assigneeLogins(confirmed.issue.assignees) : []
-  const stillBlocked = confirmed.problem === undefined ? BLOCKING_LABELS.filter((label) => confirmed.labels.includes(label)) : []
+  // Any lifecycle label beside in-progress, not only the three blockers: a wontfix or deferred
+  // that arrived with the label move is a human burying the issue, and a run that reports itself
+  // claimed over it starts work the human just refused.
+  const stillBlocked = confirmed.problem === undefined ? LIFECYCLE_LABELS.filter((label) => label !== IN_PROGRESS_LABEL && confirmed.labels.includes(label)) : []
   const moved = confirmed.problem === undefined && login !== '' && confirmed.state === 'OPEN' &&
     confirmed.labels.includes(IN_PROGRESS_LABEL) && !confirmed.labels.includes(READY_LABEL) &&
     stillBlocked.length === 0 && assigned.includes(login)

@@ -80,6 +80,7 @@ if (group === "issue" && verb === "edit") {
   if (st.partialEdit === "add-only") { const add = rest.indexOf("--add-label"); if (add !== -1) st.issue.labels.push({ name: rest[add + 1] }); fail("issue edit: the add landed and the remove failed"); }
   if (st.editFails) fail("issue edit failed");
   if (st.buryOnEdit) st.issue.labels = st.issue.labels.filter((l) => l.name !== "in-progress").concat([{ name: "wontfix" }]);
+  if (st.labelOnEdit && !st.labelOnEditDone) { st.issue.labels.push({ name: st.labelOnEdit }); st.labelOnEditDone = true; }
   if (st.applyEdit !== false) {
     const rm = rest.indexOf("--remove-label"), add = rest.indexOf("--add-label");
     if (rm !== -1) st.issue.labels = st.issue.labels.filter((l) => l.name !== rest[rm + 1]);
@@ -129,7 +130,7 @@ const world = (issue = {}, extra = {}) => {
 const run = (w, args, envExtra = {}) => {
   const r = spawnSync(process.execPath, [EXECUTOR, ...args], {
     encoding: "utf8",
-    env: { ...gitEnv(w.ssh), PATH: `${w.bin}:${process.env.PATH}`, FAKE_GH_STATE: w.state, ...envExtra },
+    env: { ...gitEnv(w.ssh), PATH: `${w.bin}:${process.env.PATH}`, FAKE_GH_STATE: w.state, FLOW_WORKSPACE: w.dir, ...envExtra },
   });
   let verdict = null;
   try { verdict = JSON.parse(r.stdout.trim().split("\n").pop()); } catch { /* usage errors print no JSON */ }
@@ -247,13 +248,33 @@ it("refuses a hostless origin rather than call gh unpinned", () => {
   done(w);
 });
 
-it("keeps the tag when the edit does not read back", () => {
+it("an accepted no-op gives the tag back so the orphan is not stranded", () => {
   const w = world({}, { applyEdit: false });
   const r = run(w, ["clear-orphan", w.repo, ISSUE]);
   assert.equal(r.code, 1);
-  assert.match(r.verdict.reason, /the edit was accepted but the read-back shows the labels unchanged.*retained: claim-tag/);
+  assert.match(r.verdict.reason, /accepted but the read-back shows the labels unchanged; nothing moved/);
+  assert.doesNotMatch(r.verdict.reason, /retained/);
   assert.equal(comments(r.state).length, 0, "no comment on an unconfirmed move");
-  assert.equal(tagOnOrigin(w), true, "an issue in an unexplained state keeps its tag for a human");
+  assert.equal(tagOnOrigin(w), false, "the original tuple proves nothing moved; the tag goes back");
+  done(w);
+});
+
+it("refuses a repository outside the workspace root", () => {
+  const w = world();
+  mkdirSync(join(w.dir, "elsewhere"));
+  const r = run(w, ["clear-orphan", w.repo, ISSUE], { FLOW_WORKSPACE: join(w.dir, "elsewhere") });
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /not a direct child of the workspace/);
+  assert.equal(r.state.calls.length, 0, "no gh call on a repository outside the workspace");
+  done(w);
+});
+
+it("refuses to run under the cron without a workspace root", () => {
+  const w = world();
+  const r = run(w, ["clear-orphan", w.repo, ISSUE], { FLOW_CRON_JOB: "lint", FLOW_WORKSPACE: "" });
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /FLOW_WORKSPACE is not/);
+  assert.equal(r.state.calls.length, 0);
   done(w);
 });
 
@@ -314,7 +335,8 @@ it("a failed edit that landed half way keeps the tag", () => {
 
 it("demote-unready moves a failing ready issue to needs-triage with the reason", () => {
   const w = world({ labels: [{ name: "ready-for-agent" }, { name: "bug" }] });
-  const r = run(w, ["demote-unready", w.repo, ISSUE, "no", "acceptance", "criteria", "heading"]);
+  const seen = JSON.parse(readFileSync(w.state, "utf8")).issue.updatedAt;
+  const r = run(w, ["demote-unready", w.repo, ISSUE, "--seen", seen, "no", "acceptance", "criteria", "heading"]);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.verdict.reason, /^demoted \(ready-for-agent contract not met: no acceptance criteria heading\)/);
   assert.deepEqual(labelsOf(r.state), ["bug", "needs-triage"]);
@@ -325,11 +347,13 @@ it("demote-unready moves a failing ready issue to needs-triage with the reason",
 
 it("demote-unready refuses without a reason and without the ready label", () => {
   const w = world({ labels: [{ name: "ready-for-agent" }] });
-  const noReason = run(w, ["demote-unready", w.repo, ISSUE]);
+  const seen0 = JSON.parse(readFileSync(w.state, "utf8")).issue.updatedAt;
+  const noReason = run(w, ["demote-unready", w.repo, ISSUE, "--seen", seen0]);
   assert.equal(noReason.code, 1);
   assert.match(noReason.verdict.reason, /needs the failed contract point/);
   const w2 = world();
-  const notReady = run(w2, ["demote-unready", w2.repo, ISSUE, "whatever"]);
+  const seen2 = JSON.parse(readFileSync(w2.state, "utf8")).issue.updatedAt;
+  const notReady = run(w2, ["demote-unready", w2.repo, ISSUE, "--seen", seen2, "whatever"]);
   assert.equal(notReady.code, 1);
   assert.match(notReady.verdict.reason, /needs ready-for-agent alone/);
   assert.equal(edits(notReady.state).length, 0);
@@ -339,7 +363,8 @@ it("demote-unready refuses without a reason and without the ready label", () => 
 it("demote-unready refuses a ready issue with a live branch", () => {
   const w = world({ labels: [{ name: "ready-for-agent" }] });
   git(w, "branch", "feat/issue-7-started");
-  const r = run(w, ["demote-unready", w.repo, ISSUE, "stale"]);
+  const seen = JSON.parse(readFileSync(w.state, "utf8")).issue.updatedAt;
+  const r = run(w, ["demote-unready", w.repo, ISSUE, "--seen", seen, "stale"]);
   assert.equal(r.code, 1);
   assert.match(r.verdict.reason, /live: local branch feat\/issue-7-started/);
   done(w);
@@ -347,7 +372,8 @@ it("demote-unready refuses a ready issue with a live branch", () => {
 
 it("triage-unlabelled adds needs-triage to an unlabelled issue and takes no tag", () => {
   const w = world({ labels: [{ name: "bug" }] }, { expectTag: false });
-  const r = run(w, ["triage-unlabelled", w.repo, ISSUE]);
+  const seen = JSON.parse(readFileSync(w.state, "utf8")).issue.updatedAt;
+  const r = run(w, ["triage-unlabelled", w.repo, ISSUE, "--seen", seen]);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.verdict.reason, /^triaged \(open with no lifecycle label\)/);
   assert.deepEqual(labelsOf(r.state), ["bug", "needs-triage"]);
@@ -358,10 +384,44 @@ it("triage-unlabelled adds needs-triage to an unlabelled issue and takes no tag"
 
 it("triage-unlabelled refuses an issue that already carries a lifecycle label", () => {
   const w = world({ labels: [{ name: "wontfix" }] }, { expectTag: false });
-  const r = run(w, ["triage-unlabelled", w.repo, ISSUE]);
+  const seen = JSON.parse(readFileSync(w.state, "utf8")).issue.updatedAt;
+  const r = run(w, ["triage-unlabelled", w.repo, ISSUE, "--seen", seen]);
   assert.equal(r.code, 1);
   assert.match(r.verdict.reason, /is for an issue with none/);
   assert.equal(edits(r.state).length, 0);
+  done(w);
+});
+
+it("demote-unready refuses an issue that moved since the lint read it", () => {
+  const w = world({ labels: [{ name: "ready-for-agent" }] });
+  const r = run(w, ["demote-unready", w.repo, ISSUE, "--seen", "2026-01-01T00:00:00Z", "stale judgment"]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /moved since the lint read it/);
+  assert.equal(edits(r.state).length, 0);
+  assert.equal(tagOnOrigin(w), false);
+  done(w);
+});
+
+it("the two prep-racing verbs refuse without --seen", () => {
+  const w = world({ labels: [{ name: "ready-for-agent" }] });
+  const d = run(w, ["demote-unready", w.repo, ISSUE, "reason"]);
+  assert.equal(d.code, 1);
+  assert.match(d.verdict.reason, /needs --seen/);
+  const w2 = world({ labels: [{ name: "bug" }] }, { expectTag: false });
+  const t = run(w2, ["triage-unlabelled", w2.repo, ISSUE]);
+  assert.equal(t.code, 1);
+  assert.match(t.verdict.reason, /needs --seen/);
+  done(w); done(w2);
+});
+
+it("triage-unlabelled undoes its own add when prep labels the issue in the same window", () => {
+  const w = world({ labels: [{ name: "bug" }] }, { expectTag: false, labelOnEdit: "ready-for-agent" });
+  const seen = JSON.parse(readFileSync(w.state, "utf8")).issue.updatedAt;
+  const r = run(w, ["triage-unlabelled", w.repo, ISSUE, "--seen", seen]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /another writer moved it in the same window, and the needs-triage this verb added was removed again/);
+  assert.deepEqual(labelsOf(r.state), ["bug", "ready-for-agent"], "only the label this verb added is removed");
+  assert.equal(comments(r.state).length, 0);
   done(w);
 });
 

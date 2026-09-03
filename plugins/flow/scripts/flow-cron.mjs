@@ -190,6 +190,8 @@ function main() {
     env: {
       ...process.env,
       FLOW_CRON_JOB: job,
+      // The executor binds every repository path it is handed to a direct child of this root.
+      FLOW_WORKSPACE: workspace,
       // ssh must never prompt in an unattended session; a prompt is a silent hang.
       GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes -o ConnectTimeout=10",
     },
