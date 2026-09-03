@@ -66,16 +66,16 @@ check("a bare null on stdout is not a message", extractReport("null").report, ""
 check("a null entry in a message array is skipped", extractReport(JSON.stringify([null, { type: "assistant", message: { content: [{ type: "text", text: REPORT }] } }, 7, "x"])).report, REPORT);
 check("a null line in stream-json is skipped", extractReport("null\n" + assistant(REPORT) + result("ok")).report, REPORT);
 
-console.log(bad === 0 ? "\nflow-cron: ALL PASS" : `\nflow-cron: ${bad} FAILURE(S)`);
-process.exit(bad === 0 ? 0 : 1);
-
 // The lint's mutating authority is one allowlist entry per executor verb and never a bare
 // script prefix: a verb added to lint-actions.mjs widens nothing until it is named here.
 console.log("lint allowlist");
-const lint = jobs("/x").allowedTools;
+const lint = jobs("/x").lint.allowedTools;
 const executorEntries = lint.filter((t) => t.includes("lint-actions.mjs"));
 check("no bare lint-actions prefix", executorEntries.some((t) => t.endsWith("lint-actions.mjs:*")), false);
 for (const verb of ["remove-worktree", "delete-branch", "clear-orphan"]) {
   check(`verb entry: ${verb}`, executorEntries.includes(`Bash(node /x/scripts/lint-actions.mjs ${verb}:*)`), true);
 }
 check("exactly the three verbs", executorEntries.length, 3);
+
+console.log(bad === 0 ? "\nflow-cron: ALL PASS" : `\nflow-cron: ${bad} FAILURE(S)`);
+process.exit(bad === 0 ? 0 : 1);

@@ -49,6 +49,13 @@ const out = (v) => { process.stdout.write(JSON.stringify(v)); save(); process.ex
 const fail = (m) => { process.stderr.write("fake gh: " + m + "\\n"); save(); process.exit(1); };
 const [group, verb, ...rest] = argv;
 const pinned = () => { const i = rest.indexOf("--repo"); return i !== -1 && rest[i + 1] === ${JSON.stringify(PIN)}; };
+// The under-tag invariant, checked from the fake's side: the second liveness scan and the edit
+// happen only while this issue's claim tag is on origin. An executor that took the tag late, or
+// took it and gave it straight back, fails here whatever its verdict says.
+const requireTagHeld = (when) => {
+  const held = execFileSync("git", ["-C", st.repo, "ls-remote", "--tags", "origin", "refs/tags/flow-claim-issue-7"], { encoding: "utf8", env: { ...process.env, GIT_SSH_COMMAND: st.ssh } }).trim() !== "";
+  if (!held) fail(when + " without the claim tag held on origin");
+};
 if (group === "api") {
   const h = argv.indexOf("--hostname");
   if (h === -1 || argv[h + 1] !== "github.com") fail("api call without --hostname github.com: " + argv.join(" "));
@@ -56,6 +63,7 @@ if (group === "api") {
   if (!endpoint.startsWith("repos/jakub/demo/pulls?state=open")) fail("api call to an unexpected endpoint: " + endpoint);
   if (!argv.includes("--paginate") || !argv.includes("--slurp")) fail("api call without --paginate --slurp");
   st.pullsReads = (st.pullsReads || 0) + 1;
+  if (st.pullsReads >= 2) requireTagHeld("second pull-request read");
   if (st.plantOnPullsRead === st.pullsReads) {
     execFileSync("git", ["-C", st.repo, "push", "--quiet", "origin", "main:refs/heads/feat/issue-7-rival"], { env: { ...process.env, GIT_SSH_COMMAND: st.ssh } });
   }
@@ -68,7 +76,9 @@ if (group === "issue" && verb === "view") {
   out(Object.fromEntries(fields.map((f) => [f, st.issue[f]])));
 }
 if (group === "issue" && verb === "edit") {
+  requireTagHeld("issue edit");
   if (st.editFails) fail("issue edit failed");
+  if (st.buryOnEdit) st.issue.labels = st.issue.labels.filter((l) => l.name !== "in-progress").concat([{ name: "wontfix" }]);
   if (st.applyEdit !== false) {
     const rm = rest.indexOf("--remove-label"), add = rest.indexOf("--add-label");
     if (rm !== -1) st.issue.labels = st.issue.labels.filter((l) => l.name !== rest[rm + 1]);
@@ -236,13 +246,24 @@ it("refuses a hostless origin rather than call gh unpinned", () => {
   done(w);
 });
 
-it("reports unknown when the edit does not read back, and gives the tag back", () => {
+it("keeps the tag when the edit does not read back", () => {
   const w = world({}, { applyEdit: false });
   const r = run(w, ["clear-orphan", w.repo, ISSUE]);
   assert.equal(r.code, 1);
-  assert.match(r.verdict.reason, /did not read back/);
+  assert.match(r.verdict.reason, /instead of OPEN with ready-for-agent alone.*retained: claim-tag/);
   assert.equal(comments(r.state).length, 0, "no comment on an unconfirmed move");
-  assert.equal(tagOnOrigin(w), false);
+  assert.equal(tagOnOrigin(w), true, "an issue in an unexplained state keeps its tag for a human");
+  done(w);
+});
+
+it("keeps the tag when a human buries the issue in the same window", () => {
+  const w = world({}, { buryOnEdit: true });
+  const r = run(w, ["clear-orphan", w.repo, ISSUE]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /lifecycle labels \[ready-for-agent, wontfix\]|lifecycle labels \[wontfix, ready-for-agent\]/);
+  assert.match(r.verdict.reason, /retained: claim-tag/);
+  assert.equal(comments(r.state).length, 0);
+  assert.equal(tagOnOrigin(w), true);
   done(w);
 });
 

@@ -47,6 +47,9 @@ const out = (ok, reason) => {
 };
 const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: ENV }).trim();
 const tryGit = (...args) => { try { return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: ENV, stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch { return null; } };
+// The same read with a ceiling. A remote that accepts the connection and then stalls would
+// otherwise hold the executor until something outside kills it, and a kill skips every cleanup.
+const tryGitWithin = (timeoutMs, ...args) => { try { return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: ENV, timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch { return null; } };
 
 // Fail closed on stale refs: every decision below is made against a fresh fetch.
 try { execFileSync("git", ["-C", repo, "fetch", "origin", "--prune", "--quiet"], { encoding: "utf8", timeout: 60_000, env: ENV }); }
@@ -188,18 +191,18 @@ if (action === "clear-orphan") {
     return { ageMs };
   };
   const liveness = () => {
-    const local = tryGit("for-each-ref", "--format=%(refname:short)", ...patterns);
+    const local = tryGitWithin(5_000, "for-each-ref", "--format=%(refname:short)", ...patterns);
     if (local === null) return { fail: "git for-each-ref failed; refusing to act without this clone's branch state" };
     const localHit = local.split("\n").filter(Boolean).find((r) => branchRe.test(r));
     if (localHit) return { live: `local branch ${localHit}` };
-    const worktrees = tryGit("worktree", "list", "--porcelain", "-z");
+    const worktrees = tryGitWithin(5_000, "worktree", "list", "--porcelain", "-z");
     if (worktrees === null) return { fail: "git worktree list failed; refusing to act without worktree state" };
     const wt = worktrees.split("\0").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9)).find((p) => p.includes(`-issue-${n}-`));
     if (wt) return { live: `worktree ${wt}` };
     // origin is asked directly: a clone whose fetch refspec covers only main never mirrors the
     // issue branch under refs/remotes/origin/, and a fetch alone would read as "no branch".
-    const remote = tryGit("ls-remote", "--heads", "origin", ...patterns);
-    if (remote === null) return { fail: "git ls-remote origin failed; refusing to act without origin's branch state" };
+    const remote = tryGitWithin(60_000, "ls-remote", "--heads", "origin", ...patterns);
+    if (remote === null) return { fail: "git ls-remote origin failed or timed out; refusing to act without origin's branch state" };
     const remoteHit = remote.split("\n").map((l) => l.split("\t")[1]).find((r) => r && branchRe.test(r.replace(/^refs\/heads\//, "")));
     if (remoteHit) return { live: `branch ${remoteHit} on origin` };
     // Every open pull request, paged to exhaustion: a fork PR keeps its head in the fork, so
@@ -237,18 +240,34 @@ if (action === "clear-orphan") {
     out(ok, reason);
   };
 
-  // Under the tag: the same reads again, against state nothing racing this verb can now move.
-  const gate2 = issueGate();
-  if (gate2.fail) settle(false, `under the claim tag: ${gate2.fail}`);
-  const live2 = liveness();
-  if (live2.fail) settle(false, `under the claim tag: ${live2.fail}`);
-  if (live2.live) settle(false, `under the claim tag, live: ${live2.live}`);
+  // Under the tag: the same reads again, against state no flow run can now move. Anything that
+  // throws in here still reaches abandon; a tag left behind by an exception would be a lock
+  // nobody holds and nobody reports.
+  try {
+    const gate2 = issueGate();
+    if (gate2.fail) settle(false, `under the claim tag: ${gate2.fail}`);
+    const live2 = liveness();
+    if (live2.fail) settle(false, `under the claim tag: ${live2.fail}`);
+    if (live2.live) settle(false, `under the claim tag, live: ${live2.live}`);
 
-  if (gh("issue", "edit", n, ...repoPin, "--remove-label", "in-progress", "--add-label", "ready-for-agent") === null) settle(false, "gh issue edit failed; nothing moved");
-  const afterRaw = gh("issue", "view", n, ...repoPin, "--json", "labels");
-  const afterIssue = afterRaw === null ? undefined : parse(afterRaw);
-  const after = afterIssue && Array.isArray(afterIssue.labels) ? afterIssue.labels.map((l) => l.name) : null;
-  if (!after || after.includes("in-progress") || !after.includes("ready-for-agent")) settle(false, "label edit did not read back as ready-for-agent without in-progress; issue state unknown, a human checks it");
-  const commented = gh("issue", "comment", n, ...repoPin, "--body", `Cleared an orphaned \`in-progress\` claim back to \`ready-for-agent\`: ${why}.\n\n- flow nightly lint`) !== null;
-  settle(true, `cleared (${why})${commented ? "" : "; the comment failed, labels moved"}`);
+    if (gh("issue", "edit", n, ...repoPin, "--remove-label", "in-progress", "--add-label", "ready-for-agent") === null) settle(false, "gh issue edit failed; nothing moved");
+
+    // The read-back wants an OPEN issue whose only lifecycle label is ready-for-agent. The claim
+    // tag serializes flow's own runs and nobody else: a human who buried or closed the issue in
+    // these same seconds leaves a tuple no agent may act on, and then the tag stays where it is,
+    // because a freed tag on a wontfix issue that also reads ready-for-agent invites the next
+    // claim. A held tag is the state the issue stage already routes to a human.
+    const afterRaw = gh("issue", "view", n, ...repoPin, "--json", "state,labels");
+    const afterIssue = afterRaw === null ? undefined : parse(afterRaw);
+    const after = afterIssue && Array.isArray(afterIssue.labels) ? afterIssue.labels.map((l) => l.name) : null;
+    if (!after) out(false, "the issue could not be read back after the edit; its state is unknown, so the claim tag is kept for a human to settle, retained: claim-tag");
+    const lifecycleAfter = after.filter((l) => LIFECYCLE.includes(l));
+    if (afterIssue.state !== "OPEN" || lifecycleAfter.length !== 1 || lifecycleAfter[0] !== "ready-for-agent") {
+      out(false, `after the edit the issue reads ${afterIssue.state} with lifecycle labels [${lifecycleAfter.join(", ")}] instead of OPEN with ready-for-agent alone; something else moved it in the same window, so the claim tag is kept for a human to settle, retained: claim-tag`);
+    }
+    const commented = gh("issue", "comment", n, ...repoPin, "--body", `Cleared an orphaned \`in-progress\` claim back to \`ready-for-agent\`: ${why}.\n\n- flow nightly lint`) !== null;
+    settle(true, `cleared (${why})${commented ? "" : "; the comment failed, labels moved"}`);
+  } catch (e) {
+    settle(false, `unexpected failure under the claim tag: ${String(e?.message || e).slice(0, 200)}`);
+  }
 }
