@@ -1,0 +1,5 @@
+interface:
+  display_name: "Delegate"
+  short_description: "Operating manual for cross-family delegation through the flow_delegate MCP tools"
+policy:
+  allow_implicit_invocation: true
