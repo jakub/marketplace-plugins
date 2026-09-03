@@ -1,6 +1,20 @@
 #!/usr/bin/env node
 // The compare-and-set that stops two autonomous runs from starting the same issue.
 //
+// Reasons a `refused` result can carry, each with its fix. `live-run`: another run owns this
+// issue and `found` says what it saw; surface it and stop. `issue-closed`, `not-ready`,
+// `blocked`: the issue's state or labels; route the human. `no-acceptance-criteria`: the body
+// has no `## Acceptance Criteria`; back through prep. `bad-slug`, `worktree-path`,
+// `outside-parent`: the derived worktree path is unusable or outside the repository's parent.
+// `acquire-refused`: origin already holds the claim tag. `worktree-add`, `push`: git refused.
+// Preconditions of this executor: `usage`; `no-origin`; `origin-unparseable`, the origin URL
+// has no host, names a port, carries a query string or fragment, or is not owner/repo shaped,
+// so the executor cannot pin its `gh` calls to one repository; `origin-host-not-allowed`, the
+// origin's host is not github.com and not in FLOW_GH_HOSTS, an allowlist that lives in the
+// environment because a repository's own config is untrusted input to a program holding
+// credentials; `push-fetch-mismatch`, origin's fetch and push URLs disagree, so the claim would
+// be written to a repository other than the one scanned. A human fixes the remote.
+//
 // A claim is one lightweight tag on the origin remote, refs/tags/flow-claim-issue-<N>. Creating
 // a ref is the one operation git's wire protocol makes atomic for us. The client sends the old
 // value it saw in the ref advertisement, and receive-pack refuses the update if the remote has

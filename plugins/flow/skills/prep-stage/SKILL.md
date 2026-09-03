@@ -117,7 +117,7 @@ Add `surface:` when the landing spot isn't obvious from the evidence text; the l
 
 ## 8. Hand-off
 
-One line naming the outcome - design-hardened and ready for the implementation stage, or done-now / split / needs-info - plus the decisions made and any doc touched. Name the next stage the way your host's subsection spells it. Naming a stage is not invoking it; the human's next message is the authorization.
+One line naming the outcome - design-hardened and ready for the implementation stage, or done-now / split / needs-info - plus the decisions made and any doc touched. Name the next stage the way your host's subsection spells it.
 
 ## Host mechanics
 

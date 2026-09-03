@@ -5,7 +5,7 @@ description: The flow development framework - project setup, the documentation s
 
 # flow - the development framework
 
-The charter is in your context already; it says how we build and delegate. No command file says what its command does: prep, issue and land are each one stage skill (`prep-stage`, `issue-stage`, `land-stage`), a host-neutral body ending in a `## Host mechanics` section that names the seats, models and calls for the host you are on. Where a host has commands, `prep.md`, `issue.md` and `land.md` only alias them. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, and the machinery running in the background. Don't restate the charter here - if something is true in every session, it belongs there.
+The charter is in your context already; it says how we build and delegate. No command file says what its command does: prep, issue and land are each one stage skill (`prep-stage`, `issue-stage`, `land-stage`), a host-neutral body ending in a `## Host mechanics` section that names the seats, models and calls for the host you are on. Where a host has commands, `prep.md`, `issue.md` and `land.md` only alias them. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, and the machinery running in the background.
 
 Files in this directory:
 
