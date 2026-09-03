@@ -50,7 +50,7 @@ The scheduled jobs are three files each: the prompt in `skills/flow/cron/<job>.m
 
 `scripts/worktree-audit.sh` is ported from pstack (see `plugins/flow/NOTICE`); unlike grill's vendoring it is a fork, edit it freely.
 
-Agent defs under `agents/` don't pin a model; the orchestrator sets model and effort at spawn. The explicit `tools:` list is load-bearing - a subagent without one can call Agent, and `implementer.md` relies on not having it.
+The explicit `tools:` list on an agent def is load-bearing - a subagent without one can call Agent, and `implementer.md` relies on not having it.
 
 ### Delegation
 
