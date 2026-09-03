@@ -85,35 +85,3 @@ export function sessionHalves(text) {
     `<!-- flow-charter, part 2 of 2 -->\n\n${text.slice(cut)}`,
   ]
 }
-
-/**
- * One `## <heading>` section of the charter, heading line included, or `null` when the
- * charter has no such heading.
- *
- * The last reader of this is src/delegation/instructions.mjs, which the seat-payload milestone
- * replaces. It goes with that import.
- *
- * The section runs from its heading to the character before the next `## ` line or the
- * closing `</flow-charter>` tag. A `## ` line inside a fenced code block is example text, not a
- * heading, so the scan tracks fence state: an unfenced boundary read inside an example would cut
- * the section short and leave the fence open across everything appended after it.
- */
-export function charterSection(text, heading) {
-  const lines = text.split('\n')
-  const start = lines.indexOf(`## ${heading}`)
-  if (start === -1) return null
-  let fence = null
-  let next = -1
-  for (let at = start + 1; at < lines.length; at += 1) {
-    const line = lines[at]
-    const opener = /^\s{0,3}(`{3,}|~{3,})/.exec(line)
-    if (fence === null && opener) { fence = opener[1]; continue }
-    if (fence !== null) {
-      if (opener && opener[1][0] === fence[0] && opener[1].length >= fence.length) fence = null
-      continue
-    }
-    if (line.startsWith('## ') || line === '</flow-charter>') { next = at; break }
-  }
-  if (next === -1) return lines.slice(start).join('\n')
-  return `${lines.slice(start, next).join('\n')}\n`
-}
