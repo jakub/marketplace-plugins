@@ -72,10 +72,11 @@ console.log("lint allowlist");
 const lint = jobs("/x").lint.allowedTools;
 const executorEntries = lint.filter((t) => t.includes("lint-actions.mjs"));
 check("no bare lint-actions prefix", executorEntries.some((t) => t.endsWith("lint-actions.mjs:*")), false);
-for (const verb of ["remove-worktree", "delete-branch", "clear-orphan"]) {
+for (const verb of ["remove-worktree", "delete-branch", "clear-orphan", "demote-unready", "triage-unlabelled"]) {
   check(`verb entry: ${verb}`, executorEntries.includes(`Bash(node /x/scripts/lint-actions.mjs ${verb}:*)`), true);
 }
-check("exactly the three verbs", executorEntries.length, 3);
+check("exactly the five verbs", executorEntries.length, 5);
+check("no direct gh issue edit", lint.some((t) => t.startsWith("Bash(gh issue edit")), false);
 
 console.log(bad === 0 ? "\nflow-cron: ALL PASS" : `\nflow-cron: ${bad} FAILURE(S)`);
 process.exit(bad === 0 ? 0 : 1);

@@ -7,24 +7,24 @@
 //
 //   lint-actions.mjs remove-worktree <repo> <worktree-path> [--check]
 //   lint-actions.mjs delete-branch  <repo> <branch> [--check]
-//   lint-actions.mjs clear-orphan   <repo> <issue-number> [--check]
+//   lint-actions.mjs clear-orphan       <repo> <issue-number> [--check]
+//   lint-actions.mjs demote-unready     <repo> <issue-number> <failed contract point...> [--check]
+//   lint-actions.mjs triage-unlabelled  <repo> <issue-number> [--check]
 //
 // --check runs every gate and reports the verdict without acting.
 //
 // Prints one JSON verdict on stdout: {action, target, ok, reason}. Exit 0 only when
 // the action was performed. Fail closed: any fetch/query failure is a refusal.
 //
-// clear-orphan is the one verb that mutates GitHub rather than git: it moves an orphaned
-// `in-progress` claim back to `ready-for-agent` and comments on the issue. The model
-// could spell that `gh issue edit` itself (the verb is on the lint's allowlist for the
-// other label moves), so the prompt routes this move here and this code re-derives the
-// liveness checks and the grace window instead of trusting the model's reading of them.
-// Every gh call it makes is pinned to the repository origin's URL parses to, through the
-// same identity reader the claim executor uses, because an ambient GH_REPO or a second
-// remote would otherwise let a clean repository authorize a label move in another one. And
-// the move is serialized with the issue stage by holding that issue's claim tag on origin
-// while the checks are repeated and the edit lands: a run that already holds the tag makes
-// this verb stand down, and a run that arrives while this verb holds it stands down itself.
+// The three label verbs are the lint's whole authority over GitHub: its allowlist grants no
+// `gh issue edit`, so a label moves only through one of these fixed transitions, each of which
+// re-derives its preconditions from fresh state. Every gh call is pinned to the repository
+// origin's URL parses to, through the claim executor's identity reader, because an ambient
+// GH_REPO or a second remote would otherwise let a clean repository authorize a label move in
+// another one. The two transitions a claim could race hold the issue's claim tag on origin,
+// taken through the claim executor's acquire, while the checks repeat and the edit lands and is
+// read back; a run that already holds the tag makes the verb stand down, and a run arriving while
+// the verb holds it stands down itself. The read-back is the last read before the tag goes back.
 import { execFileSync } from "node:child_process";
 import { issueClaim, repoIdentity } from "./issue-claim.mjs";
 import { allowedHostsFrom, hostIsAllowed } from "../lib/remote-identity.mjs";
@@ -35,8 +35,8 @@ const ENV = { ...process.env, GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "s
 const argv = process.argv.slice(2);
 const check = argv.includes("--check");
 const [action, repo, target] = argv.filter((a) => a !== "--check");
-const usage = "usage: lint-actions.mjs <remove-worktree|delete-branch|clear-orphan> <repo> <target>";
-if (!repo || !target || !["remove-worktree", "delete-branch", "clear-orphan"].includes(action)) {
+const usage = "usage: lint-actions.mjs <remove-worktree|delete-branch|clear-orphan|demote-unready|triage-unlabelled> <repo> <target> [reason...]";
+if (!repo || !target || !["remove-worktree", "delete-branch", "clear-orphan", "demote-unready", "triage-unlabelled"].includes(action)) {
   console.error(usage);
   process.exit(2);
 }
@@ -139,23 +139,37 @@ if (action === "delete-branch") {
   out(true, `deleted (${w.why}; ${v.why})`);
 }
 
-// An orphaned claim is an open `in-progress` issue with no live branch, worktree, or open PR,
-// carrying no other lifecycle label, whose last update is older than the grace window. The window
-// exists because a running issue stage looks exactly like an orphan in the minutes between its
-// label move and its branch reaching origin; anything younger is left for the next night. A
-// second lifecycle label (blocked, buried, or a double-label) is a human's to untangle, since
-// moving such an issue to ready-for-agent would hand a blocked or buried issue to an agent.
+// ------------------------------------------------------------------------ the label verbs
 //
-// The checks run twice: once cheaply, and once more while holding the issue's claim tag on
-// origin, taken through the claim executor's own acquire. Between the free checks and the edit
-// a delayed issue stage could publish the branch the checks just failed to find; under the tag
-// it cannot, because its acquire fails the moment the tag exists. The tag goes back through
-// abandon whatever the outcome, and a tag that would not go back is reported as retained.
-if (action === "clear-orphan") {
+// clear-orphan: an open `in-progress` issue with no other lifecycle label, no live branch,
+// worktree, or open PR, and a last update older than the grace window, goes back to
+// `ready-for-agent`. The window exists because a running issue stage looks exactly like an orphan
+// in the minutes between its label move and its branch reaching origin. demote-unready: an open
+// `ready-for-agent` issue with no other lifecycle label that failed the contract goes to
+// `needs-triage`, with the failed point in the comment. triage-unlabelled: an open issue with no
+// lifecycle label at all gets `needs-triage`. A second lifecycle label on the issue refuses every
+// verb, since moving such an issue would hand a blocked or buried issue to an agent.
+//
+// The first two hold the claim tag: the checks run once for free and once more under the tag,
+// where no flow run can move the issue. gh's add and remove are two mutations, and either can
+// land while the other fails, so a failed edit is read back rather than assumed unmoved: the
+// original tuple means nothing moved and the tag goes back; the intended tuple means it landed;
+// anything else is a partial move or someone else's and the tag stays for a human, reported as
+// retained. On success the tag goes back straight after the read-back, before the comment.
+const LABEL_VERBS = {
+  "clear-orphan":      { require: "in-progress",     add: "ready-for-agent", remove: "in-progress",     holdTag: true,  grace: true,  liveness: true,  past: "cleared" },
+  "demote-unready":    { require: "ready-for-agent", add: "needs-triage",    remove: "ready-for-agent", holdTag: true,  grace: false, liveness: true,  past: "demoted", reasonArg: true },
+  "triage-unlabelled": { require: null,              add: "needs-triage",    remove: null,              holdTag: false, grace: false, liveness: false, past: "triaged" },
+};
+if (action in LABEL_VERBS) {
+  const spec = LABEL_VERBS[action];
   const GRACE_MS = 6 * 60 * 60 * 1000;
   const LIFECYCLE = ["needs-triage", "agent-found", "ready-for-agent", "in-progress", "needs-info", "needs-human", "needs-rebase", "wontfix", "deferred"];
   if (!/^[1-9]\d*$/.test(target)) out(false, "issue number must be a positive integer");
   const n = target;
+  const TAG_REF = `refs/tags/flow-claim-issue-${n}`;
+  const reason = spec.reasonArg ? argv.filter((a) => a !== "--check").slice(3).join(" ").trim() : "";
+  if (spec.reasonArg && reason === "") out(false, `${action} needs the failed contract point after the issue number`);
 
   const identity = repoIdentity(repo);
   if (identity.problem) out(false, `origin is unusable (${identity.problem}${identity.detail ? `: ${identity.detail}` : ""}); refusing to call gh unpinned`);
@@ -171,26 +185,39 @@ if (action === "clear-orphan") {
   const parse = (raw) => { try { return JSON.parse(raw); } catch { return undefined; } };
   const branchRe = new RegExp(`^(feat|fix|chore)/issue-${n}-`);
   const patterns = ["feat", "fix", "chore"].map((k) => `refs/heads/${k}/issue-${n}-*`);
+  const lifecycleOf = (labels) => labels.filter((l) => LIFECYCLE.includes(l));
+  const sameSet = (a, b) => a.length === b.length && a.every((l) => b.includes(l));
+  const wanted = spec.require ? [spec.require] : [];
+  const final = [spec.add];
 
-  // The issue gate and the liveness scan return a verdict object and never exit, so the caller
-  // can give the claim tag back before it reports.
-  const issueGate = () => {
+  // Every read returns a verdict object and never exits, so the caller can give the claim tag
+  // back before it reports.
+  const readIssue = () => {
     const raw = gh("issue", "view", n, ...repoPin, "--json", "number,state,labels,updatedAt");
     if (raw === null) return { fail: "gh issue view failed; refusing to act without issue state" };
     const issue = parse(raw);
-    if (!issue || typeof issue !== "object") return { fail: "gh issue view returned unparseable JSON" };
-    const labels = (issue.labels || []).map((l) => l.name);
-    if (issue.state !== "OPEN") return { fail: `issue is ${issue.state}, not OPEN` };
-    if (!labels.includes("in-progress")) return { fail: "issue does not carry in-progress" };
-    const others = labels.filter((l) => LIFECYCLE.includes(l) && l !== "in-progress");
-    if (others.length) return { fail: `issue also carries ${others.join(", ")}; a blocked, buried, or double-labelled issue is a human's to settle` };
-    const updated = Date.parse(issue.updatedAt);
+    if (!issue || typeof issue !== "object" || !Array.isArray(issue.labels)) return { fail: "gh issue view returned something that is not an issue" };
+    return { state: issue.state, labels: issue.labels.map((l) => l.name), updatedAt: issue.updatedAt };
+  };
+  const issueGate = () => {
+    const r = readIssue();
+    if (r.fail) return r;
+    if (r.state !== "OPEN") return { fail: `issue is ${r.state}, not OPEN` };
+    const lc = lifecycleOf(r.labels);
+    if (!sameSet(lc, wanted)) {
+      return { fail: wanted.length
+        ? `issue carries lifecycle labels [${lc.join(", ")}] and ${action} needs ${wanted[0]} alone; a blocked, buried, or double-labelled issue is a human's to settle`
+        : `issue carries lifecycle labels [${lc.join(", ")}]; ${action} is for an issue with none` };
+    }
+    if (!spec.grace) return { ageMs: null };
+    const updated = Date.parse(r.updatedAt);
     if (!Number.isFinite(updated)) return { fail: "issue updatedAt is unreadable" };
     const ageMs = Date.now() - updated;
     if (ageMs < GRACE_MS) return { fail: `issue was updated ${Math.round(ageMs / 60_000)} minutes ago; a claim younger than six hours may be a running stage whose branch is not yet on origin` };
     return { ageMs };
   };
   const liveness = () => {
+    if (!spec.liveness) return {};
     const local = tryGitWithin(5_000, "for-each-ref", "--format=%(refname:short)", ...patterns);
     if (local === null) return { fail: "git for-each-ref failed; refusing to act without this clone's branch state" };
     const localHit = local.split("\n").filter(Boolean).find((r) => branchRe.test(r));
@@ -226,47 +253,75 @@ if (action === "clear-orphan") {
   const pre = liveness();
   if (pre.fail) out(false, pre.fail);
   if (pre.live) out(false, `live: ${pre.live}`);
-  const hours = Math.round(gate.ageMs / 3_600_000);
-  const why = `in-progress for ${hours}h with no branch, worktree, claim tag, or open PR`;
-  if (check) out(true, `check only: would clear (${why})`);
-
-  const acq = claimVerb("acquire", n);
-  if (acq.result === "held") out(false, `claim tag flow-claim-issue-${n} is held on origin; a held claim is a human's to settle (${acq.detail || "no detail"})`);
-  if (acq.result !== "acquired" || typeof acq.sha !== "string") out(false, `could not take the claim tag to serialize with the issue stage: ${acq.detail || acq.reason || acq.result}`);
-  const receipt = acq.sha;
-  const settle = (ok, reason) => {
-    const back = claimVerb("abandon", n, receipt);
-    if (back.result !== "abandoned") out(false, `${reason}; and the claim tag could not be given back (${back.detail || back.result}), retained: claim-tag`);
-    out(ok, reason);
-  };
-
-  // Under the tag: the same reads again, against state no flow run can now move. Anything that
-  // throws in here still reaches abandon; a tag left behind by an exception would be a lock
-  // nobody holds and nobody reports.
-  try {
-    const gate2 = issueGate();
-    if (gate2.fail) settle(false, `under the claim tag: ${gate2.fail}`);
-    const live2 = liveness();
-    if (live2.fail) settle(false, `under the claim tag: ${live2.fail}`);
-    if (live2.live) settle(false, `under the claim tag, live: ${live2.live}`);
-
-    if (gh("issue", "edit", n, ...repoPin, "--remove-label", "in-progress", "--add-label", "ready-for-agent") === null) settle(false, "gh issue edit failed; nothing moved");
-
-    // The read-back wants an OPEN issue whose only lifecycle label is ready-for-agent. The claim
-    // tag serializes flow's own runs and nobody else: a human who buried or closed the issue in
-    // these same seconds leaves a tuple no agent may act on, and then the tag stays where it is,
-    // because a freed tag on a wontfix issue that also reads ready-for-agent invites the next
-    // claim. A held tag is the state the issue stage already routes to a human.
-    const afterRaw = gh("issue", "view", n, ...repoPin, "--json", "state,labels");
-    const afterIssue = afterRaw === null ? undefined : parse(afterRaw);
-    const after = afterIssue && Array.isArray(afterIssue.labels) ? afterIssue.labels.map((l) => l.name) : null;
-    if (!after) out(false, "the issue could not be read back after the edit; its state is unknown, so the claim tag is kept for a human to settle, retained: claim-tag");
-    const lifecycleAfter = after.filter((l) => LIFECYCLE.includes(l));
-    if (afterIssue.state !== "OPEN" || lifecycleAfter.length !== 1 || lifecycleAfter[0] !== "ready-for-agent") {
-      out(false, `after the edit the issue reads ${afterIssue.state} with lifecycle labels [${lifecycleAfter.join(", ")}] instead of OPEN with ready-for-agent alone; something else moved it in the same window, so the claim tag is kept for a human to settle, retained: claim-tag`);
+  const why = action === "clear-orphan" ? `in-progress for ${Math.round(gate.ageMs / 3_600_000)}h with no branch, worktree, claim tag, or open PR`
+    : action === "demote-unready" ? `ready-for-agent contract not met: ${reason}`
+    : "open with no lifecycle label";
+  if (check) {
+    // --check runs every gate, and for a tag-holding verb the tag is one of them: a held tag would
+    // refuse the real run at acquire, so the check reads it directly rather than take it.
+    if (spec.holdTag) {
+      const tag = tryGitWithin(60_000, "ls-remote", "--tags", "origin", TAG_REF);
+      if (tag === null) out(false, "git ls-remote origin failed or timed out; refusing to report without the claim tag state");
+      if (tag !== "") out(false, `claim tag flow-claim-issue-${n} is held on origin; a held claim is a human's to settle`);
     }
-    const commented = gh("issue", "comment", n, ...repoPin, "--body", `Cleared an orphaned \`in-progress\` claim back to \`ready-for-agent\`: ${why}.\n\n- flow nightly lint`) !== null;
-    settle(true, `cleared (${why})${commented ? "" : "; the comment failed, labels moved"}`);
+    out(true, `check only: would ${spec.past === "cleared" ? "clear" : spec.past === "demoted" ? "demote" : "triage"} (${why})`);
+  }
+
+  let receipt = null;
+  if (spec.holdTag) {
+    const acq = claimVerb("acquire", n);
+    if (acq.result === "held") out(false, `claim tag flow-claim-issue-${n} is held on origin; a held claim is a human's to settle (${acq.detail || "no detail"})`);
+    if (acq.result !== "acquired" || typeof acq.sha !== "string") out(false, `could not take the claim tag to serialize with the issue stage: ${acq.detail || acq.reason || acq.result}`);
+    receipt = acq.sha;
+  }
+  const giveBack = () => {
+    if (receipt === null) return true;
+    const back = claimVerb("abandon", n, receipt);
+    return back.result === "abandoned" ? true : (back.detail || back.result);
+  };
+  const settle = (ok, why) => {
+    const b = giveBack();
+    if (b !== true) out(false, `${why}; and the claim tag could not be given back (${b}), retained: claim-tag`);
+    out(ok, why);
+  };
+  const keep = (why) => out(false, receipt !== null ? `${why}, so the claim tag is kept for a human to settle, retained: claim-tag` : `${why}; a human checks it`);
+
+  // Under the tag (or, for a verb no claim can race, straight away): anything that throws in
+  // here still reaches abandon; a tag left behind by an exception would be a lock nobody holds
+  // and nobody reports.
+  try {
+    if (spec.holdTag) {
+      const gate2 = issueGate();
+      if (gate2.fail) settle(false, `under the claim tag: ${gate2.fail}`);
+      const live2 = liveness();
+      if (live2.fail) settle(false, `under the claim tag: ${live2.fail}`);
+      if (live2.live) settle(false, `under the claim tag, live: ${live2.live}`);
+    }
+    const editArgs = ["issue", "edit", n, ...repoPin];
+    if (spec.remove) editArgs.push("--remove-label", spec.remove);
+    editArgs.push("--add-label", spec.add);
+    const edited = gh(...editArgs) !== null;
+
+    const back = readIssue();
+    if (back.fail) keep("the issue could not be read back after the edit, so its state is unknown");
+    const lc = lifecycleOf(back.labels);
+    const landed = back.state === "OPEN" && sameSet(lc, final);
+    if (!landed) {
+      if (back.state === "OPEN" && sameSet(lc, wanted)) {
+        if (!edited) settle(false, "gh issue edit failed and the read-back confirms nothing moved");
+        keep("the edit was accepted but the read-back shows the labels unchanged");
+      }
+      keep(`after the edit the issue reads ${back.state} with lifecycle labels [${lc.join(", ")}] instead of OPEN with ${spec.add} alone; ${edited ? "something else moved it in the same window" : "the edit failed part way"}`);
+    }
+    // Landed. The read-back was the last read; the tag goes back now, before anything else
+    // touches the network, so no later call widens the window between the read and the release.
+    const b = giveBack();
+    if (b !== true) out(false, `${spec.past} (${why}); but the claim tag could not be given back (${b}), retained: claim-tag`);
+    const body = action === "clear-orphan" ? `Cleared an orphaned \`in-progress\` claim back to \`ready-for-agent\`: ${why}.`
+      : action === "demote-unready" ? `Moved \`ready-for-agent\` back to \`needs-triage\`: ${reason}`
+      : "Added \`needs-triage\`: open issue with no lifecycle label.";
+    const commented = gh("issue", "comment", n, ...repoPin, "--body", `${body}\n\n- flow nightly lint`) !== null;
+    out(true, `${spec.past} (${why})${commented ? "" : "; the comment failed, labels moved"}`);
   } catch (e) {
     settle(false, `unexpected failure under the claim tag: ${String(e?.message || e).slice(0, 200)}`);
   }

@@ -106,6 +106,13 @@ expectEnv(false, 'git log -1 | head -5', lint, 'lint: pipe into a plain filter s
 expectEnv(false, 'git fetch origin --prune && git branch -a', lint, 'lint: two reads chained')
 expectEnv(false, "gh issue comment 42 --body 'run git branch -D old; then git push'", lint, 'lint: single-quoted prose about git writes')
 expectEnv(false, 'node /x/scripts/lint-actions.mjs prune-worktree --repo /home/x/code/r --path /home/x/code/r-wt', { ...lint, CLAUDE_PLUGIN_ROOT: '/x' }, 'lint: the executor invocation')
+// The allowlist is a prefix over the whole command, so a permitted executor prefix followed by a
+// separator would smuggle any second segment the grammar accepts. A pipe into a filter stays legal.
+expectEnv(true, 'node /x/scripts/lint-actions.mjs clear-orphan /home/x/code/r 7 --check; bash /x/scripts/install-cron.sh uninstall', { ...lint, CLAUDE_PLUGIN_ROOT: '/x' }, 'lint: an executor followed by a second plugin script')
+expectEnv(true, 'git status && node /x/scripts/lint-actions.mjs clear-orphan /home/x/code/r 7', { ...lint, CLAUDE_PLUGIN_ROOT: '/x' }, 'lint: an executor chained after a read')
+expectEnv(true, 'bash /x/scripts/worktree-audit.sh /home/x/code/r || node /x/scripts/lint-actions.mjs delete-branch /home/x/code/r old', { ...lint, CLAUDE_PLUGIN_ROOT: '/x' }, 'lint: two plugin scripts joined by ||')
+expectEnv(false, 'node /x/scripts/lint-actions.mjs clear-orphan /home/x/code/r 7', { ...lint, CLAUDE_PLUGIN_ROOT: '/x' }, 'lint: the executor alone')
+expectEnv(false, 'bash /x/scripts/worktree-audit.sh /home/x/code/r | head -50', { ...lint, CLAUDE_PLUGIN_ROOT: '/x' }, 'lint: a plugin script piped into a filter')
 // Review-found shapes: prose naming a shell form, a dashed heredoc delimiter, and a quoted
 // heredoc delimiter that turns interpolation off.
 expectEnv(false, 'gh issue comment 42 --body "do not use bash -c git push"', lint, 'lint: prose naming bash -c in a quoted body')

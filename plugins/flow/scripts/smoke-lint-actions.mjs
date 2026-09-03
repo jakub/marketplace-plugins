@@ -76,7 +76,8 @@ if (group === "issue" && verb === "view") {
   out(Object.fromEntries(fields.map((f) => [f, st.issue[f]])));
 }
 if (group === "issue" && verb === "edit") {
-  requireTagHeld("issue edit");
+  if (st.expectTag !== false) requireTagHeld("issue edit");
+  if (st.partialEdit === "add-only") { const add = rest.indexOf("--add-label"); if (add !== -1) st.issue.labels.push({ name: rest[add + 1] }); fail("issue edit: the add landed and the remove failed"); }
   if (st.editFails) fail("issue edit failed");
   if (st.buryOnEdit) st.issue.labels = st.issue.labels.filter((l) => l.name !== "in-progress").concat([{ name: "wontfix" }]);
   if (st.applyEdit !== false) {
@@ -188,11 +189,11 @@ const refuses = (name, setup, pattern) => it(name, () => {
 });
 
 refuses("refuses a claim younger than the grace window", () => world({ updatedAt: new Date(Date.now() - HOUR).toISOString() }), /younger than six hours/);
-refuses("refuses an issue without in-progress", () => world({ labels: [{ name: "ready-for-agent" }] }), /does not carry in-progress/);
+refuses("refuses an issue without in-progress", () => world({ labels: [{ name: "ready-for-agent" }] }), /lifecycle labels \[ready-for-agent\] and clear-orphan needs in-progress alone/);
 refuses("refuses a closed issue", () => world({ state: "CLOSED" }), /not OPEN/);
-refuses("refuses a blocked issue", () => world({ labels: [{ name: "in-progress" }, { name: "needs-human" }] }), /also carries needs-human/);
-refuses("refuses a buried issue", () => world({ labels: [{ name: "in-progress" }, { name: "wontfix" }] }), /also carries wontfix/);
-refuses("refuses a double-labelled issue", () => world({ labels: [{ name: "in-progress" }, { name: "ready-for-agent" }] }), /also carries ready-for-agent/);
+refuses("refuses a blocked issue", () => world({ labels: [{ name: "in-progress" }, { name: "needs-human" }] }), /needs clear-orphan.*in-progress alone|lifecycle labels \[in-progress, needs-human\]/);
+refuses("refuses a buried issue", () => world({ labels: [{ name: "in-progress" }, { name: "wontfix" }] }), /lifecycle labels \[in-progress, wontfix\]/);
+refuses("refuses a double-labelled issue", () => world({ labels: [{ name: "in-progress" }, { name: "ready-for-agent" }] }), /lifecycle labels \[in-progress, ready-for-agent\]/);
 refuses("refuses when a branch for the issue is on origin", () => {
   const w = world();
   git(w, "push", "--quiet", "origin", "main:refs/heads/feat/issue-7-widget");
@@ -250,7 +251,7 @@ it("keeps the tag when the edit does not read back", () => {
   const w = world({}, { applyEdit: false });
   const r = run(w, ["clear-orphan", w.repo, ISSUE]);
   assert.equal(r.code, 1);
-  assert.match(r.verdict.reason, /instead of OPEN with ready-for-agent alone.*retained: claim-tag/);
+  assert.match(r.verdict.reason, /the edit was accepted but the read-back shows the labels unchanged.*retained: claim-tag/);
   assert.equal(comments(r.state).length, 0, "no comment on an unconfirmed move");
   assert.equal(tagOnOrigin(w), true, "an issue in an unexplained state keeps its tag for a human");
   done(w);
@@ -277,6 +278,90 @@ it("names a retained claim tag when origin refuses to give it back", () => {
   assert.match(r.verdict.reason, /retained: claim-tag/);
   assert.deepEqual(labelsOf(r.state), ["enhancement", "ready-for-agent"], "the labels did move; the verdict says so");
   assert.equal(tagOnOrigin(w), true);
+  done(w);
+});
+
+it("--check refuses when the claim tag is held", () => {
+  const w = world();
+  git(w, "push", "--quiet", "origin", "HEAD:" + TAG_REF);
+  const r = run(w, ["clear-orphan", w.repo, ISSUE, "--check"]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /claim tag flow-claim-issue-7 is held/);
+  assert.equal(edits(r.state).length, 0);
+  done(w);
+});
+
+it("a failed edit that moved nothing gives the tag back", () => {
+  const w = world({}, { editFails: true });
+  const r = run(w, ["clear-orphan", w.repo, ISSUE]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /gh issue edit failed and the read-back confirms nothing moved/);
+  assert.deepEqual(labelsOf(r.state), ["enhancement", "in-progress"]);
+  assert.equal(tagOnOrigin(w), false);
+  done(w);
+});
+
+it("a failed edit that landed half way keeps the tag", () => {
+  const w = world({}, { partialEdit: "add-only" });
+  const r = run(w, ["clear-orphan", w.repo, ISSUE]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /the edit failed part way.*retained: claim-tag/);
+  assert.deepEqual(labelsOf(r.state), ["enhancement", "in-progress", "ready-for-agent"]);
+  assert.equal(comments(r.state).length, 0);
+  assert.equal(tagOnOrigin(w), true);
+  done(w);
+});
+
+it("demote-unready moves a failing ready issue to needs-triage with the reason", () => {
+  const w = world({ labels: [{ name: "ready-for-agent" }, { name: "bug" }] });
+  const r = run(w, ["demote-unready", w.repo, ISSUE, "no", "acceptance", "criteria", "heading"]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.verdict.reason, /^demoted \(ready-for-agent contract not met: no acceptance criteria heading\)/);
+  assert.deepEqual(labelsOf(r.state), ["bug", "needs-triage"]);
+  assert.match(comments(r.state)[0].at(-1), /no acceptance criteria heading/);
+  assert.equal(tagOnOrigin(w), false);
+  done(w);
+});
+
+it("demote-unready refuses without a reason and without the ready label", () => {
+  const w = world({ labels: [{ name: "ready-for-agent" }] });
+  const noReason = run(w, ["demote-unready", w.repo, ISSUE]);
+  assert.equal(noReason.code, 1);
+  assert.match(noReason.verdict.reason, /needs the failed contract point/);
+  const w2 = world();
+  const notReady = run(w2, ["demote-unready", w2.repo, ISSUE, "whatever"]);
+  assert.equal(notReady.code, 1);
+  assert.match(notReady.verdict.reason, /needs ready-for-agent alone/);
+  assert.equal(edits(notReady.state).length, 0);
+  done(w); done(w2);
+});
+
+it("demote-unready refuses a ready issue with a live branch", () => {
+  const w = world({ labels: [{ name: "ready-for-agent" }] });
+  git(w, "branch", "feat/issue-7-started");
+  const r = run(w, ["demote-unready", w.repo, ISSUE, "stale"]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /live: local branch feat\/issue-7-started/);
+  done(w);
+});
+
+it("triage-unlabelled adds needs-triage to an unlabelled issue and takes no tag", () => {
+  const w = world({ labels: [{ name: "bug" }] }, { expectTag: false });
+  const r = run(w, ["triage-unlabelled", w.repo, ISSUE]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.verdict.reason, /^triaged \(open with no lifecycle label\)/);
+  assert.deepEqual(labelsOf(r.state), ["bug", "needs-triage"]);
+  assert.equal(comments(r.state).length, 1);
+  assert.equal(tagOnOrigin(w), false);
+  done(w);
+});
+
+it("triage-unlabelled refuses an issue that already carries a lifecycle label", () => {
+  const w = world({ labels: [{ name: "wontfix" }] }, { expectTag: false });
+  const r = run(w, ["triage-unlabelled", w.repo, ISSUE]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /is for an issue with none/);
+  assert.equal(edits(r.state).length, 0);
   done(w);
 });
 

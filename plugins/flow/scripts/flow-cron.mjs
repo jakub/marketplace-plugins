@@ -38,16 +38,22 @@ export const jobs = (root) => ({
     allowedTools: [
       "Read", "Glob", "Grep", "Agent",
       "Bash(git:*)", // guarded read-only in cron mode (git-guard.mjs); lint-actions.mjs below is the mutating path
-      "Bash(gh issue list:*)", "Bash(gh issue view:*)", "Bash(gh issue edit:*)", "Bash(gh issue comment:*)",
+      // No `gh issue edit`: every label move the lint may make is an executor verb below, so the
+      // model cannot spell one directly. Comments stay direct; a comment moves no state.
+      "Bash(gh issue list:*)", "Bash(gh issue view:*)", "Bash(gh issue comment:*)",
       "Bash(gh pr list:*)", "Bash(gh pr view:*)",
       "Bash(gh run list:*)", "Bash(gh run view:*)",
       "Bash(gh label list:*)",
       `Bash(bash ${root}/scripts/worktree-audit.sh:*)`,
       // The ONLY mutating path, one entry per verb: adding a verb to the executor widens nothing
       // until its entry is added here, so this file stays the audited gate the docs say it is.
+      // git-guard's cron grammar refuses an executor joined to a second segment, which is what
+      // keeps a prefix entry from carrying a smuggled command behind it.
       `Bash(node ${root}/scripts/lint-actions.mjs remove-worktree:*)`,
       `Bash(node ${root}/scripts/lint-actions.mjs delete-branch:*)`,
       `Bash(node ${root}/scripts/lint-actions.mjs clear-orphan:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs demote-unready:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs triage-unlabelled:*)`,
 
       // drift-audit §5 on the marketplace repo:
       `Bash(node ${root}/hooks/scripts/inject-charter.mjs:*)`,

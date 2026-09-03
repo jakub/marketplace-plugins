@@ -276,6 +276,10 @@ const KINDS = new Set(['feat', 'fix', 'chore'])
 const READY_LABEL = 'ready-for-agent'
 const IN_PROGRESS_LABEL = 'in-progress'
 const BLOCKING_LABELS = ['needs-human', 'needs-info', 'needs-rebase']
+// Every lifecycle label the contract knows. The ready label is trusted only when it is the one
+// lifecycle label on the issue: a buried or double-labelled issue carrying it beside wontfix,
+// deferred, or a stale in-progress is a human's to untangle, never a run's to start.
+const LIFECYCLE_LABELS = ['needs-triage', 'agent-found', READY_LABEL, IN_PROGRESS_LABEL, ...BLOCKING_LABELS, 'wontfix', 'deferred']
 // Long enough to read, short enough that the branch and the sibling directory both stay typable.
 const SLUG_MAX = 40
 
@@ -1296,6 +1300,14 @@ const claim = ({ argv, cwd, env, runGh }) => {
         reason: 'blocked',
         detail: `issue #${issue} carries ${blocking.join(', ')} beside ${READY_LABEL}, so the ready label is stale and only a human clears the blocker`,
         extra: { blocking },
+      }
+    }
+    const extra = LIFECYCLE_LABELS.filter((label) => label !== READY_LABEL && read.labels.includes(label))
+    if (extra.length > 0) {
+      return {
+        reason: 'blocked',
+        detail: `issue #${issue} carries ${extra.join(', ')} beside ${READY_LABEL}, and the ready label is trusted only as the sole lifecycle label; a buried or double-labelled issue is a human's to settle`,
+        extra: { blocking: extra },
       }
     }
     return null

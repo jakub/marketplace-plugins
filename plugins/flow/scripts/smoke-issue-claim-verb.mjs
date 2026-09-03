@@ -422,7 +422,7 @@ console.log('\nrefusals before the first write')
   check('a missing ready-for-agent refuses with not-ready', notReady.code === 2 && notReady.json?.reason === 'not-ready', `exit ${notReady.code} ${notReady.stdout}`)
   untouched('not-ready', notReady)
 
-  for (const label of ['needs-human', 'needs-info', 'needs-rebase']) {
+  for (const label of ['needs-human', 'needs-info', 'needs-rebase', 'wontfix', 'deferred', 'needs-triage', 'in-progress']) {
     const blocked = run(w, ['claim', String(ISSUE)], freshState({ issue: { labels: [{ name: 'ready-for-agent' }, { name: label }] } }))
     check(`${label} beside the ready label refuses with blocked`, blocked.code === 2 && blocked.json?.reason === 'blocked', `exit ${blocked.code} ${blocked.stdout}`)
     check(`${label} is named in the refusal`, String(blocked.json?.detail).includes(label) && (blocked.json?.blocking ?? []).includes(label), blocked.stdout)

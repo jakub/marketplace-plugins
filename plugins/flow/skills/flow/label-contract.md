@@ -92,12 +92,15 @@ auto-implementation; keep it strict.
    taxonomy are reported as drift for a human to remove.
 2. For every open `ready-for-agent` issue: validate the six contract points (a scoped
    sonnet agent per issue; judgment calls escalate to the orchestrator). Non-conforming →
-   remove label, add `needs-triage`, comment the specific failures.
+   `scripts/lint-actions.mjs demote-unready` with the failed point, which moves it to
+   `needs-triage` and comments.
 3. For every `in-progress` issue: verify a live worktree/branch/PR actually exists.
    An orphaned claim is cleared back to `ready-for-agent` only through
    `scripts/lint-actions.mjs clear-orphan`, which re-derives the liveness checks and the
    six-hour grace window itself and comments on the issue.
-4. For every open issue with NO lifecycle label: add `needs-triage` with a comment.
+4. For every open issue with NO lifecycle label: `scripts/lint-actions.mjs triage-unlabelled`,
+   which adds `needs-triage` and comments. An issue with two lifecycle labels is reported
+   for a human; no verb touches it.
 5. Report: per-issue verdicts + what changed.
 
 The nightly cron runs a narrower version: its allowlist has `gh label list` only, so step 1
