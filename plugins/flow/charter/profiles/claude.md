@@ -23,7 +23,7 @@ cap and the worktree rule apply as written.
 The transport seat for a bridge call is `flow:bridge`, whose toolset is the `flow_delegate`
 tools and ToolSearch and nothing else. Spawn it as `model: sonnet`, low effort, with the call's
 arguments in its prompt; in a workflow script that is `agent(prompt, {agentType: 'flow:bridge',
-schema})`, with the envelope schema `node <plugin-root>/dist/delegation.mjs schema envelope`
+effort: 'low', schema})` (the delegated call's own effort rides inside the prompt), with the envelope schema `node <plugin-root>/dist/delegation.mjs schema envelope`
 prints. It returns the envelope verbatim, and the orchestrator reads that as the tool result.
 
 ### role: context-inheritance

@@ -97,8 +97,8 @@ auto-implementation; keep it strict.
    moves it to `needs-triage`, and comments.
 3. For every `in-progress` issue: verify a live worktree/branch/PR actually exists.
    An orphaned claim is cleared back to `ready-for-agent` only through
-   `scripts/lint-actions.mjs clear-orphan`, which re-derives the liveness checks and the
-   six-hour grace window itself and comments on the issue.
+   `scripts/lint-actions.mjs clear-orphan <repo> <n>`, which re-derives the liveness checks
+   and the six-hour grace window itself and comments on the issue.
 4. For every open issue with NO lifecycle label: `scripts/lint-actions.mjs triage-unlabelled
    <repo> <n> --seen <its updatedAt>`, which adds `needs-triage` and comments. An issue with
    two lifecycle labels is reported for a human; no verb touches it.

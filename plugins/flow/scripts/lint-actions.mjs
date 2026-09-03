@@ -318,7 +318,10 @@ if (action in LABEL_VERBS) {
   const giveBack = () => {
     if (receipt === null) return true;
     const back = claimVerb("abandon", n, receipt);
-    return back.result === "abandoned" ? true : (back.detail || back.result);
+    // tag-absent is a tag already gone: nothing is held, so nothing is retained. Who removed it
+    // is the receipt-generation residual the header names, not a reason to report a lock.
+    if (back.result === "abandoned" || back.reason === "tag-absent") return true;
+    return back.detail || back.result;
   };
   const settle = (ok, why) => {
     const b = giveBack();
