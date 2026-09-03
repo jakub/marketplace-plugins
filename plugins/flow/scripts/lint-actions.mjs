@@ -7,11 +7,18 @@
 //
 //   lint-actions.mjs remove-worktree <repo> <worktree-path> [--check]
 //   lint-actions.mjs delete-branch  <repo> <branch> [--check]
+//   lint-actions.mjs clear-orphan   <repo> <issue-number> [--check]
 //
 // --check runs every gate and reports the verdict without acting.
 //
 // Prints one JSON verdict on stdout: {action, target, ok, reason}. Exit 0 only when
 // the action was performed. Fail closed: any fetch/query failure is a refusal.
+//
+// clear-orphan is the one verb that mutates GitHub rather than git: it moves an orphaned
+// `in-progress` claim back to `ready-for-agent` and comments on the issue. The model
+// could spell that `gh issue edit` itself (the verb is on the lint's allowlist for the
+// other label moves), so the prompt routes this move here and this code re-derives the
+// liveness checks and the grace window instead of trusting the model's reading of them.
 import { execFileSync } from "node:child_process";
 
 // Unattended: ssh must never prompt (a prompt is a 40-minute hang, then a dead job).
@@ -20,8 +27,8 @@ const ENV = { ...process.env, GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "s
 const argv = process.argv.slice(2);
 const check = argv.includes("--check");
 const [action, repo, target] = argv.filter((a) => a !== "--check");
-const usage = "usage: lint-actions.mjs <remove-worktree|delete-branch> <repo> <target>";
-if (!repo || !target || !["remove-worktree", "delete-branch"].includes(action)) {
+const usage = "usage: lint-actions.mjs <remove-worktree|delete-branch|clear-orphan> <repo> <target>";
+if (!repo || !target || !["remove-worktree", "delete-branch", "clear-orphan"].includes(action)) {
   console.error(usage);
   process.exit(2);
 }
@@ -119,4 +126,53 @@ if (action === "delete-branch") {
   if (check) out(true, `check only: would delete (${w.why}; ${v.why})`);
   try { git("branch", "-D", target); } catch (e) { out(false, `git branch -D refused: ${String(e.stderr || e.message).trim().slice(0, 200)}`); }
   out(true, `deleted (${w.why}; ${v.why})`);
+}
+
+// An orphaned claim is an open `in-progress` issue with no live branch, worktree, claim tag,
+// or open PR, whose last update is older than the grace window. The window exists because a
+// running issue stage looks exactly like an orphan in the minutes between its label move and
+// its branch reaching origin; anything younger is left for the next night. A claim tag on
+// origin is never cleared from here: a held tag means a run may still own the issue, and the
+// issue stage says a stale tag is a human's to settle with the branch and PR state it guards.
+if (action === "clear-orphan") {
+  const GRACE_MS = 6 * 60 * 60 * 1000;
+  if (!/^[1-9]\d*$/.test(target)) out(false, "issue number must be a positive integer");
+  const n = target;
+  const gh = (...args) => { try { return execFileSync("gh", args, { encoding: "utf8", cwd: repo, timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] }); } catch { return null; } };
+  const parse = (raw, what) => { try { return JSON.parse(raw); } catch { out(false, `${what} returned unparseable JSON`); } };
+
+  const issueRaw = gh("issue", "view", n, "--json", "number,state,labels,updatedAt");
+  if (issueRaw === null) out(false, "gh issue view failed; refusing to act without issue state");
+  const issue = parse(issueRaw, "gh issue view");
+  const labels = (issue.labels || []).map((l) => l.name);
+  if (issue.state !== "OPEN") out(false, `issue is ${issue.state}, not OPEN`);
+  if (!labels.includes("in-progress")) out(false, "issue does not carry in-progress");
+  const updated = Date.parse(issue.updatedAt);
+  if (!Number.isFinite(updated)) out(false, "issue updatedAt is unreadable");
+  const ageMs = Date.now() - updated;
+  if (ageMs < GRACE_MS) out(false, `issue was updated ${Math.round(ageMs / 60_000)} minutes ago; a claim younger than six hours may be a running stage whose branch is not yet on origin`);
+
+  const branchRe = new RegExp(`^(feat|fix|chore)/issue-${n}-`);
+  const refs = (tryGit("for-each-ref", "--format=%(refname:short)", "refs/heads/", "refs/remotes/origin/") || "").split("\n").filter(Boolean);
+  const live = refs.filter((r) => branchRe.test(r.replace(/^origin\//, "")));
+  if (live.length) out(false, `live branch: ${live.join(", ")}`);
+  const worktrees = (tryGit("worktree", "list", "--porcelain", "-z") || "").split("\0").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
+  const wt = worktrees.find((p) => p.includes(`-issue-${n}-`));
+  if (wt) out(false, `live worktree: ${wt}`);
+  const tag = tryGit("ls-remote", "--tags", "origin", `refs/tags/flow-claim-issue-${n}`);
+  if (tag === null) out(false, "git ls-remote failed; refusing to act without the claim tag state");
+  if (tag !== "") out(false, `claim tag flow-claim-issue-${n} is on origin; a held claim is a human's to settle`);
+  const prsRaw = gh("pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName");
+  if (prsRaw === null) out(false, "gh pr list failed; refusing to act without PR state");
+  const pr = parse(prsRaw, "gh pr list").find((p) => branchRe.test(p.headRefName || ""));
+  if (pr) out(false, `open PR #${pr.number} on ${pr.headRefName}`);
+
+  const why = `in-progress for ${Math.round(ageMs / 3_600_000)}h with no branch, worktree, claim tag, or open PR`;
+  if (check) out(true, `check only: would clear (${why})`);
+  if (gh("issue", "edit", n, "--remove-label", "in-progress", "--add-label", "ready-for-agent") === null) out(false, "gh issue edit failed");
+  const afterRaw = gh("issue", "view", n, "--json", "labels");
+  const after = afterRaw === null ? null : (parse(afterRaw, "gh issue view").labels || []).map((l) => l.name);
+  if (!after || after.includes("in-progress") || !after.includes("ready-for-agent")) out(false, "label edit did not read back as ready-for-agent without in-progress; issue state unknown, a human checks it");
+  const commented = gh("issue", "comment", n, "--body", `Cleared an orphaned \`in-progress\` claim back to \`ready-for-agent\`: ${why}.\n\n- flow nightly lint`) !== null;
+  out(true, `cleared (${why})${commented ? "" : "; the comment failed, labels moved"}`);
 }

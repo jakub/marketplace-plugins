@@ -93,8 +93,10 @@ auto-implementation; keep it strict.
 2. For every open `ready-for-agent` issue: validate the six contract points (a scoped
    sonnet agent per issue; judgment calls escalate to the orchestrator). Non-conforming →
    remove label, add `needs-triage`, comment the specific failures.
-3. For every `in-progress` issue: verify a live worktree/branch/PR actually exists;
-   orphaned claims → clear back to `ready-for-agent` with a comment.
+3. For every `in-progress` issue: verify a live worktree/branch/PR actually exists.
+   An orphaned claim is cleared back to `ready-for-agent` only through
+   `scripts/lint-actions.mjs clear-orphan`, which re-derives the liveness checks and the
+   six-hour grace window itself and comments on the issue.
 4. For every open issue with NO lifecycle label: add `needs-triage` with a comment.
 5. Report: per-issue verdicts + what changed.
 
