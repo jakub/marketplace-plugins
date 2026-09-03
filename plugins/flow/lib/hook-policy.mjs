@@ -1,5 +1,9 @@
-// Harness-neutral policy for flow's protected-file and public-registry guards.
+// Harness-neutral policy for flow's protected-file, public-registry and merge guards.
 // Adapters own wire formats: policy receives commands or paths and returns a reason.
+
+import { execFileSync } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const SECRET = /(^|\/)\.env(\.[A-Za-z0-9_-]+)*$/
 const SECRET_EXEMPT = /\.(example|sample|template|dist|defaults?)$/
@@ -265,3 +269,110 @@ export function mergeShapes(command) {
   ])
 }
 
+// ------------------------------------------------- the merge decision, shared by both guards
+//
+// Both hosts route a pull request merge the same way, so the decision lives here once and each
+// adapter calls mergeDenialFor() and emits its own host's deny shape. What follows is the whole
+// rationale; the two guard scripts carry a pointer to it instead of a copy.
+//
+// A repository opts in by committing a `.flow/managed` file, which is how flow tells "a repo
+// whose merges I am responsible for" from "some clone the session happens to be sitting in".
+// The marker being committed at HEAD is the opt-in, so deleting the working-tree copy does not
+// turn the guardrail off. In an opted-in repository every merge command these guards can
+// recognize is denied and the denial names scripts/land-merge.mjs, the executor that performs
+// the merge after deriving the repository from the origin remote and the pull request's live
+// facts from GitHub. This is routing, not approval: the human asking to land is the
+// authorization, and in an attended session the executor invocation passes both guards
+// untouched - the deny just keeps the merge on the path that verifies what it merges.
+// (Scheduled jobs are the exception: cron merges nothing, executor included.) In any other
+// repository these guards do no merge gating at all.
+//
+// Ordinary work must not notice this. A command that is not merge-shaped takes a few passes
+// over its own text and starts no subprocess; only a merge-shaped command pays for the one
+// `git rev-parse`.
+
+const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+const EXECUTOR = join(PLUGIN_ROOT, 'scripts', 'land-merge.mjs')
+
+const git = (root, args) => execFileSync('git', ['-C', root, ...args], {
+  encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'pipe'],
+})
+
+/**
+ * Does this session's repository opt into flow's merge guardrail?
+ *
+ * Two bounded git reads, and only for a command that already looks like a merge. The hook runs
+ * before every Bash call and the hook registrations give the whole hook 10 seconds, so a git
+ * that cannot answer is treated as an answer of "managed": failing closed here costs a denial
+ * the human can resolve, and failing open costs a merge that skipped the verifying path.
+ *
+ * The opt-in lives in git, not in the working tree: the marker committed at HEAD is what
+ * enrolls the repository, exactly as documented, so a deleted worktree copy does not un-enroll
+ * it and an untracked or merely staged copy does not enroll some unrelated clone the session
+ * happens to be sitting in. `git ls-tree` lists the
+ * path when it is committed at HEAD and prints nothing when it is not, both on a clean exit 0.
+ * Empty output is a real "not committed" and leaves the repository unmanaged; non-empty output
+ * is managed. Any nonzero exit or error from the probe - a repository with no HEAD yet, a broken
+ * object store - is treated as managed, because failing closed here costs a denial the human can
+ * resolve. `git cat-file -e` could not tell an absent path from an operational failure: both
+ * exit nonzero, so it failed open on the second.
+ */
+export const isManagedRepo = (cwd) => {
+  let root
+  try {
+    root = git(cwd, ['rev-parse', '--show-toplevel']).trim()
+  } catch {
+    return true
+  }
+  if (root === '') return true
+  try {
+    return git(root, ['ls-tree', '--name-only', 'HEAD', '--', '.flow/managed']).trim() !== ''
+  } catch {
+    return true
+  }
+}
+
+/** The denial that names the executor, from shapes mergeShapes() already found. */
+export const mergeDenial = (shapes) =>
+  `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
+  'merge guardrail with a committed .flow/managed file. Merges here run through the executor, not a raw gh ' +
+  `command: \`node "${EXECUTOR}" <pr-number> <expected-head-sha>\`. It takes the pull request number and the ` +
+  'full 40-character head SHA your gates ran against, and nothing else. It derives the repository from the ' +
+  'origin remote, reads the head SHA, the state, the draft flag and the base branch from GitHub, refuses if ' +
+  'GitHub\'s head is not the one you passed, merges with --match-head-commit pinned to that verified head, and ' +
+  'confirms the outcome by re-reading the pull request. Run it when the human has asked to land this pull ' +
+  'request and the land gates have passed.'
+
+/**
+ * The reason this command must not run as written, or null. One decision, both hosts.
+ *
+ * `cwd` is the session's directory as the hook reported it, and `env` is the hook process's own
+ * environment - the cron session's when a scheduled job is what launched it.
+ *
+ * @param {{ command: unknown, cwd?: unknown, env?: Record<string, string | undefined> }} call
+ * @returns {string | null}
+ */
+export function mergeDenialFor({ command, cwd, env = {} }) {
+  if (typeof command !== 'string') return null
+
+  const shapes = mergeShapes(command)
+  const invokesExecutor = /\bland-merge\.mjs\b/.test(command)
+
+  // Scheduled jobs read untrusted text and nobody is watching them, so merging is simply off
+  // there, opted-in repository or not, and that includes the executor. FLOW_CRON_JOB is read
+  // from the hook's own environment, which is the cron session's, so a command that strips the
+  // variable off its own child - `env -u FLOW_CRON_JOB node land-merge.mjs 12 <sha>` - is still
+  // denied here even though the executor it launches would no longer see the variable itself.
+  // This is checked before the merge-shape early return so the executor invocation, which is
+  // not merge-shaped, is caught too.
+  if (env.FLOW_CRON_JOB && (shapes.length > 0 || invokesExecutor)) {
+    const what = shapes.length > 0 ? `this looks like a pull request merge (${shapes.join('; ')})` : 'this runs flow\'s merge executor'
+    return `flow: ${what}, and scheduled jobs do not merge anything. FLOW_CRON_JOB is set, which means ` +
+      'nobody is watching this run. Leave the pull request for a human session to land.'
+  }
+
+  if (shapes.length === 0) return null
+
+  const dir = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd()
+  return isManagedRepo(dir) ? mergeDenial(shapes) : null
+}
