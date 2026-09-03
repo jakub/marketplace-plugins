@@ -7,25 +7,17 @@
 // Contract: read hook JSON on stdin, optionally emit hookSpecificOutput JSON, exit 0.
 
 import { recordRepeatedFailure } from '../../lib/failure.mjs'
-import { safeId } from '../../lib/context.mjs'
+import { readHookEvent } from '../../lib/context.mjs'
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-  let input
-  try { input = JSON.parse(raw) } catch { return }
+  const { input, sessionId, actor } = await readHookEvent()
 
   // An interrupt is the user pressing escape, not the tooling fighting the agent.
   if (input.is_interrupt) return
   if (!input.tool_name) return
 
-  // The session id keys the shared gate state and lands in its filename, so an id outside
-  // the safe alphabet counts as absent and the event is dropped rather than written to a
-  // path of its own choosing.
-  const sessionId = safeId(input.session_id)
+  // The session id keys the shared gate state, so without one the event is dropped.
   if (!sessionId) return
-
-  const actor = safeId(input.agent_id) ?? 'main'
   const note = recordRepeatedFailure({
     sessionId,
     actor,

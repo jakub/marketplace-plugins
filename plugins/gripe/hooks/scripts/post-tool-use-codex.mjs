@@ -3,18 +3,14 @@
 // checkpoint state without parsing Codex's unstable transcript format.
 
 import { observeToolResult, updateCheckpointState } from '../../lib/checkpoint.mjs'
-import { safeId } from '../../lib/context.mjs'
+import { readHookEvent } from '../../lib/context.mjs'
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
+  const { input, sessionId } = await readHookEvent()
 
-  let input
-  try { input = JSON.parse(raw) } catch { return }
-
-  const sessionId = safeId(input.session_id)
-  // PostToolUse does not identify a subagent actor. Keep all Codex evidence in the
-  // parent-session bucket even if a future payload happens to add an unrelated agent_id.
+  // PostToolUse does not identify a subagent actor, so the event's own actor is ignored here:
+  // all Codex evidence stays in the parent-session bucket even if a future payload happens to
+  // add an unrelated agent_id.
   const actor = 'main'
   const toolName = String(input.tool_name || '')
   if (!sessionId || !toolName) return

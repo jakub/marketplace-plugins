@@ -9,24 +9,16 @@
 //
 // Contract: read hook JSON on stdin, write to the database, no output, always exit 0.
 
+import { readHookEvent, safeId } from '../../lib/context.mjs'
 import { clean, fingerprint, loadGate, saveGate, target } from '../../lib/gate.mjs'
 
 // The fourth identical denial is friction; one through three are a guard doing its job.
 const DENIAL_THRESHOLD = 4
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-  let input
-  try { input = JSON.parse(raw) } catch { return }
+  const { input, sessionId, actor } = await readHookEvent()
   if (!input.tool_name) return
-
-  const { safeId } = await import('../../lib/context.mjs')
-  // Both ids land in a gate filename, so anything outside the safe alphabet counts as
-  // absent rather than becoming a path. Without the session id there is nothing to key
-  // the repeat gate on, so the event is dropped.
-  const sessionId = safeId(input.session_id)
-  const actor = safeId(input.agent_id) ?? 'main'
+  // Without a session id there is nothing to key the repeat gate on, so the event is dropped.
   if (!sessionId) return
   const aimedAt = target(input.tool_name, input.tool_input)
   // Search patterns can carry secrets the agent was hunting for. They stay in the

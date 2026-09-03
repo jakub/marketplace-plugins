@@ -6,20 +6,19 @@
 //
 // Contract: read hook JSON on stdin, emit hookSpecificOutput JSON, always exit 0.
 
-import { safeId } from '../../lib/context.mjs'
+import { readHookEvent, safeId } from '../../lib/context.mjs'
 import { heredocDelim } from '../../lib/gate.mjs'
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-  let input = {}
-  try { input = JSON.parse(raw) } catch {}
+  const { input, agentId } = await readHookEvent()
 
   // Ids land inside an advertised shell command; anything outside the safe alphabet is
-  // dropped rather than quoted, because attribution is not worth an injection risk. No
+  // dropped rather than quoted, because attribution is not worth an injection risk. The
+  // subagent's own id is wanted here and not the 'main' fallback: a spawn with no readable
+  // agent_id gets an unattributed recipe rather than one claiming to be the parent. No
   // --via here: an unprompted filing is spontaneous whoever writes it.
   const flags = []
-  const agent = safeId(input.agent_id)
+  const agent = agentId
   const prompt = safeId(input.prompt_id) ?? safeId(input.turn_id)
   if (agent) flags.push(`--agent ${agent}`)
   if (prompt) flags.push(`--prompt ${prompt}`)

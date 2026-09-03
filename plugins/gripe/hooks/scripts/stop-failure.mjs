@@ -6,17 +6,15 @@
 //
 // Contract: read hook JSON on stdin, write to the database, no output, always exit 0.
 
+import { readHookEvent, safeId } from '../../lib/context.mjs'
 import { clean } from '../../lib/gate.mjs'
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-  let input
-  try { input = JSON.parse(raw) } catch { return }
+  const { input, sessionId } = await readHookEvent()
   if (!input.session_id) return
 
   try {
-    const [store, { captureContext, safeId }] = await Promise.all([
+    const [store, { captureContext }] = await Promise.all([
       import('../../lib/store.mjs'), import('../../lib/context.mjs'),
     ])
     const db = store.openStore()
@@ -27,7 +25,10 @@ async function main() {
           (input.error_details ? `. Details: ${clean(input.error_details).slice(0, 400)}` : ''),
         elicitation: 'observed',
         ...captureContext(),
-        session_id: input.session_id,
+        // Only a validated id displaces the one captureContext read from the environment. This
+        // row is worth keeping either way: a turn that failed outright is unambiguous, and the
+        // repository, branch and error text in it say what happened without the harness's id.
+        ...(sessionId ? { session_id: sessionId } : {}),
         prompt_id: safeId(input.prompt_id),
         agent_id: safeId(input.agent_id),
         agent_type: safeId(input.agent_type),

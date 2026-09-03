@@ -26,7 +26,7 @@ import {
   MAX_SCAN_BYTES, MAX_TOOL_NAMES, buildCheckpointNote, freshCheckpointState,
   loadCheckpointState, observeToolResult, saveCheckpointState,
 } from '../../lib/checkpoint.mjs'
-import { safeId } from '../../lib/context.mjs'
+import { readHookEvent, safeId } from '../../lib/context.mjs'
 
 /** Read only what was appended since the last run and fold it into the counters. */
 async function scanNew(path, state) {
@@ -101,15 +101,7 @@ async function scanNew(path, state) {
 }
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-
-  let input
-  try {
-    input = JSON.parse(raw)
-  } catch {
-    return // unparseable input, never block on our own bug
-  }
+  const { input, sessionId, actor } = await readHookEvent()
 
   // A Stop hook that re-fires on the continuation it caused will loop forever.
   if (input.stop_hook_active) return
@@ -121,14 +113,11 @@ async function main() {
   )
   if (pending) return
 
-  // SubagentStop delivers agent_transcript_path instead of transcript_path, and an
-  // agent_id that scopes the state: subagents share their parent's session id, so the
-  // actor is the only thing keeping their scans apart. Both ids land in a filename, so
-  // either one outside the safe alphabet is treated as absent rather than becoming a
-  // path. An absent session id leaves nothing to key the checkpoint on, so the hook stops.
-  const sessionId = safeId(input.session_id)
+  // SubagentStop delivers agent_transcript_path instead of transcript_path, and an agent_id
+  // that scopes the state: subagents share their parent's session id, so the actor is the only
+  // thing keeping their scans apart. An absent session id leaves nothing to key the checkpoint
+  // on, so the hook stops.
   const transcript = input.transcript_path || input.agent_transcript_path
-  const actor = safeId(input.agent_id) ?? 'main'
   if (!sessionId || !transcript) return
 
   const state = loadCheckpointState(sessionId, actor, 'claude')

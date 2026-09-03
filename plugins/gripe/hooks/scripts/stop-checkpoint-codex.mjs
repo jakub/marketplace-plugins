@@ -5,15 +5,11 @@
 // would either lose it or cite one subagent's work to another.
 
 import { buildCheckpointNote, updateCheckpointState } from '../../lib/checkpoint.mjs'
-import { safeId } from '../../lib/context.mjs'
+import { readHookEvent, safeId } from '../../lib/context.mjs'
 import { loadGate } from '../../lib/gate.mjs'
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-
-  let input
-  try { input = JSON.parse(raw) } catch { return }
+  const { input, sessionId } = await readHookEvent()
   if (input.stop_hook_active) return
 
   const pending = (input.background_tasks || []).some((task) =>
@@ -21,7 +17,7 @@ async function main() {
   )
   if (pending) return
 
-  const sessionId = safeId(input.session_id)
+  // The event's own actor is ignored: see the note at the top of this file.
   const actor = 'main'
   if (!sessionId) return
 

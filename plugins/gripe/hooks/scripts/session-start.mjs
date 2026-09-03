@@ -9,6 +9,7 @@ import { readdirSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { readHookEvent } from '../../lib/context.mjs'
 import { heredocDelim, stateDir } from '../../lib/gate.mjs'
 import { pointShim } from '../../lib/shim.mjs'
 
@@ -58,12 +59,9 @@ function sweep() {
 }
 
 async function main() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-  let input = {}
-  try { input = JSON.parse(raw) } catch {}
+  const { sessionId } = await readHookEvent()
 
-  await markSession(input.session_id)
+  await markSession(sessionId)
   publishShim()
   sweep()
 
