@@ -30,6 +30,6 @@ Callers usually impose a structured output schema; map to its fields directly ra
 - **keyDecisions** - each fork you resolved: what you chose, what you rejected, why.
 - **testStrategy** - what proves the design works: test types, seams, the invariants to pin.
 - **risks** - blast radius, migration hazards, perf and security concerns, and the out-of-scope work you deliberately parked.
+- **milestones** - the build sequence cut into milestones, each with a difficulty judged on what could break, never on file count; the caller routes the write seat's model and effort on it.
+- **notAlone** - decisions the implementer may not make without a checkpoint. The caller hands this to its shadow reviewer as a structural watchlist.
 - **blockingAmbiguity** - empty unless a genuine unresolvable fork exists.
-
-Be specific and confident. No hedged alternatives, no "you could also consider".

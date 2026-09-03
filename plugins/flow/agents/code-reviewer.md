@@ -37,7 +37,7 @@ Confidence answers "is this real?", 0-100:
 
 Severity answers "how bad is it if real?": critical / high / medium / low, judged by impact, not by how sure you are. A reachable panic, crash, or DoS triggerable by request-controlled input is never below medium; likelihood doesn't discount reachability.
 
-Report every finding with confidence ≥ 70, at any severity, tagged honestly on both axes. Adjudication downstream handles noise control; your job is recall with honest labels, not pre-filtering. A verified-real medium belongs in the report; a speculative critical below 70 does not.
+Report every finding with confidence ≥ 75, at any severity, tagged honestly on both axes. Adjudication downstream handles noise control; your job is recall with honest labels, not pre-filtering. A verified-real medium belongs in the report; a speculative critical below 75 does not.
 
 Set `systemic` true only for findings whose proper fix is cross-crate-refactor scale - work that can't fit the current PR and needs a human decision to schedule. It isn't a label for "big bug"; it means "wrong PR to fix it in".
 

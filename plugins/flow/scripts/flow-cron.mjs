@@ -33,17 +33,29 @@ import { fileURLToPath } from "node:url";
 // denies every git subcommand outside the job's standing permissions, ignoring
 // FLOW_SANCTION. Keep the guard's write set, these lists, and the prompts' standing
 // permissions in step - they are three views of one contract.
-const jobs = (root) => ({
+export const jobs = (root) => ({
   lint: {
     allowedTools: [
       "Read", "Glob", "Grep", "Agent",
       "Bash(git:*)", // guarded read-only in cron mode (git-guard.mjs); lint-actions.mjs below is the mutating path
-      "Bash(gh issue list:*)", "Bash(gh issue view:*)", "Bash(gh issue edit:*)", "Bash(gh issue comment:*)",
+      // No `gh issue edit` and no `gh issue comment`: every label move the lint may make is an
+      // executor verb below, and each verb writes its own comment. A direct comment grant is a
+      // write to any repository the token reaches, with --body-file able to carry any readable
+      // file, so the unattended job gets none.
+      "Bash(gh issue list:*)", "Bash(gh issue view:*)",
       "Bash(gh pr list:*)", "Bash(gh pr view:*)",
       "Bash(gh run list:*)", "Bash(gh run view:*)",
       "Bash(gh label list:*)",
       `Bash(bash ${root}/scripts/worktree-audit.sh:*)`,
-      `Bash(node ${root}/scripts/lint-actions.mjs:*)`, // the ONLY mutating git path
+      // The ONLY mutating path, one entry per verb: adding a verb to the executor widens nothing
+      // until its entry is added here, so this file stays the audited gate the docs say it is.
+      // git-guard's cron grammar refuses an executor joined to a second segment, which is what
+      // keeps a prefix entry from carrying a smuggled command behind it.
+      `Bash(node ${root}/scripts/lint-actions.mjs remove-worktree:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs delete-branch:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs clear-orphan:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs demote-unready:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs triage-unlabelled:*)`,
 
       // drift-audit §5 on the marketplace repo:
       `Bash(node ${root}/hooks/scripts/inject-charter.mjs:*)`,
@@ -180,6 +192,8 @@ function main() {
     env: {
       ...process.env,
       FLOW_CRON_JOB: job,
+      // The executor binds every repository path it is handed to a direct child of this root.
+      FLOW_WORKSPACE: workspace,
       // ssh must never prompt in an unattended session; a prompt is a silent hang.
       GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes -o ConnectTimeout=10",
     },

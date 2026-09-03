@@ -1,6 +1,20 @@
 #!/usr/bin/env node
 // The compare-and-set that stops two autonomous runs from starting the same issue.
 //
+// Reasons a `refused` result can carry, each with its fix. `live-run`: another run owns this
+// issue and `found` says what it saw; surface it and stop. `issue-closed`, `not-ready`,
+// `blocked`: the issue's state or labels; route the human. `no-acceptance-criteria`: the body
+// has no `## Acceptance Criteria`; back through prep. `bad-slug`, `worktree-path`,
+// `outside-parent`: the derived worktree path is unusable or outside the repository's parent.
+// `acquire-refused`: origin already holds the claim tag. `worktree-add`, `push`: git refused.
+// Preconditions of this executor: `usage`; `no-origin`; `origin-unparseable`, the origin URL
+// has no host, names a port, carries a query string or fragment, or is not owner/repo shaped,
+// so the executor cannot pin its `gh` calls to one repository; `origin-host-not-allowed`, the
+// origin's host is not github.com and not in FLOW_GH_HOSTS, an allowlist that lives in the
+// environment because a repository's own config is untrusted input to a program holding
+// credentials; `push-fetch-mismatch`, origin's fetch and push URLs disagree, so the claim would
+// be written to a repository other than the one scanned. A human fixes the remote.
+//
 // A claim is one lightweight tag on the origin remote, refs/tags/flow-claim-issue-<N>. Creating
 // a ref is the one operation git's wire protocol makes atomic for us. The client sends the old
 // value it saw in the ref advertisement, and receive-pack refuses the update if the remote has
@@ -262,6 +276,10 @@ const KINDS = new Set(['feat', 'fix', 'chore'])
 const READY_LABEL = 'ready-for-agent'
 const IN_PROGRESS_LABEL = 'in-progress'
 const BLOCKING_LABELS = ['needs-human', 'needs-info', 'needs-rebase']
+// Every lifecycle label the contract knows. The ready label is trusted only when it is the one
+// lifecycle label on the issue: a buried or double-labelled issue carrying it beside wontfix,
+// deferred, or a stale in-progress is a human's to untangle, never a run's to start.
+const LIFECYCLE_LABELS = ['needs-triage', 'agent-found', READY_LABEL, IN_PROGRESS_LABEL, ...BLOCKING_LABELS, 'wontfix', 'deferred']
 // Long enough to read, short enough that the branch and the sibling directory both stay typable.
 const SLUG_MAX = 40
 
@@ -618,7 +636,7 @@ const remoteSlug = (remote) => {
  *
  * Returns the safe identity string, or a typed problem for the caller to refuse on.
  */
-const repoIdentity = (cwd) => {
+export const repoIdentity = (cwd) => {
   const fetchRead = runGit(['remote', 'get-url', '--all', 'origin'], cwd, LOCAL_GIT_TIMEOUT_MS)
   const pushRead = runGit(['remote', 'get-url', '--push', '--all', 'origin'], cwd, LOCAL_GIT_TIMEOUT_MS)
   const urls = (read) => read.stdout.split('\n').map((s) => s.trim()).filter((s) => s !== '')
@@ -1284,6 +1302,14 @@ const claim = ({ argv, cwd, env, runGh }) => {
         extra: { blocking },
       }
     }
+    const extra = LIFECYCLE_LABELS.filter((label) => label !== READY_LABEL && read.labels.includes(label))
+    if (extra.length > 0) {
+      return {
+        reason: 'blocked',
+        detail: `issue #${issue} carries ${extra.join(', ')} beside ${READY_LABEL}, and the ready label is trusted only as the sole lifecycle label; a buried or double-labelled issue is a human's to settle`,
+        extra: { blocking: extra },
+      }
+    }
     return null
   }
 
@@ -1669,7 +1695,10 @@ const claim = ({ argv, cwd, env, runGh }) => {
   const login = me.code === 0 ? me.stdout.trim() : ''
   const confirmed = readIssue()
   const assigned = confirmed.problem === undefined ? assigneeLogins(confirmed.issue.assignees) : []
-  const stillBlocked = confirmed.problem === undefined ? BLOCKING_LABELS.filter((label) => confirmed.labels.includes(label)) : []
+  // Any lifecycle label beside in-progress, not only the three blockers: a wontfix or deferred
+  // that arrived with the label move is a human burying the issue, and a run that reports itself
+  // claimed over it starts work the human just refused.
+  const stillBlocked = confirmed.problem === undefined ? LIFECYCLE_LABELS.filter((label) => label !== IN_PROGRESS_LABEL && confirmed.labels.includes(label)) : []
   const moved = confirmed.problem === undefined && login !== '' && confirmed.state === 'OPEN' &&
     confirmed.labels.includes(IN_PROGRESS_LABEL) && !confirmed.labels.includes(READY_LABEL) &&
     stillBlocked.length === 0 && assigned.includes(login)

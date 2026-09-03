@@ -13,16 +13,15 @@ Everything up to `## Host mechanics` is the same on every host. That section, at
 ## Core principles
 
 1) You are the gate. A merge is the hardest thing in this pipeline to reverse, so anything that looks off gets presented to the human instead of resolved by you.
-2) A check that errored, went stale, or is still pending is UNKNOWN - never a pass. Read the rollup yourself.
-3) Prove outcomes, don't infer them. The merge and every issue closure get confirmed by re-reading state afterwards, because a failed command and a silent no-op both look like success from here.
-4) Nothing external is lost. An unresolved reviewer thread blocks the merge even when it arrived after the run had already finished.
-5) Housekeeping never blocks the land, and the survey at the end takes NO action - it is a menu.
+2) Prove outcomes, don't infer them. The merge and every issue closure get confirmed by re-reading state afterwards, because a failed command and a silent no-op both look like success from here.
+3) Nothing external is lost. An unresolved reviewer thread blocks the merge even when it arrived after the run had already finished.
+4) Housekeeping never blocks the land.
 
 ## 1. Resolve and gate
 
 The argument is a PR number, or nothing at all: with no argument the PR is resolved from the current branch. Three origins authorize the number: the argument, the entry point the human invoked resolving the current branch, or the human naming the PR in words. Anything else is a stop.
 
-Run `node <plugin-root>/scripts/land-gates.mjs [<pr>]` from the repository root. It is read-only: its git calls read the origin remote's URL and, with no argument, the current branch name; everything else comes from GitHub. With no argument it also proves the resolved PR lives in the origin repository and heads the checked-out branch, and refuses otherwise (pass the number when a renamed local branch trips that). It re-reads the PR; whether the base is the default branch and which open PRs are stacked on this one; every check run and commit status on the head, read exhaustively over paginated REST (never `gh pr view`, which caps both at 100 and pages neither) and partitioned with the base branch's `.github/known-flakes.txt` (read through the API at the base ref) applied and the PR's own copy of that file diffed against it; every top-level comment, paginated the same way; every review thread, over paged GraphQL; linked issues, recovered from the branch name and from closing phrases; a `## follow-up draft` comment; and the auto-merge and merge-queue state. It prints one JSON object with `verdict`, `stops` and `attention`. Exit 0 is `pass`, 1 is `stop`, 4 is a read that failed, which is never a pass, and 2 is a usage refusal with no JSON at all (a bad argument; an origin remote with no host, a port, a query string or fragment; an origin host that is not `github.com` and not in the `FLOW_GH_HOSTS` environment allowlist; or an `--accept-flake` the base allowlist does not declare or that names an ambiguous check); read its stderr and fix the call.
+Run `node <plugin-root>/scripts/land-gates.mjs [<pr>]` from the repository root. It is read-only: its git calls read the origin remote's URL and, with no argument, the current branch name; everything else comes from GitHub. With no argument it also proves the resolved PR lives in the origin repository and heads the checked-out branch, and refuses otherwise (pass the number when a renamed local branch trips that). It re-reads the PR; whether the base is the default branch and which open PRs are stacked on this one; every check run and commit status on the head, read exhaustively over paginated REST and partitioned with the base branch's `.github/known-flakes.txt` (read through the API at the base ref) applied and the PR's own copy of that file diffed against it; every top-level comment, paginated the same way; every review thread, over paged GraphQL; linked issues, recovered from the branch name and from closing phrases; a `## follow-up draft` comment; and the auto-merge and merge-queue state. It prints one JSON object with `verdict`, `stops` and `attention`. Exit 0 is `pass`, 1 is `stop`, 4 is a read that failed, which is never a pass, and 2 is a usage refusal with no JSON at all (a bad argument; an origin remote with no host, a port, a query string or fragment; an origin host that is not `github.com` and not in the `FLOW_GH_HOSTS` environment allowlist; or an `--accept-flake` the base allowlist does not declare or that names an ambiguous check); read its stderr and fix the call.
 
 Record from it `HEAD_SHA` (`head.sha`, the commit every gate inspected and the merge is pinned to), `HEAD_REF`, `BASE_REF`, `BASE_DEFAULT` (`base.default`, the repository's default branch), `isCrossRepository` and `linkedIssues` (its `linked` list is what closes; `recovered` and `mentions` are candidates).
 
@@ -117,7 +116,7 @@ Close with what is available to do next: open PRs with a one-word status each (g
 
 Synthesize that into a ranked 3-6 line menu. Lead with the highest-leverage move, call out anything blocked on the human, and leave closed / `wontfix` / `deferred` work buried.
 
-**Take no action on any of it.** You just finished a merge and a cleanup sequence, and the pull to keep going is strongest right here. The survey is a menu for the human to pick from.
+Take no action on any of it. The survey is a menu for the human to pick from.
 
 ## Host mechanics
 
