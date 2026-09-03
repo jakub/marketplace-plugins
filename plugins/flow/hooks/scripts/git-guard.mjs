@@ -6,12 +6,11 @@ import { fileURLToPath } from 'node:url'
 //   2. no commit trailers of any kind - not attribution (Co-Authored-By, Generated-with),
 //      not session links (Claude-Session). the git author IS the author.
 //
-// Why a hook and not charter prose: the charter is injected by SessionStart, which reaches
-// the main session only. A spawned subagent starts fresh, inherits the HARNESS instruction
-// to append Co-Authored-By/Claude-Session, and never sees the charter line that overrides
-// it - so the rule inverts exactly where nobody is watching, and the damage lands in git
-// history permanently. Hooks fire on subagent tool calls too, so this layer travels where
-// context does not. (Only `subagent_type: "fork"` inherits the conversation.)
+// Why a hook and not charter prose: prose is not enforcement. The harness instruction to
+// append Co-Authored-By/Claude-Session arrives in every seat whether or not the seat half of
+// the charter did, a delegated job runs no hooks and reads only its preamble, and a trailer
+// that lands in git history is permanent. Hooks fire on subagent tool calls too, so this layer
+// travels with the tool call rather than with the context.
 //
 // Escape hatch, for foreign commits that legitimately already carry a trailer (amending or
 // rewording upstream work you did not author):
