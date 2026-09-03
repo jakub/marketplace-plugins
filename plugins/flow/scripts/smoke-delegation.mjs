@@ -10,9 +10,7 @@ import { AppServerClient } from '../src/delegation/app-server.mjs'
 import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
 import { assertRoute, capabilitiesForHost, capabilityDrift, ERROR_KINDS, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
-import { universalContainment } from '../lib/seat-contract.mjs'
-import { charterSection } from '../lib/charter-payload.mjs'
-import { DELEGATED_CHARTER_HEADING } from '../src/delegation/instructions.mjs'
+import { seatPayload } from '../lib/charter-payload.mjs'
 import { McpStdioClient } from './mcp-stdio-client.mjs'
 
 assert.equal(process.platform, 'linux', 'smoke-delegation requires the Linux Codex host and systemd-scope contract')
@@ -135,14 +133,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     const expectedAccess = doctorProbe ? 'read' : process.env.FLOW_DELEGATION_ACCESS === 'workspace-write' ? 'write' : 'read'
     const workspaceKey = doctorProbe ? process.cwd() : process.env.FLOW_DELEGATION_WORKSPACE_KEY
     const filesystem = threadConfig?.permissions?.flow_delegation?.filesystem
-    // A job carries the charter's engineering-rules section once, ahead of the seat block,
-    // and no binding profile: the section names no role, so there is nothing to bind.
+    // A job carries the charter's seat half once, ahead of the delegated-seat block.
     const instructions = message.params.developerInstructions || ''
     // capture-instructions dumps what the bundle actually sent, so the smoke can assert on the
     // built payload instead of re-rendering it from src, where no esbuild define applies.
     if (mode === 'capture-instructions' && !doctorProbe) writeFileSync(${JSON.stringify(instructionsOut)}, instructions)
     const charterOk = (instructions.match(/<flow-charter /g) || []).length === 1
-      && !instructions.includes('<flow-profile')
       && instructions.indexOf('</flow-charter>') < instructions.indexOf('<delegated-seat>')
     if (mode === 'provider-error') {
       say({ id: message.id, error: { code: -32603, message: 'account test@example.invalid failed at /home/test/private/provider.json' } })
@@ -157,7 +153,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       || (expectedAccess === 'write' && filesystem?.[workspaceKey + '/.git'] !== 'read')
       || filesystem?.[selfPath] !== 'read'
       || threadConfig?.permissions?.flow_delegation?.network?.enabled !== false
-      || (!doctorProbe && !message.params.developerInstructions?.includes('<flow-charter scope="delegated-seat">'))
+      || (!doctorProbe && !message.params.developerInstructions?.includes('<flow-charter scope="seat">'))
       || (!doctorProbe && !message.params.developerInstructions?.includes('Do not start subagents'))) {
       say({ id: message.id, error: { code: -32602, message: 'missing restricted Flow delegation profile' } })
     } else if (!doctorProbe && !charterOk) {
@@ -368,43 +364,33 @@ try {
     assert.equal(jobCount(state(name)), 0, name)
   }
 
-  console.log('seat contract rides the delegated payload')
-  const contractJob = await startJob({ prompt: 'Seat contract', access: 'workspace-write' }, {
-    mode: 'capture-instructions', stateDir: state('seat-contract'),
+  console.log('the seat half of the charter rides the delegated payload')
+  const contractJob = await startJob({ prompt: 'Seat rules', access: 'workspace-write' }, {
+    mode: 'capture-instructions', stateDir: state('seat-rules'),
   })
   assert.equal(contractJob.status, 'succeeded', JSON.stringify(contractJob))
   const payload = readFileSync(instructionsOut, 'utf8')
-  const openTag = '<seat-contract scope="containment">'
-  assert.equal((payload.match(/<seat-contract /g) || []).length, 1, 'expected exactly one seat-contract block')
-  assert.ok(payload.includes(openTag), 'the seat-contract block is not scoped to containment')
-  // Both halves of the ordering check, separately. indexOf returns -1 for a tag that is not there,
-  // and -1 is lower than every real index, so a payload that lost </delegated-seat> altogether
-  // would satisfy the comparison below while proving nothing.
-  const seatBlockEnd = payload.indexOf('</delegated-seat>')
-  assert.ok(seatBlockEnd >= 0, 'the delegated payload has no </delegated-seat> to order against')
-  assert.ok(seatBlockEnd < payload.indexOf(openTag), 'the seat-contract block must sit after the delegated-seat block, and it does not')
-  const blockStart = payload.indexOf(openTag) + openTag.length
-  const blockEnd = payload.indexOf('</seat-contract>')
-  assert.ok(blockEnd > blockStart, 'the seat-contract block never closes')
-  const contractBlock = payload.slice(blockStart, blockEnd)
-  // A byte-identical rebuild proves the bundle matches src and nothing more. Reading the canonical
-  // contract here is what proves the bundle was built with __FLOW_SEAT_CONTRACT__ pointing at it.
-  const containment = universalContainment(readFileSync(join(root, 'seat-contract.md'), 'utf8')).trim()
-  assert.ok(contractBlock.includes(containment), 'the delegated payload lost the canonical Containment section')
-  // Containment and nothing else. The other three sections are doctrine for a seat working an
-  // issue; a caller that wants them pastes them into its own task text.
-  for (const heading of ['Synchronous execution', 'Scope and completion', 'Reporting']) {
-    assert.ok(!contractBlock.includes(`## ${heading}`), `the seat-contract block carries ${heading}, which must never ride a delegated payload`)
-  }
-  // The charter rides as one section, verbatim. The orchestrator's doctrine, which a leaf seat
-  // cannot act on, does not ride, and neither does a binding profile: the section names no role.
+  // The seat half rides verbatim, and exactly once. A byte-identical rebuild proves the bundle
+  // matches src and nothing more; reading the charter here is what proves the bundle was built
+  // with __FLOW_CHARTER__ pointing at it.
   assert.equal((payload.match(/<flow-charter /g) || []).length, 1, 'expected exactly one charter block')
-  const rules = charterSection(readFileSync(join(root, 'charter', 'charter.md'), 'utf8'), DELEGATED_CHARTER_HEADING)
-  assert.ok(rules !== null && payload.includes(rules.trim()), 'the delegated payload lost the engineering-rules section of the charter')
-  for (const heading of ['Orchestration with Delegation', 'Cross-Family Delegation', 'The `flow` pipeline', 'Model Rankings', 'Rules of Engagement - Model Selection', 'Rules of Engagement - Model Contracts', 'Gripes']) {
+  const seat = seatPayload(readFileSync(join(root, 'charter', 'charter.md'), 'utf8'))
+  assert.ok(payload.includes(seat), 'the delegated payload lost the seat half of the charter')
+  for (const heading of ['Rules of Engagement - Everything Else', 'Seat Contract', 'Gripes']) {
+    assert.ok(payload.includes(`## ${heading}`), `the delegated payload lost the "${heading}" section of the seat half`)
+  }
+  // Both halves of the ordering check, separately. indexOf returns -1 for a tag that is not there,
+  // and -1 is lower than every real index, so a payload that lost </flow-charter> altogether
+  // would satisfy the comparison below while proving nothing.
+  const charterEnd = payload.indexOf('</flow-charter>')
+  assert.ok(charterEnd >= 0, 'the delegated payload has no </flow-charter> to order against')
+  assert.ok(charterEnd < payload.indexOf('<delegated-seat>'), 'the charter block must sit before the delegated-seat block, and it does not')
+  assert.ok(!payload.includes('<seat-contract'), 'the delegated payload carries a separate seat-contract block, and the contract is a charter section now')
+  // The orchestrator half does not ride. A leaf seat cannot spawn, ask, publish or delegate,
+  // so none of it binds, and every byte would ride every job and every continuation.
+  for (const heading of ['Orchestration with Delegation', 'Cross-Family Delegation', 'The `flow` pipeline', 'Model Rankings', 'Rules of Engagement - Model Selection', 'Hosts']) {
     assert.ok(!payload.includes(`## ${heading}`), `the delegated payload carries the "${heading}" charter section, which a leaf seat cannot act on`)
   }
-  assert.ok(!payload.includes('<flow-profile'), 'the delegated payload carries a binding profile, and the section it rides with names no role')
 
   console.log('immutable structured review')
   const reviewState = state('review')

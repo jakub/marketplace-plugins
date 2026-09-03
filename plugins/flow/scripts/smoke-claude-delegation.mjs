@@ -7,8 +7,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { normalizeClaudeError } from '../src/delegation/claude-errors.mjs'
-import { DELEGATED_CHARTER_HEADING } from '../src/delegation/instructions.mjs'
-import { charterSection } from '../lib/charter-payload.mjs'
+import { seatPayload } from '../lib/charter-payload.mjs'
 import { claudePolicyHook, claudeSandboxFor, claudeTools, sensitiveReadPaths } from '../src/delegation/claude-policy.mjs'
 import { McpStdioClient } from './mcp-stdio-client.mjs'
 
@@ -280,16 +279,14 @@ try {
   assert.equal(happy.target, 'claude')
   assert.equal(happy.output, 'OK from fake Claude')
   assert.ok(happy.threadId && happy.turnId)
-  // A Claude-target job carries the charter's engineering-rules section once, ahead of the
-  // seat block, and no binding profile: the section names no role, so nothing binds.
+  // A Claude-target job carries the charter's seat half once, ahead of the delegated-seat block.
   const appended = readFileSync(appendOut, 'utf8')
   assert.equal((appended.match(/<flow-charter /g) || []).length, 1, 'expected exactly one charter block')
-  assert.ok(appended.includes('<flow-charter scope="delegated-seat">'), 'delegated system prompt lost the charter section')
-  const rules = charterSection(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'charter', 'charter.md'), 'utf8'), DELEGATED_CHARTER_HEADING)
-  assert.ok(rules !== null && appended.includes(rules.trim()), 'delegated system prompt lost the engineering-rules section')
+  assert.ok(appended.includes('<flow-charter scope="seat">'), 'delegated system prompt lost the seat half of the charter')
+  const seat = seatPayload(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'charter', 'charter.md'), 'utf8'))
+  assert.ok(appended.includes(seat), 'delegated system prompt lost the seat half verbatim')
   assert.ok(!appended.includes('## Model Rankings'), 'delegated system prompt carries the model rankings, which a leaf seat cannot act on')
-  assert.ok(!appended.includes('<flow-profile'), 'delegated system prompt carries a binding profile, and the section it rides with names no role')
-  assert.ok(appended.indexOf('</flow-charter>') < appended.indexOf('<delegated-seat>'), 'the charter section must precede the delegated-seat block')
+  assert.ok(appended.indexOf('</flow-charter>') < appended.indexOf('<delegated-seat>'), 'the charter block must precede the delegated-seat block')
   // The other host's server owns the other route. Both hosts share one database, so a job ID
   // from this route is not authority over there.
   const wrongRoute = envelope(await call('delegation_result', { jobId: happy.jobId }, { host: 'claude', stateDir: state('happy') }))

@@ -16,9 +16,11 @@ export const CLAUDE_PART_BUDGET = 9_000
 // target. The hook in hooks/codex.json declares additionalContextLimit 8000, which Codex 0.152.0
 // honors for SessionStart and counts at about four bytes per token before it spills to a file
 // (codex-rs/hooks/src/output_spill.rs, read 2026-09-01), so 22,000 bytes stays inline. Nothing is
-// appended to the charter any more, so the two budgets bound the same bytes from either end: the
-// charter's own maintenance ceiling, and the wire limit the payload must stay under.
-export const CODEX_CHARTER_BYTE_BUDGET = 15_000
+// appended to the charter any more, so both budgets bound the same bytes: the charter used to
+// share the payload with a 5,000-byte binding profile, and it now gets the whole allowance. The
+// charter ceiling sits 2,000 bytes under the wire limit, so a growing charter trips the lint
+// before a session ever reads its payload out of a spill file.
+export const CODEX_CHARTER_BYTE_BUDGET = 20_000
 export const CODEX_INLINE_BYTE_BUDGET = 22_000
 
 // The one line that separates the halves. It is an HTML comment, so a reader handed either half
