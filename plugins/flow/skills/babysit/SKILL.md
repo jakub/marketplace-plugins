@@ -25,7 +25,7 @@ The projects here typically carry GitHub-hosted review bots - CodeRabbit, Macros
 Each thread then ends in exactly one of three states:
 
 - **Fixed**: the finding was real and in this PR's scope. Fix it, verify the fix by running the test that covers it, reply naming the commit, resolve the thread.
-- **Rejected**: the finding is wrong, or right about code this PR does not touch. Reply with the concrete reason - the guard the bot missed, the invariant that makes it safe, the file it misread - and resolve the thread. A rejection with no reply is indistinguishable from a miss, and the reply is what makes the dismissal auditable later.
+- **Rejected**: the finding is wrong, stale, or right about code this PR does not touch. Reply with the concrete reason - the guard the bot missed, the invariant that makes it safe, the file it misread - and resolve the thread. A rejection with no reply is indistinguishable from a miss, and the reply is what makes the dismissal auditable later.
 - **Human's**: the finding is a judgment call - a contested design point, a scope question, anything whose dismissal changes the risk posture. Reply with your read, leave the thread unresolved, and surface it in your report. A bot thread is yours to resolve either way; a human reviewer's thread you disagree with stays open for them, because resolving over a person is how a real objection gets buried.
 
 Findings that reveal an open design question are none of the three. That is a prep failure surfacing late; stop fixing, say so, and route the human, because a design decided in review threads is a design nobody ratified.

@@ -22,7 +22,7 @@ Claude Code caps one hook's stdout at 10,000 characters and swaps anything large
 
 The charter is prose to a capable colleague, and it should stay that way. Every line costs context in every session, so anything that isn't true in every session goes somewhere else.
 
-The orchestrator picks the model and effort of every seat from the charter's rankings table and its `## Rules of Engagement - Model Selection` bullets. **Nothing outside the charter names a model.** `scripts/smoke-charter-conformance.mjs` is the lint.
+The orchestrator picks the model and effort of every seat from the charter's rankings table and its `## Model Selection` bullets. **Nothing outside the charter names a model.** `scripts/smoke-charter-conformance.mjs` is the lint.
 
 `lib/hook-policy.mjs` owns protected-file, publication and merge policy; `hooks/scripts/wire.mjs` owns the harness wire formats every hook answers with (`preToolDeny`, `preToolAsk`, `readHookInput`) so policy stays free of event names and envelopes; the Claude and Codex adapters own their different tool inputs. **Never return Claude's publication `ask` result to Codex**: Codex CLI treats that unsupported value as a hook failure and lets the command continue (observed on 0.149.1, still true on 0.152.0), so its adapter denies and directs the human to publish manually. If a later Codex gains `ask` support, that adapter can retire.
 

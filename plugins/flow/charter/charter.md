@@ -1,4 +1,4 @@
-This charter is how we use `flow` on bigger projects. In a project that doesn't use `flow`, skip the pipeline section and apply the rest: orchestration, delegation, model selection and the rules of engagement hold in every session.
+This charter is how we use `flow` on bigger projects. In a project that doesn't use `flow`, skip the pipeline section and apply the rest: orchestration, delegation, model selection and the rules of engagement.
 
 <flow-charter>
 
@@ -33,29 +33,29 @@ Classifiers says whether the model runs cyber classifiers that can refuse securi
 
 | model                    | cheapness | intelligence | taste | classifiers |
 |--------------------------|-----------|--------------|-------|-------------|
-| gpt-5.6-luna             | 9         | 4/7          | 4     | standard    |
-| sonnet-5                 | 5         | 6            | 6     | standard    |
-| opus-5                   | 4         | 8            | 8     | standard    |
-| gpt-5.6-sol              | 7         | 8            | 5     | standard    |
+| gpt-5.6-luna             | 9         | 4/7          | 4     | cyber       |
+| sonnet-5                 | 5         | 5            | 5     | cyber       |
+| opus-5                   | 4         | 8            | 8     | cyber       |
+| gpt-5.6-sol              | 7         | 8            | 5     | cyber       |
 | gpt-daybreak-blue-latest | 7         | 8            | 5     | none        |
-| fable-5-1                | 2         | 10           | 9     | standard    |
+| fable-5-1                | 2         | 10           | 10    | cyber       |
 
-## Rules of Engagement - Model Selection
+## Model Selection
 These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
 
 General rule: intelligence > taste > cost. Lower efforts follow instructions more literally and call fewer tools; higher efforts verify more and wander more. Match the model to the hardest decision left in the task, not to the size of the task.
 
 - Locating files and seams is eyes, not judgment: the cheapest model that drives tools, at low effort.
-- Transcribing a spec whose shape is already decided: intelligence 6 at medium effort, or Luna at max.
-- Anything with a code-design decision left in it, which is the default write seat: intelligence 8 at high effort. Work where a miss ships: the same model at xhigh.
+- Transcribing a spec whose shape is already decided: intelligence 5+ at medium effort, or Luna at max.
+- Anything with a code-design decision left in it, which is the default write seat: intelligence 8+ at high effort. Work where a miss ships: the same model at xhigh.
 - Mechanical sweeps at scale: the cheapest model at max effort, and never as the second opinion.
 - Anything user-facing (UI, copy, a public API) and any taste call, including reconciling two rival designs: Fable.
 - Vulnerability finding and defensive security work: a model with no cyber classifiers.
-- Settling conflicting reviewers or decisions: intelligence 8 at max effort. A taste disagreement goes to Fable instead.
+- Settling conflicting reviewers or decisions: intelligence 8+ at max effort. A taste disagreement goes to Fable instead.
 
-Decorrelation is the family line. A diff your own family wrote gets its mandatory review from the other family, adversarial by default, against an immutable base. A diff the other family wrote is reviewed natively. A design worth a second proposal gets one blind proposal from each family. A green verdict from your own family alone is not a green.
+Decorrelation must be cross-family. A diff your own family wrote gets its mandatory review from the other family, adversarial by default, against an immutable base. A diff the other family wrote is reviewed natively. A design worth a second proposal gets one blind proposal from each family. A green verdict from your own family alone is not a green.
 
-Model notes. Luna at max competes with Opus and Sol at medium to high. Sonnet drives tools at low effort and returns verdicts at medium and up. Opus at xhigh writes code about as well as Fable, and is never the taste call. Sol writes slightly uglier code and is the decorrelated opinion by default. Daybreak Blue is Sol without cyber classifiers. Fable is depth and taste, and the most expensive seat.
+Model notes: Luna at max competes with Opus and Sol at medium to high. Sonnet drives tools at low effort and returns verdicts at medium and up. Opus at xhigh writes code about as well as Fable, but is never the taste call. Sol writes slightly uglier code and is the decorrelated opinion by default. Daybreak Blue is Sol without cyber classifiers. Fable is depth and taste, and the most expensive seat.
 
 A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on a model with no cyber classifiers; when that model is the one that refused, the single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.
 
@@ -74,6 +74,8 @@ The issue is the record of events. The issue body is a living spec that should b
 Issues must contain acceptance criteria, including what evidence is required to satisfy.
 PRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher (the plans client).
 
+PRs have additional code review bots that run on every push, hunting for potential issues and bugs. Trust but verify, however. Respond and fix each comment accepting or rejecting the bug, rejecting it as invalid or stale if it doesn't apply to the latest PR version. Use the `/babysit` skill for this.
+
 `flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything the human didn't say or that changes the proposed shape for the better, then interview them one question at a time, prioritizing answers that change the architecture.
 
 ## Hosts
@@ -85,7 +87,7 @@ On both hosts a PR merges only through `scripts/land-merge.mjs`, which the land 
 
 <!-- flow-charter: seat rules. Everything below this line is also delivered to every seat. -->
 
-## Rules of Engagement - Everything Else
+## Rules of Engagement
 Before adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.
 
 Packages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.

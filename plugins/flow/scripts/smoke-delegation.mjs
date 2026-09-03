@@ -376,7 +376,7 @@ try {
   assert.equal((payload.match(/<flow-charter /g) || []).length, 1, 'expected exactly one charter block')
   const seat = seatPayload(readFileSync(join(root, 'charter', 'charter.md'), 'utf8'))
   assert.ok(payload.includes(seat), 'the delegated payload lost the seat half of the charter')
-  for (const heading of ['Rules of Engagement - Everything Else', 'Seat Contract', 'Gripes']) {
+  for (const heading of ['Rules of Engagement', 'Seat Contract', 'Gripes']) {
     assert.ok(payload.includes(`## ${heading}`), `the delegated payload lost the "${heading}" section of the seat half`)
   }
   // Both halves of the ordering check, separately. indexOf returns -1 for a tag that is not there,
@@ -388,7 +388,7 @@ try {
   assert.ok(!payload.includes('<seat-contract'), 'the delegated payload carries a separate seat-contract block, and the contract is a charter section now')
   // The orchestrator half does not ride. A leaf seat cannot spawn, ask, publish or delegate,
   // so none of it binds, and every byte would ride every job and every continuation.
-  for (const heading of ['Orchestration with Delegation', 'Cross-Family Delegation', 'The `flow` pipeline', 'Model Rankings', 'Rules of Engagement - Model Selection', 'Hosts']) {
+  for (const heading of ['Orchestration with Delegation', 'Cross-Family Delegation', 'The `flow` pipeline', 'Model Rankings', 'Model Selection', 'Hosts']) {
     assert.ok(!payload.includes(`## ${heading}`), `the delegated payload carries the "${heading}" charter section, which a leaf seat cannot act on`)
   }
 

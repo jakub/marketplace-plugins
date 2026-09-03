@@ -1,6 +1,6 @@
 ---
 name: prep
-description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; use this stage when either you or the user wants to create a new issue or revise an existing issue. MUST only run when the human explicitly asks to prep a specific issue or idea; never start it from adjacent work, a discovered defect, or a 'what next' survey.
+description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; use this stage when either you or the user wants to create a new issue or revise an existing issue. MUST only run when the human explicitly asks to prep or grill a specific issue or idea; never start it from adjacent work, a discovered defect, or a 'what next' survey.
 disable-model-invocation: true
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Skill, AskUserQuestion, Agent, SendMessage, Workflow, TaskOutput, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_continue, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel
 ---

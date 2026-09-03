@@ -31,7 +31,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // on it, and a session that loses `## Seat Contract` from the seat half spawns seats with no rules.
 const REQUIRED = [
   ['## Hosts', 'orchestrator'],
-  ['## Rules of Engagement - Everything Else', 'seat'],
+  ['## Rules of Engagement', 'seat'],
   ['## Seat Contract', 'seat'],
   ['## Gripes', 'seat'],
 ]

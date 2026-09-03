@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: The operating manual for Flow's `flow_delegate` MCP tools. Read it before the first bridge call of a session, and for any question about cross-model or cross-family work, `delegate_to_codex`, `delegate_to_claude`, a delegation job, its result envelope, or the approval fork.
+description: The operating manual for Flow's `flow_delegate` MCP tools. Read it before the first bridge call of a session, and for any question about cross-model or cross-family work, `delegate_to_codex`, `delegate_to_claude`, a delegation job, its result envelope, or the approval fork. Apply this when the user says "ask Sol", "ask Codex", "ask Fable", "ask Claude", etc.
 ---
 
 # delegate - reaching the other model family
