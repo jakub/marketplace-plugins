@@ -9,7 +9,7 @@ Prompt text follows the same split, but in one file. A stage both harnesses run 
 subsection per harness. The command file that used to hold the steps is a one-sentence alias
 pointing at that skill.
 
-This document describes the implemented contract as of 2026-09-01. Product behavior
+This document describes the implemented contract as of 2026-09-03. Product behavior
 that can change is based on the current Codex hooks documentation and must be rechecked
 before changing an adapter.
 
@@ -48,21 +48,21 @@ logic.
 
 Cross-family model calls use a related adapter shape, but they are not hooks. Flow's Claude
 manifest starts a local MCP server, while its shared job service owns route checks, state,
-events, and recovery. A Codex App Server worker is the Phase 1 backend. The delegated seat's
-instructions carry the target host's binding profile between the charter and the
-`<delegated-seat>` block, built into the bundle rather than read from a hook at delegation
-time. See [`plugins/flow/docs/DELEGATION.md`](../plugins/flow/docs/DELEGATION.md) for that
-contract.
+events, and recovery. A Codex App Server worker is the Phase 1 backend. A delegated seat's
+instructions open with the charter's seat half, the same bytes a native subagent gets from its
+hook, followed by the `<delegated-seat>` block; both are built into the bundle rather than read
+from a hook at delegation time. See
+[`plugins/flow/docs/DELEGATION.md`](../plugins/flow/docs/DELEGATION.md) for that contract.
 
 ## Implemented mapping
 
 | Behavior | Claude Code | Codex | Shared core |
 | --- | --- | --- | --- |
-| Flow charter | Two `SessionStart` commands split below Claude's output cap, then a third that runs `inject-profile.mjs` and emits the `<flow-profile>` block | One ordered `SessionStart` command that emits the charter and the Codex profile in a single payload, under a 6,000-token inline limit | Host-neutral `charter/charter.md`, whose `[[role:<id>]]` markers each host's `charter/profiles/<host>.md` binds |
+| Flow charter | Two `SessionStart` commands, one per half, each below Claude's 10,000-character output cap, plus one `SubagentStart` command that emits the seat half and skips `Explore` and `fork` | One `SessionStart` command that emits the whole charter in a single payload, plus one `SubagentStart` command that emits the seat half and skips nothing | `charter/charter.md` in two halves split by one marker line, and `lib/charter-payload.mjs`, which owns the split, the seat block and the byte budgets. One `inject-charter.mjs` serves every cell |
 | Flow Bash guards | `PreToolUse` on `Bash` | `PreToolUse` on `Bash` | Existing no-backlog and Git guards; publication policy in `lib/hook-policy.mjs` |
 | Flow protected files | `file_path` from Edit/Write input, `notebook_path` from NotebookEdit | Paths parsed from `apply_patch`'s `tool_input.command` | `protectedFileReason()` |
 | Flow registry publication gate | `permissionDecision: "ask"` built from `publishReason()`, which strips quoted text before classifying | Deterministic deny with a manual-publish instruction, built from `publishOperationsStrict()`, which also classifies what a shell-execution form would run | `registryReason()` over the one `PUBLISH` table |
-| Flow pull request merge | Pre-approved `gh pr merge --squash --match-head-commit`, no per-command prompt. The human's explicit `/flow:land` invocation, then the stage's CI-green and unresolved-thread checks, are the gate | Same gate (the human asked in words), same checks; a repo with a committed `.flow/managed` marker routes the merge through `scripts/land-merge.mjs`, which re-derives every fact from GitHub before merging | `mergeShapes()` classifies the routed commands; the executor holds the checks |
+| Flow pull request merge | The human's explicit `/flow:land` invocation, then the stage's CI-green and unresolved-thread checks, are the gate; in a repo with a committed `.flow/managed` marker the guard denies a raw merge command and the stage runs `scripts/land-merge.mjs` | Same gate (the human asked in words), same checks, same denial, same executor | `mergeDenialFor()` decides both denials over `mergeShapes()`; the executor re-derives every fact from GitHub before merging |
 | Flow prep stage | `/flow:prep` is a one-sentence alias: read `skills/prep-stage/SKILL.md` and follow the Claude Code subsection of its host mechanics | The plugin-namespaced `prep-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/prep-stage/SKILL.md` - one body, one `## Host mechanics` section, one subsection per host |
 | Flow issue stage | `/flow:issue` is a one-sentence alias: read `skills/issue-stage/SKILL.md` and follow the Claude Code subsection of its host mechanics | The plugin-namespaced `issue-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/issue-stage/SKILL.md` - one body, one `## Host mechanics` section, one subsection per host |
 | Flow land stage | `/flow:land` is a one-sentence alias: read `skills/land-stage/SKILL.md` and follow the Claude Code subsection of its host mechanics | The plugin-namespaced `land-stage` skill, with `agents/openai.yaml` setting `allow_implicit_invocation: false` | `skills/land-stage/SKILL.md` - one body, one `## Host mechanics` section, one subsection per host |
@@ -97,16 +97,15 @@ false allow ships a release nobody can unship. The Claude guard keeps the prose 
 always had, which is why a sentence about publishing can still be written in a commit message
 there, and why a shell-wrapped publish gets no prompt from it.
 
-### The Codex merge path is a cooperative guardrail, not a boundary
+### The merge path is a cooperative guardrail, not a boundary
 
-Claude does not prompt per command. The `gh pr merge --squash` runs pre-approved under the
-session's `Bash(gh:*)` allowance, and the Claude publish guard asks only about package-registry
-publishes, not this merge. The gate is upstream of the command: the land stage runs only when the
-human invokes `/flow:land`, and its own CI-green and unresolved-thread checks decide whether the
-merge is warranted. Codex has the same gate in different clothes: the human asks for the land in
-words, the same stage gates run, and in a repo carrying a committed `.flow/managed` marker the
-publish guard routes the merge through `scripts/land-merge.mjs` instead of a raw gh command. Neither
-host asks for anything beyond that pair, the request and the gates.
+Both harnesses route a merge the same way, so this is no longer a fork. The gate is upstream of
+the command: the land stage runs only when the human asks for it, by `/flow:land` on Claude or in
+words on Codex, and the stage's own CI-green and unresolved-thread checks decide whether the merge
+is warranted. In a repo carrying a committed `.flow/managed` marker, each host's publish guard
+denies a merge-shaped command through the shared `mergeDenialFor()` and names
+`scripts/land-merge.mjs`, which the stage runs instead. Neither host asks for anything beyond that
+pair, the request and the gates.
 
 None of this is a security boundary. Everything runs as one uid, where a determined model could
 substitute its own gh, call the GitHub API with the token, or curl the merge endpoint, and no
@@ -117,13 +116,13 @@ chase, because closing them buys nothing at same-uid.
 
 What the guardrail actually enforces is downstream and deterministic. The committed
 `.flow/managed` marker enrols the repository (a deleted worktree copy does not un-enrol it, and
-the marker is a protected file). The executor takes only a pull request number, pins every
-gh call to the repository derived from the origin remote, reads the head, state, draft flag and
-base from live GitHub state, refuses an armed auto-merge or a merge-queue base, merges with
-`--match-head-commit` pinned to the head it verified, and reports merged, failed, or genuinely
-unknown rather than guessing. It stops the accident: a merge of the wrong pull request, of a
-head nobody saw, onto a base nobody was shown. It does not pretend to stop an adversary who
-already owns the uid.
+the marker is a protected file). The executor takes only a pull request number and the head the
+gates ran against, pins every gh call to the repository derived from the origin remote, reads the
+head, state, draft flag and base from live GitHub state, refuses an armed auto-merge or a
+merge-queue base, merges with `--match-head-commit` pinned to the head it verified, and reports
+merged, failed, or genuinely unknown rather than guessing. It stops the accident: a merge of the
+wrong pull request, of a head nobody saw, onto a base nobody was shown. It does not pretend to
+stop an adversary who already owns the uid.
 
 ### Codex protected-file checks parse the patch envelope
 
@@ -160,33 +159,20 @@ Claude-only. The captured shape is retained as a smoke-test fixture.
 path, and it decides which install to run on every invocation. It imports node builtins only,
 because it runs before any plugin root is known.
 
-`GRIPE_HOME` comes first, judged by key presence rather than by value. Set and holding a
-readable `bin/gripe`, it is the only candidate considered. Set but empty or broken, the shim
-stops with one stderr line naming `GRIPE_HOME` and scans no cache. A typo in a development
-override must not file into the live database through installed code.
+`GRIPE_HOME` comes first, judged by key presence rather than by value. Otherwise the shim globs
+both plugin cache roots on every run, `~/.claude/plugins/cache` and `${CODEX_HOME:-~/.codex}/plugins/cache`,
+taking `jakub/gripe/<version>/bin/gripe` under each, and runs the highest live version it finds
+whichever harness installed it. Claude Code marks a removed version with `.orphaned_at` and the
+shim skips it; Codex writes no such marker, so a removed-but-cached newer version keeps winning
+there until its directory is deleted.
 
-Otherwise the shim globs both plugin cache roots on every run, `~/.claude/plugins/cache` and
-`${CODEX_HOME:-~/.codex}/plugins/cache`, taking `jakub/gripe/<version>/bin/gripe` under each:
-this marketplace's directory only, since every plugin here installs as `<plugin>@jakub`. A
-version directory is dotted integers and nothing else, so a prerelease or a hash-named checkout
-is skipped, so is a root whose `bin/gripe` is not a readable regular file, and so is a version
-Claude Code has marked with `.orphaned_at` (Codex writes no such marker, so a removed-but-cached
-newer version wins there until its directory is deleted). The highest version wins whichever harness installed it, with the path as tie-break so
-the answer is deterministic. No manifest is read on either side: the cache directory name is
-the whole of the evidence. When nothing resolves, the shim prints one bounded line naming the
-two directories scanned and the override, never the versions under them.
+The shim carries one `// gripe-shim-epoch: <n>` marker, at 2 since the resolver stopped reading
+manifests, and the SessionStart hook that maintains the published copy is an upgrade-only ratchet.
+Gripe 0.2.x has no marker logic at all, so a harness still registered on it overwrites the newer
+shim at every session start there, which is why the README says to upgrade both in one sitting.
 
-Filing stays free whatever happens. `gripe add` and a bare `gripe` exit 0 through every
-failure; every other subcommand passes the child's status through. The shim carries one
-`// gripe-shim-epoch: <n>` marker, at 2 since the resolver stopped reading manifests, and the
-SessionStart hook that maintains the published copy is an upgrade-only ratchet. It rewrites a
-missing, lower, or unparseable marker, repairs drifted bytes under an equal one, and leaves a
-strictly higher one alone. The epoch counts shim protocol changes, not releases. Gripe 0.2.x
-has no marker logic at all, so a harness still registered on it overwrites the newer shim at
-every session start there, which is why the README says to upgrade both in one sitting.
-
-The reasoning behind each of those decisions, the residual races that are accepted as shipped,
-and what each exit code promises are in [`docs/gripe/DESIGN.md`](gripe/DESIGN.md).
+Every exit code, the residual races accepted as shipped, and the reasoning behind each of these
+decisions are in [`docs/gripe/DESIGN.md`](gripe/DESIGN.md).
 
 ### Unsupported observed signals stay unsupported
 
@@ -211,11 +197,10 @@ to a nearby event with different meaning.
 - Flow enforcement adapters deny when the target cannot be inspected. Gripe and Unslop are
   advisory and exit quietly when their own input cannot be parsed.
 - Codex SessionStart context limits are sized above the current Flow and Unslop payloads so
-  both arrive inline. Flow's smoke test holds the charter under a conservative 15,000-byte
-  maintenance budget and the Codex profile under 3,000 bytes, an 18,000-byte combined
-  maintenance budget for the raised 6,000-token inline limit; Unslop retains Claude's
-  10,000-byte output checks. Codex spills oversized output to a file and supplies a
-  preview, so spilling is a degraded fallback rather than silent loss.
+  both arrive inline. Flow's charter hook declares an 8,000-token limit, and its conformance
+  lint holds what the injector actually prints under a 22,000-byte maintenance budget; Unslop
+  retains Claude's 10,000-byte output checks. Codex spills oversized output to a file and
+  supplies a preview, so spilling is a degraded fallback rather than silent loss.
 
 ## Testing without installation
 
@@ -247,9 +232,10 @@ the captured Codex failure payload that deliberately remains unclassified. The l
 a document work the same way and keep no fixture tree on disk: each one carries its broken
 examples as inline strings, runs its own checker over them, and asserts the defect it names,
 so a green run also shows the check can still fail. The charter conformance lint checks that
-the charter's six `[[role:<id>]]` markers are bound in both host profiles and nowhere else,
-that the charter names no host outside its three allowlisted sections, and that both charter
-halves and each profile hold under their byte budgets. The stage conformance lint finds every
+the charter carries exactly one seat-rules marker, that each required heading lands on the side
+of it that reaches the right reader, that what the injector prints in all four modes stays under
+the caps, that `Explore` and `fork` are skipped on Claude and still delivered on Codex, and that
+a delegated job's preamble is the seat half byte for byte. The stage conformance lint finds every
 stage by structure and holds it to the one-file shape: no host named above the line, exactly
 one `## Host mechanics` heading as the last section, a `### Claude Code` and a `### Codex`
 subsection under it in that order with prose in each, implicit invocation off, and an alias
