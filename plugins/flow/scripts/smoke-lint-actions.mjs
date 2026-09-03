@@ -414,14 +414,32 @@ it("the two prep-racing verbs refuse without --seen", () => {
   done(w); done(w2);
 });
 
-it("triage-unlabelled undoes its own add when prep labels the issue in the same window", () => {
+it("triage-unlabelled leaves a conflicting tuple for a human when prep labels the issue in the same window", () => {
   const w = world({ labels: [{ name: "bug" }] }, { expectTag: false, labelOnEdit: "ready-for-agent" });
   const seen = JSON.parse(readFileSync(w.state, "utf8")).issue.updatedAt;
   const r = run(w, ["triage-unlabelled", w.repo, ISSUE, "--seen", seen]);
   assert.equal(r.code, 1);
-  assert.match(r.verdict.reason, /another writer moved it in the same window, and the needs-triage this verb added was removed again/);
-  assert.deepEqual(labelsOf(r.state), ["bug", "ready-for-agent"], "only the label this verb added is removed");
+  assert.match(r.verdict.reason, /something else moved it in the same window; a human checks it/);
+  assert.equal(edits(r.state).length, 1, "no second edit: a label on the read-back is not proof this verb added it");
+  assert.deepEqual(labelsOf(r.state), ["bug", "needs-triage", "ready-for-agent"]);
   assert.equal(comments(r.state).length, 0);
+  done(w);
+});
+
+it("refuses a linked worktree of an outside repository placed under the workspace", () => {
+  const w = world();
+  const outside = join(w.dir, "outside");
+  mkdirSync(outside);
+  const upstream = join(outside, "upstream");
+  execFileSync("git", ["init", "--quiet", "-b", "main", upstream]);
+  execFileSync("git", ["-C", upstream, "-c", "user.name=s", "-c", "user.email=s@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "init"]);
+  execFileSync("git", ["-C", upstream, "remote", "add", "origin", "git@github.com:jakub/demo.git"]);
+  const linked = join(w.dir, "linked");
+  execFileSync("git", ["-C", upstream, "worktree", "add", "--quiet", "--detach", linked]);
+  const r = run(w, ["clear-orphan", linked, ISSUE]);
+  assert.equal(r.code, 1);
+  assert.match(r.verdict.reason, /is a linked worktree of .*upstream, not a repository of its own/);
+  assert.equal(r.state.calls.length, 0);
   done(w);
 });
 

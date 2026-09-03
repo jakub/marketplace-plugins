@@ -63,6 +63,12 @@ const out = (ok, reason) => {
     let real = null, root = null;
     try { real = realpathSync(repo); root = realpathSync(workspace); } catch { out(false, "the repository path or FLOW_WORKSPACE does not resolve"); }
     if (dirname(real) !== root) out(false, `${real} is not a direct child of the workspace ${root}; the lint acts only on the repositories it enumerated`);
+    // A direct child that is a linked worktree of a checkout elsewhere shares that checkout's
+    // refs and origin, so acting on it acts on the outside repository. The enumerator skips
+    // linked worktrees for the same reason; the executor has to skip them on its own evidence.
+    let common = null;
+    try { common = realpathSync(execFileSync("git", ["-C", real, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", env: ENV, timeout: 5_000, stdio: ["ignore", "pipe", "pipe"] }).trim()); } catch { out(false, "the repository's common git directory could not be read"); }
+    if (dirname(common) !== real) out(false, `${real} is a linked worktree of ${dirname(common)}, not a repository of its own; the lint acts only on main checkouts`);
   }
 }
 
@@ -178,12 +184,17 @@ if (action === "delete-branch") {
 // while the other fails, so every edit is read back rather than assumed: the original tuple means
 // nothing moved and the tag goes back; the intended tuple means it landed; anything else is a
 // partial move or someone else's, and a tag-holding verb keeps the tag for a human, reported as
-// retained, while the tagless triage verb removes the one label it added. On success the tag goes
-// back straight after the read-back, before the comment.
+// retained. On success the tag goes back straight after the read-back, before the comment.
+//
+// Accepted residual: GitHub has no conditional write for labels. --seen and the read-back bound
+// the window to the milliseconds between the last read and the edit, and the claim tag closes it
+// against flow's own runs, but a human or a prep run editing inside that window is not excluded,
+// and a body edit under an unchanged label tuple is invisible to the read-back. The PR's
+// follow-up draft records it; closing it needs a serialization every writer honours.
 const LABEL_VERBS = {
   "clear-orphan":      { require: "in-progress",     add: "ready-for-agent", remove: "in-progress",     holdTag: true,  grace: true,  liveness: true,  seen: false, past: "cleared" },
   "demote-unready":    { require: "ready-for-agent", add: "needs-triage",    remove: "ready-for-agent", holdTag: true,  grace: false, liveness: true,  seen: true,  past: "demoted", reasonArg: true },
-  "triage-unlabelled": { require: null,              add: "needs-triage",    remove: null,              holdTag: false, grace: false, liveness: false, seen: true,  past: "triaged", undoOwnAdd: true },
+  "triage-unlabelled": { require: null,              add: "needs-triage",    remove: null,              holdTag: false, grace: false, liveness: false, seen: true,  past: "triaged" },
 };
 if (action in LABEL_VERBS) {
   const spec = LABEL_VERBS[action];
@@ -342,14 +353,9 @@ if (action in LABEL_VERBS) {
       if (back.state === "OPEN" && sameSet(lc, wanted)) {
         settle(false, edited ? "gh issue edit was accepted but the read-back shows the labels unchanged; nothing moved" : "gh issue edit failed and the read-back confirms nothing moved");
       }
-      // The tagless verb can still undo the one thing it did: remove the label it added, and say
-      // whether that took. It never touches a label it did not add.
-      if (spec.undoOwnAdd && back.state === "OPEN" && lc.includes(spec.add)) {
-        const undone = gh("issue", "edit", n, ...repoPin, "--remove-label", spec.add) !== null;
-        const again = readIssue();
-        const gone = undone && !again.fail && !lifecycleOf(again.labels).includes(spec.add);
-        out(false, `after the edit the issue reads OPEN with lifecycle labels [${lc.join(", ")}]; another writer moved it in the same window, and the ${spec.add} this verb added was ${gone ? "removed again" : "NOT removed; a human repairs the labels"}`);
-      }
+      // No undo. gh's add is idempotent and returns no receipt, so a label present on the read-back
+      // is not proof this verb put it there; removing it could take a label another writer owns.
+      // A conflicting tuple is reported and left for a human.
       keep(`after the edit the issue reads ${back.state} with lifecycle labels [${lc.join(", ")}] instead of OPEN with ${spec.add} alone; ${edited ? "something else moved it in the same window" : "the edit failed part way"}`);
     }
     // Landed. The read-back was the last read; the tag goes back now, before anything else
