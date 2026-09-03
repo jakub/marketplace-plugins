@@ -83,7 +83,7 @@ Model notes. Luna at max competes with Opus and Sol at medium to high. Sonnet dr
 A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on the security seat; when the security seat is the one that refused, that single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.
 
 ## Rules of Engagement - Model Contracts
-Worker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.
+Worker seats return typed results - a schema where the host offers one, a fixed field list otherwise - or write journals to disk. A seat's prose report is a claim to verify, never a record.
 
 Worker seats do **NOT** inherit this charter - only a context-inheriting spawn does [[role:context-inheritance]], by copying your context. A fresh seat gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.
 
@@ -127,7 +127,6 @@ Never bump a version, cut a tag, or publish a release unless the human asks for 
 Not in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.
 
 `gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.
-Don't `await` a gate with nothing checking it.
 Long outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.
 
 Never bare-`cd` into a worktree - subshell `(cd $WT && …)`, `git -C $WT`, or absolute paths.
