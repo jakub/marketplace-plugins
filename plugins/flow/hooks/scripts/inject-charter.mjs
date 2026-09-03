@@ -49,7 +49,13 @@ async function main() {
     ? [process.env.PLUGIN_ROOT, process.env.CLAUDE_PLUGIN_ROOT]
     : [process.env.CLAUDE_PLUGIN_ROOT, process.env.PLUGIN_ROOT]
   const root = preferred.find(Boolean) || fallback
-  const charter = readFileSync(join(root, 'charter', 'charter.md'), 'utf8')
+  let charter
+  try {
+    charter = readFileSync(join(root, 'charter', 'charter.md'), 'utf8')
+  } catch (error) {
+    process.stderr.write(`inject-charter: cannot read the charter under ${root}: ${error.message}\n`)
+    return
+  }
 
   if (mode === 'session') {
     if (host === 'codex') {
@@ -71,10 +77,21 @@ async function main() {
   if (mode === 'subagent') {
     const { agent_type: agentType } = await readStdin()
     if (host === 'claude' && CLAUDE_SKIPPED.includes(agentType)) return
+    // seatPayload throws on a charter with zero or two marker lines. A hook that dies non-zero
+    // is a harness error in the seat's face and still delivers nothing, so the defect goes to
+    // stderr and the hook exits 0 with empty stdout: the seat runs on the guards alone, and the
+    // conformance smoke is what catches the broken charter before it ships.
+    let payload
+    try {
+      payload = seatPayload(charter)
+    } catch (error) {
+      process.stderr.write(`inject-charter: ${error.message}\n`)
+      return
+    }
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SubagentStart',
-        additionalContext: seatPayload(charter),
+        additionalContext: payload,
       },
     }))
     return

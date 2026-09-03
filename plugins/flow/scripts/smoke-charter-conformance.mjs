@@ -9,7 +9,7 @@
 // Run: node plugins/flow/scripts/smoke-charter-conformance.mjs
 
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -123,6 +123,22 @@ assert.equal(divergent, charter, 'a Codex session read the charter from CLAUDE_P
 const divergentClaude = emit(['session', 'claude', '1'], ROOT, '', { CLAUDE_PLUGIN_ROOT: ROOT, PLUGIN_ROOT: join(tmpdir(), 'flow-no-such-root') })
 assert.ok(divergentClaude.includes('# Flow Engineering Charter'), 'a Claude session read the charter from PLUGIN_ROOT instead of CLAUDE_PLUGIN_ROOT')
 ok('each host reads its own root variable first when the two diverge')
+
+// A charter with two marker lines cannot be split, and the hook must still exit 0 with nothing on
+// stdout: a non-zero SubagentStart hook is a harness error in the seat's face, and the defect
+// belongs in the conformance smoke, not in a seat's transcript.
+{
+  const brokenRoot = mkdtempSync(join(tmpdir(), 'flow-broken-charter-'))
+  mkdirSync(join(brokenRoot, 'charter'))
+  writeFileSync(join(brokenRoot, 'charter', 'charter.md'), charter.replace(SEAT_MARKER, `${SEAT_MARKER}\n${SEAT_MARKER}`))
+  const run = spawnSync(process.execPath, [join(ROOT, 'hooks', 'scripts', 'inject-charter.mjs'), 'subagent', 'claude'], {
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: brokenRoot, PLUGIN_ROOT: brokenRoot }, encoding: 'utf8', input: '{"agent_type":"claude"}',
+  })
+  assert.equal(run.status, 0, `a broken charter made the subagent hook exit ${run.status}`)
+  assert.equal(run.stdout, '', 'a broken charter still printed a payload')
+  assert.ok(run.stderr.includes('exactly one seat-rules marker'), `the diagnostic did not name the marker: ${run.stderr}`)
+  ok('a charter with two markers leaves the subagent hook at exit 0, empty stdout, and a stderr diagnostic')
+}
 
 // A delegated job gets the same bytes a native seat gets, from the same function. Nothing is
 // reworded on the way, so there is nothing to drift.
