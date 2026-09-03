@@ -34,6 +34,8 @@ All work happens in a worktree at `../<repo>-issue-N-<slug>`, a sibling of the r
 
 **Out**: an open PR, pushed, reviewed, evidenced and `Closes #N`-linked. Or a clean escalation: `needs-info`, `needs-human` or `needs-rebase`, labeled, with a comment saying what is blocking, and the escalation notice of §9. A run that never got past the preflight leaves through that same door and leaves nothing else behind it (§2). Never merge.
 
+The stage itself always stops at the pushed PR. When the request that launched this run also asked for the PR to be watched through review, continue into the `babysit` skill after the final journal; otherwise the final report may name it as the next move, and the human's go-ahead is what invokes it.
+
 ## 2. The write-seat preflight
 
 This runs before any mutation, and "any" is literal: no assignment, no label, no comment, no claim tag, no branch, no worktree, no spawn happens until it passes. The one exemption is the terminal escalation a failure fires, below. A host that cannot run this stage must never stamp `in-progress` on an issue and walk away.

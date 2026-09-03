@@ -1,0 +1,5 @@
+interface:
+  display_name: "Babysit"
+  short_description: "Watch one open PR through external review and CI to green, then hand it to the land stage"
+policy:
+  allow_implicit_invocation: true
