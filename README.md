@@ -99,7 +99,7 @@ Two timers run in the background once `/flow:flow setup` has armed them: a night
 | `plugins/flow/charter/charter.md` | The engineering charter. |
 | `plugins/flow/commands/` | `prep.md`, `issue.md` and `land.md`, each only an alias to its stage. |
 | `plugins/flow/skills/prep-stage/`, `skills/issue-stage/`, `skills/land-stage/` | One `SKILL.md` per stage: the steps written once for both hosts, then a `## Host mechanics` section per host. |
-| `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool, and a report the orchestrator checks against git), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
+| `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool, and a report the orchestrator checks against git), `code-architect`, `code-reviewer`, and `bridge` (the transport seat for a call across the family bridge: the delegate tools and nothing else, returning the envelope verbatim). Models and efforts are chosen by the orchestrator at spawn. |
 | `plugins/flow/skills/flow/` | `/flow:flow setup`, `/flow:flow drift`, `/flow:flow labels`, `/flow:flow charter`, `/flow:flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
 | `plugins/flow/hooks/` | Claude and Codex hook registrations and adapters: charter injection, unsanctioned-issue prevention, protected-file checks, publication gates, and destructive Git guards. |

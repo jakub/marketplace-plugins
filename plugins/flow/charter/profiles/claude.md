@@ -16,6 +16,11 @@ is set on the call.
 The Agent tool. Read-only seats use the built-in agent types; write-capable pipeline
 seats spawn as `flow:implementer`, whose toolset has no Agent tool. The ~20-parallel
 cap and the worktree rule apply as written.
+The transport seat for a bridge call is `flow:bridge`, whose toolset is the `flow_delegate`
+tools and ToolSearch and nothing else. Spawn it at `sonnet-5`, low effort, with the call's
+arguments in its prompt; in a workflow script that is `agent(prompt, {agentType: 'flow:bridge',
+schema})`, with the envelope schema `node <plugin-root>/dist/delegation.mjs schema envelope`
+prints. It returns the envelope verbatim, and the orchestrator reads that as the tool result.
 
 ### role: context-inheritance
 
