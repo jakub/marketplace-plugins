@@ -60,13 +60,20 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   const approvalMessage = (jobId, summary) => {
     const head = `Delegated ${targetTitle} job ${String(jobId).slice(0, 8)} asks for an approval Flow does not grant on its own.`
     if (summary?.kind === 'command') return `${head} It wants to run a command${summary.cwd ? ` in ${summary.cwd}` : ''}:\n${summary.command ?? '(command not reported)'}`
-    if (summary?.kind === 'file-change') return `${head} It wants to change a file:\n${summary.path ?? '(path not reported)'}`
-    if (summary?.kind === 'tool') return `${head} It wants to use ${summary.toolName ?? 'a tool'} with input:\n${summary.input ?? '(no input)'}`
+    if (summary?.kind === 'file-change') return `${head} It wants to change ${summary.paths.length === 1 ? 'a file' : `${summary.paths.length} files`}:\n${summary.paths.join('\n')}`
+    if (summary?.kind === 'tool') {
+      const lines = [summary.title ?? `It wants to use ${summary.toolName}.`]
+      if (summary.description) lines.push(summary.description)
+      if (summary.blockedPath) lines.push(`Blocked path: ${summary.blockedPath}`)
+      if (summary.decisionReason) lines.push(`Reason: ${summary.decisionReason}`)
+      lines.push(summary.input ? `Input:\n${summary.input}` : 'The input is too long to show and is not part of what you approve.')
+      return `${head} ${lines.join('\n')}`
+    }
     return `${head} Request: ${summary?.method ?? 'unknown'}`
   }
   // One form per request, one decision, and anything that is not an explicit accept is a
   // decline: a dismissed form, a cancelled one, a client error, or the window closing.
-  const answerApproval = async (jobId, event) => {
+  const answerApproval = async (jobId, event, signal) => {
     const { approvalId, summary, seconds } = event.payload || {}
     let decision = 'decline'
     let decidedBy = 'human'
@@ -86,12 +93,12 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
           },
           required: ['decision'],
         },
-      }, { timeout: Math.max(5, (Number(seconds) || 240) - 10) * 1_000 })
+      }, { timeout: Math.max(5, (Number(seconds) || 240) - 10) * 1_000, signal })
       if (answer?.action === 'accept' && answer?.content?.decision === 'accept') decision = 'accept'
       else decidedBy = answer?.action === 'accept' ? 'human' : `human:${answer?.action || 'none'}`
     } catch (error) {
-      decidedBy = 'elicitation-error'
-      serviceLog(stateDir, `elicitation for job ${jobId} failed: ${error?.message || error}`)
+      decidedBy = signal?.aborted ? 'caller-cancelled' : 'elicitation-error'
+      if (!signal?.aborted) serviceLog(stateDir, `elicitation for job ${jobId} failed: ${error?.message || error}`)
     }
     try { service.decideApproval(jobId, approvalId, decision, decidedBy) } catch (error) {
       serviceLog(stateDir, `approval decision for job ${jobId} could not be recorded: ${error?.message || error}`)
@@ -144,7 +151,10 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   const attachedOptions = (extra, jobId) => ({
     signal: extra.signal,
     onEvent: async (event) => {
-      if (event.type === 'approval.requested') await answerApproval(jobId, event)
+      // Not awaited: the form can stay open for minutes, and the wait loop must keep reading
+      // the job, the caller's abort signal, and the terminal state while it does. The form
+      // races the same signal, so a cancelled call closes it as a decline.
+      if (event.type === 'approval.requested') void answerApproval(jobId, event, extra.signal)
       if (extra._meta?.progressToken === undefined) return
       await extra.sendNotification({
         method: 'notifications/progress',
@@ -296,11 +306,11 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     title: 'Delegation jobs',
     description: `This route's ${targetTitle} delegation jobs, newest first, as result envelopes.`,
     mimeType: 'application/json',
-  }, asResource(async (uri) => readJson(uri.href, { jobs: service.list().map(resultEnvelope) })))
+  }, asResource(async (uri) => readJson(uri.href, { jobs: (await service.listVisible(await rootOptions())).map(resultEnvelope) })))
   const jobResource = (suffix, name, title, description, read) => {
     server.registerResource(name, new ResourceTemplate(`flow://jobs/{jobId}${suffix}`, {
       list: async () => ({
-        resources: service.list().map((job) => ({ uri: `flow://jobs/${job.id}${suffix}`, name: `${name} ${job.id}`, mimeType: 'application/json' })),
+        resources: (await service.listVisible(await rootOptions())).map((job) => ({ uri: `flow://jobs/${job.id}${suffix}`, name: `${name} ${job.id}`, mimeType: 'application/json' })),
       }),
     }), { title, description, mimeType: 'application/json' }, asResource(async (uri, variables) => {
       const id = String(variables.jobId)

@@ -195,7 +195,19 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       spawn(process.execPath, ['-e', daemon], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()
     }
     if (mode === 'approval') {
-      timer = setTimeout(() => say({ method: 'item/commandExecution/requestApproval', id: 900, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'command-1' } }), 20)
+      timer = setTimeout(() => {
+        say({ method: 'item/started', params: { threadId: active.threadId, turnId: active.turnId, item: { type: 'commandExecution', id: 'command-1', command: 'echo approved', cwd: process.cwd(), status: 'inProgress' } } })
+        say({ method: 'item/commandExecution/requestApproval', id: 900, params: { kind: 'command', threadId: active.threadId, turnId: active.turnId, itemId: 'command-1', startedAtMs: Date.now(), environmentId: null, command: 'echo approved', cwd: process.cwd() } })
+      }, 20)
+    } else if (mode === 'approval-undisclosed') {
+      timer = setTimeout(() => say({ method: 'item/commandExecution/requestApproval', id: 900, params: { kind: 'command', threadId: active.threadId, turnId: active.turnId, itemId: 'command-1', startedAtMs: Date.now(), environmentId: null } }), 20)
+    } else if (mode === 'file-approval') {
+      timer = setTimeout(() => {
+        say({ method: 'item/started', params: { threadId: active.threadId, turnId: active.turnId, item: { type: 'fileChange', id: 'fc-1', status: 'inProgress', changes: [{ path: 'a.txt', kind: 'update', diff: 'stub' }] } } })
+        say({ method: 'item/fileChange/requestApproval', id: 900, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'fc-1', startedAtMs: Date.now() } })
+      }, 20)
+    } else if (mode === 'file-approval-orphan') {
+      timer = setTimeout(() => say({ method: 'item/fileChange/requestApproval', id: 900, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'fc-missing', startedAtMs: Date.now() } }), 20)
     } else if (mode === 'permissions-approval') {
       timer = setTimeout(() => say({ method: 'item/permissions/requestApproval', id: 902, params: { threadId: active.threadId, turnId: active.turnId, itemId: 'permissions-1', cwd: process.cwd(), permissions: { network: { enabled: true } }, startedAtMs: Date.now() } }), 20)
     } else if (mode === 'failed-turn') {
@@ -909,6 +921,47 @@ try {
   assert.equal(dismissed.status, 'awaiting_approval')
   const dismissedEvents = await eventsOf(dismissed.jobId, {}, { stateDir: state('approval-dismiss') })
   assert.deepEqual(dismissedEvents.filter((e) => e.type === 'approval.decided').map((e) => e.payload.decidedBy), ['human:cancel'])
+  // A request the form cannot show whole is declined unasked: a command approval that names no
+  // command, and a file-change approval whose item never arrived.
+  for (const [mode, name] of [['approval-undisclosed', 'command'], ['file-approval-orphan', 'file change']]) {
+    const hidden = await startJob({ prompt: 'Ask for approval' }, {
+      mode, stateDir: state(mode), elicit: () => assert.fail(`an undisclosed ${name} must never reach the human`),
+    })
+    assert.equal(hidden.status, 'awaiting_approval', JSON.stringify(hidden))
+    const hiddenTypes = (await eventsOf(hidden.jobId, {}, { stateDir: state(mode) })).map((e) => e.type)
+    assert.ok(hiddenTypes.includes('approval.undisclosed') && !hiddenTypes.includes('approval.requested'), `${name}: ${hiddenTypes.join(',')}`)
+  }
+  // A file change shows its paths, read from the item that preceded the request.
+  const fileForms = []
+  const fileAccepted = await startJob({ prompt: 'Change a file' }, {
+    mode: 'file-approval', stateDir: state('file-approval'),
+    elicit: (params) => { fileForms.push(params); return { action: 'accept', content: { decision: 'accept' } } },
+  })
+  assert.equal(fileAccepted.status, 'succeeded', JSON.stringify(fileAccepted))
+  assert.match(fileForms[0].message, /change a file:\na\.txt/)
+  assert.match(forms[0].message, /echo approved/)
+  // A cancel already on record beats the human's accept: the provider never gets an accept.
+  const revoked = await startJob({ prompt: 'Ask for approval' }, {
+    mode: 'approval', stateDir: state('approval-race'),
+    elicit: () => {
+      const store = new JobStore(state('approval-race'))
+      try { store.requestCancel(store.db.prepare('SELECT id FROM jobs ORDER BY created_at DESC LIMIT 1').get().id) } finally { store.close() }
+      return { action: 'accept', content: { decision: 'accept' } }
+    },
+  })
+  assert.notEqual(revoked.status, 'succeeded', JSON.stringify(revoked))
+  assert.notEqual(revoked.output, 'APPROVED')
+  const revokedEvents = await eventsOf(revoked.jobId, {}, { stateDir: state('approval-race') })
+  assert.ok(!revokedEvents.some((e) => e.type === 'approval.granted'), 'a revoked accept reached the provider')
+  assert.deepEqual(revokedEvents.filter((e) => e.type === 'approval.decided').map((e) => [e.payload.decision, e.payload.decidedBy]), [['decline', 'cancel']])
+  // An unanswered form does not park the attached call: the job's own deadline ends it and
+  // the tool call returns then, not at the form's timeout.
+  const parkedAt = Date.now()
+  const parked = await startJob({ prompt: 'Ask for approval', timeBudgetSeconds: 30 }, {
+    mode: 'approval', stateDir: state('approval-parked'), timeout: 120_000, elicit: () => new Promise(() => {}),
+  })
+  assert.notEqual(parked.status, 'succeeded', JSON.stringify(parked))
+  assert.ok(Date.now() - parkedAt < 90_000, `the attached call took ${Date.now() - parkedAt}ms with a form open`)
   // A permissions request widens the proven sandbox, so it is never put to the human even
   // when the human could answer.
   const permissionsAsked = await startJob({ prompt: 'Ask for permissions' }, {
@@ -1292,11 +1345,19 @@ try {
   const envelopeSchema = delegateTool.outputSchema.properties.job
   assert.ok(envelopeSchema.properties.commandFailures && envelopeSchema.properties.elicitation && envelopeSchema.properties.quarantine, 'the envelope schema lost a field')
   assert.deepEqual(envelopeSchema.properties.error.anyOf?.[0]?.properties?.kind?.enum ?? envelopeSchema.properties.error.properties?.kind?.enum, ERROR_KINDS)
+  // Kinds are spelled three ways in the source: a DelegationError constructor, a `kind:`
+  // expression, and the continuation lines of a ternary that picks one. Every upper-case
+  // literal on such a line is a kind, apart from the few named here.
+  const NOT_KINDS = new Set(['COMMIT', 'ROLLBACK', 'HEAD', 'ENOENT', 'EPERM', 'DATABASE'])
   const thrownKinds = new Set()
   for (const file of readdirSync(join(root, 'src', 'delegation'))) {
     if (!file.endsWith('.mjs')) continue
-    for (const m of readFileSync(join(root, 'src', 'delegation', file), 'utf8').matchAll(/DelegationError\('([A-Z_]+)'/g)) thrownKinds.add(m[1])
+    for (const line of readFileSync(join(root, 'src', 'delegation', file), 'utf8').split('\n')) {
+      if (!/DelegationError\(|\bkind\b|^\s*:\s/.test(line)) continue
+      for (const m of line.matchAll(/'([A-Z][A-Z0-9_]{2,})'/g)) if (!NOT_KINDS.has(m[1]) && !m[1].startsWith('SIG')) thrownKinds.add(m[1])
+    }
   }
+  for (const kind of ['STALL', 'TIMEOUT', 'MAX_TURNS', 'BILLING', 'CLAUDE_TURN']) assert.ok(thrownKinds.has(kind), `the kind scan no longer sees ${kind}`)
   const unlisted = [...thrownKinds].filter((kind) => !ERROR_KINDS.includes(kind))
   assert.deepEqual(unlisted, [], `error kinds thrown but not in ERROR_KINDS: ${unlisted.join(', ')}`)
   const escaped = await client.callTool(
@@ -1340,6 +1401,18 @@ try {
   assert.equal(caps.target, 'codex')
   assert.equal(caps.elicitation, false)
   await assert.rejects(client.readResource('flow://jobs/00000000-0000-4000-8000-000000000000'), /No delegation job has that ID/)
+  // The database is shared across workspaces. A job another repository ran on this route is
+  // not listed here and not readable here, the same visibility the id tools enforce.
+  const other = join(temp, 'other-repo')
+  mkdirSync(other)
+  execFileSync('git', ['init', '-q'], { cwd: other })
+  const elsewhere = await startJob({ prompt: 'elsewhere', cwd: other }, { stateDir: mcpState, roots: [other] })
+  assert.equal(elsewhere.status, 'succeeded', JSON.stringify(elsewhere))
+  const jobsAgain = JSON.parse((await client.readResource('flow://jobs')).contents[0].text)
+  assert.ok(jobsAgain.jobs.some((job) => job.jobId === linkedId) && !jobsAgain.jobs.some((job) => job.jobId === elsewhere.jobId), 'the jobs resource lists a job from another workspace')
+  const listedAgain = await client.listResources()
+  assert.ok(!listedAgain.resources.some((r) => r.uri.includes(elsewhere.jobId)), 'the resource listing names a job from another workspace')
+  await assert.rejects(client.readResource(`flow://jobs/${elsewhere.jobId}`), /OUTSIDE_ROOTS|outside|root/i)
   // A resource is route-scoped exactly like a tool: the other host's server does not own this job.
   await assert.rejects(
     session({ host: 'codex', stateDir: mcpState, extraEnv: { CODEX_PROJECT_DIR: repo } }, (other) => other.readResource(`flow://jobs/${linkedId}`)),

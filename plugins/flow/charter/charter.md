@@ -24,7 +24,7 @@ Never spawn more than ~20 parallel seats without the user's confirmation first.
 Permissions scale with how reversible the change is. Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
 
 ## Cross-Family Delegation
-Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses `delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to inspect, cancel, or continue the durable job. Never reach either provider through a shell command. Call the tools directly for a synchronous answer; for a long, parallel, or scripted job, spawn your host's transport seat to carry the call and read its untouched envelope as the tool's result.
+Reach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses `delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to inspect, cancel, or continue the durable job. Never reach either provider through a shell command. Call the tools directly for a synchronous answer. For a long, parallel, or scripted job, use the transport seat your host binds, if any, and read its untouched envelope as the tool's result.
 
 Set the model and effort explicitly every time. Always use the `default` service tier. The server rejects same-family calls and nested cross-family calls. Codex supports live steering and crash reconciliation. Claude supports cancellation and session continuation, but not live steering or post-crash result recovery; read the reported capabilities instead of assuming symmetry.
 

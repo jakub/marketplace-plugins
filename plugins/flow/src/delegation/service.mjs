@@ -291,6 +291,18 @@ export class DelegationService {
     return this.withStore((store) => store.listJobs({ host: this.host, target: this.target(), limit }))
   }
 
+  // The route's jobs inside this client's workspace roots, which is the same visibility the
+  // job tools enforce one id at a time. The database is shared across workspaces, so a
+  // listing that skipped this check would name and expose another repository's jobs.
+  async listVisible({ rootUris = [], fallbackCwd = null } = {}, limit = 50) {
+    const roots = canonicalRoots({ rootUris, projectDir: this.projectDir, fallbackCwd })
+    const visible = []
+    for (const job of this.list(limit)) {
+      try { await canonicalWorkspace(job.cwd, roots); visible.push(job) } catch {}
+    }
+    return visible
+  }
+
   decideApproval(jobId, approvalId, decision, decidedBy) {
     if (!['accept', 'decline'].includes(decision)) throw new DelegationError('BAD_REQUEST', 'An approval decision is accept or decline.')
     return this.withStore((store) => {

@@ -127,11 +127,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       spawn(process.execPath, ['-e', daemon], { cwd: process.cwd(), stdio: 'ignore', detached: true }).unref()
       return result()
     }
-    if (mode === 'approval') {
+    if (mode === 'approval' || mode === 'approval-long') {
       pendingApproval = true
       return say({
         type: 'control_request', request_id: 'approval-1',
-        request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'touch denied' }, tool_use_id: 'tool-1', permission_suggestions: [] },
+        request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: mode === 'approval-long' ? 'x'.repeat(5000) : 'touch denied' }, tool_use_id: 'tool-1', permission_suggestions: [] },
       })
     }
     if (mode === 'rate-limit') {
@@ -485,7 +485,12 @@ try {
   assert.equal(approved.output, 'APPROVED')
   assert.equal(approved.elicitation, true)
   assert.equal(forms.length, 1)
-  assert.match(forms[0].message, /Delegated Claude job [0-9a-f]{8} asks for an approval[\s\S]*Bash/)
+  assert.match(forms[0].message, /Delegated Claude job [0-9a-f]{8} asks for an approval[\s\S]*Bash[\s\S]*touch denied/)
+  // An input the form cannot show whole, with no host-rendered title, is declined unasked.
+  const oversized = await startJob({ prompt: 'Request approval' }, {
+    mode: 'approval-long', stateDir: state('approval-long'), elicit: () => assert.fail('an undisclosed input must never reach the human'),
+  })
+  assert.equal(oversized.status, 'awaiting_approval')
   const humanRefused = await startJob({ prompt: 'Request approval' }, {
     mode: 'approval', stateDir: state('approval-decline'),
     elicit: () => ({ action: 'decline' }),

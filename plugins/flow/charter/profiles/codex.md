@@ -14,9 +14,10 @@ Native subagents, with model and effort named per spawn. Read-only seats spawn f
 a substantial write seat runs contained - same-family in a native seat carrying the
 seat contract in its spawn prompt, cross-family through `delegate_to_claude` with
 workspace-write. The ~20-parallel cap and the worktree rule apply as written.
-A bridge call that must not block the parent rides a `spawn_agent` child whose prompt is the
-verbatim-return contract alone. `spawn_agent` narrows nothing, so the parent checks the
-`jobId` that child returns against `delegation_result` before trusting the envelope.
+This host binds no transport seat: `spawn_agent` narrows nothing, so a child carrying a
+bridge call would hold the whole session's authority for one tool call. Call the tool
+directly; a call that must not block the turn is `delivery: detached`, polled with
+`delegation_status`.
 
 ### role: context-inheritance
 

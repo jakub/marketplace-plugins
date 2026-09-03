@@ -56,9 +56,13 @@ export const eventShape = z.object({
   createdAt: z.number().int(),
 })
 
-// Raw shapes for registerTool: the SDK wraps a shape in an object schema of its own.
-export const jobResultShape = { ok: z.literal(true), job: envelopeShape }
-export const eventsResultShape = { ok: z.literal(true), events: z.array(eventShape) }
+// Raw shapes for registerTool: the SDK wraps a shape in an object schema of its own. `ok` is
+// a boolean and both payloads are optional because an error result carries structured
+// content too ({ ok: false, error } from the tool wrapper, { ok: false, job } for an attached
+// job that ended badly), and a client that validates every structuredContent against the
+// declared schema, as MCP Client 1.30.0 does, must find those valid as well.
+export const jobResultShape = { ok: z.boolean(), job: envelopeShape.optional(), error: publicErrorShape.optional() }
+export const eventsResultShape = { ok: z.boolean(), events: z.array(eventShape).optional(), error: publicErrorShape.optional() }
 // Doctor answers with a check tree whose keys vary by host, so its declared shape is loose.
 export const doctorResultShape = z.looseObject({ ok: z.boolean() })
 

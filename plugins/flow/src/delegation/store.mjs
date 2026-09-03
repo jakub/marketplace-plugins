@@ -651,11 +651,23 @@ export class JobStore {
     return row?.decision ?? null
   }
 
+  // A queued cancel wins over an accept, decided inside the write lock so the worker's read
+  // and the server's write cannot interleave into an accept the caller had already revoked.
   decideApproval(jobId, approvalId, decision, decidedBy) {
-    const result = this.db.prepare(`UPDATE approvals SET decision = ?, decided_by = ?, decided_at = ?
-      WHERE id = ? AND job_id = ? AND decision IS NULL`).run(decision, decidedBy, now(), approvalId, jobId)
-    if (result.changes) this.appendEvent(jobId, 'approval.decided', { approvalId, decision, decidedBy })
-    return result.changes > 0
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const revoked = decision === 'accept' && this.cancelRequested(jobId)
+      const finalDecision = revoked ? 'decline' : decision
+      const finalBy = revoked ? 'cancel' : decidedBy
+      const result = this.db.prepare(`UPDATE approvals SET decision = ?, decided_by = ?, decided_at = ?
+        WHERE id = ? AND job_id = ? AND decision IS NULL`).run(finalDecision, finalBy, now(), approvalId, jobId)
+      if (result.changes) this.appendEvent(jobId, 'approval.decided', { approvalId, decision: finalDecision, decidedBy: finalBy })
+      this.db.exec('COMMIT')
+      return result.changes > 0
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw error
+    }
   }
 
   // Newest first, one route only: the resources a host lists are the jobs it may read.

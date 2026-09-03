@@ -35,6 +35,18 @@ export function runCodexJob({ job, store, settle }) {
   const terminal = new Promise((resolve) => { terminalResolve = resolve })
   let previewAt = 0
   let jobTempDir = null
+  // Items by id, bounded to what an approval form may show: a file-change approval names
+  // only its item, and the paths live on the item notifications that preceded it.
+  const items = new Map()
+  const remember = (item) => {
+    if (!item?.id || items.size >= 500) return
+    items.set(item.id, {
+      type: item.type ?? null,
+      command: typeof item.command === 'string' ? item.command.slice(0, 4001) : null,
+      cwd: typeof item.cwd === 'string' ? item.cwd : null,
+      changes: Array.isArray(item.changes) ? item.changes.slice(0, 101).map((change) => ({ path: change?.path ?? change?.filePath ?? null, kind: change?.kind ?? null })) : null,
+    })
+  }
 
   const rememberProvider = ({ discover = false } = {}) => {
     const pid = client?.child?.pid
@@ -66,9 +78,11 @@ export function runCodexJob({ job, store, settle }) {
     } else if (method === 'turn/completed') {
       terminalResolve(params.turn)
     } else if (method === 'item/started') {
+      remember(params.item)
       store.appendEvent(jobId, 'item.started', { itemType: params.item?.type || 'unknown' })
     } else if (method === 'item/completed') {
       const item = params.item || {}
+      remember(item)
       if (item.type === 'agentMessage' && item.text) latestMessage = item.text
       if (item.type === 'commandExecution') {
         store.appendEvent(jobId, 'command.completed', {
@@ -108,10 +122,14 @@ export function runCodexJob({ job, store, settle }) {
       store.appendEvent(jobId, 'app_server.request_denied', { method })
       return null
     }
-    const askable = Boolean(job.elicitation)
+    const eligible = Boolean(job.elicitation)
       && (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval')
+    const rendered = eligible ? approvalSummary(method, params, { item: items.get(params.itemId) }) : null
+    // A request the form cannot show whole is declined unasked, and says so.
+    if (eligible && !rendered.ok) store.appendEvent(jobId, 'approval.undisclosed', { method, reason: rendered.reason })
+    const askable = eligible && rendered.ok
     const decision = askable
-      ? await awaitApproval(store, jobId, { method, summary: approvalSummary(method, params) }, { onTick: resetStall })
+      ? await awaitApproval(store, jobId, { method, summary: rendered.summary }, { onTick: resetStall })
       : null
     if (decision === 'accept') {
       store.appendEvent(jobId, 'approval.granted', { method })

@@ -203,10 +203,17 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
       // Same fork as the Codex route: a job started from a session that can render the
       // form puts the request to the human; anything else, and any decline or timeout, is
       // the deny it always was.
-      const canUseTool = async (toolName, input) => {
+      const canUseTool = async (toolName, input, options = {}) => {
         const name = toolName || 'unknown'
-        const decision = job.elicitation
-          ? await awaitApproval(store, jobId, { method: 'claude/can_use_tool', summary: approvalSummary('claude/can_use_tool', { toolName: name, input }) })
+        const rendered = job.elicitation
+          ? approvalSummary('claude/can_use_tool', {
+            toolName: name, input, title: options.title, description: options.description,
+            blockedPath: options.blockedPath, decisionReason: options.decisionReason,
+          })
+          : null
+        if (rendered && !rendered.ok) store.appendEvent(jobId, 'approval.undisclosed', { toolName: name, reason: rendered.reason })
+        const decision = rendered?.ok
+          ? await awaitApproval(store, jobId, { method: 'claude/can_use_tool', summary: rendered.summary })
           : null
         if (decision === 'accept') {
           store.appendEvent(jobId, 'approval.granted', { toolName: name })
