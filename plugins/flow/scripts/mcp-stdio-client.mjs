@@ -4,18 +4,22 @@
 // MCP SDK. This speaks the stdio transport directly instead: newline-delimited JSON-RPC 2.0 on
 // the server's stdin and stdout. It covers only what the smokes drive - initialize, tools/list,
 // tools/call with progress, and a roots/list answer. MCP is the service's only entry mode, so
-// every call in both smokes goes through here.
+// every call in both smokes goes through here. `elicit` is the answer policy for an
+// elicitation/create request: absent, the client advertises no elicitation and refuses one;
+// a function receives the request params and returns the ElicitResult.
 import { spawn } from 'node:child_process'
 
 const PROTOCOL_VERSION = '2025-06-18'
 
 export class McpStdioClient {
-  constructor({ command, args, cwd, env, roots }) {
+  constructor({ command, args, cwd, env, roots, elicit = null }) {
     this.command = command
     this.args = args
     this.cwd = cwd
     this.env = env
     this.roots = roots
+    this.elicit = elicit
+    this.elicitations = []
     this.child = null
     this.exited = null
     this.pending = new Map()
@@ -47,7 +51,7 @@ export class McpStdioClient {
 
     await this.request('initialize', {
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: { roots: { listChanged: true } },
+      capabilities: { roots: { listChanged: true }, ...(this.elicit ? { elicitation: { form: {} } } : {}) },
       clientInfo: { name: 'flow-smoke', version: '1.0.0' },
     })
     this.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
@@ -83,6 +87,9 @@ export class McpStdioClient {
       this.send({ jsonrpc: '2.0', id: message.id, result: { roots: this.roots } })
     } else if (message.method === 'ping') {
       this.send({ jsonrpc: '2.0', id: message.id, result: {} })
+    } else if (message.method === 'elicitation/create' && this.elicit) {
+      this.elicitations.push(message.params)
+      Promise.resolve(this.elicit(message.params)).then((result) => this.send({ jsonrpc: '2.0', id: message.id, result }))
     } else {
       this.send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `unhandled request ${message.method}` } })
     }
@@ -136,6 +143,12 @@ export class McpStdioClient {
   callTool(name, args, options = {}) {
     return this.request('tools/call', { name, arguments: args }, options)
   }
+
+  listResources() { return this.request('resources/list', {}) }
+
+  listResourceTemplates() { return this.request('resources/templates/list', {}) }
+
+  readResource(uri) { return this.request('resources/read', { uri }) }
 
   async close() {
     if (!this.child || this.closed) return

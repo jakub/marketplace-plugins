@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, isApprovalRequest, restrictedPermissionConfig } from './app-server.mjs'
+import { approvalSummary, awaitApproval } from './approvals.mjs'
 import { providerScopeName } from './containment.mjs'
 import { assertRoute, DelegationError, publicError, STALL_SECONDS } from './contracts.mjs'
 import { delegatedInstructions } from './instructions.mjs'
@@ -98,13 +99,27 @@ export function runCodexJob({ job, store, settle }) {
     }
   }
 
-  const onServerRequest = (method) => {
-    if (isApprovalRequest(method)) {
-      approvalMethod = method
-      store.appendEvent(jobId, 'approval.denied', { method })
-    } else {
+  // An approval request is put to the human when the job was started from a session that
+  // can render the form, and only for a command or a file change: a permissions request
+  // widens the proven sandbox and is never asked. A decline, a timeout, or a job that
+  // cannot ask ends the way it always did, as awaiting_approval.
+  const onServerRequest = async (method, params) => {
+    if (!isApprovalRequest(method)) {
       store.appendEvent(jobId, 'app_server.request_denied', { method })
+      return null
     }
+    const askable = Boolean(job.elicitation)
+      && (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval')
+    const decision = askable
+      ? await awaitApproval(store, jobId, { method, summary: approvalSummary(method, params) }, { onTick: resetStall })
+      : null
+    if (decision === 'accept') {
+      store.appendEvent(jobId, 'approval.granted', { method })
+      return 'accept'
+    }
+    approvalMethod = method
+    store.appendEvent(jobId, 'approval.denied', { method, asked: askable })
+    return null
   }
 
   // Deadline and stall share one ending: whichever fires first owns the reason, clears

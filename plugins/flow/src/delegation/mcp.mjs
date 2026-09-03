@@ -1,8 +1,9 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod/v4'
 import { DelegationService } from './service.mjs'
 import { ACCESS_MODES, capabilitiesForTarget, DelegationError, DELIVERIES, EFFORTS, MODES, MODEL_PATTERN, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
+import { doctorResultShape, eventsResultShape, jobResultShape } from './envelope-schema.mjs'
 import { serviceLog } from './store.mjs'
 import { VERSION } from './version.mjs'
 import { canonicalRoots, canonicalWorkspace } from './workspace.mjs'
@@ -31,7 +32,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   } : {}
   const service = new DelegationService({ host, depth, stateDir, entryPath, projectDir })
   const server = new McpServer({ name: 'flow-delegation', version: VERSION }, {
-    capabilities: { logging: {} },
+    capabilities: { logging: {}, resources: {} },
   })
 
   // publicError() is all the caller gets. An unexpected failure with no job to journal it
@@ -50,6 +51,52 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   }
   const rootOptions = async () => ({ rootUris: await clientRoots() })
   const requireVisibleJob = async (jobId) => service.requireVisible(jobId, await rootOptions())
+
+  // The approval fork is asked only when this client can render a form, and only on an
+  // attached call, because a detached job has nobody waiting to answer. The flag rides the
+  // job so the worker knows whether to park a request or deny it outright.
+  const clientElicits = () => Boolean(server.server.getClientCapabilities()?.elicitation?.form)
+  const elicitationFor = (delivery) => clientElicits() && delivery === 'attached'
+  const approvalMessage = (jobId, summary) => {
+    const head = `Delegated ${targetTitle} job ${String(jobId).slice(0, 8)} asks for an approval Flow does not grant on its own.`
+    if (summary?.kind === 'command') return `${head} It wants to run a command${summary.cwd ? ` in ${summary.cwd}` : ''}:\n${summary.command ?? '(command not reported)'}`
+    if (summary?.kind === 'file-change') return `${head} It wants to change a file:\n${summary.path ?? '(path not reported)'}`
+    if (summary?.kind === 'tool') return `${head} It wants to use ${summary.toolName ?? 'a tool'} with input:\n${summary.input ?? '(no input)'}`
+    return `${head} Request: ${summary?.method ?? 'unknown'}`
+  }
+  // One form per request, one decision, and anything that is not an explicit accept is a
+  // decline: a dismissed form, a cancelled one, a client error, or the window closing.
+  const answerApproval = async (jobId, event) => {
+    const { approvalId, summary, seconds } = event.payload || {}
+    let decision = 'decline'
+    let decidedBy = 'human'
+    try {
+      const answer = await server.server.elicitInput({
+        mode: 'form',
+        message: approvalMessage(jobId, summary),
+        requestedSchema: {
+          type: 'object',
+          properties: {
+            decision: {
+              type: 'string',
+              title: 'Decision',
+              description: 'accept lets the delegated seat do this one thing; decline refuses it and the job ends as awaiting_approval',
+              enum: ['accept', 'decline'],
+            },
+          },
+          required: ['decision'],
+        },
+      }, { timeout: Math.max(5, (Number(seconds) || 240) - 10) * 1_000 })
+      if (answer?.action === 'accept' && answer?.content?.decision === 'accept') decision = 'accept'
+      else decidedBy = answer?.action === 'accept' ? 'human' : `human:${answer?.action || 'none'}`
+    } catch (error) {
+      decidedBy = 'elicitation-error'
+      serviceLog(stateDir, `elicitation for job ${jobId} failed: ${error?.message || error}`)
+    }
+    try { service.decideApproval(jobId, approvalId, decision, decidedBy) } catch (error) {
+      serviceLog(stateDir, `approval decision for job ${jobId} could not be recorded: ${error?.message || error}`)
+    }
+  }
   const doctorContext = async (requestedCwd) => {
     const clientCapabilities = server.server.getClientCapabilities() || {}
     // What the initialize handshake reported, untouched. The SDK keeps the clientInfo object from
@@ -94,9 +141,10 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   }
 
   // Attached delivery streams the durable event journal back as progress notifications.
-  const attachedOptions = (extra) => ({
+  const attachedOptions = (extra, jobId) => ({
     signal: extra.signal,
     onEvent: async (event) => {
+      if (event.type === 'approval.requested') await answerApproval(jobId, event)
       if (extra._meta?.progressToken === undefined) return
       await extra.sendNotification({
         method: 'notifications/progress',
@@ -126,11 +174,12 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       base: z.string().optional().describe('Required Git revision for review modes'),
       head: z.string().default('HEAD').describe('Git revision for review modes'),
     },
+    outputSchema: jobResultShape,
     annotations: { openWorldHint: false },
   }, asTool(async (input, extra) => {
-    const job = await service.start(input, await rootOptions())
+    const job = await service.start({ ...input, elicitation: elicitationFor(input.delivery) }, await rootOptions())
     if (input.delivery === 'detached') return toolResult({ ok: true, job: resultEnvelope(job) })
-    const finished = await service.wait(job.id, attachedOptions(extra))
+    const finished = await service.wait(job.id, attachedOptions(extra, job.id))
     const envelope = resultEnvelope(finished)
     return toolResult({ ok: finished.status === 'succeeded', job: envelope }, finished.status !== 'succeeded')
   }))
@@ -138,6 +187,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   server.registerTool('delegation_status', {
     description: 'Read and reconcile one delegation job.',
     inputSchema: { jobId: jobId },
+    outputSchema: jobResultShape,
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, asTool(async ({ jobId }) => {
     await requireVisibleJob(jobId)
@@ -148,6 +198,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   server.registerTool('delegation_result', {
     description: 'Read the typed result envelope for one delegation job.',
     inputSchema: { jobId: jobId },
+    outputSchema: jobResultShape,
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, asTool(async ({ jobId }) => {
     await requireVisibleJob(jobId)
@@ -161,6 +212,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       after: z.number().int().min(0).default(0),
       limit: z.number().int().min(1).max(1000).default(200),
     },
+    outputSchema: eventsResultShape,
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, asTool(async ({ jobId, after, limit }) => {
     await requireVisibleJob(jobId)
@@ -173,6 +225,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
   server.registerTool('delegation_cancel', {
     description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId: jobId },
+    outputSchema: jobResultShape,
     annotations: { destructiveHint: true, openWorldHint: false },
   }, asTool(async ({ jobId }) => {
     await requireVisibleJob(jobId)
@@ -185,6 +238,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     server.registerTool('delegation_steer', {
       description: `Add instructions to the active ${targetTitle} turn without starting a new job.`,
       inputSchema: { jobId: jobId, text: z.string().min(1) },
+      outputSchema: jobResultShape,
       annotations: { openWorldHint: false },
     }, asTool(async ({ jobId, text }) => {
       await requireVisibleJob(jobId)
@@ -205,24 +259,61 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
       ...providerLimits,
       outputSchema: z.union([z.boolean(), z.record(z.string(), z.unknown())]).optional(),
     },
+    outputSchema: jobResultShape,
     annotations: { openWorldHint: false },
   }, asTool(async (input, extra) => {
     await requireVisibleJob(input.jobId)
-    const job = await service.continue(input.jobId, input, await rootOptions())
+    const job = await service.continue(input.jobId, { ...input, elicitation: elicitationFor(input.delivery) }, await rootOptions())
     if (input.delivery === 'detached') return toolResult({ ok: true, job: resultEnvelope(job) })
-    const finished = await service.wait(job.id, attachedOptions(extra))
+    const finished = await service.wait(job.id, attachedOptions(extra, job.id))
     return toolResult({ ok: finished.status === 'succeeded', job: resultEnvelope(finished) }, finished.status !== 'succeeded')
   }))
 
   server.registerTool('delegation_doctor', {
     description: `Check the local delegation database, ${targetTitle} runtime, and account.`,
     inputSchema: { cwd: z.string().optional() },
+    outputSchema: doctorResultShape,
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, asTool(async ({ cwd }) => {
     const context = await doctorContext(cwd)
     const result = await service.doctor(context.cwd, { workspace: context.workspace, client: context.mcp.client })
     return toolResult({ ...result, mcp: context.mcp })
   }))
+
+  // The job record as resources: state is read, mutations are called. Every read runs the
+  // same route and visibility checks the tools do, and an unexpected failure is logged and
+  // reported as INTERNAL, because a resource error message crosses the same redaction
+  // boundary a tool result does.
+  const readJson = (uri, value) => ({ contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(value, null, 2) }] })
+  const asResource = (fn) => async (...args) => {
+    try { return await fn(...args) } catch (error) {
+      if (error instanceof DelegationError) throw error
+      serviceLog(stateDir, `mcp resource failed: ${error?.stack || error?.message || error}`)
+      throw new DelegationError('INTERNAL', 'The resource could not be read.')
+    }
+  }
+  server.registerResource('jobs', 'flow://jobs', {
+    title: 'Delegation jobs',
+    description: `This route's ${targetTitle} delegation jobs, newest first, as result envelopes.`,
+    mimeType: 'application/json',
+  }, asResource(async (uri) => readJson(uri.href, { jobs: service.list().map(resultEnvelope) })))
+  const jobResource = (suffix, name, title, description, read) => {
+    server.registerResource(name, new ResourceTemplate(`flow://jobs/{jobId}${suffix}`, {
+      list: async () => ({
+        resources: service.list().map((job) => ({ uri: `flow://jobs/${job.id}${suffix}`, name: `${name} ${job.id}`, mimeType: 'application/json' })),
+      }),
+    }), { title, description, mimeType: 'application/json' }, asResource(async (uri, variables) => {
+      const id = String(variables.jobId)
+      await requireVisibleJob(id)
+      return readJson(uri.href, read(id))
+    }))
+  }
+  jobResource('', 'job', 'Delegation job', 'The result envelope for one job.', (id) => service.result(id))
+  jobResource('/events', 'job-events', 'Delegation job events', 'The ordered event journal for one job, first 1000 events.', (id) => ({ events: service.events(id, { after: 0, limit: 1000 }) }))
+  jobResource('/capabilities', 'job-capabilities', 'Delegation job capabilities', 'The target controls this job ran under, and whether it could ask the human.', (id) => {
+    const job = service.get(id)
+    return { target: job.target, capabilities: capabilitiesForTarget(job.target), elicitation: Boolean(job.elicitation) }
+  })
 
   const transport = new StdioServerTransport()
   await server.connect(transport)

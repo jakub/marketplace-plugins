@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { ACTIVE_STATES, DelegationError, TERMINAL_STATES } from './contracts.mjs'
 
-const SCHEMA_VERSION = 6
+const SCHEMA_VERSION = 7
 // Terminal jobs are operational history, not an archive. Fourteen days outlives any
 // investigation of a run, including an `unknown` one.
 const RETENTION_DAYS = 14
@@ -60,6 +60,7 @@ const SCHEMA = `
     output_schema_json TEXT,
     base_sha TEXT,
     head_sha TEXT,
+    elicitation INTEGER NOT NULL DEFAULT 0,
     native_thread_id TEXT,
     native_turn_id TEXT,
     turn_accepted_at INTEGER,
@@ -94,6 +95,16 @@ const SCHEMA = `
     payload_json TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     handled_at INTEGER
+  );
+  CREATE TABLE approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    method TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    decision TEXT CHECK (decision IN ('accept','decline')),
+    decided_by TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER
   );
   CREATE TABLE leases (
     workspace_key TEXT PRIMARY KEY,
@@ -145,6 +156,7 @@ function decode(row) {
     outputSchema: parse(row.output_schema_json),
     baseSha: row.base_sha,
     headSha: row.head_sha,
+    elicitation: Boolean(row.elicitation),
     nativeThreadId: row.native_thread_id,
     nativeTurnId: row.native_turn_id,
     turnAcceptedAt: row.turn_accepted_at,
@@ -249,7 +261,7 @@ export class JobStore {
               'which would drop those jobs and the worktree write leases they hold without proving their ' +
               'providers dead. Let them finish, or cancel them with the previous Flow version, then upgrade.')
           }
-          this.db.exec('DROP TABLE IF EXISTS leases; DROP TABLE IF EXISTS controls; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS jobs;')
+          this.db.exec('DROP TABLE IF EXISTS approvals; DROP TABLE IF EXISTS leases; DROP TABLE IF EXISTS controls; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS jobs;')
           this.db.exec(SCHEMA)
           this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
         }
@@ -318,16 +330,16 @@ export class JobStore {
       id, trace_id, parent_job_id, host, target, depth, mode, access,
       cwd, workspace_key, model, effort, time_budget_seconds,
       max_turns, max_budget_usd,
-      prompt, output_schema_json, base_sha, head_sha, native_thread_id,
+      prompt, output_schema_json, base_sha, head_sha, native_thread_id, elicitation,
       status, created_at, updated_at, heartbeat_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
       .run(id, request.traceId || randomUUID(), request.parentJobId || null,
         request.host, request.target, request.depth, request.mode, request.access,
         request.cwd, request.workspaceKey, request.model, request.effort,
         request.timeBudgetSeconds,
         request.maxTurns ?? null, request.maxBudgetUsd ?? null, request.prompt,
         json(request.outputSchema), request.baseSha || null, request.headSha || null,
-        request.nativeThreadId || null, at, at, at)
+        request.nativeThreadId || null, request.elicitation ? 1 : 0, at, at, at)
     this.appendEvent(id, 'job.queued', { status: 'queued' })
     return this.getJob(id)
   }
@@ -622,6 +634,34 @@ export class JobStore {
     if (cancelled) this.appendEvent(jobId, 'job.cancelled', { status: 'cancelled' })
     else this.appendEvent(jobId, 'control.cancel.queued', {})
     return this.getJob(jobId)
+  }
+
+  // The approval fork. A worker parks a provider's approval request here and polls for the
+  // decision; the MCP server process, which alone holds the session, asks the human and
+  // writes it. approvals.mjs owns the wait; these are the rows.
+  requestApproval(jobId, { method, summary = {}, seconds = null }) {
+    const id = this.db.prepare(`INSERT INTO approvals (job_id, method, summary_json, created_at)
+      VALUES (?, ?, ?, ?) RETURNING id`).get(jobId, method, json(summary), now()).id
+    this.appendEvent(jobId, 'approval.requested', { approvalId: id, method, summary, seconds })
+    return id
+  }
+
+  approvalDecision(jobId, approvalId) {
+    const row = this.db.prepare('SELECT decision FROM approvals WHERE id = ? AND job_id = ?').get(approvalId, jobId)
+    return row?.decision ?? null
+  }
+
+  decideApproval(jobId, approvalId, decision, decidedBy) {
+    const result = this.db.prepare(`UPDATE approvals SET decision = ?, decided_by = ?, decided_at = ?
+      WHERE id = ? AND job_id = ? AND decision IS NULL`).run(decision, decidedBy, now(), approvalId, jobId)
+    if (result.changes) this.appendEvent(jobId, 'approval.decided', { approvalId, decision, decidedBy })
+    return result.changes > 0
+  }
+
+  // Newest first, one route only: the resources a host lists are the jobs it may read.
+  listJobs({ host, target, limit = 50 } = {}) {
+    return this.db.prepare('SELECT * FROM jobs WHERE host = ? AND target = ? ORDER BY created_at DESC, id LIMIT ?')
+      .all(host, target, Math.max(1, Math.min(limit, 200))).map(decode)
   }
 
   pendingControls(jobId) {

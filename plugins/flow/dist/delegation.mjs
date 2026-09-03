@@ -21761,6 +21761,228 @@ var McpZodTypeKind;
   McpZodTypeKind2["Completable"] = "McpCompletable";
 })(McpZodTypeKind || (McpZodTypeKind = {}));
 
+// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/uriTemplate.js
+var MAX_TEMPLATE_LENGTH = 1e6;
+var MAX_VARIABLE_LENGTH = 1e6;
+var MAX_TEMPLATE_EXPRESSIONS = 1e4;
+var MAX_REGEX_LENGTH = 1e6;
+var UriTemplate = class _UriTemplate {
+  /**
+   * Returns true if the given string contains any URI template expressions.
+   * A template expression is a sequence of characters enclosed in curly braces,
+   * like {foo} or {?bar}.
+   */
+  static isTemplate(str) {
+    return /\{[^}\s]+\}/.test(str);
+  }
+  static validateLength(str, max, context) {
+    if (str.length > max) {
+      throw new Error(`${context} exceeds maximum length of ${max} characters (got ${str.length})`);
+    }
+  }
+  get variableNames() {
+    return this.parts.flatMap((part) => typeof part === "string" ? [] : part.names);
+  }
+  constructor(template) {
+    _UriTemplate.validateLength(template, MAX_TEMPLATE_LENGTH, "Template");
+    this.template = template;
+    this.parts = this.parse(template);
+  }
+  toString() {
+    return this.template;
+  }
+  parse(template) {
+    const parts = [];
+    let currentText = "";
+    let i = 0;
+    let expressionCount = 0;
+    while (i < template.length) {
+      if (template[i] === "{") {
+        if (currentText) {
+          parts.push(currentText);
+          currentText = "";
+        }
+        const end = template.indexOf("}", i);
+        if (end === -1)
+          throw new Error("Unclosed template expression");
+        expressionCount++;
+        if (expressionCount > MAX_TEMPLATE_EXPRESSIONS) {
+          throw new Error(`Template contains too many expressions (max ${MAX_TEMPLATE_EXPRESSIONS})`);
+        }
+        const expr = template.slice(i + 1, end);
+        const operator = this.getOperator(expr);
+        const exploded = expr.includes("*");
+        const names = this.getNames(expr);
+        const name = names[0];
+        for (const name2 of names) {
+          _UriTemplate.validateLength(name2, MAX_VARIABLE_LENGTH, "Variable name");
+        }
+        parts.push({ name, operator, names, exploded });
+        i = end + 1;
+      } else {
+        currentText += template[i];
+        i++;
+      }
+    }
+    if (currentText) {
+      parts.push(currentText);
+    }
+    return parts;
+  }
+  getOperator(expr) {
+    const operators = ["+", "#", ".", "/", "?", "&"];
+    return operators.find((op) => expr.startsWith(op)) || "";
+  }
+  getNames(expr) {
+    const operator = this.getOperator(expr);
+    return expr.slice(operator.length).split(",").map((name) => name.replace("*", "").trim()).filter((name) => name.length > 0);
+  }
+  encodeValue(value, operator) {
+    _UriTemplate.validateLength(value, MAX_VARIABLE_LENGTH, "Variable value");
+    if (operator === "+" || operator === "#") {
+      return encodeURI(value);
+    }
+    return encodeURIComponent(value);
+  }
+  expandPart(part, variables) {
+    if (part.operator === "?" || part.operator === "&") {
+      const pairs = part.names.map((name) => {
+        const value2 = variables[name];
+        if (value2 === void 0)
+          return "";
+        const encoded2 = Array.isArray(value2) ? value2.map((v) => this.encodeValue(v, part.operator)).join(",") : this.encodeValue(value2.toString(), part.operator);
+        return `${name}=${encoded2}`;
+      }).filter((pair) => pair.length > 0);
+      if (pairs.length === 0)
+        return "";
+      const separator = part.operator === "?" ? "?" : "&";
+      return separator + pairs.join("&");
+    }
+    if (part.names.length > 1) {
+      const values2 = part.names.map((name) => variables[name]).filter((v) => v !== void 0);
+      if (values2.length === 0)
+        return "";
+      return values2.map((v) => Array.isArray(v) ? v[0] : v).join(",");
+    }
+    const value = variables[part.name];
+    if (value === void 0)
+      return "";
+    const values = Array.isArray(value) ? value : [value];
+    const encoded = values.map((v) => this.encodeValue(v, part.operator));
+    switch (part.operator) {
+      case "":
+        return encoded.join(",");
+      case "+":
+        return encoded.join(",");
+      case "#":
+        return "#" + encoded.join(",");
+      case ".":
+        return "." + encoded.join(".");
+      case "/":
+        return "/" + encoded.join("/");
+      default:
+        return encoded.join(",");
+    }
+  }
+  expand(variables) {
+    let result = "";
+    let hasQueryParam = false;
+    for (const part of this.parts) {
+      if (typeof part === "string") {
+        result += part;
+        continue;
+      }
+      const expanded = this.expandPart(part, variables);
+      if (!expanded)
+        continue;
+      if ((part.operator === "?" || part.operator === "&") && hasQueryParam) {
+        result += expanded.replace("?", "&");
+      } else {
+        result += expanded;
+      }
+      if (part.operator === "?" || part.operator === "&") {
+        hasQueryParam = true;
+      }
+    }
+    return result;
+  }
+  escapeRegExp(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  partToRegExp(part) {
+    const patterns = [];
+    for (const name2 of part.names) {
+      _UriTemplate.validateLength(name2, MAX_VARIABLE_LENGTH, "Variable name");
+    }
+    if (part.operator === "?" || part.operator === "&") {
+      for (let i = 0; i < part.names.length; i++) {
+        const name2 = part.names[i];
+        const prefix = i === 0 ? "\\" + part.operator : "&";
+        patterns.push({
+          pattern: prefix + this.escapeRegExp(name2) + "=([^&]+)",
+          name: name2
+        });
+      }
+      return patterns;
+    }
+    let pattern;
+    const name = part.name;
+    switch (part.operator) {
+      case "":
+        pattern = part.exploded ? "([^/,]+(?:,[^/,]+)*)" : "([^/,]+)";
+        break;
+      case "+":
+      case "#":
+        pattern = "(.+)";
+        break;
+      case ".":
+        pattern = "\\.([^/,]+)";
+        break;
+      case "/":
+        pattern = "/" + (part.exploded ? "([^/,]+(?:,[^/,]+)*)" : "([^/,]+)");
+        break;
+      default:
+        pattern = "([^/]+)";
+    }
+    patterns.push({ pattern, name });
+    return patterns;
+  }
+  match(uri) {
+    _UriTemplate.validateLength(uri, MAX_TEMPLATE_LENGTH, "URI");
+    let pattern = "^";
+    const names = [];
+    for (const part of this.parts) {
+      if (typeof part === "string") {
+        pattern += this.escapeRegExp(part);
+      } else {
+        const patterns = this.partToRegExp(part);
+        for (const { pattern: partPattern, name } of patterns) {
+          pattern += partPattern;
+          names.push({ name, exploded: part.exploded });
+        }
+      }
+    }
+    pattern += "$";
+    _UriTemplate.validateLength(pattern, MAX_REGEX_LENGTH, "Generated regex pattern");
+    const regex = new RegExp(pattern);
+    const match = uri.match(regex);
+    if (!match)
+      return null;
+    const result = {};
+    for (let i = 0; i < names.length; i++) {
+      const { name, exploded } = names[i];
+      const value = match[i + 1];
+      const cleanName = name.replace("*", "");
+      if (exploded && value.includes(",")) {
+        result[cleanName] = value.split(",");
+      } else {
+        result[cleanName] = value;
+      }
+    }
+    return result;
+  }
+};
+
 // deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/toolNameValidation.js
 var TOOL_NAME_REGEX = /^[A-Za-z0-9._-]{1,128}$/;
 function validateToolName(name) {
@@ -22550,6 +22772,30 @@ var McpServer = class {
     }
   }
 };
+var ResourceTemplate = class {
+  constructor(uriTemplate, _callbacks) {
+    this._callbacks = _callbacks;
+    this._uriTemplate = typeof uriTemplate === "string" ? new UriTemplate(uriTemplate) : uriTemplate;
+  }
+  /**
+   * Gets the URI template pattern.
+   */
+  get uriTemplate() {
+    return this._uriTemplate;
+  }
+  /**
+   * Gets the list callback, if one was provided.
+   */
+  get listCallback() {
+    return this._callbacks.list;
+  }
+  /**
+   * Gets the callback for completing a specific URI template variable, if one was provided.
+   */
+  completeCallback(variable) {
+    return this._callbacks.complete?.[variable];
+  }
+};
 var EMPTY_OBJECT_JSON_SCHEMA = {
   type: "object",
   properties: {}
@@ -22748,6 +22994,66 @@ var ACTIVE_STATES = ["queued", "starting", "running", "reconciling"];
 var TERMINAL_STATES = ["succeeded", "failed", "cancelled", "unknown", "awaiting_approval"];
 var MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
 var STALL_SECONDS = 420;
+var ERROR_KINDS = [
+  "AGENT_SDK_MISSING",
+  "APPROVAL_REQUIRED",
+  "APP_SERVER_ERROR",
+  "APP_SERVER_EXIT",
+  "APP_SERVER_PROTOCOL",
+  "APP_SERVER_TIMEOUT",
+  "BAD_EFFORT",
+  "BAD_MODEL",
+  "BAD_REQUEST",
+  "BAD_SCHEMA",
+  "BAD_WORKSPACE",
+  "CLAUDE_AUTH",
+  "CLAUDE_NOT_INSTALLED",
+  "CLAUDE_PROTOCOL",
+  "CLAUDE_SDK",
+  "CLAUDE_STARTUP",
+  "CLAUDE_STARTUP_TIMEOUT",
+  "CLAUDE_VERSION",
+  "CODEX_AUTH",
+  "CODEX_NOT_INSTALLED",
+  "CODEX_TOO_OLD",
+  "CODEX_TURN",
+  "CODEX_VERSION",
+  "CONTAINMENT_UNAVAILABLE",
+  "CONTROL_UNSUPPORTED",
+  "DATABASE_NEWER",
+  "EMPTY_OUTPUT",
+  "GIT_REF",
+  "INTERNAL",
+  "INTERRUPTED",
+  "JOB_NOT_FOUND",
+  "JOB_QUARANTINED",
+  "JOB_STATE",
+  "LIMIT_UNSUPPORTED",
+  "MCP_ISOLATION",
+  "MODEL_MISMATCH",
+  "NESTED_DELEGATION",
+  "NO_ROOTS",
+  "NO_THREAD",
+  "NO_WORKSPACE",
+  "OUTSIDE_ROOTS",
+  "PERMISSION_PROFILE",
+  "PROVIDER_QUARANTINED",
+  "RATE_LIMIT",
+  "RECOVERY_UNKNOWN",
+  "REFUSAL",
+  "ROUTE_DENIED",
+  "SAME_FAMILY",
+  "SANDBOX_UNAVAILABLE",
+  "SCHEMA_OUTPUT",
+  "STORE_UPGRADE_BLOCKED",
+  "UNKNOWN_JOB",
+  "UNKNOWN_TURN",
+  "UNSUPPORTED_HOST",
+  "WORKER_EXIT",
+  "WORKER_IDENTITY",
+  "WORKER_SPAWN_FAILED",
+  "WORKSPACE_BUSY"
+];
 var FINDINGS_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -22902,6 +23208,7 @@ function resultEnvelope(job) {
     access: job.access,
     model: job.model,
     effort: job.effort,
+    elicitation: Boolean(job.elicitation),
     limits: {
       timeBudgetSeconds: job.timeBudgetSeconds,
       maxTurns: job.maxTurns,
@@ -23292,7 +23599,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync as readFileSync2, re
 import { homedir as homedir2 } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-var SCHEMA_VERSION = 6;
+var SCHEMA_VERSION = 7;
 var RETENTION_DAYS = 14;
 var LIVE_ON_UPGRADE = [...ACTIVE_STATES, "awaiting_approval", "quarantined", "unknown"];
 var now = () => Date.now();
@@ -23334,6 +23641,7 @@ var SCHEMA = `
     output_schema_json TEXT,
     base_sha TEXT,
     head_sha TEXT,
+    elicitation INTEGER NOT NULL DEFAULT 0,
     native_thread_id TEXT,
     native_turn_id TEXT,
     turn_accepted_at INTEGER,
@@ -23368,6 +23676,16 @@ var SCHEMA = `
     payload_json TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     handled_at INTEGER
+  );
+  CREATE TABLE approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    method TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    decision TEXT CHECK (decision IN ('accept','decline')),
+    decided_by TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER
   );
   CREATE TABLE leases (
     workspace_key TEXT PRIMARY KEY,
@@ -23416,6 +23734,7 @@ function decode3(row) {
     outputSchema: parse3(row.output_schema_json),
     baseSha: row.base_sha,
     headSha: row.head_sha,
+    elicitation: Boolean(row.elicitation),
     nativeThreadId: row.native_thread_id,
     nativeTurnId: row.native_turn_id,
     turnAcceptedAt: row.turn_accepted_at,
@@ -23515,7 +23834,7 @@ var JobStore = class {
               `The delegation database was written by an older Flow version and still holds ${live === 1 ? "1 unfinished job" : `${live} unfinished jobs`}. Upgrading resets the database, which would drop those jobs and the worktree write leases they hold without proving their providers dead. Let them finish, or cancel them with the previous Flow version, then upgrade.`
             );
           }
-          this.db.exec("DROP TABLE IF EXISTS leases; DROP TABLE IF EXISTS controls; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS jobs;");
+          this.db.exec("DROP TABLE IF EXISTS approvals; DROP TABLE IF EXISTS leases; DROP TABLE IF EXISTS controls; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS jobs;");
           this.db.exec(SCHEMA);
           this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
         }
@@ -23591,9 +23910,9 @@ var JobStore = class {
       id, trace_id, parent_job_id, host, target, depth, mode, access,
       cwd, workspace_key, model, effort, time_budget_seconds,
       max_turns, max_budget_usd,
-      prompt, output_schema_json, base_sha, head_sha, native_thread_id,
+      prompt, output_schema_json, base_sha, head_sha, native_thread_id, elicitation,
       status, created_at, updated_at, heartbeat_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
       id2,
       request.traceId || randomUUID(),
       request.parentJobId || null,
@@ -23614,6 +23933,7 @@ var JobStore = class {
       request.baseSha || null,
       request.headSha || null,
       request.nativeThreadId || null,
+      request.elicitation ? 1 : 0,
       at2,
       at2,
       at2
@@ -23897,6 +24217,29 @@ var JobStore = class {
     if (cancelled) this.appendEvent(jobId2, "job.cancelled", { status: "cancelled" });
     else this.appendEvent(jobId2, "control.cancel.queued", {});
     return this.getJob(jobId2);
+  }
+  // The approval fork. A worker parks a provider's approval request here and polls for the
+  // decision; the MCP server process, which alone holds the session, asks the human and
+  // writes it. approvals.mjs owns the wait; these are the rows.
+  requestApproval(jobId2, { method, summary = {}, seconds = null }) {
+    const id2 = this.db.prepare(`INSERT INTO approvals (job_id, method, summary_json, created_at)
+      VALUES (?, ?, ?, ?) RETURNING id`).get(jobId2, method, json(summary), now()).id;
+    this.appendEvent(jobId2, "approval.requested", { approvalId: id2, method, summary, seconds });
+    return id2;
+  }
+  approvalDecision(jobId2, approvalId) {
+    const row = this.db.prepare("SELECT decision FROM approvals WHERE id = ? AND job_id = ?").get(approvalId, jobId2);
+    return row?.decision ?? null;
+  }
+  decideApproval(jobId2, approvalId, decision, decidedBy) {
+    const result = this.db.prepare(`UPDATE approvals SET decision = ?, decided_by = ?, decided_at = ?
+      WHERE id = ? AND job_id = ? AND decision IS NULL`).run(decision, decidedBy, now(), approvalId, jobId2);
+    if (result.changes) this.appendEvent(jobId2, "approval.decided", { approvalId, decision, decidedBy });
+    return result.changes > 0;
+  }
+  // Newest first, one route only: the resources a host lists are the jobs it may read.
+  listJobs({ host, target, limit = 50 } = {}) {
+    return this.db.prepare("SELECT * FROM jobs WHERE host = ? AND target = ? ORDER BY created_at DESC, id LIMIT ?").all(host, target, Math.max(1, Math.min(limit, 200))).map(decode3);
   }
   pendingControls(jobId2) {
     return this.db.prepare(`SELECT id, type, payload_json, created_at FROM controls
@@ -24227,15 +24570,23 @@ var AppServerClient = class {
       return;
     }
     if (Object.hasOwn(message, "id") && message.method) {
-      this.handleServerRequest(message);
+      void this.handleServerRequest(message);
       return;
     }
     if (message.method) this.onNotification(message.method, message.params || {});
   }
-  handleServerRequest(message) {
-    this.onServerRequest(message.method, message.params || {});
+  // The worker's handler answers with 'accept' or nothing. Only a command or a file change
+  // can be accepted; a permissions request widens the sandbox the doctor proved and is
+  // declined whatever the handler says.
+  async handleServerRequest(message) {
+    let decision = null;
+    try {
+      decision = await this.onServerRequest(message.method, message.params || {});
+    } catch {
+      decision = null;
+    }
     if (message.method === "item/commandExecution/requestApproval" || message.method === "item/fileChange/requestApproval") {
-      this.respond(message.id, { decision: "decline" });
+      this.respond(message.id, { decision: decision === "accept" ? "accept" : "decline" });
     } else if (message.method === "item/permissions/requestApproval") {
       this.respond(message.id, { permissions: {} });
     } else if (message.method === "applyPatchApproval" || message.method === "execCommandApproval") {
@@ -56595,7 +56946,7 @@ function universalContainment(text) {
 }
 
 // src/delegation/charter.mjs
-var FLOW_CHARTER = true ? "Note to agents: this charter outlines how we use `flow` to work on bigger projects.\nIf we're working on a smaller project that *isn't* using `flow`, don't ignore this file!\nThere's good stuff here that I want you to follow, so skip the ceremony but apply the principles: follow everything except the `flow` pipeline section.\nOrchestration, delegation, model selection, and rules of engagement ALWAYS apply.\n\n<flow-charter>\n\n# Flow Engineering Charter\nThis is the charter for the `flow` plugin, injected at the start of each session.\nYour host's user instructions cover who the user is; this describes how we build and delegate our work.\nUse this as a guide for all development tasks.\n\nThis charter is host-neutral: wherever it names a role in `[[role:\u2026]]` brackets, the `<flow-profile>` block injected beside it says what that role binds to on your host. Charter present but no profile block? Say so once, keep every rule here that is still true, invent no host mechanism, and don't start the pipeline stages until the human fixes the install.\n\n## Orchestration with Delegation to Worker Seats\nThe overall operating model for `flow` is a main-thread orchestrator that spawns and monitors worker seats [[role:sub-seat]]. A seat is one spawned model instance with its own model, effort, tools and prompt. The model the human launched the session with orchestrates; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.\n\nThe orchestrator has standing permission to spawn seats at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by worker seats.\n\nDelegation is not free however: each seat re-establishes context and reports back, and you re-read the report. Delegate genuinely independent, sizeable tracks - not work you could finish in a handful of tool calls, and never verification of your own work, which belongs in your own loop.\n\nNever spawn more than ~20 parallel seats without the user's confirmation first.\n\nPermissions scale with how reversible the change is. Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.\n\n## Cross-Family Delegation\nReach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses `delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to inspect, cancel, or continue the durable job. Do not wrap the call in an agent or invoke either provider through shell commands.\n\nSet the model and effort explicitly every time. Always use the `default` service tier. The server rejects same-family calls and nested cross-family calls. Codex supports live steering and crash reconciliation. Claude supports cancellation and session continuation, but not live steering or post-crash result recovery; read the reported capabilities instead of assuming symmetry.\n\n## The `flow` pipeline\nThe pipeline is three stages that run in order: prep \u2192 issue \u2192 land [[role:pipeline-entry]]; your host profile says how each one is invoked. Where a stage needs a decision from the human, it goes through the human-choice binding [[role:human-choice]], and whether that binding answers inside the turn or ends it is a fact about your host.\n\n`prep` is the front door, and nothing enters the issue tracker otherwise.\n`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.\n`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.\n\nThe issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.\n\nIssues must contain acceptance criteria, including what evidence is required to satisfy.\nPRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher [[role:artifact-publish]] (the plans client).\n\n`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything the human didn't say or that changes the proposed shape for the better, then interview them one question at a time, prioritizing answers that change the architecture.\n\n## Model Rankings\nAs of 2026-09. Higher is better, on every axis.\nCheapness is inverted - Luna is effectively free and Fable is expensive.\nIntelligence is how hard a problem the model can handle unsupervised.\nTaste covers UI/UX, code quality assessments, API and architecture design, and copy text.\nClassifiers says whether the model runs cyber classifiers that can refuse security work. A cell written `a/b` is the score at default effort and at max effort.\n\n| model                    | cheapness | intelligence | taste | classifiers |\n|--------------------------|-----------|--------------|-------|-------------|\n| gpt-5.6-luna             | 9         | 4/7          | 4     | standard    |\n| sonnet-5                 | 5         | 6            | 6     | standard    |\n| opus-5                   | 4         | 8            | 8     | standard    |\n| gpt-5.6-sol              | 7         | 8            | 5     | standard    |\n| gpt-daybreak-blue-latest | 7         | 8            | 5     | none        |\n| fable-5-1                | 2         | 10           | 9     | standard    |\n\n## Rules of Engagement - Model Selection\nThese are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.\n\nGeneral rule: intelligence > taste > cost. Anything user-facing (UI, text) goes to the taste leg. Lower efforts follow instructions more literally and call fewer tools; higher efforts verify more and wander more.\n\nEvery seat the pipeline spawns is one of the roles below. Each role has floors against the rankings above; your host profile binds it to one model and effort, and the conformance lint fails a binding under its floor. A floor is the written default, never a ceiling. `family: other` is the model family your host does not run natively. `classifiers: none` is a model that runs no cyber classifiers. A binding is scored at the effort it names, so Luna counts 7 only at max.\n\n| role | floors | what it is for |\n|------|--------|----------------|\n| [[role:search-seat]] | cheapness >= 5, intelligence >= 4 | locate files and seams: eyes, not judgment |\n| [[role:outside-scout]] | intelligence >= 6, family: other | the other family's read of the codebase during prep |\n| [[role:design-leg-native]] | intelligence >= 8 | a blind design proposal from your own family |\n| [[role:design-leg-bridge]] | intelligence >= 8, family: other | the rival blind proposal, from the other family |\n| [[role:taste-leg]] | taste >= 9 | user-facing UI and copy, public APIs, reconciling rival designs, any taste call |\n| [[role:write-seat-mechanical]] | intelligence >= 6, effort >= medium | transcribing a spec whose shape is already decided |\n| [[role:write-seat-standard]] | intelligence >= 8, effort >= medium | the default write seat: anything with a code-design decision left in it |\n| [[role:write-seat-hard]] | intelligence >= 8, effort >= high | work where a miss ships |\n| [[role:bulk-seat]] | cheapness >= 7 | mechanical sweeps at max effort; never the decorrelation seat |\n| [[role:review-seat-native]] | intelligence >= 8, effort >= high | code review of a diff the other family wrote |\n| [[role:review-seat-bridge]] | intelligence >= 8, effort >= high, family: other | the mandatory review of a diff your own family wrote, adversarial by default |\n| [[role:security-seat]] | intelligence >= 8, classifiers: none | vulnerability finding and defensive work, and the first retry for any refused seat |\n| [[role:adjudicator]] | intelligence >= 8, effort >= max | settling conflicting reviewers or decisions; taste disagreements go to the taste leg |\n\nModel notes. Luna at max competes with Opus and Sol at medium to high. Sonnet drives tools at low effort and returns verdicts at medium and up. Opus at xhigh writes code about as well as Fable, and is never the taste call. Sol writes slightly uglier code and is the decorrelated opinion by default. Daybreak Blue is Sol without cyber classifiers. Fable is depth and taste, and the most expensive seat.\n\nA refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on the security seat; when the security seat is the one that refused, that single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.\n\n## Rules of Engagement - Model Contracts\nWorker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.\n\nWorker seats do **NOT** inherit this charter - only a context-inheriting spawn does [[role:context-inheritance]], by copying your context. A fresh seat gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.\n\nPure locate/search fan-outs run on the search seat - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.\n\nReview non-trivial changes before assuming they're done, and monitor every backgrounded command.\n\nSpawning parallel implementers is permitted if there is sufficient isolation between the tasks handed out.\n\n## Rules of Engagement - Everything Else\nBefore adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.\n\nPackages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.\n\nIf the Context7 MCP is available, use it to fetch live documentation.\n\nGreenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.\n\nAgents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.\n\nAvoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.\n\nA backgrounded task, monitor, or worker seat that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.\n\nGreen verdicts on anything that ships need a confirming cross-model read.\n\nWhen structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.\n\nWhen adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through the artifact publisher with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.\n\nWe are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix.\n\nNo unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.\n\nComments are documentation - preserve and update while working, drop only if provably wrong.\nReal dependencies over mocks.\nDesign against races/TOCTOU up front for check-then-act code.\nRedact implementation details (db errors, stack traces, internal paths) at trust boundaries.\nWhen asked for a secret, surface ONLY the credential requested and avoid log pollution.\n\nNo commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. The `git-guard` hook enforces this anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.\n\nConventional commits, imperative, present tense; each commit is one atomic logical change.\n\nNever bump a version, cut a tag, or publish a release unless the human asks for it by name.\n\nNot in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.\n\n`gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.\nDon't `await` a gate with nothing checking it.\nLong outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.\n\nNever bare-`cd` into a worktree - subshell `(cd $WT && \u2026)`, `git -C $WT`, or absolute paths. \"Shell cwd was reset\" notices are benign harness noise, ignore them.\n\nNever batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.\n\nPR descriptions: summary narrative + one-line-per-commit changelog.\n\nFind the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce \u2192 minimize \u2192 instrument \u2192 regression-test.\n\n## Gripes\nIf the `gripe` plugin is installed, the `gripe` CLI is on the shell on both hosts. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.\n\n</flow-charter>\n" : readFileSync(new URL("../../charter/charter.md", import.meta.url), "utf8");
+var FLOW_CHARTER = true ? "Note to agents: this charter outlines how we use `flow` to work on bigger projects.\nIf we're working on a smaller project that *isn't* using `flow`, don't ignore this file!\nThere's good stuff here that I want you to follow, so skip the ceremony but apply the principles: follow everything except the `flow` pipeline section.\nOrchestration, delegation, model selection, and rules of engagement ALWAYS apply.\n\n<flow-charter>\n\n# Flow Engineering Charter\nThis is the charter for the `flow` plugin, injected at the start of each session.\nYour host's user instructions cover who the user is; this describes how we build and delegate our work.\nUse this as a guide for all development tasks.\n\nThis charter is host-neutral: wherever it names a role in `[[role:\u2026]]` brackets, the `<flow-profile>` block injected beside it says what that role binds to on your host. Charter present but no profile block? Say so once, keep every rule here that is still true, invent no host mechanism, and don't start the pipeline stages until the human fixes the install.\n\n## Orchestration with Delegation to Worker Seats\nThe overall operating model for `flow` is a main-thread orchestrator that spawns and monitors worker seats [[role:sub-seat]]. A seat is one spawned model instance with its own model, effort, tools and prompt. The model the human launched the session with orchestrates; the table below governs every other seat. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.\n\nThe orchestrator has standing permission to spawn seats at whatever model+effort combination fits, without asking, guided by the model table below. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by worker seats.\n\nDelegation is not free however: each seat re-establishes context and reports back, and you re-read the report. Delegate genuinely independent, sizeable tracks - not work you could finish in a handful of tool calls, and never verification of your own work, which belongs in your own loop.\n\nNever spawn more than ~20 parallel seats without the user's confirmation first.\n\nPermissions scale with how reversible the change is. Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.\n\n## Cross-Family Delegation\nReach the other model family only through Flow's `flow_delegate` MCP tools. A Claude host uses `delegate_to_codex`; a Codex host uses `delegate_to_claude`. Use the `delegation_*` tools to inspect, cancel, or continue the durable job. Never reach either provider through a shell command. Call the tools directly for a synchronous answer; for a long, parallel, or scripted job, spawn your host's transport seat to carry the call and read its untouched envelope as the tool's result.\n\nSet the model and effort explicitly every time. Always use the `default` service tier. The server rejects same-family calls and nested cross-family calls. Codex supports live steering and crash reconciliation. Claude supports cancellation and session continuation, but not live steering or post-crash result recovery; read the reported capabilities instead of assuming symmetry.\n\n## The `flow` pipeline\nThe pipeline is three stages that run in order: prep \u2192 issue \u2192 land [[role:pipeline-entry]]; your host profile says how each one is invoked. Where a stage needs a decision from the human, it goes through the human-choice binding [[role:human-choice]], and whether that binding answers inside the turn or ends it is a fact about your host.\n\n`prep` is the front door, and nothing enters the issue tracker otherwise.\n`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.\n`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.\n\nThe issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.\n\nIssues must contain acceptance criteria, including what evidence is required to satisfy.\nPRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher [[role:artifact-publish]] (the plans client).\n\n`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything the human didn't say or that changes the proposed shape for the better, then interview them one question at a time, prioritizing answers that change the architecture.\n\n## Model Rankings\nAs of 2026-09. Higher is better, on every axis.\nCheapness is inverted - Luna is effectively free and Fable is expensive.\nIntelligence is how hard a problem the model can handle unsupervised.\nTaste covers UI/UX, code quality assessments, API and architecture design, and copy text.\nClassifiers says whether the model runs cyber classifiers that can refuse security work. A cell written `a/b` is the score at default effort and at max effort.\n\n| model                    | cheapness | intelligence | taste | classifiers |\n|--------------------------|-----------|--------------|-------|-------------|\n| gpt-5.6-luna             | 9         | 4/7          | 4     | standard    |\n| sonnet-5                 | 5         | 6            | 6     | standard    |\n| opus-5                   | 4         | 8            | 8     | standard    |\n| gpt-5.6-sol              | 7         | 8            | 5     | standard    |\n| gpt-daybreak-blue-latest | 7         | 8            | 5     | none        |\n| fable-5-1                | 2         | 10           | 9     | standard    |\n\n## Rules of Engagement - Model Selection\nThese are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.\n\nGeneral rule: intelligence > taste > cost. Anything user-facing (UI, text) goes to the taste leg. Lower efforts follow instructions more literally and call fewer tools; higher efforts verify more and wander more.\n\nEvery seat the pipeline spawns is one of the roles below. Each role has floors against the rankings above; your host profile binds it to one model and effort, and the conformance lint fails a binding under its floor. A floor is the written default, never a ceiling. `family: other` is the model family your host does not run natively. `classifiers: none` is a model that runs no cyber classifiers. A binding is scored at the effort it names, so Luna counts 7 only at max.\n\n| role | floors | what it is for |\n|------|--------|----------------|\n| [[role:search-seat]] | cheapness >= 5, intelligence >= 4 | locate files and seams: eyes, not judgment |\n| [[role:outside-scout]] | intelligence >= 6, family: other | the other family's read of the codebase during prep |\n| [[role:design-leg-native]] | intelligence >= 8 | a blind design proposal from your own family |\n| [[role:design-leg-bridge]] | intelligence >= 8, family: other | the rival blind proposal, from the other family |\n| [[role:taste-leg]] | taste >= 9 | user-facing UI and copy, public APIs, reconciling rival designs, any taste call |\n| [[role:write-seat-mechanical]] | intelligence >= 6, effort >= medium | transcribing a spec whose shape is already decided |\n| [[role:write-seat-standard]] | intelligence >= 8, effort >= medium | the default write seat: anything with a code-design decision left in it |\n| [[role:write-seat-hard]] | intelligence >= 8, effort >= high | work where a miss ships |\n| [[role:bulk-seat]] | cheapness >= 7 | mechanical sweeps at max effort; never the decorrelation seat |\n| [[role:review-seat-native]] | intelligence >= 8, effort >= high | code review of a diff the other family wrote |\n| [[role:review-seat-bridge]] | intelligence >= 8, effort >= high, family: other | the mandatory review of a diff your own family wrote, adversarial by default |\n| [[role:security-seat]] | intelligence >= 8, classifiers: none | vulnerability finding and defensive work, and the first retry for any refused seat |\n| [[role:adjudicator]] | intelligence >= 8, effort >= max | settling conflicting reviewers or decisions; taste disagreements go to the taste leg |\n\nModel notes. Luna at max competes with Opus and Sol at medium to high. Sonnet drives tools at low effort and returns verdicts at medium and up. Opus at xhigh writes code about as well as Fable, and is never the taste call. Sol writes slightly uglier code and is the decorrelated opinion by default. Daybreak Blue is Sol without cyber classifiers. Fable is depth and taste, and the most expensive seat.\n\nA refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on the security seat; when the security seat is the one that refused, that single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.\n\n## Rules of Engagement - Model Contracts\nWorker seats return typed results (schemas) or write journals to disk - they shouldn't be returning prose.\n\nWorker seats do **NOT** inherit this charter - only a context-inheriting spawn does [[role:context-inheritance]], by copying your context. A fresh seat gets the harness defaults instead, including the ones this charter overrides. Carry the relevant non-negotiables of this charter into the prompt yourself. The git rules are hooks, so they travel.\n\nPure locate/search fan-outs run on the search seat - search needs eyes, not the session model's judgment or its price tag. Escalate when the search itself needs judgment.\n\nReview non-trivial changes before assuming they're done, and monitor every backgrounded command.\n\nSpawning parallel implementers is permitted if there is sufficient isolation between the tasks handed out.\n\n## Rules of Engagement - Everything Else\nBefore adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.\n\nPackages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.\n\nIf the Context7 MCP is available, use it to fetch live documentation.\n\nGreenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.\n\nAgents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.\n\nAvoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.\n\nA backgrounded task, monitor, or worker seat that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.\n\nGreen verdicts on anything that ships need a confirming cross-model read.\n\nWhen structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.\n\nWhen adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through the artifact publisher with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.\n\nWe are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix.\n\nNo unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.\n\nComments are documentation - preserve and update while working, drop only if provably wrong.\nReal dependencies over mocks.\nDesign against races/TOCTOU up front for check-then-act code.\nRedact implementation details (db errors, stack traces, internal paths) at trust boundaries.\nWhen asked for a secret, surface ONLY the credential requested and avoid log pollution.\n\nNo commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. The `git-guard` hook enforces this anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.\n\nConventional commits, imperative, present tense; each commit is one atomic logical change.\n\nNever bump a version, cut a tag, or publish a release unless the human asks for it by name.\n\nNot in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.\n\n`gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.\nDon't `await` a gate with nothing checking it.\nLong outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.\n\nNever bare-`cd` into a worktree - subshell `(cd $WT && \u2026)`, `git -C $WT`, or absolute paths. \"Shell cwd was reset\" notices are benign harness noise, ignore them.\n\nNever batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.\n\nPR descriptions: summary narrative + one-line-per-commit changelog.\n\nFind the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce \u2192 minimize \u2192 instrument \u2192 regression-test.\n\n## Gripes\nIf the `gripe` plugin is installed, the `gripe` CLI is on the shell on both hosts. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.\n\n</flow-charter>\n" : readFileSync(new URL("../../charter/charter.md", import.meta.url), "utf8");
 
 // src/delegation/seat-contract.mjs
 var FLOW_SEAT_CONTRACT = true ? 'You are one leaf of a parallel fan-out run by a orchestrator. You implement the plan you are\nhanded, in the worktree you are pointed at, and nothing else. The rules below are\nmechanical, not advisory.\n\n## Containment\n\n- Do the work yourself in this seat. You are already the delegate: spawn no agents and\n  start no delegations, and never claim to have delegated, launched, backgrounded, or\n  handed off anything. Verification belongs in your own loop.\n- All writes happen inside the worktree you were assigned. Keep the persistent shell\n  rooted where it starts - wrap a cd in a subshell `(cd <wt> && <cmd>)`, or point the\n  command at the worktree with `-C`, or pass an absolute path under the worktree. Never\n  bare-cd.\n- The worktree may be shared with sibling seats. Stage only the files you touched, by\n  explicit path - never `git add -A` / `commit -a`. No `--no-verify`, no attribution\n  trailers.\n\n## Synchronous execution\n\n- Run every command yourself, in your own shell, in the foreground, and watch it finish.\n  Never background a command and end your turn "waiting" on it: no monitor, task, or\n  notification will ever call you back, and a turn that ends mid-wait ends the seat.\n- If a command genuinely cannot finish in one step, split it into steps you can observe to\n  completion, or report the blocker plainly. Do not report progress you did not watch\n  happen.\n\n## Scope and completion\n\n- Deliver the plan\'s scope and nothing beyond it: no unasked-for abstractions, files,\n  flags, or error handling for cases that cannot happen.\n- Milestones in order, TDD where the plan calls for it: failing test first, minimum code\n  to pass, refactor. Commit each milestone atomically with a conventional message in\n  present tense.\n- Finish the whole task. Report completion only when every milestone is genuinely done.\n  If something is truly blocked, complete everything else and say plainly what is missing\n  and why, rather than reporting done.\n- Structural deviation from the plan \u2192 stop at that milestone and report it as a\n  deviation; local deviation \u2192 adapt, note it in the commit message, keep going.\n\n## Reporting\n\nYour final message is a claim the orchestrator will verify against `git log` and the tree,\nnot a narrative it will trust. Make it cheap to check:\n\n- List the commits you made (sha + subject). Never list a commit you did not author in\n  this seat as your own.\n- Per milestone: done / partial / blocked, with the test command you ran and what it\n  printed (red \u2192 green, or the failure).\n- Deviations from the plan, each with the reason.\n- Anything you did NOT do that the plan asked for.\n\nIf a transient failure (rate limit, 5xx, network) blocks a step, retry up to three times\nwith backoff, then report status unknown with the reason. Unknown is its own state: never\nround it up to a pass, and never report a pass you did not observe.\n' : readFileSync(new URL("../../seat-contract.md", import.meta.url), "utf8");
@@ -57389,7 +57740,8 @@ var DelegationService = class {
       base: input.base || null,
       head: input.head || "HEAD",
       parentJobId: input.parentJobId || null,
-      nativeThreadId: input.nativeThreadId || null
+      nativeThreadId: input.nativeThreadId || null,
+      elicitation: Boolean(input.elicitation)
     };
     const target = this.target();
     validateStart(normalized, target);
@@ -57514,6 +57866,16 @@ var DelegationService = class {
     }
     return this.withStore((store) => store.resolveQuarantine(jobId2, { force: "unknown" }));
   }
+  list(limit = 50) {
+    return this.withStore((store) => store.listJobs({ host: this.host, target: this.target(), limit }));
+  }
+  decideApproval(jobId2, approvalId, decision, decidedBy) {
+    if (!["accept", "decline"].includes(decision)) throw new DelegationError("BAD_REQUEST", "An approval decision is accept or decline.");
+    return this.withStore((store) => {
+      this.requireRoute(store.requireJob(jobId2));
+      return store.decideApproval(jobId2, approvalId, decision, decidedBy);
+    });
+  }
   steer(jobId2, text) {
     if (!text?.trim()) throw new DelegationError("BAD_REQUEST", "Steering text cannot be empty.");
     return this.withStore((store) => {
@@ -57545,7 +57907,8 @@ var DelegationService = class {
       maxBudgetUsd: input.maxBudgetUsd ?? previous.maxBudgetUsd,
       outputSchema: input.outputSchema ?? null,
       parentJobId: previous.id,
-      nativeThreadId: previous.nativeThreadId
+      nativeThreadId: previous.nativeThreadId,
+      elicitation: Boolean(input.elicitation)
     }, roots);
   }
   // handshakeClient, not client: the App Server connection a few lines down already owns that
@@ -57776,6 +58139,60 @@ var DelegationService = class {
   }
 };
 
+// src/delegation/envelope-schema.mjs
+var JOB_STATES = [...ACTIVE_STATES, "quarantined", ...TERMINAL_STATES];
+var publicErrorShape = object2({
+  kind: _enum(ERROR_KINDS),
+  message: string2(),
+  details: unknown().nullable()
+});
+var quarantineShape = object2({
+  resumeStatus: string2().nullable(),
+  providerPid: number2().int().nullable(),
+  providerProcessGroupId: number2().int().nullable(),
+  providerScope: string2().nullable(),
+  trackedProcesses: number2().int().min(0)
+});
+var envelopeShape = object2({
+  jobId: string2().uuid(),
+  status: _enum(JOB_STATES),
+  host: _enum(HOSTS),
+  target: _enum(TARGETS),
+  mode: _enum(MODES),
+  access: _enum(ACCESS_MODES),
+  model: string2(),
+  effort: _enum(EFFORTS),
+  elicitation: boolean2().describe("Whether an approval request in this job is put to the human through the MCP session, or denied outright"),
+  limits: object2({
+    timeBudgetSeconds: number2().int(),
+    maxTurns: number2().int().nullable(),
+    maxBudgetUsd: number2().nullable()
+  }),
+  threadId: string2().nullable(),
+  turnId: string2().nullable(),
+  output: string2().nullable(),
+  structured: unknown().nullable(),
+  findings: array(unknown()).nullable(),
+  usage: unknown().nullable(),
+  commandFailures: number2().int().min(0).describe("Recorded command completions that failed or exited nonzero. Always 0 on the Claude route, which records none"),
+  error: publicErrorShape.nullable(),
+  quarantine: quarantineShape.nullable(),
+  createdAt: number2().int(),
+  updatedAt: number2().int()
+});
+var eventShape = object2({
+  seq: number2().int().min(1),
+  type: string2(),
+  payload: record(string2(), unknown()),
+  createdAt: number2().int()
+});
+var jobResultShape = { ok: literal(true), job: envelopeShape };
+var eventsResultShape = { ok: literal(true), events: array(eventShape) };
+var doctorResultShape = looseObject({ ok: boolean2() });
+function envelopeJsonSchema() {
+  return toJSONSchema(envelopeShape, { io: "output" });
+}
+
 // src/delegation/mcp.mjs
 var jobId = string2().uuid().describe("Durable Flow delegation job ID");
 var model = string2().regex(MODEL_PATTERN).describe("Provider model id or alias. Claude takes an alias (sonnet, opus, fable) or a full id (claude-fable-5-1); Codex takes its own ids (gpt-5.6-sol). Never the charter table's short names.");
@@ -57799,7 +58216,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
   } : {};
   const service = new DelegationService({ host, depth, stateDir, entryPath: entryPath2, projectDir });
   const server = new McpServer({ name: "flow-delegation", version: VERSION }, {
-    capabilities: { logging: {} }
+    capabilities: { logging: {}, resources: {} }
   });
   const asTool = (fn2) => async (...args) => {
     try {
@@ -57820,6 +58237,51 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
   };
   const rootOptions = async () => ({ rootUris: await clientRoots() });
   const requireVisibleJob = async (jobId2) => service.requireVisible(jobId2, await rootOptions());
+  const clientElicits = () => Boolean(server.server.getClientCapabilities()?.elicitation?.form);
+  const elicitationFor = (delivery2) => clientElicits() && delivery2 === "attached";
+  const approvalMessage = (jobId2, summary) => {
+    const head = `Delegated ${targetTitle} job ${String(jobId2).slice(0, 8)} asks for an approval Flow does not grant on its own.`;
+    if (summary?.kind === "command") return `${head} It wants to run a command${summary.cwd ? ` in ${summary.cwd}` : ""}:
+${summary.command ?? "(command not reported)"}`;
+    if (summary?.kind === "file-change") return `${head} It wants to change a file:
+${summary.path ?? "(path not reported)"}`;
+    if (summary?.kind === "tool") return `${head} It wants to use ${summary.toolName ?? "a tool"} with input:
+${summary.input ?? "(no input)"}`;
+    return `${head} Request: ${summary?.method ?? "unknown"}`;
+  };
+  const answerApproval = async (jobId2, event) => {
+    const { approvalId, summary, seconds } = event.payload || {};
+    let decision = "decline";
+    let decidedBy = "human";
+    try {
+      const answer = await server.server.elicitInput({
+        mode: "form",
+        message: approvalMessage(jobId2, summary),
+        requestedSchema: {
+          type: "object",
+          properties: {
+            decision: {
+              type: "string",
+              title: "Decision",
+              description: "accept lets the delegated seat do this one thing; decline refuses it and the job ends as awaiting_approval",
+              enum: ["accept", "decline"]
+            }
+          },
+          required: ["decision"]
+        }
+      }, { timeout: Math.max(5, (Number(seconds) || 240) - 10) * 1e3 });
+      if (answer?.action === "accept" && answer?.content?.decision === "accept") decision = "accept";
+      else decidedBy = answer?.action === "accept" ? "human" : `human:${answer?.action || "none"}`;
+    } catch (error2) {
+      decidedBy = "elicitation-error";
+      serviceLog(stateDir, `elicitation for job ${jobId2} failed: ${error2?.message || error2}`);
+    }
+    try {
+      service.decideApproval(jobId2, approvalId, decision, decidedBy);
+    } catch (error2) {
+      serviceLog(stateDir, `approval decision for job ${jobId2} could not be recorded: ${error2?.message || error2}`);
+    }
+  };
   const doctorContext = async (requestedCwd) => {
     const clientCapabilities = server.server.getClientCapabilities() || {};
     const client = server.server.getClientVersion() || null;
@@ -57866,9 +58328,10 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       }
     };
   };
-  const attachedOptions = (extra) => ({
+  const attachedOptions = (extra, jobId2) => ({
     signal: extra.signal,
     onEvent: async (event) => {
+      if (event.type === "approval.requested") await answerApproval(jobId2, event);
       if (extra._meta?.progressToken === void 0) return;
       await extra.sendNotification({
         method: "notifications/progress",
@@ -57897,17 +58360,19 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       base: string2().optional().describe("Required Git revision for review modes"),
       head: string2().default("HEAD").describe("Git revision for review modes")
     },
+    outputSchema: jobResultShape,
     annotations: { openWorldHint: false }
   }, asTool(async (input, extra) => {
-    const job = await service.start(input, await rootOptions());
+    const job = await service.start({ ...input, elicitation: elicitationFor(input.delivery) }, await rootOptions());
     if (input.delivery === "detached") return toolResult({ ok: true, job: resultEnvelope(job) });
-    const finished = await service.wait(job.id, attachedOptions(extra));
+    const finished = await service.wait(job.id, attachedOptions(extra, job.id));
     const envelope = resultEnvelope(finished);
     return toolResult({ ok: finished.status === "succeeded", job: envelope }, finished.status !== "succeeded");
   }));
   server.registerTool("delegation_status", {
     description: "Read and reconcile one delegation job.",
     inputSchema: { jobId },
+    outputSchema: jobResultShape,
     annotations: { readOnlyHint: true, openWorldHint: false }
   }, asTool(async ({ jobId: jobId2 }) => {
     await requireVisibleJob(jobId2);
@@ -57917,6 +58382,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
   server.registerTool("delegation_result", {
     description: "Read the typed result envelope for one delegation job.",
     inputSchema: { jobId },
+    outputSchema: jobResultShape,
     annotations: { readOnlyHint: true, openWorldHint: false }
   }, asTool(async ({ jobId: jobId2 }) => {
     await requireVisibleJob(jobId2);
@@ -57929,6 +58395,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       after: number2().int().min(0).default(0),
       limit: number2().int().min(1).max(1e3).default(200)
     },
+    outputSchema: eventsResultShape,
     annotations: { readOnlyHint: true, openWorldHint: false }
   }, asTool(async ({ jobId: jobId2, after, limit }) => {
     await requireVisibleJob(jobId2);
@@ -57940,6 +58407,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
   server.registerTool("delegation_cancel", {
     description: `Interrupt a running ${targetTitle} turn. Cancellation is cooperative and durable.`,
     inputSchema: { jobId },
+    outputSchema: jobResultShape,
     annotations: { destructiveHint: true, openWorldHint: false }
   }, asTool(async ({ jobId: jobId2 }) => {
     await requireVisibleJob(jobId2);
@@ -57949,6 +58417,7 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
     server.registerTool("delegation_steer", {
       description: `Add instructions to the active ${targetTitle} turn without starting a new job.`,
       inputSchema: { jobId, text: string2().min(1) },
+      outputSchema: jobResultShape,
       annotations: { openWorldHint: false }
     }, asTool(async ({ jobId: jobId2, text }) => {
       await requireVisibleJob(jobId2);
@@ -57968,29 +58437,104 @@ async function startMcp({ host, depth, stateDir, entryPath: entryPath2, projectD
       ...providerLimits,
       outputSchema: union([boolean2(), record(string2(), unknown())]).optional()
     },
+    outputSchema: jobResultShape,
     annotations: { openWorldHint: false }
   }, asTool(async (input, extra) => {
     await requireVisibleJob(input.jobId);
-    const job = await service.continue(input.jobId, input, await rootOptions());
+    const job = await service.continue(input.jobId, { ...input, elicitation: elicitationFor(input.delivery) }, await rootOptions());
     if (input.delivery === "detached") return toolResult({ ok: true, job: resultEnvelope(job) });
-    const finished = await service.wait(job.id, attachedOptions(extra));
+    const finished = await service.wait(job.id, attachedOptions(extra, job.id));
     return toolResult({ ok: finished.status === "succeeded", job: resultEnvelope(finished) }, finished.status !== "succeeded");
   }));
   server.registerTool("delegation_doctor", {
     description: `Check the local delegation database, ${targetTitle} runtime, and account.`,
     inputSchema: { cwd: string2().optional() },
+    outputSchema: doctorResultShape,
     annotations: { readOnlyHint: true, openWorldHint: true }
   }, asTool(async ({ cwd }) => {
     const context = await doctorContext(cwd);
     const result = await service.doctor(context.cwd, { workspace: context.workspace, client: context.mcp.client });
     return toolResult({ ...result, mcp: context.mcp });
   }));
+  const readJson = (uri, value) => ({ contents: [{ uri, mimeType: "application/json", text: JSON.stringify(value, null, 2) }] });
+  const asResource = (fn2) => async (...args) => {
+    try {
+      return await fn2(...args);
+    } catch (error2) {
+      if (error2 instanceof DelegationError) throw error2;
+      serviceLog(stateDir, `mcp resource failed: ${error2?.stack || error2?.message || error2}`);
+      throw new DelegationError("INTERNAL", "The resource could not be read.");
+    }
+  };
+  server.registerResource("jobs", "flow://jobs", {
+    title: "Delegation jobs",
+    description: `This route's ${targetTitle} delegation jobs, newest first, as result envelopes.`,
+    mimeType: "application/json"
+  }, asResource(async (uri) => readJson(uri.href, { jobs: service.list().map(resultEnvelope) })));
+  const jobResource = (suffix, name, title, description, read) => {
+    server.registerResource(name, new ResourceTemplate(`flow://jobs/{jobId}${suffix}`, {
+      list: async () => ({
+        resources: service.list().map((job) => ({ uri: `flow://jobs/${job.id}${suffix}`, name: `${name} ${job.id}`, mimeType: "application/json" }))
+      })
+    }), { title, description, mimeType: "application/json" }, asResource(async (uri, variables) => {
+      const id2 = String(variables.jobId);
+      await requireVisibleJob(id2);
+      return readJson(uri.href, read(id2));
+    }));
+  };
+  jobResource("", "job", "Delegation job", "The result envelope for one job.", (id2) => service.result(id2));
+  jobResource("/events", "job-events", "Delegation job events", "The ordered event journal for one job, first 1000 events.", (id2) => ({ events: service.events(id2, { after: 0, limit: 1e3 }) }));
+  jobResource("/capabilities", "job-capabilities", "Delegation job capabilities", "The target controls this job ran under, and whether it could ask the human.", (id2) => {
+    const job = service.get(id2);
+    return { target: job.target, capabilities: capabilitiesForTarget(job.target), elicitation: Boolean(job.elicitation) };
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
 // src/delegation/claude-worker.mjs
 import { randomUUID as randomUUID4 } from "node:crypto";
+
+// src/delegation/approvals.mjs
+var APPROVAL_WAIT_SECONDS = 240;
+var APPROVAL_POLL_MS = 250;
+var SUMMARY_LIMIT = 400;
+var bounded = (value) => {
+  if (value === void 0 || value === null) return null;
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text.length > SUMMARY_LIMIT ? `${text.slice(0, SUMMARY_LIMIT)}\u2026` : text;
+};
+function approvalSummary(method, params = {}) {
+  if (method === "item/commandExecution/requestApproval") {
+    return { kind: "command", command: bounded(params.command ?? params.item?.command), cwd: bounded(params.cwd), itemId: params.itemId ?? null };
+  }
+  if (method === "item/fileChange/requestApproval") {
+    return { kind: "file-change", path: bounded(params.path ?? params.item?.path), itemId: params.itemId ?? null };
+  }
+  if (method === "claude/can_use_tool") {
+    return { kind: "tool", toolName: bounded(params.toolName), input: bounded(params.input) };
+  }
+  return { kind: "other", method };
+}
+async function awaitApproval(store, jobId2, { method, summary }, { seconds = APPROVAL_WAIT_SECONDS, onTick = () => {
+} } = {}) {
+  const approvalId = store.requestApproval(jobId2, { method, summary, seconds });
+  const deadline = Date.now() + seconds * 1e3;
+  while (Date.now() < deadline) {
+    const decision = store.approvalDecision(jobId2, approvalId);
+    if (decision) return decision;
+    if (store.cancelRequested(jobId2)) {
+      store.decideApproval(jobId2, approvalId, "decline", "cancel");
+      return "decline";
+    }
+    onTick();
+    await new Promise((resolve8) => setTimeout(resolve8, APPROVAL_POLL_MS));
+  }
+  store.decideApproval(jobId2, approvalId, "decline", "timeout");
+  return "decline";
+}
+
+// src/delegation/claude-worker.mjs
 var STARTUP_SECONDS = 30;
 var modelKey = (value) => String(value || "").replace(/\[1m\]$/i, "").toLowerCase();
 var RESULT_FAILURE_MESSAGES = {
@@ -58180,9 +58724,15 @@ function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFailure })
     providerLabel: "Claude",
     async start() {
       assertRoute({ host: job.host, target: job.target, depth: job.depth });
-      const canUseTool = async (toolName) => {
-        approvalRequired ||= toolName || "unknown";
-        store.appendEvent(jobId2, "approval.denied", { toolName: toolName || "unknown" });
+      const canUseTool = async (toolName, input2) => {
+        const name = toolName || "unknown";
+        const decision = job.elicitation ? await awaitApproval(store, jobId2, { method: "claude/can_use_tool", summary: approvalSummary("claude/can_use_tool", { toolName: name, input: input2 }) }) : null;
+        if (decision === "accept") {
+          store.appendEvent(jobId2, "approval.granted", { toolName: name });
+          return { behavior: "allow", updatedInput: input2 };
+        }
+        approvalRequired ||= name;
+        store.appendEvent(jobId2, "approval.denied", { toolName: name, asked: Boolean(job.elicitation) });
         return {
           behavior: "deny",
           message: "Flow does not grant delegated approvals. The caller must change the job contract.",
@@ -58528,13 +59078,20 @@ function runCodexJob({ job, store, settle }) {
       store.appendEvent(jobId2, "usage.updated", { total: usage?.total || null });
     }
   };
-  const onServerRequest = (method) => {
-    if (isApprovalRequest(method)) {
-      approvalMethod = method;
-      store.appendEvent(jobId2, "approval.denied", { method });
-    } else {
+  const onServerRequest = async (method, params) => {
+    if (!isApprovalRequest(method)) {
       store.appendEvent(jobId2, "app_server.request_denied", { method });
+      return null;
     }
+    const askable = Boolean(job.elicitation) && (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval");
+    const decision = askable ? await awaitApproval(store, jobId2, { method, summary: approvalSummary(method, params) }, { onTick: resetStall }) : null;
+    if (decision === "accept") {
+      store.appendEvent(jobId2, "approval.granted", { method });
+      return "accept";
+    }
+    approvalMethod = method;
+    store.appendEvent(jobId2, "approval.denied", { method, asked: askable });
+    return null;
   };
   const interruptAndForce = async (reason) => {
     if (interruptReason) return;
@@ -58958,7 +59515,9 @@ if (mode === "mcp") {
     jobId: flags.job || null,
     stateDir: flags["state-dir"] || defaultStateDir()
   });
+} else if (mode === "schema" && argv[1] === "envelope") {
+  process.stdout.write(JSON.stringify(envelopeJsonSchema(), null, 2) + "\n");
 } else {
-  process.stderr.write("usage: delegation.mjs mcp|worker\n");
+  process.stderr.write("usage: delegation.mjs mcp|worker|schema envelope\n");
   process.exitCode = 2;
 }

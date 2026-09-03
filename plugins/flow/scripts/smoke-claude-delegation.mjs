@@ -106,7 +106,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (mode === 'cancel-no-result') return setTimeout(() => process.exit(0), 10)
     result({ text: 'Interrupted', error: true })
   } else if (message.type === 'control_response' && message.response?.request_id === 'approval-1') {
-    result({ text: 'Approval denied', error: true })
+    const allowed = message.response?.response?.behavior === 'allow'
+    if (allowed) pendingApproval = false
+    result({ text: allowed ? 'APPROVED' : 'Approval denied', error: !allowed })
   } else if (message.type === 'user') {
     sessionId = message.session_id || sessionId
     initFrame()
@@ -209,13 +211,14 @@ const SETTLED = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approv
 // MCP is the service's only entry mode, so this smoke calls the tools a Codex host calls: one
 // server process per call, and one kept-open session for a test that polls.
 const session = async (options, body) => {
-  const { host = 'codex', stateDir = state('default'), mode = 'happy', extraEnv = {} } = options
+  const { host = 'codex', stateDir = state('default'), mode = 'happy', extraEnv = {}, elicit = null } = options
   const client = new McpStdioClient({
     command: process.execPath,
     args: [bundle, 'mcp', '--host', host, '--state-dir', stateDir],
     cwd: repo,
     env: { ...process.env, FLOW_DELEGATION_CLAUDE_BIN: fake, FLOW_FAKE_CLAUDE_MODE: mode, ...extraEnv },
     roots: [{ uri: pathToFileURL(repo).href, name: 'repo' }],
+    elicit,
   })
   await client.start()
   try { return await body(client) } finally { await client.close() }
@@ -470,6 +473,25 @@ try {
   const approval = await startJob({ prompt: 'Request approval' }, { mode: 'approval', stateDir: state('approval') })
   assert.equal(approval.status, 'awaiting_approval')
   assert.equal(approval.error.kind, 'APPROVAL_REQUIRED')
+  assert.equal(approval.elicitation, false)
+  // The same fork put to the human through the session that started the job: the SDK's
+  // permission callback waits for the form, and an accept becomes an allow.
+  const forms = []
+  const approved = await startJob({ prompt: 'Request approval' }, {
+    mode: 'approval', stateDir: state('approval-accept'),
+    elicit: (params) => { forms.push(params); return { action: 'accept', content: { decision: 'accept' } } },
+  })
+  assert.equal(approved.status, 'succeeded', JSON.stringify(approved))
+  assert.equal(approved.output, 'APPROVED')
+  assert.equal(approved.elicitation, true)
+  assert.equal(forms.length, 1)
+  assert.match(forms[0].message, /Delegated Claude job [0-9a-f]{8} asks for an approval[\s\S]*Bash/)
+  const humanRefused = await startJob({ prompt: 'Request approval' }, {
+    mode: 'approval', stateDir: state('approval-decline'),
+    elicit: () => ({ action: 'decline' }),
+  })
+  assert.equal(humanRefused.status, 'awaiting_approval')
+  assert.equal(humanRefused.error.kind, 'APPROVAL_REQUIRED')
   const limited = await startJob({ prompt: 'Rate limit' }, { mode: 'rate-limit', stateDir: state('rate-limit') })
   assert.equal(limited.status, 'failed')
   assert.equal(limited.error.kind, 'RATE_LIMIT')

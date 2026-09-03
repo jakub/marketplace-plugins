@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { approvalSummary, awaitApproval } from './approvals.mjs'
 import { normalizeClaudeError } from './claude-errors.mjs'
 import { createClaudeQuery } from './claude-sdk.mjs'
 import { captureProcessDescendants, providerScopeRunning, signalProviderScope, signalTrackedProcessTree, trackedDescendantRunning } from './containment.mjs'
@@ -199,9 +200,20 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
 
     async start() {
       assertRoute({ host: job.host, target: job.target, depth: job.depth })
-      const canUseTool = async (toolName) => {
-        approvalRequired ||= toolName || 'unknown'
-        store.appendEvent(jobId, 'approval.denied', { toolName: toolName || 'unknown' })
+      // Same fork as the Codex route: a job started from a session that can render the
+      // form puts the request to the human; anything else, and any decline or timeout, is
+      // the deny it always was.
+      const canUseTool = async (toolName, input) => {
+        const name = toolName || 'unknown'
+        const decision = job.elicitation
+          ? await awaitApproval(store, jobId, { method: 'claude/can_use_tool', summary: approvalSummary('claude/can_use_tool', { toolName: name, input }) })
+          : null
+        if (decision === 'accept') {
+          store.appendEvent(jobId, 'approval.granted', { toolName: name })
+          return { behavior: 'allow', updatedInput: input }
+        }
+        approvalRequired ||= name
+        store.appendEvent(jobId, 'approval.denied', { toolName: name, asked: Boolean(job.elicitation) })
         return {
           behavior: 'deny',
           message: 'Flow does not grant delegated approvals. The caller must change the job contract.',

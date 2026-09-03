@@ -16,6 +16,17 @@ export const MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
 // notifications while the worker keeps heartbeating as healthy. This is the quiet-period
 // ceiling both workers enforce, inherited from the shell transport they replaced.
 export const STALL_SECONDS = 420
+// Every kind a DelegationError can carry, so the envelope schema can enumerate them. The
+// smoke greps the source for kinds and fails on one missing here.
+export const ERROR_KINDS = ['AGENT_SDK_MISSING', 'APPROVAL_REQUIRED', 'APP_SERVER_ERROR', 'APP_SERVER_EXIT', 'APP_SERVER_PROTOCOL',
+  'APP_SERVER_TIMEOUT', 'BAD_EFFORT', 'BAD_MODEL', 'BAD_REQUEST', 'BAD_SCHEMA', 'BAD_WORKSPACE', 'CLAUDE_AUTH', 'CLAUDE_NOT_INSTALLED',
+  'CLAUDE_PROTOCOL', 'CLAUDE_SDK', 'CLAUDE_STARTUP', 'CLAUDE_STARTUP_TIMEOUT', 'CLAUDE_VERSION', 'CODEX_AUTH', 'CODEX_NOT_INSTALLED',
+  'CODEX_TOO_OLD', 'CODEX_TURN', 'CODEX_VERSION', 'CONTAINMENT_UNAVAILABLE', 'CONTROL_UNSUPPORTED', 'DATABASE_NEWER', 'EMPTY_OUTPUT',
+  'GIT_REF', 'INTERNAL', 'INTERRUPTED', 'JOB_NOT_FOUND', 'JOB_QUARANTINED', 'JOB_STATE', 'LIMIT_UNSUPPORTED', 'MCP_ISOLATION',
+  'MODEL_MISMATCH', 'NESTED_DELEGATION', 'NO_ROOTS', 'NO_THREAD', 'NO_WORKSPACE', 'OUTSIDE_ROOTS', 'PERMISSION_PROFILE',
+  'PROVIDER_QUARANTINED', 'RATE_LIMIT', 'RECOVERY_UNKNOWN', 'REFUSAL', 'ROUTE_DENIED', 'SAME_FAMILY', 'SANDBOX_UNAVAILABLE',
+  'SCHEMA_OUTPUT', 'STORE_UPGRADE_BLOCKED', 'UNKNOWN_JOB', 'UNKNOWN_TURN', 'UNSUPPORTED_HOST', 'WORKER_EXIT', 'WORKER_IDENTITY',
+  'WORKER_SPAWN_FAILED', 'WORKSPACE_BUSY']
 
 export const FINDINGS_SCHEMA = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -216,6 +227,7 @@ export function resultEnvelope(job) {
     access: job.access,
     model: job.model,
     effort: job.effort,
+    elicitation: Boolean(job.elicitation),
     limits: {
       timeBudgetSeconds: job.timeBudgetSeconds,
       maxTurns: job.maxTurns,

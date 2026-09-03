@@ -130,16 +130,20 @@ export class AppServerClient {
       return
     }
     if (Object.hasOwn(message, 'id') && message.method) {
-      this.handleServerRequest(message)
+      void this.handleServerRequest(message)
       return
     }
     if (message.method) this.onNotification(message.method, message.params || {})
   }
 
-  handleServerRequest(message) {
-    this.onServerRequest(message.method, message.params || {})
+  // The worker's handler answers with 'accept' or nothing. Only a command or a file change
+  // can be accepted; a permissions request widens the sandbox the doctor proved and is
+  // declined whatever the handler says.
+  async handleServerRequest(message) {
+    let decision = null
+    try { decision = await this.onServerRequest(message.method, message.params || {}) } catch { decision = null }
     if (message.method === 'item/commandExecution/requestApproval' || message.method === 'item/fileChange/requestApproval') {
-      this.respond(message.id, { decision: 'decline' })
+      this.respond(message.id, { decision: decision === 'accept' ? 'accept' : 'decline' })
     } else if (message.method === 'item/permissions/requestApproval') {
       this.respond(message.id, { permissions: {} })
     } else if (message.method === 'applyPatchApproval' || message.method === 'execCommandApproval') {

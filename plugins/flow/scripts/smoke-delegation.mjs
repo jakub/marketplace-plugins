@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { AppServerClient } from '../src/delegation/app-server.mjs'
 import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
-import { assertRoute, capabilitiesForHost, capabilityDrift, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
+import { assertRoute, capabilitiesForHost, capabilityDrift, ERROR_KINDS, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
 import { universalContainment } from '../lib/seat-contract.mjs'
 import { charterSection } from '../lib/charter-payload.mjs'
 import { DELEGATED_CHARTER_HEADING } from '../src/delegation/instructions.mjs'
@@ -92,7 +92,7 @@ const recoveredTurn = () => {
 createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line)
   const answer = (result) => say({ id: message.id, result })
-  if (message.id === 900 && !message.method) finish('failed', '')
+  if (message.id === 900 && !message.method) finish(message.result?.decision === 'accept' ? 'completed' : 'failed', message.result?.decision === 'accept' ? 'APPROVED' : '')
   else if (message.id === 902 && !message.method) {
     if (message.result?.permissions && Object.keys(message.result.permissions).length === 0) finish('failed', '')
     else process.exit(18)
@@ -239,13 +239,14 @@ const SETTLED = ['succeeded', 'failed', 'cancelled', 'unknown', 'awaiting_approv
 // per call, the way the deleted CLI mode was one process per call; a test that polls opens one
 // session and keeps it. Roots come from the client, which is where a real host's come from.
 const session = async (options, body) => {
-  const { host = 'claude', stateDir = state('default'), mode = 'happy', roots = [repo], extraEnv = {} } = options
+  const { host = 'claude', stateDir = state('default'), mode = 'happy', roots = [repo], extraEnv = {}, elicit = null } = options
   const client = new McpStdioClient({
     command: process.execPath,
     args: [bundle, 'mcp', '--host', host, '--state-dir', stateDir],
     cwd: repo,
     env: { ...process.env, FLOW_DELEGATION_CODEX_BIN: fake, FLOW_FAKE_MODE: mode, ...extraEnv },
     roots: roots.map((path) => ({ uri: pathToFileURL(path).href, name: 'root' })),
+    elicit,
   })
   await client.start()
   try { return await body(client) } finally { await client.close() }
@@ -865,6 +866,64 @@ try {
   assert.equal(permissionsApproval.status, 'awaiting_approval')
   assert.equal(permissionsApproval.error.kind, 'APPROVAL_REQUIRED')
   assert.ok(permissionsApproval.usage?.total)
+  // A client that advertises no elicitation never gets asked: the deny is recorded as unasked
+  // and the envelope says the job could not ask.
+  assert.equal(approval.elicitation, false)
+  const unasked = await eventsOf(approval.jobId, {}, { stateDir: state('approval') })
+  assert.deepEqual(unasked.filter((e) => e.type === 'approval.denied').map((e) => e.payload.asked), [false])
+  assert.ok(!unasked.some((e) => e.type === 'approval.requested'))
+
+  console.log('the approval fork, put to the human')
+  // A session that renders forms and answers accept: the worker parks the request, the server
+  // asks, the decision reaches the provider, and the turn finishes as approved work.
+  const forms = []
+  const accepted = await startJob({ prompt: 'Ask for approval' }, {
+    mode: 'approval', stateDir: state('approval-accept'),
+    elicit: (params) => { forms.push(params); return { action: 'accept', content: { decision: 'accept' } } },
+  })
+  assert.equal(accepted.status, 'succeeded', JSON.stringify(accepted))
+  assert.equal(accepted.output, 'APPROVED')
+  assert.equal(accepted.elicitation, true)
+  assert.equal(forms.length, 1)
+  assert.equal(forms[0].mode, 'form')
+  assert.match(forms[0].message, /Delegated Codex job [0-9a-f]{8} asks for an approval/)
+  assert.deepEqual(forms[0].requestedSchema.required, ['decision'])
+  assert.deepEqual(forms[0].requestedSchema.properties.decision.enum, ['accept', 'decline'])
+  const acceptedTypes = (await eventsOf(accepted.jobId, {}, { stateDir: state('approval-accept') })).map((e) => e.type)
+  for (const type of ['approval.requested', 'approval.decided', 'approval.granted']) assert.ok(acceptedTypes.includes(type), `missing ${type}`)
+  assert.ok(!acceptedTypes.includes('approval.denied'))
+  // The human declines: the deny it always was, with the decision on record.
+  const declined = await startJob({ prompt: 'Ask for approval' }, {
+    mode: 'approval', stateDir: state('approval-decline'),
+    elicit: () => ({ action: 'accept', content: { decision: 'decline' } }),
+  })
+  assert.equal(declined.status, 'awaiting_approval')
+  assert.equal(declined.error.kind, 'APPROVAL_REQUIRED')
+  const declinedEvents = await eventsOf(declined.jobId, {}, { stateDir: state('approval-decline') })
+  assert.deepEqual(declinedEvents.filter((e) => e.type === 'approval.decided').map((e) => e.payload.decision), ['decline'])
+  assert.deepEqual(declinedEvents.filter((e) => e.type === 'approval.denied').map((e) => e.payload.asked), [true])
+  // A dismissed form is a decline, never an accept by default.
+  const dismissed = await startJob({ prompt: 'Ask for approval' }, {
+    mode: 'approval', stateDir: state('approval-dismiss'), elicit: () => ({ action: 'cancel' }),
+  })
+  assert.equal(dismissed.status, 'awaiting_approval')
+  const dismissedEvents = await eventsOf(dismissed.jobId, {}, { stateDir: state('approval-dismiss') })
+  assert.deepEqual(dismissedEvents.filter((e) => e.type === 'approval.decided').map((e) => e.payload.decidedBy), ['human:cancel'])
+  // A permissions request widens the proven sandbox, so it is never put to the human even
+  // when the human could answer.
+  const permissionsAsked = await startJob({ prompt: 'Ask for permissions' }, {
+    mode: 'permissions-approval', stateDir: state('permissions-elicit'),
+    elicit: () => assert.fail('a permissions request must never reach the human'),
+  })
+  assert.equal(permissionsAsked.status, 'awaiting_approval')
+  // A detached job has nobody waiting to answer, so it is not asked whatever the client can do.
+  const detachedAsk = await startJob({ prompt: 'Ask for approval', delivery: 'detached' }, {
+    mode: 'approval', stateDir: state('approval-detached'),
+    elicit: () => assert.fail('a detached job must never elicit'),
+  })
+  assert.equal(detachedAsk.elicitation, false)
+  const detachedDone = await waitFor(detachedAsk.jobId, state('approval-detached'), 'awaiting_approval')
+  assert.equal(detachedDone.error.kind, 'APPROVAL_REQUIRED')
 
   const missingCodex = await startJob({ prompt: 'cannot start' }, {
     stateDir: state('missing-codex'),
@@ -1134,7 +1193,7 @@ try {
   ])
   const upgraded = new JobStore(legacyState)
   const columnsOf = (table) => upgraded.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
-  assert.equal(upgraded.userVersion(), 6)
+  assert.equal(upgraded.userVersion(), 7)
   assert.equal(upgraded.getJob('legacy-done'), null)
   assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS jobs FROM jobs').get().jobs, 0)
   assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS leases FROM leases').get().leases, 0)
@@ -1226,6 +1285,20 @@ try {
   const delegateTool = tools.tools.find((tool) => tool.name === 'delegate_to_codex')
   assert.equal(delegateTool.inputSchema.properties.maxTurns, undefined)
   assert.equal(delegateTool.inputSchema.properties.maxBudgetUsd, undefined)
+  // Every tool declares the shape of what it returns, so the SDK validates the envelope before
+  // it is sent and the client can validate it on arrival. The envelope's error kinds are the
+  // list contracts.mjs exports, and that list is every kind the source can throw.
+  for (const tool of tools.tools) assert.ok(tool.outputSchema?.properties, `${tool.name} declares no outputSchema`)
+  const envelopeSchema = delegateTool.outputSchema.properties.job
+  assert.ok(envelopeSchema.properties.commandFailures && envelopeSchema.properties.elicitation && envelopeSchema.properties.quarantine, 'the envelope schema lost a field')
+  assert.deepEqual(envelopeSchema.properties.error.anyOf?.[0]?.properties?.kind?.enum ?? envelopeSchema.properties.error.properties?.kind?.enum, ERROR_KINDS)
+  const thrownKinds = new Set()
+  for (const file of readdirSync(join(root, 'src', 'delegation'))) {
+    if (!file.endsWith('.mjs')) continue
+    for (const m of readFileSync(join(root, 'src', 'delegation', file), 'utf8').matchAll(/DelegationError\('([A-Z_]+)'/g)) thrownKinds.add(m[1])
+  }
+  const unlisted = [...thrownKinds].filter((kind) => !ERROR_KINDS.includes(kind))
+  assert.deepEqual(unlisted, [], `error kinds thrown but not in ERROR_KINDS: ${unlisted.join(', ')}`)
   const escaped = await client.callTool(
     'delegate_to_codex',
     { mode: 'task', prompt: 'escape', cwd: temp, access: 'read-only', model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30 },
@@ -1250,6 +1323,28 @@ try {
   )
   assert.equal(linkedWrite.isError, undefined)
   assert.equal(linkedWrite.structuredContent.job.status, 'succeeded')
+  // The record as resources: the route's jobs, one job, its journal, its capabilities.
+  const listed = await client.listResources()
+  assert.ok(listed.resources.some((r) => r.uri === 'flow://jobs'), 'flow://jobs is not listed')
+  const templates = await client.listResourceTemplates()
+  assert.deepEqual(templates.resourceTemplates.map((t) => t.uriTemplate).sort(), ['flow://jobs/{jobId}', 'flow://jobs/{jobId}/capabilities', 'flow://jobs/{jobId}/events'])
+  const linkedId = linkedWrite.structuredContent.job.id ?? linkedWrite.structuredContent.job.jobId
+  const jobsRead = JSON.parse((await client.readResource('flow://jobs')).contents[0].text)
+  assert.ok(jobsRead.jobs.some((job) => job.jobId === linkedId), 'the jobs resource does not list the job just run')
+  const jobRead = await client.readResource(`flow://jobs/${linkedId}`)
+  assert.equal(jobRead.contents[0].mimeType, 'application/json')
+  assert.equal(JSON.parse(jobRead.contents[0].text).status, 'succeeded')
+  const journal = JSON.parse((await client.readResource(`flow://jobs/${linkedId}/events`)).contents[0].text)
+  assert.ok(journal.events.length > 0 && journal.events[0].seq === 1)
+  const caps = JSON.parse((await client.readResource(`flow://jobs/${linkedId}/capabilities`)).contents[0].text)
+  assert.equal(caps.target, 'codex')
+  assert.equal(caps.elicitation, false)
+  await assert.rejects(client.readResource('flow://jobs/00000000-0000-4000-8000-000000000000'), /No delegation job has that ID/)
+  // A resource is route-scoped exactly like a tool: the other host's server does not own this job.
+  await assert.rejects(
+    session({ host: 'codex', stateDir: mcpState, extraEnv: { CODEX_PROJECT_DIR: repo } }, (other) => other.readResource(`flow://jobs/${linkedId}`)),
+    /does not own that job route/,
+  )
   const forged = join(temp, 'forged')
   mkdirSync(forged)
   writeFileSync(join(forged, '.git'), `gitdir: ${join(repo, '.git')}\n`)

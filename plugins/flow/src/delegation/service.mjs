@@ -160,6 +160,7 @@ export class DelegationService {
       head: input.head || 'HEAD',
       parentJobId: input.parentJobId || null,
       nativeThreadId: input.nativeThreadId || null,
+      elicitation: Boolean(input.elicitation),
     }
     const target = this.target()
     validateStart(normalized, target)
@@ -286,6 +287,18 @@ export class DelegationService {
     return this.withStore((store) => store.resolveQuarantine(jobId, { force: 'unknown' }))
   }
 
+  list(limit = 50) {
+    return this.withStore((store) => store.listJobs({ host: this.host, target: this.target(), limit }))
+  }
+
+  decideApproval(jobId, approvalId, decision, decidedBy) {
+    if (!['accept', 'decline'].includes(decision)) throw new DelegationError('BAD_REQUEST', 'An approval decision is accept or decline.')
+    return this.withStore((store) => {
+      this.requireRoute(store.requireJob(jobId))
+      return store.decideApproval(jobId, approvalId, decision, decidedBy)
+    })
+  }
+
   steer(jobId, text) {
     if (!text?.trim()) throw new DelegationError('BAD_REQUEST', 'Steering text cannot be empty.')
     return this.withStore((store) => {
@@ -319,6 +332,7 @@ export class DelegationService {
       outputSchema: input.outputSchema ?? null,
       parentJobId: previous.id,
       nativeThreadId: previous.nativeThreadId,
+      elicitation: Boolean(input.elicitation),
     }, roots)
   }
 

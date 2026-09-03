@@ -3,9 +3,11 @@ import { startMcp } from './mcp.mjs'
 import { HOSTS } from './contracts.mjs'
 import { runWorker } from './worker.mjs'
 import { defaultStateDir } from './store.mjs'
+import { envelopeJsonSchema } from './envelope-schema.mjs'
 
-// Two entry modes and no more. A host starts the MCP server; the service starts one worker
-// per job, so the prompt never crosses a shell boundary.
+// Two runtime modes. A host starts the MCP server; the service starts one worker per job, so
+// the prompt never crosses a shell boundary. `schema envelope` prints the result envelope's
+// JSON Schema for a caller composing its own schema around it, and runs nothing.
 const argv = process.argv.slice(2)
 const mode = argv[0]
 const entryPath = fileURLToPath(import.meta.url)
@@ -42,7 +44,9 @@ if (mode === 'mcp') {
     jobId: flags.job || null,
     stateDir: flags['state-dir'] || defaultStateDir(),
   })
+} else if (mode === 'schema' && argv[1] === 'envelope') {
+  process.stdout.write(JSON.stringify(envelopeJsonSchema(), null, 2) + '\n')
 } else {
-  process.stderr.write('usage: delegation.mjs mcp|worker\n')
+  process.stderr.write('usage: delegation.mjs mcp|worker|schema envelope\n')
   process.exitCode = 2
 }

@@ -78,7 +78,7 @@ The charter is injected into the main session at `SessionStart`, and defines *ho
 
 The orchestrator (whichever model the session was launched with) is then allowed to flex what resources it allocates to what problem, and when, instead of running a hard-coded pipeline. The agent scoring table idea is stolen from @Theo.
 
-We also integrate the other model family as an almost-first-class participant. Claude can delegate to Codex, Codex can delegate to Claude, and both routes keep durable jobs, typed results, cancellation, and native context continuation. We use GPT-5.6 Sol for adversarial reviews, second opinions, and competing designs, and Daybreak Blue for the security seat.
+We also integrate the other model family as an almost-first-class participant. Claude can delegate to Codex, Codex can delegate to Claude, and both routes keep durable jobs, typed results, cancellation, and native context continuation. The job record is readable as MCP resources as well as through the tools, and an approval a delegated seat asks for is put to you as a form in the session that started it, never granted by flow on its own. We use GPT-5.6 Sol for adversarial reviews, second opinions, and competing designs, and Daybreak Blue for the security seat.
 
 ---
 
