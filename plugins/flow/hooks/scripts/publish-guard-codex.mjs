@@ -18,7 +18,7 @@
 // deny is a tripwire that points at the executor, and over-matching costs one rephrase.
 
 import { mergeDenialFor, publishOperationsStrict, registryReason } from '../../lib/hook-policy.mjs'
-import { preToolDeny } from './wire.mjs'
+import { preToolDeny, readHookInput } from './wire.mjs'
 
 const REGISTRY_TAIL =
   'Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. ' +
@@ -40,10 +40,5 @@ const decide = (input) => {
   return mergeDenialFor({ command, cwd: input?.cwd, env: process.env })
 }
 
-let raw = ''
-for await (const chunk of process.stdin) raw += chunk
-let input
-try { input = JSON.parse(raw) } catch { input = null }
-
-const denial = decide(input)
+const denial = decide(await readHookInput())
 if (denial !== null) process.stdout.write(JSON.stringify(preToolDeny(denial)))

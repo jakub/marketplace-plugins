@@ -9,10 +9,7 @@
 // wins, and the process exits naturally so stdout always drains.
 
 import { protectedFileReason } from '../../lib/hook-policy.mjs'
-import { applyPatchPaths, preToolDeny } from './wire.mjs'
-
-let raw = ''
-for await (const chunk of process.stdin) raw += chunk
+import { applyPatchPaths, preToolDeny, readHookInput } from './wire.mjs'
 
 let decided = false
 const deny = (reason) => {
@@ -23,8 +20,7 @@ const deny = (reason) => {
   process.stdout.write(JSON.stringify(preToolDeny(String(reason).slice(0, 1024))))
 }
 
-let input
-try { input = JSON.parse(raw) } catch { input = null }
+const input = await readHookInput()
 const filePath = input?.tool_input?.file_path
 const command = input?.tool_input?.command
 const hasFilePath = typeof filePath === 'string' && filePath !== ''

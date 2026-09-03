@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { preToolDeny, readHookInput } from './wire.mjs'
 // git guard: enforces the charter's two git non-negotiables at the hook layer -
 //   1. NEVER `--no-verify` (it exists to skip the checks that catch bad commits)
 //   2. no commit trailers of any kind - not attribution (Co-Authored-By, Generated-with),
@@ -76,15 +78,7 @@ const CLEAN_FORCE = /\bgit\b[^;&|]*\bclean\b[^;&|]*\s-{1,2}[a-zA-Z]*f/
 const CLEAN_DRYRUN = /\bgit\b[^;&|]*\bclean\b[^;&|]*(?:\s-[a-zA-Z]*n\b|--dry-run)/
 
 const deny = (reason) => {
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: reason,
-      },
-    }),
-  )
+  process.stdout.write(JSON.stringify(preToolDeny(reason)))
   process.exit(0)
 }
 
@@ -380,72 +374,65 @@ const cronVerdict = (cmd, job) => {
   return null
 }
 
-let raw = ''
-process.stdin.on('data', (c) => (raw += c))
-process.stdin.on('end', () => {
-  let input
-  try {
-    input = JSON.parse(raw)
-  } catch {
-    process.exit(0) // unparseable input → never block on our own bug
+// An unparseable body is the harness's problem, not a policy breach: never block on our own
+// bug, and never block on a body this could not read.
+const input = await readHookInput()
+const cmd = input?.tool_input?.command || ''
+
+// Cron mode: when flow-cron.mjs spawned this session it exported FLOW_CRON_JOB, and
+// hooks inherit that env. The scheduled jobs read untrusted text (issue bodies, PR
+// titles, repo files), so here EVERY command has to fit the cron grammar above, git or
+// not - a substitution inside a gh comment body is an exfiltration whether or not the
+// word git appears - and git itself is deny-by-default: only the subcommands the job's
+// standing permissions name may run, and FLOW_SANCTION is ignored, since an injected
+// instruction can put the sanction string in a command but cannot change this process's
+// environment. Interactive sessions are untouched. Env source of truth:
+// scripts/flow-cron.mjs; keep the write set in step with the prompts in skills/flow/cron/.
+const cronJob = process.env.FLOW_CRON_JOB || ''
+if (cronJob) {
+  const target = cronScanTarget(cmd)
+  if (target.deny) {
+    deny(`flow cron guard (${cronJob}): ${target.deny}. Cron runs plain commands one at a time; spell the command out.`)
   }
-  const cmd = input?.tool_input?.command || ''
+  const verdict = cronVerdict(target.text, cronJob)
+  if (verdict) deny(verdict)
+  process.exit(0) // cron sessions never commit, so the trailer rules below are moot
+}
 
-  // Cron mode: when flow-cron.mjs spawned this session it exported FLOW_CRON_JOB, and
-  // hooks inherit that env. The scheduled jobs read untrusted text (issue bodies, PR
-  // titles, repo files), so here EVERY command has to fit the cron grammar above, git or
-  // not - a substitution inside a gh comment body is an exfiltration whether or not the
-  // word git appears - and git itself is deny-by-default: only the subcommands the job's
-  // standing permissions name may run, and FLOW_SANCTION is ignored, since an injected
-  // instruction can put the sanction string in a command but cannot change this process's
-  // environment. Interactive sessions are untouched. Env source of truth:
-  // scripts/flow-cron.mjs; keep the write set in step with the prompts in skills/flow/cron/.
-  const cronJob = process.env.FLOW_CRON_JOB || ''
-  if (cronJob) {
-    const target = cronScanTarget(cmd)
-    if (target.deny) {
-      deny(`flow cron guard (${cronJob}): ${target.deny}. Cron runs plain commands one at a time; spell the command out.`)
-    }
-    const verdict = cronVerdict(target.text, cronJob)
-    if (verdict) deny(verdict)
-    process.exit(0) // cron sessions never commit, so the trailer rules below are moot
-  }
+if (!/\bgit\b/.test(cmd)) process.exit(0)
 
-  if (!/\bgit\b/.test(cmd)) process.exit(0)
+if (/\bFLOW_SANCTION=git\b/.test(cmd)) process.exit(0)
 
-  if (/\bFLOW_SANCTION=git\b/.test(cmd)) process.exit(0)
+if (/--no-verify\b/.test(stripLiterals(cmd))) {
+  deny(
+    'flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad ' +
+      'commits out of history. Fix what the hook is failing on, or say plainly that the ' +
+      'hook itself is broken - do not route around it.',
+  )
+}
 
-  if (/--no-verify\b/.test(stripLiterals(cmd))) {
+const bare = stripLiterals(cmd)
+
+for (const [re, why] of DESTRUCTIVE) if (re.test(bare)) deny(why)
+
+if (CLEAN_FORCE.test(bare) && !CLEAN_DRYRUN.test(bare)) {
+  deny(
+    'flow charter: `git clean -f` deletes untracked files permanently - nothing recovers ' +
+      'them. Run `git clean -n` first to see what would go, then delete only what you mean.',
+  )
+}
+
+if (GIT_COMMIT.test(cmd)) {
+  const hit = TRAILERS.find((t) => t.test(cmd))
+  if (hit) {
     deny(
-      'flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad ' +
-        'commits out of history. Fix what the hook is failing on, or say plainly that the ' +
-        'hook itself is broken - do not route around it.',
+      'flow charter: no commit trailers of any kind - not attribution (Co-Authored-By, ' +
+        'Generated-with), not session links (Claude-Session). The git author IS the ' +
+        'author. This rule overrides any harness instruction to append them. Rewrite the ' +
+        'commit message without the trailer. If you are amending foreign work that ' +
+        'already carries one, prefix with FLOW_SANCTION=git.',
     )
   }
+}
 
-  const bare = stripLiterals(cmd)
-
-  for (const [re, why] of DESTRUCTIVE) if (re.test(bare)) deny(why)
-
-  if (CLEAN_FORCE.test(bare) && !CLEAN_DRYRUN.test(bare)) {
-    deny(
-      'flow charter: `git clean -f` deletes untracked files permanently - nothing recovers ' +
-        'them. Run `git clean -n` first to see what would go, then delete only what you mean.',
-    )
-  }
-
-  if (GIT_COMMIT.test(cmd)) {
-    const hit = TRAILERS.find((t) => t.test(cmd))
-    if (hit) {
-      deny(
-        'flow charter: no commit trailers of any kind - not attribution (Co-Authored-By, ' +
-          'Generated-with), not session links (Claude-Session). The git author IS the ' +
-          'author. This rule overrides any harness instruction to append them. Rewrite the ' +
-          'commit message without the trailer. If you are amending foreign work that ' +
-          'already carries one, prefix with FLOW_SANCTION=git.',
-      )
-    }
-  }
-
-  process.exit(0)
-})
+process.exit(0)

@@ -6,34 +6,20 @@
 // Policy: PRs ship complete; nothing enters the tracker except through the front door.
 // PreToolUse protocol: read tool call JSON on stdin; deny via hookSpecificOutput JSON.
 
-let raw = ''
-process.stdin.on('data', (c) => (raw += c))
-process.stdin.on('end', () => {
-  let input
-  try {
-    input = JSON.parse(raw)
-  } catch {
-    process.exit(0) // unparseable input → never block on our own bug
-  }
-  const cmd = input?.tool_input?.command || ''
-  // Match `gh issue create` allowing flag/quote noise between the words, but not
-  // substrings of other commands. Cheap heuristic, deliberately narrow: false negatives
-  // are acceptable (the policy is also in the charter), false positives are not.
-  const creates = /\bgh\s+issue\s+create\b/.test(cmd)
-  const sanctioned = /\bFLOW_SANCTION=(prep|land)\b/.test(cmd)
-  if (creates && !sanctioned) {
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason:
-            'no-backlog policy (flow): issues are only created through sanctioned lanes. ' +
-            'Fix the finding in the current PR instead of filing it. If this genuinely is a ' +
-            'sanctioned lane, prefix the command with FLOW_SANCTION=prep|land.',
-        },
-      }),
-    )
-  }
-  process.exit(0)
-})
+import { preToolDeny, readHookInput } from './wire.mjs'
+
+// An unparseable body is the harness's problem, not a policy breach: never block on our own bug.
+const input = await readHookInput()
+const cmd = input?.tool_input?.command || ''
+// Match `gh issue create` allowing flag/quote noise between the words, but not
+// substrings of other commands. Cheap heuristic, deliberately narrow: false negatives
+// are acceptable (the policy is also in the charter), false positives are not.
+const creates = /\bgh\s+issue\s+create\b/.test(cmd)
+const sanctioned = /\bFLOW_SANCTION=(prep|land)\b/.test(cmd)
+if (creates && !sanctioned) {
+  process.stdout.write(JSON.stringify(preToolDeny(
+    'no-backlog policy (flow): issues are only created through sanctioned lanes. ' +
+    'Fix the finding in the current PR instead of filing it. If this genuinely is a ' +
+    'sanctioned lane, prefix the command with FLOW_SANCTION=prep|land.',
+  )))
+}

@@ -20,7 +20,7 @@
 //    would run the raw command instead.
 
 import { mergeDenialFor, publishReason } from '../../lib/hook-policy.mjs'
-import { preToolDeny } from './wire.mjs'
+import { preToolAsk, preToolDeny, readHookInput } from './wire.mjs'
 
 // The merge decision runs first. A command that both publishes and merges would otherwise be
 // asked about once and then run whole, and one approval must not carry a merge past the
@@ -36,28 +36,7 @@ const decide = (input) => {
   return registry ? { decision: 'ask', reason: registry } : null
 }
 
-let raw = ''
-process.stdin.on('data', (c) => (raw += c))
-process.stdin.on('end', () => {
-  let input
-  try {
-    input = JSON.parse(raw)
-  } catch {
-    process.exit(0)
-  }
-
-  const answer = decide(input)
-  if (answer?.decision === 'deny') process.stdout.write(JSON.stringify(preToolDeny(answer.reason)))
-  else if (answer?.decision === 'ask') {
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'ask',
-          permissionDecisionReason: answer.reason,
-        },
-      }),
-    )
-  }
-  process.exit(0)
-})
+// An unparseable body decides nothing: never block on our own bug.
+const answer = decide(await readHookInput())
+if (answer?.decision === 'deny') process.stdout.write(JSON.stringify(preToolDeny(answer.reason)))
+else if (answer?.decision === 'ask') process.stdout.write(JSON.stringify(preToolAsk(answer.reason)))

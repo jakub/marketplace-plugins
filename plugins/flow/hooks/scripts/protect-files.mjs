@@ -22,29 +22,13 @@
 // `notebook_path` for NotebookEdit - so a heredoc through Bash is not caught.
 
 import { protectedFileReason } from '../../lib/hook-policy.mjs'
-import { preToolDeny } from './wire.mjs'
+import { preToolDeny, readHookInput } from './wire.mjs'
 
-const deny = (reason) => {
-  process.stdout.write(JSON.stringify(preToolDeny(reason)))
-  process.exit(0)
-}
+// An unparseable body reads as no target: it is the harness's problem, not a policy breach.
+// hooks.json matches Edit|Write|NotebookEdit, and NotebookEdit names its target `notebook_path`.
+// Reading file_path alone let every notebook write through.
+const toolInput = (await readHookInput())?.tool_input
+const file = toolInput?.file_path || toolInput?.notebook_path || ''
 
-let raw = ''
-process.stdin.on('data', (c) => (raw += c))
-process.stdin.on('end', () => {
-  let file = ''
-  try {
-    // hooks.json matches Edit|Write|NotebookEdit, and NotebookEdit names its target
-    // `notebook_path`. Reading file_path alone let every notebook write through.
-    const toolInput = JSON.parse(raw)?.tool_input
-    file = toolInput?.file_path || toolInput?.notebook_path || ''
-  } catch {
-    process.exit(0) // unparseable input is the harness's problem, not a policy breach
-  }
-  if (!file) process.exit(0)
-
-  const reason = protectedFileReason(file)
-  if (reason) deny(reason)
-
-  process.exit(0)
-})
+const reason = file ? protectedFileReason(file) : null
+if (reason) process.stdout.write(JSON.stringify(preToolDeny(reason)))

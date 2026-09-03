@@ -12,6 +12,33 @@ export const preToolDeny = (reason) => ({
   },
 })
 
+/**
+ * The PreToolUse ask result. Claude only: Codex reads an unsupported `ask` as a hook failure and
+ * runs the command anyway (observed on Codex CLI 0.149.1, still true on 0.152.0), which is why
+ * publish-guard-codex.mjs denies where publish-guard.mjs asks. Never return this to Codex.
+ */
+export const preToolAsk = (reason) => ({
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'ask',
+    permissionDecisionReason: reason,
+  },
+})
+
+/**
+ * The hook call on stdin, or null when there is nothing usable there.
+ *
+ * Every hook script in this directory opened with its own copy of this, in two different idioms,
+ * and each one decided for itself what an unparseable body meant. Null is the one answer, and the
+ * caller still decides: a guard exits 0 and blocks nothing, because refusing on a body this could
+ * not read would turn a harness change into a session that cannot run commands.
+ */
+export async function readHookInput() {
+  let raw = ''
+  for await (const chunk of process.stdin) raw += chunk
+  try { return JSON.parse(raw) } catch { return null }
+}
+
 /** Extract every target path from Codex's apply_patch command envelope. */
 export function applyPatchPaths(command) {
   // CRLF tolerated: stray \r must read as line endings, not as proof of tampering,
