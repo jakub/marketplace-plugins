@@ -30,7 +30,7 @@ You are in `claude -p`: a turn that ends without a tool call ends the session, a
 
 ## Procedure
 
-Enumerate repos: every directory directly under `${FLOW_WORKSPACE}` that is a git repository with an `origin` remote. Skip a directory whose `git rev-parse --git-common-dir` points outside itself (it is a worktree; its parent repo covers it). Skip repos with no GitHub remote for the label steps. Name every skipped directory in the report with its reason (worktree of <parent> / no origin remote / not a git repo / third-party), so the audited count reconciles against the directory count and a repo that silently drops out of the sweep is visible the same night. Delegate per-repo work to cheap read-only subagents with the exact allowlisted commands; reconcile on the main thread.
+Enumerate repos: every directory directly under `${FLOW_WORKSPACE}` that is a git repository with an `origin` remote. Skip a directory whose `git rev-parse --git-common-dir` points outside itself (it is a worktree; its parent repo covers it). A repo whose `origin` is not on GitHub gets no `gh` call at all: report its labels, PR cross-check and known-flakes sections as skipped for that reason and run only the worktree and branch reads. Name every skipped directory in the report with its reason (worktree of <parent> / no origin remote / not a git repo / third-party), so the audited count reconciles against the directory count and a repo that silently drops out of the sweep is visible the same night. Delegate per-repo work to cheap read-only subagents with the exact allowlisted commands; reconcile on the main thread.
 
 Per repo, run sections 3 and 4 of `${CLAUDE_PLUGIN_ROOT}/skills/flow/drift-audit.md`:
 
