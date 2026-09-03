@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "gripe",
-      "description": "A local complaint log for coding agents: friction gets filed as it happens, observed or self-reported, into one SQLite file a model summarises for jakub later.",
+      "description": "A local complaint log for coding agents: friction gets filed as it happens, observed or self-reported, into one SQLite file a model summarises for the user later.",
       "version": "0.4.0",
       "author": {
         "name": "jakub"
@@ -18,7 +18,7 @@
     },
     {
       "name": "flow",
-      "description": "The prep → issue → land development pipeline: framework skill, commands, workflow, hooks, and the engineering charter.",
+      "description": "The prep → issue → land development pipeline: framework skill, stage skills, commands, hooks, cross-family delegation, and the engineering charter.",
       "version": "0.34.0",
       "author": {
         "name": "jakub"

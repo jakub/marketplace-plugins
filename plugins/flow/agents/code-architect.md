@@ -23,13 +23,6 @@ If the issue plus the code can't resolve a design fork - conflicting requirement
 
 ## Output
 
-Callers usually impose a structured output schema; map to its fields directly rather than writing a prose document first. The canonical fields, which double as section headers when no schema is imposed:
+The caller owns the output contract. It names the fields it wants, usually as a structured output schema, and the stage that spawned you is where that list is written; map to it directly rather than writing a prose document and mapping afterwards.
 
-- **approach** - the chosen architecture and how it integrates, tight prose, with file:line references to the patterns you're reusing.
-- **files** - every file to create or modify, ordered as a build sequence.
-- **keyDecisions** - each fork you resolved: what you chose, what you rejected, why.
-- **testStrategy** - what proves the design works: test types, seams, the invariants to pin.
-- **risks** - blast radius, migration hazards, perf and security concerns, and the out-of-scope work you deliberately parked.
-- **milestones** - the build sequence cut into milestones, each with a difficulty judged on what could break, never on file count; the caller routes the write seat's model and effort on it.
-- **notAlone** - decisions the implementer may not make without a checkpoint. The caller hands this to its shadow reviewer as a structural watchlist.
-- **blockingAmbiguity** - empty unless a genuine unresolvable fork exists.
+Two things hold whatever the caller asks for. Report every fork you resolved with what you rejected and why, because a blueprint that hides its rejected branches gets re-litigated at review time. And report a genuine unresolvable fork as blocking ambiguity even when no field asks for one, because the alternative is a confident guess that costs a full implementation round.

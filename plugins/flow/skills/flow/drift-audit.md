@@ -93,8 +93,8 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
   `scripts/smoke-plugin-manifests.mjs` at the repo root. Take the list from `ls`, never from
   memory, so a new smoke is picked up and a deleted one is not reported. A smoke that lints a document builds its broken examples as
   inline strings, so a checked-in fixture tree is itself drift. Running them is dev-checkout
-  work, not the nightly lint's: `smoke-bundle-drift` and `smoke-claude-delegation` need
-  `npm ci` in `plugins/flow/deps`, and only `smoke-delegation.mjs` is on the cron's allowlist.
+  work, not the nightly lint's: `smoke-bundle-drift` is the one that needs `npm ci` in
+  `plugins/flow/deps`, and only `smoke-delegation.mjs` is on the cron's allowlist.
   Where the tree cannot run one, report it as not run rather than folding it into a clean line.
 
 ## Output format

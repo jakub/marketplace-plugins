@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Validate the Claude and Codex plugin manifests and every registered hook command path.
-// Versions are derived from the marketplace manifest, not pinned here: the invariant is that
-// a plugin's Claude manifest, its Codex manifest when it has one, and its marketplace entry
-// all agree. A release of a dual-harness plugin is those three edits and nothing else - the
-// marketplace manifest carries no catalog version, because no software reads one.
+// Versions and descriptions are derived from the marketplace manifest, not pinned here: the
+// invariant is that a plugin's Claude manifest, its Codex manifest when it has one, and its
+// marketplace entry all agree. The version is what both plugin managers name a cache directory
+// after; the description is what a human reads in a listing, and it forked once unwatched.
+// A release of a dual-harness plugin is those three edits and nothing else - the marketplace
+// manifest carries no catalog version, because no software reads one.
 
 import assert from 'node:assert/strict'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -26,6 +28,7 @@ for (const listed of marketplace.plugins) {
   const pluginRoot = join(ROOT, 'plugins', name)
   const claude = readJson(join(pluginRoot, '.claude-plugin', 'plugin.json'))
   assert.equal(claude.version, listed.version, `${name} Claude version matches marketplace`)
+  assert.equal(claude.description, listed.description, `${name} Claude description matches marketplace`)
   if (name === 'flow') {
     const claudeDelegation = claude.mcpServers?.flow_delegate
     assert.deepEqual(claudeDelegation?.args?.slice(-2), ['--host', 'claude'], 'flow Claude MCP pins its host')
@@ -80,6 +83,7 @@ for (const listed of marketplace.plugins) {
   codexPlugins.push(name)
   const codex = readJson(codexManifest)
   assert.equal(codex.version, listed.version, `${name} Codex version matches marketplace`)
+  assert.equal(codex.description, listed.description, `${name} Codex description matches marketplace`)
   assert.ok(
     codex.hooks !== undefined || codex.mcpServers !== undefined,
     `${name} Codex manifest registers hooks or an MCP server; skills alone need no manifest`,

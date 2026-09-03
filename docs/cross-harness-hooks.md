@@ -213,14 +213,21 @@ node plugins/flow/scripts/smoke-codex-hooks.mjs
 node plugins/flow/scripts/smoke-charter-conformance.mjs
 node plugins/flow/scripts/smoke-stage-conformance.mjs
 node plugins/flow/scripts/smoke-label-contract.mjs
+node plugins/flow/scripts/smoke-git-guard.mjs
+node plugins/flow/scripts/smoke-protect-files.mjs
+node plugins/flow/scripts/smoke-publish-guard.mjs
 node plugins/gripe/scripts/smoke-hooks.mjs
 node plugins/gripe/scripts/smoke-shim.mjs
 node plugins/unslop/scripts/smoke-hooks.mjs
 ```
 
-The manifest test derives each plugin's version from the marketplace manifest and checks that
-a plugin's Claude manifest, its Codex manifest where it has one, and its marketplace entry all
-agree. It also holds the rule about which plugins get a Codex manifest at all: one that
+That is the adapter and prompt-shape subset, not the whole suite. Every `smoke-*.mjs` under
+`plugins/*/scripts/` runs the same way, so take the full list from `ls` rather than from this
+block: a new smoke is picked up and a deleted one stops being reported.
+
+The manifest test derives each plugin's version and description from the marketplace manifest
+and checks that a plugin's Claude manifest, its Codex manifest where it has one, and its
+marketplace entry all agree. It also holds the rule about which plugins get a Codex manifest at all: one that
 registers Codex hooks or an MCP server must carry one, and a skills-only plugin needs none,
 because Codex finds `skills/*/SKILL.md` by itself. Then it checks supported Codex event names
 and that every `${PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_ROOT}` command target exists on disk.
