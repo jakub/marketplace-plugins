@@ -285,26 +285,35 @@ const runExecutor = (args, { cwd = repo, env = {}, st } = {}) => {
   return { code: result.code, stdout: result.stdout, stderr: result.stderr, calls: s.calls, merges: s.merges, st: s }
 }
 
-// --------------------------------------------------------------------- the guard, in process
-const guard = (command, { env = {}, cwd = repo } = {}) => {
-  const out = execFileSync(process.execPath, [GUARD], {
+// -------------------------------------------------------------------- the guards, in process
+//
+// Both hosts take the same merge decision out of lib/hook-policy.mjs, so every merge case below
+// runs twice, once through each adapter, and a host that drifts fails on its own line. Registry
+// publication is the one job they do differently - Codex denies, Claude asks - and those cases
+// name the host they are about.
+const guardWith = (script) => (command, { env = {}, cwd = repo } = {}) => {
+  const out = execFileSync(process.execPath, [script], {
     input: JSON.stringify({ tool_input: { command }, cwd }),
     encoding: 'utf8',
     env: { ...gitEnv, FLOW_CRON_JOB: '', ...env },
   }).trim()
   return out ? JSON.parse(out) : null
 }
+const guard = guardWith(GUARD)
 const reasonOf = (decision) => decision?.hookSpecificOutput?.permissionDecisionReason || ''
-const denies = (name, command, substring, options) => {
-  const decision = guard(command, options)
-  const denied = decision?.hookSpecificOutput?.permissionDecision === 'deny'
-  const matched = denied && reasonOf(decision).includes(substring)
-  check(name, matched, denied ? `denied for the wrong reason: ${reasonOf(decision)}` : 'allowed')
-}
-const allows = (name, command, options) => {
-  const decision = guard(command, options)
-  check(name, decision === null, `denied: ${reasonOf(decision)}`)
-}
+const assertions = (run, host) => ({
+  denies: (name, command, substring, options) => {
+    const decision = run(command, options)
+    const denied = decision?.hookSpecificOutput?.permissionDecision === 'deny'
+    const matched = denied && reasonOf(decision).includes(substring)
+    check(`${name} (${host})`, matched, denied ? `denied for the wrong reason: ${reasonOf(decision)}` : 'allowed')
+  },
+  allows: (name, command, options) => {
+    const decision = run(command, options)
+    check(`${name} (${host})`, decision === null, `denied: ${reasonOf(decision)}`)
+  },
+})
+const HOSTS = [assertions(guard, 'codex'), assertions(guardWith(CLAUDE_GUARD), 'claude')]
 
 const MERGE = `gh pr merge ${PR} --squash --match-head-commit ${head}`
 const QUOTED = `bash -lc 'gh pr merge ${PR} --squash --match-head-commit ${head}'`
@@ -323,11 +332,13 @@ const claude = (command) => execFileSync(process.execPath, [CLAUDE_GUARD], {
   input: JSON.stringify({ tool_input: { command } }), encoding: 'utf8',
   env: { ...gitEnv, FLOW_CRON_JOB: '' },
 }).trim()
-check('the Claude guard says nothing about a merge', claude(MERGE) === '')
-check('the Claude guard still asks about cargo publish', claude('cargo publish').includes('permissionDecision'))
+check('the Claude guard still asks about cargo publish', claude('cargo publish').includes('"permissionDecision":"ask"'))
 check('a quoted merge is invisible to the shallow read', JSON.stringify(publishOperations(QUOTED)) === '[]')
 check('the strict read finds it', JSON.stringify(publishOperationsStrict(QUOTED)) === '["gh-pr-merge"]')
-check('the Claude guard is untouched by the strict read', claude(QUOTED) === '')
+// The strict read is the Codex deny path's. Claude's ask-gate still reads publication with
+// quoted literals removed, so a publish inside a quoted payload is prose to it, exactly as
+// before the two guards started sharing a merge decision.
+check('the Claude ask-gate keeps the prose exemption the strict read drops', claude("bash -lc 'npm publish --access public'") === '')
 check(
   'a quoted registry publish is found too',
   JSON.stringify(publishOperationsStrict("bash -lc 'npm publish --access public'")) === '["npm-publish"]',
@@ -357,73 +368,93 @@ check('nor is a comment quoting the command', JSON.stringify(mergeShapes(`gh pr 
 check('nor is reading the pull request', JSON.stringify(mergeShapes(`gh pr view ${PR} --json state,mergeCommit`)) === '[]')
 check('nor is git merge', JSON.stringify(mergeShapes('git merge --ff-only origin/main')) === '[]')
 
-// ---------------------------------------------------------------- the guard, managed repo
-console.log('\nin a repo with .flow/managed, merging by hand is routed to the executor')
-denies('a plain merge is denied', MERGE, 'node ')
-denies('and the denial names the executor', MERGE, EXECUTOR)
-denies('and shows the two-argument form', MERGE, '<pr-number> <expected-head-sha>')
-denies('and says the repository opted in', MERGE, '.flow/managed')
-denies('a bare merge is denied', `gh pr merge ${PR}`, 'gh pr merge')
-denies('a merge wrapped in bash -lc is denied', QUOTED, 'gh pr merge')
-denies('a merge under eval is denied', `eval "gh pr merge ${PR} --squash"`, 'gh pr merge')
-denies('the -R form is denied', `gh -R ${SLUG} pr merge ${PR} --squash`, 'gh pr merge')
-denies('the REST endpoint is denied', `gh api repos/${SLUG}/pulls/${PR}/merge -X PUT -f merge_method=squash`, 'merge endpoint')
-denies('a quoted REST path is denied', `gh api -X PUT "repos/${SLUG}/pulls/${PR}/merge"`, 'merge endpoint')
-denies(
-  'the GraphQL mutation is denied',
-  `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "abc"}) { clientMutationId } }'`,
-  'mergePullRequest',
-)
-denies('a subdirectory of the repo is still the repo', MERGE, EXECUTOR, { cwd: join(repo, 'src') })
-denies('a directory git cannot read fails closed', MERGE, EXECUTOR, { cwd: join(tmp, 'nowhere') })
-denies('a repo whose HEAD the marker probe cannot list fails closed', MERGE, EXECUTOR, { cwd: nohead })
-denies('a committed marker with a deleted worktree copy is still managed', MERGE, EXECUTOR, { cwd: mdel })
-allows('the executor itself is not denied', `node ${EXECUTOR} ${PR} ${head}`)
-allows('nor is it from another install path', `node /home/x/.claude/plugins/flow/scripts/land-merge.mjs ${PR} ${head}`)
-allows('nor is it by relative path', `node plugins/flow/scripts/land-merge.mjs ${PR} ${head}`)
-
-console.log('\nin a repo without the marker, flow gates no merges')
-allows('a plain merge passes', MERGE, { cwd: plain })
-allows('so does the REST endpoint', `gh api repos/someone/unmanaged/pulls/${PR}/merge -X PUT`, { cwd: plain })
-allows('so does a merge wrapped in bash -lc', QUOTED, { cwd: plain })
-allows('an uncommitted marker does not enroll a repo', MERGE, { cwd: muntr })
-
-console.log('\nregistry publication is denied in both')
+// ------------------------------------------------------- registry publication, host by host
+//
+// This is the one job the two adapters do differently, so it runs once per host with the
+// answer that host gives. Codex denies because it has no way to ask; Claude asks.
+console.log('\nregistry publication: Codex denies it, Claude asks about it')
 const PLAIN = 'This publishes to crates.io, which you cannot take back - crates.io has no unpublish at all. ' +
   'Confirm the version number and the contents are what you mean to ship. ' +
   'Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. ' +
   'Run the publish command yourself after reviewing the version and package contents.'
 const plainDecision = guard('cargo publish -p flow')
 check('the plain publication deny text is unchanged', reasonOf(plainDecision).startsWith(PLAIN), reasonOf(plainDecision))
-denies('npm publish, managed', 'npm publish', 'Registry publication stays manual')
-denies('npm publish, unmanaged', 'npm publish', 'Registry publication stays manual', { cwd: plain })
-denies('a quoted registry publish, managed', "bash -lc 'npm publish'", 'Registry publication stays manual')
-denies('a quoted registry publish, unmanaged', "bash -lc 'npm publish'", 'Registry publication stays manual', { cwd: plain })
-
-console.log('\nscheduled jobs merge nothing anywhere, executor included')
-denies('a cron job is denied in a managed repo', MERGE, 'scheduled jobs do not merge', { env: { FLOW_CRON_JOB: 'lint' } })
-denies('and in an unmanaged one', MERGE, 'scheduled jobs do not merge', { cwd: plain, env: { FLOW_CRON_JOB: 'lint' } })
-denies('a cron job may not invoke the executor', `node ${EXECUTOR} ${PR} ${head}`, 'merge executor', { env: { FLOW_CRON_JOB: 'lint' } })
-denies(
-  'even after stripping the variable off the child',
-  `env -u FLOW_CRON_JOB node ${EXECUTOR} ${PR} ${head}`,
-  'merge executor',
-  { env: { FLOW_CRON_JOB: 'lint' } },
+const { denies: codexDenies } = HOSTS[0]
+codexDenies('npm publish, managed', 'npm publish', 'Registry publication stays manual')
+codexDenies('npm publish, unmanaged', 'npm publish', 'Registry publication stays manual', { cwd: plain })
+codexDenies('a quoted registry publish, managed', "bash -lc 'npm publish'", 'Registry publication stays manual')
+codexDenies('a quoted registry publish, unmanaged', "bash -lc 'npm publish'", 'Registry publication stays manual', { cwd: plain })
+// The merge deny must not have swallowed Claude's ask-gate: a publish in a managed repository
+// is still the ask it has always been.
+const claudePublish = guardWith(CLAUDE_GUARD)('npm publish')
+check(
+  'the Claude guard still asks in a managed repo',
+  claudePublish?.hookSpecificOutput?.permissionDecision === 'ask',
+  JSON.stringify(claudePublish),
 )
-allows('but the executor invocation is fine in an attended session', `node ${EXECUTOR} ${PR} ${head}`)
 
-console.log('\nordinary commands are untouched')
-allows('git status', 'git status --porcelain')
-allows('git add', 'git add -A plugins/flow')
-allows('git commit', 'git commit -m "fix(flow): route the land through the executor"')
-allows('git push', 'git push -u origin feat/issue-6-land-cross-harness')
-allows('git commit describing a merge', 'git commit -m "chore: note that gh pr merge is the only land path"')
-allows('a test run', 'npm test -- --watch=false')
-allows('a dry run', 'cargo publish --dry-run')
-allows('a dry run through a shell', "bash -lc 'cargo publish --dry-run'")
-allows('a merge described in prose', `gh pr comment ${PR} -b "run gh pr merge once CI is green"`)
-allows('reading a PR', `gh pr view ${PR} --json state,mergeCommit`)
-allows('a local merge', 'git merge --ff-only origin/main')
+// ----------------------------------------------------- the merge decision, once per adapter
+//
+// Both hosts read the same mergeDenialFor() out of lib/hook-policy.mjs, so every case runs
+// through both guards and a host that drifts fails on its own line. Claude denies a merge
+// rather than asking about it: an approved ask would run the raw merge command, and the whole
+// point is routing it to the executor.
+for (const { denies, allows } of HOSTS) {
+  console.log('\nin a repo with .flow/managed, merging by hand is routed to the executor')
+  denies('a plain merge is denied', MERGE, 'node ')
+  denies('and the denial names the executor', MERGE, EXECUTOR)
+  denies('and shows the two-argument form', MERGE, '<pr-number> <expected-head-sha>')
+  denies('and says the repository opted in', MERGE, '.flow/managed')
+  denies('a bare merge is denied', `gh pr merge ${PR}`, 'gh pr merge')
+  denies('a merge wrapped in bash -lc is denied', QUOTED, 'gh pr merge')
+  denies('a merge under eval is denied', `eval "gh pr merge ${PR} --squash"`, 'gh pr merge')
+  denies('the -R form is denied', `gh -R ${SLUG} pr merge ${PR} --squash`, 'gh pr merge')
+  denies('the REST endpoint is denied', `gh api repos/${SLUG}/pulls/${PR}/merge -X PUT -f merge_method=squash`, 'merge endpoint')
+  denies('a quoted REST path is denied', `gh api -X PUT "repos/${SLUG}/pulls/${PR}/merge"`, 'merge endpoint')
+  denies(
+    'the GraphQL mutation is denied',
+    `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "abc"}) { clientMutationId } }'`,
+    'mergePullRequest',
+  )
+  denies('a subdirectory of the repo is still the repo', MERGE, EXECUTOR, { cwd: join(repo, 'src') })
+  denies('a directory git cannot read fails closed', MERGE, EXECUTOR, { cwd: join(tmp, 'nowhere') })
+  denies('a repo whose HEAD the marker probe cannot list fails closed', MERGE, EXECUTOR, { cwd: nohead })
+  denies('a committed marker with a deleted worktree copy is still managed', MERGE, EXECUTOR, { cwd: mdel })
+  allows('the executor itself is not denied', `node ${EXECUTOR} ${PR} ${head}`)
+  allows('nor is it from another install path', `node /home/x/.claude/plugins/flow/scripts/land-merge.mjs ${PR} ${head}`)
+  allows('nor is it by relative path', `node plugins/flow/scripts/land-merge.mjs ${PR} ${head}`)
+
+  console.log('\nin a repo without the marker, flow gates no merges')
+  allows('a plain merge passes', MERGE, { cwd: plain })
+  allows('so does the REST endpoint', `gh api repos/someone/unmanaged/pulls/${PR}/merge -X PUT`, { cwd: plain })
+  allows('so does a merge wrapped in bash -lc', QUOTED, { cwd: plain })
+  allows('an uncommitted marker does not enroll a repo', MERGE, { cwd: muntr })
+
+  console.log('\nscheduled jobs merge nothing anywhere, executor included')
+  denies('a cron job is denied in a managed repo', MERGE, 'scheduled jobs do not merge', { env: { FLOW_CRON_JOB: 'lint' } })
+  denies('and in an unmanaged one', MERGE, 'scheduled jobs do not merge', { cwd: plain, env: { FLOW_CRON_JOB: 'lint' } })
+  denies('a cron job may not invoke the executor', `node ${EXECUTOR} ${PR} ${head}`, 'merge executor', { env: { FLOW_CRON_JOB: 'lint' } })
+  denies(
+    'even after stripping the variable off the child',
+    `env -u FLOW_CRON_JOB node ${EXECUTOR} ${PR} ${head}`,
+    'merge executor',
+    { env: { FLOW_CRON_JOB: 'lint' } },
+  )
+  allows('but the executor invocation is fine in an attended session', `node ${EXECUTOR} ${PR} ${head}`)
+
+  console.log('\nordinary commands are untouched')
+  allows('git status', 'git status --porcelain')
+  allows('git add', 'git add -A plugins/flow')
+  allows('git commit', 'git commit -m "fix(flow): route the land through the executor"')
+  allows('git push', 'git push -u origin feat/issue-6-land-cross-harness')
+  allows('git commit describing a merge', 'git commit -m "chore: note that gh pr merge is the only land path"')
+  allows('a test run', 'npm test -- --watch=false')
+  allows('a dry run', 'cargo publish --dry-run')
+  allows('a dry run through a shell', "bash -lc 'cargo publish --dry-run'")
+  allows('a merge described in prose', `gh pr comment ${PR} -b "run gh pr merge once CI is green"`)
+  allows('reading a PR', `gh pr view ${PR} --json state,mergeCommit`)
+  allows('a local merge', 'git merge --ff-only origin/main')
+}
 
 // ------------------------------------------------------------------------------ the executor
 console.log('\nthe executor merges once, pinning every call to the origin repository')
