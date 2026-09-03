@@ -1,14 +1,26 @@
 {
-  "description": "flow for Codex: ordered charter injection plus no-backlog, git, publish and protected-file guards.",
+  "description": "flow for Codex: charter injection at session and subagent start, plus no-backlog, git, publish and protected-file guards.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/hooks/scripts/inject-charter-codex.mjs\"",
+            "command": "node \"${PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" session codex",
             "timeout": 5,
             "additionalContextLimit": 8000
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" subagent codex",
+            "timeout": 5,
+            "additionalContextLimit": 3000
           }
         ]
       }

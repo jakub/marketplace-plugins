@@ -6,7 +6,7 @@ You are in `claude -p`: a turn that ends without a tool call ends the session, a
 
 ## Procedure
 
-Enumerate repos: every directory directly under `${FLOW_WORKSPACE}` that is a git repository with an `origin` remote; skip worktrees (`git rev-parse --git-common-dir` outside the directory). Delegate one sonnet subagent per repo; reconcile and judge on the main thread.
+Enumerate repos: every directory directly under `${FLOW_WORKSPACE}` that is a git repository with an `origin` remote; skip worktrees (`git rev-parse --git-common-dir` outside the directory). Delegate one cheap read-only subagent per repo; reconcile and judge on the main thread.
 
 Per repo, run sections 1 and 2 of `${CLAUDE_PLUGIN_ROOT}/skills/flow/drift-audit.md` exactly as written there: doc-stack conformance (symlink, lean `AGENTS.md`, honest `## Contexts`, no `context-map.md` / `CLAUDE.local.md` / uppercase `CONTEXT.md`, domain-doc claims spot-checked against code, candidates for domain files) and glossary drift (orphans, ghosts, ADR numbering and contradictions).
 

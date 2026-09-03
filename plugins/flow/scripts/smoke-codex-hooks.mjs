@@ -4,17 +4,13 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   CODEX_CHARTER_BYTE_BUDGET,
   CODEX_INLINE_BYTE_BUDGET,
-  CODEX_PROFILE_BYTE_BUDGET,
-  NO_BINDINGS_NOTE,
-  profileBlock,
-  readProfile,
+  seatPayload,
 } from '../lib/charter-payload.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -111,44 +107,44 @@ for (const output of [
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /without an inspectable command/)
 }
 
-// The Codex SessionStart payload is the charter, then a blank line, then the Codex binding
-// profile. Building the expectation from the same lib the hook uses keeps this an equality
-// check on the wiring, not a second copy of the block's shape.
+// Codex takes the whole charter in one SessionStart write, and the seat half again at the start
+// of every subagent. Both registrations live in hooks/codex.json; these run the same script the
+// same way, so this is an equality check on the wiring rather than a second copy of the shape.
 const charterText = readFileSync(join(ROOT, 'charter', 'charter.md'), 'utf8')
-const codexProfile = profileBlock(readProfile(ROOT, 'codex'))
-const payload = execFileSync(
+const inject = (args, input = '') => execFileSync(
   process.execPath,
-  [join(ROOT, 'hooks', 'scripts', 'inject-charter-codex.mjs')],
-  { env: { ...process.env, PLUGIN_ROOT: ROOT }, encoding: 'utf8' },
+  [join(ROOT, 'hooks', 'scripts', 'inject-charter.mjs'), ...args],
+  { env: { ...process.env, PLUGIN_ROOT: ROOT }, encoding: 'utf8', input },
 )
-assert.equal(payload, charterText + '\n' + codexProfile)
+
+const registered = JSON.parse(readFileSync(join(ROOT, 'hooks', 'codex.json'), 'utf8')).hooks
+for (const [event, args, limit] of [['SessionStart', 'session codex', 8000], ['SubagentStart', 'subagent codex', 3000]]) {
+  const entry = registered[event]?.[0]?.hooks?.[0]
+  assert.ok(entry, `hooks/codex.json registers no ${event} charter hook`)
+  assert.equal(entry.command, `node "\${PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs" ${args}`)
+  assert.equal(entry.additionalContextLimit, limit)
+}
+
+const payload = inject(['session', 'codex'])
+assert.equal(payload, charterText)
 assert.match(payload, /<flow-charter>/)
 assert.match(payload, /<\/flow-charter>/)
-assert.match(payload, /<flow-profile host="codex" bindings="bound">/)
 assert.ok(
   Buffer.byteLength(charterText) < CODEX_CHARTER_BYTE_BUDGET,
   `Flow charter exceeds the ${CODEX_CHARTER_BYTE_BUDGET}-byte Codex inline maintenance budget`,
-)
-assert.ok(
-  Buffer.byteLength(codexProfile) <= CODEX_PROFILE_BYTE_BUDGET,
-  `Codex binding profile exceeds the ${CODEX_PROFILE_BYTE_BUDGET}-byte budget`,
 )
 assert.ok(
   Buffer.byteLength(payload) < CODEX_INLINE_BYTE_BUDGET,
   `Codex SessionStart payload exceeds the ${CODEX_INLINE_BYTE_BUDGET}-byte inline maintenance budget`,
 )
 
-// A root with no charter/profiles/ directory still yields a block, and the block tells the
-// session what it lost. This is the failure a silent read would hide. execFileSync throws on
-// a non-zero exit, so reaching the assertions is itself the exit-0 check.
-const bare = mkdtempSync(join(tmpdir(), 'flow-profile-'))
-const missing = execFileSync(
-  process.execPath,
-  [join(ROOT, 'hooks', 'scripts', 'inject-profile.mjs'), 'codex'],
-  { env: { ...process.env, CLAUDE_PLUGIN_ROOT: bare, PLUGIN_ROOT: bare }, encoding: 'utf8' },
-)
-assert.match(missing, /<flow-profile host="codex" bindings="none">/)
-assert.ok(missing.includes(NO_BINDINGS_NOTE), 'a missing profile must carry the no-bindings note')
-assert.match(missing, /<\/flow-profile>\n$/)
+// Codex has no Explore type and no context-copying fork, so there is nothing to skip: every
+// subagent gets the seat half, whatever it calls itself, and an unparseable body still delivers.
+const seat = seatPayload(charterText)
+for (const input of [JSON.stringify({ agent_type: 'Explore' }), JSON.stringify({ agent_type: 'fork' }), JSON.stringify({}), '{']) {
+  const answer = JSON.parse(inject(['subagent', 'codex'], input))
+  assert.equal(answer.hookSpecificOutput.hookEventName, 'SubagentStart')
+  assert.equal(answer.hookSpecificOutput.additionalContext, seat)
+}
 
 console.log('flow Codex hooks: ALL PASS')
