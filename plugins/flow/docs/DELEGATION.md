@@ -246,12 +246,12 @@ against the original schema before the job can succeed.
 
 ## What the caller receives
 
-Both workers receive one section of the charter, `## Rules of Engagement - Everything Else`, read
-from `charter/charter.md` at build time and wrapped in a `<flow-charter scope="delegated-seat">`
-block; `instructions.mjs` refuses to load if that heading is gone. The delegated-seat rule
-forbidding subagents and nested provider calls follows it, and the payload ends with the
-Containment section of `seat-contract.md` in a `<seat-contract scope="containment">` block, that
-section and no other.
+Both workers receive the seat half of the charter: everything below the seat-rules marker line
+in `charter/charter.md` (`## Rules of Engagement - Everything Else`, `## Seat Contract`,
+`## Gripes`), read at build time and wrapped by `seatPayload` in `lib/charter-payload.mjs` in a
+`<flow-charter scope="seat">` block, the same bytes a native subagent gets from the SubagentStart
+hook. `instructions.mjs` refuses to load if the marker is missing or doubled. The delegated-seat
+rule forbidding subagents and nested provider calls follows it, and nothing else.
 
 The public error carries a named kind, a short message and bounded details, never a stack, raw
 provider payload, account identifier, model identifier from an error payload, or internal path.
@@ -265,8 +265,8 @@ the Claude Agent SDK. `npm run build` in `plugins/flow/deps` writes one committe
 service starts one worker per job with a job ID. Every install runs the bundle and never the
 source, so an edit under `src/delegation` is half a change until the rebuild lands in the same
 commit. The build injects the plugin version, the SDK
-version, the charter and the seat contract (through `__FLOW_SEAT_CONTRACT__`), so a version bump
-or a charter edit rebuilds the bundle too.
+version and the charter (through `__FLOW_CHARTER__`), so a version bump or a charter edit
+rebuilds the bundle too.
 
 The Claude manifest holds the direct `flow_delegate` server definition with a 7,500,000 millisecond
 call timeout. The Codex manifest points at plugin-root `.mcp.json`, which starts the same bundle

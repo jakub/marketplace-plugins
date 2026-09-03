@@ -86,8 +86,9 @@ the field is always 0: the Agent SDK never reports an exit status, so Flow recor
 count and a zero there means the question was not asked.
 
 A succeeded review with `findings: []` is not yet a pass. That is also the shape of a runner
-that never started. Require a coverage finding, or call `delegation_continue` and ask which
-files it read, before you treat an empty array as clean. An `unknown` job is never a pass; the
+that never started, and the review schema has no room for a coverage note, so do not ask for
+one. Call `delegation_continue` on the finished job as a plain task and ask which files it read
+and which it skipped, before you treat an empty array as clean. An `unknown` job is never a pass; the
 charter's UNKNOWN rule covers these exactly as it covers a native seat.
 
 ## What each provider can do
