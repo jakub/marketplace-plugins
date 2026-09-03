@@ -5,7 +5,7 @@
 // between 2026-08-24 and 2026-09-01 as failures whose text was "Gripe filed." and nothing
 // else. Every case here is stdout as `claude -p` really writes it.
 // Run: node plugins/flow/scripts/smoke-flow-cron.mjs
-import { extractReport } from "./flow-cron.mjs";
+import { extractReport, jobs } from "./flow-cron.mjs";
 
 let bad = 0;
 const check = (name, got, want) => {
@@ -68,3 +68,14 @@ check("a null line in stream-json is skipped", extractReport("null\n" + assistan
 
 console.log(bad === 0 ? "\nflow-cron: ALL PASS" : `\nflow-cron: ${bad} FAILURE(S)`);
 process.exit(bad === 0 ? 0 : 1);
+
+// The lint's mutating authority is one allowlist entry per executor verb and never a bare
+// script prefix: a verb added to lint-actions.mjs widens nothing until it is named here.
+console.log("lint allowlist");
+const lint = jobs("/x").allowedTools;
+const executorEntries = lint.filter((t) => t.includes("lint-actions.mjs"));
+check("no bare lint-actions prefix", executorEntries.some((t) => t.endsWith("lint-actions.mjs:*")), false);
+for (const verb of ["remove-worktree", "delete-branch", "clear-orphan"]) {
+  check(`verb entry: ${verb}`, executorEntries.includes(`Bash(node /x/scripts/lint-actions.mjs ${verb}:*)`), true);
+}
+check("exactly the three verbs", executorEntries.length, 3);

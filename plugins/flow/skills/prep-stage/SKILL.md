@@ -127,9 +127,9 @@ Everything above is host-neutral. The subsections name the seats and calls for e
 
 **Subject.** `$ARGUMENTS` from the `/flow:prep` invocation.
 
-**Scouts.** search seats (`search-seat`) as `Explore` agents, one per lane, launched in one message so they run together. The outside perspective is the outside scout (`outside-scout`) through `delegate_to_codex`, `access: read-only`, the repository root as `cwd`. The profile binds each role to its model and effort. An `Explore` seat is the session's tool list minus Edit, Write, NotebookEdit and Agent; it keeps Bash and the same `gh` token, so its read-only posture is the prompt plus the hooks.
+**Scouts.** search seats (`search-seat`) as `Explore` agents, one per lane, launched together from one `Workflow` script so each runs at the effort the profile binds. The outside perspective is the outside scout (`outside-scout`) through `delegate_to_codex`, `access: read-only`, the repository root as `cwd`. The profile binds each role to its model and effort. An `Explore` seat is the session's tool list minus Edit, Write, NotebookEdit and Agent; it keeps Bash and the same `gh` token, so its read-only posture is the prompt plus the hooks.
 
-**Dialectic legs.** Native: the native design leg (`design-leg-native`) as `flow:code-architect`, in the background, or the taste leg (`taste-leg`) when the subject is user-facing UI or copy. Bridge: the bridge design leg (`design-leg-bridge`) through `delegate_to_codex`, `access: read-only`, `delivery: attached`, the repository root as `cwd`.
+**Dialectic legs.** Native: the native design leg (`design-leg-native`) as `flow:code-architect`, a bare Agent call in the background so `SendMessage` can resume it for the critique, which means it runs at the session's effort (journal that); or the taste leg (`taste-leg`) when the subject is user-facing UI or copy. Bridge: the bridge design leg (`design-leg-bridge`) through `delegate_to_codex`, `access: read-only`, `delivery: attached`, the repository root as `cwd`.
 
 **Mutual critique.** `delegation_continue` on the bridge job id carries the native sheet across; `SendMessage` to the native agent carries the bridge sheet back.
 

@@ -7,8 +7,10 @@ conformance lint reads exactly that opening pair against the role's floors. The 
 takes `model` only, so a seat spawned through it runs at the session's effort. To run a
 native seat at the effort its binding names, spawn it from a Workflow script:
 `agent(prompt, {agentType: '<seat>', effort: '<effort>'})` runs that agent definition at
-that effort, and a script holding one agent is a normal way to spawn one seat. Journal the
-effort each seat ran at. A bridge binding's effort is set on the call.
+that effort, and a script holding one agent is a normal way to spawn one seat. A seat you
+must reach again with `SendMessage` (the native design leg in prep, resumed for the mutual
+critique) is a bare Agent call and runs at the session's effort. Journal the effort each
+seat ran at. A bridge binding's effort is set on the call.
 A "Shell cwd was reset" notice from the Bash tool is harness noise, not a reason to stop.
 
 ## Bindings

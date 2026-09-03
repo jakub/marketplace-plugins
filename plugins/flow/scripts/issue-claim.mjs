@@ -632,7 +632,7 @@ const remoteSlug = (remote) => {
  *
  * Returns the safe identity string, or a typed problem for the caller to refuse on.
  */
-const repoIdentity = (cwd) => {
+export const repoIdentity = (cwd) => {
   const fetchRead = runGit(['remote', 'get-url', '--all', 'origin'], cwd, LOCAL_GIT_TIMEOUT_MS)
   const pushRead = runGit(['remote', 'get-url', '--push', '--all', 'origin'], cwd, LOCAL_GIT_TIMEOUT_MS)
   const urls = (read) => read.stdout.split('\n').map((s) => s.trim()).filter((s) => s !== '')

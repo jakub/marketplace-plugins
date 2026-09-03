@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 // denies every git subcommand outside the job's standing permissions, ignoring
 // FLOW_SANCTION. Keep the guard's write set, these lists, and the prompts' standing
 // permissions in step - they are three views of one contract.
-const jobs = (root) => ({
+export const jobs = (root) => ({
   lint: {
     allowedTools: [
       "Read", "Glob", "Grep", "Agent",
@@ -43,7 +43,11 @@ const jobs = (root) => ({
       "Bash(gh run list:*)", "Bash(gh run view:*)",
       "Bash(gh label list:*)",
       `Bash(bash ${root}/scripts/worktree-audit.sh:*)`,
-      `Bash(node ${root}/scripts/lint-actions.mjs:*)`, // the ONLY mutating git path
+      // The ONLY mutating path, one entry per verb: adding a verb to the executor widens nothing
+      // until its entry is added here, so this file stays the audited gate the docs say it is.
+      `Bash(node ${root}/scripts/lint-actions.mjs remove-worktree:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs delete-branch:*)`,
+      `Bash(node ${root}/scripts/lint-actions.mjs clear-orphan:*)`,
 
       // drift-audit §5 on the marketplace repo:
       `Bash(node ${root}/hooks/scripts/inject-charter.mjs:*)`,
