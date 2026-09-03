@@ -77,6 +77,8 @@ for (const verb of ["remove-worktree", "delete-branch", "clear-orphan", "demote-
 }
 check("exactly the five verbs", executorEntries.length, 5);
 check("no direct gh issue edit", lint.some((t) => t.startsWith("Bash(gh issue edit")), false);
+check("no direct gh issue comment", lint.some((t) => t.startsWith("Bash(gh issue comment")), false);
+check("no gh write verb at all", lint.some((t) => /^Bash\(gh (issue|pr) (edit|comment|create|close|merge|delete)/.test(t)), false);
 
 console.log(bad === 0 ? "\nflow-cron: ALL PASS" : `\nflow-cron: ${bad} FAILURE(S)`);
 process.exit(bad === 0 ? 0 : 1);

@@ -38,9 +38,11 @@ export const jobs = (root) => ({
     allowedTools: [
       "Read", "Glob", "Grep", "Agent",
       "Bash(git:*)", // guarded read-only in cron mode (git-guard.mjs); lint-actions.mjs below is the mutating path
-      // No `gh issue edit`: every label move the lint may make is an executor verb below, so the
-      // model cannot spell one directly. Comments stay direct; a comment moves no state.
-      "Bash(gh issue list:*)", "Bash(gh issue view:*)", "Bash(gh issue comment:*)",
+      // No `gh issue edit` and no `gh issue comment`: every label move the lint may make is an
+      // executor verb below, and each verb writes its own comment. A direct comment grant is a
+      // write to any repository the token reaches, with --body-file able to carry any readable
+      // file, so the unattended job gets none.
+      "Bash(gh issue list:*)", "Bash(gh issue view:*)",
       "Bash(gh pr list:*)", "Bash(gh pr view:*)",
       "Bash(gh run list:*)", "Bash(gh run view:*)",
       "Bash(gh label list:*)",
