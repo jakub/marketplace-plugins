@@ -1,22 +1,28 @@
 {
-  "description": "flow: charter injection + no-backlog, git, publish and protected-file guards.",
+  "description": "flow: charter injection at session and subagent start, plus no-backlog, git, publish and protected-file guards.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" 1",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" session claude 1",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" 2",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" session claude 2",
             "timeout": 5
-          },
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-profile.mjs\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" subagent claude",
             "timeout": 5
           }
         ]
