@@ -1,10 +1,11 @@
 ---
-name: prep-stage
+name: prep
 description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; use this stage when either you or the user wants to create a new issue or revise an existing issue. MUST only run when the human explicitly asks to prep a specific issue or idea; never start it from adjacent work, a discovered defect, or a 'what next' survey.
 disable-model-invocation: true
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Skill, AskUserQuestion, Agent, SendMessage, Workflow, TaskOutput, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_continue, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel
 ---
 
-# prep-stage - the front door for the prep → issue → land process
+# prep - the front door for the prep → issue → land process
 
 This stage is the entry point for all new development work. The subject is either an issue number - well-defined or a bare placeholder - or free text: an idea, a spike, a mid-development deviation.
 
@@ -122,7 +123,7 @@ Read the subsection for your host.
 
 ### Claude Code
 
-**Subject.** `$ARGUMENTS` from the `/flow:prep` invocation.
+**Subject.** What the human named in the `/flow:prep` invocation.
 
 **Mutual critique.** `SendMessage` carries the other family's sheet back to the running native leg, so that leg has to be a bare Agent call in the background for `SendMessage` to reach it.
 
@@ -132,10 +133,10 @@ Read the subsection for your host.
 
 ### Codex
 
-**Subject.** What the human's message carries when they name the plugin's `prep-stage` skill or ask in words to prep, create or revise an issue. A message mentioning `#N` while describing something else suspends the turn to ask which.
+**Subject.** What the human's message carries when they name the plugin's `prep` skill or ask in words to prep, create or revise an issue. A message mentioning `#N` while describing something else suspends the turn to ask which.
 
 **Mutual critique.** `followup_task` on the native leg carries the other family's sheet back and starts its next turn; `send_message` only queues text and resumes nothing.
 
 **Grill.** The grill plugin's `grill-with-docs` skill by name, `$grill:grill-with-docs`. There is no Skill tool here, so that skill composes by reading its siblings, as its own text says. Rounds are one question per turn, up to 4 numbered options; a four-wide frontier takes four turns, and that is the cost of this host, not a reason to stack.
 
-**Hand-off.** `#N design-hardened → ready-for-agent → issue-stage N`. The plugin's `issue-stage` skill is the next stage here.
+**Hand-off.** `#N design-hardened → ready-for-agent → issue N`. The plugin's `issue` skill is the next stage here.

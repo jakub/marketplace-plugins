@@ -1,14 +1,22 @@
 #!/usr/bin/env node
-// Conformance lint for the pipeline stages. A stage is one SKILL.md: host-neutral prose first,
-// then a final "## Host mechanics" section whose two subsections name the seats, models and
-// calls for each host. The alias under commands/ is a routing line and nothing else, and the
-// stage's agents/openai.yaml keeps implicit invocation off, because a stage that merges, opens
-// issues or spawns write seats must never start itself.
+// Conformance lint for the pipeline stages. A stage is one SKILL.md and nothing else: it
+// declares its own tool allowance, keeps model invocation off on both hosts, opens with
+// host-neutral prose, and ends in a "## Host mechanics" section whose two subsections name the
+// calls for each host. There is no command alias; the skill IS the invocation on both hosts.
 //
-// Stages are found by structure, not by name: every skills/*-stage/ directory is one, so a
-// stage added later is linted without an edit here. The same checker runs over the inline
-// fixtures at the bottom, each valid but for the one defect it is named for, so a green run
-// also proves the checker can still fail and fails for the reason claimed.
+// PIPELINE is the list, because a stage is a deliberate addition and three of them is the whole
+// pipeline. A name here that has no directory fails, and so does a skill NOT listed here that
+// carries a host-mechanics section - that second check is what stops a fourth stage being
+// written and quietly never linted.
+//
+// The value is whether the skill is gated. `gated` is a stage: the human alone starts it, so
+// model invocation is off on both hosts. `open` is babysit, the same document shape without the
+// gate, because an issue run hands off to it. Which one a skill is gets asserted either way, so
+// a stage cannot lose its gate and babysit cannot silently gain one.
+//
+// The same checker runs over the inline fixtures at the bottom, each valid but for the one
+// defect it is named for, so a green run also proves the checker can still fail and fails for
+// the reason claimed.
 // Run: node plugins/flow/scripts/smoke-stage-conformance.mjs
 
 import assert from 'node:assert/strict'
@@ -21,6 +29,9 @@ const lf = (text) => text.replace(/\r\n/g, '\n')
 const read = (...parts) => {
   try { return lf(readFileSync(join(...parts), 'utf8')) } catch { return null }
 }
+
+const PIPELINE = { prep: 'gated', issue: 'gated', land: 'gated', babysit: 'open' }
+const STAGES = Object.keys(PIPELINE)
 
 const HOST_MECHANICS = '## Host mechanics'
 const SUBSECTIONS = ['### Claude Code', '### Codex']
@@ -45,15 +56,29 @@ const blank = (lines) => lines.join('\n').trim() === ''
 
 // Everything wrong with one stage, as sentences. An empty array is clean. Files arrive as text
 // so the inline fixtures and the real tree go through exactly the same checks.
-const stageProblems = ({ name, skill, alias, openai }) => {
+const stageProblems = ({ name, skill, openai, gate = 'gated' }) => {
   const problems = []
   const at = `skills/${name}/SKILL.md`
   if (skill === null) return [`${at} does not exist`]
 
   const fm = FRONTMATTER.exec(skill)
   if (!fm) problems.push(`${at} has no frontmatter, so the loader cannot read the stage's name`)
-  else if (!/^disable-model-invocation: true$/m.test(fm[1])) {
-    problems.push(`${at} does not set "disable-model-invocation: true", so the model could start the stage itself`)
+  else {
+    const suppressed = /^disable-model-invocation: true$/m.test(fm[1])
+    if (gate === 'gated' && !suppressed) {
+      problems.push(`${at} does not set "disable-model-invocation: true", so the model could start the stage itself`)
+    }
+    if (gate === 'open' && suppressed) {
+      problems.push(`${at} sets "disable-model-invocation: true", but this skill is handed off to mid-run and has to stay model-invocable`)
+    }
+    // The allowance used to live on a command alias. It is on the skill now, and a stage without
+    // one runs on whatever the session happens to allow.
+    if (!/^allowed-tools: \S/m.test(fm[1])) {
+      problems.push(`${at} carries no "allowed-tools:" line, so the stage runs on whatever the session happens to allow`)
+    }
+    if (!new RegExp(`^name: ${name}$`, 'm').test(fm[1])) {
+      problems.push(`${at} does not declare "name: ${name}", so the invocation and the directory disagree`)
+    }
   }
 
   const lines = skill.split('\n')
@@ -90,28 +115,14 @@ const stageProblems = ({ name, skill, alias, openai }) => {
     problems.push(`${at}:${hit.line + (fm ? fm[0].split('\n').length - 1 : 0)} names "${hit.word}" above ${HOST_MECHANICS}, where the prose is the same on every host`)
   }
 
+  const want = gate === 'gated' ? 'false' : 'true'
   if (openai === null) problems.push(`skills/${name}/agents/openai.yaml does not exist`)
-  else if (!/^\s*allow_implicit_invocation: false$/m.test(openai)) {
-    problems.push(`skills/${name}/agents/openai.yaml does not set "allow_implicit_invocation: false", so the stage can start itself`)
+  else if (!new RegExp(`^\\s*allow_implicit_invocation: ${want}$`, 'm').test(openai)) {
+    problems.push(gate === 'gated'
+      ? `skills/${name}/agents/openai.yaml does not set "allow_implicit_invocation: false", so the stage can start itself`
+      : `skills/${name}/agents/openai.yaml does not set "allow_implicit_invocation: true", and this skill is handed off to mid-run`)
   }
 
-  const short = name.replace(/-stage$/, '')
-  const to = `commands/${short}.md`
-  if (alias === null) return [...problems, `${to} does not exist`]
-  const aliasFm = FRONTMATTER.exec(alias)
-  if (!aliasFm) problems.push(`${to} has no frontmatter, so it declares no tools`)
-  else if (!/^allowed-tools: \S/m.test(aliasFm[1])) {
-    problems.push(`${to} carries no "allowed-tools:" line, so the alias runs on whatever the session happens to allow`)
-  }
-  const blocks = alias.slice(aliasFm ? aliasFm[0].length : 0).split(/\n{2,}/).map((b) => b.trim()).filter(Boolean)
-  if (blocks.length !== 2 || !blocks[0].startsWith('# ') || blocks[0].includes('\n')) {
-    problems.push(`${to} has ${blocks.length} blocks below its frontmatter, and an alias is one "# " heading plus one routing sentence`)
-  } else {
-    for (const want of [`skills/${name}/SKILL.md`, '$ARGUMENTS']) {
-      if (!blocks[1].includes(want)) problems.push(`${to} routes without naming ${want}`)
-    }
-    if (isHeading(blocks[1])) problems.push(`${to} writes a second heading where its routing sentence belongs`)
-  }
   return problems
 }
 
@@ -122,35 +133,44 @@ const ok = (line) => {
 }
 
 console.log('the real stages')
-const stages = readdirSync(join(ROOT, 'skills'), { withFileTypes: true })
-  .filter((entry) => entry.isDirectory() && entry.name.endsWith('-stage'))
-  .map((entry) => entry.name)
-  .sort()
-assert.ok(stages.length >= 3, `found ${stages.length} stages under skills/, expected at least the three pipeline stages`)
-ok(`${stages.length} stages found by structure: ${stages.join(', ')}`)
-
-for (const name of stages) {
+for (const [name, gate] of Object.entries(PIPELINE)) {
   const problems = stageProblems({
     name,
+    gate,
     skill: read(ROOT, 'skills', name, 'SKILL.md'),
-    alias: read(ROOT, 'commands', `${name.replace(/-stage$/, '')}.md`),
     openai: read(ROOT, 'skills', name, 'agents', 'openai.yaml'),
   })
   assert.deepEqual(problems, [], `${name}:\n${problems.join('\n')}`)
-  ok(`${name}: neutral body, two host subsections with prose, implicit invocation off, and a one-line alias`)
+  ok(`${name}: own allowance, neutral body, two host subsections with prose, ${gate === 'gated' ? 'model invocation off on both hosts' : 'model-invocable on both hosts for the hand-off'}`)
 }
+
+// Nothing else may quietly be a stage. A skill that carries a host-mechanics section and is not
+// in STAGES is a fourth stage nobody registered, and every check above would skip it.
+const unlisted = readdirSync(join(ROOT, 'skills'), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && !STAGES.includes(entry.name))
+  .map((entry) => entry.name)
+  .filter((name) => (read(ROOT, 'skills', name, 'SKILL.md') ?? '').includes(`\n${HOST_MECHANICS}\n`))
+assert.deepEqual(unlisted, [],
+  `these skills carry a "${HOST_MECHANICS}" section but are not in PIPELINE, so nothing lints them: ${unlisted.join(', ')}`)
+ok(`no unlisted skill carries a ${HOST_MECHANICS} section`)
+
+// The commands directory is gone on purpose: the skill is the invocation on both hosts.
+assert.equal(read(ROOT, 'commands', 'prep.md'), null,
+  'commands/prep.md is back; a command alias re-exposes a stage the model is not allowed to start')
+ok('no command alias re-exposes a stage')
 
 console.log('the checker can still fail')
 // One valid mini stage, mutated one way per case. Building the broken files from the good one
 // is what makes each case honest about its single defect: everything but the named edit is the
 // shape the real stages have.
 const SKILL = `---
-name: mini-stage
+name: mini
 description: A miniature stage, for the lint alone.
 disable-model-invocation: true
+allowed-tools: Bash(git:*), Read
 ---
 
-# mini-stage
+# mini
 
 Do the work, then read your host's subsection for the calls.
 
@@ -164,17 +184,8 @@ The mechanism here.
 
 The mechanism there.
 `
-const ALIAS = `---
-description: A miniature alias.
-allowed-tools: Bash(git:*), Read
----
-
-# /flow:mini - the miniature stage
-
-The stage lives in the \`mini-stage\` skill. Read \`\${CLAUDE_PLUGIN_ROOT}/skills/mini-stage/SKILL.md\` and execute it against $ARGUMENTS.
-`
 const YAML = 'interface:\n  display_name: "Mini Stage"\npolicy:\n  allow_implicit_invocation: false\n'
-const mini = (edits = {}) => stageProblems({ name: 'mini-stage', skill: SKILL, alias: ALIAS, openai: YAML, ...edits })
+const mini = (edits = {}) => stageProblems({ name: 'mini', skill: SKILL, openai: YAML, ...edits })
 
 const CASES = [
   {
@@ -213,19 +224,24 @@ const CASES = [
     names: ['so the stage can start itself'],
   },
   {
-    label: 'alias with extra prose',
-    problems: () => mini({ alias: `${ALIAS}\nAnd one more thing the alias wanted to say.\n` }),
-    names: ['has 3 blocks below its frontmatter'],
-  },
-  {
-    label: 'alias with no allowed-tools',
-    problems: () => mini({ alias: ALIAS.replace(/^allowed-tools: .*\n/m, '') }),
+    label: 'a stage with no allowed-tools',
+    problems: () => mini({ skill: SKILL.replace(/^allowed-tools: .*\n/m, '') }),
     names: ['carries no "allowed-tools:" line'],
   },
   {
-    label: 'alias that names no stage file',
-    problems: () => mini({ alias: ALIAS.replace('skills/mini-stage/SKILL.md', 'skills/other-stage/SKILL.md') }),
-    names: ['routes without naming skills/mini-stage/SKILL.md'],
+    label: 'model invocation left on',
+    problems: () => mini({ skill: SKILL.replace('disable-model-invocation: true\n', '') }),
+    names: ['does not set "disable-model-invocation: true"'],
+  },
+  {
+    label: 'an open skill that gates itself',
+    problems: () => mini({ gate: 'open', openai: YAML.replace('false', 'true') }),
+    names: ['has to stay model-invocable'],
+  },
+  {
+    label: 'a name that disagrees with the directory',
+    problems: () => mini({ skill: SKILL.replace('name: mini', 'name: mini-stage') }),
+    names: ['does not declare "name: mini"'],
   },
 ]
 assert.deepEqual(mini(), [], `the mini stage every case is built from is itself broken: ${mini().join('; ')}`)

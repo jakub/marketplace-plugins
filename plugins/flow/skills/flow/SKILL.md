@@ -5,7 +5,7 @@ description: The flow development framework - project setup, the documentation s
 
 # flow - the development framework
 
-The charter is in your context already; it says how we build and delegate. No command file says what its command does: prep, issue and land are each one stage skill (`prep-stage`, `issue-stage`, `land-stage`), a host-neutral body ending in a `## Host mechanics` section that holds only what differs by host; the charter's `## Hosts` section holds the rest. Where a host has commands, `prep.md`, `issue.md` and `land.md` only alias them. The `delegate` skill beside this one is the operating manual for a cross-family call. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, and the machinery running in the background.
+The charter is in your context already; it says how we build and delegate. prep, issue and land are each one skill, on both hosts: a host-neutral body ending in a `## Host mechanics` section that holds only what differs by host, with the charter's `## Hosts` section holding the rest. There is no separate command file aliasing them. The `delegate` skill beside this one is the operating manual for a cross-family call. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, and the machinery running in the background.
 
 Files in this directory:
 
@@ -39,7 +39,7 @@ Deploy flow to a project, in this order. Every step is idempotent: skip what alr
 4. **Domain layer**, a judgment call - propose, don't blanket: for each crate or module with real domain depth, `crates/<x>/AGENTS.md` from `templates/crate-agents.md` plus the `CLAUDE.md` symlink, and a `context.md` slice if the vocabulary is crate-local. Every slice gets a line in the root `## Contexts`. Always committed.
 5. **Decision records**: `docs/adr/` with a `0000-template.md`.
 6. **Labels**: run the `labels` subcommand.
-7. **Known flakes**: create `.github/known-flakes.txt` (empty). The land stage reads it - one entry per line, either a bare CI check name or `check-name:test_name` for a single flaky test (the `land-stage` skill documents both forms), naming what the repo consciously merges through. Lore lives in the repo, not in command prompts.
+7. **Known flakes**: create `.github/known-flakes.txt` (empty). The land stage reads it - one entry per line, either a bare CI check name or `check-name:test_name` for a single flaky test (the `land` skill documents both forms), naming what the repo consciously merges through. Lore lives in the repo, not in command prompts.
 8. **Report**: what was created, what already conformed, what needs a human decision (e.g. which crates deserve domain files). A checklist, not an essay.
 
 ## Drift

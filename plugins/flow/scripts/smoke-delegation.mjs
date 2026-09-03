@@ -484,7 +484,7 @@ try {
     assert.equal(hostInventories.claude.capabilities[id].assurance, 'mechanism', `claude/${id} assurance`)
   }
 
-  // The issue-stage profiles cite these ids by name, in prose no test parses. Renaming a row in
+  // The issue stage profiles cite these ids by name, in prose no test parses. Renaming a row in
   // HOST_CAPABILITY_TABLE has to fail here rather than leave a profile naming an id nobody has.
   const citedCapabilities = {
     claude: ['per-seat-tool-allowlist', 'agent-depth-limit', 'hooks-in-native-children', 'mcp-client-roots'],
@@ -495,7 +495,7 @@ try {
   }
   for (const [host, ids] of Object.entries(citedCapabilities)) {
     for (const id of ids) {
-      assert.ok(hostInventories[host].capabilities[id], `the ${host} issue-stage profile cites capability ${id}, which the inventory no longer has`)
+      assert.ok(hostInventories[host].capabilities[id], `the ${host} issue stage profile cites capability ${id}, which the inventory no longer has`)
     }
   }
 

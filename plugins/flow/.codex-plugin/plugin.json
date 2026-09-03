@@ -1,7 +1,7 @@
 {
   "name": "flow",
   "version": "0.34.0",
-  "description": "The prep → issue → land development pipeline: framework skill, stage skills, commands, hooks, cross-family delegation, and the engineering charter.",
+  "description": "The prep → issue → land development pipeline: stage skills, hooks, cross-family delegation, and the engineering charter.",
   "author": {
     "name": "jakub"
   },

@@ -32,13 +32,11 @@ Doctrine lives in two places and no more. The charter holds what must be true in
 
 ### Stages
 
-All three pipeline commands are stages, and each stage is one file: `skills/prep-stage/SKILL.md`, `skills/issue-stage/SKILL.md`, `skills/land-stage/SKILL.md`. The body is host-neutral prose that names no host, no host-only tool, and no model, effort tier or role: it describes the shape of a seat and lets the orchestrator pick. It ends with a `## Host mechanics` section holding exactly two subsections, `### Claude Code` and `### Codex`, carrying only what genuinely differs and is not already in the charter's `## Hosts` section.
+Each stage is one file and nothing else: `skills/prep/SKILL.md`, `skills/issue/SKILL.md`, `skills/land/SKILL.md`. The skill is the invocation on both hosts - `/flow:prep` on Claude, the plugin-namespaced `prep` skill on Codex - and there is no command alias, because Claude Code resolves commands and skills in one namespace and an alias would both collide with the skill's name and re-expose a stage the model is not allowed to start. The body is host-neutral prose that names no host, no host-only tool, and no model, effort tier or role: it describes the shape of a seat and lets the orchestrator pick. It ends with a `## Host mechanics` section holding exactly two subsections, `### Claude Code` and `### Codex`, carrying only what genuinely differs and is not already in the charter's `## Hosts` section.
 
-`commands/prep.md`, `commands/issue.md` and `commands/land.md` are thin aliases: frontmatter with the tool allowance, one heading, one sentence pointing at the skill and `$ARGUMENTS`. Codex ignores a plugin's `commands/` directory, so there the human names the plugin-namespaced skill; `agents/openai.yaml` beside each sets `allow_implicit_invocation: false` because a stage that merges, opens issues, or spawns write seats must never start itself, though that suppression is unverified on the plugin-loader path and the human is the actual gate.
+Each stage carries its own `allowed-tools` line and sets `disable-model-invocation: true`; `agents/openai.yaml` beside it sets `allow_implicit_invocation: false`. Both exist because a stage that merges, opens issues or spawns write seats must never start itself, and the Codex half is unverified on the plugin-loader path, so the human is the actual gate. `skills/babysit/` is the same document shape without either gate, on purpose: it is the watch between a pushed PR and the land, and an issue run hands off to it.
 
-`skills/babysit/` is the fourth command and not a stage: the watch between a pushed PR and the land, invoked by the human or handed off from an issue run.
-
-`scripts/smoke-stage-conformance.mjs` finds stages by structure (every `skills/*-stage/`) and checks all of the above. There is no fixtures directory.
+`scripts/smoke-stage-conformance.mjs` holds the pipeline as an explicit list with each skill's gate as its value, checks all of the above, and fails if any skill outside that list carries a `## Host mechanics` section - which is what stops a fourth stage being written and quietly never linted. There is no fixtures directory.
 
 ### Executors and guards
 

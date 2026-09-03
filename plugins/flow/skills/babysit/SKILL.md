@@ -1,6 +1,7 @@
 ---
 name: babysit
 description: Watch one open pull request through external review and CI until everything is green - validate and fix reviewer findings, answer every thread, keep the branch rebased - then hand it to the land stage. Use when the human asks to monitor, watch, or babysit a PR, or when the request that launched an issue run also asked for its PR to be seen through review.
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Agent, TaskOutput, TaskStop, SendMessage, Monitor, PushNotification, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_continue
 ---
 
 # babysit - the watch between push and land
@@ -54,7 +55,7 @@ Read the subsection for your host.
 
 ### Claude Code
 
-**Argument.** `$ARGUMENTS` from the `/flow:babysit` invocation is the PR number; empty means resolve from the current branch. The human asking in words works the same.
+**Argument.** The PR number the human named in the `/flow:babysit` invocation; empty means resolve from the current branch. The human asking in words works the same.
 
 **Waiting.** Prefer a real wait over a hot poll: the Monitor tool with an until-condition over the PR's checks and comments, or a scheduled wakeup where the session offers one, and bounded `gh` polls otherwise. A monitor that errors or times out is UNKNOWN, not quiet - re-read the PR before trusting it.
 

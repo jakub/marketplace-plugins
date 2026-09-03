@@ -1,10 +1,11 @@
 ---
-name: land-stage
+name: land
 description: Land one named pull request through the flow gates - the CI and unresolved-thread checks, the escape-hatch ack, the squash-merge, explicit issue closure, worktree retirement, and a survey of what to do next. The only merge path. MUST only run when the human explicitly asks to land a specific PR; never start it from adjacent work, a finished review, or a green build.
 disable-model-invocation: true
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(node:*), Bash(docker:*), Bash(ls:*), Read, Edit, AskUserQuestion
 ---
 
-# land-stage - the human gate
+# land - the human gate
 
 This stage is the back of the prep → issue → land process. The issue run stopped at an open PR and left it there; once the human is happy with it, this stage runs the closing ritual: the gates, the merge, the cleanup, and a survey of what to do next.
 
@@ -132,12 +133,12 @@ Read the subsection for your host: the argument and the tool allowance are all t
 
 ### Claude Code
 
-**Argument.** `$ARGUMENTS` from the `/flow:land` invocation is the PR number; empty means the current branch. The human typed the command, and that is the request. A green build in the transcript is not one.
+**Argument.** The PR number the human named in the `/flow:land` invocation; empty means the current branch. The human typed that invocation, and it is the request. A green build in the transcript is not one.
 
-**Allowance notes.** `Bash(node:*)` is in the alias for the gate and merge executors; `Bash(docker:*)` and `Bash(ls:*)` are there for repo teardown and nothing else. The memory stamp is the Edit tool on the note under `~/.claude/projects/<slug>/memory/`.
+**Allowance notes.** `Bash(node:*)` is in this skill's allowance for the gate and merge executors; `Bash(docker:*)` and `Bash(ls:*)` are there for repo teardown and nothing else. The memory stamp is the Edit tool on the note under `~/.claude/projects/<slug>/memory/`.
 
 ### Codex
 
-**Argument.** The PR number in the human's message naming the plugin's `land-stage` skill or asking for the land in words; there is no slash command here. Empty means the current branch.
+**Argument.** The PR number in the human's message naming the plugin's `land` skill or asking for the land in words; there is no slash command here. Empty means the current branch.
 
 **Allowance notes.** There is no per-skill tool allowance on this host; the session's sandbox and approval policy apply as they are. The memory stamp is an ordinary file edit.

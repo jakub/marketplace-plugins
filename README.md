@@ -97,8 +97,7 @@ Two timers run in the background once `/flow:flow setup` has armed them: a night
 | Path | What's there |
 |---|---|
 | `plugins/flow/charter/charter.md` | The engineering charter. |
-| `plugins/flow/commands/` | `prep.md`, `issue.md` and `land.md`, each only an alias to its stage. |
-| `plugins/flow/skills/prep-stage/`, `skills/issue-stage/`, `skills/land-stage/` | One `SKILL.md` per stage: the steps written once for both hosts, then a `## Host mechanics` section per host. |
+| `plugins/flow/skills/prep/`, `skills/issue/`, `skills/land/` | One `SKILL.md` per stage, and the invocation on both hosts: the steps written once, then a `## Host mechanics` section per host. |
 | `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool, and a report the orchestrator checks against git), `code-architect`, `code-reviewer`, and `bridge` (the transport seat for a call across the family bridge: the delegate tools and nothing else, returning the envelope verbatim). Models and efforts are chosen by the orchestrator at spawn. |
 | `plugins/flow/skills/flow/` | `/flow:flow setup`, `/flow:flow drift`, `/flow:flow labels`, `/flow:flow charter`, `/flow:flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/skills/delegate/` | `flow:delegate` - how a cross-family call works: attached against detached delivery, the review mode, the envelope, the approval fork. |

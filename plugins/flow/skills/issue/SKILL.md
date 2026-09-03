@@ -1,10 +1,11 @@
 ---
-name: issue-stage
+name: issue
 description: Hands-off implementation of one ready-for-agent issue, through a pushed, reviewed, evidenced PR and no further. The orchestrator composes the seat fabric per issue, contains every writer, journals every call to the issue, and never merges. MUST only run when the human explicitly asks to run a specific issue number; never start it from adjacent work, a finished prep, a discovered defect, or a survey of what to do next.
 disable-model-invocation: true
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Workflow, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_continue, mcp__plugin_flow_flow_delegate__delegation_doctor
 ---
 
-# issue-stage - the autonomous middle of the prep → issue → land process
+# issue - the autonomous middle of the prep → issue → land process
 
 Prep hardened the issue. This stage drives it, hands-off, to a pushed, reviewed, evidenced PR and stops there. The land stage is the only merge path.
 
@@ -191,7 +192,7 @@ Read the subsection for your host.
 
 ### Claude Code
 
-**Argument.** `$ARGUMENTS` from the `/flow:issue` invocation. Empty, or anything that is not a positive integer, aborts with usage and mutates nothing. `Bash(node:*)` is in the alias's allowance for the claim helper, the tree snapshot, and the orchestrator's own scratch scripts.
+**Argument.** The issue number the human named in the `/flow:issue` invocation. Empty, or anything that is not a positive integer, aborts with usage and mutates nothing. `Bash(node:*)` is in this skill's allowance for the claim helper, the tree snapshot, and the orchestrator's own scratch scripts.
 
 **Workspace boundary.** The session's workspace roots are the directory the session was opened in plus anything the human added, and the delegation server reads them over `roots/list`. The sibling worktree is inside the boundary whenever the repository is.
 
@@ -205,7 +206,7 @@ Read the subsection for your host.
 
 ### Codex
 
-**Argument.** The number in the human's message naming the plugin's `issue-stage` skill or asking in words to run an issue. A bare integer or `#N` in that request is the subject, and a message that mentions `#N` while describing something else suspends the turn to ask which. There is no per-skill tool allowance here; the session's sandbox and approval policy apply as they are, to you and to every native child.
+**Argument.** The number in the human's message naming the plugin's `issue` skill or asking in words to run an issue. A bare integer or `#N` in that request is the subject, and a message that mentions `#N` while describing something else suspends the turn to ask which. There is no per-skill tool allowance here; the session's sandbox and approval policy apply as they are, to you and to every native child.
 
 **Workspace boundary.** Two roots can diverge on this host. The bridge root is the launch shell's PWD, because this host's MCP client advertises no roots. The session root is the cwd this session runs in, which `codex -C` sets; it is the sandbox root for your own writes and for every native `spawn_agent` child. `cd parent; codex -C repo` splits them: the sibling worktree under `parent` then passes every delegation check while no native seat can write a byte in it, so preflight goes green and the run dies at `git worktree add`. Read the session root from the session's own cwd, never from PWD, and treat diverged roots as a stop. The intended worktree sits inside the session root only when the session was launched from the directory HOLDING the repository with no `-C`; launched at the repository root, `git worktree add` writes outside the sandbox. Say that at preflight, name the directory to relaunch from, and stop: do not claim the issue first, and do not move the worktree inside the repository to get around it.
 
