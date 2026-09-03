@@ -79,17 +79,11 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
   `plugins/flow/.claude-plugin/plugin.json`) - a stale install means sessions run an old
   charter.
 - Charter delivery: run `node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs session claude 1`
-  and read its first line. The script prints a `<!-- flow-charter WARNING: ... -->` comment
-  naming any half at or over 9,000 characters, so read that instead of piping to `wc`: the
-  nightly lint allows this script only at that exact absolute path and refuses pipelines.
-  Claude Code caps one hook's stdout at 10,000 and replaces anything larger with a 2KB
-  preview plus a file path, which is why the charter ships as two SessionStart hooks; a half
-  over the cap means sessions run on a fragment while the `<flow-charter>` presence check in
-  the global CLAUDE.md still passes. The script resolves the charter through
-  `CLAUDE_PLUGIN_ROOT`, so this measures the installed charter, not the working tree's; the
-  version-skew bullet above is what tells you whether those are the same file. The same script
-  in `subagent` mode is what every spawned seat reads, so a charter that lost its seat-rules
-  marker line leaves seats with no rules at all; `smoke-charter-conformance.mjs` is the check.
+  and read its first line; a `<!-- flow-charter WARNING: ... -->` comment names any half at or
+  over 9,000 characters (the nightly lint allows this script only at that exact absolute path and
+  refuses pipelines, so read the line rather than piping to `wc`). It measures the installed
+  charter, not the working tree's; the version-skew bullet above says whether those differ.
+  `smoke-charter-conformance.mjs` is the full check, subagent mode included.
 - Facts with `as-of` dates older than a quarter (the model rankings, the Codex App Server
   protocol): flag for re-verification.
 - `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-delegation.mjs` passes. The smoke test uses a local
