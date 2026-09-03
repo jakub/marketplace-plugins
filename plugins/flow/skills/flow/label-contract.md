@@ -91,7 +91,7 @@ auto-implementation; keep it strict.
    drifted colors, rewrite drifted descriptions. Delete nothing; labels outside the closed
    taxonomy are reported as drift for a human to remove.
 2. For every open `ready-for-agent` issue: read it with `updatedAt` in the JSON, validate
-   the six contract points (a scoped sonnet agent per issue; judgment calls escalate to the
+   the six contract points (a scoped read-only seat per issue; judgment calls escalate to the
    orchestrator). Non-conforming → `scripts/lint-actions.mjs demote-unready <repo> <n>
    --seen <that updatedAt> <the failed point>`, which refuses an issue that moved since,
    moves it to `needs-triage`, and comments.

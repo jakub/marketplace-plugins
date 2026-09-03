@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 This stage is the entry point for all new development work. The subject is either an issue number - well-defined or a bare placeholder - or free text: an idea, a spike, a mid-development deviation.
 
-Everything up to `## Host mechanics` is the same on every host; read your host's subsection there before step 1. Picking a seat, asking the human a question and reaching the other model family are all the charter's. This file names the shape of a seat it wants, never a model.
+Everything up to `## Host mechanics` is the same on every host; read your host's subsection there before step 1. Picking a seat, asking the human a question and reaching the other model family are all the charter's.
 
 The implementation stage runs hands-off, so the issue has to carry everything a cold implementer in a new session would need.
 
@@ -118,7 +118,7 @@ One line naming the outcome - design-hardened and ready for the implementation s
 
 ## Host mechanics
 
-Everything above is host-neutral, and what the charter already says about your host stays there. These subsections carry only what this stage needs and the charter does not say.
+Read the subsection for your host.
 
 ### Claude Code
 

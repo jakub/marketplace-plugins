@@ -46,7 +46,11 @@ it to its Git worktree root before granting the provider anything. A path outsid
 writer. No plugin hook fires inside a delegated job: the delegated Claude query loads no
 settings, plugins or skills, and the delegated Codex thread has plugin loading and every
 discovered MCP server disabled. A `workspace-write` job leases that worktree exclusively, so a
-second one fails with `WORKSPACE_BUSY` before a provider starts.
+second one fails with `WORKSPACE_BUSY` before a provider starts. A `workspace-write` job in a
+linked worktree can edit but not commit: the worktree's object store and refs live in the parent
+repository's git directory outside the grant, and network is off. The caller commits what the
+job edited, staging only that job's paths. Nothing denies `git checkout .` or `git clean -f`
+inside the grant, so never point a writer at a worktree holding another seat's uncommitted work.
 
 `delivery` is `attached` or `detached`. Attached blocks the tool call, streams progress, and
 returns the finished envelope. Detached returns a job id straight away; poll `delegation_status`

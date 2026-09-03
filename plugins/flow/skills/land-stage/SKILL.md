@@ -128,7 +128,7 @@ Take no action on any of it. The survey is a menu for the human to pick from.
 
 ## Host mechanics
 
-Everything above is host-neutral, and what the charter already says about your host stays there. These subsections carry the argument and the tool allowance, which is all that differs.
+Read the subsection for your host: the argument and the tool allowance are all that differ.
 
 ### Claude Code
 
