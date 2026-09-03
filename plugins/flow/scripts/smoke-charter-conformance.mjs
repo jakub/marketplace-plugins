@@ -22,7 +22,9 @@ import {
   CODEX_CHARTER_BYTE_BUDGET,
   CODEX_PROFILE_BYTE_BUDGET,
   NO_BINDINGS_NOTE,
+  charterSection,
 } from '../lib/charter-payload.mjs'
+import { DELEGATED_CHARTER_HEADING } from '../src/delegation/instructions.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CHARTER = join(ROOT, 'charter')
@@ -347,6 +349,13 @@ assert.ok(Buffer.byteLength(charter) < CODEX_CHARTER_BYTE_BUDGET, `the charter i
 assert.ok(Buffer.byteLength(codexProfile) < CODEX_PROFILE_BYTE_BUDGET, `the Codex profile block is ${Buffer.byteLength(codexProfile)} bytes, over the ${CODEX_PROFILE_BYTE_BUDGET}-byte budget`)
 ok(`the Codex payload is ${Buffer.byteLength(charter)} bytes of charter and ${Buffer.byteLength(codexProfile)} bytes of profile, both under budget`)
 
+// A delegated seat is handed one charter section and no profile, so the section must exist and
+// must name no role. instructions.mjs refuses to load otherwise; this names the reason first.
+const delegated = charterSection(charter, DELEGATED_CHARTER_HEADING)
+assert.ok(delegated !== null, `the charter has no "## ${DELEGATED_CHARTER_HEADING}" section, and that is the one a delegated seat is handed`)
+assert.ok(!delegated.includes('[[role:'), `the "${DELEGATED_CHARTER_HEADING}" section names a role, and no binding profile rides with it`)
+ok(`the delegated-seat section is ${Buffer.byteLength(delegated)} bytes of the charter's ${Buffer.byteLength(charter)}, and names no role`)
+
 // A root with no charter/profiles/ still emits a block and exits 0: execFileSync throws on a
 // non-zero exit, so reaching the assertions is the exit check.
 const bare = mkdtempSync(join(tmpdir(), 'flow-charter-conformance-'))
@@ -512,3 +521,12 @@ for (const { label, problems: run, name } of CASES) {
 }
 
 console.log(`\ncharter conformance: ALL PASS (${checks} checks)`)
+
+console.log('charterSection')
+assert.equal(charterSection('# x\n\n## A\nbody\n', 'B'), null, 'a missing heading must read null')
+assert.equal(charterSection('## A\na\n## B\nb\n</flow-charter>\n', 'B'), '## B\nb\n', 'the section must stop at the closing tag')
+assert.equal(charterSection('## A\na\n## B\nb\n', 'A'), '## A\na\n', 'the section must stop at the next heading')
+assert.equal(charterSection('## A\na\n', 'A'), '## A\na\n', 'the last section runs to the end of the text')
+assert.equal(charterSection('## A\na\n```markdown\n## not a heading\n```\nb\n## B\nc\n', 'A'), '## A\na\n```markdown\n## not a heading\n```\nb\n', 'a heading inside a fenced example must not end the section')
+assert.equal(charterSection('## A\na\n~~~\n## not a heading\n```\n## still fenced\n~~~\nb\n## B\n', 'A'), '## A\na\n~~~\n## not a heading\n```\n## still fenced\n~~~\nb\n', 'only a matching fence closes a fenced example')
+ok('charterSection reads null for a missing heading, stops at the next heading or the closing tag, and reads through a fenced example')

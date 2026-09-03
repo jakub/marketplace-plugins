@@ -60,13 +60,13 @@ If you have flow or gripe registered in both Claude Code and Codex, update both 
 
 Gripe's `~/.local/bin/gripe` shim carries a protocol epoch marker, and the SessionStart hook that maintains it replaces a shim whose marker is missing, lower, or unparseable, repairs one whose marker matches but whose bytes have drifted, and leaves a strictly higher one alone. That ratchet lives in the shim's own code, so a harness still registered on gripe 0.2.x has no ratchet at all. Its SessionStart hook overwrites whatever it finds, including the newer shim you just installed, and you end up with a shim that flips back and forth depending on which harness you last opened.
 
-The same reasoning is why the shim running the newest install it can find is mitigation and not a guarantee. Hooks import their own install's storage code directly and never run through the shim, so an old hook can still open the database whatever the shim decides. The durable guarantee sits underneath. Schema migrations are numbered and additive only, and code older than the database refuses to touch it and exits 0 with one stderr line rather than corrupting it.
+The same reasoning is why the shim running the newest install it can find is mitigation and not a guarantee. Hooks import their own install's storage code directly and never run through the shim, so an old hook can still open the database whatever the shim decides. The durable guarantee sits underneath. Schema migrations are numbered and additive only, and code older than the database refuses to touch it rather than corrupting it: `gripe add` still exits 0 with one stderr line, and the read commands report the failure.
 
 ## Plugins
 
 | Plugin | Install | What it is |
 |---|---|---|
-| **flow** | `flow@jakub` | This is my main agentic development process. It runs through three stages: `prep` (scope, design, refine) → `issue` (hands-off all the way to a reviewed, evidenced PR) → `land` (ceremony to do final checks, rebase, and merge it in.) |
+| **flow** | `flow@jakub` | This is my main agentic development process. It runs through three stages: `prep` (scope, design, refine) → `issue` (hands-off all the way to a reviewed, evidenced PR) → `land` (final checks and a pinned squash merge). |
 | **grill** | `grill@jakub` | Used by `prep` to hammer out the issue design. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT). |
 | **unslop** | `unslop@jakub` | Cuts AI tells from writing. ***Under evaluation.*** Adds Claude and Codex hooks to forcefully inject the skill into agents and subagents instead of relying on front matter. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
 | **gripe** | `gripe@jakub` | A circular filing cabinet for the agents. If they hit friction during a task, repeat errors, or are just unhappy about something they're either encouraged to file a gripe, or where possible, a Claude or Codex hook does it for them. |
@@ -74,11 +74,11 @@ The same reasoning is why the shim running the newest install it can find is mit
 ## flow
 **flow** is my attempt at an agentic development framework. It consists of a charter, three commands, and a couple of hooks. It's by no means perfect, but produces code I can live with.
 
-The charter is injected into every agent (at `SessionStart`), and defines *how* we work together. It attempts to give the agent guidance on how to delegate and pick models for subagent calls, some general rules of engagement, and some requirements that must be met.
+The charter is injected into the main session at `SessionStart`, and defines *how* we work together. A fresh worker seat doesn't inherit it (only a fork of the orchestrator's own context does): the orchestrator carries the rules a seat needs into its prompt, and a seat reached across the bridge gets the charter's engineering-rules section plus the containment contract. It attempts to give the agent guidance on how to delegate and pick models for subagent calls, some general rules of engagement, and some requirements that must be met.
 
-The orchestrator (Fable) is then allowed to flex what resources it allocates to what problem, and when, instead of running a hard-coded pipeline. The agent scoring table idea is stolen from @Theo.
+The orchestrator (whichever model the session was launched with) is then allowed to flex what resources it allocates to what problem, and when, instead of running a hard-coded pipeline. The agent scoring table idea is stolen from @Theo.
 
-We also integrate the other model family as an almost-first-class participant. Claude can delegate to Codex, Codex can delegate to Claude, and both routes keep durable jobs, typed results, cancellation, and native context continuation. We use GPT-5.6 Sol and Daybreak Blue for adversarial reviews, second opinions, and competing designs.
+We also integrate the other model family as an almost-first-class participant. Claude can delegate to Codex, Codex can delegate to Claude, and both routes keep durable jobs, typed results, cancellation, and native context continuation. We use GPT-5.6 Sol for adversarial reviews, second opinions, and competing designs, and Daybreak Blue for the security seat.
 
 ---
 
@@ -88,7 +88,7 @@ Three commands in order:
 
 `/flow:issue` is the automated part. The orchestrator again spins up subagents to do code design against the spec, a write seat native to the orchestrating host's family or reached across the bridge, and most importantly - evidence production. Whichever family wrote a diff, a seat from the other one reviews it before it ships: a shadow reader triaging at milestone boundaries, then an adversarial pass over the finished diff before convergence. The reviewing family is always the one that didn't write the diff, so which family that is shifts with the host's native seats and the bridge, and the ban never does. The acceptance criteria can only be signed off if there's a specific test, Actions log entry, screenshot, or end-to-end Playwright test that confirms it.
 
-`/flow:land` is the human gate and the only merge path. We run CI and review-thread checks, rebase, squash merge, cleanup, and then perform a survey of what tasks are up next.
+`/flow:land` is the human gate and the only merge path. A read-only executor re-reads the live PR state (the CI rollup, every review thread, stacking, auto-merge arming), the stage squash-merges pinned to the head those gates ran against, cleans up, and then surveys what tasks are up next.
 
 All three run on Codex too. Each one is a single stage skill: one host-neutral body, then a `## Host mechanics` section at the end that names the seats, models and calls for the host in use. The slash command is a one-sentence alias to that file.
 
@@ -99,7 +99,7 @@ Two timers run in the background once `/flow:flow setup` has armed them: a night
 | `plugins/flow/charter/charter.md` | The engineering charter. |
 | `plugins/flow/commands/` | `prep.md`, `issue.md` and `land.md`, each only an alias to its stage. |
 | `plugins/flow/skills/prep-stage/`, `skills/issue-stage/`, `skills/land-stage/` | One `SKILL.md` per stage: the steps written once for both hosts, then a `## Host mechanics` section per host. |
-| `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool and a fixed schema output), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
+| `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool, and a report the orchestrator checks against git), `code-architect`, and `code-reviewer`. Models and efforts are chosen by the orchestrator at spawn. |
 | `plugins/flow/skills/flow/` | `/flow:flow setup`, `/flow:flow drift`, `/flow:flow labels`, `/flow:flow charter`, `/flow:flow cron` - not needed day-to-day, housekeeping tasks. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
 | `plugins/flow/hooks/` | Claude and Codex hook registrations and adapters: charter injection, unsanctioned-issue prevention, protected-file checks, publication gates, and destructive Git guards. |

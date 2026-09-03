@@ -44,7 +44,7 @@ model is kept intact. The check is inline in the vendored text because a model c
 own tool list. The same patch gives `grill-with-docs`'s one-line body a second sentence:
 without a Skill tool, read `../grilling/SKILL.md` and `../domain-modeling/SKILL.md` and
 follow both. Those paths are relative to the file that names them, which is why they climb
-a level. Its last hunk flips `allow_implicit_invocation` in
+a level. Its second hunk flips `allow_implicit_invocation` in
 `grill-with-docs/agents/openai.yaml` from false to true, which is the Codex half of the
 decision 0004 makes on the Claude side; upstream ships that flag paired with the
 `disable-model-invocation: true` that 0004 removes.

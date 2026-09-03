@@ -78,7 +78,8 @@ design decisions rather than among them.
 
 `node:sqlite` needs Node 24 or newer. It exists from 22.5 but throws on import without
 `--experimental-sqlite` until 23.4, so "built into Node 22" is wrong in the way that costs an
-afternoon. Check the version at startup and exit 0 with one stderr line below the floor.
+afternoon. Check the version at startup. Below the floor, `add` exits 0 with one stderr
+line and the read commands exit 1 with the same line.
 
 WAL allows concurrent readers alongside a single writer. It does not let parallel subagents
 write at once, and a twenty-agent fan-out will try. Measured with twenty processes each holding
@@ -96,9 +97,9 @@ failure, and `PRAGMA user_version` set at creation.
 
 `user_version` is a ladder, not a label. On open, code newer than the database applies
 numbered additive migrations inside one transaction. Code older than the database refuses to
-touch it and exits 0 with one stderr line, per invariant 1. The shim always resolves newest,
-so old-code-new-database only happens when `$GRIPE_HOME` points a stale working tree at a
-production file, and refusing beats corrupting.
+touch it: `add` exits 0 with one stderr line per invariant 1, and the read commands exit 1.
+The shim always resolves newest, so old-code-new-database only happens when `$GRIPE_HOME`
+points a stale working tree at a production file, and refusing beats corrupting.
 
 ## Schema
 
@@ -163,10 +164,12 @@ runs as shell commands, auto-approved under the very allowlist invariant 2 requi
 Attacker text is written before the delimiter exists, so it cannot contain it.
 
 Every flag is a literal the advertising hook bakes into the recipe at advertisement time,
-never a value the agent chooses: `--via` always, the rest when the hook knows them at that
-moment (SubagentStart knows the agent and prompt, an error nudge knows the trigger and
-prompt). Absent `--via` means `spontaneous`. `--via observed` and unknown values coerce to
-`spontaneous` with one stderr line, because the observed lane belongs to hooks.
+never a value the agent chooses: `--via` on the nudge and checkpoint recipes, the rest when
+the hook knows them at that moment (SubagentStart knows the agent and prompt, an error nudge
+knows the trigger and prompt). The plain advertisements omit `--via`, because an unprompted
+filing is spontaneous whoever writes it. Absent `--via` means `spontaneous`. `--via observed`
+and unknown values coerce to `spontaneous` with one stderr line, because the observed lane
+belongs to hooks.
 
 Human-facing, never advertised to agents:
 
@@ -245,8 +248,9 @@ context, and the charter is injected by exactly this kind of hook.
 ### SubagentStart
 
 The same advertisement for subagents, which is the only reason they hear about gripe at all.
-Payload is `{ agent_id, agent_type }` and it accepts `additionalContext`. Bake `--agent` and
-`--prompt` into the advertised recipe so attribution survives; a subagent lives inside one
+The hook reads `agent_id` and `prompt_id` (Claude) or `turn_id` (Codex) from the payload,
+and it accepts `additionalContext`. Bake `--agent` and `--prompt` into the advertised
+recipe so attribution survives; a subagent lives inside one
 prompt, so both stay valid for its whole life, and the agent copies a literal rather than
 deciding anything.
 
