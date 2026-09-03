@@ -63,10 +63,10 @@ const roleMarkers = (files) => files
   .filter(([, body]) => body.includes('[[role:'))
   .map(([at]) => `${at} writes a [[role:...]] marker, and role markers are gone`)
 
-const emit = (args, root, input = '') => execFileSync(
+const emit = (args, root, input = '', env = { CLAUDE_PLUGIN_ROOT: root, PLUGIN_ROOT: root }) => execFileSync(
   process.execPath,
   [join(ROOT, 'hooks', 'scripts', 'inject-charter.mjs'), ...args],
-  { env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, PLUGIN_ROOT: root }, encoding: 'utf8', input },
+  { env: { ...process.env, ...env }, encoding: 'utf8', input },
 )
 
 let checks = 0
@@ -115,6 +115,14 @@ const codex = emit(['session', 'codex'], ROOT)
 assert.equal(codex, charter, 'the Codex SessionStart payload is not the charter verbatim')
 assert.ok(Buffer.byteLength(codex) < CODEX_INLINE_BYTE_BUDGET, `the Codex payload is ${Buffer.byteLength(codex)} bytes, over the ${CODEX_INLINE_BYTE_BUDGET}-byte inline budget`)
 ok(`the Codex payload is the charter verbatim, ${Buffer.byteLength(codex)} bytes, under the inline budget`)
+
+// A Codex process launched from a Claude shell inherits CLAUDE_PLUGIN_ROOT, which may name another
+// install or nothing at all, so the declared host has to decide which root variable wins.
+const divergent = emit(['session', 'codex'], ROOT, '', { PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_ROOT: join(tmpdir(), 'flow-no-such-root') })
+assert.equal(divergent, charter, 'a Codex session read the charter from CLAUDE_PLUGIN_ROOT instead of PLUGIN_ROOT')
+const divergentClaude = emit(['session', 'claude', '1'], ROOT, '', { CLAUDE_PLUGIN_ROOT: ROOT, PLUGIN_ROOT: join(tmpdir(), 'flow-no-such-root') })
+assert.ok(divergentClaude.includes('# Flow Engineering Charter'), 'a Claude session read the charter from PLUGIN_ROOT instead of CLAUDE_PLUGIN_ROOT')
+ok('each host reads its own root variable first when the two diverge')
 
 // A delegated job gets the same bytes a native seat gets, from the same function. Nothing is
 // reworded on the way, so there is nothing to drift.

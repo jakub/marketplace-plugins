@@ -38,13 +38,18 @@ async function main() {
   const mode = process.argv[2]
   const host = process.argv[3] || 'claude'
   const fallback = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-  const root = process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT || fallback
-  const charter = readFileSync(join(root, 'charter', 'charter.md'), 'utf8')
-
   if (!['claude', 'codex'].includes(host)) {
     process.stderr.write(`inject-charter: expected host "claude" or "codex", got ${JSON.stringify(host)}\n`)
     return
   }
+  // Each host exports its own root variable, and a Codex process launched from a Claude shell can
+  // inherit CLAUDE_PLUGIN_ROOT pointing at another install, so the declared host decides which
+  // variable is read first.
+  const preferred = host === 'codex'
+    ? [process.env.PLUGIN_ROOT, process.env.CLAUDE_PLUGIN_ROOT]
+    : [process.env.CLAUDE_PLUGIN_ROOT, process.env.PLUGIN_ROOT]
+  const root = preferred.find(Boolean) || fallback
+  const charter = readFileSync(join(root, 'charter', 'charter.md'), 'utf8')
 
   if (mode === 'session') {
     if (host === 'codex') {
