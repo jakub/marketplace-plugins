@@ -24466,7 +24466,7 @@ function signalTrackedProcessTree(rootPid, knownDescendants, signal) {
 }
 
 // src/delegation/version.mjs
-var VERSION = true ? "0.35.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
+var VERSION = true ? "0.36.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
 
 // src/delegation/app-server.mjs
 var APPROVAL_METHODS = /* @__PURE__ */ new Set([
