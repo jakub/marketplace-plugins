@@ -54,7 +54,11 @@ inside the grant, so never point a writer at a worktree holding another seat's u
 
 `delivery` is `attached` or `detached`. Attached blocks the tool call, streams progress, and
 returns the finished envelope. Detached returns a job id straight away; poll `delegation_status`
-or read `delegation_result` later.
+or read `delegation_result` later. On Claude Code, detached is for a job you will not wait on:
+nothing notifies the session when it ends, and the shell cannot reach these tools, so a
+background waiter has nothing to poll but the job store's private files. A call that must run
+beside other work goes through the `flow:bridge` seat with `attached` delivery, which returns
+the envelope as a task notification when the job ends (see "Running a call beside other work").
 
 `mode` is `task` or `adversarial-review`. Review requires `base` and takes `head` (default
 `HEAD`), and Flow resolves both to full commit ids before the worker starts, so the diff under
