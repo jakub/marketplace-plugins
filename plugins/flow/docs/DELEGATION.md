@@ -64,8 +64,10 @@ own component version rather than the CLI's.
 ## Job record
 
 Flow stores data under `${XDG_STATE_HOME}/flow/delegation`, or `~/.local/state/flow/delegation`
-when unset; tests replace it with `FLOW_DELEGATION_STATE_DIR`. `jobs.sqlite3` uses WAL mode,
-foreign keys, a busy timeout and a schema version.
+when unset; tests replace it with `FLOW_DELEGATION_STATE_DIR`. `jobs.sqlite3` uses WAL mode with
+`synchronous=NORMAL`, foreign keys, a busy timeout (5 s in the MCP server, 30 s in a worker, which
+answers nobody and must not lose a journal write to a lock) and a schema version. Every MCP server
+and worker on the machine shares the one file.
 
 A database written by an older Flow is dropped and recreated rather than migrated: it holds at
 most 14 days of history, and a migration ladder for rows nobody reads is more risk than the rows

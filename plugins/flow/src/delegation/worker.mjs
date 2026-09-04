@@ -3,8 +3,14 @@ import { runCodexJob } from './codex-worker.mjs'
 import { DelegationError, TERMINAL_STATES, publicError } from './contracts.mjs'
 import { JobStore, processStartToken, serviceLog } from './store.mjs'
 
+// The MCP server answers a host in the foreground and keeps the store's 5 s wait. A worker
+// answers nobody, so it waits out a long lock rather than losing a heartbeat or a journal
+// line to one. A worker blocked here stops heartbeating, and recovery already tolerates
+// that: it checks the pid and its start token before touching a job with a stale heartbeat.
+const WORKER_BUSY_TIMEOUT_MS = 30_000
+
 export async function runWorker(options) {
-  const store = new JobStore(options.stateDir)
+  const store = new JobStore(options.stateDir, { busyTimeoutMs: WORKER_BUSY_TIMEOUT_MS })
   let target
   try {
     target = store.requireJob(options.jobId).target
@@ -29,7 +35,7 @@ export async function runWorker(options) {
  * written out twice they drifted, and the half that drifted was the cleanup.
  */
 async function runProviderJob({ jobId, stateDir, createAdapter }) {
-  const store = new JobStore(stateDir)
+  const store = new JobStore(stateDir, { busyTimeoutMs: WORKER_BUSY_TIMEOUT_MS })
   let job
   try {
     job = store.claim(jobId, process.pid, processStartToken(process.pid))
@@ -51,7 +57,7 @@ async function runProviderJob({ jobId, stateDir, createAdapter }) {
   let activeControlPoll = Promise.resolve()
   let signalStopping = false
   let quarantined = false
-  const signalHandlers = []
+  const processHandlers = []
 
   const recordBackgroundFailure = (error) => {
     try { store.recordInternalError(jobId, error) } catch {
@@ -91,17 +97,14 @@ async function runProviderJob({ jobId, stateDir, createAdapter }) {
     // A kill mid-turn skips the cooperative interrupt. The child dies BEFORE the job is
     // marked, because finish() releases the write lease and a writer must never outlive it;
     // an accepted write with no native terminal proof is unknown, never failed.
-    const onSignal = async (signal) => {
+    const onFatal = async (error) => {
       if (signalStopping) return
       signalStopping = true
       try {
         const current = live()
         if (current) {
           const unproven = acceptedWriteOn(current) && !adapter.nativeTerminal()
-          await settle(unproven ? 'unknown' : 'failed', {
-            error: { kind: 'INTERRUPTED', message: `The ${adapter.provider} delegation worker received ${signal}.`, details: null },
-            usage: adapter.usage(),
-          })
+          await settle(unproven ? 'unknown' : 'failed', { error, usage: adapter.usage() })
         }
       } catch {}
       try { adapter.cleanup({ quarantined }) } catch {}
@@ -111,17 +114,32 @@ async function runProviderJob({ jobId, stateDir, createAdapter }) {
       try { process.kill(-process.pid, 'SIGKILL') } catch {}
       process.exit(1)
     }
+    const abandon = (error) => {
+      recordBackgroundFailure(error)
+      adapter.killProvider()
+      try { process.kill(-process.pid, 'SIGKILL') } catch {}
+      process.exit(1)
+    }
     for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
       const handler = () => {
-        void onSignal(signal).catch((error) => {
-          recordBackgroundFailure(error)
-          adapter.killProvider()
-          try { process.kill(-process.pid, 'SIGKILL') } catch {}
-          process.exit(1)
-        })
+        void onFatal({ kind: 'INTERRUPTED', message: `The ${adapter.provider} delegation worker received ${signal}.`, details: null }).catch(abandon)
       }
-      signalHandlers.push([signal, handler])
+      processHandlers.push([signal, handler])
       process.on(signal, handler)
+    }
+    // The worker runs detached with its stdio discarded, so an exception nobody caught ended
+    // the process with no record anywhere, left the provider running until recovery noticed
+    // the missing heartbeat, and had the orphaned turn read as INTERRUPTED. The service log
+    // gets the stack first, because a journal write can be the very thing that threw; the job
+    // then ends the way a signal ends it, provider tree first.
+    const onCrash = (error) => {
+      serviceLog(stateDir, `${adapter.provider} worker crashed on job ${jobId}: ${error?.stack || error}`)
+      recordBackgroundFailure(error)
+      void onFatal({ kind: 'WORKER_EXIT', message: `The ${adapter.provider} delegation worker crashed.`, details: null }).catch(abandon)
+    }
+    for (const event of ['uncaughtException', 'unhandledRejection']) {
+      processHandlers.push([event, onCrash])
+      process.on(event, onCrash)
     }
 
     const pollControls = () => {
@@ -182,7 +200,7 @@ async function runProviderJob({ jobId, stateDir, createAdapter }) {
       serviceLog(stateDir, `${adapter.provider} worker could not quarantine provider processes for ${jobId}: ${error?.stack || error}`)
     }
     try { adapter.cleanup({ quarantined }) } catch (error) { recordBackgroundFailure(error) }
-    for (const [signal, handler] of signalHandlers) process.off(signal, handler)
+    for (const [event, handler] of processHandlers) process.off(event, handler)
     store.close()
   }
 }

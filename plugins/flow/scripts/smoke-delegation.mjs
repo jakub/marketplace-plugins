@@ -1030,6 +1030,21 @@ try {
   await delay(1_200)
   assert.equal(existsSync(join(repo, 'codex-detached-survivor')), false)
 
+  // A write lock held past the MCP server's 5 s busy timeout used to end a worker at its
+  // first blocked write. The worker waits it out; the job succeeds and journals no failure.
+  console.log('worker outlives a held write lock')
+  const lockedState = state('locked-store')
+  const lockedJob = await startJob({ prompt: 'run under a held write lock', delivery: 'detached' }, { stateDir: lockedState })
+  const locker = new DatabaseSync(join(lockedState, 'jobs.sqlite3'), { timeout: 5_000 })
+  locker.exec('BEGIN IMMEDIATE')
+  await delay(7_000)
+  locker.exec('COMMIT')
+  locker.close()
+  const survived = await waitFor(lockedJob.jobId, lockedState, 'succeeded')
+  assert.equal(survived.output, 'OK from fake Codex')
+  const lockedEvents = await eventsOf(lockedJob.jobId, {}, { stateDir: lockedState })
+  assert.deepEqual(lockedEvents.filter((event) => event.type === 'internal.error'), [])
+
   const recoveryState = state('recovery')
   const recoverable = await startJob({ prompt: 'complete' }, { stateDir: recoveryState })
   const recoveryDb = new DatabaseSync(join(recoveryState, 'jobs.sqlite3'))
@@ -1078,7 +1093,7 @@ try {
   assert.equal(unknownContinuation.error.kind, 'UNKNOWN_JOB')
 
   console.log('recovered turn classification')
-  const recoveredOutcome = async (name, mode, { cancelRequested = false } = {}) => {
+  const recoveredOutcome = async (name, mode, { cancelRequested = false, events = [] } = {}) => {
     const stateDir = state(name)
     const job = await startJob({ prompt: 'complete' }, { stateDir })
     const db = new DatabaseSync(join(stateDir, 'jobs.sqlite3'))
@@ -1088,12 +1103,24 @@ try {
       db.prepare(`INSERT INTO controls (job_id, type, payload_json, created_at) VALUES (?, 'cancel', '{}', ?)`)
         .run(job.jobId, Date.now())
     }
+    for (const type of events) {
+      const seq = db.prepare('SELECT MAX(seq) + 1 AS seq FROM events WHERE job_id=?').get(job.jobId).seq
+      db.prepare(`INSERT INTO events (job_id, seq, type, payload_json, created_at) VALUES (?, ?, ?, '{}', ?)`).run(job.jobId, seq, type, Date.now())
+    }
     db.close()
     return statusOf(job.jobId, { stateDir, mode })
   }
+  // An interrupted turn with no interruption of the worker's own on record is the worker's
+  // death: Codex interrupts a turn whose client vanished.
   const interruptedRecovery = await recoveredOutcome('recovery-interrupted', 'recovery-interrupted')
   assert.equal(interruptedRecovery.status, 'failed')
-  assert.equal(interruptedRecovery.error.kind, 'INTERRUPTED')
+  assert.equal(interruptedRecovery.error.kind, 'WORKER_EXIT')
+  const stalledRecovery = await recoveredOutcome('recovery-stalled', 'recovery-interrupted', { events: ['turn.stalled'] })
+  assert.equal(stalledRecovery.status, 'failed')
+  assert.equal(stalledRecovery.error.kind, 'STALL')
+  const timedOutRecovery = await recoveredOutcome('recovery-timed-out', 'recovery-interrupted', { events: ['turn.timeout'] })
+  assert.equal(timedOutRecovery.status, 'failed')
+  assert.equal(timedOutRecovery.error.kind, 'TIMEOUT')
   const cancelledRecovery = await recoveredOutcome('recovery-cancelled', 'recovery-interrupted', { cancelRequested: true })
   assert.equal(cancelledRecovery.status, 'cancelled')
   assert.equal(cancelledRecovery.error, null)

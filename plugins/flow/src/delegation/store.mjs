@@ -179,15 +179,21 @@ function decode(row) {
 }
 
 export class JobStore {
-  constructor(stateDir = defaultStateDir()) {
+  constructor(stateDir = defaultStateDir(), { busyTimeoutMs = 5_000 } = {}) {
     this.stateDir = stateDir
     mkdirSync(stateDir, { recursive: true, mode: 0o700 })
     try { chmodSync(stateDir, 0o700) } catch {}
     this.path = join(stateDir, 'jobs.sqlite3')
     try {
-      this.db = new DatabaseSync(this.path, { timeout: 5_000 })
+      this.db = new DatabaseSync(this.path, { timeout: busyTimeoutMs })
       try { chmodSync(this.path, 0o600) } catch {}
-      this.db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;')
+      // synchronous=NORMAL fsyncs the WAL at checkpoint instead of on every commit. A commit
+      // holds the writer lock across its fsync, and every MCP server and worker on this
+      // machine shares one file, so on a saturated disk that wait ran past the busy timeout
+      // for everyone else (2026-09-04: five dead jobs behind two cargo test suites). What
+      // NORMAL gives up is the last few commits on a power loss, in a journal whose reader
+      // already tolerates a stale heartbeat.
+      this.db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;`)
       // A journal_mode switch answers SQLITE_BUSY at once and ignores busy_timeout while any
       // other connection holds the fresh database open. The mode is a durable property of the
       // file, so losing this race costs nothing: whoever wins sets WAL for everyone.
@@ -470,6 +476,15 @@ export class JobStore {
     const at = now()
     this.db.prepare('UPDATE jobs SET heartbeat_at=?, updated_at=? WHERE id=? AND status IN (\'starting\',\'running\',\'reconciling\',\'awaiting_approval\')')
       .run(at, at, id)
+  }
+
+  // Which of the worker's own interruptions preceded the turn's end. The deadline and the
+  // stall each journal their event before sending turn/interrupt, so recovery can tell them
+  // from a turn Codex ended because its client vanished.
+  interruptEvidence(jobId) {
+    const types = new Set(this.db.prepare(`SELECT DISTINCT type FROM events WHERE job_id = ? AND type IN ('turn.timeout', 'turn.stalled')`)
+      .all(jobId).map((row) => row.type))
+    return { deadlineFired: types.has('turn.timeout'), stallFired: types.has('turn.stalled') }
   }
 
   finish(id, status, { output = null, structured = null, usage = null, error = null } = {}) {

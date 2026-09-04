@@ -42,9 +42,9 @@ function codexTurnError(error) {
 }
 
 // The one fold from a native Codex turn to a job outcome. The live worker and recovery must
-// agree on what a turn means, so both call this. The worker fills every context flag;
-// reconcile() can read the controls table for a cancel request but cannot tell a deadline
-// from a stall, so it passes neither and an interrupted turn folds to plain INTERRUPTED.
+// agree on what a turn means, so both call this. The worker fills every context flag from
+// memory; reconcile() fills them from the controls and events tables, and an interrupted
+// turn that none of them explains is the dead worker's, which reconcile() renames itself.
 export function foldTurnOutcome(turn, {
   cancelRequested = false,
   deadlineFired = false,

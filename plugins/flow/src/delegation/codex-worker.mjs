@@ -13,7 +13,7 @@ import { gitMetadataPaths } from './workspace.mjs'
 const textInput = (text) => [{ type: 'text', text, text_elements: [] }]
 
 /** The Codex App Server half of a delegation worker. runProviderJob owns everything else. */
-export function runCodexJob({ job, store, settle }) {
+export function runCodexJob({ job, store, settle, recordBackgroundFailure }) {
   const jobId = job.id
   let client
   let deadlineTimer
@@ -69,7 +69,7 @@ export function runCodexJob({ job, store, settle }) {
     stallTimer = setTimeout(onStallFire, STALL_SECONDS * 1_000)
   }
 
-  const onNotification = (method, params) => {
+  const handleNotification = (method, params) => {
     resetStall()
     if (method === 'turn/started') {
       turnId = params.turn?.id || turnId
@@ -111,6 +111,14 @@ export function runCodexJob({ job, store, settle }) {
       usage = params.tokenUsage || null
       store.appendEvent(jobId, 'usage.updated', { total: usage?.total || null })
     }
+  }
+
+  // handleNotification runs on the App Server's stdout line handler, which catches nothing
+  // past the JSON parse. A journal write that failed there ("database is locked" past the
+  // busy timeout, 2026-09-04) ended the worker with the provider still running. Now the
+  // event is lost and the loss recorded, and the turn goes on.
+  const onNotification = (method, params) => {
+    try { handleNotification(method, params) } catch (error) { recordBackgroundFailure(error) }
   }
 
   // An approval request is put to the human when the job was started from a session that

@@ -565,10 +565,15 @@ export class DelegationService {
       if (!turn || turn.status === 'inProgress') {
         return this.withStore((store) => store.finish(jobId, 'unknown', { error: { kind: 'RECOVERY_UNKNOWN', message: 'Codex could not prove the stale turn reached a terminal state.', details: null } }))
       }
-      // The same fold the live worker uses. Recovery can read the controls table for a cancel
-      // request, but it has no way to tell a deadline or a stall from any other interruption.
-      const cancelRequested = this.withStore((store) => store.cancelRequested(jobId))
-      const outcome = foldTurnOutcome(turn, { cancelRequested, acceptedWrite: job.access === 'workspace-write' })
+      // The same fold the live worker uses. A cancel sits in the controls table and the worker
+      // journals a deadline or a stall before it sends turn/interrupt, so recovery can name
+      // each interruption of its own. One it cannot name was never asked for: Codex ends a
+      // turn as interrupted when its client vanishes, and the client was the dead worker.
+      const context = this.withStore((store) => ({ cancelRequested: store.cancelRequested(jobId), ...store.interruptEvidence(jobId) }))
+      const outcome = foldTurnOutcome(turn, { ...context, acceptedWrite: job.access === 'workspace-write' })
+      if (outcome.error?.kind === 'INTERRUPTED') {
+        outcome.error = { kind: 'WORKER_EXIT', message: 'The delegation worker exited while the Codex turn was running.', details: null }
+      }
       return this.withStore((store) => {
         if (outcome.internalError) store.recordInternalError(jobId, outcome.internalError)
         if (outcome.status !== 'succeeded') return store.finish(jobId, outcome.status, { error: outcome.error })
