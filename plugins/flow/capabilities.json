@@ -157,7 +157,7 @@
           "supported": false,
           "assurance": "mechanism",
           "verifiedAt": "2026-08-30",
-          "note": "The Codex 0.151.0 MCP client advertises no roots capability and sets no project-dir variable; the delegation server takes the launch shell PWD as the workspace boundary on this host, so a session started with codex -C elsewhere fails closed with OUTSIDE_ROOTS."
+          "note": "The Codex 0.151.0 MCP client advertises no roots capability and sets no project-dir variable. The Flow issue launcher supplies the exact worktree through CODEX_PROJECT_DIR; ordinary sessions fall back to the launch shell PWD, so codex -C elsewhere still fails closed with OUTSIDE_ROOTS."
         },
         "hooks-in-native-children": {
           "supported": true,

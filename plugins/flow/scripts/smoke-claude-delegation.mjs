@@ -26,12 +26,27 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 const args = process.argv.slice(2)
-if (args[0] === '--version') { console.log('2.1.test (Claude Code)'); process.exit(0) }
+const mode = process.env.FLOW_FAKE_CLAUDE_MODE || 'happy'
+if (args[0] === '--version') {
+  if (mode === 'probe-version-exit') {
+    console.log('sensitive version output')
+    console.error('/private/version/stderr')
+    process.exit(23)
+  }
+  if (mode === 'probe-version-signal') process.kill(process.pid, 'SIGTERM')
+  console.log('2.1.test (Claude Code)')
+  process.exit(0)
+}
 if (args[0] === 'auth' && args[1] === 'status') {
+  if (mode === 'probe-auth-invalid') { console.log('not json'); process.exit(0) }
+  if (mode === 'probe-auth-empty') process.exit(0)
+  if (mode === 'probe-auth-logged-out') {
+    console.log(JSON.stringify({ loggedIn: false, email: 'private@example.invalid' }))
+    process.exit(1)
+  }
   console.log(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', subscriptionType: 'max', email: 'redacted@example.invalid' }))
   process.exit(0)
 }
-const mode = process.env.FLOW_FAKE_CLAUDE_MODE || 'happy'
 if (mode === 'assert-env') {
   if (process.env.FLOW_SMOKE_API_KEY || process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1' || process.env.CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK !== '1' || process.env.CLAUDE_CODE_NO_MODEL_FALLBACK !== '1' || !process.env.FLOW_DELEGATION_DEPTH) process.exit(19)
 }
@@ -268,6 +283,8 @@ try {
   assert.equal(doctor.checks.account.authMethod, 'claude.ai')
   assert.equal(doctor.checks.agentSdk.bundled, true)
   assert.equal(doctor.checks.models.count, 1)
+  assert.equal(Object.hasOwn(doctor.checks.claude, 'probe'), false)
+  assert.equal(Object.hasOwn(doctor.checks.account, 'probe'), false)
   // The host here is Codex, so the drift operand is what `codex --version` reports on this
   // machine. A checkout with no Codex installed reads unknown, which is a stop and not a pass.
   assert.equal(doctor.hostCapabilities.host, 'codex')
@@ -518,7 +535,43 @@ try {
   const spawnErrorDoctor = await doctorOf({
     stateDir: state('spawn-error'), extraEnv: { FLOW_DELEGATION_CLAUDE_BIN: repo },
   })
+  assert.equal(spawnErrorDoctor.checks.claude.kind, 'CLAUDE_STARTUP')
+  assert.equal(spawnErrorDoctor.checks.claude.probe.outcome, 'spawn-error')
+  assert.equal(spawnErrorDoctor.checks.claude.probe.status, null)
+  assert.match(spawnErrorDoctor.checks.claude.probe.errorCode, /^(EACCES|EPERM)$/)
   assert.equal(spawnErrorDoctor.checks.account.kind, 'CLAUDE_STARTUP')
+  assert.equal(spawnErrorDoctor.checks.account.probe.outcome, 'spawn-error')
+  const versionExitDoctor = await doctorOf({
+    stateDir: state('probe-version-exit'), mode: 'probe-version-exit',
+  })
+  assert.deepEqual(versionExitDoctor.checks.claude.probe, {
+    outcome: 'exit-nonzero', errorCode: null, status: 23, signal: null, stdout: 'present', stderr: 'present',
+  })
+  assert.doesNotMatch(JSON.stringify(versionExitDoctor), /sensitive version output|private\/version/)
+  const versionSignalDoctor = await doctorOf({
+    stateDir: state('probe-version-signal'), mode: 'probe-version-signal',
+  })
+  assert.equal(versionSignalDoctor.checks.claude.kind, 'CLAUDE_STARTUP')
+  assert.equal(versionSignalDoctor.checks.claude.probe.outcome, 'signal')
+  assert.equal(versionSignalDoctor.checks.claude.probe.signal, 'SIGTERM')
+  const invalidAuthDoctor = await doctorOf({
+    stateDir: state('probe-auth-invalid'), mode: 'probe-auth-invalid',
+  })
+  assert.equal(invalidAuthDoctor.checks.account.kind, 'CLAUDE_AUTH')
+  assert.equal(invalidAuthDoctor.checks.account.probe.outcome, 'invalid-json')
+  assert.equal(invalidAuthDoctor.checks.account.probe.stdout, 'present')
+  assert.doesNotMatch(JSON.stringify(invalidAuthDoctor), /not json/)
+  const emptyAuthDoctor = await doctorOf({
+    stateDir: state('probe-auth-empty'), mode: 'probe-auth-empty',
+  })
+  assert.equal(emptyAuthDoctor.checks.account.probe.outcome, 'empty-output')
+  const loggedOutDoctor = await doctorOf({
+    stateDir: state('probe-auth-logged-out'), mode: 'probe-auth-logged-out',
+  })
+  assert.equal(loggedOutDoctor.checks.account.kind, 'CLAUDE_AUTH')
+  assert.equal(loggedOutDoctor.checks.account.probe.outcome, 'not-authenticated')
+  assert.equal(loggedOutDoctor.checks.account.probe.status, 1)
+  assert.doesNotMatch(JSON.stringify(loggedOutDoctor), /private@example\.invalid/)
   const denied = []
   const readHook = claudePolicyHook({ access: 'read-only', cwd: repo, workspaceKey: repo }, { onDenied: (value) => denied.push(value) })
   const blockedEdit = await readHook({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: join(repo, 'a.txt') } })

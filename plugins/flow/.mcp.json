@@ -12,6 +12,7 @@
     "env_vars": [
       "XDG_RUNTIME_DIR",
       "DBUS_SESSION_BUS_ADDRESS",
+      "CODEX_PROJECT_DIR",
       "PWD"
     ]
   }

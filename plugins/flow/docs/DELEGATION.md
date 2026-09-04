@@ -17,13 +17,14 @@ release. Containment fails closed with `UNSUPPORTED_HOST`.
 Each plugin manifest starts the server with a trusted `--host` argument. Tool input cannot replace
 it, and MCP mode refuses to start when it is missing or names an unknown family.
 
-The Codex manifest also names `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` and `PWD` in
-`env_vars`. Codex curates the environment of a stdio MCP server, and without the first two
-`systemd-run --user` cannot reach the user bus, so every provider scope fails with
-`CONTAINMENT_UNAVAILABLE`. `PWD` is there because that client advertises no `roots` capability and
-sets no project-dir variable, so without it every call fails with `NO_ROOTS`. The server takes it,
-the shell cwd the human launched `codex` from, as the workspace boundary, so
-`codex -C <elsewhere>` fails closed with `OUTSIDE_ROOTS`. The Claude host has real roots and
+The Codex manifest also names `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `CODEX_PROJECT_DIR`
+and `PWD` in `env_vars`. Codex curates the environment of a stdio MCP server, and without the first
+two `systemd-run --user` cannot reach the user bus, so every provider scope fails with
+`CONTAINMENT_UNAVAILABLE`. That client advertises no `roots` capability. The issue launcher's
+`CODEX_PROJECT_DIR` is therefore the exact planned worktree and takes precedence over `PWD`; the
+server accepts delegated jobs there without treating the directory that holds every repository as
+one broad root. Ordinary Codex sessions still fall back to the shell cwd in `PWD`, and
+`codex -C <elsewhere>` then fails closed with `OUTSIDE_ROOTS`. The Claude host has real roots and
 `CLAUDE_PROJECT_DIR`, and never reads `PWD`.
 
 The route is checked three times: at job creation, again in the worker before it starts a
@@ -243,6 +244,14 @@ catalog id it asked for, and a mismatch fails the job as `REFUSAL` when a refusa
 `MODEL_MISMATCH` otherwise, journaling the model that answered as `model.served`. Schema jobs add
 Claude's native `StructuredOutput` tool and plain jobs do not; Ajv checks `structured_output`
 against the original schema before the job can succeed.
+
+Doctor runs separate `claude --version` and `claude auth status --json` child processes before the
+SDK model probe. A failed check includes a `probe` record with a classified outcome, a normalized
+error code, exit status, signal, and only `present` or `empty` for stdout and stderr. It never
+returns either stream's text or the executable path. Valid auth JSON that explicitly reports
+`loggedIn: false` is `not-authenticated`; spawn errors, signals, nonzero exits, empty output and
+invalid JSON remain distinct, so an operator is not told to log in when the child process itself
+failed.
 
 ## What the caller receives
 

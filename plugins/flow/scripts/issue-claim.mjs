@@ -130,7 +130,13 @@
 // uid a model with a shell can push whatever it likes. What this buys is that the ordinary path
 // cannot start a duplicate run by accident.
 //
-// claim is the fourth subcommand and the only one that composes the other three. The issue stage
+// plan is a read-only preview of the names claim will use. It exists so the Codex launcher can
+// reserve that one worktree path and grant it with --add-dir before the session starts. It runs
+// the same issue, slug, path and repository-boundary checks as claim, then stops before the live
+// run scan and acquire. A separate implementation would eventually disagree about the path and
+// widen the wrong directory.
+//
+// claim is the fifth subcommand and the only one that composes the other three. The issue stage
 // used to run this procedure by hand, nine prose steps deep, and every step was a place for a
 // model to skip a scan or branch off a stale origin/main. It is one command now, and one JSON
 // line back: read the issue and refuse unless it is open, carries ready-for-agent and carries
@@ -140,8 +146,10 @@
 // moved; release.
 //
 // Everything up to the acquire is a read. A closed issue, a missing label, a title with no slug
-// in it, a worktree path already on disk: all of them are decided before anything is written, so
-// a refusal there has changed nothing anywhere.
+// in it, or a worktree path occupied by anything except an empty real directory: all of them are
+// decided before anything is written, so a refusal there has changed nothing anywhere. An empty
+// directory is accepted because the Codex launcher has to create the exact --add-dir target before
+// Codex starts. claim checks it again under the claim immediately before git fills it.
 //
 // That read is stale the moment it is taken, which is why the issue is read twice more. Once
 // while the tag is held and before the worktree is added, because a human can close the issue,
@@ -227,11 +235,11 @@
 // refuses it if the branch moved; reading the head and then running `git branch -D` left a window
 // between the two commands, and what falls into it is a rival's work.
 //
-// The worktree has no equivalent lease and is not getting one. Between the path check and the
-// `git worktree add`, a foreign process could in principle create a directory at exactly the
-// derived path, and the unwind after a failed add would then remove it as this run's; the claim
-// tag serializes flow's own runs and the path is derived from the issue number, so the only way
-// to reach that is a process outside flow choosing this path, which is out of scope here.
+// The worktree has no equivalent lease and is not getting one. A foreign process can still change
+// the prepared directory after the second check and before `git worktree add`. Git refuses a
+// non-empty target, and cleanup removes only a worktree this clone registered; it never clears an
+// occupied unregistered directory. The claim tag serializes flow's own runs. A same-uid process
+// deliberately racing that one path remains outside this cooperative guardrail.
 //
 // Every remote interaction is an argv array, never a shell string, so there is no quoting to
 // get wrong. stdout is always exactly one JSON object, one line, including for refusals; the
@@ -240,7 +248,7 @@
 // someone else, 4 unknown.
 
 import { createHash } from 'node:crypto'
-import { accessSync, constants, existsSync, realpathSync } from 'node:fs'
+import { accessSync, constants, existsSync, lstatSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -291,10 +299,16 @@ const SLUG_MAX = 40
  */
 const branchForIssue = (issue) => new RegExp(`^(feat|fix|chore)/issue-${issue}-`)
 
-const USAGE = `issue-claim.mjs claim <issue-number> [--kind feat|fix|chore]
+const USAGE = `issue-claim.mjs plan <issue-number> [--kind feat|fix|chore]
+issue-claim.mjs claim <issue-number> [--kind feat|fix|chore]
 issue-claim.mjs acquire <issue-number>
 issue-claim.mjs release <issue-number> <branch> <expected-head-sha>
 issue-claim.mjs abandon <issue-number> <acquired-sha>
+
+plan reads the issue and runs the local checks needed to print the exact repoRoot, worktree and
+branch a Codex launcher must grant before starting the session. It never scans remote run state,
+acquires a tag, creates a directory, pushes a branch or edits an issue. Exits 0 planned, 2 refused
+or 4 unknown.
 
 claim is the whole start-of-run procedure as one command, and the one most callers want. It
 reads the issue and refuses unless it is open, carries ${READY_LABEL} and carries no blocking
@@ -371,7 +385,7 @@ the tag is on origin at exactly that object, and deletes it under a --force-with
 the same SHA, so the remote rechecks too. A tag at any other object stays: this is not a way to
 break a stale claim, and a claim nobody holds a receipt for is a job for a human.
 
-All four refuse when origin's fetch and push URLs disagree. Nothing here overwrites a ref or
+All five refuse when origin's fetch and push URLs disagree. Nothing here overwrites a ref or
 breaks a stale tag, and nothing it prints carries a credential from a remote URL.
 `
 
@@ -999,6 +1013,47 @@ const worktreeState = (cwd, path) => {
 }
 
 /**
+ * Whether the derived target is absent or an empty real directory ready for git to fill. The
+ * launcher creates the directory before Codex starts because --add-dir names an existing path.
+ * A file, link, mount alias or anything already inside the directory is not that reservation and
+ * is left untouched.
+ */
+const worktreeTarget = (path) => {
+  let stat
+  try { stat = lstatSync(path) } catch (error) {
+    return error?.code === 'ENOENT'
+      ? { state: 'absent' }
+      : { state: 'invalid', detail: `${path} could not be inspected` }
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    return { state: 'invalid', detail: `${path} exists but is not a real directory` }
+  }
+  let canonical
+  try { canonical = realpathSync(path) } catch {
+    return { state: 'invalid', detail: `${path} does not resolve to a real directory` }
+  }
+  if (canonical !== path) {
+    return { state: 'invalid', detail: `${path} resolves to ${canonical}, so it is not the exact directory Flow planned` }
+  }
+  let entries
+  try { entries = readdirSync(path) } catch {
+    return { state: 'invalid', detail: `${path} could not be read to confirm it is empty` }
+  }
+  if (entries.length !== 0) {
+    return { state: 'invalid', detail: `${path} is not empty, so Flow will not write a worktree over it` }
+  }
+  return { state: 'prepared' }
+}
+
+/** The registration git reports for one exact path, or the fact that the list could not be read. */
+const worktreeRegistration = (cwd, path) => {
+  const listed = runGit(['worktree', 'list', '--porcelain'], cwd, LOCAL_GIT_TIMEOUT_MS)
+  if (listed.code !== 0) return { state: 'unknown' }
+  const found = parseWorktrees(listed.stdout).find((entry) => entry.path === path)
+  return found === undefined ? { state: 'absent' } : { state: 'present', branch: found.branch }
+}
+
+/**
  * The object a local branch points at, as one of present, absent or unknown. This asks
  * for-each-ref rather than `rev-parse --verify`, because rev-parse answers in its exit code and
  * that code is not one this program can read: 1 is both "no such ref" and, through runGit, a
@@ -1037,8 +1092,8 @@ const groupHits = (hits) => ({
   pullRequests: hits.filter((hit) => hit.where === 'pull-request'),
 })
 
-const claim = ({ argv, cwd, env, runGh }) => {
-  const usage = (detail) => line({ command: 'claim', result: 'refused', reason: 'usage', phase: 'pre-acquire', retained: [], cleanup: null, detail },
+const claim = ({ argv, cwd, env, runGh, command = 'claim', planOnly = false }) => {
+  const usage = (detail) => line({ command, result: 'refused', reason: 'usage', phase: 'pre-acquire', retained: [], cleanup: null, detail },
     EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
 
   let issueArg = null
@@ -1053,10 +1108,10 @@ const claim = ({ argv, cwd, env, runGh }) => {
       if (!KINDS.has(kindArg)) return usage(`${JSON.stringify(kindArg)} is not a kind; expected feat, fix or chore`)
       continue
     }
-    if (issueArg !== null) return usage(`${JSON.stringify(arg)} is an extra argument; claim takes one issue number and an optional --kind`)
+    if (issueArg !== null) return usage(`${JSON.stringify(arg)} is an extra argument; ${command} takes one issue number and an optional --kind`)
     issueArg = arg
   }
-  if (issueArg === null) return usage('claim expects one argument, the issue number')
+  if (issueArg === null) return usage(`${command} expects one argument, the issue number`)
   const issue = Number(issueArg)
   if (!Number.isInteger(issue) || issue <= 0) return usage(`${JSON.stringify(issueArg)} is not an issue number`)
 
@@ -1064,11 +1119,11 @@ const claim = ({ argv, cwd, env, runGh }) => {
   const ref = `refs/tags/${tag}`
   // resolveOrigin is shared with the three older subcommands, so the claim shape rides in as
   // facts rather than being bolted onto a refusal every caller has to know about.
-  const origin = resolveOrigin('claim', cwd, { issue, tag, ref, phase: 'pre-acquire', retained: [], cleanup: null })
+  const origin = resolveOrigin(command, cwd, { issue, tag, ref, phase: 'pre-acquire', retained: [], cleanup: null })
   if (origin.refusal) return origin.refusal
   const repo = origin.repo
   const redact = origin.redact
-  const base = { command: 'claim', repo, issue, tag, ref }
+  const base = { command, repo, issue, tag, ref }
 
   /** What a retained artifact is, named where a human has to go and look for it. */
   const whereItIs = {
@@ -1223,6 +1278,39 @@ const claim = ({ argv, cwd, env, runGh }) => {
   const worktree = join(parent, `${basename(canonicalRoot)}-issue-${issue}-${slug}`)
   const names = { kind, branch, worktree, acDigest, title: found.title ?? null, url: found.url ?? null }
 
+  /**
+   * The local checks shared by plan and claim. plan calls them before its read-only return. claim
+   * calls them after the live-run scan so an existing run remains the more useful refusal.
+   */
+  const validateWorktreeBoundary = () => {
+    const target = worktreeTarget(worktree)
+    if (target.state === 'invalid') return { result: refuse('worktree-path', target.detail, names) }
+    try {
+      accessSync(parent, constants.W_OK)
+    } catch {
+      return { result: refuse('worktree-path', `${parent} is not writable, so the worktree beside this repository cannot be created`, names) }
+    }
+    const commonRead = runGit(['rev-parse', '--git-common-dir'], cwd, LOCAL_GIT_TIMEOUT_MS)
+    const commonRaw = commonRead.code === 0 ? resolve(cwd, commonRead.stdout.trim()) : ''
+    if (commonRaw === '') {
+      return { result: unknown('repo-unreadable', `\`git rev-parse --git-common-dir\` gave no git directory for this repository: ${firstLine(redact(commonRead.stderr)) || `exit ${commonRead.code}`}`, names) }
+    }
+    const common = canonical(commonRaw)
+    if (common === '') {
+      return { result: refuse('outside-parent', 'this repository\'s git directory does not resolve to a real path, so whether a worktree added here would register itself out of bounds cannot be established', names) }
+    }
+    if (common !== parent && !common.startsWith(parent + sep)) {
+      return { result: refuse('outside-parent', `this repository's git directory is ${common}, outside ${parent}, so a worktree added here would register itself out of bounds`, names) }
+    }
+    return { target }
+  }
+
+  if (planOnly) {
+    const checked = validateWorktreeBoundary()
+    if (checked.result) return checked.result
+    return line({ ...base, ...names, result: 'planned', repoRoot: canonicalRoot, parent, target: checked.target.state }, EXIT_OK, '')
+  }
+
   // ---- is a run already live? The four places one leaves a mark: this clone's worktrees, this
   // clone's branches for the issue, the issue's branches on the server, and open pull requests.
   // The server is asked for the branches as well as this clone, because a clone's remote refs are
@@ -1293,33 +1381,13 @@ const claim = ({ argv, cwd, env, runGh }) => {
 
   // ---- the path this run would write to. Checked before the first mutation, because a worktree
   // add that fails after the claim is a tag to give back and a half-made directory to clear up.
-  if (existsSync(worktree)) {
-    return refuse('worktree-path', `${worktree} already exists, so there is nowhere to put this run's worktree`, names)
-  }
-  try {
-    accessSync(parent, constants.W_OK)
-  } catch {
-    return refuse('worktree-path', `${parent} is not writable, so the worktree beside this repository cannot be created`, names)
-  }
+  // Codex's launcher prepares an empty real directory so --add-dir can grant exactly this path.
+  // Anything else at the target is foreign and stays untouched.
   // The boundary check the stage states. A repository that is itself a linked worktree of
-  // something outside this directory's parent passes everything else and then fails at
-  // `git worktree add`, after the claim, because git writes the new registration into that
-  // out-of-bounds common directory.
-  const commonRead = runGit(['rev-parse', '--git-common-dir'], cwd, LOCAL_GIT_TIMEOUT_MS)
-  const commonRaw = commonRead.code === 0 ? resolve(cwd, commonRead.stdout.trim()) : ''
-  if (commonRaw === '') {
-    return unknown('repo-unreadable', `\`git rev-parse --git-common-dir\` gave no git directory for this repository: ${firstLine(redact(commonRead.stderr)) || `exit ${commonRead.code}`}`, names)
-  }
-  // git answers `.git` for the common directory of an ordinary clone, and a `.git` that is a
-  // symlink to a directory outside the parent resolves to a path inside it until the links are
-  // followed. So both sides of this comparison are real paths.
-  const common = canonical(commonRaw)
-  if (common === '') {
-    return refuse('outside-parent', 'this repository\'s git directory does not resolve to a real path, so whether a worktree added here would register itself out of bounds cannot be established', names)
-  }
-  if (common !== parent && !common.startsWith(parent + sep)) {
-    return refuse('outside-parent', `this repository's git directory is ${common}, outside ${parent}, so a worktree added here would register itself out of bounds`, names)
-  }
+  // something outside this directory's parent would make git register the new worktree out of
+  // bounds. The helper follows links in both paths before it compares them.
+  const checked = validateWorktreeBoundary()
+  if (checked.result) return checked.result
 
   // ---- the claim. Everything above was a read.
   const acquired = acquire({ argv: [String(issue)], cwd })
@@ -1462,6 +1530,19 @@ const claim = ({ argv, cwd, env, runGh }) => {
     })
   }
 
+  // The launcher prepared this path before the session started, and another process can still
+  // replace or fill it while this run is taking the claim. Re-read it under the claim and leave
+  // anything foreign alone. Giving back only the tag is safe because this run has not created a
+  // branch or registered a worktree yet.
+  const readyTarget = worktreeTarget(worktree)
+  if (readyTarget.state === 'invalid') {
+    const swept = unwind({ worktreeAdded: false, branchCreated: false })
+    return settle('refused', 'worktree-path', `${readyTarget.detail}; the target changed while this run held the claim`, {
+      phase: 'acquired', retained: swept.retained, cleanup: swept.cleanup,
+      extra: { ...claimed, abandon: swept.abandon },
+    })
+  }
+
   // ---- the worktree, at the object the acquire verified on the remote. Never at this clone's
   // own origin/main, which is as old as its last fetch.
   const added = runGit(['worktree', 'add', worktree, '-b', branch, baseSha], cwd, WORKTREE_TIMEOUT_MS)
@@ -1471,6 +1552,16 @@ const claim = ({ argv, cwd, env, runGh }) => {
     // three and says which of them it could not confirm gone.
     const swept = unwind({ worktreeAdded: true, branchCreated: true })
     const detail = `\`git worktree add ${worktree} -b ${branch}\` failed (exit ${added.code}): ${gitComplaint(redact(added.stderr)) || 'git said nothing'}`
+    return settle('refused', 'worktree-add', detail,
+      { phase: 'acquired', retained: swept.retained, cleanup: swept.cleanup, extra: { ...claimed, abandon: swept.abandon } })
+  }
+
+  const registration = worktreeRegistration(cwd, worktree)
+  if (registration.state !== 'present' || registration.branch !== `refs/heads/${branch}`) {
+    const swept = unwind({ worktreeAdded: true, branchCreated: true })
+    const detail = registration.state === 'unknown'
+      ? `git reported that it added ${worktree}, but the worktree list could not be read back`
+      : `git reported that it added ${worktree}, but that exact path and branch were not in the worktree list`
     return settle('refused', 'worktree-add', detail,
       { phase: 'acquired', retained: swept.retained, cleanup: swept.cleanup, extra: { ...claimed, abandon: swept.abandon } })
   }
@@ -1597,8 +1688,8 @@ const claim = ({ argv, cwd, env, runGh }) => {
  * gh is injected the way scripts/land-merge.mjs injects it, as a plain function across the
  * module boundary, which is what lets the smoke answer GitHub reads from a state object without
  * an environment variable that selects the binary this program trusts. The three git-only
- * subcommands never call it, which is why it is optional. claim is the exception: it reads and
- * labels the issue over gh, so a claim with no runner is refused in the dispatcher rather than
+ * subcommands never call it, which is why it is optional. plan and claim are the exceptions: they
+ * read the issue over gh, so either one with no runner is refused in the dispatcher rather than
  * thrown out of the middle of the run, where the caller would get a stack trace in place of the
  * JSON line it parses.
  *
@@ -1607,7 +1698,7 @@ const claim = ({ argv, cwd, env, runGh }) => {
  * @param {string} args.cwd the directory whose origin remote this run claims on
  * @param {Record<string,string|undefined>} [args.env] read for FLOW_GH_HOSTS alone, the allowlist
  *   of hosts gh may be pinned to; an absent environment is the default list, github.com only
- * @param {(ghArgs: string[], options: {cwd: string}) => {code: number, stdout: string, stderr: string}} [args.runGh] required by claim, unused by the other three
+ * @param {(ghArgs: string[], options: {cwd: string}) => {code: number, stdout: string, stderr: string}} [args.runGh] required by plan and claim, unused by the other three
  * @returns {{code: number, stdout: string, stderr: string}}
  */
 export function issueClaim({ argv, cwd, env, runGh }) {
@@ -1615,19 +1706,20 @@ export function issueClaim({ argv, cwd, env, runGh }) {
     return { code: EXIT_OK, stdout: USAGE, stderr: '' }
   }
   const [subcommand, ...rest] = argv
-  if (subcommand === 'claim' && typeof runGh !== 'function') {
-    const detail = 'claim was called with no gh runner, and it reads and labels the issue over gh before it writes ' +
-      'anything, so there is nothing it can do without one; acquire, release and abandon are git alone and take none'
-    return line({ command: 'claim', result: 'refused', reason: 'usage', phase: 'pre-acquire', retained: [], cleanup: null, detail },
+  if ((subcommand === 'plan' || subcommand === 'claim') && typeof runGh !== 'function') {
+    const detail = `${subcommand} was called with no gh runner, and it reads the issue over gh before it can ` +
+      'derive the worktree path; acquire, release and abandon are git alone and take none'
+    return line({ command: subcommand, result: 'refused', reason: 'usage', phase: 'pre-acquire', retained: [], cleanup: null, detail },
       EXIT_REFUSED, `${detail}. Nothing was read and nothing was pushed.`)
   }
+  if (subcommand === 'plan') return claim({ argv: rest, cwd, env, runGh, command: 'plan', planOnly: true })
   if (subcommand === 'claim') return claim({ argv: rest, cwd, env, runGh })
   if (subcommand === 'acquire') return acquire({ argv: rest, cwd })
   if (subcommand === 'release') return release({ argv: rest, cwd })
   if (subcommand === 'abandon') return abandon({ argv: rest, cwd })
   const detail = argv.length === 0
-    ? 'expected a subcommand, one of claim, acquire, release or abandon'
-    : `${JSON.stringify(subcommand)} is not a subcommand; expected claim, acquire, release or abandon`
+    ? 'expected a subcommand, one of plan, claim, acquire, release or abandon'
+    : `${JSON.stringify(subcommand)} is not a subcommand; expected plan, claim, acquire, release or abandon`
   return line({ command: null, result: 'refused', reason: 'usage', detail }, EXIT_REFUSED, `${detail}.\n\n${USAGE}`)
 }
 

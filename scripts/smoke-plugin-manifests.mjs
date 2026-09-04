@@ -39,11 +39,10 @@ for (const listed of marketplace.plugins) {
     // Codex hands a stdio MCP server a curated environment (HOME, PATH, TERM and a few more), and
     // systemd-run --user needs the runtime dir to find the user bus. Without the first two, every
     // provider scope fails with CONTAINMENT_UNAVAILABLE and the Codex host cannot delegate at all.
-    // PWD is the shell's cwd when the human launched codex, and it is the only host-derived
-    // workspace signal Codex 0.151 gives a plugin MCP server: the client advertises no roots
-    // capability and Codex sets no project-dir variable, so without PWD every tool call fails
-    // with NO_ROOTS.
-    assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'PWD'], 'flow Codex MCP passes the user-bus environment and the launch cwd through')
+    // The client advertises no roots capability and Codex itself sets no project-dir variable.
+    // codex-issue supplies CODEX_PROJECT_DIR as the exact worktree; ordinary sessions retain PWD
+    // as their fallback, or every tool call would fail with NO_ROOTS.
+    assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CODEX_PROJECT_DIR', 'PWD'], 'flow Codex MCP passes the user-bus environment, an exact launcher root and the fallback launch cwd through')
   }
 
   // Every ${CLAUDE_PLUGIN_ROOT} path Claude will run has to resolve inside the plugin. Claude

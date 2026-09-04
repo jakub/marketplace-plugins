@@ -305,6 +305,24 @@ const run = (world, args, st = freshState(), cwd = world.repo, env = {}) => {
   } finally { process.env.GIT_SSH_COMMAND = saved }
 }
 
+// ---------------------------------------------------------------------- the read-only plan
+console.log('\na read-only plan for a ready issue')
+{
+  const w = makeWorld('plan')
+  const before = allRefs(w.origin)
+  const r = run(w, ['plan', String(ISSUE)])
+  check('exits 0 with result planned', r.code === 0 && r.json?.result === 'planned', `exit ${r.code} ${r.stdout}`)
+  check('returns the exact repository, worktree and branch the claim will use',
+    r.json?.repoRoot === realpathSync(w.repo) && r.json?.worktree === w.pathFor(SLUG) &&
+      r.json?.branch === `feat/issue-${ISSUE}-${SLUG}`,
+    r.stdout)
+  check('returns the acceptance criteria digest without creating the target directory',
+    r.json?.acDigest === AC_DIGEST && !existsSync(w.pathFor(SLUG)), r.stdout)
+  check('does not touch origin, edit the issue or register a worktree',
+    allRefs(w.origin) === before && callsTo(r.st, 'edit').length === 0 && worktreePaths(w.repo).length === 1,
+    'the plan mutated state')
+}
+
 // --------------------------------------------------------------------------- the happy path
 console.log('\na claim on a ready issue')
 {
@@ -365,14 +383,12 @@ console.log('\nthe token behind @me belongs to another login')
     r.st.issue.assignees.some((who) => who.login === 'octocat'), JSON.stringify(r.st.issue.assignees))
 }
 
-// ------------------------------------------------------- claim called with no gh runner
-console.log('\nclaim called with no gh runner')
+// ---------------------------------------------------- plan or claim called with no gh runner
+console.log('\nplan or claim called with no gh runner')
 {
-  // runGh is optional because acquire, release and abandon are git alone. claim is not: it calls
-  // the runner to read the issue before it touches anything, so a caller that leaves it out used
-  // to get a TypeError thrown out of the middle of the run in place of the one JSON line every
-  // other refusal prints. The dispatcher answers it as a usage error instead, in the shape the
-  // stage already reads.
+  // runGh is optional because acquire, release and abandon are git alone. plan and claim are not:
+  // both read the issue to derive the path, so a caller that leaves it out gets the same bounded
+  // usage refusal instead of a TypeError from the middle of the run.
   const w = makeWorld('no-gh-runner')
   const before = allRefs(w.origin)
   let threw = null
@@ -393,7 +409,13 @@ console.log('\nclaim called with no gh runner')
   check('origin is unchanged', allRefs(w.origin) === before, allRefs(w.origin))
   check('no worktree was added', worktreePaths(w.repo).length === 1, worktreePaths(w.repo).join(','))
 
-  // The guard is on the claim verb alone. The three git-only verbs take no runner and never did.
+  const planned = issueClaim({ argv: ['plan', String(ISSUE)], cwd: w.repo })
+  const planJson = JSON.parse(planned.stdout)
+  check('plan with no runner refuses in the same bounded shape',
+    planned.code === 2 && planJson.command === 'plan' && planJson.reason === 'usage' && /gh runner/.test(planned.stderr),
+    `exit ${planned.code} ${planned.stdout}`)
+
+  // The guard is on the two GitHub-reading verbs. The three git-only verbs take no runner.
   const saved = process.env.GIT_SSH_COMMAND
   process.env.GIT_SSH_COMMAND = w.ssh
   const acquired = issueClaim({ argv: ['acquire', String(ISSUE)], cwd: w.repo })
@@ -534,17 +556,57 @@ console.log('\ngh issue edit fails after the branch is on origin')
   check('the human is told not to re-run it', /do not re-run the claim/.test(r.stderr), JSON.stringify(r.stderr))
 }
 
-// ----------------------------------------------------------------- the path is already there
-console.log('\nthe worktree path already exists')
+// ---------------------------------------------------- an empty path reserved before Codex starts
+console.log('\nthe worktree path is an existing empty directory')
 {
-  const w = makeWorld('worktree-path')
+  const w = makeWorld('prepared-worktree-path')
   mkdirSync(w.pathFor(SLUG))
+  const r = run(w, ['claim', String(ISSUE)])
+  check('claims into the prepared directory', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout}`)
+  check('registers that exact path on the expected branch',
+    worktreePaths(w.repo).includes(w.pathFor(SLUG)) &&
+      refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === w.mainSha,
+    worktreePaths(w.repo).join(','))
+}
+
+console.log('\na non-empty or linked worktree path already exists')
+for (const [label, prepare] of [
+  ['non-empty directory', (w) => { mkdirSync(w.pathFor(SLUG)); writeFileSync(join(w.pathFor(SLUG), 'foreign.txt'), 'not flow\n') }],
+  ['symbolic link', (w) => { const target = join(w.dir, 'foreign'); mkdirSync(target); symlinkSync(target, w.pathFor(SLUG)) }],
+]) {
+  const w = makeWorld(`worktree-path-${label.replaceAll(' ', '-')}`)
+  prepare(w)
   const before = allRefs(w.origin)
   const r = run(w, ['claim', String(ISSUE)])
-  check('refuses with worktree-path', r.code === 2 && r.json?.reason === 'worktree-path', `exit ${r.code} ${r.stdout}`)
-  check('origin is unchanged', allRefs(w.origin) === before, allRefs(w.origin))
-  check('no claim tag was taken', refSha(w.origin, TAG_REF) === null, String(refSha(w.origin, TAG_REF)))
-  check('the issue was not touched', callsTo(r.st, 'edit').length === 0, 'an edit went out')
+  check(`${label}: refuses with worktree-path`, r.code === 2 && r.json?.reason === 'worktree-path', `exit ${r.code} ${r.stdout}`)
+  check(`${label}: origin is unchanged and no claim tag was taken`,
+    allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
+  check(`${label}: the issue was not touched`, callsTo(r.st, 'edit').length === 0, 'an edit went out')
+}
+
+console.log('\na prepared path changes while the claim is held')
+{
+  const w = makeWorld('prepared-path-changes')
+  const worktree = w.pathFor(SLUG)
+  mkdirSync(worktree)
+  let scans = 0
+  const st = freshState({
+    onPrScan: () => {
+      scans += 1
+      if (scans === 2) writeFileSync(join(worktree, 'foreign.txt'), 'arrived during claim\n')
+    },
+  })
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check('refuses with worktree-path after the second scan',
+    r.code === 2 && r.json?.reason === 'worktree-path' && r.json?.phase === 'acquired',
+    `exit ${r.code} ${r.stdout}`)
+  check('gives the claim tag back without deleting the foreign file',
+    r.json?.abandon === 'abandoned' && refSha(w.origin, TAG_REF) === null &&
+      existsSync(join(worktree, 'foreign.txt')),
+    r.stdout)
+  check('creates no branch and never edits the issue',
+    refSha(w.repo, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && callsTo(st, 'edit').length === 0,
+    'something was mutated')
 }
 
 // ------------------------------------------------ a worktree add that fails after it made both

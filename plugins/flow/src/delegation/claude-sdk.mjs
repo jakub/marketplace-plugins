@@ -97,15 +97,59 @@ export function claudeExecutable() {
   return path
 }
 
+function probeOutputState(value) {
+  return typeof value === 'string' && value.trim() ? 'present' : 'empty'
+}
+
+function safeProbeErrorCode(error) {
+  if (!error) return null
+  const code = typeof error.code === 'string' ? error.code.toUpperCase() : ''
+  return /^[A-Z][A-Z0-9_]{0,31}$/.test(code) ? code : 'UNKNOWN'
+}
+
+function safeProbeSignal(signal) {
+  if (!signal) return null
+  return typeof signal === 'string' && /^SIG[A-Z0-9]{1,16}$/.test(signal) ? signal : 'UNKNOWN'
+}
+
+function probeFailure(result, kind, outcome, extra = {}) {
+  return {
+    ok: false,
+    kind,
+    ...extra,
+    probe: {
+      outcome,
+      errorCode: safeProbeErrorCode(result.error),
+      status: Number.isInteger(result.status) ? result.status : null,
+      signal: safeProbeSignal(result.signal),
+      stdout: probeOutputState(result.stdout),
+      stderr: probeOutputState(result.stderr),
+    },
+  }
+}
+
+function probeStartFailure(result) {
+  if (result.error?.code === 'ENOENT') return ['CLAUDE_NOT_INSTALLED', 'executable-not-found']
+  if (result.error) {
+    return ['CLAUDE_STARTUP', result.error.code === 'ETIMEDOUT' ? 'timeout' : 'spawn-error']
+  }
+  if (result.signal) return ['CLAUDE_STARTUP', 'signal']
+  if (!Number.isInteger(result.status)) return ['CLAUDE_STARTUP', 'missing-status']
+  return null
+}
+
 export function claudeVersion() {
   let bin
   try { bin = claudeExecutable() } catch {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED', version: null }
   }
   const result = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10_000 })
-  if (result.error?.code === 'ENOENT') return { ok: false, kind: 'CLAUDE_NOT_INSTALLED', version: null }
-  if (result.status !== 0) return { ok: false, kind: 'CLAUDE_VERSION', version: null }
-  return { ok: true, kind: null, version: result.stdout.trim() }
+  const startFailure = probeStartFailure(result)
+  if (startFailure) return probeFailure(result, startFailure[0], startFailure[1], { version: null })
+  if (result.status !== 0) return probeFailure(result, 'CLAUDE_VERSION', 'exit-nonzero', { version: null })
+  const version = result.stdout.trim()
+  if (!version) return probeFailure(result, 'CLAUDE_VERSION', 'empty-output', { version: null })
+  return { ok: true, kind: null, version }
 }
 
 export function claudeAuthStatus() {
@@ -114,20 +158,36 @@ export function claudeAuthStatus() {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
   }
   const result = spawnSync(bin, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 10_000 })
-  if (result.error?.code === 'ENOENT') return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
-  if (result.error) return { ok: false, kind: 'CLAUDE_STARTUP' }
-  if (result.status !== 0) return { ok: false, kind: 'CLAUDE_AUTH' }
+  const startFailure = probeStartFailure(result)
+  if (startFailure) return probeFailure(result, startFailure[0], startFailure[1])
+  const output = result.stdout.trim()
+  if (result.status !== 0) {
+    if (output) {
+      try {
+        const value = JSON.parse(output)
+        if (value && typeof value === 'object' && value.loggedIn === false) {
+          return probeFailure(result, 'CLAUDE_AUTH', 'not-authenticated')
+        }
+      } catch {}
+    }
+    return probeFailure(result, 'CLAUDE_AUTH', 'exit-nonzero')
+  }
+  if (!output) return probeFailure(result, 'CLAUDE_AUTH', 'empty-output')
   try {
-    const value = JSON.parse(result.stdout)
+    const value = JSON.parse(output)
+    if (!value || typeof value !== 'object' || typeof value.loggedIn !== 'boolean') {
+      return probeFailure(result, 'CLAUDE_AUTH', 'invalid-json')
+    }
+    if (!value.loggedIn) return probeFailure(result, 'CLAUDE_AUTH', 'not-authenticated')
     return {
-      ok: value.loggedIn === true,
-      kind: value.loggedIn === true ? null : 'CLAUDE_AUTH',
+      ok: true,
+      kind: null,
       authMethod: value.authMethod || null,
       apiProvider: value.apiProvider || null,
       subscriptionType: value.subscriptionType || null,
     }
   } catch {
-    return { ok: false, kind: 'CLAUDE_AUTH' }
+    return probeFailure(result, 'CLAUDE_AUTH', 'invalid-json')
   }
 }
 
