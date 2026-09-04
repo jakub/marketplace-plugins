@@ -16,23 +16,21 @@ Adding a plugin: `plugins/<name>/` with a `.claude-plugin/plugin.json`, plus an 
 
 ## flow
 
-`plugins/flow/charter/charter.md` is hand-authored by jakub and is the source of truth. It is one file in two halves, separated by one marker line; above the marker is doctrine for the orchestrator, below it the rules every seat follows. `hooks/scripts/inject-charter.mjs` is the one injector on both hosts and `lib/charter-payload.mjs` owns the marker, the split and the byte budgets.
+`plugins/flow/charter/charter.md` is hand-authored by jakub and is the source of truth. One file in two halves split by a marker line, orchestrator doctrine above it and seat rules below. `hooks/scripts/inject-charter.mjs` is the one injector on both hosts; `lib/charter-payload.mjs` owns the marker, the split and the byte budgets.
 
-Claude Code caps one hook's stdout at 10,000 characters and swaps anything larger for a 2KB preview plus a file path, so the charter ships as two SessionStart hooks there. **Keep each half under 9,000 bytes**, or the session silently runs on a fragment while the global CLAUDE.md's presence check still passes. The injector prints a warning line when a half gets close.
+Claude Code caps one hook's stdout at 10,000 characters and swaps anything larger for a 2KB preview plus a file path, so the charter ships as two SessionStart hooks there. **Keep each half under 9,000 bytes**, or the session silently runs on a fragment while the global CLAUDE.md's presence check still passes. The injector warns when a half gets close.
 
-The charter is prose to a capable colleague, and it should stay that way. Every line costs context in every session, so anything that isn't true in every session goes somewhere else.
+The charter is prose to a capable colleague. Every line costs context in every session, so anything that isn't true in every session goes somewhere else. The orchestrator picks the model and effort of every seat from its rankings table and `## Model Selection` bullets, and **nothing outside the charter names a model**; `scripts/smoke-charter-conformance.mjs` is the lint.
 
-The orchestrator picks the model and effort of every seat from the charter's rankings table and its `## Model Selection` bullets. **Nothing outside the charter names a model.** `scripts/smoke-charter-conformance.mjs` is the lint.
+`lib/hook-policy.mjs` owns protected-file, publication and merge policy, kept free of event names and envelopes by `hooks/scripts/wire.mjs`, which owns the wire formats every hook answers with (`preToolDeny`, `preToolAsk`, `readHookInput`); the Claude and Codex adapters own their different tool inputs. **Never return Claude's publication `ask` result to Codex**: Codex CLI treats that unsupported value as a hook failure and lets the command continue (observed on 0.149.1, still true on 0.152.0), so its adapter denies and directs the human to publish manually. If a later Codex gains `ask` support, that adapter can retire.
 
-`lib/hook-policy.mjs` owns protected-file, publication and merge policy; `hooks/scripts/wire.mjs` owns the harness wire formats every hook answers with (`preToolDeny`, `preToolAsk`, `readHookInput`) so policy stays free of event names and envelopes; the Claude and Codex adapters own their different tool inputs. **Never return Claude's publication `ask` result to Codex**: Codex CLI treats that unsupported value as a hook failure and lets the command continue (observed on 0.149.1, still true on 0.152.0), so its adapter denies and directs the human to publish manually. If a later Codex gains `ask` support, that adapter can retire.
+`agents/implementer.md` keeps only the claims a Claude seat can make. Seat rules arrive from the charter through the SubagentStart hook, so no agent definition carries a copy.
 
-`agents/implementer.md` keeps only the claims a Claude seat can make. The rules a seat follows arrive from the charter's seat half through the SubagentStart hook, so no agent definition carries a copy.
-
-Doctrine lives in two places and no more. The charter holds what must be true in every session; the stage bodies hold the steps a stage executes. If something appears in both, delete one copy. The skill under `skills/flow/` holds what neither needs at runtime: setup, the doc stack, the ambient crons and hooks, the label contract, and the drift audit.
+Doctrine lives in two places and no more: the charter holds what must be true in every session, the stage bodies hold the steps a stage executes. If something appears in both, delete one copy. The skill under `skills/flow/` holds what neither needs at runtime - setup, the doc stack, the ambient crons and hooks, the label contract, and the drift audit.
 
 ### Stages
 
-Each stage is one file and nothing else: `skills/prep/SKILL.md`, `skills/issue/SKILL.md`, `skills/land/SKILL.md`. The skill is the invocation on both hosts - `/flow:prep` on Claude, the plugin-namespaced `prep` skill on Codex - and there is no command alias, because Claude Code resolves commands and skills in one namespace and an alias would both collide with the skill's name and re-expose a stage the model is not allowed to start. The body is host-neutral prose that names no host, no host-only tool, and no model, effort tier or role: it describes the shape of a seat and lets the orchestrator pick. It ends with a `## Host mechanics` section holding exactly two subsections, `### Claude Code` and `### Codex`, carrying only what genuinely differs and is not already in the charter's `## Hosts` section.
+Each stage is one file and nothing else: `skills/prep/SKILL.md`, `skills/issue/SKILL.md`, `skills/land/SKILL.md`. The skill is the invocation on both hosts (`/flow:prep` on Claude, the plugin-namespaced `prep` skill on Codex) and **there is no command alias**: Claude Code resolves commands and skills in one namespace, so an alias would collide with the skill's name and re-expose a stage the model may not start. The body is host-neutral prose naming no host, no host-only tool, and no model, effort tier or role: it describes the shape of a seat and lets the orchestrator pick. It ends with a `## Host mechanics` section holding exactly two subsections, `### Claude Code` and `### Codex`, carrying only what genuinely differs and is not already in the charter's `## Hosts` section.
 
 Each stage carries its own `allowed-tools` line and sets `disable-model-invocation: true`; `agents/openai.yaml` beside it sets `allow_implicit_invocation: false`. Both exist because a stage that merges, opens issues or spawns write seats must never start itself, and the Codex half is unverified on the plugin-loader path, so the human is the actual gate. `skills/babysit/` is the same document shape without either gate, on purpose: it is the watch between a pushed PR and the land, and an issue run hands off to it.
 
@@ -40,16 +38,11 @@ Each stage carries its own `allowed-tools` line and sets `disable-model-invocati
 
 ### Executors and guards
 
-Four deterministic executors do the pipeline's irreversible work, and each one's header is the spec. Read the header before editing; none of the reasoning is repeated here.
-
-- `scripts/issue-claim.mjs` - claims an issue through a tag push origin decides. **Two runs on one issue both see a green re-read**, so never replace this with an assignment check.
-- `scripts/land-gates.mjs` - the land's read-only verdict. Mutates nothing.
-- `scripts/land-merge.mjs` - the only merge, on either host.
-- `scripts/lint-actions.mjs` - the nightly lint's only path to a worktree, branch or label mutation.
+Four deterministic executors do the pipeline's irreversible work: `scripts/issue-claim.mjs` (claims an issue through a tag push origin decides; **two runs on one issue both see a green re-read**, so never replace this with an assignment check), `scripts/land-gates.mjs` (the land's read-only verdict, mutates nothing), `scripts/land-merge.mjs` (the only merge, on either host) and `scripts/lint-actions.mjs` (the nightly lint's only path to a worktree, branch or label mutation). Each one's header is the spec, including why it is code and not stage prose. Read the header before editing; none of that reasoning is repeated here.
 
 `.flow/managed` is a committed marker that opts a repository into merge enforcement. In a repository that has one, both publish guards deny every merge command they recognize through the same `mergeDenialFor` and name `land-merge.mjs`; in a repository without one, neither guard gates a merge at all. That classification is a coarse tripwire whose **only real requirement is that it never matches the executor's own invocation**, which `scripts/smoke-release-path.mjs` asserts.
 
-The executors share `lib/gh-exec.mjs` (finding gh, pinning its environment, reading its output), `lib/remote-identity.mjs` (the origin grammar, plus the two policies over it) and `lib/redact.mjs` (making a command's own words safe to quote). Each exists because a copy had already drifted. Don't reintroduce a local copy of any of them.
+The executors share `lib/gh-exec.mjs` (finding gh, pinning its environment, reading its output), `lib/remote-identity.mjs` (the origin grammar and the two policies over it) and `lib/redact.mjs` (making a command's own words safe to quote). Each exists because a copy had already drifted. Don't reintroduce a local copy of any of them.
 
 `scripts/tree-snapshot.mjs <path>` prints the four digests the prep and issue stages compare around every read-only seat.
 
@@ -69,15 +62,11 @@ The explicit `tools:` list on an agent def is load-bearing - a subagent without 
 
 ### Delegation
 
-Facts that go stale (model pricing, the Codex App Server protocol) carry an as-of date. Re-verify anything older than a quarter, and re-verify the host capability table on every CLI bump since both CLIs ship weekly. The protocol lives in `plugins/flow/docs/DELEGATION.md` and `plugins/flow/src/delegation/`, validated against Codex CLI 0.152.0 as of 2026-09-01; `skills/delegate/SKILL.md` is the operating manual a session reads before its first bridge call. Delegation requires Linux with cgroup v2 and a working systemd user manager, because every provider runs in a transient scope; there is no other platform path.
+Facts that go stale (model pricing, the Codex App Server protocol) carry an as-of date; re-verify anything older than a quarter, and re-verify the host capability table on every CLI bump since both CLIs ship weekly. The protocol lives in `docs/DELEGATION.md` and `src/delegation/`, validated against Codex CLI 0.152.0 as of 2026-09-01; `skills/delegate/SKILL.md` is the operating manual a session reads before its first bridge call. Delegation requires Linux with cgroup v2 and a working systemd user manager; there is no other platform path.
 
-`plugins/flow/capabilities.json` is the hand-maintained host capability table the issue stage's write-seat preflight reads through `delegation_doctor`. It is a plain file on purpose: editing it needs no rebuild. The doctor computes drift and the stage stops only on `older` or `unknown`; `newer` is a journal event asking for a re-check, because the table is biased false.
+`capabilities.json` is the hand-maintained host capability table the issue stage's write-seat preflight reads through `delegation_doctor`, a plain file on purpose so editing it needs no rebuild. The doctor computes drift and the stage stops only on `older` or `unknown`; `newer` is a journal event asking for a re-check, because the table is biased false.
 
-Read `docs/DELEGATION.md` before editing `src/delegation`. Three rules bind every edit:
-
-1. Every tool declares an `outputSchema` envelope, and `ERROR_KINDS` in `contracts.mjs` is the closed list the Codex smoke greps.
-2. **An edit under `src/delegation`, a charter edit or a version bump is half a change until `npm run build` in `plugins/flow/deps` regenerates `dist/delegation.mjs` in the same commit.** `scripts/smoke-bundle-drift.mjs` is the one script that needs `npm ci` there.
-3. A delegated job is handed `seatPayload(charter)` verbatim, the same bytes a subagent gets. The charter conformance smoke asserts the two payloads are equal.
+Read `docs/DELEGATION.md` before editing `src/delegation`; its `## Contracts that bind an edit` section is the list, and the closed `ERROR_KINDS` set and the verbatim `seatPayload(charter)` rule live there. The one trap that bites before you open a file: **an edit under `src/delegation`, a charter edit or a version bump is half a change until `npm run build` in `plugins/flow/deps` regenerates `dist/delegation.mjs` in the same commit.** `scripts/smoke-bundle-drift.mjs` is the one script that needs `npm ci` there.
 
 `agents/bridge.md` is the Claude transport seat, held to exactly the delegate tools by `scripts/smoke-bridge-seat.mjs`. Codex binds no transport seat, because `spawn_agent` narrows nothing.
 
