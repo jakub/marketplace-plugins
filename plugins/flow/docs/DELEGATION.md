@@ -241,9 +241,12 @@ silently for a subagent-style query, so the delegated environment sets
 reads `stop_reason` plus the `model_refusal_no_fallback` and `model_refusal_fallback` system
 messages. Neither variable is public API, and 2.1.257 carries a third feature-flagged fallback
 lane that reads neither, so the contract does not rest on them. The guard that does hold is that
-every assistant frame names the model that produced it: the worker compares that against the
+each model-produced assistant frame names its model: the worker compares that against the
 catalog id it asked for, and a mismatch fails the job as `REFUSAL` when a refusal was seen and
-`MODEL_MISMATCH` otherwise, journaling the model that answered as `model.served`. Schema jobs add
+`MODEL_MISMATCH` otherwise, journaling the model that answered as `model.served`. Claude's local
+diagnostic frames use `<synthetic>` and name no served model. Flow keeps their error tags for
+the terminal result classification, so a login failure remains `CLAUDE_AUTH` instead of causing
+a false model mismatch and interrupt. Schema jobs add
 Claude's native `StructuredOutput` tool and plain jobs do not; Ajv checks `structured_output`
 against the original schema before the job can succeed.
 

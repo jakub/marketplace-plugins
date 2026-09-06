@@ -6,8 +6,6 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Re
 
 # babysit - the watch between push and land
 
-The issue stage stops at a pushed PR, and the land stage gates a finished one. This skill is the stretch in between: external reviewers and CI keep arriving after the push, and someone has to read them, fix what is real, answer what is not, and keep the branch mergeable while other PRs land around it. That someone is you, in rounds, until the PR is clean or a human is needed.
-
 This is not a stage. It writes to one branch and its PR, never merges, never touches the issue tracker beyond the PR itself, and can run standalone on any PR the human names, flow-managed repository or not.
 
 ## The contract
@@ -20,12 +18,12 @@ This is not a stage. It writes to one branch and its PR, never merges, never tou
 
 ## The reviewers
 
-The projects here typically carry GitHub-hosted review bots - CodeRabbit, Macroscope, Greptile - alongside any human reviewers. The bots are useful and wrong often enough that neither blanket-accepting nor blanket-dismissing them survives contact. So every finding gets the same treatment: validate it against the actual code before anything else. Read the lines it cites, check the claim holds on the current head, and for a behavioral claim, prefer demonstrating it - a failing test that proves the finding skips the argument entirely and becomes the regression guard for its fix.
+Validate every finding against the actual code before anything else. Read the lines it cites, check the claim holds on the current head, and for a behavioral claim, prefer demonstrating it - a failing test that proves the finding skips the argument entirely and becomes the regression guard for its fix.
 
 Each thread then ends in exactly one of three states:
 
 - **Fixed**: the finding was real and in this PR's scope. Fix it, verify the fix by running the test that covers it, reply naming the commit, resolve the thread.
-- **Rejected**: the finding is wrong, stale, or right about code this PR does not touch. Reply with the concrete reason - the guard the bot missed, the invariant that makes it safe, the file it misread - and resolve the thread. A rejection with no reply is indistinguishable from a miss, and the reply is what makes the dismissal auditable later.
+- **Rejected**: the finding is wrong, stale, or right about code this PR does not touch. Reply with the concrete reason - the guard the bot missed, the invariant that makes it safe, the file it misread - and resolve the thread.
 - **Human's**: the finding is a judgment call - a contested design point, a scope question, anything whose dismissal changes the risk posture. Reply with your read, leave the thread unresolved, and surface it in your report. A bot thread is yours to resolve either way; a human reviewer's thread you disagree with stays open for them, because resolving over a person is how a real objection gets buried.
 
 Findings that reveal an open design question are none of the three. That is a prep failure surfacing late; stop fixing, say so, and route the human, because a design decided in review threads is a design nobody ratified.
@@ -43,7 +41,7 @@ Work in rounds. A round is one pass from "what changed" to "pushed and answered"
 5. **Push once per round**, then reply to and resolve the round's threads, citing the pushed SHA.
 6. **Wait, then verify the wait.** The bots re-review the new head and CI reruns, neither instantly. A round is not clean because the PR was quiet the moment you pushed: it is clean when CI has completed on the new head and the bots have either posted against it or a reasonable quiet interval has passed with nothing arriving. Then gather again; the next round starts only if the gather found something.
 
-Multiple rounds are the expected shape, not a failure. But churn is a signal: past roughly five fix rounds, or when a fix keeps spawning findings where it landed, stop fixing. Summarize the survivors, your read on each, and hand the set to the human - a breaker that trips loudly beats a babysitter that argues with a bot all night.
+Past roughly five fix rounds, or when a fix keeps spawning findings where it landed, stop fixing. Summarize the survivors, your read on each, and hand the set to the human.
 
 ## Reporting
 

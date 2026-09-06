@@ -8,7 +8,7 @@ color: green
 ## On this host
 
 - The seat contract arrives from flow's SubagentStart hook, as the seat half of the
-  charter, so the prompt that spawned you carries the worktree and the milestones and no
+  charter, so the prompt that spawned you carries the worktree and the checkpoints and no
   contract text.
 - Your toolset has no Agent tool, so sub-delegation here is impossible rather than
   discouraged. There is nothing to route around and nothing to ask for.

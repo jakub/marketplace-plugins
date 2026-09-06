@@ -30,11 +30,9 @@ first, then `flow://jobs/{jobId}`, `flow://jobs/{jobId}/events` and
 `flow://jobs/{jobId}/capabilities`. All JSON, filtered to jobs inside your workspace roots,
 since the database is shared across workspaces.
 
-Name the model and the effort on every call. Efforts are `low`, `medium`, `high`, `xhigh` and
-`max` on both sides. Provider ids are not the charter table's short names: the Claude side takes
-an alias (`sonnet`, `opus`, `fable`) or a full id (`claude-sonnet-5`, `claude-opus-5`,
-`claude-fable-5-1`), and the Codex side takes `gpt-5.6-luna`, `gpt-5.6-sol` or
-`gpt-daybreak-blue-latest`. Every Codex turn runs at the `default` service tier.
+Set model and effort on every call. Claude takes an alias (`sonnet`, `opus`, `fable`) or a
+full provider id, never its charter display name. Codex takes the full id from the charter.
+Use the tool's supported effort values. Codex turns use the `default` service tier.
 
 ## Arguments that matter
 
@@ -83,9 +81,7 @@ ended badly is `{ ok: false, job }` with the whole envelope still in it.
 (a provider outlived termination and still holds the write lease, so it is settled for you but
 not terminal), or terminal: `succeeded`, `failed`, `cancelled`, `unknown`, `awaiting_approval`.
 
-`error.kind` comes from `ERROR_KINDS` in `src/delegation/contracts.mjs`, the closed list every
-tool declares. The ones you will actually meet are `SAME_FAMILY`, `NESTED_DELEGATION`,
-`OUTSIDE_ROOTS`, `WORKSPACE_BUSY`, `BAD_SCHEMA`, `RATE_LIMIT`, `TIMEOUT`, `STALL` and `REFUSAL`.
+`error.kind` comes from `ERROR_KINDS` in `src/delegation/contracts.mjs`, declared by every tool.
 A `REFUSAL` carries its category in `details`; the charter says where the single retry goes.
 
 `commandFailures` counts recorded command completions that failed or exited nonzero, so a
@@ -101,8 +97,7 @@ charter's UNKNOWN rule covers these exactly as it covers a native seat.
 
 ## What each provider can do
 
-Both directions give you durable status, events, a typed result, cancel, continue and structured
-output. Flow reports the differences instead of pretending:
+Provider differences:
 
 - Steering an active turn works only against Codex.
 - Recovering a result after the worker dies works only against Codex, through `thread/read`.
@@ -141,13 +136,18 @@ nobody is waiting to answer.
 ## Running a call beside other work
 
 Claude Code. The transport seat for a bridge call is `flow:bridge`, whose toolset is the
-`flow_delegate` tools and ToolSearch and nothing else. Spawn it at a cheap model and low effort
-with the call's arguments in its prompt. In a workflow script that is
-`agent(prompt, {agentType: 'flow:bridge', effort: 'low', schema})`, where the delegated call's own
-effort rides inside the prompt and the schema is what
+`flow_delegate` tools and ToolSearch and nothing else. Its definition sets Sonnet at low effort.
+Native `Agent` calls naming `flow:bridge` have their model normalized to that definition by a
+PreToolUse hook. The delegated worker's model and effort remain unchanged inside the prompt.
+In a workflow script use
+`agent(prompt, {agentType: 'flow:bridge', model: 'sonnet', effort: 'low', schema})`, where the schema is what
 `node <plugin-root>/dist/delegation.mjs schema envelope` prints.
 It returns the envelope verbatim, and you read that as the tool result. Call the tool directly
 instead when you want a synchronous answer.
+
+The native hook is not verified for Workflow's internal spawns. Workflow model and effort are
+explicit defaults, not an enforced lock. Host-wide model overrides and provider substitutions
+can also change the model actually served. Check the host's task display when diagnosing cost.
 
 Codex. This host binds no transport seat: `spawn_agent` narrows nothing, so a child carrying a
 bridge call would hold the whole session's authority for one tool call. Call the tool directly.

@@ -158,6 +158,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       say({ type: 'assistant', error, message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: error, error: true })
     }
+    if (mode.startsWith('synthetic-')) {
+      const error = mode === 'synthetic-auth' ? 'authentication_failed'
+        : mode === 'synthetic-rate-limit' ? 'rate_limit'
+        : mode === 'synthetic-billing' ? 'billing_error' : undefined
+      say({ type: 'assistant', ...(error ? { error } : {}), message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'private synthetic diagnostic' }], model: '<synthetic>', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      if (error) return result({ text: 'private synthetic diagnostic', error: true })
+      const model = mode === 'synthetic-then-swap' ? 'claude-opus-4-8' : 'claude-sonnet-5'
+      say({ type: 'assistant', message: { id: 'real', role: 'assistant', content: [{ type: 'text', text: 'real answer' }], model, stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      return result({ text: 'real answer' })
+    }
     if (mode === 'refusal') {
       say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber' }, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
@@ -341,6 +351,19 @@ try {
   const overloaded = await startJob({ prompt: 'Overload failure' }, { mode: 'overloaded', stateDir: state('overloaded') })
   assert.equal(overloaded.error.kind, 'OVERLOADED')
   assert.match(overloaded.error.message, /overloaded/)
+  for (const [mode, kind] of [['synthetic-auth', 'CLAUDE_AUTH'], ['synthetic-rate-limit', 'RATE_LIMIT'], ['synthetic-billing', 'BILLING']]) {
+    const failed = await startJob({ prompt: 'Synthetic provider error' }, { mode, stateDir: state(mode) })
+    assert.equal(failed.status, 'failed')
+    assert.equal(failed.error.kind, kind, 'a CLI diagnostic is not a response from a different model')
+    assert.ok(!JSON.stringify(failed).includes('private synthetic diagnostic'), 'provider error prose stays private')
+    const events = (await call('delegation_events', { jobId: failed.jobId }, { stateDir: state(mode) })).structuredContent.events
+    assert.ok(!events.some((event) => ['model.served', 'model.mismatch', 'turn.interrupted'].includes(event.type)), 'a synthetic error must not invent a served model or interrupt result delivery')
+  }
+  const afterSynthetic = await startJob({ prompt: 'Diagnostic then real answer' }, { mode: 'synthetic-then-answer', stateDir: state('synthetic-then-answer') })
+  assert.equal(afterSynthetic.status, 'succeeded', 'an informational synthetic frame does not invalidate a real answer')
+  const swapAfterSynthetic = await startJob({ prompt: 'Diagnostic then wrong model' }, { mode: 'synthetic-then-swap', stateDir: state('synthetic-then-swap') })
+  assert.equal(swapAfterSynthetic.error.kind, 'MODEL_MISMATCH', 'ignoring the sentinel must not hide a real model substitution')
+  assert.equal(swapAfterSynthetic.error.details.served, 'claude-opus-4-8')
   const refused = await startJob({ prompt: 'Refused turn' }, { mode: 'refusal', stateDir: state('refusal') })
   assert.equal(refused.status, 'failed')
   assert.equal(refused.error.kind, 'REFUSAL')

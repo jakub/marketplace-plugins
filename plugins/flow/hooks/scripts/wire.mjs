@@ -25,6 +25,14 @@ export const preToolAsk = (reason) => ({
   },
 })
 
+/** Claude only. Replace arguments without granting permission to run the tool. */
+export const preToolUpdate = (input) => ({
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse',
+    updatedInput: input,
+  },
+})
+
 /**
  * The hook call on stdin, or null when there is nothing usable there.
  *

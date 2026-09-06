@@ -9,7 +9,7 @@
 //
 // `subagent` reads hook JSON on stdin and answers with hookSpecificOutput.additionalContext
 // holding the seat half alone: the rules every seat follows, without the orchestrator doctrine
-// a leaf seat cannot act on. A spawn prompt therefore carries the worktree and the milestones
+// a leaf seat cannot act on. A spawn prompt therefore carries the worktree and the checkpoints
 // and no contract text. On Claude, `Explore` and `fork` are skipped: Explore returns file paths
 // and never writes, and fork already carries the whole session context, charter included. Codex
 // has neither mechanism, so it skips nothing.

@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "0.36.1",
+  "version": "0.37.0",
   "description": "The prep → issue → land development pipeline: stage skills, hooks, cross-family delegation, and the engineering charter.",
   "author": {
     "name": "jakub"

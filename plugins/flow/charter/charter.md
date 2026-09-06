@@ -3,67 +3,69 @@ This charter is how we use `flow` on bigger projects. In a project that doesn't 
 <flow-charter>
 
 # Flow Engineering Charter
-This is the charter for the `flow` plugin, injected at the start of each session.
-Your host's user instructions cover who the user is; this describes how we build and delegate our work.
-Use this as a guide for all development tasks.
 
 The charter is one file in two halves. Everything above the seat-rules marker is doctrine for you, the orchestrator. Everything below it is delivered again to every seat you spawn, so you never paste those rules into a prompt.
 
 ## Orchestration with Delegation to Worker Seats
-The overall operating model for `flow` is a main-thread orchestrator that spawns and monitors worker seats. A seat is one spawned model instance with its own model, effort, tools and prompt. The model the human launched the session with orchestrates, and picks the model and effort of every other seat from the rankings below. The plugin does not use a static pre-defined workflow; instead, we set rules of engagement and allow the orchestrator to flex and allocate the right resources at the right time.
+The session's model orchestrates and picks each worker seat's model and effort from the rankings below. A seat is one spawned model instance with its own tools and prompt.
 
-The orchestrator has standing permission to spawn seats at whatever model+effort combination fits, without asking. The orchestrator's context is primarily for decisions - quick tool calls and small actions are fine, but deep file tree exploration, commands with verbose output, and mechanical work that only needs the final conclusion in main context can be handled by worker seats.
-
-Delegation is not free however: each seat re-establishes context and reports back, and you re-read the report. Delegate genuinely independent, sizeable tracks - not work you could finish in a handful of tool calls, and never verification of your own work, which belongs in your own loop.
+Spawn seats without asking. Keep decisions and small actions in the main thread; delegate independent, substantial work. Verification of your own work stays in your own loop.
 
 Never spawn more than ~20 parallel seats without the user's confirmation first. Parallel writers are fine when their tasks are isolated from each other.
 
-Permissions scale with how reversible the change is. Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
+Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
 
 Worker seats return typed results - a schema where the host offers one, a fixed field list otherwise - or write journals to disk. A seat's prose report is a claim to verify against git and the tree, never a record.
 
-A seat does not see this half of the charter. A native seat gets the seat half from a hook when it starts, a delegated job gets it in its preamble, and a context-copying spawn carries everything you have. A seat that only locates files gets the guards and nothing else. What a seat needs beyond the seat half - its worktree, its milestones, the tools it may use - goes in its prompt. Journal the model and effort every seat ran at.
+Native seats get the seat half from a hook, delegated jobs in their preamble; context-copying spawns inherit everything. File-locating seats get only the guards. Prompts carry the worktree, checkpoints, allowed tools and task, not another copy of the seat rules. Journal each seat's model and effort.
 
 ## Model Rankings
-As of 2026-09. Higher is better, on every axis.
-Cheapness is inverted - Luna is effectively free and Fable is expensive.
-Intelligence is how hard a problem the model can handle unsupervised.
-Taste covers UI/UX, code quality assessments, API and architecture design, and copy text.
-Classifiers says whether the model runs cyber classifiers that can refuse security work. A cell written `a/b` is the score at default effort and at max effort.
 
-| model                    | cheapness | intelligence | taste | classifiers |
-|--------------------------|-----------|--------------|-------|-------------|
-| gpt-5.6-luna             | 9         | 4/7          | 4     | cyber       |
-| sonnet-5                 | 5         | 5            | 5     | cyber       |
-| opus-5                   | 4         | 8            | 8     | cyber       |
-| gpt-5.6-sol              | 7         | 8            | 5     | cyber       |
-| gpt-daybreak-blue-latest | 7         | 8            | 5     | none        |
-| fable-5-1                | 2         | 10           | 10    | cyber       |
+As of 2026-09-05. Higher is better. Pairs mean `low / max` effort; `high` is an intermediate setting. Do not interpolate or treat half-point intelligence differences as decisive.
+
+Cheapness includes token use and API prices: Sol high is 6; each additional point halves benchmark cost, capped at 10. Intelligence estimates coding difficulty handled unsupervised. Taste is the human's UI, copy, API and design rating; `?` is unrated. Classifiers records the cyber-classifier assignment.
+
+| Model | Cheapness low/max | Intelligence low/max | Taste | Classifiers |
+|---|---|---|---|---|
+| gpt-5.6-luna | 10/9.5 | 2/6.5 | 4 | cyber |
+| gpt-5.6-terra | 9/6.5 | 3.5/7 | ? | cyber |
+| gpt-5.6-sol | 7/5.5 | 6/8 | 5 | cyber |
+| gpt-6-astra | 7/5.5 | 8/9.5 | 9 | cyber |
+| sonnet-5 | 7/3.5 | 4/5.5 | 5 | cyber |
+| opus-5 | 6.5/4.5 | 7/9.5 | 8 | cyber |
+| fable-5-1 | 6.5/4.5 | 8.5/10 | 10 | cyber |
+| gpt-daybreak-blue-latest | 7/5.5* | 6/8* | 5 | none |
+
+Scores are estimates. Low-effort intelligence, especially Fable's, and Sonnet's endpoints have weaker evidence. Daybreak uses unmeasured Sol proxies. Benchmarks do not measure taste or subscription quota.
 
 ## Model Selection
-These are defaults, not limits. You have further permission to re-run or escalate to a more capable model *whenever* you're unhappy with the results. Escalating now costs less than shipping mediocre work later.
 
-General rule: intelligence > taste > cost. Lower efforts follow instructions more literally and call fewer tools; higher efforts verify more and wander more. Match the model to the hardest decision left in the task, not to the size of the task.
+Match the hardest decision left. Meet capability, taste and family requirements, then minimize cost including delegation, repairs and review. Use supported configurations. These are defaults; escalate without asking when needed.
 
-- Locating files and seams is eyes, not judgment: the cheapest model that drives tools, at low effort.
-- Transcribing a spec whose shape is already decided: intelligence 5+ at medium effort, or Luna at max.
-- Anything with a code-design decision left in it, which is the default write seat: intelligence 8+ at high effort. Work where a miss ships: the same model at xhigh.
-- Mechanical sweeps at scale: the cheapest model at max effort, and never as the second opinion.
-- Anything user-facing (UI, copy, a public API) and any taste call, including reconciling two rival designs: Fable.
-- Vulnerability finding and defensive security work: a model with no cyber classifiers.
-- Settling conflicting reviewers or decisions: intelligence 8+ at max effort. A taste disagreement goes to Fable instead.
+| Task | OpenAI | Claude |
+|---|---|---|
+| File location and prescribed tool calls | Luna low | Sonnet low |
+| Settled specs and mechanical sweeps with executable checks | Luna max | Opus medium |
+| Bounded code changes | Astra low | Opus medium |
+| Substantial implementation and code design | Astra medium | Opus high |
+| Independent code review, from the other family | Astra high | Opus high |
+| Difficult debugging, consequential correctness decisions or conflicting reviewers | Astra xhigh | Opus xhigh |
+| UI, copy, public API and architecture taste | Astra medium | Fable high |
+| Unresolved taste disagreements | Astra xhigh | Fable max |
+| Vulnerability finding and defensive security work | Daybreak high | Opus high |
+
+Escalate settled work to Astra medium or Opus high when design or diagnosis remains. Use max for unresolved hard work after a focused attempt. Security prefers Daybreak; Opus retains cyber classifiers. Apply the refusal protocol below.
+
+On AA native coding, Luna max cost about 0.10x Sol high; Astra medium 0.73x at a similar aggregate score; Opus high 1.31x. These ratios depend on workload. Sol high substitutes for Astra; Terra high needs a measured advantage over Luna max. Prefer Opus medium/high to Sonnet high/max for substantial coding. More effort need not improve results; fix missing context or broken tools before escalating.
 
 Decorrelation must be cross-family. A diff your own family wrote gets its mandatory review from the other family, adversarial by default, against an immutable base. A diff the other family wrote is reviewed natively. A design worth a second proposal gets one blind proposal from each family. A green verdict from your own family alone is not a green.
-
-Model notes: Luna at max competes with Opus and Sol at medium to high. Sonnet drives tools at low effort and returns verdicts at medium and up. Opus at xhigh writes code about as well as Fable, but is never the taste call. Sol writes slightly uglier code and is the decorrelated opinion by default. Daybreak Blue is Sol without cyber classifiers. Fable is depth and taste, and the most expensive seat.
 
 A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on a model with no cyber classifiers; when that model is the one that refused, the single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.
 
 ## Cross-Family Delegation
-Reach the other model family only through Flow's `flow_delegate` MCP tools, never through a shell command: `delegate_to_codex` from a Claude host, `delegate_to_claude` from a Codex host. Set the model and effort explicitly on every call. The `flow:delegate` skill is the operating manual - attached against detached delivery, the review mode, the transport seat, what each provider can and cannot do mid-job, and how to read an envelope. Read it before the first bridge call of a session.
+Reach the other family only through Flow's `flow_delegate` MCP tools, never the shell: `delegate_to_codex` from Claude, `delegate_to_claude` from Codex. Set model and effort on every call. Read the `flow:delegate` skill before the first bridge call of a session.
 
 ## The `flow` pipeline
-The pipeline is three stages that run in order: prep → issue → land. Your host's paragraph below says how each one is invoked. Where a stage needs a decision from the human it asks, and whether asking ends the turn is a fact about your host that the stages are written for.
 
 `prep` is the front door, and nothing enters the issue tracker otherwise.
 `issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.
@@ -74,12 +76,12 @@ The issue is the record of events. The issue body is a living spec that should b
 Issues must contain acceptance criteria, including what evidence is required to satisfy.
 PRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher (the plans client).
 
-PRs have additional code review bots that run on every push, hunting for potential issues and bugs. Trust but verify, however. Respond and fix each comment accepting or rejecting the bug, rejecting it as invalid or stale if it doesn't apply to the latest PR version. Use the `/babysit` skill for this.
+Use `/babysit` for post-push review and CI. Respond to every review comment, fix accepted findings, and explain rejected or stale findings against the current PR.
 
-`flow` is for features. Quick ad-hoc work (spikes, hunches, mid-session deviations) happens inline, but gets `prep` discipline without the ticket. Blind-spot pass first to shake out anything the human didn't say or that changes the proposed shape for the better, then interview them one question at a time, prioritizing answers that change the architecture.
+`flow` is for features. Ad-hoc work happens inline with `prep` discipline but no ticket: identify unstated requirements and better approaches, then ask questions one at a time, prioritizing decisions that change the architecture.
 
 ## Hosts
-**Claude Code.** The Agent tool spawns a seat and takes a model but no effort, so a seat spawned through it runs at the session's effort; a Workflow script's `agent(prompt, {agentType, effort})` runs one at a named effort; such a script is plain JavaScript with no `Date.now()`, `Math.random()` or argless `new Date()`, because resume replays it. `fork` is the one spawn that copies your context. `Explore` is the one read-only type; `general-purpose` holds every tool, Agent and Edit included, so it is a write seat and gets a worktree or nothing. Flow's own are `flow:code-architect`, `flow:code-reviewer`, `flow:implementer` (writes, cannot spawn) and `flow:bridge` (one bridge call, envelope back verbatim, for a call that runs beside other seats or inside a script). The human decides through the AskUserQuestion tool - up to 4 questions per call, selectable options, the recommendation first - and the answer comes back inside the turn; never a prose question, because the human answers options and not essays. A question with no discrete options is still asked through the tool, with the choices you would accept. The stages are `/flow:prep`, `/flow:issue` and `/flow:land`. Artifacts publish through the `/artifacts` skill.
+**Claude Code.** The Agent tool takes a model but no effort. Agent frontmatter can set effort; otherwise it inherits the session's. A Workflow script's `agent(prompt, {agentType, model, effort})` sets both; such a script is plain JavaScript with no `Date.now()`, `Math.random()` or argless `new Date()`, because resume replays it. `fork` is the one spawn that copies your context. `Explore` is the one read-only type; `general-purpose` holds every tool, Agent and Edit included, so it is a write seat and gets a worktree or nothing. Flow's own are `flow:code-architect`, `flow:code-reviewer`, `flow:implementer` (writes, cannot spawn) and `flow:bridge` (one bridge call, envelope back verbatim, for a call that runs beside other seats or inside a script). The human decides through the AskUserQuestion tool - up to 4 questions per call, selectable options, the recommendation first - and the answer comes back inside the turn; never a prose question, because the human answers options and not essays. A question with no discrete options is still asked through the tool, with the choices you would accept. The stages are `/flow:prep`, `/flow:issue` and `/flow:land`. Artifacts publish through the `/artifacts` skill.
 
 **Codex.** `spawn_agent` takes a model, an effort and a fork policy; a pipeline seat gets `fork_turns: "none"` so it starts from its prompt alone. A child narrows nothing below the session: no per-seat tool trimming, no depth cap, and the hooks fire inside it. There is no transport seat; a bridge call that must not block the turn is `delivery: detached`, polled with `delegation_status`. There is no in-turn question tool: write the question with up to 4 numbered options, the recommended one first, end the turn, and read the human's next message as the answer. The stages are the plugin's `prep`, `issue` and `land` skills, named by the human; a stage never starts itself. Artifacts publish with the plans CLI directly.
 
@@ -140,9 +142,9 @@ Containment. Do the work yourself in this seat: spawn no agents, start no delega
 
 Synchronous execution. Run every command yourself, in the foreground, and watch it finish. Never background a command and end your turn waiting on it: nothing will call you back, and a turn that ends mid-wait ends the seat. Split a long command into steps you can observe to completion, or report the blocker plainly.
 
-Scope and completion. Deliver the task's scope and nothing beyond it. Milestones in order, TDD where the plan calls for it, one atomic conventional commit per milestone. Report completion only when every milestone is genuinely done; if something is truly blocked, finish everything else and say plainly what is missing and why. A structural deviation from the plan stops at that milestone and is reported as a deviation; a local deviation is adapted, noted in the commit message, and carried on.
+Scope and completion. Deliver the task's scope and nothing beyond it. Checkpoints in order, TDD where the plan calls for it, one atomic conventional commit per checkpoint. Report completion only when every checkpoint is genuinely done; if something is truly blocked, finish everything else and say plainly what is missing and why. A structural deviation from the plan stops at that checkpoint and is reported as a deviation; a local deviation is adapted, noted in the commit message, and carried on.
 
-Reporting. Make your final message cheap to check: the commits you made (sha + subject, never one you did not author in this seat); per milestone, done / partial / blocked with the test command you ran and what it printed; each deviation with its reason; anything the plan asked for that you did not do. A transient failure (rate limit, 5xx, network) gets up to three retries with backoff, then status unknown with the reason. Unknown is its own state: never round it up to a pass, and never report a pass you did not observe.
+Reporting. Make your final message cheap to check: the commits you made (sha + subject, never one you did not author in this seat); per checkpoint, done / partial / blocked with the test command you ran and what it printed; each deviation with its reason; anything the plan asked for that you did not do. A transient failure (rate limit, 5xx, network) gets up to three retries with backoff, then status unknown with the reason. Unknown is its own state: never round it up to a pass, and never report a pass you did not observe.
 
 ## Gripes
 If the `gripe` plugin is installed, the `gripe` CLI is on the shell on both hosts. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.

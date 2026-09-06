@@ -5,7 +5,7 @@ description: The flow development framework - project setup, the documentation s
 
 # flow - the development framework
 
-The charter is in your context already; it says how we build and delegate. prep, issue and land are each one skill, on both hosts: a host-neutral body ending in a `## Host mechanics` section that holds only what differs by host, with the charter's `## Hosts` section holding the rest. There is no separate command file aliasing them. The `delegate` skill beside this one is the operating manual for a cross-family call. This skill holds what neither needs every session: how to set a project up, what the doc stack looks like, and the machinery running in the background.
+The charter holds recurring doctrine. Stage skills own their procedures; `delegate` covers cross-family calls. This skill covers project setup, the doc stack and background jobs.
 
 Files in this directory:
 

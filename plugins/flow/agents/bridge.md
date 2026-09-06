@@ -1,5 +1,7 @@
 ---
 name: bridge
+model: sonnet
+effort: low
 description: The flow transport seat for the other model family. Makes exactly one flow_delegate call with the arguments it was handed and returns the result envelope verbatim. Spawn it when a bridge job is long, runs beside other seats, or is composed by a workflow script; call the tool directly when you want a synchronous answer. It has no shell, no file tools, and no Agent tool, and it adds nothing to what came back.
 tools: ToolSearch, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_continue, mcp__plugin_flow_flow_delegate__delegation_steer
 color: cyan

@@ -321,7 +321,9 @@ export function runClaudeJob({ job, store, stateDir, settle, recordBackgroundFai
               refusal = { category: message.message.stop_details?.category ?? null, originalModel: message.message.model ?? null, fallbackModel: null }
               store.appendEvent(jobId, 'turn.refused', refusal)
             }
-            if (message.message?.model && message.message.model !== servedBy) {
+            // Claude uses <synthetic> for local diagnostics, including an expired login.
+            // Keep the error tag above for resultFailure; this frame names no served model.
+            if (message.message?.model && message.message.model !== '<synthetic>' && message.message.model !== servedBy) {
               servedBy = message.message.model
               const matches = modelKey(servedBy) === expectedModel
               store.appendEvent(jobId, 'model.served', { model: servedBy, expected: expectedModel, matches })

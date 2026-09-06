@@ -8,6 +8,18 @@ The charter you already have in context says how we build. This file is only abo
 
 Each plugin has one version, written in up to three places that must agree: `plugins/<name>/.claude-plugin/plugin.json`, its entry in the marketplace manifest, and `plugins/<name>/.codex-plugin/plugin.json` when the plugin ships one. The marketplace entry is the number that matters, because both plugin managers name the cache directory after it. The description is mirrored across the same files and checked the same way. A Codex manifest exists only where Codex needs it, for a `hooks` or `mcpServers` pointer; a skills-only plugin (grill) has none, since Codex discovers `skills/*/SKILL.md` on its own. There is no catalog version. `scripts/smoke-plugin-manifests.mjs` enforces all of it.
 
+Before every push containing Flow changes or a new Flow version, rebuild and verify `plugins/flow/dist/delegation.mjs`. The bundle embeds the charter and version, so prose-only charter edits and version bumps need a rebuild too. Run these commands from the repo root after all source, charter, dependency and manifest edits are final:
+
+```sh
+npm --prefix plugins/flow/deps run build
+node plugins/flow/scripts/smoke-bundle-drift.mjs
+node plugins/flow/scripts/smoke-charter-conformance.mjs
+node plugins/flow/scripts/smoke-stage-conformance.mjs
+node scripts/smoke-plugin-manifests.mjs
+```
+
+If the build dependencies are missing or `plugins/flow/deps/package-lock.json` changed, run `npm --prefix plugins/flow/deps ci` first. Include the regenerated bundle in the same commit as its inputs; never hand-edit `dist/`. All checks must pass before the push. If any build input changes afterward, rebuild and rerun the checks. These checks do not grant permission to bump a version or publish.
+
 Installs pull from the pinned GitHub clone, never from this working tree. To test a change: commit, push, then `claude plugin uninstall flow@jakub && claude plugin install flow@jakub`. On Codex, run `codex plugin marketplace upgrade` FIRST: `codex plugin add` resolves the version from a cached marketplace snapshot, so without the refresh it reinstalls the old version and says so only in the cache path it prints. Hook scripts can be exercised without a reinstall - `echo '<json>' | node plugins/flow/hooks/scripts/no-backlog-guard.mjs`.
 
 Desktop and claude.ai bridge sessions load plugins from service-pushed snapshots with hooks stripped, so a bridge session never sees the charter or the guards; don't debug "the hook didn't fire" from one.
@@ -20,7 +32,7 @@ Adding a plugin: `plugins/<name>/` with a `.claude-plugin/plugin.json`, plus an 
 
 Claude Code caps one hook's stdout at 10,000 characters and swaps anything larger for a 2KB preview plus a file path, so the charter ships as two SessionStart hooks there. **Keep each half under 9,000 bytes**, or the session silently runs on a fragment while the global CLAUDE.md's presence check still passes. The injector warns when a half gets close.
 
-The charter is prose to a capable colleague. Every line costs context in every session, so anything that isn't true in every session goes somewhere else. The orchestrator picks the model and effort of every seat from its rankings table and `## Model Selection` bullets, and **nothing outside the charter names a model**; `scripts/smoke-charter-conformance.mjs` is the lint.
+The charter is prose to a capable colleague. Every line costs context in every session, so anything that isn't true in every session goes somewhere else. The orchestrator picks each worker's model and effort from its rankings table and `## Model Selection` guidance. Model choices live in the charter, except the fixed transport configuration in `agents/bridge.md` and its invocation examples. `scripts/smoke-charter-conformance.mjs` checks charter structure and delivery; `scripts/smoke-bridge-seat.mjs` checks the transport binding.
 
 `lib/hook-policy.mjs` owns protected-file, publication and merge policy, kept free of event names and envelopes by `hooks/scripts/wire.mjs`, which owns the wire formats every hook answers with (`preToolDeny`, `preToolAsk`, `readHookInput`); the Claude and Codex adapters own their different tool inputs. **Never return Claude's publication `ask` result to Codex**: Codex CLI treats that unsupported value as a hook failure and lets the command continue (observed on 0.149.1, still true on 0.152.0), so its adapter denies and directs the human to publish manually. If a later Codex gains `ask` support, that adapter can retire.
 
@@ -66,9 +78,9 @@ Facts that go stale (model pricing, the Codex App Server protocol) carry an as-o
 
 `capabilities.json` is the hand-maintained host capability table the issue stage's write-seat preflight reads through `delegation_doctor`, a plain file on purpose so editing it needs no rebuild. The doctor computes drift and the stage stops only on `older` or `unknown`; `newer` is a journal event asking for a re-check, because the table is biased false.
 
-Read `docs/DELEGATION.md` before editing `src/delegation`; its `## Contracts that bind an edit` section is the list, and the closed `ERROR_KINDS` set and the verbatim `seatPayload(charter)` rule live there. The one trap that bites before you open a file: **an edit under `src/delegation`, a charter edit or a version bump is half a change until `npm run build` in `plugins/flow/deps` regenerates `dist/delegation.mjs` in the same commit.** `scripts/smoke-bundle-drift.mjs` is the one script that needs `npm ci` there.
+Read `docs/DELEGATION.md` before editing `src/delegation`; its `## Contracts that bind an edit` section is the list, and the closed `ERROR_KINDS` set and the verbatim `seatPayload(charter)` rule live there. Follow the rebuild and pre-push checks under `Versions and publishing` above.
 
-`agents/bridge.md` is the Claude transport seat, held to exactly the delegate tools by `scripts/smoke-bridge-seat.mjs`. Codex binds no transport seat, because `spawn_agent` narrows nothing.
+`agents/bridge.md` is the Claude transport seat. Its frontmatter owns the fixed model and effort; `hooks/scripts/bridge-model.mjs` reads it to normalize native Agent calls. `scripts/smoke-bridge-seat.mjs` checks the binding, argument preservation and exact tool list. Workflow limits live in the delegate skill. Codex binds no transport seat, because `spawn_agent` narrows nothing.
 
 ## gripe
 

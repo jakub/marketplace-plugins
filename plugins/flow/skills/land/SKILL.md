@@ -7,8 +7,6 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(node:*), Bash(docker:*), Bash(ls:*)
 
 # land - the human gate
 
-This stage is the back of the prep → issue → land process. The issue run stopped at an open PR and left it there; once the human is happy with it, this stage runs the closing ritual: the gates, the merge, the cleanup, and a survey of what to do next.
-
 Everything up to `## Host mechanics` is the same on every host; read your host's subsection there before step 1. It holds where the PR number comes from and the tool allowance, and nothing else: the merge is one executor on every host, and asking the human a question is the charter's.
 
 ## Core principles
@@ -73,8 +71,6 @@ gh api graphql -f query='mutation($thread: ID!) {
 
 The two input field names differ, `pullRequestReviewThreadId` on the reply and `threadId` on the resolve, and swapping them is a schema error rather than a silent no-op. Read `thread.isResolved` back as proof, and re-run the executor at the end: zero unresolved threads is the only pass.
 
-This is where a review that landed after the issue run finished gets caught. The run cannot wait indefinitely, so this gate is what makes a late review still count.
-
 ## 3. Escape-hatch ack
 
 If the PR carries a `## follow-up draft` comment, meaning cross-crate-scale findings the run deferred rather than filing, present it to the human and ask: file it or drop it, with the cost of each in a line. The executor reports it under `followUpDraft`; it is a top-level PR comment, so it never appears among the review threads.
@@ -115,7 +111,7 @@ Confirm with `gh pr view $PR --json state,mergeCommit,autoMergeRequest` that `st
 
 What DOES get cleaned up is a stray worktree or checkout the evidence commit went through. `git worktree list` after step 2 shows anything the ledger left behind; `git fetch --prune` won't touch it.
 
-Then confirm the evidence held. Take one committed capture out of the ledger comment and check the object still resolves at its pinned SHA: `gh api repos/{owner}/{repo}/contents/<path>?ref=<sha> --jq .sha`. A ledger row pointing at a dead url is worse than one that admits a gap, and this is the last moment anyone is looking at it.
+Then confirm the evidence held. Take one committed capture out of the ledger comment and check the object still resolves at its pinned SHA: `gh api repos/{owner}/{repo}/contents/<path>?ref=<sha> --jq .sha`.
 
 4) Repo-specific teardown: if the repo's `AGENTS.md` documents per-worktree resources - isolated test databases, containers - run the documented teardown, best effort. Never block the land on housekeeping, and never touch the canonical or shared instance.
 
