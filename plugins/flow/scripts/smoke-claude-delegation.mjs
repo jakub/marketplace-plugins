@@ -300,6 +300,42 @@ try {
   assert.equal(doctor.hostCapabilities.host, 'codex')
   assert.ok(['match', 'newer', 'older', 'unknown'].includes(doctor.hostCapabilities.drift.status))
 
+  // A service may reach the user manager through D-Bus alone. The provider must retain
+  // that address after filtering its environment, even without XDG_RUNTIME_DIR.
+  // Forward to the real scope launcher, but reject an unrelated service-only variable.
+  // This catches a doctor that silently returns to probing its inherited environment.
+  const scopeBin = join(temp, 'scope-bin')
+  mkdirSync(scopeBin)
+  const realSystemdRun = execFileSync('sh', ['-c', 'command -v systemd-run'], { encoding: 'utf8' }).trim()
+  const checkedSystemdRun = join(scopeBin, 'systemd-run')
+  writeFileSync(checkedSystemdRun, `#!/usr/bin/env node
+import { spawnSync } from 'node:child_process'
+if (process.env.FLOW_SMOKE_API_KEY) process.exit(91)
+const child = spawnSync(${JSON.stringify(realSystemdRun)}, process.argv.slice(2), { stdio: 'inherit' })
+process.exit(child.status ?? 1)
+`)
+  chmodSync(checkedSystemdRun, 0o755)
+  const busOnlyEnv = {
+    PATH: `${scopeBin}${delimiter}${process.env.PATH}`,
+    DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS
+      || `unix:path=${process.env.XDG_RUNTIME_DIR}/bus`,
+    XDG_RUNTIME_DIR: undefined,
+    FLOW_SMOKE_API_KEY: 'not-a-real-secret',
+  }
+  const busOnlyDoctor = await doctorOf({ stateDir: state('bus-only-doctor'), extraEnv: busOnlyEnv })
+  assert.equal(busOnlyDoctor.checks.containment.ok, true)
+  const busOnlyJob = await startJob({ prompt: 'Use the D-Bus-only runtime environment' }, {
+    stateDir: state('bus-only-job'), mode: 'assert-env', extraEnv: busOnlyEnv,
+  })
+  assert.equal(busOnlyJob.status, 'succeeded', JSON.stringify(busOnlyJob))
+  const noBusEnv = { DBUS_SESSION_BUS_ADDRESS: undefined, XDG_RUNTIME_DIR: undefined }
+  const noBusDoctor = await doctorOf({ stateDir: state('no-bus-doctor'), extraEnv: noBusEnv })
+  assert.equal(noBusDoctor.ok, false)
+  assert.equal(noBusDoctor.checks.containment.kind, 'CONTAINMENT_UNAVAILABLE')
+  const noBusJob = await startJob({}, { stateDir: state('no-bus-job'), extraEnv: noBusEnv })
+  assert.equal(noBusJob.error.kind, 'CONTAINMENT_UNAVAILABLE')
+  console.log('  D-Bus-only launch succeeds; doctor and admission reject missing user-bus environment')
+
   const happy = await startJob({ prompt: 'Reply with OK' }, { stateDir: state('happy'), mode: 'capture-instructions' })
   assert.equal(happy.status, 'succeeded')
   assert.equal(happy.host, 'codex')

@@ -24310,11 +24310,13 @@ function providerScopeName(id2 = randomUUID2()) {
   const safe = String(id2).toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 80);
   return `flow-delegation-${safe}.scope`;
 }
-function probeProviderContainment() {
+function probeProviderContainment(env) {
   const scopeName = providerScopeName(`probe-${process.pid}-${randomUUID2()}`);
   try {
     const probe = 'const {spawn}=require("node:child_process"); const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore",detached:true}); child.unref()';
-    const result = spawnSync("systemd-run", [...scopeOptions(scopeName), "--", process.execPath, "-e", probe], {
+    const launch = scopedProviderCommand(process.execPath, ["-e", probe], scopeName);
+    const result = spawnSync(launch.command, launch.args, {
+      env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 1e4
@@ -24332,12 +24334,13 @@ function probeProviderContainment() {
     }
   }
 }
-function providerContainmentSupport({ fresh = false } = {}) {
+function providerContainmentSupport({ fresh = false, env = process.env } = {}) {
   if (process.platform !== "linux") {
     return { ok: false, kind: "UNSUPPORTED_HOST", mode: null, platform: process.platform, required: "linux" };
   }
+  if (env !== process.env) return probeProviderContainment(env);
   if (!fresh && cachedContainmentSupport) return cachedContainmentSupport;
-  cachedContainmentSupport = probeProviderContainment();
+  cachedContainmentSupport = probeProviderContainment(env);
   return cachedContainmentSupport;
 }
 function scopedProviderCommand(command, args, scopeName) {
@@ -57150,6 +57153,8 @@ var CLAUDE_ENV_ALLOWLIST = /* @__PURE__ */ new Set([
   "XDG_DATA_HOME",
   "XDG_RUNTIME_DIR",
   "XDG_STATE_HOME",
+  // systemd-run --user needs this when XDG_RUNTIME_DIR is absent.
+  "DBUS_SESSION_BUS_ADDRESS",
   // Network and certificate configuration needed to reach the selected provider.
   "ALL_PROXY",
   "HTTP_PROXY",
@@ -57804,7 +57809,7 @@ var DelegationService = class {
     const target = this.target();
     validateStart(normalized, target);
     assertRoute({ host: this.host, target, depth: this.depth });
-    const containment = providerContainmentSupport();
+    const containment = providerContainmentSupport(target === "claude" ? { env: claudeProcessEnvironment() } : {});
     if (!containment.ok) {
       throw new DelegationError(containment.kind, "Delegation requires Linux with a working systemd user scope for provider containment.");
     }
@@ -58077,7 +58082,7 @@ var DelegationService = class {
       workspace,
       node: { ok: Number(process.versions.node.split(".")[0]) >= 22, version: process.version },
       claude: claudeVersion(),
-      containment: providerContainmentSupport({ fresh: true }),
+      containment: providerContainmentSupport({ fresh: true, env: claudeProcessEnvironment() }),
       agentSdk: claudeAgentSdkStatus(),
       database: { ok: false },
       account: claudeAuthStatus(),

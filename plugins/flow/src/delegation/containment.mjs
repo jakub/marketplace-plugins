@@ -21,14 +21,16 @@ export function providerScopeName(id = randomUUID()) {
   return `flow-delegation-${safe}.scope`
 }
 
-function probeProviderContainment() {
+function probeProviderContainment(env) {
   const scopeName = providerScopeName(`probe-${process.pid}-${randomUUID()}`)
   try {
     // Leave a detached grandchild in the probe scope after systemd-run returns. A zero exit only
     // proves that systemd accepted the command; Flow also needs cgroup.events for later liveness
     // checks, quarantine, and lease release.
     const probe = 'const {spawn}=require("node:child_process"); const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore",detached:true}); child.unref()'
-    const result = spawnSync('systemd-run', [...scopeOptions(scopeName), '--', process.execPath, '-e', probe], {
+    const launch = scopedProviderCommand(process.execPath, ['-e', probe], scopeName)
+    const result = spawnSync(launch.command, launch.args, {
+      env,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10_000,
@@ -51,12 +53,15 @@ function probeProviderContainment() {
 
 // The whole subsystem requires Linux, and this is where that requirement is enforced for
 // both routes: no transient systemd scope, no delegation.
-export function providerContainmentSupport({ fresh = false } = {}) {
+export function providerContainmentSupport({ fresh = false, env = process.env } = {}) {
   if (process.platform !== 'linux') {
     return { ok: false, kind: 'UNSUPPORTED_HOST', mode: null, platform: process.platform, required: 'linux' }
   }
+  // A filtered provider environment cannot reuse a success from the service environment.
+  // Probe explicit environments each time, so admission and doctor see the current filter.
+  if (env !== process.env) return probeProviderContainment(env)
   if (!fresh && cachedContainmentSupport) return cachedContainmentSupport
-  cachedContainmentSupport = probeProviderContainment()
+  cachedContainmentSupport = probeProviderContainment(env)
   return cachedContainmentSupport
 }
 

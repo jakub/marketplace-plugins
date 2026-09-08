@@ -21,6 +21,8 @@ const CLAUDE_ENV_ALLOWLIST = new Set([
   'LOGNAME', 'PATH', 'PATHEXT', 'SHELL', 'SYSTEMROOT', 'TEMP', 'TERM', 'TMP',
   'TMPDIR', 'TZ', 'USER', 'USERPROFILE', 'WINDIR', 'XDG_CACHE_HOME',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'XDG_STATE_HOME',
+  // systemd-run --user needs this when XDG_RUNTIME_DIR is absent.
+  'DBUS_SESSION_BUS_ADDRESS',
   // Network and certificate configuration needed to reach the selected provider.
   'ALL_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
   'SSL_CERT_DIR', 'SSL_CERT_FILE',
@@ -39,7 +41,7 @@ const CLAUDE_ENV_ALLOWLIST = new Set([
   'FLOW_FAKE_CLAUDE_MODE',
 ])
 
-function claudeProcessEnvironment() {
+export function claudeProcessEnvironment() {
   const env = {}
   for (const [name, value] of Object.entries(process.env)) {
     if (value !== undefined && (CLAUDE_ENV_ALLOWLIST.has(name.toUpperCase()) || name.startsWith('LC_'))) {

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { assertRoute, capabilitiesForHost, capabilitiesForTarget, DelegationError, EFFORTS, MODES, ACCESS_MODES, DELIVERIES, MODEL_PATTERN, TERMINAL_STATES, publicError, resultEnvelope, targetForHost } from './contracts.mjs'
 import { AppServerClient, assertRestrictedPermissionProfile, assertThreadMcpIsolated, CODEX_PERMISSION_PROFILE, codexHostSupport, codexVersion, isolatedThreadConfig, restrictedPermissionConfig } from './app-server.mjs'
-import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeVersion } from './claude-sdk.mjs'
+import { claudeAgentSdkStatus, claudeAuthStatus, claudeModels, claudeProcessEnvironment, claudeVersion } from './claude-sdk.mjs'
 import { providerContainmentSupport, providerScopeRunning } from './containment.mjs'
 import { foldTurnOutcome, validateStructured } from './outcome.mjs'
 import { validateOutputSchema } from './schema.mjs'
@@ -165,7 +165,7 @@ export class DelegationService {
     const target = this.target()
     validateStart(normalized, target)
     assertRoute({ host: this.host, target, depth: this.depth })
-    const containment = providerContainmentSupport()
+    const containment = providerContainmentSupport(target === 'claude' ? { env: claudeProcessEnvironment() } : {})
     if (!containment.ok) {
       throw new DelegationError(containment.kind, 'Delegation requires Linux with a working systemd user scope for provider containment.')
     }
@@ -448,7 +448,7 @@ export class DelegationService {
       workspace,
       node: { ok: Number(process.versions.node.split('.')[0]) >= 22, version: process.version },
       claude: claudeVersion(),
-      containment: providerContainmentSupport({ fresh: true }),
+      containment: providerContainmentSupport({ fresh: true, env: claudeProcessEnvironment() }),
       agentSdk: claudeAgentSdkStatus(),
       database: { ok: false },
       account: claudeAuthStatus(),
