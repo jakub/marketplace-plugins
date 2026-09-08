@@ -23600,7 +23600,7 @@ function claudePolicyHook(job, { onDenied = () => {
 }
 
 // src/delegation/containment.mjs
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { createHash, randomUUID as randomUUID2 } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync as readdirSync2, readFileSync as readFileSync3 } from "node:fs";
 
@@ -24332,16 +24332,18 @@ function probeProviderContainment(env) {
     for (let attempt = 0; attempt < 20 && providerScopeRunning(scopeName); attempt++) {
       Atomics.wait(probeWait, 0, 0, 25);
     }
+    controlGroupCache.delete(scopeName);
   }
 }
 function providerContainmentSupport({ fresh = false, env = process.env } = {}) {
   if (process.platform !== "linux") {
     return { ok: false, kind: "UNSUPPORTED_HOST", mode: null, platform: process.platform, required: "linux" };
   }
-  if (env !== process.env) return probeProviderContainment(env);
-  if (!fresh && cachedContainmentSupport) return cachedContainmentSupport;
-  cachedContainmentSupport = probeProviderContainment(env);
-  return cachedContainmentSupport;
+  const key = createHash("sha256").update(JSON.stringify(Object.entries(env).filter(([, value]) => value !== void 0).sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
+  if (!fresh && cachedContainmentSupport?.key === key) return cachedContainmentSupport.result;
+  const result = probeProviderContainment(env);
+  cachedContainmentSupport = { key, result };
+  return result;
 }
 function scopedProviderCommand(command, args, scopeName) {
   return {
@@ -57295,7 +57297,7 @@ function claudeVersion() {
   } catch {
     return { ok: false, kind: "CLAUDE_NOT_INSTALLED", version: null };
   }
-  const result = spawnSync3(bin, ["--version"], { encoding: "utf8", timeout: 1e4 });
+  const result = spawnSync3(bin, ["--version"], { env: claudeProcessEnvironment(), encoding: "utf8", timeout: 1e4 });
   const startFailure = probeStartFailure(result);
   if (startFailure) return probeFailure(result, startFailure[0], startFailure[1], { version: null });
   if (result.status !== 0) return probeFailure(result, "CLAUDE_VERSION", "exit-nonzero", { version: null });
@@ -57310,7 +57312,7 @@ function claudeAuthStatus() {
   } catch {
     return { ok: false, kind: "CLAUDE_NOT_INSTALLED" };
   }
-  const result = spawnSync3(bin, ["auth", "status", "--json"], { encoding: "utf8", timeout: 1e4 });
+  const result = spawnSync3(bin, ["auth", "status", "--json"], { env: claudeProcessEnvironment(), encoding: "utf8", timeout: 1e4 });
   const startFailure = probeStartFailure(result);
   if (startFailure) return probeFailure(result, startFailure[0], startFailure[1]);
   const output = result.stdout.trim();
@@ -57350,6 +57352,7 @@ async function* pendingInput() {
 }
 function probeOptions(cwd) {
   return {
+    env: claudeProcessEnvironment(),
     pathToClaudeCodeExecutable: claudeExecutable(),
     cwd,
     settingSources: [],

@@ -253,8 +253,9 @@ against the original schema before the job can succeed.
 Claude's environment allowlist retains `DBUS_SESSION_BUS_ADDRESS` as well as
 `XDG_RUNTIME_DIR`, so `systemd-run --user` can reach the user manager when only the D-Bus
 address is available. Admission and the doctor's containment check apply that same filter and
-use `scopedProviderCommand`, which also constructs the worker's launch. A filtered probe never
-reuses a cached result from the service environment. The Claude smoke checks a D-Bus-only
+use `scopedProviderCommand`, which also constructs the worker's launch. The containment cache matches the
+launch environment by value, and doctor always probes afresh. The version, authentication and
+model checks also apply the provider environment filter. The Claude smoke checks a D-Bus-only
 worker launch and rejects admission and doctor checks when both bus variables are absent.
 
 Doctor runs separate `claude --version` and `claude auth status --json` child processes before the

@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { providerContainmentSupport } from '../src/delegation/containment.mjs'
 import { normalizeClaudeError } from '../src/delegation/claude-errors.mjs'
 import { seatPayload } from '../lib/charter-payload.mjs'
 import { claudePolicyHook, claudeSandboxFor, claudeTools, sensitiveReadPaths } from '../src/delegation/claude-policy.mjs'
@@ -27,6 +28,7 @@ import { spawn } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 const args = process.argv.slice(2)
 const mode = process.env.FLOW_FAKE_CLAUDE_MODE || 'happy'
+if (process.env.FLOW_SMOKE_API_KEY) process.exit(19)
 if (args[0] === '--version') {
   if (mode === 'probe-version-exit') {
     console.log('sensitive version output')
@@ -308,8 +310,12 @@ try {
   mkdirSync(scopeBin)
   const realSystemdRun = execFileSync('sh', ['-c', 'command -v systemd-run'], { encoding: 'utf8' }).trim()
   const checkedSystemdRun = join(scopeBin, 'systemd-run')
+  const scopeCalls = join(temp, 'scope-calls.txt')
+  writeFileSync(scopeCalls, '')
   writeFileSync(checkedSystemdRun, `#!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
+import { appendFileSync } from 'node:fs'
+appendFileSync(${JSON.stringify(scopeCalls)}, 'call\\n')
 if (process.env.FLOW_SMOKE_API_KEY) process.exit(91)
 const child = spawnSync(${JSON.stringify(realSystemdRun)}, process.argv.slice(2), { stdio: 'inherit' })
 process.exit(child.status ?? 1)
@@ -322,7 +328,20 @@ process.exit(child.status ?? 1)
     XDG_RUNTIME_DIR: undefined,
     FLOW_SMOKE_API_KEY: 'not-a-real-secret',
   }
+  const filteredBusEnv = { ...process.env, ...busOnlyEnv }
+  delete filteredBusEnv.FLOW_SMOKE_API_KEY
+  const calls = () => readFileSync(scopeCalls, 'utf8').split('\n').filter(Boolean).length
+  assert.equal(providerContainmentSupport({ env: filteredBusEnv }).ok, true)
+  const firstProbeCalls = calls()
+  assert.equal(providerContainmentSupport({ env: { ...filteredBusEnv } }).ok, true)
+  assert.equal(calls(), firstProbeCalls, 'equal environment values should reuse the probe')
+  assert.equal(providerContainmentSupport({ env: { ...filteredBusEnv, FLOW_SMOKE_API_KEY: 'sentinel' } }).ok, false)
+  assert.equal(calls(), firstProbeCalls + 1, 'changed environment must invalidate the probe')
+  assert.equal(providerContainmentSupport({ env: filteredBusEnv }).ok, true)
+  assert.equal(providerContainmentSupport({ fresh: true, env: filteredBusEnv }).ok, true)
+  assert.equal(calls(), firstProbeCalls + 3, 'doctor must force a fresh probe')
   const busOnlyDoctor = await doctorOf({ stateDir: state('bus-only-doctor'), extraEnv: busOnlyEnv })
+  assert.equal(busOnlyDoctor.ok, true, JSON.stringify(busOnlyDoctor))
   assert.equal(busOnlyDoctor.checks.containment.ok, true)
   const busOnlyJob = await startJob({ prompt: 'Use the D-Bus-only runtime environment' }, {
     stateDir: state('bus-only-job'), mode: 'assert-env', extraEnv: busOnlyEnv,

@@ -145,7 +145,7 @@ export function claudeVersion() {
   try { bin = claudeExecutable() } catch {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED', version: null }
   }
-  const result = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10_000 })
+  const result = spawnSync(bin, ['--version'], { env: claudeProcessEnvironment(), encoding: 'utf8', timeout: 10_000 })
   const startFailure = probeStartFailure(result)
   if (startFailure) return probeFailure(result, startFailure[0], startFailure[1], { version: null })
   if (result.status !== 0) return probeFailure(result, 'CLAUDE_VERSION', 'exit-nonzero', { version: null })
@@ -159,7 +159,7 @@ export function claudeAuthStatus() {
   try { bin = claudeExecutable() } catch {
     return { ok: false, kind: 'CLAUDE_NOT_INSTALLED' }
   }
-  const result = spawnSync(bin, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 10_000 })
+  const result = spawnSync(bin, ['auth', 'status', '--json'], { env: claudeProcessEnvironment(), encoding: 'utf8', timeout: 10_000 })
   const startFailure = probeStartFailure(result)
   if (startFailure) return probeFailure(result, startFailure[0], startFailure[1])
   const output = result.stdout.trim()
@@ -197,6 +197,7 @@ async function* pendingInput() { await new Promise(() => {}) }
 
 function probeOptions(cwd) {
   return {
+    env: claudeProcessEnvironment(),
     pathToClaudeCodeExecutable: claudeExecutable(),
     cwd,
     settingSources: [],

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { processStartToken } from './store.mjs'
@@ -48,6 +48,7 @@ function probeProviderContainment(env) {
     for (let attempt = 0; attempt < 20 && providerScopeRunning(scopeName); attempt++) {
       Atomics.wait(probeWait, 0, 0, 25)
     }
+    controlGroupCache.delete(scopeName)
   }
 }
 
@@ -57,12 +58,16 @@ export function providerContainmentSupport({ fresh = false, env = process.env } 
   if (process.platform !== 'linux') {
     return { ok: false, kind: 'UNSUPPORTED_HOST', mode: null, platform: process.platform, required: 'linux' }
   }
-  // A filtered provider environment cannot reuse a success from the service environment.
-  // Probe explicit environments each time, so admission and doctor see the current filter.
-  if (env !== process.env) return probeProviderContainment(env)
-  if (!fresh && cachedContainmentSupport) return cachedContainmentSupport
-  cachedContainmentSupport = probeProviderContainment(env)
-  return cachedContainmentSupport
+  // Match the whole launch environment by value, including wrapper-specific variables.
+  // Keep only its digest and the latest result, so the cache retains neither credentials
+  // nor an entry for every environment seen. Doctor still forces a fresh probe.
+  const key = createHash('sha256').update(JSON.stringify(Object.entries(env)
+    .filter(([, value]) => value !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b)))).digest('hex')
+  if (!fresh && cachedContainmentSupport?.key === key) return cachedContainmentSupport.result
+  const result = probeProviderContainment(env)
+  cachedContainmentSupport = { key, result }
+  return result
 }
 
 export function scopedProviderCommand(command, args, scopeName) {
