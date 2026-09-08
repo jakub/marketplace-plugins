@@ -57,6 +57,8 @@ codex plugin add flow@jakub
 Before the first Codex Flow project session on a machine, ask an existing agent session to run
 Flow setup for the installed plugin. Setup installs `flow-delegate` on PATH and registers the
 installed Flow package cache directory for the canonical Codex home. It runs the installer itself.
+The installer writes the command to `~/.local/bin`. That directory must be on the Codex host's
+PATH before the project session starts; the installer does not change PATH.
 Complete this one-time step before opening the new project session, or explicitly reload the app's MCP servers
 afterward. Codex starts MCP before SessionStart, so the maintenance hook cannot make the first
 launch succeed on its own. Disabled or untrusted hooks still require setup; when hooks run, later
