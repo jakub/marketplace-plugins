@@ -11,6 +11,15 @@
             "additionalContextLimit": 8000
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/install-delegate.mjs\" install",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStart": [

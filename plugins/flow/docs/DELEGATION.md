@@ -17,15 +17,51 @@ release. Containment fails closed with `UNSUPPORTED_HOST`.
 Each plugin manifest starts the server with a trusted `--host` argument. Tool input cannot replace
 it, and MCP mode refuses to start when it is missing or names an unknown family.
 
-The Codex manifest also names `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `CODEX_PROJECT_DIR`
-and `PWD` in `env_vars`. Codex curates the environment of a stdio MCP server, and without the first
-two `systemd-run --user` cannot reach the user bus, so every provider scope fails with
-`CONTAINMENT_UNAVAILABLE`. That client advertises no `roots` capability. The issue launcher's
-`CODEX_PROJECT_DIR` is therefore the exact planned worktree and takes precedence over `PWD`; the
-server accepts delegated jobs there without treating the directory that holds every repository as
-one broad root. Ordinary Codex sessions still fall back to the shell cwd in `PWD`, and
-`codex -C <elsewhere>` then fails closed with `OUTSIDE_ROOTS`. The Claude host has real roots and
-`CLAUDE_PROJECT_DIR`, and never reads `PWD`.
+The Codex MCP definition invokes the stable `flow-delegate` PATH command with an exact plugin
+version pin and no `cwd` override. One registration per canonical Codex home pins the installed
+`CODEX_HOME/plugins/cache/<marketplace>/flow` package directory and its cache layout. The
+registration lives at `~/.local/share/flow-delegate/registrations/<sha256(CODEX_HOME)>.json`.
+For a versioned cache, the dispatcher selects only `<anchor>/<exact MCP version>`. A local cache
+selects `<anchor>/local` only when that slot's manifest matches the requested version. It never
+scans for a newer version or falls back to a Claude cache. It preserves the host-selected process
+directory. The native app supplies the thread's project directory there; Flow accepts it only when its canonical path
+is exactly Git's top-level directory. An enclosing repository is not sufficient. Home,
+nonrepository and repository-subdirectory launches produce `NO_ROOTS`.
+
+Codex CLI 0.153.4 still advertises no MCP roots capability in the observed launch. Inherited
+`PWD`, `CODEX_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` are ignored on this host. Git discovery strips
+inherited `GIT_*` variables and disables global and system Git configuration, so environment
+injection cannot select another worktree. The Codex MCP environment retains `XDG_RUNTIME_DIR`
+and `DBUS_SESSION_BUS_ADDRESS` for access to the systemd user bus. Claude continues to use MCP
+roots and `CLAUDE_PROJECT_DIR`, and ignores `CODEX_PROJECT_DIR` and `PWD`.
+
+Install the dispatcher once per machine through flow setup before the first Codex Flow session.
+Setup runs `node <plugin-root>/scripts/install-delegate.mjs install` from the installed Codex
+package and checks the result. The SessionStart hook maintains the package registration
+idempotently. A new versioned cache under the same anchor works without another installer or
+hook run, because its MCP definition selects that exact version. Codex starts
+MCP before SessionStart, so first installation needs a new session or an explicit app MCP reload
+after setup. A hook alone does not make that first launch work. Setup also remains necessary
+when hooks are disabled or untrusted. The installer's `uninstall` action removes that home's
+registration and preserves other homes. Changing the registered package anchor or cache layout
+requires an explicit uninstall before installing the replacement.
+
+Uninstall may run from the replacement Codex package when the former cache has already been
+removed. It removes only the valid registration for the current canonical Codex home. It does
+not follow the old anchor or remove another home's registration.
+Unknown entries in the registration directory retain the shared launcher. This includes
+temporary files left by an interrupted installation; uninstall does not guess whether those
+files can be deleted. A crashed install also leaves its lock for the owner to inspect.
+
+The configured HOME and existing CODEX_HOME resolve to canonical directories before path
+validation. Aliases for those bases are supported. Child paths below them, including `.local`,
+the launcher, registrations, and cache slots, must have real directory chains rather than
+symlinks. Cache inputs and installation paths must be owned by the current user and have no
+group or world write permission. Use a restrictive Codex host umask such as `022` for plugin
+installation and upgrades. An existing path with broader permissions is refused with its
+canonical path and a remediation command. Inspect that path and its intended sharing before
+changing permissions. The installer does not chmod user files. Fixing only the current cache
+does not fix a host umask that creates writable inputs again on the next upgrade.
 
 The route is checked three times: at job creation, again in the worker before it starts a
 provider, and in every read and control method, resource reads included, which verify that the
@@ -34,13 +70,32 @@ share one database, so a UUID from the other route is not authority. The worker 
 `FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider environment, so a child MCP server
 refuses new work.
 
-A requested working directory must resolve inside a client root or the host's canonical project
-directory, and Flow rejects missing paths, symlink escapes and unrelated checkouts. At least one
-usable root must exist before any job starts, continues or is read back; `delegation_doctor` is
-the exception, because it has to explain a missing-root failure. Flow checks the Git worktree root
-before granting access: a linked worktree beside the approved repository passes only when its
-common Git directory belongs to the approved root and Git lists that worktree, since a
-caller-writable `.git` pointer alone is not proof.
+A requested working directory and the Git top-level directory granted to its provider must both
+resolve inside an authorized canonical root. Flow rejects missing paths, symlink escapes,
+unrelated checkouts and registered sibling worktrees outside that root. A forged `.git` pointer
+does not grant an outside directory. An internal worktree under `<repoRoot>/.flow-worktrees/`
+remains inside the repository root. At least one usable root must exist before any job starts,
+continues or is read back; `delegation_doctor` can report a missing-root failure.
+
+The issue stage plans `<repoRoot>/.flow-worktrees/<repoName>-issue-N-<slug>` from the canonical
+primary checkout with a real `.git` directory. Its plan is read-only. Before the prospective
+worktree exists, preflight calls the doctor with `cwd=repoRoot` and checks that the host's
+repository write grant covers the nested path. Codex requires that repository to be the sole
+usable root. Claude requires it among the usable roots and may retain other explicitly authorized MCP roots.
+A failed preflight stops before any issue mutation. The claim executor creates the worktree
+container and adds `/.flow-worktrees/` to `.git/info/exclude` only after it holds the claim tag
+and rechecks readiness. Those idempotent local setup changes can survive a later failed claim.
+
+The native app can grant repository writes while keeping `.git` read-only. The orchestrator uses
+the host's normal approval mechanism for Git metadata writes. In an issue run, the orchestrator
+passes only the exact nested worktree to a delegated Claude writer. That writer cannot commit;
+the orchestrator verifies and commits its edits. The generic delegation API authorizes the
+client's project root and does not enforce issue-stage path selection on unrelated tasks.
+The human invokes the issue skill directly, for example "run issue #42". No per-issue launcher,
+parent-directory grant or session restart is part of an ordinary run.
+
+The 0.153.4 launch observation does not reverify the full capability table, which remains pinned
+to 0.152.0. It also does not establish a full native-app issue run through a reviewed PR.
 
 ## Contracts that bind an edit
 
@@ -291,8 +346,8 @@ version and the charter (through `__FLOW_CHARTER__`), so a version bump or a cha
 rebuilds the bundle too.
 
 The Claude manifest holds the direct `flow_delegate` server definition with a 7,500,000 millisecond
-call timeout. The Codex manifest points at plugin-root `.mcp.json`, which starts the same bundle
-with `--host codex` and a 7,500 second tool timeout. Both exceed the maximum 7,200 second job
+call timeout. The Codex manifest points at plugin-root `.mcp.json`, which calls `flow-delegate`
+with the exact version pin and `--host codex`, no cwd override, and a 7,500 second tool timeout. Both exceed the maximum 7,200 second job
 budget, so the client does not cut off a valid attached call.
 
 `scripts/smoke-delegation.mjs` runs the service against a fake App Server and needs Linux with the

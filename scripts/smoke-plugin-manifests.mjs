@@ -34,15 +34,17 @@ for (const listed of marketplace.plugins) {
     assert.deepEqual(claudeDelegation?.args?.slice(-2), ['--host', 'claude'], 'flow Claude MCP pins its host')
     assert.equal(claudeDelegation?.timeout, 7_500_000, 'flow Claude MCP timeout outlives the maximum job budget')
     const codexDelegation = readJson(join(pluginRoot, '.mcp.json')).flow_delegate
+    assert.equal(codexDelegation.command, 'flow-delegate', 'flow Codex MCP uses the installed dispatcher')
+    assert.deepEqual(codexDelegation.args.slice(0, 2), ['--flow-version', listed.version], 'flow Codex MCP pins the manifest version')
+    assert.ok(!Object.hasOwn(codexDelegation, 'cwd'), 'flow Codex MCP inherits the host session cwd')
     assert.deepEqual(codexDelegation?.args?.slice(-2), ['--host', 'codex'], 'flow Codex MCP pins its host')
     assert.equal(codexDelegation?.tool_timeout_sec, 7_500, 'flow Codex MCP timeout outlives the maximum job budget')
     // Codex hands a stdio MCP server a curated environment (HOME, PATH, TERM and a few more), and
     // systemd-run --user needs the runtime dir to find the user bus. Without the first two, every
     // provider scope fails with CONTAINMENT_UNAVAILABLE and the Codex host cannot delegate at all.
-    // The client advertises no roots capability and Codex itself sets no project-dir variable.
-    // codex-issue supplies CODEX_PROJECT_DIR as the exact worktree; ordinary sessions retain PWD
-    // as their fallback, or every tool call would fail with NO_ROOTS.
-    assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CODEX_PROJECT_DIR', 'PWD'], 'flow Codex MCP passes the user-bus environment, an exact launcher root and the fallback launch cwd through')
+    // Omitted cwd makes Codex start the dispatcher at the session directory.
+    // CODEX_HOME selects the install registration, never workspace authority.
+    assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CODEX_HOME'], 'flow Codex MCP forwards bus and registration environment only')
   }
 
   // Every ${CLAUDE_PLUGIN_ROOT} path Claude will run has to resolve inside the plugin. Claude

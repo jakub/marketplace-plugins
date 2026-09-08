@@ -217,6 +217,12 @@ refuses("refuses when a worktree for the issue exists", () => {
   git(w, "worktree", "add", "--quiet", "--detach", join(w.dir, "repo-issue-7-widget"));
   return w;
 }, /live: worktree .*repo-issue-7-widget/);
+
+refuses("refuses when an internal worktree for the issue exists", () => {
+  const w = world();
+  git(w, "worktree", "add", "--quiet", "--detach", join(w.repo, ".flow-worktrees", "repo-issue-7-widget"));
+  return w;
+}, /live: worktree .*repo-issue-7-widget/);
 refuses("refuses when the claim tag is held on origin", () => {
   const w = world();
   git(w, "push", "--quiet", "origin", "HEAD:" + TAG_REF);

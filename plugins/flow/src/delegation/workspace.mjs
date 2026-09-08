@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { realpathSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { DelegationError, FINDINGS_SCHEMA } from './contracts.mjs'
@@ -32,23 +33,17 @@ export function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd =
   return roots
 }
 
-// flow's pipeline puts a run worktree beside its repository (git worktree add
-// ../<repo>-issue-N), so it resolves outside every client root even though it belongs to an
-// approved repository. Membership takes two proofs: the linked worktree's --git-common-dir
-// must point into an approved root, and the approved repository must list the worktree as
-// one it registered. The pointer alone is not enough, because a .git file is caller-writable
-// and any directory could claim `gitdir: <approved>/.git`.
-async function sharedGitDirInsideRoots(path, roots) {
+// Native Codex launches the PATH command in the thread's project directory. Only that
+// actual directory can authorize a root. Discovering an enclosing repository would widen
+// authority from a subdirectory. Inherited project variables and Git discovery overrides
+// are not project authority. A missing repository or a home-directory launch fails closed.
+export async function codexProjectRoot() {
   try {
-    const commonDir = realpathSync(await git(path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], 'not a git worktree.'))
-    if (!roots.some((root) => isInside(root, commonDir))) return false
-    const top = realpathSync(await git(path, ['rev-parse', '--show-toplevel'], 'not a git worktree.'))
-    const listed = await git(path, ['--git-dir', commonDir, 'worktree', 'list', '--porcelain'], 'the worktree list is unavailable.')
-    return listed.split('\n').some((line) => {
-      if (!line.startsWith('worktree ')) return false
-      try { return realpathSync(line.slice('worktree '.length)) === top } catch { return false }
-    })
-  } catch { return false }
+    const cwd = realpathSync(process.cwd())
+    if (cwd === realpathSync(homedir())) return null
+    const top = realpathSync(await git(cwd, ['rev-parse', '--show-toplevel'], 'cwd is not a Git worktree.'))
+    return top === cwd ? cwd : null
+  } catch { return null }
 }
 
 export async function canonicalWorkspace(cwd, roots) {
@@ -66,7 +61,6 @@ export async function canonicalWorkspace(cwd, roots) {
     throw new DelegationError('NO_ROOTS', 'The client did not provide a usable workspace root.')
   }
   if (roots.some((root) => isInside(root, canonical))) return canonical
-  if (await sharedGitDirInsideRoots(canonical, roots)) return canonical
   throw new DelegationError('OUTSIDE_ROOTS', 'cwd resolves outside the workspace roots supplied by the client.')
 }
 
@@ -74,6 +68,12 @@ async function git(cwd, args, message) {
   try {
     const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
       encoding: 'utf8', timeout: 15_000,
+      // GIT_DIR, GIT_WORK_TREE, config injection and discovery limits must not change
+      // which repository supplies the requested path or immutable review revisions.
+      env: {
+        ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_'))),
+        GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+      },
     })
     return stdout.trim()
   } catch {
@@ -104,7 +104,6 @@ export async function gitMetadataPaths(cwd) {
 export async function validatedWorktreeKey(cwd, roots) {
   const key = await worktreeKey(cwd)
   if (roots.some((root) => isInside(root, key))) return key
-  if (await sharedGitDirInsideRoots(key, roots)) return key
   throw new DelegationError('OUTSIDE_ROOTS', 'The Git worktree root resolves outside the workspace roots supplied by the client.')
 }
 

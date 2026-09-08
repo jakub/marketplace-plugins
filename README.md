@@ -54,6 +54,18 @@ codex plugin add flow@jakub
 
 `codex plugin marketplace upgrade` refreshes the configured Git marketplace snapshots, and `codex plugin marketplace upgrade --help` says whether it wants a marketplace name. Refreshing updates the bytes Codex could install; it does not touch a registration you already made. Until `codex plugin remove` and `codex plugin add` run, the installed plugin stays on the version it was added at, and every session keeps loading that version's hooks. Start a new Codex thread after re-adding. A thread already running read the old registration at its own session start and will not notice a newer one.
 
+Before the first Codex Flow project session on a machine, ask an existing agent session to run
+Flow setup for the installed plugin. Setup installs `flow-delegate` on PATH and registers the
+installed Flow package cache directory for the canonical Codex home. It runs the installer itself.
+The installer writes the command to `~/.local/bin`. That directory must be on the Codex host's
+PATH before the project session starts; the installer does not change PATH.
+Complete this one-time step before opening the new project session, or explicitly reload the app's MCP servers
+afterward. Codex starts MCP before SessionStart, so the maintenance hook cannot make the first
+launch succeed on its own. Disabled or untrusted hooks still require setup; when hooks run, later
+SessionStart calls maintain the registration idempotently. Plugin upgrades in the same versioned
+cache use the exact version named by the new MCP definition, without waiting for that hook or
+rerunning the installer.
+
 ### Upgrade both harnesses in one sitting
 
 If you have flow or gripe registered in both Claude Code and Codex, update both before you go back to work.
@@ -92,7 +104,12 @@ Three stage skills, in order:
 
 All three run on Codex too. Each one is a single stage skill: one host-neutral body, then a `## Host mechanics` section at the end holding only what genuinely differs between the two harnesses, since the charter already describes both. Claude Code exposes the skill through its namespaced slash invocation; on Codex the human names the plugin's `prep`, `issue`, or `land` skill. There are no command alias files.
 
-Start a Codex issue run through `node <installed-flow-root>/scripts/codex-issue.mjs <issue-number>`. The launcher computes the sibling worktree path before Codex starts, reserves that empty directory, and grants Codex only the repository plus that worktree. Flow's delegation server receives the worktree as its exact project root, not the directory containing every repository.
+Open the native Codex app project at the canonical repository checkout and say "run issue #42".
+The issue skill plans `<repoRoot>/.flow-worktrees/<repoName>-issue-42-<slug>` and checks the existing
+repository grant before it claims the issue or creates that path. The app can leave `.git`
+read-only; the orchestrator uses its normal approval mechanism for Git metadata writes. Delegated
+writers receive the exact nested worktree grant. A normal issue run needs no shell launcher,
+parent-directory grant or new session.
 
 Two timers run in the background once the `flow` housekeeping skill's `setup` action has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly doc sweep. The sweep has no write tools at all, so it files nothing and opens nothing; it reports the doc drift it found and, for a small fix, the diff you can paste.
 
@@ -104,7 +121,8 @@ Two timers run in the background once the `flow` housekeeping skill's `setup` ac
 | `plugins/flow/skills/flow/` | The `flow` housekeeping skill's `setup`, `drift`, `labels`, `charter`, and `cron` actions. Claude Code invokes it as `/flow:flow`; Codex uses the plugin skill by name. |
 | `plugins/flow/skills/delegate/` | `flow:delegate` - how a cross-family call works: attached against detached delivery, the review mode, the envelope, the approval fork. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
-| `plugins/flow/scripts/codex-issue.mjs`, `issue-claim.mjs` | The narrow Codex issue launcher and the read-only plan plus atomic issue claim it relies on. |
+| `plugins/flow/scripts/install-delegate.mjs` | One-time installation and removal of the stable Codex MCP dispatcher, with a package cache registration per Codex home and exact version selection. |
+| `plugins/flow/scripts/issue-claim.mjs` | The read-only nested-worktree plan and atomic issue claim. |
 | `plugins/flow/hooks/` | Claude and Codex hook registrations and adapters. One `inject-charter.mjs` serves both harnesses at session and subagent start; beside it are unsanctioned-issue prevention, protected-file checks, publication and merge gates, and destructive Git guards. |
 | `plugins/flow/scripts/flow-cron.mjs`, `install-cron.sh` | The scheduled jobs - a nightly lint and a weekly doc sweep as systemd user timers, each a headless `claude -p` under a fixed tool allowlist. The `flow` skill's `cron` action installs and reports on them. |
 

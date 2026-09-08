@@ -64,7 +64,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, lstatSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -180,7 +180,7 @@ const makeWorld = (name) => {
   git(repo, 'push', '-q', 'origin', 'main')
   process.env.GIT_SSH_COMMAND = saved
   const world = { name, dir, origin, repo, ssh, gitDir: join(repo, '.git'), mainSha: git(repo, 'rev-parse', 'HEAD') }
-  world.pathFor = (slug) => join(dir, `repo-issue-${ISSUE}-${slug}`)
+  world.pathFor = (slug) => join(repo, '.flow-worktrees', `repo-issue-${ISSUE}-${slug}`)
   return world
 }
 
@@ -201,7 +201,7 @@ const makeLocalWorld = (name) => {
   git(repo, 'remote', 'add', 'origin', origin)
   git(repo, 'push', '-q', 'origin', 'main')
   const world = { name, dir, origin, repo, gitDir: join(repo, '.git'), mainSha: git(repo, 'rev-parse', 'HEAD') }
-  world.pathFor = (slug) => join(dir, `repo-issue-${ISSUE}-${slug}`)
+  world.pathFor = (slug) => join(repo, '.flow-worktrees', `repo-issue-${ISSUE}-${slug}`)
   return world
 }
 
@@ -310,6 +310,7 @@ console.log('\na read-only plan for a ready issue')
 {
   const w = makeWorld('plan')
   const before = allRefs(w.origin)
+  const excluded = readFileSync(join(w.gitDir, 'info', 'exclude'), 'utf8')
   const r = run(w, ['plan', String(ISSUE)])
   check('exits 0 with result planned', r.code === 0 && r.json?.result === 'planned', `exit ${r.code} ${r.stdout}`)
   check('returns the exact repository, worktree and branch the claim will use',
@@ -318,6 +319,8 @@ console.log('\na read-only plan for a ready issue')
     r.stdout)
   check('returns the acceptance criteria digest without creating the target directory',
     r.json?.acDigest === AC_DIGEST && !existsSync(w.pathFor(SLUG)), r.stdout)
+  check('does not create a container or change local exclusions',
+    !existsSync(join(w.repo, '.flow-worktrees')) && readFileSync(join(w.gitDir, 'info', 'exclude'), 'utf8') === excluded, r.stdout)
   check('does not touch origin, edit the issue or register a worktree',
     allRefs(w.origin) === before && callsTo(r.st, 'edit').length === 0 && worktreePaths(w.repo).length === 1,
     'the plan mutated state')
@@ -334,7 +337,8 @@ console.log('\na claim on a ready issue')
   check('the branch is the derived one', r.json?.branch === branch, String(r.json?.branch))
   check('base and head are the object the acquire verified', r.json?.base === w.mainSha && r.json?.head === w.mainSha, `${r.json?.base} ${r.json?.head}`)
   check('the acceptance criteria digest is the sha256 of the section', r.json?.acDigest === AC_DIGEST, String(r.json?.acDigest))
-  check('the worktree path is the sibling of the repository', r.json?.worktree === worktree, String(r.json?.worktree))
+  check('creates the container with private permissions', (lstatSync(join(w.repo, '.flow-worktrees')).mode & 0o777) === 0o700, r.stdout)
+  check('the worktree path is inside the repository container', r.json?.worktree === worktree, String(r.json?.worktree))
   check('the title and url come back from the issue read', r.json?.title === TITLE && String(r.json?.url).endsWith(`/issues/${ISSUE}`), r.stdout)
   check('nothing is written to stderr on a win', r.stderr === '', JSON.stringify(r.stderr))
 
@@ -560,7 +564,7 @@ console.log('\ngh issue edit fails after the branch is on origin')
 console.log('\nthe worktree path is an existing empty directory')
 {
   const w = makeWorld('prepared-worktree-path')
-  mkdirSync(w.pathFor(SLUG))
+  mkdirSync(w.pathFor(SLUG), { recursive: true })
   const r = run(w, ['claim', String(ISSUE)])
   check('claims into the prepared directory', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout}`)
   check('registers that exact path on the expected branch',
@@ -571,12 +575,15 @@ console.log('\nthe worktree path is an existing empty directory')
 
 console.log('\na non-empty or linked worktree path already exists')
 for (const [label, prepare] of [
-  ['non-empty directory', (w) => { mkdirSync(w.pathFor(SLUG)); writeFileSync(join(w.pathFor(SLUG), 'foreign.txt'), 'not flow\n') }],
+  ['non-empty directory', (w) => { mkdirSync(w.pathFor(SLUG), { recursive: true }); writeFileSync(join(w.pathFor(SLUG), 'foreign.txt'), 'not flow\n') }],
   ['symbolic link', (w) => { const target = join(w.dir, 'foreign'); mkdirSync(target); symlinkSync(target, w.pathFor(SLUG)) }],
 ]) {
   const w = makeWorld(`worktree-path-${label.replaceAll(' ', '-')}`)
+  mkdirSync(join(w.repo, '.flow-worktrees'))
   prepare(w)
   const before = allRefs(w.origin)
+  const preview = run(w, ['plan', String(ISSUE)])
+  check(`${label}: plan refuses with worktree-path`, preview.code === 2 && preview.json?.reason === 'worktree-path', preview.stdout)
   const r = run(w, ['claim', String(ISSUE)])
   check(`${label}: refuses with worktree-path`, r.code === 2 && r.json?.reason === 'worktree-path', `exit ${r.code} ${r.stdout}`)
   check(`${label}: origin is unchanged and no claim tag was taken`,
@@ -588,7 +595,7 @@ console.log('\na prepared path changes while the claim is held')
 {
   const w = makeWorld('prepared-path-changes')
   const worktree = w.pathFor(SLUG)
-  mkdirSync(worktree)
+  mkdirSync(worktree, { recursive: true })
   let scans = 0
   const st = freshState({
     onPrScan: () => {
@@ -774,7 +781,7 @@ console.log('\nthe acquire cannot read origin at all')
   check('at phase pre-acquire, because no push was ever attempted',
     r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
   check('with no cleanup step to report', r.json?.cleanup === null, String(r.json?.cleanup))
-  check('and the human is not sent looking for a tag', /Nothing of this run is left anywhere/.test(r.stderr), JSON.stringify(r.stderr))
+  check('and the human is not sent looking for a tag', /No claim tag, worktree or branch from this run remains/.test(r.stderr), JSON.stringify(r.stderr))
   check('origin holds no claim tag', refSha(w.origin, TAG_REF) === null, String(refSha(w.origin, TAG_REF)))
   check('no branch, no worktree, no issue edit',
     refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0,
@@ -782,12 +789,10 @@ console.log('\nthe acquire cannot read origin at all')
 }
 
 // --------------------------------------------------------- the boundary a worktree stays inside
-console.log('\nthe git directory is a symlink out of the parent')
+console.log('\nthe git directory is a symlink to external metadata')
 {
-  // The check used to be lexical. `git rev-parse --git-common-dir` answers `.git` for an ordinary
-  // clone, and a `.git` that is a symlink to a directory outside the parent resolves to a path
-  // inside it, so the comparison passed and `git worktree add` then wrote its registration, and
-  // the new branch, through the link and out of bounds.
+  // Git can report `.git` even when that path is a link to external metadata. The
+  // executor must inspect the directory itself before trusting the lexical Git answer.
   const w = makeWorld('outside-common-dir')
   const outside = join(tmp, 'outside-git-of-outside-common-dir')
   mkdirSync(outside)
@@ -796,7 +801,7 @@ console.log('\nthe git directory is a symlink out of the parent')
   symlinkSync(moved, join(w.repo, '.git'))
   const before = allRefs(w.origin)
   const r = run(w, ['claim', String(ISSUE)])
-  check('refuses with outside-parent', r.code === 2 && r.json?.reason === 'outside-parent', `exit ${r.code} ${r.stdout}`)
+  check('refuses with not-main-worktree', r.code === 2 && r.json?.reason === 'not-main-worktree', `exit ${r.code} ${r.stdout}`)
   check('at phase pre-acquire, with nothing retained', r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]', r.stdout)
   check('and names the real git directory it resolved to', String(r.json?.detail).includes(moved), String(r.json?.detail))
   check('origin is unchanged and no claim tag was taken', allRefs(w.origin) === before && refSha(w.origin, TAG_REF) === null, allRefs(w.origin))
@@ -806,9 +811,7 @@ console.log('\nthe git directory is a symlink out of the parent')
   check('the issue was not touched', callsTo(r.st, 'edit').length === 0, 'an edit went out')
 }
 {
-  // The other half of the same rule: canonicalizing has to refuse only what actually leaves the
-  // parent. This link points at a directory beside the repository, inside the boundary, and the
-  // claim goes through with its worktree at the canonical sibling path.
+  // Even nearby shared metadata is outside the main checkout's boundary.
   const w = makeWorld('inside-common-dir')
   const inside = join(w.dir, 'gitdirs')
   mkdirSync(inside)
@@ -816,9 +819,103 @@ console.log('\nthe git directory is a symlink out of the parent')
   renameSync(join(w.repo, '.git'), moved)
   symlinkSync(moved, join(w.repo, '.git'))
   const r = run(w, ['claim', String(ISSUE)])
-  check('a git directory symlinked to somewhere inside the parent still claims', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout}`)
-  check('and the worktree is the canonical sibling of the repository',
-    r.json?.worktree === w.pathFor(SLUG) && existsSync(w.pathFor(SLUG)), String(r.json?.worktree))
+  check('a Git directory symlink beside the repository is refused', r.code === 2 && r.json?.reason === 'not-main-worktree', r.stdout)
+  check('no internal worktree is created', !existsSync(w.pathFor(SLUG)), r.stdout)
+}
+
+console.log('\ninternal container and exclusion boundaries')
+for (const verb of ['plan', 'claim']) {
+  for (const location of ['container', 'exclude', 'info']) {
+    const w = makeWorld(`${verb}-symlink-${location}`)
+    const foreign = join(w.dir, 'foreign')
+    const path = location === 'container' ? join(w.repo, '.flow-worktrees')
+      : location === 'exclude' ? join(w.gitDir, 'info', 'exclude') : join(w.gitDir, 'info')
+    if (location === 'exclude') writeFileSync(foreign, 'foreign\n')
+    else mkdirSync(foreign)
+    rmSync(path, { recursive: true, force: true })
+    symlinkSync(foreign, path)
+    const before = allRefs(w.origin)
+    const r = run(w, [verb, String(ISSUE)])
+    check(`${verb} refuses a linked ${location} before acquiring`, r.code === 2 && r.json?.reason === 'worktree-path' && r.json?.phase === 'pre-acquire', r.stdout)
+    check(`${verb} leaves the linked ${location} and origin alone`, lstatSync(path).isSymbolicLink() && allRefs(w.origin) === before && !existsSync(w.pathFor(SLUG)), r.stdout)
+  }
+  const w = makeWorld(`${verb}-linked-checkout`)
+  const linked = join(w.repo, 'linked')
+  git(w.repo, 'worktree', 'add', '--detach', linked, 'HEAD')
+  const r = run({ ...w, repo: linked }, [verb, String(ISSUE)])
+  check(`${verb} refuses invocation from a linked checkout`, r.code === 2 && r.json?.reason === 'not-main-worktree', r.stdout)
+}
+{
+  const w = makeWorld('empty-container')
+  const container = join(w.repo, '.flow-worktrees')
+  mkdirSync(container, { mode: 0o700 })
+  const excluded = join(w.gitDir, 'info', 'exclude')
+  writeFileSync(excluded, 'keep-this-without-newline')
+  const preview = run(w, ['plan', String(ISSUE)])
+  check('plan accepts an empty real container and leaves exclusion unchanged', preview.code === 0 && readFileSync(excluded, 'utf8') === 'keep-this-without-newline', preview.stdout)
+  writeHook(w.gitDir, 'post-checkout', FAIL_FIRST_CHECKOUT)
+  const failed = run(w, ['claim', String(ISSUE)])
+  const retry = run(w, ['claim', String(ISSUE)])
+  check('a failed checkout can retry through the existing container', failed.code === 2 && retry.code === 0, failed.stdout + retry.stdout)
+  check('setup preserves exclusion content and adds its line once across retries', readFileSync(excluded, 'utf8') === 'keep-this-without-newline\n/.flow-worktrees/\n', readFileSync(excluded, 'utf8'))
+  check('the main checkout ignores the internal worktree', git(w.repo, 'status', '--porcelain') === '', git(w.repo, 'status', '--porcelain'))
+}
+for (const location of ['container', 'exclude', 'info']) {
+  const w = makeWorld(`race-linked-${location}`)
+  const foreign = join(w.dir, 'foreign')
+  if (location === 'exclude') writeFileSync(foreign, 'do not change\n')
+  else mkdirSync(foreign)
+  let scans = 0
+  const st = freshState({ onPrScan: () => {
+    if (++scans !== 2) return
+    const path = location === 'container' ? join(w.repo, '.flow-worktrees')
+      : location === 'exclude' ? join(w.gitDir, 'info', 'exclude') : join(w.gitDir, 'info')
+    rmSync(path, { recursive: true, force: true })
+    symlinkSync(foreign, path)
+  } })
+  const r = run(w, ['claim', String(ISSUE)], st)
+  check(`a ${location} replaced while acquiring refuses and releases the tag`, r.code === 2 && r.json?.phase === 'acquired' && refSha(w.origin, TAG_REF) === null && callsTo(st, 'edit').length === 0, r.stdout)
+}
+
+console.log('\na common Git directory read fails during acquired setup')
+for (const failAt of [1, 2, 3, 4]) {
+  const w = makeWorld(`setup-common-unreadable-${failAt}`)
+  const bin = join(w.dir, 'bin')
+  mkdirSync(bin)
+  const counter = join(bin, 'remaining')
+  writeFileSync(counter, String(failAt))
+  const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+  const quote = (text) => "'" + text.replaceAll("'", "'\"'\"'") + "'"
+  const wrapper = join(bin, 'git')
+  writeFileSync(wrapper, `#!/bin/sh
+if [ "$3" = rev-parse ] && [ "$4" = --git-common-dir ]; then
+  remaining=$(cat ${quote(counter)})
+  remaining=$((remaining - 1))
+  echo "$remaining" > ${quote(counter)}
+  if [ "$remaining" = 0 ]; then
+    echo 'transient common directory read failure' >&2
+    exit 1
+  fi
+fi
+exec ${quote(realGit)} "$@"
+`)
+  chmodSync(wrapper, 0o755)
+  const savedPath = process.env.PATH
+  let scans = 0
+  const st = freshState({ onPrScan: () => {
+    if (++scans === 2) process.env.PATH = `${bin}:${savedPath}`
+  } })
+  let r
+  try { r = run(w, ['claim', String(ISSUE)], st) } finally { process.env.PATH = savedPath }
+  check(`setup read ${failAt} preserves unknown repo-unreadable`,
+    r.code === 4 && r.json?.result === 'unknown' && r.json?.reason === 'repo-unreadable' &&
+      r.json?.detail.includes('transient common directory read failure'), r.stdout)
+  check(`setup read ${failAt} records confirmed tag cleanup`,
+    r.json?.phase === 'acquired' && r.json?.abandon === 'abandoned' &&
+      r.json?.cleanup === null && JSON.stringify(r.json?.retained) === '[]' && refSha(w.origin, TAG_REF) === null, r.stdout)
+  check(`setup read ${failAt} creates no worktree or branch and edits no issue`,
+    worktreePaths(w.repo).length === 1 && !existsSync(w.pathFor(SLUG)) &&
+      refSha(w.repo, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && callsTo(st, 'edit').length === 0, r.stdout)
 }
 
 // ------------------------------------------------- the issue changes while the tag is held
@@ -1066,7 +1163,7 @@ console.log('\norigin will not have a claim tag created on it')
   check('at phase pre-acquire, with nothing retained and no cleanup',
     r.json?.phase === 'pre-acquire' && JSON.stringify(r.json?.retained) === '[]' && r.json?.cleanup === null, r.stdout)
   check('origin really holds no tag', refSha(w.origin, TAG_REF) === null, String(refSha(w.origin, TAG_REF)))
-  check('and the human is not sent hunting one', /Nothing of this run is left anywhere/.test(r.stderr), JSON.stringify(r.stderr))
+  check('and the human is not sent hunting one', /No claim tag, worktree or branch from this run remains/.test(r.stderr), JSON.stringify(r.stderr))
   check('no branch, no worktree, no issue edit',
     refSha(w.origin, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && worktreePaths(w.repo).length === 1 && callsTo(r.st, 'edit').length === 0,
     'something was mutated')
@@ -1199,7 +1296,7 @@ console.log('\nan issue title that no ASCII slug can be read out of')
   check('it claims rather than refusing', r.code === 0 && r.json?.result === 'claimed', `exit ${r.code} ${r.stdout}`)
   check('on a branch whose slug is the hash of the title', r.json?.branch === branch, String(r.json?.branch))
   check('and the branch is on origin at the base', refSha(w.origin, `refs/heads/${branch}`) === w.mainSha, String(refSha(w.origin, `refs/heads/${branch}`)))
-  check('and the worktree is the sibling named after that slug',
+  check('and the internal worktree is named after that slug',
     r.json?.worktree === w.pathFor(hashed) && existsSync(w.pathFor(hashed)), String(r.json?.worktree))
   check('and the title itself still comes back whole', r.json?.title === TITLE_CJK, String(r.json?.title))
 
