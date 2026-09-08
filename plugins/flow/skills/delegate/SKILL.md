@@ -36,9 +36,16 @@ Use the tool's supported effort values. Codex turns use the `default` service ti
 
 ## Arguments that matter
 
-`cwd` is an absolute directory inside a workspace root your client advertised, and Flow resolves
-it to its Git worktree root before granting the provider anything. A path outside fails
+`cwd` is an absolute directory inside an authorized canonical workspace root. Both the requested
+path and its resolved Git top-level directory must stay inside that root. Nested worktrees under
+`<repoRoot>/.flow-worktrees/` pass. Registered siblings outside the root and symlink escapes fail
 `OUTSIDE_ROOTS`.
+
+Claude gets roots from MCP and `CLAUDE_PROJECT_DIR`. Native Codex launches `flow-delegate` in the
+thread's project directory with no MCP cwd override. Flow requires that actual process cwd to be
+an exact canonical Git top-level directory, and ignores inherited `PWD`, `CODEX_PROJECT_DIR`
+and `CLAUDE_PROJECT_DIR`. A home, nonrepository or repository-subdirectory launch has `NO_ROOTS`;
+naming a real repository in tool input cannot repair it.
 
 `access` is `read-only` or `workspace-write`, and it is the whole confinement of a delegated
 writer. No plugin hook fires inside a delegated job: the delegated Claude query loads no
@@ -158,5 +165,15 @@ A call that must not block the turn is `delivery: detached`, polled with `delega
 Delegation needs Linux with cgroup v2 and a working systemd user manager, because every provider
 process runs in a transient systemd scope, which is what makes releasing a write lease safe.
 There is no path on another platform: containment fails closed with `UNSUPPORTED_HOST` and no
-job starts. Run `delegation_doctor` as the preflight. It is the one tool that answers without a
+job starts. Before the first Codex Flow session on a machine, the flow setup action installs the
+stable dispatcher and pins the installed Flow package cache directory for the canonical Codex
+home. Setup runs `node <plugin-root>/scripts/install-delegate.mjs install` itself. SessionStart maintains that
+registration idempotently, but Codex starts MCP before SessionStart. First setup therefore needs
+a new session or an explicit app MCP reload after installation. Disabled or untrusted hooks do
+not replace setup. Versioned plugin upgrades under that registered directory select the exact
+version in the MCP definition without rerunning the installer or waiting for a hook. A local
+cache must match the requested manifest version. The dispatcher never selects the newest cache
+or falls back to Claude. No dispatcher installation is needed per issue.
+
+Run `delegation_doctor` as the preflight. It is the one tool that answers without a
 workspace, which is what you need when the answer is that you have no workspace.

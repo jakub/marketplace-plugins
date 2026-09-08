@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
@@ -1385,10 +1385,17 @@ try {
   )
   assert.equal(symlinkEscape.isError, true)
   assert.equal(symlinkEscape.structuredContent.error.kind, 'OUTSIDE_ROOTS')
-  // The roots exception for linked worktrees: a worktree the approved repository registered
-  // is accepted even though it sits outside every client root, while a caller-writable .git
-  // file pointing at the approved repository is not, because the repository never listed it.
-  const linked = join(temp, 'linked-wt')
+  // Registered worktrees must still sit inside the approved root. Registration never
+  // grants a sibling directory, and a caller-written .git pointer cannot grant one either.
+  const sibling = join(temp, 'sibling-wt')
+  execFileSync('git', ['worktree', 'add', '-q', sibling], { cwd: repo })
+  const siblingRun = await client.callTool('delegate_to_codex', {
+    mode: 'task', prompt: 'sibling worktree', cwd: sibling, access: 'read-only',
+    model: 'gpt-5.6-luna', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30,
+  })
+  assert.equal(siblingRun.isError, true)
+  assert.equal(siblingRun.structuredContent.error.kind, 'OUTSIDE_ROOTS')
+  const linked = join(repo, '.flow-worktrees', 'linked-wt')
   execFileSync('git', ['worktree', 'add', '-q', linked], { cwd: repo })
   const linkedWrite = await client.callTool(
     'delegate_to_codex',
@@ -1428,7 +1435,7 @@ try {
   await assert.rejects(client.readResource(`flow://jobs/${elsewhere.jobId}`), /OUTSIDE_ROOTS|outside|root/i)
   // A resource is route-scoped exactly like a tool: the other host's server does not own this job.
   await assert.rejects(
-    session({ host: 'codex', stateDir: mcpState, extraEnv: { CODEX_PROJECT_DIR: repo } }, (other) => other.readResource(`flow://jobs/${linkedId}`)),
+    session({ host: 'codex', stateDir: mcpState }, (other) => other.readResource(`flow://jobs/${linkedId}`)),
     /does not own that job route/,
   )
   const forged = join(temp, 'forged')
@@ -1530,16 +1537,15 @@ try {
   assert.equal(doctorResult.structuredContent.ok, true)
   await client.close()
 
-  // PWD is set here on purpose. The Claude host has real roots and CLAUDE_PROJECT_DIR, so it must
-  // never fall back to the launch shell's cwd; the same environment that gives a Codex host a
-  // workspace below still has to fail NO_ROOTS on this one.
+  // Claude accepts its own project variable and MCP roots. Neither Codex's project
+  // variable nor the shell's PWD gives this host authority.
   const noRootsClient = new McpStdioClient({
     command: process.execPath,
     args: [bundle, 'mcp', '--host', 'claude', '--state-dir', state('mcp-no-roots')],
     cwd: repo,
     env: {
       ...process.env,
-      CODEX_PROJECT_DIR: '',
+      CODEX_PROJECT_DIR: repo,
       CLAUDE_PROJECT_DIR: '',
       PWD: repo,
       FLOW_DELEGATION_CODEX_BIN: fake,
@@ -1561,65 +1567,59 @@ try {
   assert.equal(noRootsStart.structuredContent.error.kind, 'NO_ROOTS')
   await noRootsClient.close()
 
-  // Codex 0.151.0 advertises no roots capability and sets no project-dir variable, which is
-  // exactly this client: no roots, both project-dir variables empty. The launch shell's PWD is
-  // the only workspace signal left, so the Codex host takes it and the same call that fails on
-  // the Claude host above succeeds here.
-  const codexPwdClient = new McpStdioClient({
-    command: process.execPath,
-    args: [bundle, 'mcp', '--host', 'codex', '--state-dir', state('mcp-codex-pwd')],
-    cwd: repo,
-    env: {
-      ...process.env,
-      CODEX_PROJECT_DIR: '',
-      CLAUDE_PROJECT_DIR: '',
-      PWD: repo,
-      FLOW_DELEGATION_CODEX_BIN: fake,
-      FLOW_FAKE_MODE: 'happy',
-    },
-    roots: [],
-  })
-  // Seeded rather than started: what is under test is whether PWD resolves to a workspace the
-  // job's cwd sits inside, and reading a job back proves that without a provider turn.
-  const pwdSeed = new JobStore(state('mcp-codex-pwd'))
-  const pwdJob = pwdSeed.createJob({
-    traceId: 'codex-pwd', host: 'codex', target: 'claude', depth: 0,
-    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
-    model: 'sonnet', effort: 'low', timeBudgetSeconds: 30, prompt: 'pwd', outputSchema: null,
-  })
-  pwdSeed.close()
-  await codexPwdClient.start()
-  const codexPwdRead = await codexPwdClient.callTool('delegation_status', { jobId: pwdJob.id }, { timeout: 30_000 })
-  assert.equal(codexPwdRead.isError, undefined, 'the Codex host resolves a workspace from PWD')
-  assert.equal(codexPwdRead.structuredContent.job.jobId, pwdJob.id)
-  await codexPwdClient.close()
-
-  const codexNoPwdClient = new McpStdioClient({
-    command: process.execPath,
-    args: [bundle, 'mcp', '--host', 'codex', '--state-dir', state('mcp-codex-no-pwd')],
-    cwd: repo,
-    env: {
-      ...process.env,
-      CODEX_PROJECT_DIR: '',
-      CLAUDE_PROJECT_DIR: '',
-      PWD: '',
-      FLOW_DELEGATION_CODEX_BIN: fake,
-      FLOW_FAKE_MODE: 'happy',
-    },
-    roots: [],
-  })
-  const noPwdSeed = new JobStore(state('mcp-codex-no-pwd'))
-  const noPwdJob = noPwdSeed.createJob({
-    traceId: 'codex-no-pwd', host: 'codex', target: 'claude', depth: 0,
-    mode: 'task', access: 'read-only', cwd: repo, workspaceKey: repo,
-    model: 'sonnet', effort: 'low', timeBudgetSeconds: 30, prompt: 'no pwd', outputSchema: null,
-  })
-  noPwdSeed.close()
-  await codexNoPwdClient.start()
-  const codexNoPwdRead = await codexNoPwdClient.callTool('delegation_status', { jobId: noPwdJob.id }, { timeout: 30_000 })
-  assert.equal(codexNoPwdRead.isError, true)
-  assert.equal(codexNoPwdRead.structuredContent.error.kind, 'NO_ROOTS')
-  await codexNoPwdClient.close()
+  // Codex gets its root from the actual process cwd. A broader or narrower inherited
+  // project directory cannot change it, and a nonproject cwd cannot borrow a real repo.
+  const rootCases = [
+    { name: 'cwd-clean', cwd: repo, env: {} },
+    { name: 'cwd-broad-env', cwd: repo, env: { PWD: temp, CODEX_PROJECT_DIR: temp, CLAUDE_PROJECT_DIR: temp } },
+    { name: 'cwd-narrow-env', cwd: repo, env: { PWD: nestedDir, CODEX_PROJECT_DIR: nestedDir, CLAUDE_PROJECT_DIR: nestedDir } },
+    { name: 'cwd-git-env', cwd: repo, env: { GIT_DIR: join(other, '.git'), GIT_WORK_TREE: other, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.worktree', GIT_CONFIG_VALUE_0: other } },
+    { name: 'cwd-nonrepo', cwd: temp, denied: true, env: { PWD: repo, CODEX_PROJECT_DIR: repo, CLAUDE_PROJECT_DIR: repo, GIT_DIR: join(repo, '.git'), GIT_WORK_TREE: temp } },
+    { name: 'cwd-home', cwd: homedir(), denied: true, env: { PWD: repo, CODEX_PROJECT_DIR: repo, CLAUDE_PROJECT_DIR: repo } },
+    { name: 'cwd-subdir', cwd: nestedDir, denied: true, env: { PWD: repo, CODEX_PROJECT_DIR: repo, CLAUDE_PROJECT_DIR: repo } },
+  ]
+  for (const fixture of rootCases) {
+    const fixtureState = state(`mcp-codex-${fixture.name}`)
+    const seed = new JobStore(fixtureState)
+    const seedJob = (cwd) => seed.createJob({
+      traceId: fixture.name, host: 'codex', target: 'claude', depth: 0,
+      mode: 'task', access: 'read-only', cwd, workspaceKey: cwd,
+      model: 'sonnet', effort: 'low', timeBudgetSeconds: 30, prompt: 'root authority', outputSchema: null,
+    })
+    const insideJob = seedJob(repo)
+    const outsideJob = seedJob(other)
+    seed.close()
+    const cwdClient = new McpStdioClient({
+      command: process.execPath,
+      args: [bundle, 'mcp', '--host', 'codex', '--state-dir', fixtureState],
+      cwd: fixture.cwd,
+      env: {
+        ...process.env, CODEX_PROJECT_DIR: '', CLAUDE_PROJECT_DIR: '', PWD: '',
+        FLOW_DELEGATION_CODEX_BIN: fake, FLOW_FAKE_MODE: 'happy', ...fixture.env,
+      },
+      roots: [],
+    })
+    await cwdClient.start()
+    try {
+      const insideRead = await cwdClient.callTool('delegation_status', { jobId: insideJob.id }, { timeout: 30_000 })
+      if (fixture.denied) {
+        assert.equal(insideRead.isError, true, fixture.name)
+        assert.equal(insideRead.structuredContent.error.kind, 'NO_ROOTS', fixture.name)
+        const start = await cwdClient.callTool('delegate_to_claude', {
+          mode: 'task', prompt: 'no project root', cwd: repo, access: 'read-only',
+          model: 'sonnet', effort: 'low', delivery: 'attached', timeBudgetSeconds: 30,
+        }, { timeout: 30_000 })
+        assert.equal(start.isError, true, fixture.name)
+        assert.equal(start.structuredContent.error.kind, 'NO_ROOTS', fixture.name)
+      } else {
+        assert.equal(insideRead.isError, undefined, fixture.name)
+        assert.equal(insideRead.structuredContent.job.jobId, insideJob.id, fixture.name)
+        const outsideRead = await cwdClient.callTool('delegation_status', { jobId: outsideJob.id }, { timeout: 30_000 })
+        assert.equal(outsideRead.isError, true, fixture.name)
+        assert.equal(outsideRead.structuredContent.error.kind, 'OUTSIDE_ROOTS', fixture.name)
+      }
+    } finally { await cwdClient.close() }
+  }
 
   for (const entry of readdirSync(temp, { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith('state-')) continue

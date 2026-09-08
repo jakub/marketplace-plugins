@@ -14,7 +14,7 @@ This is not a stage. It writes to one branch and its PR, never merges, never tou
 
 **Out**: a PR that is ready to land - zero unresolved threads, every check green on the current head, the head rebased on the current base - reported to the human with the land stage named as the next move. Or an escalation: a plain statement of what is stuck, who it is waiting on, and the state of everything else. Never merge, and never arm auto-merge: the land stage is the only merge path, and in a flow-managed repository the publish guard denies a raw merge anyway.
 
-**Where the writes go.** Fixes land on the PR's branch in a worktree. An issue run's worktree, if it still exists, is that worktree; otherwise create one as a sibling of the repository and check the PR branch out into it. Never babysit on the canonical checkout - the human, or another session, may be standing in it.
+**Where the writes go.** Fixes land on the PR's branch in a worktree. Reuse an issue run's worktree when it still exists inside the canonical repository's `.flow-worktrees` directory. Otherwise create a worktree under that directory and check out the PR branch there. Before creating it, verify the host's repository write grant covers the path, reject symlink escapes, and add `/.flow-worktrees/` to the primary checkout's `.git/info/exclude` if absent. A sibling worktree outside the repository root is not delegation authority. Never babysit on the canonical checkout - the human, or another session, may be standing in it.
 
 ## The reviewers
 
@@ -64,5 +64,7 @@ Read the subsection for your host.
 **Argument.** The PR number in the human's message naming this skill or asking for the watch in words; empty means the current branch. There is no slash command here.
 
 **Waiting.** Poll with bounded shell sleeps inside the turn. A wait too long to hold in one turn ends it with a status line naming what you are waiting for; the human's next message resumes the watch from a fresh gather, never from remembered state.
+
+Git writes. The app's repository grant can leave `.git` read-only. Use its normal approval mechanism for worktree creation, commits, rebases and pushes that need Git metadata writes. Keep the project root at the canonical checkout and pass the exact nested worktree to delegated writers.
 
 **Seats.** Fix seats are native spawns into the worktree; the cross-family review is a `delegate_to_claude` review-mode call per the delegate skill. A running seat cannot be reached here, so keep fix batches small enough to verify against git between spawns.

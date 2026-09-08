@@ -57560,6 +57560,7 @@ function foldTurnOutcome(turn, {
 import { execFile } from "node:child_process";
 import { realpathSync as realpathSync5, statSync as statSync3 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { homedir as homedir3 } from "node:os";
 import { isAbsolute as isAbsolute6, relative as relative3, resolve as resolve7, sep as sep8 } from "node:path";
 import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
@@ -57588,22 +57589,14 @@ function canonicalRoots({ rootUris = [], projectDir = null, fallbackCwd = null }
   }
   return roots;
 }
-async function sharedGitDirInsideRoots(path, roots) {
+async function codexProjectRoot() {
   try {
-    const commonDir = realpathSync5(await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "not a git worktree."));
-    if (!roots.some((root) => isInside(root, commonDir))) return false;
-    const top = realpathSync5(await git(path, ["rev-parse", "--show-toplevel"], "not a git worktree."));
-    const listed = await git(path, ["--git-dir", commonDir, "worktree", "list", "--porcelain"], "the worktree list is unavailable.");
-    return listed.split("\n").some((line) => {
-      if (!line.startsWith("worktree ")) return false;
-      try {
-        return realpathSync5(line.slice("worktree ".length)) === top;
-      } catch {
-        return false;
-      }
-    });
+    const cwd = realpathSync5(process.cwd());
+    if (cwd === realpathSync5(homedir3())) return null;
+    const top = realpathSync5(await git(cwd, ["rev-parse", "--show-toplevel"], "cwd is not a Git worktree."));
+    return top === cwd ? cwd : null;
   } catch {
-    return false;
+    return null;
   }
 }
 async function canonicalWorkspace(cwd, roots) {
@@ -57621,14 +57614,20 @@ async function canonicalWorkspace(cwd, roots) {
     throw new DelegationError("NO_ROOTS", "The client did not provide a usable workspace root.");
   }
   if (roots.some((root) => isInside(root, canonical))) return canonical;
-  if (await sharedGitDirInsideRoots(canonical, roots)) return canonical;
   throw new DelegationError("OUTSIDE_ROOTS", "cwd resolves outside the workspace roots supplied by the client.");
 }
 async function git(cwd, args, message) {
   try {
     const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
       encoding: "utf8",
-      timeout: 15e3
+      timeout: 15e3,
+      // GIT_DIR, GIT_WORK_TREE, config injection and discovery limits must not change
+      // which repository supplies the requested path or immutable review revisions.
+      env: {
+        ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))),
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null"
+      }
     });
     return stdout.trim();
   } catch {
@@ -57659,7 +57658,6 @@ async function gitMetadataPaths(cwd) {
 async function validatedWorktreeKey(cwd, roots) {
   const key = await worktreeKey(cwd);
   if (roots.some((root) => isInside(root, key))) return key;
-  if (await sharedGitDirInsideRoots(key, roots)) return key;
   throw new DelegationError("OUTSIDE_ROOTS", "The Git worktree root resolves outside the workspace roots supplied by the client.");
 }
 async function immutableReview({ cwd, mode: mode2, base = null, head = "HEAD", prompt = "" }) {
@@ -59661,7 +59659,7 @@ if (mode === "mcp") {
     process.exitCode = 2;
   } else {
     const depth = Number(process.env.FLOW_DELEGATION_DEPTH || 0);
-    const projectDir = process.env.CODEX_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || (flags.host === "codex" ? process.env.PWD || null : null);
+    const projectDir = flags.host === "codex" ? await codexProjectRoot() : process.env.CLAUDE_PROJECT_DIR || null;
     await startMcp({
       host: flags.host,
       depth,

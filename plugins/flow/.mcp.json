@@ -1,19 +1,18 @@
 {
   "flow_delegate": {
-    "command": "node",
+    "command": "flow-delegate",
     "args": [
-      "./dist/delegation.mjs",
+      "--flow-version",
+      "0.37.2",
       "mcp",
       "--host",
       "codex"
     ],
-    "cwd": ".",
     "tool_timeout_sec": 7500,
     "env_vars": [
       "XDG_RUNTIME_DIR",
       "DBUS_SESSION_BUS_ADDRESS",
-      "CODEX_PROJECT_DIR",
-      "PWD"
+      "CODEX_HOME"
     ]
   }
 }

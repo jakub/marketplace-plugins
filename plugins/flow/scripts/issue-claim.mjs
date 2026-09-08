@@ -4,8 +4,9 @@
 // Reasons a `refused` result can carry, each with its fix. `live-run`: another run owns this
 // issue and `found` says what it saw; surface it and stop. `issue-closed`, `not-ready`,
 // `blocked`: the issue's state or labels; route the human. `no-acceptance-criteria`: the body
-// has no `## Acceptance Criteria`; back through prep. `bad-slug`, `worktree-path`,
-// `outside-parent`: the derived worktree path is unusable or outside the repository's parent.
+// has no `## Acceptance Criteria`; back through prep. `bad-slug`, `worktree-path`: the
+// derived worktree path or its repository boundary is unusable. `not-main-worktree`: run
+// from the main checkout with its own real .git directory and local common Git metadata.
 // `acquire-refused`: origin already holds the claim tag. `worktree-add`, `push`: git refused.
 // Preconditions of this executor: `usage`; `no-origin`; `origin-unparseable`, the origin URL
 // has no host, names a port, carries a query string or fragment, or is not owner/repo shaped,
@@ -130,8 +131,7 @@
 // uid a model with a shell can push whatever it likes. What this buys is that the ordinary path
 // cannot start a duplicate run by accident.
 //
-// plan is a read-only preview of the names claim will use. It exists so the Codex launcher can
-// reserve that one worktree path and grant it with --add-dir before the session starts. It runs
+// plan is a read-only preview of the names claim will use under <repo>/.flow-worktrees. It runs
 // the same issue, slug, path and repository-boundary checks as claim, then stops before the live
 // run scan and acquire. A separate implementation would eventually disagree about the path and
 // widen the wrong directory.
@@ -148,8 +148,9 @@
 // Everything up to the acquire is a read. A closed issue, a missing label, a title with no slug
 // in it, or a worktree path occupied by anything except an empty real directory: all of them are
 // decided before anything is written, so a refusal there has changed nothing anywhere. An empty
-// directory is accepted because the Codex launcher has to create the exact --add-dir target before
-// Codex starts. claim checks it again under the claim immediately before git fills it.
+// directory is accepted as an unused target. claim checks it again under the claim immediately
+// before git fills it. Local setup then creates a private .flow-worktrees container and adds
+// /.flow-worktrees/ to .git/info/exclude. These idempotent setup changes survive failed claims.
 //
 // That read is stale the moment it is taken, which is why the issue is read twice more. Once
 // while the tag is held and before the worktree is added, because a human can close the issue,
@@ -169,11 +170,10 @@
 // repos/<owner>/<repo>/pulls rather than `gh pr list --limit 100`, because a fork's head branch
 // lives in the fork and no ref under refs/heads/* on origin advertises it, so the branch scan does
 // not cover the same run, and because a hundredth open pull request is a bound nobody chose;
-// --slurp is what makes the pages one JSON document instead of one array printed per page. And
-// the boundary a worktree has to stay inside is
-// compared as real paths: /safe/repo/.git can be a symlink to /outside/repo.git, git answers
-// `.git` when asked for the common directory, and the lexical comparison that used to sit here
-// read a path under the parent while every write through it landed outside.
+// --slurp is what makes the pages one JSON document instead of one array printed per page.
+// Local writes stay in the main checkout: worktrees go under its real .flow-worktrees
+// directory, and common Git metadata must resolve to its own real .git directory. A linked
+// checkout or a symlinked .git would direct registration writes elsewhere and is refused.
 //
 // The order of the last three steps is the part worth explaining, because the obvious order is
 // the wrong one. The branch reaches origin before the labels move. A pushed branch is the marker
@@ -191,7 +191,8 @@
 // A second autonomous run on the same issue is not.
 //
 // What a refusal has to be worth, since the stage reads this JSON line and never the stderr. It
-// has to mean one thing: nothing this run made is left anywhere. The first version could not
+// has to mean one thing: no claim tag, worktree or branch from this run remains. Durable
+// container and exclusion setup can remain. The first version could not
 // promise that, because it returned refused whatever the cleanup did, so `abandon: "unknown"`
 // could sit beside `reason: "live-run"` with the tag still on origin and the stage would read a
 // clean stand-down. Every result but a win now carries two more fields. `phase` says how far the
@@ -248,8 +249,8 @@
 // someone else, 4 unknown.
 
 import { createHash } from 'node:crypto'
-import { accessSync, constants, existsSync, lstatSync, readdirSync, realpathSync } from 'node:fs'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { execCapture, parseJson, parseObject, pinnedGhEnv, resolveGh, runExecutor } from '../lib/gh-exec.mjs'
@@ -290,7 +291,7 @@ const BLOCKING_LABELS = ['needs-human', 'needs-info', 'needs-rebase']
 // lifecycle label on the issue: a buried or double-labelled issue carrying it beside wontfix,
 // deferred, or a stale in-progress is a human's to untangle, never a run's to start.
 const LIFECYCLE_LABELS = ['needs-triage', 'agent-found', READY_LABEL, IN_PROGRESS_LABEL, ...BLOCKING_LABELS, 'wontfix', 'deferred']
-// Long enough to read, short enough that the branch and the sibling directory both stay typable.
+// Long enough to read, short enough that the branch and the worktree directory both stay typable.
 const SLUG_MAX = 40
 
 /**
@@ -306,7 +307,7 @@ issue-claim.mjs release <issue-number> <branch> <expected-head-sha>
 issue-claim.mjs abandon <issue-number> <acquired-sha>
 
 plan reads the issue and runs the local checks needed to print the exact repoRoot, worktree and
-branch a Codex launcher must grant before starting the session. It never scans remote run state,
+branch inside the repository that claim will use. It never scans remote run state,
 acquires a tag, creates a directory, pushes a branch or edits an issue. Exits 0 planned, 2 refused
 or 4 unknown.
 
@@ -331,7 +332,7 @@ worktrees, localBranches, remoteBranches and pullRequests.
 A claim refusal names one of: usage, no-origin, push-fetch-mismatch, origin-unparseable,
 origin-host-not-allowed,
 issue-closed, not-ready, blocked, no-acceptance-criteria, bad-slug, live-run, worktree-path,
-outside-parent, acquire-refused, worktree-add, push. An unknown names one of those, or one of:
+not-main-worktree, acquire-refused, worktree-add, push. An unknown names one of those, or one of:
 issue-unreadable, repo-unreadable, scan-unreadable, acquire-unknown, acquire-ambiguous,
 acquire-not-created, issue-edit, issue-edit-unconfirmed, release. Everything before the
 acquire is a read, so a refusal there changed nothing; after it, a failure before the branch
@@ -1014,7 +1015,7 @@ const worktreeState = (cwd, path) => {
 
 /**
  * Whether the derived target is absent or an empty real directory ready for git to fill. The
- * launcher creates the directory before Codex starts because --add-dir names an existing path.
+ * target may already have been created as an empty directory.
  * A file, link, mount alias or anything already inside the directory is not that reservation and
  * is left untouched.
  */
@@ -1133,12 +1134,12 @@ const claim = ({ argv, cwd, env, runGh, command = 'claim', planOnly = false }) =
     'remote-branch': () => `${branch} on ${repo}`,
   }
   const leftovers = (retained) => retained.length === 0
-    ? 'Nothing of this run is left anywhere.'
+    ? 'No claim tag, worktree or branch from this run remains. Repository container and exclusion setup may remain.'
     : `This run may have left ${retained.map((what) => `${what} (${whereItIs[what]()})`).join(', ')} behind; settle that by hand before running this again.`
 
   /**
    * One shape for every result but a win. The caller reads this line and not the stderr, so
-   * "refused" has to mean nothing of this run is left anywhere: a non-empty retained list turns a
+   * "refused" has to mean no claim tag, worktree or branch from this run remains: a non-empty retained list turns a
    * refusal into an unknown, keeping the reason that was true and adding the cleanup that was
    * not. `want` is therefore what the run would have said had the cleanup gone through.
    */
@@ -1263,44 +1264,58 @@ const claim = ({ argv, cwd, env, runGh, command = 'claim', planOnly = false }) =
   if (repoRoot === '') {
     return unknown('repo-unreadable', `\`git rev-parse --show-toplevel\` gave no repository root for this directory: ${firstLine(redact(topRead.stderr)) || `exit ${topRead.code}`}`)
   }
-  // The boundary a worktree has to stay inside, canonicalized before anything is compared against
-  // it. A lexical resolve is not a boundary: /safe/repo/.git can be a symlink to
-  // /outside/repo.git, `git rev-parse --git-common-dir` answers `.git`, and that resolves to a
-  // path under the parent while every write through it lands outside. realpathSync is what makes
-  // the two strings comparable, and a path that will not resolve is refused rather than compared.
+  // Both checkout files and Git's shared metadata must stay in this main checkout.
+  // A linked checkout cannot grant that boundary, even when its main checkout is nearby.
   const canonical = (path) => { try { return realpathSync(path) } catch { return '' } }
   const canonicalRoot = canonical(repoRoot)
-  const parent = canonicalRoot === '' ? '' : canonical(dirname(canonicalRoot))
-  if (parent === '') {
-    return refuse('outside-parent',
-      'the real path of this repository, or of the directory above it, could not be resolved, so there is no boundary to keep a worktree inside')
+  if (canonicalRoot === '') {
+    return refuse('worktree-path', 'the real repository root could not be resolved')
   }
+  const parent = join(canonicalRoot, '.flow-worktrees')
+  const gitDir = join(canonicalRoot, '.git')
+  const infoDir = join(gitDir, 'info')
+  const exclude = join(infoDir, 'exclude')
   const worktree = join(parent, `${basename(canonicalRoot)}-issue-${issue}-${slug}`)
   const names = { kind, branch, worktree, acDigest, title: found.title ?? null, url: found.url ?? null }
 
-  /**
-   * The local checks shared by plan and claim. plan calls them before its read-only return. claim
-   * calls them after the live-run scan so an existing run remains the more useful refusal.
-   */
-  const validateWorktreeBoundary = () => {
-    const target = worktreeTarget(worktree)
-    if (target.state === 'invalid') return { result: refuse('worktree-path', target.detail, names) }
+  // lstat checks absent paths too, so a dangling link never looks like free space.
+  const realDirectory = (path, absent = false) => {
     try {
-      accessSync(parent, constants.W_OK)
-    } catch {
-      return { result: refuse('worktree-path', `${parent} is not writable, so the worktree beside this repository cannot be created`, names) }
-    }
+      const stat = lstatSync(path)
+      return stat.isDirectory() && !stat.isSymbolicLink() && canonical(path) === path
+    } catch (error) { return absent && error?.code === 'ENOENT' }
+  }
+  const validateWorktreeBoundary = () => {
     const commonRead = runGit(['rev-parse', '--git-common-dir'], cwd, LOCAL_GIT_TIMEOUT_MS)
     const commonRaw = commonRead.code === 0 ? resolve(cwd, commonRead.stdout.trim()) : ''
     if (commonRaw === '') {
-      return { result: unknown('repo-unreadable', `\`git rev-parse --git-common-dir\` gave no git directory for this repository: ${firstLine(redact(commonRead.stderr)) || `exit ${commonRead.code}`}`, names) }
+      return { result: unknown('repo-unreadable', `the common Git directory could not be read: ${firstLine(redact(commonRead.stderr)) || `exit ${commonRead.code}`}`, names) }
     }
     const common = canonical(commonRaw)
-    if (common === '') {
-      return { result: refuse('outside-parent', 'this repository\'s git directory does not resolve to a real path, so whether a worktree added here would register itself out of bounds cannot be established', names) }
+    if (!realDirectory(canonicalRoot)) {
+      return { result: refuse('worktree-path', 'the repository root is no longer a real directory at its canonical path', names) }
     }
-    if (common !== parent && !common.startsWith(parent + sep)) {
-      return { result: refuse('outside-parent', `this repository's git directory is ${common}, outside ${parent}, so a worktree added here would register itself out of bounds`, names) }
+    if (!realDirectory(gitDir) || common !== gitDir) {
+      return { result: refuse('not-main-worktree', `claim requires the main checkout with a real ${gitDir}; common Git metadata resolves to ${common || 'an unreadable path'}`, names) }
+    }
+    if (!realDirectory(parent, true) || dirname(worktree) !== parent) {
+      return { result: refuse('worktree-path', `${parent} must be a real directory inside the repository`, names) }
+    }
+    if (!realDirectory(infoDir, true) || !realDirectory(join(gitDir, 'worktrees'), true)) {
+      return { result: refuse('worktree-path', 'Git info and worktrees metadata must be real directories', names) }
+    }
+    try {
+      const stat = lstatSync(exclude)
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || canonical(exclude) !== exclude) {
+        return { result: refuse('worktree-path', `${exclude} must be a real, unshared file`, names) }
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return { result: refuse('worktree-path', `${exclude} could not be inspected`, names) }
+    }
+    const target = worktreeTarget(worktree)
+    if (target.state === 'invalid') return { result: refuse('worktree-path', target.detail, names) }
+    try { accessSync(existsSync(parent) ? parent : canonicalRoot, constants.W_OK) } catch {
+      return { result: refuse('worktree-path', `${parent} cannot be created or written`, names) }
     }
     return { target }
   }
@@ -1381,11 +1396,10 @@ const claim = ({ argv, cwd, env, runGh, command = 'claim', planOnly = false }) =
 
   // ---- the path this run would write to. Checked before the first mutation, because a worktree
   // add that fails after the claim is a tag to give back and a half-made directory to clear up.
-  // Codex's launcher prepares an empty real directory so --add-dir can grant exactly this path.
   // Anything else at the target is foreign and stays untouched.
   // The boundary check the stage states. A repository that is itself a linked worktree of
-  // something outside this directory's parent would make git register the new worktree out of
-  // bounds. The helper follows links in both paths before it compares them.
+  // another checkout would register the new worktree outside this repository.
+  // The helper requires this main checkout's own real .git directory.
   const checked = validateWorktreeBoundary()
   if (checked.result) return checked.result
 
@@ -1530,14 +1544,45 @@ const claim = ({ argv, cwd, env, runGh, command = 'claim', planOnly = false }) =
     })
   }
 
-  // The launcher prepared this path before the session started, and another process can still
-  // replace or fill it while this run is taking the claim. Re-read it under the claim and leave
-  // anything foreign alone. Giving back only the tag is safe because this run has not created a
-  // branch or registered a worktree yet.
-  const readyTarget = worktreeTarget(worktree)
-  if (readyTarget.state === 'invalid') {
+  // Recheck the whole boundary while holding the tag, before any local setup. The
+  // container and ignore entry are durable repository setup and survive later claim failures.
+  // They grant no ownership of a branch, worktree or claim tag.
+  const prepareDirectory = (path) => {
+    try { mkdirSync(path, { mode: 0o700 }) } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+    }
+  }
+  let setupProblem
+  try {
+    let boundary = validateWorktreeBoundary()
+    if (boundary.result) throw new Error(parseObject(boundary.result.stdout)?.detail)
+    prepareDirectory(parent)
+    prepareDirectory(infoDir)
+    boundary = validateWorktreeBoundary()
+    if (boundary.result) throw new Error(parseObject(boundary.result.stdout)?.detail)
+    // O_NOFOLLOW closes the final-component link race. Check the opened inode against
+    // the path before writing, and leave concurrent foreign changes for a human.
+    // Append preserves existing bytes. Different issue claims can append the same ignore
+    // line concurrently, which changes no ignore behavior and loses no existing content.
+    const fd = openSync(exclude, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+    try {
+      const opened = fstatSync(fd)
+      const current = lstatSync(exclude)
+      boundary = validateWorktreeBoundary()
+      if (boundary.result || !opened.isFile() || opened.nlink !== 1 || opened.dev !== current.dev || opened.ino !== current.ino) {
+        throw new Error('the exclusion path changed during repository setup')
+      }
+      const text = readFileSync(fd, 'utf8')
+      if (!text.split(/\r?\n/).includes('/.flow-worktrees/')) {
+        writeSync(fd, `${text === '' || text.endsWith('\n') ? '' : '\n'}/.flow-worktrees/\n`)
+      }
+    } finally { closeSync(fd) }
+    boundary = validateWorktreeBoundary()
+    if (boundary.result) throw new Error(parseObject(boundary.result.stdout)?.detail)
+  } catch (error) { setupProblem = String(error?.message ?? error) }
+  if (setupProblem) {
     const swept = unwind({ worktreeAdded: false, branchCreated: false })
-    return settle('refused', 'worktree-path', `${readyTarget.detail}; the target changed while this run held the claim`, {
+    return settle('refused', 'worktree-path', setupProblem, {
       phase: 'acquired', retained: swept.retained, cleanup: swept.cleanup,
       extra: { ...claimed, abandon: swept.abandon },
     })

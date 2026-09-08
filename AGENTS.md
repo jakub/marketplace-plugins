@@ -8,6 +8,8 @@ The charter you already have in context says how we build. This file is only abo
 
 Each plugin has one version, written in up to three places that must agree: `plugins/<name>/.claude-plugin/plugin.json`, its entry in the marketplace manifest, and `plugins/<name>/.codex-plugin/plugin.json` when the plugin ships one. The marketplace entry is the number that matters, because both plugin managers name the cache directory after it. The description is mirrored across the same files and checked the same way. A Codex manifest exists only where Codex needs it, for a `hooks` or `mcpServers` pointer; a skills-only plugin (grill) has none, since Codex discovers `skills/*/SKILL.md` on its own. There is no catalog version. `scripts/smoke-plugin-manifests.mjs` enforces all of it.
 
+Flow also pins that version in `plugins/flow/.mcp.json` as `--flow-version`. Keep the pin aligned when changing its manifests. The manifest smoke checks it.
+
 Before every push containing Flow changes or a new Flow version, rebuild and verify `plugins/flow/dist/delegation.mjs`. The bundle embeds the charter and version, so prose-only charter edits and version bumps need a rebuild too. Run these commands from the repo root after all source, charter, dependency and manifest edits are final:
 
 ```sh
@@ -27,6 +29,8 @@ Desktop and claude.ai bridge sessions load plugins from service-pushed snapshots
 Adding a plugin: `plugins/<name>/` with a `.claude-plugin/plugin.json`, plus an entry in the manifest's `plugins` array with `"source": "./plugins/<name>"`. Plugins don't reach into each other's files - flow's prep stage uses `grill-with-docs` when it's installed and falls back to an inline grill otherwise, and that one-way, soft dependency is the model.
 
 ## flow
+
+Codex starts delegation through the installed `flow-delegate` command with no MCP `cwd` override. `scripts/install-delegate.mjs` owns its installation and package registration; read its header and `docs/DELEGATION.md` before changing that contract. `scripts/smoke-codex-app-workspace.mjs` checks the installed plugin against a real App Server in disposable homes. Issue worktrees live under the canonical checkout's ignored `.flow-worktrees/` directory on both hosts.
 
 `plugins/flow/charter/charter.md` is hand-authored by jakub and is the source of truth. One file in two halves split by a marker line, orchestrator doctrine above it and seat rules below. `hooks/scripts/inject-charter.mjs` is the one injector on both hosts; `lib/charter-payload.mjs` owns the marker, the split and the byte budgets.
 
