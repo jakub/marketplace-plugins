@@ -40,6 +40,8 @@ Before any seat touches the tree, record the entry snapshot: `node <plugin-root>
 
 ## 2. Scout
 
+Before launching scouts, give the user a short, plain-language explanation of the issue or idea: the relevant context, what needs to change and why it matters. Use only what is known so far, and name any uncertainty.
+
 Delegate the codebase read to scoped read-only seats, one lane each - domain docs, code seams, prior art - launched together rather than one after another. The outside perspective is one read-only seat from the other model family, reading the repository root.
 
 Tell every seat to send back paths and the seams that matter, not file dumps.
