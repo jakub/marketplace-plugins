@@ -141,4 +141,4 @@ Read the subsection for your host.
 
 **Grill.** The grill plugin's `grill-with-docs` skill by name, `$grill:grill-with-docs`. There is no Skill tool here, so that skill composes by reading its siblings, as its own text says. Rounds are one question per turn, up to 4 numbered options; a four-wide frontier takes four turns, and that is the cost of this host, not a reason to stack.
 
-**Hand-off.** `#N design-hardened → ready-for-agent → issue N`. The plugin's `issue` skill is the next stage here.
+**Hand-off.** `#N design-hardened → ready-for-agent → node <plugin-root>/scripts/codex-issue.mjs N`. That launcher is the entry point here, not the `issue` skill by name: it starts the session whose writable roots the next stage's preflight requires, and a direct invocation stops at that preflight.
