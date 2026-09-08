@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Conformance lint for the pipeline stages. A stage is one SKILL.md and nothing else: it
-// declares its own tool allowance, keeps model invocation off on both hosts, opens with
+// declares its own tool allowance, keeps the SKILL.md model-invocation gate, opens with
 // host-neutral prose, and ends in a "## Host mechanics" section whose two subsections name the
 // calls for each host. There is no command alias; the skill IS the invocation on both hosts.
 //
@@ -10,7 +10,7 @@
 // written and quietly never linted.
 //
 // The value is whether the skill is gated. `gated` is a stage: the human alone starts it, so
-// model invocation is off on both hosts. `open` is babysit, the same document shape without the
+// SKILL.md sets disable-model-invocation. Codex metadata carries no invocation policy. `open` is babysit, the same document shape without the
 // gate, because an issue run hands off to it. Which one a skill is gets asserted either way, so
 // a stage cannot lose its gate and babysit cannot silently gain one.
 //
@@ -115,12 +115,9 @@ const stageProblems = ({ name, skill, openai, gate = 'gated' }) => {
     problems.push(`${at}:${hit.line + (fm ? fm[0].split('\n').length - 1 : 0)} names "${hit.word}" above ${HOST_MECHANICS}, where the prose is the same on every host`)
   }
 
-  const want = gate === 'gated' ? 'false' : 'true'
   if (openai === null) problems.push(`skills/${name}/agents/openai.yaml does not exist`)
-  else if (!new RegExp(`^\\s*allow_implicit_invocation: ${want}$`, 'm').test(openai)) {
-    problems.push(gate === 'gated'
-      ? `skills/${name}/agents/openai.yaml does not set "allow_implicit_invocation: false", so the stage can start itself`
-      : `skills/${name}/agents/openai.yaml does not set "allow_implicit_invocation: true", and this skill is handed off to mid-run`)
+  else if (/^\s*allow_implicit_invocation:/m.test(openai)) {
+    problems.push(`skills/${name}/agents/openai.yaml must omit "allow_implicit_invocation"`)
   }
 
   return problems
@@ -141,7 +138,7 @@ for (const [name, gate] of Object.entries(PIPELINE)) {
     openai: read(ROOT, 'skills', name, 'agents', 'openai.yaml'),
   })
   assert.deepEqual(problems, [], `${name}:\n${problems.join('\n')}`)
-  ok(`${name}: own allowance, neutral body, two host subsections with prose, ${gate === 'gated' ? 'model invocation off on both hosts' : 'model-invocable on both hosts for the hand-off'}`)
+  ok(`${name}: own allowance, neutral body, two host subsections with prose, ${gate === 'gated' ? 'SKILL.md model invocation disabled, Codex invocation policy omitted' : 'SKILL.md model-invocable for the hand-off, Codex invocation policy omitted'}`)
 }
 
 // Nothing else may quietly be a stage. A skill that carries a host-mechanics section and is not
@@ -184,7 +181,7 @@ The mechanism here.
 
 The mechanism there.
 `
-const YAML = 'interface:\n  display_name: "Mini Stage"\npolicy:\n  allow_implicit_invocation: false\n'
+const YAML = 'interface:\n  display_name: "Mini Stage"\n'
 const mini = (edits = {}) => stageProblems({ name: 'mini', skill: SKILL, openai: YAML, ...edits })
 
 const CASES = [
@@ -219,9 +216,9 @@ const CASES = [
     names: ['opens "## Notes" after ## Host mechanics'],
   },
   {
-    label: 'implicit invocation left on',
-    problems: () => mini({ openai: YAML.replace('false', 'true') }),
-    names: ['so the stage can start itself'],
+    label: 'implicit invocation policy reintroduced',
+    problems: () => mini({ openai: `${YAML}policy:\n  allow_implicit_invocation: false\n` }),
+    names: ['must omit "allow_implicit_invocation"'],
   },
   {
     label: 'a stage with no allowed-tools',
@@ -235,7 +232,7 @@ const CASES = [
   },
   {
     label: 'an open skill that gates itself',
-    problems: () => mini({ gate: 'open', openai: YAML.replace('false', 'true') }),
+    problems: () => mini({ gate: 'open' }),
     names: ['has to stay model-invocable'],
   },
   {
