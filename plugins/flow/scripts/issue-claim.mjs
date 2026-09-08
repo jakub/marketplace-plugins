@@ -1553,13 +1553,14 @@ const claim = ({ argv, cwd, env, runGh, command = 'claim', planOnly = false }) =
     }
   }
   let setupProblem
+  let boundary
   try {
-    let boundary = validateWorktreeBoundary()
-    if (boundary.result) throw new Error(parseObject(boundary.result.stdout)?.detail)
+    boundary = validateWorktreeBoundary()
+    if (boundary.result) throw boundary.result
     prepareDirectory(parent)
     prepareDirectory(infoDir)
     boundary = validateWorktreeBoundary()
-    if (boundary.result) throw new Error(parseObject(boundary.result.stdout)?.detail)
+    if (boundary.result) throw boundary.result
     // O_NOFOLLOW closes the final-component link race. Check the opened inode against
     // the path before writing, and leave concurrent foreign changes for a human.
     // Append preserves existing bytes. Different issue claims can append the same ignore
@@ -1569,7 +1570,8 @@ const claim = ({ argv, cwd, env, runGh, command = 'claim', planOnly = false }) =
       const opened = fstatSync(fd)
       const current = lstatSync(exclude)
       boundary = validateWorktreeBoundary()
-      if (boundary.result || !opened.isFile() || opened.nlink !== 1 || opened.dev !== current.dev || opened.ino !== current.ino) {
+      if (boundary.result) throw boundary.result
+      if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== current.dev || opened.ino !== current.ino) {
         throw new Error('the exclusion path changed during repository setup')
       }
       const text = readFileSync(fd, 'utf8')
@@ -1578,11 +1580,17 @@ const claim = ({ argv, cwd, env, runGh, command = 'claim', planOnly = false }) =
       }
     } finally { closeSync(fd) }
     boundary = validateWorktreeBoundary()
-    if (boundary.result) throw new Error(parseObject(boundary.result.stdout)?.detail)
-  } catch (error) { setupProblem = String(error?.message ?? error) }
+    if (boundary.result) throw boundary.result
+  } catch (error) {
+    // A failed boundary read remains unknown even when cleanup confirms the tag is gone.
+    // Preserve its verdict; ordinary setup I/O failures remain worktree-path refusals.
+    setupProblem = error === boundary?.result
+      ? parseObject(error.stdout)
+      : { result: 'refused', reason: 'worktree-path', detail: String(error?.message ?? error) }
+  }
   if (setupProblem) {
     const swept = unwind({ worktreeAdded: false, branchCreated: false })
-    return settle('refused', 'worktree-path', setupProblem, {
+    return settle(setupProblem.result, setupProblem.reason, setupProblem.detail, {
       phase: 'acquired', retained: swept.retained, cleanup: swept.cleanup,
       extra: { ...claimed, abandon: swept.abandon },
     })

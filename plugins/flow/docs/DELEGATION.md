@@ -46,6 +46,23 @@ when hooks are disabled or untrusted. The installer's `uninstall` action removes
 registration and preserves other homes. Changing the registered package anchor or cache layout
 requires an explicit uninstall before installing the replacement.
 
+Uninstall may run from the replacement Codex package when the former cache has already been
+removed. It removes only the valid registration for the current canonical Codex home. It does
+not follow the old anchor or remove another home's registration.
+Unknown entries in the registration directory retain the shared launcher. This includes
+temporary files left by an interrupted installation; uninstall does not guess whether those
+files can be deleted. A crashed install also leaves its lock for the owner to inspect.
+
+The configured HOME and existing CODEX_HOME resolve to canonical directories before path
+validation. Aliases for those bases are supported. Child paths below them, including `.local`,
+the launcher, registrations, and cache slots, must have real directory chains rather than
+symlinks. Cache inputs and installation paths must be owned by the current user and have no
+group or world write permission. Use a restrictive Codex host umask such as `022` for plugin
+installation and upgrades. An existing path with broader permissions is refused with its
+canonical path and a remediation command. Inspect that path and its intended sharing before
+changing permissions. The installer does not chmod user files. Fixing only the current cache
+does not fix a host umask that creates writable inputs again on the next upgrade.
+
 The route is checked three times: at job creation, again in the worker before it starts a
 provider, and in every read and control method, resource reads included, which verify that the
 requesting host owns the stored route and that the job sits inside the client's roots. Both hosts
@@ -70,8 +87,10 @@ container and adds `/.flow-worktrees/` to `.git/info/exclude` only after it hold
 and rechecks readiness. Those idempotent local setup changes can survive a later failed claim.
 
 The native app can grant repository writes while keeping `.git` read-only. The orchestrator uses
-the host's normal approval mechanism for Git metadata writes. A delegated Claude writer gets
-only the exact worktree grant and cannot commit; the orchestrator verifies and commits its edits.
+the host's normal approval mechanism for Git metadata writes. In an issue run, the orchestrator
+passes only the exact nested worktree to a delegated Claude writer. That writer cannot commit;
+the orchestrator verifies and commits its edits. The generic delegation API authorizes the
+client's project root and does not enforce issue-stage path selection on unrelated tasks.
 The human invokes the issue skill directly, for example "run issue #42". No per-issue launcher,
 parent-directory grant or session restart is part of an ordinary run.
 

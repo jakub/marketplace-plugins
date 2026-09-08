@@ -32,6 +32,8 @@ Adding a plugin: `plugins/<name>/` with a `.claude-plugin/plugin.json`, plus an 
 
 Codex starts delegation through the installed `flow-delegate` command with no MCP `cwd` override. `scripts/install-delegate.mjs` owns its installation and package registration; read its header and `docs/DELEGATION.md` before changing that contract. `scripts/smoke-codex-app-workspace.mjs` checks the installed plugin against a real App Server in disposable homes. Issue worktrees live under the canonical checkout's ignored `.flow-worktrees/` directory on both hosts.
 
+`bin/flow-delegate.mjs` is copied verbatim into `~/.local/bin/flow-delegate`. After its first release, every byte change requires increasing both `flow-delegate-launcher-epoch` and the exported `epoch`, including comment edits. Same-epoch content drift is deliberately refused. This epoch changes when the dispatcher changes, never for a Flow version bump alone.
+
 `plugins/flow/charter/charter.md` is hand-authored by jakub and is the source of truth. One file in two halves split by a marker line, orchestrator doctrine above it and seat rules below. `hooks/scripts/inject-charter.mjs` is the one injector on both hosts; `lib/charter-payload.mjs` owns the marker, the split and the byte budgets.
 
 Claude Code caps one hook's stdout at 10,000 characters and swaps anything larger for a 2KB preview plus a file path, so the charter ships as two SessionStart hooks there. **Keep each half under 9,000 bytes**, or the session silently runs on a fragment while the global CLAUDE.md's presence check still passes. The injector warns when a half gets close.

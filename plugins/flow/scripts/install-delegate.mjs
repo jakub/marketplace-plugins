@@ -5,28 +5,23 @@
 // Register the installed package directory once. Versioned upgrades need no hook
 // before launch. A different package directory requires explicit uninstall first.
 // A crashed installer leaves a lock and fails closed until the owner removes it.
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import { at, directory, epoch, identity, installedPackage, locations, regular, registrationName } from '../bin/flow-delegate.mjs'
+import { at, diagnostic, directory, epoch, identity, installedPackage, locations, ownedDirectory, regular, registrationName, SetupError, validateRegistration } from '../bin/flow-delegate.mjs'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const action = process.argv[2]
-const paths = locations()
 const sourcePath = join(root, 'bin/flow-delegate.mjs')
 const launcherName = 'flow-delegate'
-function ownedDirectory(fd) {
-  const stat = fstatSync(fd)
-  if (stat.uid !== process.getuid() || (stat.mode & 0o022)) throw new Error('installer directories must be owned and not writable by others')
-}
 function optional(path) {
   try { return regular(path) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
 }
 function launcherEpoch(bytes) {
   if (!bytes) return null
   const match = bytes.toString().match(/^#!\/usr\/bin\/env node\n\/\/ flow-delegate-launcher-epoch: ([1-9]\d*)\n/)
-  if (!match) throw new Error('refusing to replace an unrelated flow-delegate executable')
+  if (!match) throw new SetupError('refusing to replace an unrelated flow-delegate executable')
   return Number(match[1])
 }
 function atomic(fd, name, bytes, mode) {
@@ -48,22 +43,20 @@ async function acquire(fd) {
   while (true) {
     try { mkdirSync(lock, { mode: 0o700 }); return () => rmdirSync(lock) } catch (error) {
       if (error.code !== 'EEXIST') throw error
-      try { if (!lstatSync(lock).isDirectory()) throw new Error('invalid installer lock') } catch (error) {
+      try { if (!lstatSync(lock).isDirectory()) throw new SetupError('invalid installer lock') } catch (error) {
         if (error.code === 'ENOENT') continue
         throw error
       }
-      if (Date.now() >= deadline) throw new Error('entrypoint installation lock is busy; inspect a stale lock before removing it')
+      if (Date.now() >= deadline) throw new SetupError('entrypoint installation lock is busy; inspect a stale lock before removing it')
       await new Promise(resolve => setTimeout(resolve, 25))
     }
   }
 }
 async function main() {
-  if (!['install', 'uninstall'].includes(action)) throw new Error('usage: install-delegate.mjs install|uninstall')
+  if (!['install', 'uninstall'].includes(action)) throw new SetupError('usage: install-delegate.mjs install|uninstall')
+  const paths = locations()
   const current = identity(root, action === 'install')
   const selected = installedPackage(root, paths.codexHome, current.version)
-  if (action === 'install' && !(process.env.PATH || '').split(':').some(path => path.startsWith('/') && resolve(path) === paths.bin)) {
-    console.error(`flow-delegate installer: add ${paths.bin} to the Codex host PATH before starting a session`)
-  }
   const state = directory(paths.state, true)
   try {
     ownedDirectory(state)
@@ -73,16 +66,20 @@ async function main() {
       const bin = directory(paths.bin, true)
       try {
         ownedDirectory(registry); ownedDirectory(bin)
+        if (action === 'install' && !(process.env.PATH || '').split(':').some(path => {
+          try { return path.startsWith('/') && realpathSync(path) === paths.bin } catch { return false }
+        })) console.error(`flow-delegate installer: add ${paths.bin} to the Codex host PATH before starting a session`)
         const name = registrationName(paths.codexHome)
         const existingBytes = optional(at(registry, name))
         const existing = existingBytes ? JSON.parse(existingBytes) : null
-        if (existing && (existing.schema !== 1 || existing.codexHome !== paths.codexHome || existing.anchor !== selected.anchor || existing.layout !== selected.layout)) throw new Error('this Codex home is registered to another package; uninstall that registration first')
+        if (existingBytes) validateRegistration(existing, paths.codexHome)
+        if (action === 'install' && existing && (existing.anchor !== selected.anchor || existing.layout !== selected.layout)) throw new SetupError("this Codex home is registered to another package; use this installed package's uninstall action, then retry install")
         const launcher = optional(at(bin, launcherName))
         const installedEpoch = launcherEpoch(launcher)
         if (action === 'install') {
           const source = regular(sourcePath)
-          if (launcherEpoch(source) !== epoch) throw new Error('launcher protocol marker mismatch')
-          if (installedEpoch === epoch && launcher && !launcher.equals(source)) throw new Error('same-epoch launcher content differs; update the protocol epoch before replacing it')
+          if (launcherEpoch(source) !== epoch) throw new SetupError('launcher protocol marker mismatch')
+          if (installedEpoch === epoch && launcher && !launcher.equals(source)) throw new SetupError('same-epoch launcher content differs; update the protocol epoch before replacing it')
           if (installedEpoch === null || installedEpoch < epoch) atomic(bin, launcherName, source, 0o755)
           atomic(registry, name, JSON.stringify({ schema: 1, codexHome: paths.codexHome, ...selected }) + '\n', 0o600)
         } else if (existing) {
@@ -95,4 +92,4 @@ async function main() {
     } finally { unlock() }
   } finally { closeSync(state) }
 }
-try { await main() } catch (error) { console.error(`flow-delegate installer: ${error.message}`); process.exitCode = 1 }
+try { await main() } catch (error) { console.error(`flow-delegate installer: ${diagnostic(error, 'installation failed; check the configured home, installed cache and target paths')}`); process.exitCode = 1 }

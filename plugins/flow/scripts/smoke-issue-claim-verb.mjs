@@ -877,6 +877,47 @@ for (const location of ['container', 'exclude', 'info']) {
   check(`a ${location} replaced while acquiring refuses and releases the tag`, r.code === 2 && r.json?.phase === 'acquired' && refSha(w.origin, TAG_REF) === null && callsTo(st, 'edit').length === 0, r.stdout)
 }
 
+console.log('\na common Git directory read fails during acquired setup')
+for (const failAt of [1, 2, 3, 4]) {
+  const w = makeWorld(`setup-common-unreadable-${failAt}`)
+  const bin = join(w.dir, 'bin')
+  mkdirSync(bin)
+  const counter = join(bin, 'remaining')
+  writeFileSync(counter, String(failAt))
+  const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+  const quote = (text) => "'" + text.replaceAll("'", "'\"'\"'") + "'"
+  const wrapper = join(bin, 'git')
+  writeFileSync(wrapper, `#!/bin/sh
+if [ "$3" = rev-parse ] && [ "$4" = --git-common-dir ]; then
+  remaining=$(cat ${quote(counter)})
+  remaining=$((remaining - 1))
+  echo "$remaining" > ${quote(counter)}
+  if [ "$remaining" = 0 ]; then
+    echo 'transient common directory read failure' >&2
+    exit 1
+  fi
+fi
+exec ${quote(realGit)} "$@"
+`)
+  chmodSync(wrapper, 0o755)
+  const savedPath = process.env.PATH
+  let scans = 0
+  const st = freshState({ onPrScan: () => {
+    if (++scans === 2) process.env.PATH = `${bin}:${savedPath}`
+  } })
+  let r
+  try { r = run(w, ['claim', String(ISSUE)], st) } finally { process.env.PATH = savedPath }
+  check(`setup read ${failAt} preserves unknown repo-unreadable`,
+    r.code === 4 && r.json?.result === 'unknown' && r.json?.reason === 'repo-unreadable' &&
+      r.json?.detail.includes('transient common directory read failure'), r.stdout)
+  check(`setup read ${failAt} records confirmed tag cleanup`,
+    r.json?.phase === 'acquired' && r.json?.abandon === 'abandoned' &&
+      r.json?.cleanup === null && JSON.stringify(r.json?.retained) === '[]' && refSha(w.origin, TAG_REF) === null, r.stdout)
+  check(`setup read ${failAt} creates no worktree or branch and edits no issue`,
+    worktreePaths(w.repo).length === 1 && !existsSync(w.pathFor(SLUG)) &&
+      refSha(w.repo, `refs/heads/feat/issue-${ISSUE}-${SLUG}`) === null && callsTo(st, 'edit').length === 0, r.stdout)
+}
+
 // ------------------------------------------------- the issue changes while the tag is held
 console.log('\nthe issue changes between the first read and the claim')
 for (const [label, mutate, reason] of [

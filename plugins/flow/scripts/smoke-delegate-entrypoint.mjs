@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Real installer and copied dispatcher, isolated homes and Codex cache fixtures.
 import assert from 'node:assert/strict'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -104,7 +104,10 @@ try {
   const linked = environment('linked')
   const linkedRoot = fixture(linked)
   symlinkSync(temp, join(linked.HOME, '.local'))
-  install(linkedRoot, linked, 'install', 1)
+  const linkedFailure = install(linkedRoot, linked, 'install', 1)
+  assert.ok(linkedFailure.stderr.includes(join(linked.HOME, '.local')))
+  assert.match(linkedFailure.stderr, /must be a real directory/)
+  assert.doesNotMatch(linkedFailure.stderr, /\/proc\/self\/fd/)
 
   const mappingEnv = environment('mapping')
   const mappingRoot = fixture(mappingEnv)
@@ -172,6 +175,86 @@ try {
   assert.ok(Date.now() - waiting < 6000, 'lock wait is bounded')
   assert.ok(existsSync(lock), 'installer does not steal a stale lock')
   rmSync(lock, { recursive: true })
+
+  const permissions = environment('permissions')
+  const permissionRoot = fixture(permissions)
+  install(permissionRoot, permissions)
+  for (const target of ['.codex-plugin/plugin.json', 'dist/delegation.mjs']) {
+    const file = join(permissionRoot, target)
+    chmodSync(file, 0o664)
+    for (const failure of [install(permissionRoot, permissions, 'install', 1), run(permissions, '1.0.0', 1)]) {
+      assert.ok(failure.stderr.includes(file), 'permission diagnostic names the canonical file')
+      assert.match(failure.stderr, /chmod go-w/)
+      assert.doesNotMatch(failure.stderr, /\/proc\/self\/fd|\n\s+at /)
+    }
+    assert.equal(statSync(file).mode & 0o777, 0o664, 'refusal never changes permissions')
+    chmodSync(file, 0o644)
+  }
+  const writableBin = join(permissions.HOME, '.local/bin')
+  chmodSync(writableBin, 0o775)
+  const deniedBin = install(permissionRoot, permissions, 'install', 1)
+  assert.ok(deniedBin.stderr.includes(writableBin))
+  assert.match(deniedBin.stderr, /chmod go-w/)
+  assert.equal(statSync(writableBin).mode & 0o777, 0o775)
+  chmodSync(writableBin, 0o755)
+
+  const aliases = environment('canonical-home')
+  const aliasRoot = fixture(aliases)
+  const homeAlias = join(temp, 'home-alias'); symlinkSync(aliases.HOME, homeAlias)
+  const aliasEnv = { ...aliases, HOME: homeAlias, CODEX_HOME: join(homeAlias, '.codex'), PATH: `${homeAlias}/.local/bin:${process.env.PATH}` }
+  assert.equal(install(aliasRoot, aliasEnv).stderr, '', 'equivalent PATH needs no diagnostic')
+  assert.match(run(aliasEnv, '1.0.0', 0, cwd).stdout, /actual project/)
+  run(aliases, '1.0.0')
+  const separateAlias = join(temp, 'codex-home-alias'); symlinkSync(aliases.CODEX_HOME, separateAlias)
+  const separateEnv = { ...aliases, CODEX_HOME: separateAlias }
+  assert.equal(install(aliasRoot, separateEnv).stderr, '')
+  run(separateEnv, '1.0.0')
+  assert.equal(readdirSync(join(aliases.HOME, '.local/share/flow-delegate/registrations')).length, 1, 'base aliases share one canonical registration')
+  const missing = { ...aliases, CODEX_HOME: join(temp, 'missing-codex-home') }
+  for (const failure of [install(aliasRoot, missing, 'install', 1), run(missing, '1.0.0', 1)]) {
+    assert.match(failure.stderr, /CODEX_HOME must name an existing directory/)
+    assert.doesNotMatch(failure.stderr, /\n\s+at |Error:/)
+  }
+  const originalRegistry = join(aliases.HOME, '.local/share/flow-delegate/registrations')
+  rmSync(originalRegistry, { recursive: true })
+  symlinkSync(temp, originalRegistry)
+  for (const failure of [install(aliasRoot, aliases, 'install', 1), run(aliases, '1.0.0', 1)]) {
+    assert.ok(failure.stderr.includes(originalRegistry))
+    assert.match(failure.stderr, /must be a real directory/)
+    assert.doesNotMatch(failure.stderr, /\/proc\/self\/fd/)
+  }
+
+  const replacement = environment('replacement')
+  const removed = fixture(replacement)
+  install(removed, replacement)
+  const otherReplacementHome = { ...replacement, CODEX_HOME: join(replacement.HOME, 'other-codex') }
+  const retainedRoot = fixture(otherReplacementHome)
+  install(retainedRoot, otherReplacementHome)
+  rmSync(dirname(removed), { recursive: true })
+  const replacementRoot = fixture(replacement, '2.0.0', 'replacement-market')
+  assert.match(install(replacementRoot, replacement, 'install', 1).stderr, /use this installed package's uninstall action/)
+  install(replacementRoot, replacement, 'uninstall')
+  run(otherReplacementHome, '1.0.0')
+  install(replacementRoot, replacement)
+  run(replacement, '2.0.0')
+  const replacementRegistry = join(replacement.HOME, '.local/share/flow-delegate/registrations')
+  const selectedMapping = readdirSync(replacementRegistry).map(name => join(replacementRegistry, name)).find(path => JSON.parse(readFileSync(path)).codexHome === replacement.CODEX_HOME)
+  const validMapping = readFileSync(selectedMapping, 'utf8')
+  const malformed = JSON.parse(validMapping); malformed.anchor = join(temp, 'outside-cache')
+  writeFileSync(selectedMapping, JSON.stringify(malformed))
+  install(replacementRoot, replacement, 'uninstall', 1)
+  assert.ok(existsSync(selectedMapping), 'uninstall preserves invalid registrations')
+  writeFileSync(selectedMapping, validMapping)
+
+  const throwing = environment('throwing')
+  const throwingRoot = fixture(throwing, '1.0.0', 'jakub', `throw new Error('DO_NOT_LEAK_STARTUP_SECRET');\n`)
+  install(throwingRoot, throwing)
+  const startupFailure = run(throwing, '1.0.0', 1)
+  assert.match(startupFailure.stderr, /bundle startup failed/)
+  assert.doesNotMatch(startupFailure.stderr, /installer|registration|DO_NOT_LEAK|\n\s+at /)
+  assert.ok(startupFailure.stderr.length < 2048)
+  writeFileSync(join(throwingRoot, '.codex-plugin/plugin.json'), '{DO_NOT_LEAK_MANIFEST_SECRET')
+  for (const failure of [install(throwingRoot, throwing, 'install', 1), run(throwing, '1.0.0', 1)]) assert.doesNotMatch(failure.stderr, /DO_NOT_LEAK|\n\s+at /)
 
   const signalEnv = environment('signals')
   const signalRoot = fixture(signalEnv, '4.0.0', 'jakub', `process.on('SIGTERM', () => process.exit(42)); console.log('ready'); setInterval(() => {}, 1000);\n`)
