@@ -1,6 +1,6 @@
 ---
 name: technical-writing
-description: "Layered technical-writing standard: Diátaxis structure, Google developer style sentences, STE instruction rules, Global English syntax. Use when writing or substantially revising prose a reader comes back to: docs, READMEs, RFCs, ADRs, design notes, published artifacts, and PR or issue bodies longer than a few lines. Not for commit subjects, and not for chat."
+description: "Layered technical-writing standard: Diátaxis structure, Google developer style sentences, STE instruction rules, Global English syntax. Use when writing or substantially revising prose a reader comes back to: docs, READMEs, RFCs, ADRs, design notes, published artifacts, and PR or issue bodies longer than a few lines. Do not invoke it for a bare commit subject, or for chat. Once invoked, it covers every word of what you are writing."
 ---
 
 # Technical writing

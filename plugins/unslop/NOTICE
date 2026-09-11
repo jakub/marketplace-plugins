@@ -69,10 +69,17 @@ means it covers nothing on the turns where it would help most. We want the model
 reach for it, so the gate has to come off and the trigger has to earn its keep
 instead. Upstream's trigger list ends in "PR descriptions, or commit messages", and a
 conventional commit subject does not need eleven kilobytes of Diátaxis. The
-replacement fires on prose a reader comes back to and names two exclusions:
-commit subjects, and chat. Chat matters because the Global English layer bans idioms,
+replacement fires on prose a reader comes back to and refuses two triggers: a bare
+commit subject, and chat. Chat matters because the Global English layer bans idioms,
 Latin, and metaphor, which is most of what the active output style exists to produce.
-That style governs conversation; this skill governs documents.
+That style governs conversation, and this skill governs documents.
+
+Those are rules about when to invoke the skill, not about which words it then covers,
+and the description now says so. An earlier wording said "not for commit subjects"
+flatly, which contradicted the body's "PR descriptions and commit messages are writing
+too. Every layer except Diátaxis applies to them", since a commit message contains its
+subject. CodeRabbit caught it on the PR that vendored this file. The body stays
+upstream-verbatim and the frontmatter carries the distinction.
 
 0002 fixes three lines that describe pstack's repo rather than this one. "Indent code
 snippets with tabs" is a Cursor convention and this repo is spaces, so the line now
