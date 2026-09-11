@@ -37,7 +37,7 @@ The planned path must sit inside the host's writable repository grant. Prove tha
 
 **Out**: an open PR, pushed, reviewed, evidenced and `Closes #N`-linked. Or a clean escalation: `needs-info`, `needs-human` or `needs-rebase`, labeled, with a comment saying what is blocking, and the escalation notice of §9. A run that never got past the preflight is not an escalation at all: it stops in the turn and leaves the issue untouched (§2). Never merge.
 
-The stage itself always stops at the pushed PR. When the request that launched this run also asked for the PR to be watched through review, continue into the `babysit` skill after the final journal; otherwise the final report may name it as the next move, and the human's go-ahead is what invokes it.
+The stage itself always stops at the pushed PR, and then hands that PR to the `babysit` skill. Continue into it after the final journal, on every run that reaches a push, without asking first: the watch is how a pushed PR becomes a landable one, not a favour the human has to request. An escalation and a suspension are not pushes, so neither hands off; there the final report names what is blocking and stops.
 
 ## 2. The write-seat preflight
 
