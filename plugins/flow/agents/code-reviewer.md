@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Reviews code for bugs, logic errors, security vulnerabilities, and guideline violations, verifying findings by execution where possible and separating confidence (is it real) from severity (how bad)
-tools: Bash, Glob, Grep, LS, Read, WebFetch, WebSearch, BashOutput, KillShell
+tools: Bash, Glob, Grep, LS, Read, Skill, WebFetch, WebSearch, BashOutput, KillShell
 color: red
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: code-architect
 description: Designs feature architectures by analyzing existing codebase patterns and conventions, then providing decisive implementation blueprints with specific files to create/modify, key decisions, test strategy, and risks
-tools: Glob, Grep, LS, Read, WebFetch, WebSearch
+tools: Glob, Grep, LS, Read, Skill, WebFetch, WebSearch
 color: green
 ---
 

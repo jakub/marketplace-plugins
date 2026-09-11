@@ -1,6 +1,6 @@
 ---
 name: babysit
-description: Watch one open pull request through external review and CI until everything is green - validate and fix reviewer findings, answer every thread, keep the branch rebased - then hand it to the land stage. Use when the human asks to monitor, watch, or babysit a PR, or when the request that launched an issue run also asked for its PR to be seen through review.
+description: Watch one open pull request through external review and CI until everything is green - validate and fix reviewer findings, answer every thread, keep the branch rebased - then hand it to the land stage. Use when the human asks to monitor, watch, or babysit a PR, and whenever an issue run reaches its pushed PR, which always continues here.
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Agent, TaskOutput, TaskStop, SendMessage, Monitor, PushNotification, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_continue
 ---
 
@@ -10,7 +10,7 @@ This is not a stage. It writes to one branch and its PR, never merges, never tou
 
 ## The contract
 
-**In**: an open PR, by number or resolved from the current branch. Three origins authorize a run: the human asking to babysit, watch, or monitor it; the human's go-ahead on a hand-off out of an issue run; or the message that launched that issue run having asked up front for the PR to be watched through review. A green build in the transcript, or a PR you merely noticed, is not an invocation.
+**In**: an open PR, by number or resolved from the current branch. Three origins authorize a run: the human asking to babysit, watch, or monitor it; the human naming this PR in words; or an issue run finishing its work, which continues here on its own and needs no further go-ahead. A run that escalated or suspended has not finished, and its checkpoint push is not an invitation. A green build in the transcript, or a PR you merely noticed, is not an invocation.
 
 **Out**: a PR that is ready to land - zero unresolved threads, every check green on the current head, the head rebased on the current base - reported to the human with the land stage named as the next move. Or an escalation: a plain statement of what is stuck, who it is waiting on, and the state of everything else. Never merge, and never arm auto-merge: the land stage is the only merge path, and in a flow-managed repository the publish guard denies a raw merge anyway.
 
