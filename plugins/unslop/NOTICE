@@ -105,8 +105,8 @@ One file is added rather than patched:
 Upstream ships no openai.yaml for any pstack skill. Codex decides whether a model may
 reach a skill on its own from `policy.allow_implicit_invocation`, so the Codex half of
 0001's decision lives in this file. A re-sync copies SKILL.md only and leaves this file
-alone. skills/unslop/ needs no equivalent, because its rules arrive through the hook
-on both hosts.
+alone. skills/unslop/ carries its own copy for the same reason, described with patch
+0003 above.
 
 Two upstream lines are deliberately NOT patched. "Do not paste swarm logs, SHA lists,
 or metric tables" sits near the charter's "one-line-per-commit changelog" for a PR

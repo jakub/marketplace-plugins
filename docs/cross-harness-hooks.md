@@ -71,7 +71,6 @@ from a hook at delegation time. See
 | Gripe checkpoint | Claude transcript folded incrementally at `Stop` and `SubagentStop` | `PostToolUse` folds counters, parent `Stop` evaluates them | `lib/checkpoint.mjs` |
 | Gripe denial and turn-failure observations | `PermissionDenied`, `StopFailure` | Not registered; Codex has no equivalent after-the-fact events | Existing Claude-only observed-row code |
 | Gripe CLI resolution | `~/.claude/plugins/cache/jakub/gripe/*/bin/gripe` | `${CODEX_HOME:-~/.codex}/plugins/cache/jakub/gripe/*/bin/gripe` | `bin/shim.mjs` globs both roots every run, skips `.orphaned_at` versions, ranks by the version in the directory name, and execs the newest |
-| Unslop rules | `SessionStart`, `SubagentStart` | Same events | `lib/rules.mjs` and `lib/agent-selection.mjs` |
 
 ## Deliberate non-equivalences
 
@@ -194,13 +193,14 @@ to a nearby event with different meaning.
   per-session lock. Contention loses advisory evidence after half a second (25 attempts, 20 ms
   apart), and a lock left behind by a killed holder is unlinked once it is ten seconds old;
   neither delays the hook past its five-second timeout or blocks the agent's work.
-- Flow enforcement adapters deny when the target cannot be inspected. Gripe and Unslop are
-  advisory and exit quietly when their own input cannot be parsed.
-- Codex SessionStart context limits are sized above the current Flow and Unslop payloads so
-  both arrive inline. Flow's charter hook declares an 8,000-token limit, and its conformance
-  lint holds what the injector actually prints under a 22,000-byte maintenance budget; Unslop
-  retains Claude's 10,000-byte output checks. Codex spills oversized output to a file and
-  supplies a preview, so spilling is a degraded fallback rather than silent loss.
+- Flow enforcement adapters deny when the target cannot be inspected. Gripe is advisory and
+  exits quietly when its own input cannot be parsed.
+- Codex SessionStart context limits are sized above the current Flow payload so it arrives
+  inline. Flow's charter hook declares an 8,000-token limit, and its conformance lint holds
+  what the injector actually prints under a 22,000-byte maintenance budget. Codex spills
+  oversized output to a file and supplies a preview, so spilling is a degraded fallback rather
+  than silent loss. Unslop used to share that budget and no longer does: from 0.6.0 it ships
+  no hooks at all and its rules arrive by model invocation on both hosts.
 
 ## Testing without installation
 
@@ -218,7 +218,6 @@ node plugins/flow/scripts/smoke-protect-files.mjs
 node plugins/flow/scripts/smoke-publish-guard.mjs
 node plugins/gripe/scripts/smoke-hooks.mjs
 node plugins/gripe/scripts/smoke-shim.mjs
-node plugins/unslop/scripts/smoke-hooks.mjs
 ```
 
 That is the adapter and prompt-shape subset, not the whole suite. Every `smoke-*.mjs` under
