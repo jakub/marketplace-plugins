@@ -36,8 +36,8 @@
     },
     {
       "name": "unslop",
-      "description": "Writing discipline vendored from Lauren Tan's pstack (MIT): the unslop rules injected into every session and subagent, plus the technical-writing standard on demand.",
-      "version": "0.5.0",
+      "description": "Two writing skills vendored from Lauren Tan's pstack (MIT): unslop cuts AI tells from any writing, technical-writing is the layered standard for docs a reader comes back to. Both model-invocable, no hooks.",
+      "version": "0.6.0",
       "author": {
         "name": "jakub"
       },

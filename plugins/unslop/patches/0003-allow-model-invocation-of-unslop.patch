@@ -1,0 +1,12 @@
+diff --git a/plugins/unslop/skills/unslop/SKILL.md b/plugins/unslop/skills/unslop/SKILL.md
+index a3a7dc7..3b2d567 100644
+--- a/plugins/unslop/skills/unslop/SKILL.md
++++ b/plugins/unslop/skills/unslop/SKILL.md
+@@ -1,7 +1,6 @@
+ ---
+ name: unslop
+ description: Cut AI tells from any writing. Must always apply.
+-disable-model-invocation: true
+ ---
+ 
+ # Unslop

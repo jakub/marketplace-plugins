@@ -107,9 +107,9 @@ for (const listed of marketplace.plugins) {
   }
 }
 
-// flow, gripe and unslop all register Codex hooks. The set shrinking would mean a Codex
-// manifest moved or was renamed without this test noticing; that is a failure, not an empty
-// success. grill is deliberately outside it, shipping skills alone.
-assert.ok(codexPlugins.length >= 3, `expected at least 3 Codex manifests, found ${codexPlugins.length}`)
+// flow and gripe register Codex hooks. The set shrinking would mean a Codex manifest moved
+// or was renamed without this test noticing; that is a failure, not an empty success. grill
+// and unslop are deliberately outside it, shipping skills alone.
+assert.ok(codexPlugins.length >= 2, `expected at least 2 Codex manifests, found ${codexPlugins.length}`)
 
 console.log('parallel plugin manifests: ALL PASS')

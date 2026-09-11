@@ -1,9 +1,0 @@
-{
-  "name": "unslop",
-  "version": "0.5.0",
-  "description": "Writing discipline vendored from Lauren Tan's pstack (MIT): the unslop rules injected into every session and subagent, plus the technical-writing standard on demand.",
-  "author": {
-    "name": "jakub"
-  },
-  "hooks": "./hooks/codex.json"
-}

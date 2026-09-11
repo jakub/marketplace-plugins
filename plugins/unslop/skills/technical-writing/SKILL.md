@@ -97,7 +97,7 @@ Source: Kohl, The Global English Style Guide (SAS Press). Guideline text fetched
 
 ## Voice and repo specifics
 
-- The **unslop** rules apply to every doc this skill touches. That skill owns the slop-pattern catalog: AI vocabulary, filler, hedging, formatting tells. A SessionStart hook already put its body in context, so do not try to invoke it. It sets `disable-model-invocation: true` and no call will reach it.
+- Apply the **unslop** skill to every doc this skill touches. That skill owns the slop-pattern catalog: AI vocabulary, filler, hedging, formatting tells.
 - PR descriptions and commit messages are writing too. Every layer except Diátaxis applies to them. A PR body is a briefing that a reviewer can read in under a minute. Do not paste swarm logs, SHA lists, or metric tables. Link them.
 - Product UI strings are not documentation. Use your product's copy guidelines for those.
 - Indent code snippets the way the file they came from does. Write real paths and real symbols. Make every count or tree claim true at the commit that lands it, and include the command that regenerates it.
