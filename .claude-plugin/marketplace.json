@@ -36,7 +36,7 @@
     },
     {
       "name": "unslop",
-      "description": "Cut AI tells from writing and put a voice back in. Vendored from Lauren Tan's pstack skill in cursor/plugins (MIT).",
+      "description": "Writing discipline vendored from Lauren Tan's pstack (MIT): the unslop rules injected into every session and subagent, plus the technical-writing standard on demand.",
       "version": "0.4.1",
       "author": {
         "name": "jakub"

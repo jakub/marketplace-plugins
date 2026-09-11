@@ -108,11 +108,13 @@ Grill ships no Codex manifest: Codex finds `skills/*/SKILL.md` by itself. Three 
 
 ## unslop
 
-`plugins/unslop/skills/unslop/SKILL.md` is vendored verbatim from Lauren Tan's pstack skill in `cursor/plugins` (MIT), no patches yet. If it ever needs one, follow the grill pattern and bump the SHA in `plugins/unslop/NOTICE`.
+Two skills vendored from Lauren Tan's pstack in `cursor/plugins` (MIT) under one pin, because upstream designed them as a pair: `skills/unslop/SKILL.md` is the slop-pattern catalog, verbatim, and `skills/technical-writing/SKILL.md` is the four-layer document standard that cites it, carrying two patches under `plugins/unslop/patches/` in the grill pattern. `plugins/unslop/NOTICE` is the record. Upstream retires an unslop rule by leaving its number as a gap, so **never renumber the rules** - technical-writing and this file both cite them.
+
+unslop is injected and technical-writing is not, and that is the whole reason one is a hook and one is a skill. The unslop body must fit the hook cap below; technical-writing is 11KB on its own and never could, so it stays on-demand and patch 0001 takes off upstream's invocation gate to make the model reach for it. `skills/technical-writing/agents/openai.yaml` is a local addition, not a patch, carrying the Codex half of that decision.
 
 `hooks/scripts/inject-unslop.mjs` delivers the rules, because "Must always apply" in frontmatter is advice the model follows unreliably. One script, both harnesses, two modes: `session` prints to stdout at SessionStart, `subagent` answers SubagentStart with `hookSpecificOutput.additionalContext`. Plugin-local scoping wrappers live in `lib/rules.mjs` and the source-aware skip policy in `lib/agent-selection.mjs`. **Scoping changes go in those wrappers, never in a patch to the vendored file.**
 
-Watch the same 10,000-character Claude hook cap that forced flow's charter into two hooks. The subagent payload is JSON-wrapped and so is the larger of the two: 7,786 bytes as of unslop 0.4.1, about 2KB of headroom. Codex's handler uses a 3,000-token inline limit. A re-sync that grows `SKILL.md` past either bound eats or spills the rules, so measure after any vendor bump:
+Watch the same 10,000-character Claude hook cap that forced flow's charter into two hooks. The subagent payload is JSON-wrapped and so is the larger of the two: 7,216 bytes at upstream f5bdd68, about 2.8KB of headroom. Codex's handler uses a 3,000-token inline limit. A re-sync that grows `SKILL.md` past either bound eats or spills the rules, so measure after any vendor bump:
 
 ```
 echo '{"agent_type":"claude"}' | node plugins/unslop/hooks/scripts/inject-unslop.mjs subagent claude | wc -c

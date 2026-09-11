@@ -1,0 +1,5 @@
+interface:
+  display_name: "Technical Writing"
+  short_description: "Layered standard for prose a reader comes back to"
+policy:
+  allow_implicit_invocation: true

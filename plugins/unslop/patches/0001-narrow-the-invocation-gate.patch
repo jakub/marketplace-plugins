@@ -1,0 +1,13 @@
+diff --git a/plugins/unslop/skills/technical-writing/SKILL.md b/plugins/unslop/skills/technical-writing/SKILL.md
+index 70a477e..4aeae8e 100644
+--- a/plugins/unslop/skills/technical-writing/SKILL.md
++++ b/plugins/unslop/skills/technical-writing/SKILL.md
+@@ -1,7 +1,6 @@
+ ---
+ name: technical-writing
+-description: "Layered technical-writing standard: Diátaxis structure, Google developer style sentences, STE instruction rules, Global English syntax. Use for /technical-writing or when writing or reviewing docs, RFCs, readmes, PR descriptions, or commit messages."
+-disable-model-invocation: true
++description: "Layered technical-writing standard: Diátaxis structure, Google developer style sentences, STE instruction rules, Global English syntax. Use when writing or substantially revising prose a reader comes back to: docs, READMEs, RFCs, ADRs, design notes, published artifacts, and PR or issue bodies longer than a few lines. Not for commit subjects, and not for chat."
+ ---
+ 
+ # Technical writing
