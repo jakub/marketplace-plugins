@@ -1,45 +1,129 @@
-This plugin vendors one skill from Lauren Tan's "pstack" plugin, shipped in Cursor's
+This plugin vendors two skills from Lauren Tan's "pstack" plugin, shipped in Cursor's
 official plugin repo:
 
     https://github.com/cursor/plugins/tree/main/pstack
 
-    pstack/skills/unslop/SKILL.md -> skills/unslop/SKILL.md
+    pstack/skills/unslop/SKILL.md            -> skills/unslop/SKILL.md
+    pstack/skills/technical-writing/SKILL.md -> skills/technical-writing/SKILL.md
 
 Upstream commit:
 
-    99559f2f52047978602ef365589275831e76af07
+    f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d
 
-SKILL.md is the whole skill upstream: no references/, no scripts, nothing else to
-carry. The rest of pstack (agents, automations, docs) is a Cursor-oriented plugin
-and is deliberately not vendored here.
+SKILL.md is the whole of each skill upstream: no references/, no scripts, no
+agents/openai.yaml, nothing else to carry. The rest of pstack (agents, automations,
+docs) is a Cursor-oriented plugin and is deliberately not vendored here.
+
+The two are a pair, which is why they share one plugin and one pin. unslop is the
+slop-pattern catalog with stable rule ids; technical-writing is the four-layer
+standard that cites it and carries the voice guidance that used to live in unslop.
+Splitting them across two plugins would mean two pins against one upstream repo, and
+the first symptom of drift would be technical-writing citing a rule the vendored
+unslop no longer has.
 
 The upstream repo root carries no licence file. `pstack/LICENSE` is MIT and covers
-this file; it is reproduced below.
+both files; it is reproduced below.
 
-LOCAL MODIFICATIONS
--------------------
+LOCAL MODIFICATIONS: unslop
+---------------------------
 
-None. The vendored file is byte-for-byte upstream, including the frontmatter
-description ("Must always apply").
+None. skills/unslop/SKILL.md is byte-for-byte upstream.
 
-That description promises more than the mechanism delivers: a skill description is
-an advertisement the model must still act on each turn, and it reliably goes unacted
-on for prose-shaped turns, which is exactly where unslop matters. Delivery is
-therefore a SessionStart hook (`hooks/scripts/inject-unslop.mjs`) that reads this
-file at runtime, strips the frontmatter, and injects the body inside a plugin-local
-scoping wrapper: full ruleset for written deliverables; jargon + plain-speech rules
-(26-31) for technical explanations and design discussion in chat; the active output
-style wins mechanical style conflicts (rule 13's em-dash ban, rule 26's "harness"/
-"surface") in conversation, unslop wins them in deliverables. Scoping changes belong
+That description promises more than the mechanism delivers. A skill description is an
+advertisement the model must still act on each turn, and it reliably goes unacted on
+for prose-shaped turns, which is exactly where unslop matters. Upstream now also sets
+`disable-model-invocation: true`, so the model cannot reach the skill on its own at
+all. Delivery is therefore a SessionStart hook (`hooks/scripts/inject-unslop.mjs`)
+that reads this file at runtime, strips the frontmatter, and injects the body inside
+a plugin-local scoping wrapper: full ruleset for written deliverables; jargon and
+plain-speech rules (26-31 and 33) for technical explanations and design discussion in
+chat; the active output style wins mechanical style conflicts (rule 13's em-dash ban,
+rule 26's "harness"/"surface") in conversation, unslop wins them in deliverables.
+
+Rule 32 (mannered prose) is deliberately NOT in the chat range. It bans aphorisms,
+rhetorical fragments and figurative verbs, which is the conversational register the
+active output style exists to produce; the parts of it that matter for an explanation
+are already banned by that style. Rule 33 (over-compression) is in the chat range,
+because dropped articles and arrow-speak hurt an explanation the same way in either
+place. Both apply in full to deliverables.
+
+The rule numbers have gaps. Upstream treats them as stable ids that other skills cite
+and leaves a hole rather than renumbering when a rule is retired; rules 1, 2, 4, 6 and
+21 were general-prose rules retired upstream. Do not renumber to close a gap. Scoping changes belong
 in the wrapper; a rule change would go through a patch under `patches/`, following
 the `plugins/grill` pattern - none exists today. The vendored file itself stays
 byte-for-byte upstream.
+
+LOCAL MODIFICATIONS: technical-writing
+--------------------------------------
+
+skills/technical-writing/SKILL.md is NOT verbatim. Two patches apply on top of
+upstream, in order:
+
+    patches/0001-narrow-the-invocation-gate.patch
+    patches/0002-repo-specifics.patch
+
+0001 removes `disable-model-invocation: true` and narrows the description that
+replaces it. Upstream gates the skill behind a typed `/technical-writing`, which
+means it covers nothing on the turns where it would help most. We want the model to
+reach for it, so the gate has to come off and the trigger has to earn its keep
+instead. Upstream's trigger list ends in "PR descriptions, or commit messages", and a
+conventional commit subject does not need eleven kilobytes of Diátaxis. The
+replacement fires on prose a reader comes back to and refuses two triggers: a bare
+commit subject, and chat. Chat matters because the Global English layer bans idioms,
+Latin, and metaphor, which is most of what the active output style exists to produce.
+That style governs conversation, and this skill governs documents.
+
+Those are rules about when to invoke the skill, not about which words it then covers,
+and the description now says so. An earlier wording said "not for commit subjects"
+flatly, which contradicted the body's "PR descriptions and commit messages are writing
+too. Every layer except Diátaxis applies to them", since a commit message contains its
+subject. CodeRabbit caught it on the PR that vendored this file. The body stays
+upstream-verbatim and the frontmatter carries the distinction.
+
+0002 fixes three lines that describe pstack's repo rather than this one. "Indent code
+snippets with tabs" is a Cursor convention and this repo is spaces, so the line now
+says to match the file. "Apply the unslop skill" cannot be done here, or upstream: the
+hook has already put the rules in context and the skill sets
+`disable-model-invocation: true`, so the line now says so rather than sending a model
+after a skill it cannot call. The jargon paragraph's "Don't edit that skill" gains the
+destination a change actually goes to, which is patches/ in this directory.
+
+One file is added rather than patched:
+
+    skills/technical-writing/agents/openai.yaml
+
+Upstream ships no openai.yaml for any pstack skill. Codex decides whether a model may
+reach a skill on its own from `policy.allow_implicit_invocation`, so the Codex half of
+0001's decision lives in this file. A re-sync copies SKILL.md only and leaves this file
+alone. skills/unslop/ needs no equivalent, because its rules arrive through the hook
+on both hosts.
+
+Two upstream lines are deliberately NOT patched. "Do not paste swarm logs, SHA lists,
+or metric tables" sits near the charter's "one-line-per-commit changelog" for a PR
+body, and the two do not actually conflict: a list of commit subjects is not a list of
+SHAs. "Use your product's copy guidelines" for UI strings is left pointing nowhere on
+purpose, because the skill that would answer it here comes from a marketplace this
+repo does not control.
 
 RE-SYNCING
 ----------
 
     1. Copy pstack/skills/unslop/SKILL.md over skills/unslop/SKILL.md
-    2. Update the commit SHA above
+    2. Copy pstack/skills/technical-writing/SKILL.md over
+       skills/technical-writing/SKILL.md
+    3. git apply patches/0001-narrow-the-invocation-gate.patch
+    4. git apply patches/0002-repo-specifics.patch
+    5. Update the commit SHA above; regenerate any patch that stops applying
+    6. Re-measure the hook payloads, which the unslop body feeds:
+       echo '{"agent_type":"claude"}' | node hooks/scripts/inject-unslop.mjs subagent claude | wc -c
+       Claude Code swaps a hook stdout over 10,000 characters for a 2KB preview.
+
+The patches are ordinary `git diff` output with `a/plugins/unslop/skills/...` paths,
+so apply them from the repo root. To regenerate one: commit the state it applies to,
+redo the change on top of that, and `git diff` the two commits. Verify the chain by
+applying it to a fresh upstream copy in a scratch directory and diffing the result
+against skills/. They must be byte-identical.
 
 ---------------------------------------------------------------------------
 

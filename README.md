@@ -80,7 +80,7 @@ The same reasoning is why the shim running the newest install it can find is mit
 |---|---|---|
 | **flow** | `flow@jakub` | This is my main agentic development process. It runs through three stages: `prep` (scope, design, refine) → `issue` (hands-off all the way to a reviewed, evidenced PR) → `land` (final checks and a pinned squash merge). |
 | **grill** | `grill@jakub` | Used by `prep` to hammer out the issue design. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT). |
-| **unslop** | `unslop@jakub` | Cuts AI tells from writing. ***Under evaluation.*** Adds Claude and Codex hooks to forcefully inject the skill into agents and subagents instead of relying on front matter. Vendored from [Lauren Tan's pstack skill](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
+| **unslop** | `unslop@jakub` | Cuts AI tells from writing, and holds the technical-writing standard for docs a reader comes back to. ***Under evaluation.*** Claude and Codex hooks inject the unslop rules into agents and subagents rather than trusting front matter; `technical-writing` stays on demand, because it is too big to inject. Two skills vendored from [Lauren Tan's pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
 | **gripe** | `gripe@jakub` | A circular filing cabinet for the agents. If they hit friction during a task, repeat errors, or are just unhappy about something they're either encouraged to file a gripe, or where possible, a Claude or Codex hook does it for them. |
 
 ## flow

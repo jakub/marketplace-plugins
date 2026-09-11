@@ -1,0 +1,26 @@
+diff --git a/plugins/unslop/skills/technical-writing/SKILL.md b/plugins/unslop/skills/technical-writing/SKILL.md
+index 4aeae8e..ac4744d 100644
+--- a/plugins/unslop/skills/technical-writing/SKILL.md
++++ b/plugins/unslop/skills/technical-writing/SKILL.md
+@@ -15,7 +15,7 @@ Three rules sit above the layers:
+ 
+ The codebase is the word list. Write the real symbol, file, flag, or command name, not a synonym or a description of it.
+ 
+-Don't invent jargon. Use the words a developer would say out loud: "move", "delete", "a budget that only decreases", not "evacuate", "ratchet", or "endgame". A named pattern is fine when the doc says what it means the first time. Propose a new offender and its replacement as an addition to `unslop`'s abstract-metaphor rule in your reply, with the diff. Don't edit that skill.
++Don't invent jargon. Use the words a developer would say out loud: "move", "delete", "a budget that only decreases", not "evacuate", "ratchet", or "endgame". A named pattern is fine when the doc says what it means the first time. Propose a new offender and its replacement as an addition to `unslop`'s abstract-metaphor rule in your reply, with the diff. Don't edit that skill: it is vendored verbatim, so a change to it is a new patch under `plugins/unslop/patches/`.
+ 
+ ## Vary the rhythm
+ 
+@@ -97,10 +97,10 @@ Source: Kohl, The Global English Style Guide (SAS Press). Guideline text fetched
+ 
+ ## Voice and repo specifics
+ 
+-- Apply the **unslop** skill to every doc this skill touches. That skill owns the slop-pattern catalog: AI vocabulary, filler, hedging, formatting tells.
++- The **unslop** rules apply to every doc this skill touches. That skill owns the slop-pattern catalog: AI vocabulary, filler, hedging, formatting tells. A SessionStart hook already put its body in context, so do not try to invoke it. It sets `disable-model-invocation: true` and no call will reach it.
+ - PR descriptions and commit messages are writing too. Every layer except Diátaxis applies to them. A PR body is a briefing that a reviewer can read in under a minute. Do not paste swarm logs, SHA lists, or metric tables. Link them.
+ - Product UI strings are not documentation. Use your product's copy guidelines for those.
+-- Indent code snippets with tabs. Write real paths and real symbols. Make every count or tree claim true at the commit that lands it, and include the command that regenerates it.
++- Indent code snippets the way the file they came from does. Write real paths and real symbols. Make every count or tree claim true at the commit that lands it, and include the command that regenerates it.
+ 
+ ## Worked example
+ 
