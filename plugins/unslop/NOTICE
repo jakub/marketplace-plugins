@@ -27,32 +27,40 @@ both files; it is reproduced below.
 LOCAL MODIFICATIONS: unslop
 ---------------------------
 
-None. skills/unslop/SKILL.md is byte-for-byte upstream.
+One patch:
 
-That description promises more than the mechanism delivers. A skill description is an
-advertisement the model must still act on each turn, and it reliably goes unacted on
-for prose-shaped turns, which is exactly where unslop matters. Upstream now also sets
-`disable-model-invocation: true`, so the model cannot reach the skill on its own at
-all. Delivery is therefore a SessionStart hook (`hooks/scripts/inject-unslop.mjs`)
-that reads this file at runtime, strips the frontmatter, and injects the body inside
-a plugin-local scoping wrapper: full ruleset for written deliverables; jargon and
-plain-speech rules (26-31 and 33) for technical explanations and design discussion in
-chat; the active output style wins mechanical style conflicts (rule 13's em-dash ban,
-rule 26's "harness"/"surface") in conversation, unslop wins them in deliverables.
+    patches/0003-allow-model-invocation-of-unslop.patch
 
-Rule 32 (mannered prose) is deliberately NOT in the chat range. It bans aphorisms,
-rhetorical fragments and figurative verbs, which is the conversational register the
-active output style exists to produce; the parts of it that matter for an explanation
-are already banned by that style. Rule 33 (over-compression) is in the chat range,
-because dropped articles and arrow-speak hurt an explanation the same way in either
-place. Both apply in full to deliverables.
+0003 removes the `disable-model-invocation: true` that upstream added at f5bdd68.
+Nothing else changes. The body is byte-for-byte upstream, with no local scoping text.
+
+This plugin used to deliver those rules through SessionStart and SubagentStart hooks,
+on the argument that a skill description is an advertisement the model must act on
+each turn and reliably does not act on for prose-shaped turns. That machinery is gone
+as of 0.6.0, along with the Codex manifest that existed only to point at it. Both
+skills are now ordinary model-invocable skills, and this is a plugin of skills alone
+like grill. The open question is whether invocation covers the turns the hook covered.
+If it does not, the history before 0.6.0 holds a working hook to restore.
+
+Two things the hook did that invocation does not. It scoped the rules, applying the
+full set to deliverables, the jargon and plain-speech rules to technical explanation
+in chat, and letting the active output style win mechanical conflicts in conversation.
+And it reached subagents, which is why flow's implementer, code-reviewer and
+code-architect seats gained the `Skill` tool in the same change. There is no scoping
+now: a model that invokes this skill gets every rule and applies them to whatever it
+is writing.
+
+One file is added rather than patched:
+
+    skills/unslop/agents/openai.yaml
+
+Codex decides whether a model may reach a skill on its own from
+`policy.allow_implicit_invocation`, so with the hooks gone that file is the only thing
+making these rules reachable there. A re-sync copies SKILL.md only and leaves it alone.
 
 The rule numbers have gaps. Upstream treats them as stable ids that other skills cite
 and leaves a hole rather than renumbering when a rule is retired; rules 1, 2, 4, 6 and
-21 were general-prose rules retired upstream. Do not renumber to close a gap. Scoping changes belong
-in the wrapper; a rule change would go through a patch under `patches/`, following
-the `plugins/grill` pattern - none exists today. The vendored file itself stays
-byte-for-byte upstream.
+21 were general-prose rules retired upstream. Do not renumber to close a gap.
 
 LOCAL MODIFICATIONS: technical-writing
 --------------------------------------
@@ -81,13 +89,14 @@ too. Every layer except Diátaxis applies to them", since a commit message conta
 subject. CodeRabbit caught it on the PR that vendored this file. The body stays
 upstream-verbatim and the frontmatter carries the distinction.
 
-0002 fixes three lines that describe pstack's repo rather than this one. "Indent code
+0002 fixes two lines that describe pstack's repo rather than this one. "Indent code
 snippets with tabs" is a Cursor convention and this repo is spaces, so the line now
-says to match the file. "Apply the unslop skill" cannot be done here, or upstream: the
-hook has already put the rules in context and the skill sets
-`disable-model-invocation: true`, so the line now says so rather than sending a model
-after a skill it cannot call. The jargon paragraph's "Don't edit that skill" gains the
+says to match the file. The jargon paragraph's "Don't edit that skill" gains the
 destination a change actually goes to, which is patches/ in this directory.
+
+Upstream's "Apply the **unslop** skill to every doc this skill touches" is left alone
+and is accurate here: 0003 takes the invocation gate off that skill, so the call it
+asks for will reach it.
 
 One file is added rather than patched:
 
@@ -114,16 +123,15 @@ RE-SYNCING
        skills/technical-writing/SKILL.md
     3. git apply patches/0001-narrow-the-invocation-gate.patch
     4. git apply patches/0002-repo-specifics.patch
-    5. Update the commit SHA above; regenerate any patch that stops applying
-    6. Re-measure the hook payloads, which the unslop body feeds:
-       echo '{"agent_type":"claude"}' | node hooks/scripts/inject-unslop.mjs subagent claude | wc -c
-       Claude Code swaps a hook stdout over 10,000 characters for a 2KB preview.
+    5. git apply patches/0003-allow-model-invocation-of-unslop.patch
+    6. Update the commit SHA above; regenerate any patch that stops applying
 
 The patches are ordinary `git diff` output with `a/plugins/unslop/skills/...` paths,
 so apply them from the repo root. To regenerate one: commit the state it applies to,
 redo the change on top of that, and `git diff` the two commits. Verify the chain by
 applying it to a fresh upstream copy in a scratch directory and diffing the result
-against skills/. They must be byte-identical.
+against skills/. The two SKILL.md files must be byte-identical; the agents/ directories
+are local additions and will only exist on this side.
 
 ---------------------------------------------------------------------------
 

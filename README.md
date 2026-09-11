@@ -1,8 +1,8 @@
 # marketplace-plugins
 
-Jakub's personal Claude Code marketplace. Everything here installs on Codex too. Flow,
-Gripe, and Unslop carry a Codex manifest, because Codex reads hook and MCP registrations
-only from one; Grill ships skills alone and needs none, since Codex finds
+Jakub's personal Claude Code marketplace. Everything here installs on Codex too. Flow and
+Gripe carry a Codex manifest, because Codex reads hook and MCP registrations only from
+one; Grill and Unslop ship skills alone and need none, since Codex finds
 `skills/*/SKILL.md` by itself. The Claude marketplace remains the publishing catalog.
 
 ```bash
@@ -80,7 +80,7 @@ The same reasoning is why the shim running the newest install it can find is mit
 |---|---|---|
 | **flow** | `flow@jakub` | This is my main agentic development process. It runs through three stages: `prep` (scope, design, refine) → `issue` (hands-off all the way to a reviewed, evidenced PR) → `land` (final checks and a pinned squash merge). |
 | **grill** | `grill@jakub` | Used by `prep` to hammer out the issue design. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT). |
-| **unslop** | `unslop@jakub` | Cuts AI tells from writing, and holds the technical-writing standard for docs a reader comes back to. ***Under evaluation.*** Claude and Codex hooks inject the unslop rules into agents and subagents rather than trusting front matter; `technical-writing` stays on demand, because it is too big to inject. Two skills vendored from [Lauren Tan's pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
+| **unslop** | `unslop@jakub` | Cuts AI tells from writing, and holds the technical-writing standard for docs a reader comes back to. ***Under evaluation.*** Both skills are model-invocable, with no hooks: an earlier version force-injected the rules at SessionStart, and 0.6.0 tests whether invocation alone covers the same ground. Two skills vendored from [Lauren Tan's pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
 | **gripe** | `gripe@jakub` | A circular filing cabinet for the agents. If they hit friction during a task, repeat errors, or are just unhappy about something they're either encouraged to file a gripe, or where possible, a Claude or Codex hook does it for them. |
 
 ## flow
