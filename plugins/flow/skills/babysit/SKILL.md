@@ -10,7 +10,7 @@ This is not a stage. It writes to one branch and its PR, never merges, never tou
 
 ## The contract
 
-**In**: an open PR, by number or resolved from the current branch. Three origins authorize a run: the human asking to babysit, watch, or monitor it; the human naming this PR in words; or an issue run reaching a pushed PR, which continues here on its own and needs no further go-ahead. A green build in the transcript, or a PR you merely noticed, is not an invocation.
+**In**: an open PR, by number or resolved from the current branch. Three origins authorize a run: the human asking to babysit, watch, or monitor it; the human naming this PR in words; or an issue run finishing its work, which continues here on its own and needs no further go-ahead. A run that escalated or suspended has not finished, and its checkpoint push is not an invitation. A green build in the transcript, or a PR you merely noticed, is not an invocation.
 
 **Out**: a PR that is ready to land - zero unresolved threads, every check green on the current head, the head rebased on the current base - reported to the human with the land stage named as the next move. Or an escalation: a plain statement of what is stuck, who it is waiting on, and the state of everything else. Never merge, and never arm auto-merge: the land stage is the only merge path, and in a flow-managed repository the publish guard denies a raw merge anyway.
 
