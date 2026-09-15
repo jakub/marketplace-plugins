@@ -113,6 +113,25 @@ parent-directory grant or new session.
 
 Two timers run in the background once the `flow` housekeeping skill's `setup` action has armed them: a nightly lint that keeps labels, worktrees, and branches honest under narrow standing permissions, and a weekly doc sweep. The sweep has no write tools at all, so it files nothing and opens nothing; it reports the doc drift it found and, for a small fix, the diff you can paste.
 
+Two supporting skills help with investigation and measured improvement:
+
+- [`how`](plugins/flow/skills/how/SKILL.md) explains how a subsystem works from source and
+  focused tests. Ask it to trace a behavior, identify state owners, or find where a change
+  belongs. It flags concerns and confusing details encountered without conducting a deep
+  review. Answers stay in the conversation unless you request a document.
+- [`hillclimb`](plugins/flow/skills/hillclimb/SKILL.md) starts with an interactive agreement
+  on a workload, benchmark, target, and constraints. After you say "run it", workers attempt
+  independent hypotheses in parallel. The orchestrator waits for the whole batch before
+  measuring candidates sequentially. Attempts retain local branches and logs, including
+  rejected changes. A confirmed target ends the search. An exploratory run uses an agreed
+  minimum number of hypotheses. Standalone delivery is a reviewed local branch and evidence
+  report. Pushing or opening a PR requires authorization.
+
+Use `/flow:how` or `/flow:hillclimb` on Claude Code. On Codex, name the Flow skill. These are
+supporting skills, so the pipeline remains `prep` → `issue` → `land`. A calling workflow
+retains the findings and owns delivery. Hillclimb's [experiment record](plugins/flow/skills/hillclimb/references/experiment-record.md)
+defines the local evidence format.
+
 | Path | What's there |
 |---|---|
 | `plugins/flow/charter/charter.md` | The engineering charter. |
@@ -120,6 +139,7 @@ Two timers run in the background once the `flow` housekeeping skill's `setup` ac
 | `plugins/flow/agents/` | `implementer` (constrained to keep it on track - no Agent tool, and a report the orchestrator checks against git), `code-architect`, `code-reviewer`, and `bridge` (the transport seat for a call across the family bridge: the delegate tools and nothing else, returning the envelope verbatim). Models and efforts are chosen by the orchestrator at spawn. |
 | `plugins/flow/skills/flow/` | The `flow` housekeeping skill's `setup`, `drift`, `labels`, `charter`, and `cron` actions. Claude Code invokes it as `/flow:flow`; Codex uses the plugin skill by name. |
 | `plugins/flow/skills/delegate/` | `flow:delegate` - how a cross-family call works: attached against detached delivery, the review mode, the envelope, the approval fork. |
+| `plugins/flow/skills/how/`, `skills/hillclimb/` | Supporting skills for source-grounded explanations and interactive setup followed by autonomous experiments. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
 | `plugins/flow/scripts/install-delegate.mjs` | One-time installation and removal of the stable Codex MCP dispatcher, with a package cache registration per Codex home and exact version selection. |
 | `plugins/flow/scripts/issue-claim.mjs` | The read-only nested-worktree plan and atomic issue claim. |
