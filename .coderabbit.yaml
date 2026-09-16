@@ -1,0 +1,136 @@
+# yaml-language-server: $schema=https://www.coderabbit.ai/integrations/schema.v2.json
+# Public repository: keep context sources explicit instead of inheriting them.
+inheritance: false
+early_access: true
+language: en-US
+tone_instructions: >-
+  Use plain, direct English. State the trigger, failure, and consequence.
+  Keep comments concise. Explain uncertainty and avoid praise or filler.
+
+reviews:
+  # Preserve the existing organization UI choices in this self-contained file.
+  request_changes_workflow: true
+  collapse_walkthrough: false
+  tools:
+    fbinfer:
+      enabled: false
+    presidio:
+      enabled: false
+  profile: chill
+  review_status: true
+  review_details: true
+  high_level_summary_in_walkthrough: true
+  fail_commit_status: true
+  enable_prompt_for_ai_agents: true
+  assess_linked_issues: true
+  poem: false
+  in_progress_fortune: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    # Review final repair commits even after several review rounds.
+    # Each review still consumes allowance. Batch related fixes before pushing.
+    auto_pause_after_reviewed_commits: 0
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    issue_assessment:
+      mode: warning
+    custom_checks:
+      - name: Evidence matches acceptance claims
+        mode: warning
+        instructions: |
+          Inspect the linked issue's acceptance criteria and the PR's evidence.
+          Pass when each claimed-complete criterion has relevant, accessible
+          evidence, or the PR clearly records the limitation without claiming
+          completion. Fail when an explicit completion claim is contradicted
+          by the linked evidence, such as a skipped job called passed, a
+          simulated worker called real-process proof, or an older capture
+          described as current behavior without an equivalence argument.
+          Cite the claim and contradictory evidence. Return Inconclusive when
+          evidence cannot be accessed, including tailnet-only artifacts.
+          Do not infer success from pasted totals or claim to have run tests.
+  path_instructions:
+    - path: "{**/*,**/.*,.github/**,.flow/**,.claude-plugin/**,plugins/*/.claude-plugin/**,plugins/*/.codex-plugin/**,plugins/*/.mcp.json}"
+      instructions: |
+        Prioritize reachable correctness, security, concurrency, data-loss,
+        and user-visible behavior defects. Test assertions that can falsely
+        pass are actionable even if the patch is small.
+        Read linked requirements and applicable current design decisions.
+        Trace callers, callees, preceding guards, and the current PR head
+        before reporting missing validation or a contract violation.
+        State a triggering input or event sequence, the existing behavior,
+        and the consequence. Intentional behavior does not excuse a concrete
+        security defect. Do not request speculative fallback paths,
+        compatibility, extra durability, abstractions, or refactors without
+        a demonstrated need.
+    - path: "**/*.{mjs,js,ts,sh}"
+      instructions: |
+        Apply this instruction to test code and test helpers in these files.
+        For each new assertion, identify a plausible broken implementation
+        that would still pass. Verify that fixture escaping delivers the
+        intended bytes and that the test observes the correct file,
+        execution lane, or request. Assert presence separately from ordering.
+        Negative claims need a positive control proving that the observer
+        detects the allowed operation. Prefer a specific false-pass example
+        over generic coverage requests. For mutation evidence, identify the
+        target assertion failure and successful control. A build failure,
+        timeout, or unrelated failure does not prove mutation detection.
+    - path: "plugins/flow/{**/*,.claude-plugin/**,.codex-plugin/**,.mcp.json}"
+      instructions: |
+        Read the applicable module contract and executor header before
+        proposing changes to Flow authority or lifecycle behavior.
+        For process supervision and write leases, distinguish inability to
+        prove termination from proof that termination completed. Unknown
+        liveness must not release write authority. After confirmed cleanup,
+        inspect every state transition required to release the lease.
+        Do not propose fallback identity or automatic recovery that weakens
+        this contract. Follow cancellation, timeout, and recovery through
+        the supervising process, worker state, and lease ownership.
+
+        For remote identity and authenticated GitHub calls, trace untrusted
+        input through parsing, canonicalization, host and port checks,
+        API routing, and diagnostics. Unsupported identities must be
+        rejected before authenticated calls. Trust configuration must come
+        from outside the inspected repository. Check that both successful
+        and refused paths avoid leaking credentials. Trace the shared
+        identity and command helpers before claiming a caller lacks a guard.
+
+        Review command authorization against shell interpretation. Check
+        command position, split quoting, expansions, executable paths,
+        wrappers, heredocs, and mutating options. Pair a denied execution
+        example with an allowed literal-report example. Verify that the
+        fixture delivers those exact bytes. Inspect the complete command
+        and the applicable interactive or cron policy. A prompt describing
+        permission does not widen an executable allowlist or guard.
+
+        For each automatic handoff, identify the required completion state
+        and authority. Check suspension, partial completion, retry, and
+        recovery paths that produce the same event. A pushed checkpoint
+        does not prove that the implementation is complete. A review or
+        green check does not authorize merge. Trace the actual executor
+        and gate before suggesting another approval step. Keep permission
+        to implement, push, merge, and publish distinct when the changed
+        workflow crosses those boundaries.
+
+knowledge_base:
+  automatic_linking_mode: disabled
+  linked_repositories: []
+  jira:
+    usage: disabled
+  linear:
+    usage: disabled
+  mcp:
+    usage: disabled
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  code_guidelines:
+    enabled: true
+    # AGENTS.md and CLAUDE.md are already detected by default.
+    filePatterns:
+      - "**/context.md"
