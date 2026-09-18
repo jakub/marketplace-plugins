@@ -23205,6 +23205,11 @@ function publicQuarantine(job) {
     trackedProcesses: job.providerProcesses.length
   };
 }
+function requestPreview(prompt) {
+  const text2 = String(prompt || "").replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim();
+  const chars = Array.from(text2);
+  return chars.length > 240 ? `${chars.slice(0, 237).join("")}...` : text2;
+}
 function resultEnvelope(job) {
   return {
     jobId: job.id,
@@ -23215,6 +23220,7 @@ function resultEnvelope(job) {
     access: job.access,
     model: job.model,
     effort: job.effort,
+    requestPreview: job.requestPreview ?? null,
     elicitation: Boolean(job.elicitation),
     limits: {
       timeBudgetSeconds: job.timeBudgetSeconds,
@@ -23949,12 +23955,13 @@ var JobStore = class {
       at2,
       at2
     );
-    this.appendEvent(id2, "job.queued", { status: "queued" });
+    this.appendEvent(id2, "job.queued", { status: "queued", requestPreview: requestPreview(request.requestPreview ?? request.prompt) });
     return this.getJob(id2);
   }
   getJob(id2) {
     const job = decode3(this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id2));
     if (!job) return null;
+    job.requestPreview = parse3(this.db.prepare("SELECT payload_json FROM events WHERE job_id=? AND seq=1 AND type='job.queued'").get(id2)?.payload_json)?.requestPreview ?? null;
     job.commandFailures = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
       WHERE job_id = ? AND type = 'command.completed'
         AND (json_extract(payload_json, '$.status') = 'failed'
@@ -24080,7 +24087,7 @@ var JobStore = class {
       if (!current) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
       if (TERMINAL_STATES.includes(current.status)) {
         this.db.exec("COMMIT");
-        return current;
+        return this.getJob(id2);
       }
       if (current.status === "quarantined") {
         throw new DelegationError("JOB_QUARANTINED", "A quarantined job can finish only after Flow proves its provider processes stopped.");
@@ -24114,7 +24121,7 @@ var JobStore = class {
       if (!current) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
       if (TERMINAL_STATES.includes(current.status) || current.status === "quarantined") {
         this.db.exec("COMMIT");
-        return current;
+        return this.getJob(id2);
       }
       this.db.prepare(`UPDATE jobs SET status='quarantined', quarantine_resume_status=?,
         output=?, structured_json=?, usage_json=?, error_json=?, prompt=NULL,
@@ -24147,7 +24154,7 @@ var JobStore = class {
       if (!current) throw new DelegationError("JOB_NOT_FOUND", "No delegation job has that ID.");
       if (current.status !== "quarantined") {
         this.db.exec("COMMIT");
-        return current;
+        return this.getJob(id2);
       }
       resumeStatus = force || current.quarantineResumeStatus;
       if (!TERMINAL_STATES.includes(resumeStatus) && resumeStatus !== "reconciling") {
@@ -24214,7 +24221,7 @@ var JobStore = class {
       }
       if (TERMINAL_STATES.includes(job.status)) {
         this.db.exec("COMMIT");
-        return job;
+        return this.getJob(jobId2);
       }
       if (job.status === "queued") {
         const at2 = now();
@@ -24272,7 +24279,7 @@ var JobStore = class {
   }
   // Newest first, one route only: the resources a host lists are the jobs it may read.
   listJobs({ host, target, limit = 50 } = {}) {
-    return this.db.prepare("SELECT * FROM jobs WHERE host = ? AND target = ? ORDER BY created_at DESC, id LIMIT ?").all(host, target, Math.max(1, Math.min(limit, 200))).map(decode3);
+    return this.db.prepare("SELECT * FROM jobs WHERE host = ? AND target = ? ORDER BY created_at DESC, id LIMIT ?").all(host, target, Math.max(1, Math.min(limit, 200))).map((row) => this.getJob(row.id));
   }
   pendingControls(jobId2) {
     return this.db.prepare(`SELECT id, type, payload_json, created_at FROM controls
@@ -24478,7 +24485,7 @@ function signalTrackedProcessTree(rootPid, knownDescendants, signal) {
 }
 
 // src/delegation/version.mjs
-var VERSION = true ? "0.40.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
+var VERSION = true ? "0.41.0" : JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8")).version;
 
 // src/delegation/app-server.mjs
 var APPROVAL_METHODS = /* @__PURE__ */ new Set([
@@ -57837,6 +57844,7 @@ var DelegationService = class {
         cwd,
         workspaceKey,
         prompt: review.prompt,
+        requestPreview: normalized.prompt.trim() || (normalized.mode === "adversarial-review" ? `Review ${review.baseSha}...${review.headSha}` : ""),
         outputSchema,
         baseSha: review.baseSha,
         headSha: review.headSha
@@ -58244,6 +58252,7 @@ var envelopeShape = object2({
   access: _enum(ACCESS_MODES),
   model: string2(),
   effort: _enum(EFFORTS),
+  requestPreview: string2().nullable(),
   elicitation: boolean2().describe("Whether an approval request in this job is put to the human through the MCP session, or denied outright"),
   limits: object2({
     timeBudgetSeconds: number2().int(),
@@ -58268,8 +58277,13 @@ var eventShape = object2({
   payload: record(string2(), unknown()),
   createdAt: number2().int()
 });
-var jobResultShape = { ok: boolean2(), job: envelopeShape.optional(), error: publicErrorShape.optional() };
-var eventsResultShape = { ok: boolean2(), events: array(eventShape).optional(), error: publicErrorShape.optional() };
+var jobResultShape = { summary: string2().optional(), ok: boolean2(), job: envelopeShape.optional(), error: publicErrorShape.optional() };
+var eventsResultShape = { summary: string2().optional(), ok: boolean2(), job: envelopeShape.pick({
+  jobId: true,
+  model: true,
+  effort: true,
+  requestPreview: true
+}).optional(), events: array(eventShape).optional(), error: publicErrorShape.optional() };
 var doctorResultShape = looseObject({ ok: boolean2() });
 function envelopeJsonSchema() {
   return toJSONSchema(envelopeShape, { io: "output" });
@@ -58281,8 +58295,14 @@ var model = string2().regex(MODEL_PATTERN).describe("Provider model id or alias.
 var access2 = _enum([...ACCESS_MODES]);
 var delivery = _enum([...DELIVERIES]);
 function toolResult(value, isError = false) {
+  const job = value.job;
+  if (job) {
+    const summary = `${job.model} | ${job.effort} | ${job.requestPreview || "Request preview unavailable"}`;
+    value = { summary, ...value };
+  }
+  const text2 = JSON.stringify(value, null, 2).replace(/^\{\n  "summary":/, '{"summary":');
   return {
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text", text: text2 }],
     structuredContent: value,
     ...isError ? { isError: true } : {}
   };
@@ -58427,7 +58447,7 @@ ${summary.input}` : "The input is too long to show and is not part of what you a
         params: {
           progressToken: extra._meta.progressToken,
           progress: event.seq,
-          message: `${event.type}: ${JSON.stringify(event.payload).slice(0, 300)}`
+          message: `${event.type}: ${Array.from(JSON.stringify(event.payload)).slice(0, 300).join("")}`
         }
       });
     }
@@ -58487,9 +58507,10 @@ ${summary.input}` : "The input is too long to show and is not part of what you a
     outputSchema: eventsResultShape,
     annotations: { readOnlyHint: true, openWorldHint: false }
   }, asTool(async ({ jobId: jobId2, after, limit }) => {
-    await requireVisibleJob(jobId2);
+    const job = await requireVisibleJob(jobId2);
     return toolResult({
       ok: true,
+      job: { jobId: job.id, model: job.model, effort: job.effort, requestPreview: job.requestPreview },
       events: service.events(jobId2, { after, limit })
     });
   }));

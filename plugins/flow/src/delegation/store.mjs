@@ -3,7 +3,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, rename
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { ACTIVE_STATES, DelegationError, TERMINAL_STATES } from './contracts.mjs'
+import { ACTIVE_STATES, DelegationError, requestPreview, TERMINAL_STATES } from './contracts.mjs'
 
 const SCHEMA_VERSION = 7
 // Terminal jobs are operational history, not an archive. Fourteen days outlives any
@@ -346,13 +346,17 @@ export class JobStore {
         request.maxTurns ?? null, request.maxBudgetUsd ?? null, request.prompt,
         json(request.outputSchema), request.baseSha || null, request.headSha || null,
         request.nativeThreadId || null, request.elicitation ? 1 : 0, at, at, at)
-    this.appendEvent(id, 'job.queued', { status: 'queued' })
+    this.appendEvent(id, 'job.queued', { status: 'queued', requestPreview: requestPreview(request.requestPreview ?? request.prompt) })
     return this.getJob(id)
   }
 
   getJob(id) {
     const job = decode(this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id))
     if (!job) return null
+    // The first journal event retains the bounded request excerpt without retaining the
+    // full prompt or changing the database schema. Older jobs have no excerpt.
+    job.requestPreview = parse(this.db.prepare("SELECT payload_json FROM events WHERE job_id=? AND seq=1 AND type='job.queued'")
+      .get(id)?.payload_json)?.requestPreview ?? null
     // Computed from the journal on every read so a "succeeded" job whose shell was broken
     // (every command failed, provider answered from thin air) stays detectable by the host.
     job.commandFailures = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM events
@@ -498,7 +502,7 @@ export class JobStore {
       if (!current) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
       if (TERMINAL_STATES.includes(current.status)) {
         this.db.exec('COMMIT')
-        return current
+        return this.getJob(id)
       }
       if (current.status === 'quarantined') {
         throw new DelegationError('JOB_QUARANTINED', 'A quarantined job can finish only after Flow proves its provider processes stopped.')
@@ -531,7 +535,7 @@ export class JobStore {
       if (!current) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
       if (TERMINAL_STATES.includes(current.status) || current.status === 'quarantined') {
         this.db.exec('COMMIT')
-        return current
+        return this.getJob(id)
       }
       this.db.prepare(`UPDATE jobs SET status='quarantined', quarantine_resume_status=?,
         output=?, structured_json=?, usage_json=?, error_json=?, prompt=NULL,
@@ -563,7 +567,7 @@ export class JobStore {
       if (!current) throw new DelegationError('JOB_NOT_FOUND', 'No delegation job has that ID.')
       if (current.status !== 'quarantined') {
         this.db.exec('COMMIT')
-        return current
+        return this.getJob(id)
       }
       resumeStatus = force || current.quarantineResumeStatus
       if (!TERMINAL_STATES.includes(resumeStatus) && resumeStatus !== 'reconciling') {
@@ -630,7 +634,7 @@ export class JobStore {
       }
       if (TERMINAL_STATES.includes(job.status)) {
         this.db.exec('COMMIT')
-        return job
+        return this.getJob(jobId)
       }
       if (job.status === 'queued') {
         const at = now()
@@ -688,7 +692,7 @@ export class JobStore {
   // Newest first, one route only: the resources a host lists are the jobs it may read.
   listJobs({ host, target, limit = 50 } = {}) {
     return this.db.prepare('SELECT * FROM jobs WHERE host = ? AND target = ? ORDER BY created_at DESC, id LIMIT ?')
-      .all(host, target, Math.max(1, Math.min(limit, 200))).map(decode)
+      .all(host, target, Math.max(1, Math.min(limit, 200))).map((row) => this.getJob(row.id))
   }
 
   pendingControls(jobId) {

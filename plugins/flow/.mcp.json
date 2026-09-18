@@ -3,7 +3,7 @@
     "command": "flow-delegate",
     "args": [
       "--flow-version",
-      "0.40.0",
+      "0.41.0",
       "mcp",
       "--host",
       "codex"

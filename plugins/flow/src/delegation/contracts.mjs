@@ -217,6 +217,13 @@ function publicQuarantine(job) {
   }
 }
 
+// Keep a small, single-line excerpt after the provider clears the full prompt.
+export function requestPreview(prompt) {
+  const text = String(prompt || '').replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim()
+  const chars = Array.from(text)
+  return chars.length > 240 ? `${chars.slice(0, 237).join('')}...` : text
+}
+
 export function resultEnvelope(job) {
   return {
     jobId: job.id,
@@ -227,6 +234,7 @@ export function resultEnvelope(job) {
     access: job.access,
     model: job.model,
     effort: job.effort,
+    requestPreview: job.requestPreview ?? null,
     elicitation: Boolean(job.elicitation),
     limits: {
       timeBudgetSeconds: job.timeBudgetSeconds,

@@ -81,7 +81,10 @@ array. Anything else is `BAD_SCHEMA`, as is a schema over 64 KiB.
 ## Reading the envelope
 
 Every tool answers `{ ok, job?, error? }`, and `delegation_events` answers
-`{ ok, events?, error? }`. A rejected request is `{ ok: false, error }`; an attached job that
+`{ ok, job?, events?, error? }`, with compact job context on every event page. Job responses also
+include a `summary` on the first line of the JSON text for tool previews. The job's `requestPreview`
+is a single-line excerpt of at most 240 Unicode code points; older jobs return null.
+A rejected request is `{ ok: false, error }`; an attached job that
 ended badly is `{ ok: false, job }` with the whole envelope still in it.
 
 `status` is an active state (`queued`, `starting`, `running`, `reconciling`), or `quarantined`

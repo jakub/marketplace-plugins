@@ -14,8 +14,16 @@ const access = z.enum([...ACCESS_MODES])
 const delivery = z.enum([...DELIVERIES])
 
 function toolResult(value, isError = false) {
+  const job = value.job
+  if (job) {
+    const summary = `${job.model} | ${job.effort} | ${job.requestPreview || 'Request preview unavailable'}`
+    value = { summary, ...value }
+  }
+  // Keep JSON parseable for text-only clients, but put the summary on the opening
+  // line: clients that show only that line otherwise display a bare opening brace.
+  const text = JSON.stringify(value, null, 2).replace(/^\{\n  "summary":/, '{"summary":')
   return {
-    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    content: [{ type: 'text', text }],
     structuredContent: value,
     ...(isError ? { isError: true } : {}),
   }
@@ -161,7 +169,7 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
         params: {
           progressToken: extra._meta.progressToken,
           progress: event.seq,
-          message: `${event.type}: ${JSON.stringify(event.payload).slice(0, 300)}`,
+          message: `${event.type}: ${Array.from(JSON.stringify(event.payload)).slice(0, 300).join('')}`,
         },
       })
     },
@@ -225,9 +233,10 @@ export async function startMcp({ host, depth, stateDir, entryPath, projectDir })
     outputSchema: eventsResultShape,
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, asTool(async ({ jobId, after, limit }) => {
-    await requireVisibleJob(jobId)
+    const job = await requireVisibleJob(jobId)
     return toolResult({
       ok: true,
+      job: { jobId: job.id, model: job.model, effort: job.effort, requestPreview: job.requestPreview },
       events: service.events(jobId, { after, limit }),
     })
   }))

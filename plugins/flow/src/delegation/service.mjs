@@ -194,6 +194,7 @@ export class DelegationService {
         cwd,
         workspaceKey,
         prompt: review.prompt,
+        requestPreview: normalized.prompt.trim() || (normalized.mode === 'adversarial-review' ? `Review ${review.baseSha}...${review.headSha}` : ''),
         outputSchema,
         baseSha: review.baseSha,
         headSha: review.headSha,

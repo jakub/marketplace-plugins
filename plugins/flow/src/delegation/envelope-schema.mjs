@@ -30,6 +30,7 @@ export const envelopeShape = z.object({
   access: z.enum(ACCESS_MODES),
   model: z.string(),
   effort: z.enum(EFFORTS),
+  requestPreview: z.string().nullable(),
   elicitation: z.boolean().describe('Whether an approval request in this job is put to the human through the MCP session, or denied outright'),
   limits: z.object({
     timeBudgetSeconds: z.number().int(),
@@ -61,8 +62,10 @@ export const eventShape = z.object({
 // content too ({ ok: false, error } from the tool wrapper, { ok: false, job } for an attached
 // job that ended badly), and a client that validates every structuredContent against the
 // declared schema, as MCP Client 1.30.0 does, must find those valid as well.
-export const jobResultShape = { ok: z.boolean(), job: envelopeShape.optional(), error: publicErrorShape.optional() }
-export const eventsResultShape = { ok: z.boolean(), events: z.array(eventShape).optional(), error: publicErrorShape.optional() }
+export const jobResultShape = { summary: z.string().optional(), ok: z.boolean(), job: envelopeShape.optional(), error: publicErrorShape.optional() }
+export const eventsResultShape = { summary: z.string().optional(), ok: z.boolean(), job: envelopeShape.pick({
+  jobId: true, model: true, effort: true, requestPreview: true,
+}).optional(), events: z.array(eventShape).optional(), error: publicErrorShape.optional() }
 // Doctor answers with a check tree whose keys vary by host, so its declared shape is loose.
 export const doctorResultShape = z.looseObject({ ok: z.boolean() })
 

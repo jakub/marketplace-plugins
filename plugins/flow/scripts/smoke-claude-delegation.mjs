@@ -360,6 +360,7 @@ process.exit(child.status ?? 1)
   assert.equal(happy.host, 'codex')
   assert.equal(happy.target, 'claude')
   assert.equal(happy.output, 'OK from fake Claude')
+  assert.equal(happy.requestPreview, 'Reply with OK')
   assert.ok(happy.threadId && happy.turnId)
   // A Claude-target job carries the charter's seat half once, ahead of the delegated-seat block.
   const appended = readFileSync(appendOut, 'utf8')

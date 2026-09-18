@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { AppServerClient } from '../src/delegation/app-server.mjs'
 import { captureProcessDescendants, providerScopeName, providerScopeRunning, scopedProviderCommand, signalProviderScope } from '../src/delegation/containment.mjs'
 import { JobStore, processStartToken } from '../src/delegation/store.mjs'
-import { assertRoute, capabilitiesForHost, capabilityDrift, ERROR_KINDS, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES } from '../src/delegation/contracts.mjs'
+import { assertRoute, capabilitiesForHost, capabilityDrift, ERROR_KINDS, HOST_CAPABILITIES_SCHEMA_VERSION, HOST_CAPABILITY_ASSURANCES, requestPreview } from '../src/delegation/contracts.mjs'
 import { seatPayload } from '../lib/charter-payload.mjs'
 import { McpStdioClient } from './mcp-stdio-client.mjs'
 
@@ -298,11 +298,15 @@ const openStoreInChild = (stateDir, startAt) => new Promise((resolve) => {
 })
 
 try {
+  assert.equal(requestPreview('  Inspect\n\tthis\u0000 request  '), 'Inspect this request')
+  assert.equal(requestPreview('😀'.repeat(241)), `${'😀'.repeat(237)}...`)
+  assert.equal(requestPreview(''), '')
   console.log('task and typed output')
   const happy = await startJob({ prompt: 'Reply with OK' }, { stateDir: state('happy') })
   assert.equal(happy.status, 'succeeded', JSON.stringify(happy))
   assert.equal(happy.output, 'OK from fake Codex')
   assert.equal(happy.model, 'gpt-5.6-luna')
+  assert.equal(happy.requestPreview, 'Reply with OK')
   assert.ok(happy.threadId && happy.turnId)
   assert.equal(happy.commandFailures, 0)
   const happyEvents = await eventsOf(happy.jobId, { after: 0, limit: 1000 }, { stateDir: state('happy') })
@@ -310,6 +314,16 @@ try {
   const happyDb = new DatabaseSync(join(state('happy'), 'jobs.sqlite3'), { readOnly: true })
   assert.equal(happyDb.prepare('SELECT prompt FROM jobs WHERE id=?').get(happy.jobId).prompt, null)
   happyDb.close()
+  assert.equal((await cancelJob(happy.jobId, { stateDir: state('happy') })).requestPreview, 'Reply with OK')
+  // A later empty page still identifies the request after the full prompt was cleared.
+  const previewPage = await call('delegation_events', { jobId: happy.jobId, after: 99999, limit: 1 }, { stateDir: state('happy') })
+  assert.deepEqual(previewPage.structuredContent.events, [])
+  assert.deepEqual(previewPage.structuredContent.job, {
+    jobId: happy.jobId, model: happy.model, effort: 'low', requestPreview: 'Reply with OK',
+  })
+  const previewText = previewPage.content[0].text
+  assert.deepEqual(JSON.parse(previewText), previewPage.structuredContent)
+  assert.match(previewText.split('\n')[0].slice(0, 83), /gpt-5\.6-luna \| low \| Reply with OK/)
   // A succeeded turn whose commands failed must say so in the envelope: this is the only
   // signal separating a real green from a provider answering with a broken shell.
   const brokenShell = await startJob({ prompt: 'Run commands' }, { mode: 'command-failure', stateDir: state('command-failure') })
@@ -394,7 +408,7 @@ try {
 
   console.log('immutable structured review')
   const reviewState = state('review')
-  const review = await startJob({ mode: 'adversarial-review', base: 'HEAD~1', prompt: '' }, { mode: 'review', stateDir: reviewState })
+  const review = await startJob({ mode: 'adversarial-review', base: 'HEAD~1', prompt: ' \n ' }, { mode: 'review', stateDir: reviewState })
   assert.equal(review.status, 'succeeded')
   assert.equal(review.findings[0].title, 'Race')
   const db = new DatabaseSync(join(reviewState, 'jobs.sqlite3'), { readOnly: true })
@@ -402,6 +416,7 @@ try {
   db.close()
   assert.match(row.base_sha, /^[0-9a-f]{40}$/)
   assert.match(row.head_sha, /^[0-9a-f]{40}$/)
+  assert.equal(review.requestPreview, `Review ${row.base_sha}...${row.head_sha}`)
   assert.ok(JSON.parse(row.output_schema_json).properties.findings)
 
   console.log('host capability inventory')
@@ -678,6 +693,7 @@ try {
   const continued = await continueJob(happy.jobId, { prompt: 'Continue' }, { stateDir: state('happy') })
   assert.equal(continued.status, 'succeeded')
   assert.equal(continued.threadId, happy.threadId)
+  assert.equal(continued.requestPreview, 'Continue')
 
   console.log('duplicate worker claim')
   const duplicateState = state('duplicate-worker')
@@ -1412,6 +1428,7 @@ try {
   const linkedId = linkedWrite.structuredContent.job.id ?? linkedWrite.structuredContent.job.jobId
   const jobsRead = JSON.parse((await client.readResource('flow://jobs')).contents[0].text)
   assert.ok(jobsRead.jobs.some((job) => job.jobId === linkedId), 'the jobs resource does not list the job just run')
+  assert.equal(jobsRead.jobs.find((job) => job.jobId === linkedId).requestPreview, 'linked worktree')
   const jobRead = await client.readResource(`flow://jobs/${linkedId}`)
   assert.equal(jobRead.contents[0].mimeType, 'application/json')
   assert.equal(JSON.parse(jobRead.contents[0].text).status, 'succeeded')

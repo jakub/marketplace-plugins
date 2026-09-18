@@ -143,7 +143,9 @@ three tables.
 
 The database and state directory are owner-only. Prompts live in the job record, never in
 command-line arguments or process listings, and each worker clears the prompt at its acceptance
-boundary.
+boundary. The initial journal event retains a single-line request excerpt of at most 240 Unicode
+code points for tool previews. It comes from the caller's request, before review instructions are
+added, and expires with the job. Jobs created before this change have no excerpt.
 
 ## State and write safety
 
