@@ -56,6 +56,9 @@ linked worktree can edit but not commit: the worktree's object store and refs li
 repository's git directory outside the grant, and network is off. The caller commits what the
 job edited, staging only that job's paths. Nothing denies `git checkout .` or `git clean -f`
 inside the grant, so never point a writer at a worktree holding another seat's uncommitted work.
+Either access level sees the workspace, its git metadata, a private scratch directory and the
+system paths the provider itself needs, and nothing else: not `/tmp`, not your home, not a file
+another seat dropped. Material a job needs that is not in the repository travels inline in `prompt`.
 
 `delivery` is `attached` or `detached`. Attached blocks the tool call, streams progress, and
 returns the finished envelope. Detached returns a job id straight away; poll `delegation_status`
