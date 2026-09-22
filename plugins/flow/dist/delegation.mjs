@@ -33,9 +33,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// deps/node_modules/ajv/dist/compile/codegen/code.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
-  "deps/node_modules/ajv/dist/compile/codegen/code.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/codegen/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
@@ -187,9 +187,9 @@ var require_code = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/codegen/scope.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS({
-  "deps/node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = void 0;
@@ -332,9 +332,9 @@ var require_scope = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/codegen/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS({
-  "deps/node_modules/ajv/dist/compile/codegen/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/codegen/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = void 0;
@@ -1052,9 +1052,9 @@ var require_codegen = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/util.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS({
-  "deps/node_modules/ajv/dist/compile/util.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/util.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = void 0;
@@ -1219,9 +1219,9 @@ var require_util = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/names.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS({
-  "deps/node_modules/ajv/dist/compile/names.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/names.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -1258,9 +1258,9 @@ var require_names = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/errors.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS({
-  "deps/node_modules/ajv/dist/compile/errors.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = void 0;
@@ -1380,9 +1380,9 @@ var require_errors = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/validate/boolSchema.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS({
-  "deps/node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = void 0;
@@ -1431,9 +1431,9 @@ var require_boolSchema = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/rules.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS({
-  "deps/node_modules/ajv/dist/compile/rules.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/rules.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getRules = exports.isJSONType = void 0;
@@ -1462,9 +1462,9 @@ var require_rules = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/validate/applicability.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS({
-  "deps/node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = void 0;
@@ -1485,9 +1485,9 @@ var require_applicability = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/validate/dataType.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS({
-  "deps/node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = void 0;
@@ -1669,9 +1669,9 @@ var require_dataType = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/validate/defaults.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS({
-  "deps/node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.assignDefaults = void 0;
@@ -1706,9 +1706,9 @@ var require_defaults = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/code.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/code.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = void 0;
@@ -1839,9 +1839,9 @@ var require_code2 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/validate/keyword.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS({
-  "deps/node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = void 0;
@@ -1957,9 +1957,9 @@ var require_keyword = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/validate/subschema.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS({
-  "deps/node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = void 0;
@@ -2040,9 +2040,9 @@ var require_subschema = __commonJS({
   }
 });
 
-// deps/node_modules/fast-deep-equal/index.js
+// ../../../../plugins/flow/deps/node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS({
-  "deps/node_modules/fast-deep-equal/index.js"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/fast-deep-equal/index.js"(exports, module) {
     "use strict";
     module.exports = function equal(a, b) {
       if (a === b) return true;
@@ -2075,9 +2075,9 @@ var require_fast_deep_equal = __commonJS({
   }
 });
 
-// deps/node_modules/json-schema-traverse/index.js
+// ../../../../plugins/flow/deps/node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS({
-  "deps/node_modules/json-schema-traverse/index.js"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/json-schema-traverse/index.js"(exports, module) {
     "use strict";
     var traverse = module.exports = function(schema, opts, cb) {
       if (typeof opts == "function") {
@@ -2163,9 +2163,9 @@ var require_json_schema_traverse = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/resolve.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS({
-  "deps/node_modules/ajv/dist/compile/resolve.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/resolve.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = void 0;
@@ -2319,9 +2319,9 @@ var require_resolve = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/validate/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS({
-  "deps/node_modules/ajv/dist/compile/validate/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/validate/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getData = exports.KeywordCxt = exports.validateFunctionCode = void 0;
@@ -2827,9 +2827,9 @@ var require_validate = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/runtime/validation_error.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS({
-  "deps/node_modules/ajv/dist/runtime/validation_error.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/runtime/validation_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var ValidationError = class extends Error {
@@ -2843,9 +2843,9 @@ var require_validation_error = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/ref_error.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS({
-  "deps/node_modules/ajv/dist/compile/ref_error.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/ref_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var resolve_1 = require_resolve();
@@ -2860,9 +2860,9 @@ var require_ref_error = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/compile/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS({
-  "deps/node_modules/ajv/dist/compile/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/compile/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = void 0;
@@ -3084,9 +3084,9 @@ var require_compile = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/data.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS({
-  "deps/node_modules/ajv/dist/refs/data.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/data.json"(exports, module) {
     module.exports = {
       $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
       description: "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -3103,9 +3103,9 @@ var require_data = __commonJS({
   }
 });
 
-// deps/node_modules/fast-uri/lib/utils.js
+// ../../../../plugins/flow/deps/node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS({
-  "deps/node_modules/fast-uri/lib/utils.js"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/fast-uri/lib/utils.js"(exports, module) {
     "use strict";
     var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
     var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -3416,9 +3416,9 @@ var require_utils = __commonJS({
   }
 });
 
-// deps/node_modules/fast-uri/lib/schemes.js
+// ../../../../plugins/flow/deps/node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS({
-  "deps/node_modules/fast-uri/lib/schemes.js"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/fast-uri/lib/schemes.js"(exports, module) {
     "use strict";
     var { isUUID } = require_utils();
     var URN_REG = /([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-.:;=@]|%[\da-f]{2})+)/iu;
@@ -3626,9 +3626,9 @@ var require_schemes = __commonJS({
   }
 });
 
-// deps/node_modules/fast-uri/index.js
+// ../../../../plugins/flow/deps/node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS({
-  "deps/node_modules/fast-uri/index.js"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -3938,9 +3938,9 @@ var require_fast_uri = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/runtime/uri.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS({
-  "deps/node_modules/ajv/dist/runtime/uri.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/runtime/uri.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var uri = require_fast_uri();
@@ -3949,9 +3949,9 @@ var require_uri = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/core.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/core.js
 var require_core = __commonJS({
-  "deps/node_modules/ajv/dist/core.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/core.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = void 0;
@@ -4560,9 +4560,9 @@ var require_core = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/core/id.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var def = {
@@ -4575,9 +4575,9 @@ var require_id = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/core/ref.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.callRef = exports.getValidate = void 0;
@@ -4697,9 +4697,9 @@ var require_ref = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/core/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var id_1 = require_id();
@@ -4718,9 +4718,9 @@ var require_core2 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -4750,9 +4750,9 @@ var require_limitNumber = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -4778,9 +4778,9 @@ var require_multipleOf = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/runtime/ucs2length.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS({
-  "deps/node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     function ucs2length(str) {
@@ -4804,9 +4804,9 @@ var require_ucs2length = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -4836,9 +4836,9 @@ var require_limitLength = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/pattern.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -4873,9 +4873,9 @@ var require_pattern = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -4902,9 +4902,9 @@ var require_limitProperties = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/required.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -4984,9 +4984,9 @@ var require_required = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5013,9 +5013,9 @@ var require_limitItems = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/runtime/equal.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS({
-  "deps/node_modules/ajv/dist/runtime/equal.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/runtime/equal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var equal = require_fast_deep_equal();
@@ -5024,9 +5024,9 @@ var require_equal = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dataType_1 = require_dataType();
@@ -5091,9 +5091,9 @@ var require_uniqueItems = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/const.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5120,9 +5120,9 @@ var require_const = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/enum.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5169,9 +5169,9 @@ var require_enum = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var limitNumber_1 = require_limitNumber();
@@ -5207,9 +5207,9 @@ var require_validation = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateAdditionalItems = void 0;
@@ -5260,9 +5260,9 @@ var require_additionalItems = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/items.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateTuple = void 0;
@@ -5317,9 +5317,9 @@ var require_items = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var items_1 = require_items();
@@ -5334,9 +5334,9 @@ var require_prefixItems = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5369,9 +5369,9 @@ var require_items2020 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/contains.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5463,9 +5463,9 @@ var require_contains = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = void 0;
@@ -5557,9 +5557,9 @@ var require_dependencies = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5600,9 +5600,9 @@ var require_propertyNames = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5706,9 +5706,9 @@ var require_additionalProperties = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/properties.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var validate_1 = require_validate();
@@ -5764,9 +5764,9 @@ var require_properties = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5838,9 +5838,9 @@ var require_patternProperties = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/not.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -5869,9 +5869,9 @@ var require_not = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5886,9 +5886,9 @@ var require_anyOf = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5944,9 +5944,9 @@ var require_oneOf = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -5971,9 +5971,9 @@ var require_allOf = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/if.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6040,9 +6040,9 @@ var require_if = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6058,9 +6058,9 @@ var require_thenElse = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var additionalItems_1 = require_additionalItems();
@@ -6106,9 +6106,9 @@ var require_applicator = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/format/format.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6196,9 +6196,9 @@ var require_format = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/format/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var format_1 = require_format();
@@ -6207,9 +6207,9 @@ var require_format2 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/metadata.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.contentVocabulary = exports.metadataVocabulary = void 0;
@@ -6230,9 +6230,9 @@ var require_metadata = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/draft7.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -6252,9 +6252,9 @@ var require_draft7 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/discriminator/types.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.DiscrError = void 0;
@@ -6266,9 +6266,9 @@ var require_types = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/discriminator/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6371,9 +6371,9 @@ var require_discriminator = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-draft-07.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
     module.exports = {
       $schema: "http://json-schema.org/draft-07/schema#",
       $id: "http://json-schema.org/draft-07/schema#",
@@ -6528,9 +6528,9 @@ var require_json_schema_draft_07 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/ajv.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS({
-  "deps/node_modules/ajv/dist/ajv.js"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/ajv.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = void 0;
@@ -6598,9 +6598,9 @@ var require_ajv = __commonJS({
   }
 });
 
-// deps/node_modules/ajv-formats/dist/formats.js
+// ../../../../plugins/flow/deps/node_modules/ajv-formats/dist/formats.js
 var require_formats = __commonJS({
-  "deps/node_modules/ajv-formats/dist/formats.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv-formats/dist/formats.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatNames = exports.fastFormats = exports.fullFormats = void 0;
@@ -6801,9 +6801,9 @@ var require_formats = __commonJS({
   }
 });
 
-// deps/node_modules/ajv-formats/dist/limit.js
+// ../../../../plugins/flow/deps/node_modules/ajv-formats/dist/limit.js
 var require_limit = __commonJS({
-  "deps/node_modules/ajv-formats/dist/limit.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv-formats/dist/limit.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatLimitDefinition = void 0;
@@ -6873,9 +6873,9 @@ var require_limit = __commonJS({
   }
 });
 
-// deps/node_modules/ajv-formats/dist/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv-formats/dist/index.js
 var require_dist = __commonJS({
-  "deps/node_modules/ajv-formats/dist/index.js"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv-formats/dist/index.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var formats_1 = require_formats();
@@ -6915,9 +6915,9 @@ var require_dist = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/dynamic/dynamicAnchor.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/dynamicAnchor.js
 var require_dynamicAnchor = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/dynamic/dynamicAnchor.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/dynamicAnchor.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.dynamicAnchor = void 0;
@@ -6950,9 +6950,9 @@ var require_dynamicAnchor = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/dynamic/dynamicRef.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/dynamicRef.js
 var require_dynamicRef = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/dynamic/dynamicRef.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/dynamicRef.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.dynamicRef = void 0;
@@ -6996,9 +6996,9 @@ var require_dynamicRef = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/dynamic/recursiveAnchor.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/recursiveAnchor.js
 var require_recursiveAnchor = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/dynamic/recursiveAnchor.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/recursiveAnchor.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dynamicAnchor_1 = require_dynamicAnchor();
@@ -7017,9 +7017,9 @@ var require_recursiveAnchor = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/dynamic/recursiveRef.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/recursiveRef.js
 var require_recursiveRef = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/dynamic/recursiveRef.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/recursiveRef.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dynamicRef_1 = require_dynamicRef();
@@ -7032,9 +7032,9 @@ var require_recursiveRef = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/dynamic/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/index.js
 var require_dynamic = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/dynamic/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/dynamic/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dynamicAnchor_1 = require_dynamicAnchor();
@@ -7046,9 +7046,9 @@ var require_dynamic = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/dependentRequired.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/dependentRequired.js
 var require_dependentRequired = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/dependentRequired.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/dependentRequired.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dependencies_1 = require_dependencies();
@@ -7063,9 +7063,9 @@ var require_dependentRequired = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/applicator/dependentSchemas.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/dependentSchemas.js
 var require_dependentSchemas = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/applicator/dependentSchemas.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/applicator/dependentSchemas.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dependencies_1 = require_dependencies();
@@ -7079,9 +7079,9 @@ var require_dependentSchemas = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/validation/limitContains.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitContains.js
 var require_limitContains = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/validation/limitContains.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/validation/limitContains.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -7099,9 +7099,9 @@ var require_limitContains = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/next.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/next.js
 var require_next = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/next.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/next.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dependentRequired_1 = require_dependentRequired();
@@ -7112,9 +7112,9 @@ var require_next = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedProperties.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedProperties.js
 var require_unevaluatedProperties = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedProperties.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -7178,9 +7178,9 @@ var require_unevaluatedProperties = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedItems.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedItems.js
 var require_unevaluatedItems = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedItems.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/unevaluated/unevaluatedItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -7222,9 +7222,9 @@ var require_unevaluatedItems = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/unevaluated/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/unevaluated/index.js
 var require_unevaluated = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/unevaluated/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/unevaluated/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var unevaluatedProperties_1 = require_unevaluatedProperties();
@@ -7234,9 +7234,9 @@ var require_unevaluated = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/vocabularies/draft2020.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/draft2020.js
 var require_draft2020 = __commonJS({
-  "deps/node_modules/ajv/dist/vocabularies/draft2020.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/vocabularies/draft2020.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -7262,9 +7262,9 @@ var require_draft2020 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/schema.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/schema.json
 var require_schema = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/schema.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/schema.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/schema",
@@ -7322,9 +7322,9 @@ var require_schema = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/applicator.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/applicator.json
 var require_applicator2 = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/applicator.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/applicator.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/applicator",
@@ -7375,9 +7375,9 @@ var require_applicator2 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/unevaluated.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/unevaluated.json
 var require_unevaluated2 = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/unevaluated.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/unevaluated.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/unevaluated",
@@ -7395,9 +7395,9 @@ var require_unevaluated2 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/content.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/content.json
 var require_content = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/content.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/content.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/content",
@@ -7416,9 +7416,9 @@ var require_content = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/core.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/core.json
 var require_core3 = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/core.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/core.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/core",
@@ -7472,9 +7472,9 @@ var require_core3 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/format-annotation.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/format-annotation.json
 var require_format_annotation = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/format-annotation.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/format-annotation.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/format-annotation",
@@ -7491,9 +7491,9 @@ var require_format_annotation = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/meta-data.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/meta-data.json
 var require_meta_data = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/meta-data.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/meta-data.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/meta-data",
@@ -7532,9 +7532,9 @@ var require_meta_data = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/validation.json
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/validation.json
 var require_validation2 = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/validation.json"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/meta/validation.json"(exports, module) {
     module.exports = {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       $id: "https://json-schema.org/draft/2020-12/meta/validation",
@@ -7627,9 +7627,9 @@ var require_validation2 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/refs/json-schema-2020-12/index.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/index.js
 var require_json_schema_2020_12 = __commonJS({
-  "deps/node_modules/ajv/dist/refs/json-schema-2020-12/index.js"(exports) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/refs/json-schema-2020-12/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var metaSchema = require_schema();
@@ -7662,9 +7662,9 @@ var require_json_schema_2020_12 = __commonJS({
   }
 });
 
-// deps/node_modules/ajv/dist/2020.js
+// ../../../../plugins/flow/deps/node_modules/ajv/dist/2020.js
 var require__ = __commonJS({
-  "deps/node_modules/ajv/dist/2020.js"(exports, module) {
+  "../../../../plugins/flow/deps/node_modules/ajv/dist/2020.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv2020 = void 0;
@@ -7742,7 +7742,7 @@ var require__ = __commonJS({
 // src/delegation/main.mjs
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
-// deps/node_modules/zod/v3/helpers/util.js
+// ../../../../plugins/flow/deps/node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
   util2.assertEqual = (_3) => {
@@ -7876,7 +7876,7 @@ var getParsedType = (data) => {
   }
 };
 
-// deps/node_modules/zod/v3/ZodError.js
+// ../../../../plugins/flow/deps/node_modules/zod/v3/ZodError.js
 var ZodIssueCode = util.arrayToEnum([
   "invalid_type",
   "invalid_literal",
@@ -7990,7 +7990,7 @@ ZodError.create = (issues) => {
   return error2;
 };
 
-// deps/node_modules/zod/v3/locales/en.js
+// ../../../../plugins/flow/deps/node_modules/zod/v3/locales/en.js
 var errorMap = (issue2, _ctx) => {
   let message;
   switch (issue2.code) {
@@ -8093,13 +8093,13 @@ var errorMap = (issue2, _ctx) => {
 };
 var en_default = errorMap;
 
-// deps/node_modules/zod/v3/errors.js
+// ../../../../plugins/flow/deps/node_modules/zod/v3/errors.js
 var overrideErrorMap = en_default;
 function getErrorMap() {
   return overrideErrorMap;
 }
 
-// deps/node_modules/zod/v3/helpers/parseUtil.js
+// ../../../../plugins/flow/deps/node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
   const { data, path, errorMaps, issueData } = params;
   const fullPath = [...path, ...issueData.path || []];
@@ -8208,14 +8208,14 @@ var isDirty = (x) => x.status === "dirty";
 var isValid = (x) => x.status === "valid";
 var isAsync = (x) => typeof Promise !== "undefined" && x instanceof Promise;
 
-// deps/node_modules/zod/v3/helpers/errorUtil.js
+// ../../../../plugins/flow/deps/node_modules/zod/v3/helpers/errorUtil.js
 var errorUtil;
 (function(errorUtil2) {
   errorUtil2.errToObj = (message) => typeof message === "string" ? { message } : message || {};
   errorUtil2.toString = (message) => typeof message === "string" ? message : message?.message;
 })(errorUtil || (errorUtil = {}));
 
-// deps/node_modules/zod/v3/types.js
+// ../../../../plugins/flow/deps/node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
   constructor(parent, value, path, key) {
     this._cachedPath = [];
@@ -11618,7 +11618,7 @@ var nullableType = ZodNullable.create;
 var preprocessType = ZodEffects.createWithPreprocess;
 var pipelineType = ZodPipeline.create;
 
-// deps/node_modules/zod/v4/core/core.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/core.js
 var _a;
 // @__NO_SIDE_EFFECTS__
 function $constructor(name, initializer3, params) {
@@ -11691,7 +11691,7 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// deps/node_modules/zod/v4/core/util.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -12387,7 +12387,7 @@ var Class = class {
   }
 };
 
-// deps/node_modules/zod/v4/core/errors.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/errors.js
 var initializer = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -12456,7 +12456,7 @@ function formatError(error2, mapper = (issue2) => issue2.message) {
   return fieldErrors;
 }
 
-// deps/node_modules/zod/v4/core/parse.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/parse.js
 var _parse = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -12536,7 +12536,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync(_Err)(schema, value, _ctx);
 };
 
-// deps/node_modules/zod/v4/core/regexes.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$/;
@@ -12594,7 +12594,7 @@ var _null = /^null$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// deps/node_modules/zod/v4/core/checks.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a4;
   inst._zod ?? (inst._zod = {});
@@ -12984,7 +12984,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// deps/node_modules/zod/v4/core/doc.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args = []) {
     this.content = [];
@@ -13020,14 +13020,14 @@ var Doc = class {
   }
 };
 
-// deps/node_modules/zod/v4/core/versions.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 4,
   patch: 3
 };
 
-// deps/node_modules/zod/v4/core/schemas.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a4;
   inst ?? (inst = {});
@@ -14507,7 +14507,7 @@ function handleRefineResult(result, payload, input, inst) {
   }
 }
 
-// deps/node_modules/zod/v4/locales/en.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/locales/en.js
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -14620,7 +14620,7 @@ function en_default2() {
   };
 }
 
-// deps/node_modules/zod/v4/core/registries.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/registries.js
 var _a2;
 var $ZodRegistry = class {
   constructor() {
@@ -14668,7 +14668,7 @@ function registry() {
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
 
-// deps/node_modules/zod/v4/core/api.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string(Class2, params) {
   return new Class2({
@@ -15196,7 +15196,7 @@ function _check(fn2, params) {
   return ch2;
 }
 
-// deps/node_modules/zod/v4/core/to-json-schema.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -15555,7 +15555,7 @@ var createStandardJSONSchemaMethod = (schema, io2, processors = {}) => (params) 
   return finalize(ctx, schema);
 };
 
-// deps/node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -16099,7 +16099,7 @@ function toJSONSchema(input, params) {
   return finalize(ctx, input);
 }
 
-// deps/node_modules/zod/v4/mini/schemas.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/mini/schemas.js
 var ZodMiniType = /* @__PURE__ */ $constructor("ZodMiniType", (inst, def) => {
   if (!inst._zod)
     throw new Error("Uninitialized schema in ZodMiniType.");
@@ -16145,7 +16145,7 @@ function object(shape, params) {
   return new ZodMiniObject(def);
 }
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
 function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
@@ -16305,7 +16305,7 @@ function getLiteralValue(schema) {
   return void 0;
 }
 
-// deps/node_modules/zod/v4/classic/iso.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/classic/iso.js
 var iso_exports2 = {};
 __export(iso_exports2, {
   ZodISODate: () => ZodISODate,
@@ -16346,7 +16346,7 @@ function duration2(params) {
   return _isoDuration(ZodISODuration, params);
 }
 
-// deps/node_modules/zod/v4/classic/errors.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/classic/errors.js
 var initializer2 = (inst, issues) => {
   $ZodError.init(inst, issues);
   inst.name = "ZodError";
@@ -16385,7 +16385,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, {
   Parent: Error
 });
 
-// deps/node_modules/zod/v4/classic/parse.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse3 = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -16399,7 +16399,7 @@ var safeDecode2 = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync2 = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync2 = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// deps/node_modules/zod/v4/classic/schemas.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/classic/schemas.js
 var _installedGroups = /* @__PURE__ */ new WeakMap();
 function _installLazyMethods(inst, group, methods) {
   const proto = Object.getPrototypeOf(inst);
@@ -17241,10 +17241,10 @@ function preprocess(fn2, schema) {
   });
 }
 
-// deps/node_modules/zod/v4/classic/external.js
+// ../../../../plugins/flow/deps/node_modules/zod/v4/classic/external.js
 config(en_default2());
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
@@ -18775,12 +18775,12 @@ var UrlElicitationRequiredError = class extends McpError {
   }
 };
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
 function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/Options.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/Options.js
 var ignoreOverride = /* @__PURE__ */ Symbol("Let zodToJsonSchema decide on which parser to use");
 var defaultOptions = {
   name: void 0,
@@ -18814,7 +18814,7 @@ var getDefaultOptions = (options) => typeof options === "string" ? {
   ...options
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/Refs.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/Refs.js
 var getRefs = (options) => {
   const _options = getDefaultOptions(options);
   const currentPath = _options.name !== void 0 ? [..._options.basePath, _options.definitionPath, _options.name] : _options.basePath;
@@ -18835,7 +18835,7 @@ var getRefs = (options) => {
   };
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/errorMessages.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/errorMessages.js
 function addErrorMessage(res, key, errorMessage, refs) {
   if (!refs?.errorMessages)
     return;
@@ -18851,7 +18851,7 @@ function setResponseValueAndErrors(res, key, value, errorMessage, refs) {
   addErrorMessage(res, key, errorMessage, refs);
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/getRelativePath.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/getRelativePath.js
 var getRelativePath = (pathA, pathB) => {
   let i = 0;
   for (; i < pathA.length && i < pathB.length; i++) {
@@ -18861,7 +18861,7 @@ var getRelativePath = (pathA, pathB) => {
   return [(pathA.length - i).toString(), ...pathB.slice(i)].join("/");
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/any.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/any.js
 function parseAnyDef(refs) {
   if (refs.target !== "openAi") {
     return {};
@@ -18877,7 +18877,7 @@ function parseAnyDef(refs) {
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/array.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/array.js
 function parseArrayDef(def, refs) {
   const res = {
     type: "array"
@@ -18901,7 +18901,7 @@ function parseArrayDef(def, refs) {
   return res;
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/bigint.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/bigint.js
 function parseBigintDef(def, refs) {
   const res = {
     type: "integer",
@@ -18947,24 +18947,24 @@ function parseBigintDef(def, refs) {
   return res;
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/boolean.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/boolean.js
 function parseBooleanDef() {
   return {
     type: "boolean"
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/branded.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/branded.js
 function parseBrandedDef(_def, refs) {
   return parseDef(_def.type._def, refs);
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/catch.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/catch.js
 var parseCatchDef = (def, refs) => {
   return parseDef(def.innerType._def, refs);
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/date.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/date.js
 function parseDateDef(def, refs, overrideDateStrategy) {
   const strategy = overrideDateStrategy ?? refs.dateStrategy;
   if (Array.isArray(strategy)) {
@@ -19023,7 +19023,7 @@ var integerDateParser = (def, refs) => {
   return res;
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/default.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/default.js
 function parseDefaultDef(_def, refs) {
   return {
     ...parseDef(_def.innerType._def, refs),
@@ -19031,12 +19031,12 @@ function parseDefaultDef(_def, refs) {
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/effects.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/effects.js
 function parseEffectsDef(_def, refs) {
   return refs.effectStrategy === "input" ? parseDef(_def.schema._def, refs) : parseAnyDef(refs);
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/enum.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/enum.js
 function parseEnumDef(def) {
   return {
     type: "string",
@@ -19044,7 +19044,7 @@ function parseEnumDef(def) {
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/intersection.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/intersection.js
 var isJsonSchema7AllOfType = (type) => {
   if ("type" in type && type.type === "string")
     return false;
@@ -19086,7 +19086,7 @@ function parseIntersectionDef(def, refs) {
   } : void 0;
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/literal.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/literal.js
 function parseLiteralDef(def, refs) {
   const parsedType2 = typeof def.value;
   if (parsedType2 !== "bigint" && parsedType2 !== "number" && parsedType2 !== "boolean" && parsedType2 !== "string") {
@@ -19106,7 +19106,7 @@ function parseLiteralDef(def, refs) {
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/string.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var emojiRegex2 = void 0;
 var zodPatterns = {
   /**
@@ -19431,7 +19431,7 @@ function stringifyRegExpWithFlags(regex, refs) {
   return pattern;
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/record.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/record.js
 function parseRecordDef(def, refs) {
   if (refs.target === "openAi") {
     console.warn("Warning: OpenAI may not support records in schemas! Try an array of key-value pairs instead.");
@@ -19483,7 +19483,7 @@ function parseRecordDef(def, refs) {
   return schema;
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/map.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/map.js
 function parseMapDef(def, refs) {
   if (refs.mapStrategy === "record") {
     return parseRecordDef(def, refs);
@@ -19508,7 +19508,7 @@ function parseMapDef(def, refs) {
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/nativeEnum.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/nativeEnum.js
 function parseNativeEnumDef(def) {
   const object3 = def.values;
   const actualKeys = Object.keys(def.values).filter((key) => {
@@ -19522,7 +19522,7 @@ function parseNativeEnumDef(def) {
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/never.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/never.js
 function parseNeverDef(refs) {
   return refs.target === "openAi" ? void 0 : {
     not: parseAnyDef({
@@ -19532,7 +19532,7 @@ function parseNeverDef(refs) {
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/null.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/null.js
 function parseNullDef(refs) {
   return refs.target === "openApi3" ? {
     enum: ["null"],
@@ -19542,7 +19542,7 @@ function parseNullDef(refs) {
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/union.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/union.js
 var primitiveMappings = {
   ZodString: "string",
   ZodNumber: "number",
@@ -19610,7 +19610,7 @@ var asAnyOf = (def, refs) => {
   return anyOf.length ? { anyOf } : void 0;
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/nullable.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/nullable.js
 function parseNullableDef(def, refs) {
   if (["ZodString", "ZodNumber", "ZodBigInt", "ZodBoolean", "ZodNull"].includes(def.innerType._def.typeName) && (!def.innerType._def.checks || !def.innerType._def.checks.length)) {
     if (refs.target === "openApi3") {
@@ -19642,7 +19642,7 @@ function parseNullableDef(def, refs) {
   return base && { anyOf: [base, { type: "null" }] };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/number.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/number.js
 function parseNumberDef(def, refs) {
   const res = {
     type: "number"
@@ -19691,7 +19691,7 @@ function parseNumberDef(def, refs) {
   return res;
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/object.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/object.js
 function parseObjectDef(def, refs) {
   const forceOptionalIntoNullable = refs.target === "openAi";
   const result = {
@@ -19761,7 +19761,7 @@ function safeIsOptional(schema) {
   }
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/optional.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/optional.js
 var parseOptionalDef = (def, refs) => {
   if (refs.currentPath.toString() === refs.propertyPath?.toString()) {
     return parseDef(def.innerType._def, refs);
@@ -19780,7 +19780,7 @@ var parseOptionalDef = (def, refs) => {
   } : parseAnyDef(refs);
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/pipeline.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/pipeline.js
 var parsePipelineDef = (def, refs) => {
   if (refs.pipeStrategy === "input") {
     return parseDef(def.in._def, refs);
@@ -19800,12 +19800,12 @@ var parsePipelineDef = (def, refs) => {
   };
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/promise.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/promise.js
 function parsePromiseDef(def, refs) {
   return parseDef(def.type._def, refs);
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/set.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/set.js
 function parseSetDef(def, refs) {
   const items = parseDef(def.valueType._def, {
     ...refs,
@@ -19825,7 +19825,7 @@ function parseSetDef(def, refs) {
   return schema;
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/tuple.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/tuple.js
 function parseTupleDef(def, refs) {
   if (def.rest) {
     return {
@@ -19853,24 +19853,24 @@ function parseTupleDef(def, refs) {
   }
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/undefined.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/undefined.js
 function parseUndefinedDef(refs) {
   return {
     not: parseAnyDef(refs)
   };
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/unknown.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/unknown.js
 function parseUnknownDef(refs) {
   return parseAnyDef(refs);
 }
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parsers/readonly.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parsers/readonly.js
 var parseReadonlyDef = (def, refs) => {
   return parseDef(def.innerType._def, refs);
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/selectParser.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/selectParser.js
 var selectParser = (def, typeName, refs) => {
   switch (typeName) {
     case ZodFirstPartyTypeKind.ZodString:
@@ -19946,7 +19946,7 @@ var selectParser = (def, typeName, refs) => {
   }
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/parseDef.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/parseDef.js
 function parseDef(def, refs, forceResolution = false) {
   const seenItem = refs.seen.get(def);
   if (refs.override) {
@@ -20002,7 +20002,7 @@ var addMeta = (def, refs, jsonSchema) => {
   return jsonSchema;
 };
 
-// deps/node_modules/zod-to-json-schema/dist/esm/zodToJsonSchema.js
+// ../../../../plugins/flow/deps/node_modules/zod-to-json-schema/dist/esm/zodToJsonSchema.js
 var zodToJsonSchema = (schema, options) => {
   const refs = getRefs(options);
   let definitions = typeof options === "object" && options.definitions ? Object.entries(options.definitions).reduce((acc, [name2, schema2]) => ({
@@ -20064,7 +20064,7 @@ var zodToJsonSchema = (schema, options) => {
   return combined;
 };
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
 function mapMiniTarget(t) {
   if (!t)
     return "draft-7";
@@ -20106,7 +20106,7 @@ function parseWithCompat(schema, data) {
   return result.data;
 }
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 6e4;
 var Protocol = class {
   constructor(_options) {
@@ -21060,7 +21060,7 @@ function mergeCapabilities(base, additional) {
   return result;
 }
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
 var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
 function createDefaultAjvInstance() {
@@ -21128,7 +21128,7 @@ var AjvJsonSchemaValidator = class {
   }
 };
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
 var ExperimentalServerTasks = class {
   constructor(_server) {
     this._server = _server;
@@ -21341,7 +21341,7 @@ var ExperimentalServerTasks = class {
   }
 };
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
 function assertToolsCallTaskCapability(requests, method, entityName) {
   if (!requests) {
     throw new Error(`${entityName} does not support task creation (required for ${method})`);
@@ -21376,7 +21376,7 @@ function assertClientRequestTaskCapability(requests, method, entityName) {
   }
 }
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 var Server = class extends Protocol {
   /**
    * Initializes this server with the given name and version information.
@@ -21747,7 +21747,7 @@ var Server = class extends Protocol {
   }
 };
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/completable.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/completable.js
 var COMPLETABLE_SYMBOL = /* @__PURE__ */ Symbol.for("mcp.completable");
 function isCompletable(schema) {
   return !!schema && typeof schema === "object" && COMPLETABLE_SYMBOL in schema;
@@ -21761,7 +21761,7 @@ var McpZodTypeKind;
   McpZodTypeKind2["Completable"] = "McpCompletable";
 })(McpZodTypeKind || (McpZodTypeKind = {}));
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/uriTemplate.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/uriTemplate.js
 var MAX_TEMPLATE_LENGTH = 1e6;
 var MAX_VARIABLE_LENGTH = 1e6;
 var MAX_TEMPLATE_EXPRESSIONS = 1e4;
@@ -21983,7 +21983,7 @@ var UriTemplate = class _UriTemplate {
   }
 };
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/toolNameValidation.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/toolNameValidation.js
 var TOOL_NAME_REGEX = /^[A-Za-z0-9._-]{1,128}$/;
 function validateToolName(name) {
   const warnings = [];
@@ -22041,7 +22041,7 @@ function validateAndWarnToolName(name) {
   return result.isValid;
 }
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/mcp-server.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/mcp-server.js
 var ExperimentalMcpServerTasks = class {
   constructor(_mcpServer) {
     this._mcpServer = _mcpServer;
@@ -22056,7 +22056,7 @@ var ExperimentalMcpServerTasks = class {
   }
 };
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
 var McpServer = class {
   constructor(serverInfo, options) {
     this._registeredResources = {};
@@ -22872,10 +22872,10 @@ var EMPTY_COMPLETION_RESULT = {
   }
 };
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process3 from "node:process";
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 var ReadBuffer = class {
   constructor(options) {
@@ -22912,7 +22912,7 @@ function serializeMessage(message) {
   return JSON.stringify(message) + "\n";
 }
 
-// deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../../../plugins/flow/deps/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var StdioServerTransport = class {
   constructor(_stdin = process3.stdin, _stdout = process3.stdout, options) {
     this._stdin = _stdin;
@@ -24896,7 +24896,7 @@ function assertRestrictedPermissionProfile(response) {
   return { profile: CODEX_PERMISSION_PROFILE };
 }
 
-// deps/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../plugins/flow/deps/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 import { createRequire as bee } from "node:module";
 import * as br from "node:fs/promises";
 import * as Dn from "node:path";
@@ -56981,7 +56981,7 @@ ${lines.join("\n").trim()}
 }
 
 // src/delegation/charter.mjs
-var FLOW_CHARTER = true ? "This charter is how we use `flow` on bigger projects. In a project that doesn't use `flow`, skip the pipeline section and apply the rest: orchestration, delegation, model selection and the rules of engagement.\n\n<flow-charter>\n\n# Flow Engineering Charter\n\nThe charter is one file in two halves. Everything above the seat-rules marker is doctrine for you, the orchestrator. Everything below it is delivered again to every seat you spawn, so you never paste those rules into a prompt.\n\n## Orchestration with Delegation to Worker Seats\nThe session's model orchestrates and picks each worker seat's model and effort from the rankings below. A seat is one spawned model instance with its own tools and prompt.\n\nSpawn seats without asking. Keep decisions and small actions in the main thread; delegate independent, substantial work. Verification of your own work stays in your own loop.\n\nNever spawn more than ~20 parallel seats without the user's confirmation first. Parallel writers are fine when their tasks are isolated from each other.\n\nRead-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.\n\nWorker seats return typed results - a schema where the host offers one, a fixed field list otherwise - or write journals to disk. A seat's prose report is a claim to verify against git and the tree, never a record.\n\nNative seats get the seat half from a hook, delegated jobs in their preamble; context-copying spawns inherit everything. File-locating seats get only the guards. Prompts carry the worktree, checkpoints, allowed tools and task, not another copy of the seat rules. Journal each seat's model and effort.\n\n## Model Rankings\n\nAs of 2026-09-05. Higher is better. Pairs mean `low / max` effort; `high` is an intermediate setting. Do not interpolate or treat half-point intelligence differences as decisive.\n\nCheapness includes token use and API prices: Sol high is 6; each additional point halves benchmark cost, capped at 10. Intelligence estimates coding difficulty handled unsupervised. Taste is the human's UI, copy, API and design rating; `?` is unrated. Classifiers records the cyber-classifier assignment.\n\n| Model | Cheapness low/max | Intelligence low/max | Taste | Classifiers |\n|---|---|---|---|---|\n| gpt-5.6-luna | 10/9.5 | 2/6.5 | 4 | cyber |\n| gpt-5.6-terra | 9/6.5 | 3.5/7 | ? | cyber |\n| gpt-5.6-sol | 7/5.5 | 6/8 | 5 | cyber |\n| gpt-6-astra | 7/5.5 | 8/9.5 | 9 | cyber |\n| sonnet-5 | 7/3.5 | 4/5.5 | 5 | cyber |\n| opus-5 | 6.5/4.5 | 7/9.5 | 8 | cyber |\n| fable-5-1 | 6.5/4.5 | 8.5/10 | 10 | cyber |\n| gpt-daybreak-blue-latest | 7/5.5* | 6/8* | 5 | none |\n\nScores are estimates. Low-effort intelligence, especially Fable's, and Sonnet's endpoints have weaker evidence. Daybreak uses unmeasured Sol proxies. Benchmarks do not measure taste or subscription quota.\n\n## Model Selection\n\nMatch the hardest decision left. Meet capability, taste and family requirements, then minimize cost including delegation, repairs and review. Use supported configurations. These are defaults; escalate without asking when needed.\n\n| Task | OpenAI | Claude |\n|---|---|---|\n| File location and prescribed tool calls | Luna low | Sonnet low |\n| Settled specs and mechanical sweeps with executable checks | Luna max | Opus medium |\n| Bounded code changes | Astra low | Opus medium |\n| Substantial implementation and code design | Astra medium | Opus high |\n| Independent code review, from the other family | Astra high | Opus high |\n| Difficult debugging, consequential correctness decisions or conflicting reviewers | Astra xhigh | Opus xhigh |\n| UI, copy, public API and architecture taste | Astra medium | Fable high |\n| Unresolved taste disagreements | Astra xhigh | Fable max |\n| Vulnerability finding and defensive security work | Daybreak high | Opus high |\n\nEscalate settled work to Astra medium or Opus high when design or diagnosis remains. Use max for unresolved hard work after a focused attempt. Security prefers Daybreak; Opus retains cyber classifiers. Apply the refusal protocol below.\n\nOn AA native coding, Luna max cost about 0.10x Sol high; Astra medium 0.73x at a similar aggregate score; Opus high 1.31x. These ratios depend on workload. Sol high substitutes for Astra; Terra high needs a measured advantage over Luna max. Prefer Opus medium/high to Sonnet high/max for substantial coding. More effort need not improve results; fix missing context or broken tools before escalating.\n\nDecorrelation must be cross-family. A diff your own family wrote gets its mandatory review from the other family, adversarial by default, against an immutable base. A diff the other family wrote is reviewed natively. A design worth a second proposal gets one blind proposal from each family. A green verdict from your own family alone is not a green.\n\nA refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on a model with no cyber classifiers; when that model is the one that refused, the single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.\n\n## Cross-Family Delegation\nReach the other family only through Flow's `flow_delegate` MCP tools, never the shell: `delegate_to_codex` from Claude, `delegate_to_claude` from Codex. Set model and effort on every call. Read the `flow:delegate` skill before the first bridge call of a session.\n\n## The `flow` pipeline\n\n`prep` is the front door, and nothing enters the issue tracker otherwise.\n`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.\n`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.\n\nThe issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.\n\nIssues must contain acceptance criteria, including what evidence is required to satisfy.\nPRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher (the plans client).\n\nUse `/babysit` for post-push review and CI. Respond to every review comment, fix accepted findings, and explain rejected or stale findings against the current PR.\n\n`flow` is for features. Ad-hoc work happens inline with `prep` discipline but no ticket: identify unstated requirements and better approaches, then ask questions one at a time, prioritizing decisions that change the architecture.\n\n## Hosts\n**Claude Code.** The Agent tool takes a model but no effort. Agent frontmatter can set effort; otherwise it inherits the session's. A Workflow script's `agent(prompt, {agentType, model, effort})` sets both; such a script is plain JavaScript with no `Date.now()`, `Math.random()` or argless `new Date()`, because resume replays it. `fork` is the one spawn that copies your context. `Explore` is the one read-only type; `general-purpose` holds every tool, Agent and Edit included, so it is a write seat and gets a worktree or nothing. Flow's own are `flow:code-architect`, `flow:code-reviewer`, `flow:implementer` (writes, cannot spawn) and `flow:bridge` (one bridge call, envelope back verbatim, for a call that runs beside other seats or inside a script). The human decides through the AskUserQuestion tool - up to 4 questions per call, selectable options, the recommendation first - and the answer comes back inside the turn; never a prose question, because the human answers options and not essays. A question with no discrete options is still asked through the tool, with the choices you would accept. The stages are `/flow:prep`, `/flow:issue` and `/flow:land`. Artifacts publish through the `/artifacts` skill.\n\n**Codex.** `spawn_agent` takes a model, an effort and a fork policy; a pipeline seat gets `fork_turns: \"none\"` so it starts from its prompt alone. A child narrows nothing below the session: no per-seat tool trimming, no depth cap, and the hooks fire inside it. There is no transport seat; a bridge call that must not block the turn is `delivery: detached`, polled with `delegation_status`. There is no in-turn question tool: write the question with up to 4 numbered options, the recommended one first, end the turn, and read the human's next message as the answer. The stages are the plugin's `prep`, `issue` and `land` skills, named by the human; a stage never starts itself. Artifacts publish with the plans CLI directly.\n\nOn both hosts a PR merges only through `scripts/land-merge.mjs`, which the land stage runs once its gates pass. A raw merge command is denied in a repository that opts in with a committed `.flow/managed` file.\n\n<!-- flow-charter: seat rules. Everything below this line is also delivered to every seat. -->\n\n## Rules of Engagement\nBefore adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.\n\nPackages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.\n\nGreenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.\n\nAgents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.\n\nAvoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.\n\nA backgrounded task, monitor, or worker seat that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.\n\nWhen structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.\n\nWhen adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through the artifact publisher with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.\n\nWe are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix.\n\nNo unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.\n\nComments are documentation - preserve and update while working, drop only if provably wrong.\nReal dependencies over mocks.\nDesign against races/TOCTOU up front for check-then-act code.\nRedact implementation details (db errors, stack traces, internal paths) at trust boundaries.\nWhen asked for a secret, surface ONLY the credential requested and avoid log pollution.\n\nNo commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. The `git-guard` hook enforces this anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.\n\nConventional commits, imperative, present tense; each commit is one atomic logical change.\n\nNever bump a version, cut a tag, or publish a release unless the human asks for it by name.\n\nNot in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.\n\n`gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.\nLong outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.\n\nNever bare-`cd` into a worktree - subshell `(cd $WT && \u2026)`, `git -C $WT`, or absolute paths.\n\nNever batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.\n\nPR descriptions: summary narrative + one-line-per-commit changelog.\n\nFind the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce \u2192 minimize \u2192 instrument \u2192 regression-test.\n\n## Seat Contract\nWhen you are a spawned seat - a subagent or a delegated job - these rules are mechanical, not advisory. The orchestrator that spawned you holds the rest of this charter, and reads your final message as a claim to verify against git and the tree, not as a narrative to trust.\n\nContainment. Do the work yourself in this seat: spawn no agents, start no delegations, reach no model through the shell, and never claim to have delegated, backgrounded or handed off anything. If you were assigned a worktree, every write lands inside it, and the shell stays rooted where it starts - subshell `(cd <wt> && \u2026)`, `git -C <wt>`, or absolute paths under the worktree. If you were not assigned a worktree, you write nothing. A worktree may be shared with sibling seats, so stage only the files you touched, by explicit path - never `git add -A` or `commit -a`. No `--no-verify`, no commit trailers: the hooks that deny those in a native seat do not run in a delegated one, and the rule holds either way.\n\nSynchronous execution. Run every command yourself, in the foreground, and watch it finish. Never background a command and end your turn waiting on it: nothing will call you back, and a turn that ends mid-wait ends the seat. Split a long command into steps you can observe to completion, or report the blocker plainly.\n\nScope and completion. Deliver the task's scope and nothing beyond it. Checkpoints in order, TDD where the plan calls for it, one atomic conventional commit per checkpoint. Report completion only when every checkpoint is genuinely done; if something is truly blocked, finish everything else and say plainly what is missing and why. A structural deviation from the plan stops at that checkpoint and is reported as a deviation; a local deviation is adapted, noted in the commit message, and carried on.\n\nReporting. Make your final message cheap to check: the commits you made (sha + subject, never one you did not author in this seat); per checkpoint, done / partial / blocked with the test command you ran and what it printed; each deviation with its reason; anything the plan asked for that you did not do. A transient failure (rate limit, 5xx, network) gets up to three retries with backoff, then status unknown with the reason. Unknown is its own state: never round it up to a pass, and never report a pass you did not observe.\n\n## Gripes\nIf the `gripe` plugin is installed, the `gripe` CLI is on the shell on both hosts. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.\n\n</flow-charter>\n" : readFileSync(new URL("../../charter/charter.md", import.meta.url), "utf8");
+var FLOW_CHARTER = true ? "This charter is how we use `flow` on bigger projects. In a project that doesn't use `flow`, skip the pipeline section and apply the rest: orchestration, delegation, model selection and the rules of engagement.\n\n<flow-charter>\n\n# Flow Engineering Charter\n\nThe charter is one file in two halves. Everything above the seat-rules marker is doctrine for you, the orchestrator. Everything below it is delivered again to every seat you spawn, so you never paste those rules into a prompt.\n\n## Orchestration with Delegation to Worker Seats\nThe session's model orchestrates and picks each worker seat's model and effort from the rankings below. A seat is one spawned model instance with its own tools and prompt.\n\nSpawn seats without asking. Keep decisions and small actions in the main thread; delegate independent, substantial work. Verification of your own work stays in your own loop.\n\nNever spawn more than ~20 parallel seats without the user's confirmation first. Parallel writers are fine when their tasks are isolated from each other.\n\nRead-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.\n\nWorker seats return typed results - a schema where the host offers one, a fixed field list otherwise - or write journals to disk. A seat's prose report is a claim to verify against git and the tree, never a record.\n\nNative seats get the seat half from a hook, delegated jobs in their preamble; context-copying spawns inherit everything. File-locating seats get only the guards. Prompts carry the worktree, checkpoints, allowed tools and task, not another copy of the seat rules. Journal each seat's model and effort.\n\n## Model Rankings\n\nAs of 2026-09-05. Higher is better. Pairs mean `low / max` effort; `high` is an intermediate setting. Do not interpolate or treat half-point intelligence differences as decisive.\n\nCheapness includes token use and API prices: Sol high is 6; each additional point halves benchmark cost, capped at 10. Intelligence estimates coding difficulty handled unsupervised. Taste is the human's UI, copy, API and design rating; `?` is unrated. Classifiers records the cyber-classifier assignment.\n\n| Model | Cheapness low/max | Intelligence low/max | Taste | Classifiers |\n|---|---|---|---|---|\n| gpt-5.6-luna | 10/9.5 | 2/6.5 | 4 | cyber |\n| gpt-5.6-terra | 9/6.5 | 3.5/7 | ? | cyber |\n| gpt-5.6-sol | 7/5.5 | 6/8 | 5 | cyber |\n| gpt-6-astra | 7/5.5 | 8/9.5 | 9 | cyber |\n| sonnet-5 | 7/3.5 | 4/5.5 | 5 | cyber |\n| opus-5 | 6.5/4.5 | 7/9.5 | 8 | cyber |\n| fable-5-1 | 6.5/4.5 | 8.5/10 | 10 | cyber |\n| gpt-daybreak-blue-latest | 7/5.5* | 6/8* | 5 | none |\n\nScores are estimates. Low-effort intelligence, especially Fable's, and Sonnet's endpoints have weaker evidence. Daybreak uses unmeasured Sol proxies. Benchmarks do not measure taste or subscription quota.\n\n## Model Selection\n\nMatch the hardest decision left. Meet capability, taste and family requirements, then minimize cost including delegation, repairs and review. Use supported configurations. These are defaults; escalate without asking when needed.\n\nDo not add optional turn, token, or spending caps, or shorten default timeouts, unless the human explicitly requests them.\n\n| Task | OpenAI | Claude |\n|---|---|---|\n| File location and prescribed tool calls | Luna low | Sonnet low |\n| Settled specs and mechanical sweeps with executable checks | Luna max | Opus medium |\n| Bounded code changes | Astra low | Opus medium |\n| Substantial implementation and code design | Astra medium | Opus high |\n| Independent code review, from the other family | Astra high | Opus high |\n| Difficult debugging, consequential correctness decisions or conflicting reviewers | Astra xhigh | Opus xhigh |\n| UI, copy, public API and architecture taste | Astra medium | Fable high |\n| Unresolved taste disagreements | Astra xhigh | Fable max |\n| Vulnerability finding and defensive security work | Daybreak high | Opus high |\n\nEscalate settled work to Astra medium or Opus high when design or diagnosis remains. Use max for unresolved hard work after a focused attempt. Security prefers Daybreak; Opus retains cyber classifiers. Apply the refusal protocol below.\n\nOn AA native coding, Luna max cost about 0.10x Sol high; Astra medium 0.73x at a similar aggregate score; Opus high 1.31x. These ratios depend on workload. Sol high substitutes for Astra; Terra high needs a measured advantage over Luna max. Prefer Opus medium/high to Sonnet high/max for substantial coding. More effort need not improve results; fix missing context or broken tools before escalating.\n\nDecorrelation must be cross-family. A diff your own family wrote gets its mandatory review from the other family, adversarial by default, against an immutable base. A diff the other family wrote is reviewed natively. A design worth a second proposal gets one blind proposal from each family. A green verdict from your own family alone is not a green.\n\nA refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on a model with no cyber classifiers; when that model is the one that refused, the single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.\n\n## Cross-Family Delegation\nReach the other family only through Flow's `flow_delegate` MCP tools, never the shell: `delegate_to_codex` from Claude, `delegate_to_claude` from Codex. Set model and effort on every call. Read the `flow:delegate` skill before the first bridge call of a session.\n\n## The `flow` pipeline\n\n`prep` is the front door, and nothing enters the issue tracker otherwise.\n`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.\n`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.\n\nThe issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.\n\nIssues must contain acceptance criteria, including what evidence is required to satisfy.\nPRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher (the plans client).\n\nUse `/babysit` for post-push review and CI. Respond to every review comment, fix accepted findings, and explain rejected or stale findings against the current PR.\n\n`flow` is for features. Ad-hoc work happens inline with `prep` discipline but no ticket: identify unstated requirements and better approaches, then ask questions one at a time, prioritizing decisions that change the architecture.\n\n## Hosts\n**Claude Code.** The Agent tool takes a model but no effort. Agent frontmatter can set effort; otherwise it inherits the session's. A Workflow script's `agent(prompt, {agentType, model, effort})` sets both; such a script is plain JavaScript with no `Date.now()`, `Math.random()` or argless `new Date()`, because resume replays it. `fork` is the one spawn that copies your context. `Explore` is the one read-only type; `general-purpose` holds every tool, Agent and Edit included, so it is a write seat and gets a worktree or nothing. Flow's own are `flow:code-architect`, `flow:code-reviewer`, `flow:implementer` (writes, cannot spawn) and `flow:bridge` (one bridge call, envelope back verbatim, for a call that runs beside other seats or inside a script). The human decides through the AskUserQuestion tool - up to 4 questions per call, selectable options, the recommendation first - and the answer comes back inside the turn; never a prose question, because the human answers options and not essays. A question with no discrete options is still asked through the tool, with the choices you would accept. The stages are `/flow:prep`, `/flow:issue` and `/flow:land`. Artifacts publish through the `/artifacts` skill.\n\n**Codex.** `spawn_agent` takes a model, an effort and a fork policy; a pipeline seat gets `fork_turns: \"none\"` so it starts from its prompt alone. A child narrows nothing below the session: no per-seat tool trimming, no depth cap, and the hooks fire inside it. There is no transport seat; a bridge call that must not block the turn is `delivery: detached`, polled with `delegation_status`. There is no in-turn question tool: write the question with up to 4 numbered options, the recommended one first, end the turn, and read the human's next message as the answer. The stages are the plugin's `prep`, `issue` and `land` skills, named by the human; a stage never starts itself. Artifacts publish with the plans CLI directly.\n\nOn both hosts a PR merges only through `scripts/land-merge.mjs`, which the land stage runs once its gates pass. A raw merge command is denied in a repository that opts in with a committed `.flow/managed` file.\n\n<!-- flow-charter: seat rules. Everything below this line is also delivered to every seat. -->\n\n## Rules of Engagement\nBefore adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.\n\nPackages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.\n\nGreenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.\n\nAgents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.\n\nAvoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.\n\nA backgrounded task, monitor, or worker seat that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.\n\nWhen structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.\n\nWhen adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through the artifact publisher with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.\n\nWe are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix.\n\nNo unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.\n\nComments are documentation - preserve and update while working, drop only if provably wrong.\nReal dependencies over mocks.\nDesign against races/TOCTOU up front for check-then-act code.\nRedact implementation details (db errors, stack traces, internal paths) at trust boundaries.\nWhen asked for a secret, surface ONLY the credential requested and avoid log pollution.\n\nNo commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. The `git-guard` hook enforces this anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.\n\nConventional commits, imperative, present tense; each commit is one atomic logical change.\n\nNever bump a version, cut a tag, or publish a release unless the human asks for it by name.\n\nNot in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.\n\n`gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.\nLong outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.\n\nNever bare-`cd` into a worktree - subshell `(cd $WT && \u2026)`, `git -C $WT`, or absolute paths.\n\nNever batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.\n\nPR descriptions: summary narrative + one-line-per-commit changelog.\n\nFind the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce \u2192 minimize \u2192 instrument \u2192 regression-test.\n\n## Seat Contract\nWhen you are a spawned seat - a subagent or a delegated job - these rules are mechanical, not advisory. The orchestrator that spawned you holds the rest of this charter, and reads your final message as a claim to verify against git and the tree, not as a narrative to trust.\n\nContainment. Do the work yourself in this seat: spawn no agents, start no delegations, reach no model through the shell, and never claim to have delegated, backgrounded or handed off anything. If you were assigned a worktree, every write lands inside it, and the shell stays rooted where it starts - subshell `(cd <wt> && \u2026)`, `git -C <wt>`, or absolute paths under the worktree. If you were not assigned a worktree, you write nothing. A worktree may be shared with sibling seats, so stage only the files you touched, by explicit path - never `git add -A` or `commit -a`. No `--no-verify`, no commit trailers: the hooks that deny those in a native seat do not run in a delegated one, and the rule holds either way.\n\nSynchronous execution. Run every command yourself, in the foreground, and watch it finish. Never background a command and end your turn waiting on it: nothing will call you back, and a turn that ends mid-wait ends the seat. Split a long command into steps you can observe to completion, or report the blocker plainly.\n\nScope and completion. Deliver the task's scope and nothing beyond it. Checkpoints in order, TDD where the plan calls for it, one atomic conventional commit per checkpoint. Report completion only when every checkpoint is genuinely done; if something is truly blocked, finish everything else and say plainly what is missing and why. A structural deviation from the plan stops at that checkpoint and is reported as a deviation; a local deviation is adapted, noted in the commit message, and carried on.\n\nReporting. Make your final message cheap to check: the commits you made (sha + subject, never one you did not author in this seat); per checkpoint, done / partial / blocked with the test command you ran and what it printed; each deviation with its reason; anything the plan asked for that you did not do. A transient failure (rate limit, 5xx, network) gets up to three retries with backoff, then status unknown with the reason. Unknown is its own state: never round it up to a pass, and never report a pass you did not observe.\n\n## Gripes\nIf the `gripe` plugin is installed, the `gripe` CLI is on the shell on both hosts. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.\n\n</flow-charter>\n" : readFileSync(new URL("../../charter/charter.md", import.meta.url), "utf8");
 
 // src/delegation/instructions.mjs
 var FLOW_SEAT_RULES = seatPayload(FLOW_CHARTER);

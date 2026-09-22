@@ -42,6 +42,8 @@ Scores are estimates. Low-effort intelligence, especially Fable's, and Sonnet's 
 
 Match the hardest decision left. Meet capability, taste and family requirements, then minimize cost including delegation, repairs and review. Use supported configurations. These are defaults; escalate without asking when needed.
 
+Do not add optional turn, token, or spending caps, or shorten default timeouts, unless the human explicitly requests them.
+
 | Task | OpenAI | Claude |
 |---|---|---|
 | File location and prescribed tool calls | Luna low | Sonnet low |
