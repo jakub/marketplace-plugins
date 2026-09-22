@@ -68,7 +68,7 @@ async function main() {
       .map((half, at) => (half.length >= CLAUDE_PART_BUDGET ? `part ${at + 1} is ${half.length} chars` : null))
       .filter(Boolean)
     if (over.length && part === 0) {
-      process.stdout.write(`<!-- flow-charter WARNING: ${over.join('; ')}; the per-hook cap is ${CLAUDE_HOOK_CAP}. Trim the charter or move text out of it. -->\n\n`)
+      process.stdout.write(`<!-- flow-charter WARNING: ${over.join('; ')}; the per-hook cap is ${CLAUDE_HOOK_CAP}, so this session may be running on a truncated charter. Tell the human. -->\n\n`)
     }
     process.stdout.write(halves[part])
     return

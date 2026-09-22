@@ -18,8 +18,8 @@ const creates = /\bgh\s+issue\s+create\b/.test(cmd)
 const sanctioned = /\bFLOW_SANCTION=(prep|land)\b/.test(cmd)
 if (creates && !sanctioned) {
   process.stdout.write(JSON.stringify(preToolDeny(
-    'no-backlog policy (flow): issues are only created through sanctioned lanes. ' +
-    'Fix the finding in the current PR instead of filing it. If this genuinely is a ' +
-    'sanctioned lane, prefix the command with FLOW_SANCTION=prep|land.',
+    'no-backlog policy (flow): only the prep stage, or land after the human acknowledges the filing, creates issues. ' +
+    'Fix the finding in the current PR instead of filing it. In one of those two lanes, ' +
+    'prefix the command with FLOW_SANCTION=prep or FLOW_SANCTION=land.',
   )))
 }

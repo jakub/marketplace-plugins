@@ -373,10 +373,9 @@ check('nor is git merge', JSON.stringify(mergeShapes('git merge --ff-only origin
 // This is the one job the two adapters do differently, so it runs once per host with the
 // answer that host gives. Codex denies because it has no way to ask; Claude asks.
 console.log('\nregistry publication: Codex denies it, Claude asks about it')
-const PLAIN = 'This publishes to crates.io, which you cannot take back - crates.io has no unpublish at all. ' +
+const PLAIN = 'This publishes to crates.io, which you cannot take back, because crates.io has no unpublish at all. ' +
   'Confirm the version number and the contents are what you mean to ship. ' +
-  'Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. ' +
-  'Run the publish command yourself after reviewing the version and package contents.'
+  'Codex PreToolUse hooks cannot request confirmation, so publication from a session is blocked.'
 const plainDecision = guard('cargo publish -p flow')
 check('the plain publication deny text is unchanged', reasonOf(plainDecision).startsWith(PLAIN), reasonOf(plainDecision))
 const { denies: codexDenies } = HOSTS[0]

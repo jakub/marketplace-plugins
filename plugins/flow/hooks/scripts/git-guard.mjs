@@ -321,7 +321,7 @@ const cronVerdict = (cmd, job) => {
       // -c writes config for one call, and config runs code (core.pager, alias.*, credential.helper);
       // --exec-path swaps the git binaries. Neither has a read-only use here.
       if (/^-c/.test(tokens[j]) || /^(--config-env|--exec-path)(=|$)/.test(tokens[j])) {
-        return `flow cron guard (${job}): git ${tokens[j]} is outside this job's permissions - it can run code. Cron git is read-only; report the need instead of working around this.`
+        return `flow cron guard (${job}): git ${tokens[j]} is outside this job's permissions because it can run code. Cron git is read-only; report the need instead of working around this.`
       }
       if (valueOpts.has(tokens[j])) j += 2
       else j += 1
@@ -330,7 +330,7 @@ const cronVerdict = (cmd, job) => {
     const rest = tokens.slice(j + 1)
     const next = rest.find((t) => !t.startsWith('-')) || ''
     const no = (why) =>
-      `flow cron guard (${job}): git ${sub || '<none>'} is outside this job's permissions${why ? ` - ${why}` : ''}. ` +
+      `flow cron guard (${job}): git ${sub || '<none>'} is outside this job's permissions${why ? `; ${why}` : ''}. ` +
       'Cron git is read-only; the lint mutates only through scripts/lint-actions.mjs. ' +
       'Report the need instead of working around this.'
 
@@ -405,9 +405,9 @@ if (/\bFLOW_SANCTION=git\b/.test(cmd)) process.exit(0)
 
 if (/--no-verify\b/.test(stripLiterals(cmd))) {
   deny(
-    'flow charter: NEVER --no-verify. The hooks it skips are the checks that keep bad ' +
-      'commits out of history. Fix what the hook is failing on, or say plainly that the ' +
-      'hook itself is broken - do not route around it.',
+    'flow charter: no --no-verify. The hooks it skips keep bad commits out of history. ' +
+      'Fix what the hook is failing on, or say plainly that the hook itself is broken. ' +
+      'Do not route around it.',
   )
 }
 
@@ -417,7 +417,7 @@ for (const [re, why] of DESTRUCTIVE) if (re.test(bare)) deny(why)
 
 if (CLEAN_FORCE.test(bare) && !CLEAN_DRYRUN.test(bare)) {
   deny(
-    'flow charter: `git clean -f` deletes untracked files permanently - nothing recovers ' +
+    'flow charter: `git clean -f` deletes untracked files permanently, and nothing recovers ' +
       'them. Run `git clean -n` first to see what would go, then delete only what you mean.',
   )
 }

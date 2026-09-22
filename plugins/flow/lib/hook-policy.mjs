@@ -44,7 +44,7 @@ export function protectedFileReason(file) {
 
   if (/(^|\/)\.flow\/managed$/.test(file)) {
     return 'flow: .flow/managed is the committed marker that opts this repository into flow\'s merge ' +
-      'guardrail, the one that routes a Codex land through scripts/land-merge.mjs instead of a raw ' +
+      'guardrail, the one that routes every pull request merge through scripts/land-merge.mjs instead of a raw ' +
       'merge command. A session that could edit or delete it could opt the repository out of ' +
       'its own guardrail, so this file is changed by a human commit, not by a tool call.'
   }
@@ -56,7 +56,7 @@ export function protectedFileReason(file) {
   }
 
   if (BUILD_DIR.test(file)) {
-    return `flow: ${file} is inside a build output directory - the next build overwrites it. If this ` +
+    return `flow: ${file} is inside a build output directory, and the next build overwrites it. If this ` +
       'is not a path bug, the change belongs in the source that generates this file.'
   }
 
@@ -107,7 +107,7 @@ export function registryReason(operations) {
   for (const op of Array.isArray(operations) ? operations : []) {
     const entry = PUBLISH.find((e) => e.op === op && e.kind === 'registry')
     if (entry) {
-      return `This publishes to ${entry.registry}, which you cannot take back - ${entry.why}. ` +
+      return `This publishes to ${entry.registry}, which you cannot take back, because ${entry.why}. ` +
         'Confirm the version number and the contents are what you mean to ship.'
     }
   }

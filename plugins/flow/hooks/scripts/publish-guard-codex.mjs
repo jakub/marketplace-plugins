@@ -21,10 +21,9 @@ import { mergeDenialFor, publishOperationsStrict, registryReason } from '../../l
 import { preToolDeny, readHookInput } from './wire.mjs'
 
 const REGISTRY_TAIL =
-  'Codex PreToolUse hooks cannot request confirmation, so direct publication is blocked. ' +
-  'Run the publish command yourself after reviewing the version and package contents.'
+  'Codex PreToolUse hooks cannot request confirmation, so publication from a session is blocked.'
 const REGISTRY_MANUAL =
-  'Registry publication stays manual. Ask the human to run it in their own terminal.'
+  'Registry publication stays manual. Ask the human to run the publish command in their own terminal after they check the version number and the package contents.'
 
 const decide = (input) => {
   const command = input?.tool_input?.command
