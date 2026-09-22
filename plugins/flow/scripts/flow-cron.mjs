@@ -16,8 +16,8 @@
 // extractReport below. Non-zero exit on a failed or timed-out session so
 // `systemctl --user status flow-<job>` shows it.
 //
-// Env: FLOW_WORKSPACE (default ~/code), FLOW_STATE, FLOW_MODEL (default sonnet),
-// FLOW_CRON_TIMEOUT_MIN (default 40).
+// Env: FLOW_WORKSPACE (default ~/code), FLOW_STATE, FLOW_MODEL (default claude-opus-5-5),
+// FLOW_EFFORT (default low), FLOW_CRON_TIMEOUT_MIN (default 40).
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -149,7 +149,8 @@ function main() {
   }
   const workspace = process.env.FLOW_WORKSPACE || join(homedir(), "code");
   const state = process.env.FLOW_STATE || join(homedir(), ".local", "state", "flow");
-  const model = process.env.FLOW_MODEL || "sonnet";
+  const model = process.env.FLOW_MODEL || "claude-opus-5-5";
+  const effort = process.env.FLOW_EFFORT || "low";
   const timeoutMs = Number(process.env.FLOW_CRON_TIMEOUT_MIN || 40) * 60_000;
   const reports = join(state, "reports");
   const date = new Date().toISOString().slice(0, 10);
@@ -171,6 +172,7 @@ function main() {
   const args = [
     "-p", prompt,
     "--model", model,
+    "--effort", effort,
     "--permission-mode", "dontAsk",
     "--allowedTools", JOBS[job].allowedTools.join(","),
     "--output-format", "stream-json",
@@ -215,7 +217,7 @@ function main() {
       : "session returned no report text";
   }
 
-  const header = `<!-- ${JOBS[job].summary} · ${new Date().toISOString()} · ${model} · ${minutes} min${cost ? ` · ${cost}` : ""}${failure ? ` · FAILED: ${failure}` : ""} -->\n`;
+  const header = `<!-- ${JOBS[job].summary} · ${new Date().toISOString()} · ${model}/${effort} · ${minutes} min${cost ? ` · ${cost}` : ""}${failure ? ` · FAILED: ${failure}` : ""} -->\n`;
   const body = failure && !text.trim() ? `# ${JOBS[job].summary} - ${date}\n\nFAILED: ${failure}\n\n\`\`\`\n${(run.stderr || "").slice(-4000)}\n\`\`\`\n` : text;
   writeFileSync(reportPath, header + body);
 
