@@ -139,7 +139,7 @@ Yours to flex, per issue and mid-run.
   - fix rounds churn on the same area, a fix spawning findings where it landed;
   - cross-family reviewers disagree hard on the same code.
   Beyond the tripwires you have standing permission to widen on any hunch. Narrowing is also legal, a "medium" that turned out mechanical; journal that too.
-- **Seat assignment**: the difficulty §6 names per checkpoint, judged on what could break and never counted from file totals, picks the writer off the charter's model-selection bullets. A checkpoint whose shape is already decided and one with a live code-design decision in it do not get the same seat. When torn take the more capable one, and justify anything below the default write seat in the launch comment.
+- **Seat assignment**: the difficulty §6 names per checkpoint, judged on what could break and never counted from file totals, picks the writer from the charter's Model Selection table. A checkpoint whose shape is already decided and one with a live code-design decision in it do not get the same seat. When torn take the more capable one, and justify anything below the default write seat in the launch comment.
 - **Orchestration medium, per fan-out**: drive the seats directly when a stage is adaptive or small; when it is deterministic and wide, a four-lens review fabric or parallel disjoint fixes, use what your host's subsection offers for a scripted fan-out.
 - **Mode selection**: parallel-blind, collaborative (propose, then critique, then revise across families), or adversarial (red team against blue team), picked per stage. Cross-model disagreement is signal: resolve it explicitly, never average it.
 
@@ -152,7 +152,7 @@ The delegate skill is the operating manual for the calls themselves: attached ag
 - **Dialectic is prep's, not yours**: blind, then argue, then synthesize runs at the prep stage, where the human adjudicates the argument into ADRs. Here the design pair stays blind and you synthesize. Wanting a dialectic mid-run means the issue shouldn't have passed the front door.
 - **Shadow reviewer at checkpoint boundaries**: a bridge seat reads commits as they land and accumulates findings silently. At each checkpoint boundary you triage the set and hand blocking items to the writer before the next checkpoint starts, so the signal is early and nothing interrupts mid-thought. Its watchlist includes the design pass's not-alone list, so structural drift is a checkpoint finding too. It never replaces the final adversarial pass, because convergence still needs fresh eyes on the finished diff.
 - **Red team**: each family tries to break the other's implementation. Route demonstrable claims through the fast lane of invariant 2 - "prove it or drop it" beats a prose argument about severity.
-- **Bulk tier**: mechanical sweeps, meaning comment rot, evidence collection and transcript reads, go to the charter's cheap-at-max-effort seat. That seat is never the decorrelation seat, which needs intelligence.
+- **Bulk tier**: mechanical sweeps, meaning comment rot, evidence collection and transcript reads, go to the seat the charter's Model Selection table assigns to mechanical sweeps with executable checks. That seat is never the decorrelation seat, which needs intelligence.
 
 A detached job you never read back is an UNKNOWN you invented on purpose, so retain the job id and read it with the status and result tools.
 

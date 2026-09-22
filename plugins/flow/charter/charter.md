@@ -21,22 +21,20 @@ Native seats get the seat half from a hook, delegated jobs in their preamble; co
 
 ## Model Rankings
 
-As of 2026-09-05. Higher is better. Pairs mean `low / max` effort; `high` is an intermediate setting. Do not interpolate or treat half-point intelligence differences as decisive.
+As of 2026-09-22. Higher is better. Pairs mean `low / max` effort; `high` is an intermediate setting. Do not interpolate or treat half-point intelligence differences as decisive.
 
-Cheapness includes token use and API prices: Sol high is 6; each additional point halves benchmark cost, capped at 10. Intelligence estimates coding difficulty handled unsupervised. Taste is the human's UI, copy, API and design rating; `?` is unrated. Classifiers records the cyber-classifier assignment.
+Both scales come from the Artificial Analysis Intelligence Index: cheapness from its run cost, about one point per halving and capped at 10, and intelligence from its score. Taste is the human's UI, copy, API and design rating; `?` is unrated. Classifiers lists what can refuse a request.
 
-| Model | Cheapness low/max | Intelligence low/max | Taste | Classifiers |
-|---|---|---|---|---|
-| gpt-5.6-luna | 10/9.5 | 2/6.5 | 4 | cyber |
-| gpt-5.6-terra | 9/6.5 | 3.5/7 | ? | cyber |
-| gpt-5.6-sol | 7/5.5 | 6/8 | 5 | cyber |
-| gpt-6-astra | 7/5.5 | 8/9.5 | 9 | cyber |
-| sonnet-5 | 7/3.5 | 4/5.5 | 5 | cyber |
-| opus-5 | 6.5/4.5 | 7/9.5 | 8 | cyber |
-| fable-5-1 | 6.5/4.5 | 8.5/10 | 10 | cyber |
-| gpt-daybreak-blue-latest | 7/5.5* | 6/8* | 5 | none |
+| Model                    | Cheapness low/max | Intelligence low/max | Taste | Classifiers |
+| ------------------------ | ----------------- | -------------------- | ----- | ----------- |
+| gpt-6-luna               | 10/10             | 2.5/6                | ?     | cyber       |
+| gpt-6-sol                | 9/7               | 5.5/8.5              | ?     | cyber       |
+| gpt-6-astra              | 7/5.5             | 8/10                 | 9     | cyber       |
+| opus-5-5                 | 7.5/4.5           | 7.5/10               | 10    | cyber, bio  |
+| fable-5-1                | 6/4               | 8.5/10               | 10    | cyber, bio  |
+| gpt-daybreak-blue-latest | 7/5.5*            | 6/8*                 | 5     | none        |
 
-Scores are estimates. Low-effort intelligence, especially Fable's, and Sonnet's endpoints have weaker evidence. Daybreak uses unmeasured Sol proxies. Benchmarks do not measure taste or subscription quota.
+Scores are estimates. Effort names mean different amounts of thinking on different models. Benchmarks do not measure taste or subscription quota.
 
 ## Model Selection
 
@@ -44,25 +42,25 @@ Match the hardest decision left. Meet capability, taste and family requirements,
 
 Do not add optional turn, token, or spending caps, or shorten default timeouts, unless the human explicitly requests them.
 
-| Task | OpenAI | Claude |
-|---|---|---|
-| File location and prescribed tool calls | Luna low | Sonnet low |
-| Settled specs and mechanical sweeps with executable checks | Luna max | Opus medium |
-| Bounded code changes | Astra low | Opus medium |
-| Substantial implementation and code design | Astra medium | Opus high |
-| Independent code review, from the other family | Astra high | Opus high |
-| Difficult debugging, consequential correctness decisions or conflicting reviewers | Astra xhigh | Opus xhigh |
-| UI, copy, public API and architecture taste | Astra medium | Fable high |
-| Unresolved taste disagreements | Astra xhigh | Fable max |
-| Vulnerability finding and defensive security work | Daybreak high | Opus high |
+| Task                                                                              | OpenAI         | Claude        |
+| --------------------------------------------------------------------------------- | -------------- | ------------- |
+| File location and prescribed tool calls                                           | Luna low       | Sonnet low    |
+| Settled specs and mechanical sweeps with executable checks                        | Luna max       | Opus medium   |
+| Bounded code changes                                                              | Sol xhigh      | Opus medium   |
+| Substantial implementation and code design                                        | Sol max        | Opus high     |
+| Independent code review, from the other family                                    | Astra high     | Opus high     |
+| Difficult debugging, consequential correctness decisions or conflicting reviewers | Astra xhigh    | Opus xhigh    |
+| UI, copy, public API and architecture taste                                       | Astra medium   | Fable high    |
+| Unresolved taste disagreements                                                    | Astra xhigh    | Fable xhigh   |
+| Vulnerability finding and defensive security work                                 | Daybreak xhigh | Opus xhigh    |
 
-Escalate settled work to Astra medium or Opus high when design or diagnosis remains. Use max for unresolved hard work after a focused attempt. Security prefers Daybreak; Opus retains cyber classifiers. Apply the refusal protocol below.
+Escalate settled work to Sol max or Opus medium when design or diagnosis remains, and to Astra when Sol max falls short. Use max for unresolved hard work after a focused attempt. Security prefers Daybreak; Opus runs classifiers. Apply the refusal protocol below.
 
-On AA native coding, Luna max cost about 0.10x Sol high; Astra medium 0.73x at a similar aggregate score; Opus high 1.31x. These ratios depend on workload. Sol high substitutes for Astra; Terra high needs a measured advantage over Luna max. Prefer Opus medium/high to Sonnet high/max for substantial coding. More effort need not improve results; fix missing context or broken tools before escalating.
+Opus xhigh matches Opus max on agentic coding at about half the cost. Fable costs about three times Opus for a lower score; reserve it for taste. More effort need not improve results; fix missing context or broken tools before escalating.
 
 Decorrelation must be cross-family. A diff your own family wrote gets its mandatory review from the other family, adversarial by default, against an immutable base. A diff the other family wrote is reviewed natively. A design worth a second proposal gets one blind proposal from each family. A green verdict from your own family alone is not a green.
 
-A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on a model with no cyber classifiers; when that model is the one that refused, the single retry goes to the rest of the other family instead. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.
+A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on a model with no classifiers; when that model is the one that refused, the single retry goes to the rest of the other family instead. A `reasoning_extraction` refusal means the prompt asked for the model's reasoning: fix the prompt, never retry it elsewhere. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.
 
 ## Cross-Family Delegation
 Reach the other family only through Flow's `flow_delegate` MCP tools, never the shell: `delegate_to_codex` from Claude, `delegate_to_claude` from Codex. Set model and effort on every call. Read the `flow:delegate` skill before the first bridge call of a session.
