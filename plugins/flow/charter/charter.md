@@ -100,7 +100,7 @@ Agents own any test environments. Dev environments are where the user tests, and
 
 Avoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.
 
-A backgrounded task, monitor, or worker seat that returns an error, null, rate-limit, or timeout must ALWAYS be verified. They are considered UNKNOWN and untrusted, and cannot progress further until validated.
+A backgrounded task, monitor or worker seat that returns an error, null, rate limit or timeout has an unknown outcome. Verify it before any later step depends on it.
 
 When structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.
 
@@ -133,7 +133,7 @@ Never batch file edits with `git commit` in one parallel tool call; after any ho
 
 PR descriptions: summary narrative + one-line-per-commit changelog.
 
-Find the root cause when debugging, not patches for symptoms, even under time pressure. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
+Find the root cause when debugging, not patches for symptoms. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
 
 ## Seat Contract
 When you are a spawned seat - a subagent or a delegated job - these rules are mechanical, not advisory. The orchestrator that spawned you holds the rest of this charter, and reads your final message as a claim to verify against git and the tree, not as a narrative to trust.

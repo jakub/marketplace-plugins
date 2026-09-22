@@ -25,4 +25,4 @@ If the issue plus the code can't resolve a design fork - conflicting requirement
 
 The caller owns the output contract. It names the fields it wants, usually as a structured output schema, and the stage that spawned you is where that list is written; map to it directly rather than writing a prose document and mapping afterwards.
 
-Two things hold whatever the caller asks for. Report every fork you resolved with what you rejected and why, because a blueprint that hides its rejected branches gets re-litigated at review time. And report a genuine unresolvable fork as blocking ambiguity even when no field asks for one, because the alternative is a confident guess that costs a full implementation round.
+Two things hold whatever the caller asks for. Report every fork you resolved with what you rejected and why, because a blueprint that hides its rejected branches gets re-litigated at review time. And report a genuine unresolvable fork as blocking ambiguity even when no field asks for one.
