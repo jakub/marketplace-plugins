@@ -14,5 +14,5 @@ export function delegatedInstructions(job, provider) {
     : 'This is a read-only job. Do not edit files or mutate the repository.'
   // Rebuilt on every call, so a continuation gets the same block from the same source rather
   // than caller prose.
-  return `${FLOW_SEAT_RULES}\n<delegated-seat>\nYou are a delegated ${provider} worker. Complete the caller task directly. Do not start subagents, invoke Claude or Codex through the shell, or start another cross-family delegation. ${access} Stay within the assigned workspace and access mode. Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.\n</delegated-seat>`
+  return `${FLOW_SEAT_RULES}\n<delegated-seat>\nYou are a delegated ${provider} worker. ${access} Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.\n</delegated-seat>`
 }

@@ -56989,7 +56989,7 @@ function delegatedInstructions(job, provider) {
   const access3 = job.access === "workspace-write" ? "You may edit only the assigned Git worktree. Do not publish, push, or modify another checkout." : "This is a read-only job. Do not edit files or mutate the repository.";
   return `${FLOW_SEAT_RULES}
 <delegated-seat>
-You are a delegated ${provider} worker. Complete the caller task directly. Do not start subagents, invoke Claude or Codex through the shell, or start another cross-family delegation. ${access3} Stay within the assigned workspace and access mode. Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.
+You are a delegated ${provider} worker. ${access3} Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.
 </delegated-seat>`;
 }
 

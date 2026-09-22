@@ -154,7 +154,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       || filesystem?.[selfPath] !== 'read'
       || threadConfig?.permissions?.flow_delegation?.network?.enabled !== false
       || (!doctorProbe && !message.params.developerInstructions?.includes('<flow-charter scope="seat">'))
-      || (!doctorProbe && !message.params.developerInstructions?.includes('Do not start subagents'))) {
+      || (!doctorProbe && !message.params.developerInstructions?.includes('spawn no agents'))) {
       say({ id: message.id, error: { code: -32602, message: 'missing restricted Flow delegation profile' } })
     } else if (!doctorProbe && !charterOk) {
       say({ id: message.id, error: { code: -32602, message: 'missing or misplaced delegated charter section' } })
