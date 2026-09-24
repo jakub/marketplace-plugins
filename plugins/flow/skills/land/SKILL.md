@@ -1,7 +1,6 @@
 ---
 name: land
 description: Land one named pull request through the flow gates - the CI and unresolved-thread checks, the escape-hatch ack, the squash-merge, explicit issue closure, worktree retirement, and a survey of what to do next. The only merge path. MUST only run when the human explicitly asks to land a specific PR; never start it from adjacent work, a finished review, or a green build.
-disable-model-invocation: true
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(node:*), Bash(docker:*), Bash(ls:*), Read, Edit, AskUserQuestion
 ---
 

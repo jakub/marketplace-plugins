@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 // Conformance lint for the pipeline stages. A stage is one SKILL.md and nothing else: it
-// declares its own tool allowance, keeps the SKILL.md model-invocation gate, opens with
+// declares its own tool allowance, stays model-invocable, opens with
 // host-neutral prose, and ends in a "## Host mechanics" section whose two subsections name the
 // calls for each host. There is no command alias; the skill IS the invocation on both hosts.
 //
-// PIPELINE is the list, because a stage is a deliberate addition and three of them is the whole
+// STAGES is the list, because a stage is a deliberate addition and three of them is the whole
 // pipeline. A name here that has no directory fails, and so does a skill NOT listed here that
 // carries a host-mechanics section - that second check is what stops a fourth stage being
 // written and quietly never linted.
 //
-// The value is whether the skill is gated. `gated` is a stage: the human alone starts it, so
-// SKILL.md sets disable-model-invocation. Codex metadata carries no invocation policy. `open` is babysit, the same document shape without the
-// gate, because an issue run hands off to it. Which one a skill is gets asserted either way, so
-// a stage cannot lose its gate and babysit cannot silently gain one.
+// Every entry is model-invocable: SKILL.md sets no disable-model-invocation and Codex metadata
+// carries no invocation policy. The human still names a stage before it starts, but in words as
+// well as by slash, so the gate is the charter and each description's MUST clause, not the
+// loader. babysit is the same document shape, and an issue run hands off to it.
 //
 // The same checker runs over the inline fixtures at the bottom, each valid but for the one
 // defect it is named for, so a green run also proves the checker can still fail and fails for
@@ -30,8 +30,7 @@ const read = (...parts) => {
   try { return lf(readFileSync(join(...parts), 'utf8')) } catch { return null }
 }
 
-const PIPELINE = { prep: 'gated', issue: 'gated', land: 'gated', babysit: 'open' }
-const STAGES = Object.keys(PIPELINE)
+const STAGES = ['prep', 'issue', 'land', 'babysit']
 
 const HOST_MECHANICS = '## Host mechanics'
 const SUBSECTIONS = ['### Claude Code', '### Codex']
@@ -56,7 +55,7 @@ const blank = (lines) => lines.join('\n').trim() === ''
 
 // Everything wrong with one stage, as sentences. An empty array is clean. Files arrive as text
 // so the inline fixtures and the real tree go through exactly the same checks.
-const stageProblems = ({ name, skill, openai, gate = 'gated' }) => {
+const stageProblems = ({ name, skill, openai }) => {
   const problems = []
   const at = `skills/${name}/SKILL.md`
   if (skill === null) return [`${at} does not exist`]
@@ -64,12 +63,8 @@ const stageProblems = ({ name, skill, openai, gate = 'gated' }) => {
   const fm = FRONTMATTER.exec(skill)
   if (!fm) problems.push(`${at} has no frontmatter, so the loader cannot read the stage's name`)
   else {
-    const suppressed = /^disable-model-invocation: true$/m.test(fm[1])
-    if (gate === 'gated' && !suppressed) {
-      problems.push(`${at} does not set "disable-model-invocation: true", so the model could start the stage itself`)
-    }
-    if (gate === 'open' && suppressed) {
-      problems.push(`${at} sets "disable-model-invocation: true", but this skill is handed off to mid-run and has to stay model-invocable`)
+    if (/^disable-model-invocation:/m.test(fm[1])) {
+      problems.push(`${at} sets "disable-model-invocation", but the model invokes the stage once the human names it`)
     }
     // The allowance used to live on a command alias. It is on the skill now, and a stage without
     // one runs on whatever the session happens to allow.
@@ -130,15 +125,14 @@ const ok = (line) => {
 }
 
 console.log('the real stages')
-for (const [name, gate] of Object.entries(PIPELINE)) {
+for (const name of STAGES) {
   const problems = stageProblems({
     name,
-    gate,
     skill: read(ROOT, 'skills', name, 'SKILL.md'),
     openai: read(ROOT, 'skills', name, 'agents', 'openai.yaml'),
   })
   assert.deepEqual(problems, [], `${name}:\n${problems.join('\n')}`)
-  ok(`${name}: own allowance, neutral body, two host subsections with prose, ${gate === 'gated' ? 'SKILL.md model invocation disabled, Codex invocation policy omitted' : 'SKILL.md model-invocable for the hand-off, Codex invocation policy omitted'}`)
+  ok(`${name}: own allowance, neutral body, two host subsections with prose, model-invocable, Codex invocation policy omitted`)
 }
 
 // Nothing else may quietly be a stage. A skill that carries a host-mechanics section and is not
@@ -148,13 +142,13 @@ const unlisted = readdirSync(join(ROOT, 'skills'), { withFileTypes: true })
   .map((entry) => entry.name)
   .filter((name) => (read(ROOT, 'skills', name, 'SKILL.md') ?? '').includes(`\n${HOST_MECHANICS}\n`))
 assert.deepEqual(unlisted, [],
-  `these skills carry a "${HOST_MECHANICS}" section but are not in PIPELINE, so nothing lints them: ${unlisted.join(', ')}`)
+  `these skills carry a "${HOST_MECHANICS}" section but are not in STAGES, so nothing lints them: ${unlisted.join(', ')}`)
 ok(`no unlisted skill carries a ${HOST_MECHANICS} section`)
 
 // The commands directory is gone on purpose: the skill is the invocation on both hosts.
 assert.equal(read(ROOT, 'commands', 'prep.md'), null,
-  'commands/prep.md is back; a command alias re-exposes a stage the model is not allowed to start')
-ok('no command alias re-exposes a stage')
+  'commands/prep.md is back; a command alias collides with the skill of the same name')
+ok('no command alias collides with a stage')
 
 console.log('the checker can still fail')
 // One valid mini stage, mutated one way per case. Building the broken files from the good one
@@ -163,7 +157,6 @@ console.log('the checker can still fail')
 const SKILL = `---
 name: mini
 description: A miniature stage, for the lint alone.
-disable-model-invocation: true
 allowed-tools: Bash(git:*), Read
 ---
 
@@ -226,14 +219,9 @@ const CASES = [
     names: ['carries no "allowed-tools:" line'],
   },
   {
-    label: 'model invocation left on',
-    problems: () => mini({ skill: SKILL.replace('disable-model-invocation: true\n', '') }),
-    names: ['does not set "disable-model-invocation: true"'],
-  },
-  {
-    label: 'an open skill that gates itself',
-    problems: () => mini({ gate: 'open' }),
-    names: ['has to stay model-invocable'],
+    label: 'model invocation disabled',
+    problems: () => mini({ skill: SKILL.replace('allowed-tools:', 'disable-model-invocation: true\nallowed-tools:') }),
+    names: ['sets "disable-model-invocation"'],
   },
   {
     label: 'a name that disagrees with the directory',
