@@ -132,6 +132,12 @@ supporting skills, so the pipeline remains `prep` → `issue` → `land`. A call
 retains the findings and owns delivery. Hillclimb's [experiment record](plugins/flow/skills/hillclimb/references/experiment-record.md)
 defines the local evidence format.
 
+[`rank-models`](plugins/flow/skills/rank-models/SKILL.md) rewrites the charter's Model Rankings
+and Model Selection sections when a model ships. Its script reads per-effort pass rates and costs
+from Artificial Analysis's Terminal-Bench run and from Cognition's FrontierCode. It drops each rung
+that a cheaper rung in the same family matches, and asks you only for what no benchmark measures:
+which models your plans run, taste ratings and quota limits.
+
 | Path | What's there |
 |---|---|
 | `plugins/flow/charter/charter.md` | The engineering charter. |
@@ -140,6 +146,7 @@ defines the local evidence format.
 | `plugins/flow/skills/flow/` | The `flow` housekeeping skill's `setup`, `drift`, `labels`, `charter`, and `cron` actions. Claude Code invokes it as `/flow:flow`; Codex uses the plugin skill by name. |
 | `plugins/flow/skills/delegate/` | `flow:delegate` - how a cross-family call works: attached against detached delivery, the review mode, the envelope, the approval fork. |
 | `plugins/flow/skills/how/`, `skills/hillclimb/` | Supporting skills for source-grounded explanations and interactive setup followed by autonomous experiments. |
+| `plugins/flow/skills/rank-models/` | The procedure and the `ladder.mjs` extractor that regenerate the charter's model rankings from benchmark data. |
 | `plugins/flow/src/delegation/`, `plugins/flow/dist/delegation.mjs` | The shared delegation service and its committed runtime bundle. Claude calls Codex through App Server; Codex calls Claude through the Agent SDK. |
 | `plugins/flow/scripts/install-delegate.mjs` | One-time installation and removal of the stable Codex MCP dispatcher, with a package cache registration per Codex home and exact version selection. |
 | `plugins/flow/scripts/issue-claim.mjs` | The read-only nested-worktree plan and atomic issue claim. |
