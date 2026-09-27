@@ -94,7 +94,8 @@ install)
   {
     echo "FLOW_WORKSPACE=${FLOW_WORKSPACE:-$HOME/code}"
     echo "FLOW_STATE=$state"
-    echo "FLOW_MODEL=${FLOW_MODEL:-sonnet}"
+    # flow-cron.mjs owns the model default, so persist a model only when one was asked for.
+    if [ -n "${FLOW_MODEL:-}" ]; then echo "FLOW_MODEL=$FLOW_MODEL"; fi
     echo "FLOW_CRON_TIMEOUT_MIN=${FLOW_CRON_TIMEOUT_MIN:-40}"
   } > "$env_file"
   chmod 0600 "$env_file"
