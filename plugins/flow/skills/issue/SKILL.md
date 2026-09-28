@@ -36,7 +36,7 @@ The planned path must sit inside the host's writable repository grant. Prove tha
 
 **Out**: an open PR, pushed, reviewed, evidenced and `Closes #N`-linked. Or a clean escalation: `needs-info`, `needs-human` or `needs-rebase`, labeled, with a comment saying what is blocking, and the escalation notice of §9. A run that never got past the preflight is not an escalation at all: it stops in the turn and leaves the issue untouched (§2). Never merge.
 
-The stage itself always stops at the pushed PR, and then hands that PR to the `babysit` skill. Continue into it after the final journal, on every run that finishes its work, without asking first: the watch is how a pushed PR becomes a landable one, not a favour the human has to request. What authorizes the hand-off is a completed run, never the push on its own. An escalation stops instead, and so does a suspension, even though the checkpoint of §9 pushes on every fork but the one about the bytes themselves. That push is a recovery point on an unfinished run, and handing it to a watch would start reviewing work the human has not yet unblocked. Both report what is blocking and stop.
+The stage itself always stops at the pushed PR, and then hands that PR to the `babysit` skill. Continue into it after the final journal, on every run that finishes its work, without asking first: the watch is how a pushed PR becomes a landable one, not a favour the human has to request. The hand-off is an invocation of that skill with the PR number, as your host's subsection says, and its body governs everything after the push. Waiting on CI or reviewers from this stage's own judgment is not the hand-off. What authorizes the hand-off is a completed run, never the push on its own. An escalation stops instead, and so does a suspension, even though the checkpoint of §9 pushes on every fork but the one about the bytes themselves. That push is a recovery point on an unfinished run, and handing it to a watch would start reviewing work the human has not yet unblocked. Both report what is blocking and stop.
 
 ## 2. The write-seat preflight
 
@@ -199,6 +199,8 @@ Workspace boundary. The session's workspace roots are the directory the session 
 
 **Forks.** Asking answers inside the turn, so optional forks are asked.
 
+**Hand-off.** Invoke `flow:babysit` through the Skill tool with the PR number as its argument.
+
 **Escalation ping.** `PushNotification`, one line naming the issue number and what is blocking, fired after the label and the comment are on the issue. Best effort.
 
 ### Codex
@@ -216,5 +218,7 @@ Give a delegated Claude writer only the exact claimed worktree as `cwd`. Its wri
 **Reaching a running seat.** You cannot. A running seat is opaque here, with no live output and no way in until it finishes, so prefer one checkpoint per spawn: a seat that wandered can only be corrected after it stops. `followup_task` on a completed seat starts its next turn carrying the orchestrator-verified state; `send_message` only queues text and resumes nothing. Four to six concurrent write seats on disjoint files is this host's working ceiling, bounded by what you can verify against git in one turn, inside the charter's seat cap.
 
 **Forks.** Asking ends the turn, so optional forks are never asked; trust forks suspend, with the full checkpoint and the push carve-out exactly as §9 states them.
+
+**Hand-off.** Invoke the plugin's `babysit` skill by name with the PR number.
 
 **Escalation ping.** `notify-send`, one line naming the issue number and what is blocking, fired after the label and the comment are on the issue. Best effort and silent over SSH, where there is no session bus; that gap is documented, not worked around.

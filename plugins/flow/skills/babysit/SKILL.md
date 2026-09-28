@@ -41,6 +41,8 @@ Work in rounds. A round is one pass from "what changed" to "pushed and answered"
 5. **Push once per round**, then reply to and resolve the round's threads, citing the pushed SHA.
 6. **Wait, then verify the wait.** The bots re-review the new head and CI reruns, neither instantly. A round is not clean because the PR was quiet the moment you pushed: it is clean when CI has completed on the new head and the bots have either posted against it or a reasonable quiet interval has passed with nothing arriving. Then gather again; the next round starts only if the gather found something.
 
+   A watcher is an alarm clock, never a verdict: whether it fires, stays silent or exits, it says nothing about the PR, and only a gather does. While anything is pending, run a full gather at least every five minutes, whether or not a watcher fired, because a reviewer's comment moves no check a watcher is waiting on. Never tell the human the PR is waiting on something unless a gather in the same turn showed it; name the head SHA and the pending checks that gather found.
+
 Past roughly five fix rounds, or when a fix keeps spawning findings where it landed, stop fixing. Summarize the survivors, your read on each, and hand the set to the human.
 
 ## Reporting
@@ -55,7 +57,7 @@ Read the subsection for your host.
 
 **Argument.** The PR number the human named in the `/flow:babysit` invocation; empty means resolve from the current branch. The human asking in words works the same.
 
-**Waiting.** Prefer a real wait over a hot poll: the Monitor tool with an until-condition over the PR's checks and comments, or a scheduled wakeup where the session offers one, and bounded `gh` polls otherwise. A monitor that errors or times out is UNKNOWN, not quiet - re-read the PR before trusting it.
+**Waiting.** Wait in slices of five minutes at most: a Monitor whose until-condition covers new comments, reviews and threads as well as the check rollup, bounded by a timeout, or a scheduled wakeup where the session offers one. End every slice with a full gather, whether the monitor fired, timed out or errored. A monitor that errors or times out is UNKNOWN, not quiet.
 
 **Seats.** Minor fixes are yours inline in the worktree; a substantial fix round goes to an implementer seat handed the worktree path. The cross-family review is a `delegate_to_codex` review-mode call per the delegate skill.
 
@@ -63,7 +65,7 @@ Read the subsection for your host.
 
 **Argument.** The PR number in the human's message naming this skill or asking for the watch in words; empty means the current branch. There is no slash command here.
 
-**Waiting.** Poll with bounded shell sleeps inside the turn. A wait too long to hold in one turn ends it with a status line naming what you are waiting for; the human's next message resumes the watch from a fresh gather, never from remembered state.
+**Waiting.** Poll with shell sleeps of five minutes at most inside the turn, and end each sleep with a full gather. A wait too long to hold in one turn ends it with a status line naming what you are waiting for; the human's next message resumes the watch from a fresh gather, never from remembered state.
 
 Git writes. The app's repository grant can leave `.git` read-only. Use its normal approval mechanism for worktree creation, commits, rebases and pushes that need Git metadata writes. Keep the project root at the canonical checkout and pass the exact nested worktree to delegated writers.
 
