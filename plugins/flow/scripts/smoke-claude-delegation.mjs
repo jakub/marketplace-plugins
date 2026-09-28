@@ -99,7 +99,7 @@ const initialize = (message) => say({
     subtype: 'success', request_id: message.request_id,
     ...(mode === 'startup-empty' ? {} : { response: {
       commands: [], agents: [], output_style: 'default', available_output_styles: [],
-      models: [{ value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: 'fake', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] }],
+      models: [{ value: 'sonnet', resolvedModel: 'claude-sonnet-5-5', displayName: 'Sonnet', description: 'fake', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] }],
       account: { subscriptionType: 'Claude Max', apiProvider: 'firstParty', email: 'redacted@example.invalid' },
       pid: process.pid, current_permission_mode: 'dontAsk', analytics_disabled: true,
     } }),
@@ -107,7 +107,7 @@ const initialize = (message) => say({
 })
 const initFrame = () => say({
   type: 'system', subtype: 'init', agents: [], apiKeySource: 'none', claude_code_version: '2.1.test',
-  cwd: process.cwd(), tools: ['Read', 'Grep', 'Glob', 'Bash'], mcp_servers: [], model: 'claude-sonnet-5',
+  cwd: process.cwd(), tools: ['Read', 'Grep', 'Glob', 'Bash'], mcp_servers: [], model: 'claude-sonnet-5-5',
   permissionMode: 'dontAsk', slash_commands: [], output_style: 'default', skills: [], plugins: [],
   capabilities: ['interrupt_receipt_v1', 'interrupt_cancel_queued_v1'], uuid: randomUUID(), session_id: sessionId,
 })
@@ -152,12 +152,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     }
     if (mode === 'rate-limit') {
       say({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' }, uuid: randomUUID(), session_id: sessionId })
-      say({ type: 'assistant', error: 'rate_limit', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'assistant', error: 'rate_limit', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'limit reached', error: true })
     }
     if (mode === 'billing' || mode === 'overloaded') {
       const error = mode === 'billing' ? 'billing_error' : 'overloaded'
-      say({ type: 'assistant', error, message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'assistant', error, message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5-5', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: error, error: true })
     }
     if (mode.startsWith('synthetic-')) {
@@ -166,17 +166,17 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         : mode === 'synthetic-billing' ? 'billing_error' : undefined
       say({ type: 'assistant', ...(error ? { error } : {}), message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'private synthetic diagnostic' }], model: '<synthetic>', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       if (error) return result({ text: 'private synthetic diagnostic', error: true })
-      const model = mode === 'synthetic-then-swap' ? 'claude-opus-4-8' : 'claude-sonnet-5'
+      const model = mode === 'synthetic-then-swap' ? 'claude-opus-4-8' : 'claude-sonnet-5-5'
       say({ type: 'assistant', message: { id: 'real', role: 'assistant', content: [{ type: 'text', text: 'real answer' }], model, stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'real answer' })
     }
     if (mode === 'refusal') {
-      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5', stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber' }, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
-      say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [], model: 'claude-sonnet-5-5', stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber' }, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
       return result({ text: '' })
     }
     if (mode === 'refusal-fallback') {
-      say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
       say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'answer from the fallback' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'answer from the fallback' })
     }
@@ -186,13 +186,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     }
     if (mode === 'refusal-hang') {
       // A refusal with no result frame, waiting for whoever cancels it.
-      say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'system', subtype: 'model_refusal_no_fallback', original_model: 'claude-sonnet-5-5', request_id: null, api_refusal_category: 'cyber', content: 'declined', uuid: randomUUID(), session_id: sessionId })
       return
     }
     if (mode === 'refusal-swap-hang') {
       // Refusal banner, then a frame from the fallback model, then nothing: the worker's own
       // interrupt gets no answer and the CLI never sends a result frame.
-      say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'local', original_model: 'claude-sonnet-5-5', fallback_model: 'claude-opus-4-8', request_id: null, api_refusal_category: 'cyber', content: 'fell back', uuid: randomUUID(), session_id: sessionId })
       say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'partial answer from the fallback' }], model: 'claude-opus-4-8', stop_reason: null, usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return
     }
@@ -200,12 +200,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       // The wrong model answers first, the right one later. The first frame has to decide.
       say({ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'from the wrong model' }], model: 'claude-opus-4-8', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return setTimeout(() => {
-        say({ type: 'assistant', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'from the right model' }], model: 'claude-sonnet-5', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+        say({ type: 'assistant', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'from the right model' }], model: 'claude-sonnet-5-5', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
         result({ text: 'from the right model' })
       }, 400)
     }
     if (mode === 'tagged-model') {
-      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'same model, tagged' }], model: 'claude-sonnet-5[1m]', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+      say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text: 'same model, tagged' }], model: 'claude-sonnet-5-5[1m]', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
       return result({ text: 'same model, tagged' })
     }
     if (mode === 'max-turns') return result({ text: 'turn limit', error: true, subtype: 'error_max_turns' })
@@ -216,7 +216,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       : undefined
     const text = structured === undefined ? 'OK from fake Claude' : JSON.stringify(structured)
     say({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
-    say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text }], model: 'claude-sonnet-5', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
+    say({ type: 'assistant', message: { id: 'm', role: 'assistant', content: [{ type: 'text', text }], model: 'claude-sonnet-5-5', stop_reason: 'end_turn', usage }, parent_tool_use_id: null, uuid: randomUUID(), session_id: sessionId })
     result({ text, structured })
   }
 })
@@ -433,7 +433,7 @@ process.exit(child.status ?? 1)
   assert.equal(swapped.status, 'failed', 'an answer from an unrequested model fails even with no refusal signal')
   assert.equal(swapped.error.kind, 'MODEL_MISMATCH')
   assert.equal(swapped.error.details.served, 'claude-opus-4-8')
-  assert.equal(swapped.error.details.expected, 'claude-sonnet-5')
+  assert.equal(swapped.error.details.expected, 'claude-sonnet-5-5')
   const returned = await startJob({ prompt: 'Swapped, then back' }, { mode: 'swap-then-return', stateDir: state('swap-then-return') })
   assert.equal(returned.status, 'failed', 'a later frame from the requested model does not undo the swap')
   assert.equal(returned.error.kind, 'MODEL_MISMATCH')

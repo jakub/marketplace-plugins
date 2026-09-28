@@ -52,7 +52,7 @@ Name each family once, followed by its releases. Pass the band from step 2:
 ```sh
 node <this skill's directory>/scripts/ladder.mjs --band 8 \
   openai=gpt-6-luna,gpt-6-sol,gpt-6-astra \
-  claude=claude-opus-5-5,claude-fable-5-1,claude-sonnet-5
+  claude=claude-opus-5-5,claude-fable-5-1,claude-sonnet-5-5
 ```
 
 The script prints three sections:

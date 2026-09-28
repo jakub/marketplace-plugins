@@ -3,7 +3,7 @@
 //
 //   node ladder.mjs --band <points> [--keep <slug>[,<slug>…]] [--json] [--coding <eval>] [--tools <eval>]
 //                   [--fc-version <key>] <family>=<release>[,<release>…] …
-//   node ladder.mjs --band 8 openai=gpt-6-luna,gpt-6-astra claude=claude-opus-5-5,claude-sonnet-5
+//   node ladder.mjs --band 8 openai=gpt-6-luna,gpt-6-astra claude=claude-opus-5-5,claude-sonnet-5-5
 //
 // Sources. A release is the bare slug from artificialanalysis.ai/models/<release>. Each release
 // page lists its effort variants, and every variant page embeds one `currentModel` object in its
