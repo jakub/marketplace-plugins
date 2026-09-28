@@ -21,20 +21,28 @@ Native seats get the seat half from a hook, delegated jobs in their preamble; co
 
 ## Model Rankings
 
-As of 2026-09-22. Higher is better. Pairs mean `low / max` effort; `high` is an intermediate setting. Do not interpolate or treat half-point intelligence differences as decisive.
+As of 2026-09-27, at API list prices, from two agentic coding evaluations. TB is Artificial Analysis's run of Terminal-Bench 4.0: 66 hard terminal tasks on one harness, pass@1 over three repeats. FC is Cognition's FrontierCode: 100 private tasks graded on whether the maintainer would merge the PR, run in Claude Code and Codex. A rung's pass rate is the mean of the two, and $ is the geometric mean of their costs per task. A rung stays on its family's ladder only when no rung in the family passes at least as often for less per solve, and rungs within 8 points of each other are a tie the cheapest takes.
 
-Both scales come from the Artificial Analysis Intelligence Index: cheapness from its run cost, about one point per halving and capped at 10, and intelligence from its score. Taste is the human's UI, copy, API and design rating; `?` is unrated. Classifiers lists what can refuse a request.
+| Rung | TB | FC | $ | $/solve | Tools | Try first above |
+| --- | --- | --- | --- | --- | --- | --- |
+| **OpenAI** | | | | | | |
+| Luna medium, tools | 3% | 36% | 0.06 | 0.32 | 0.40 | 69% |
+| Luna high | 5% | 37% | 0.09 | 0.42 | 0.48 | 10% |
+| Sol medium | 19% | 46% | 0.93 | 2.87 | 0.58 | 58% |
+| Sol xhigh | 30% | 48% | 1.59 | 4.04 | 0.62 | 45% |
+| Astra high | 54% | 51% | 3.49 | 6.65 | 0.67 | 80% |
+| Astra xhigh, hard rows | 60% | 51% | 4.38 | 7.95 | 0.67 | — |
+| **Claude** | | | | | | |
+| Opus low, tools | 31% | 47% | 0.92 | 2.33 | 0.53 | 51% |
+| Opus medium | 53% | 55% | 1.80 | 3.36 | 0.61 | 76% |
+| Opus high, hard rows | 57% | 54% | 2.36 | 4.27 | 0.63 | 53% |
+| Opus xhigh, hard rows | 60% | 51% | 4.45 | 8.01 | 0.65 | — |
 
-| Model                    | Cheapness low/max | Intelligence low/max | Taste | Classifiers |
-| ------------------------ | ----------------- | -------------------- | ----- | ----------- |
-| gpt-6-luna               | 10/10             | 2.5/6                | ?     | cyber       |
-| gpt-6-sol                | 9/7               | 5.5/8.5              | ?     | cyber       |
-| gpt-6-astra              | 7/5.5             | 8/10                 | 9     | cyber       |
-| opus-5-5                 | 7.5/4.5           | 7.5/10               | 10    | cyber, bio  |
-| fable-5-1                | 6/4               | 8.5/10               | 10    | cyber, bio  |
-| gpt-daybreak-blue-latest | 7/5.5*            | 6/8*                 | 5     | none        |
+$/solve is $ over the mean pass rate. Tools is AutomationBench, the index's tool-use score; the family's cheapest tool-use solve is its tool-call rung. Try first above is a rung's $ over the next rung's: the pass rate a task must promise before the cheaper rung is worth trying first. A hard-rows rung sits inside a cheaper rung's tie, and the hardest rows use it on TB's direction alone.
 
-Scores are estimates. Effort names mean different amounts of thinking on different models. Benchmarks do not measure taste or subscription quota.
+Off the ladder: Sonnet, because Opus low costs less and passes more than every Sonnet rung. Fable, because Opus medium passes more often than every Fable rung for less, so Fable serves taste alone. Max on every model, which ties xhigh at a higher cost. Daybreak has no public benchmark or price.
+
+Taste is the human's UI, copy, API and design rating: Opus and Fable 10, Astra 9, Daybreak 5, Luna and Sol unrated. Classifiers can refuse a request: cyber on Luna, Sol and Astra, cyber and bio on Opus and Fable, none on Daybreak. Effort names mean different amounts of thinking on different models. Benchmarks do not measure taste or subscription quota.
 
 ## Model Selection
 
@@ -44,19 +52,17 @@ Do not add optional turn, token, or spending caps, or shorten default timeouts, 
 
 | Task                                                                              | OpenAI         | Claude        |
 | --------------------------------------------------------------------------------- | -------------- | ------------- |
-| File location and prescribed tool calls                                           | Luna low       | Sonnet low    |
-| Settled specs and mechanical sweeps with executable checks                        | Luna max       | Opus medium   |
-| Bounded code changes                                                              | Sol xhigh      | Opus medium   |
-| Substantial implementation and code design                                        | Sol max        | Opus high     |
+| File location and prescribed tool calls                                           | Luna medium    | Opus low      |
+| Settled specs and mechanical sweeps with executable checks                        | Luna high      | Opus low      |
+| Bounded code changes                                                              | Sol medium     | Opus medium   |
+| Substantial implementation and code design                                        | Sol xhigh      | Opus high     |
 | Independent code review, from the other family                                    | Astra high     | Opus high     |
 | Difficult debugging, consequential correctness decisions or conflicting reviewers | Astra xhigh    | Opus xhigh    |
-| UI, copy, public API and architecture taste                                       | Astra medium   | Fable high    |
+| UI, copy, public API and architecture taste                                       | Astra high     | Fable high    |
 | Unresolved taste disagreements                                                    | Astra xhigh    | Fable xhigh   |
 | Vulnerability finding and defensive security work                                 | Daybreak xhigh | Opus xhigh    |
 
-Escalate settled work to Sol max or Opus medium when design or diagnosis remains, and to Astra when Sol max falls short. Use max for unresolved hard work after a focused attempt. Security prefers Daybreak; Opus runs classifiers. Apply the refusal protocol below.
-
-Opus xhigh matches Opus max on agentic coding at about half the cost. Fable costs about three times Opus for a lower score; reserve it for taste. More effort need not improve results; fix missing context or broken tools before escalating.
+Each row names a starting rung. Try a lower rung first only when you expect the task to pass on it more often than its try-first threshold, and step up one rung when a focused attempt fails. Benchmark tasks are hard, so settled, well-specified work passes more often than the table shows and earns cheaper first attempts. More effort need not improve results; fix missing context or broken tools before stepping up. Security prefers Daybreak; Opus runs classifiers. Apply the refusal protocol below.
 
 Decorrelation must be cross-family. A diff your own family wrote gets its mandatory review from the other family, adversarial by default, against an immutable base. A diff the other family wrote is reviewed natively. A design worth a second proposal gets one blind proposal from each family. A green verdict from your own family alone is not a green.
 

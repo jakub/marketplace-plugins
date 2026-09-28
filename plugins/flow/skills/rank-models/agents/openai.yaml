@@ -1,0 +1,3 @@
+interface:
+  display_name: "Rank models"
+  short_description: "Re-rank the charter's model ladder from benchmark data"
