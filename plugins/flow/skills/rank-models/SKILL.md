@@ -58,7 +58,7 @@ node <this skill's directory>/scripts/ladder.mjs --band 8 \
 The script prints three sections:
 
 - the ladder, in the charter's table format
-- every rung that left the ladder, with its reason: unmeasured, beaten by a named rung, tied with a named rung, or an error on its page
+- every rung that left the ladder, with its reason: unmeasured, beaten by a named rung, tied with a named rung, or an error on its page. When the rung that beats it also tied away, the reason names the ladder rung it tied with, and a tool-call rung that left the coding ladder is listed here too
 - every rung's full numbers, including each evaluation's score and cost, the Intelligence Index and the list prices
 
 Add `--json` to get the raw rungs instead.
@@ -72,7 +72,7 @@ The script applies rules 1 to 5. Check its output against them, then apply rule 
 3. Ties collapse from the top down. The strongest rung left opens a group, every rung within the band below it joins that group, and the group's cheapest rung stays on the ladder. Repeat with the rungs left.
 4. The tool-call rung is the family's rung with the lowest cost per solve on the tool-use evaluation, on the ladder or not.
 5. Each ladder rung except the top gets a try-first threshold: its cost divided by the next rung's. Trying rung A before rung B costs c_A + (1 − p_A) × c_B, and that is less than c_B only when p_A is greater than c_A ÷ c_B. The rule assumes that a failed attempt is detectable and that B solves every task A solves. So a cheaper rung is worth a first attempt only on a task it passes more often than its threshold.
-6. A model with no rung left leaves the rankings. Move each Model Selection row that named it to the ladder rung that replaced it. A model that the human rates highest for taste keeps its taste rows, and an unmeasured model keeps the rows the human kept in step 1.
+6. A model with no rung left leaves the rankings. Move each Model Selection row that named it to the ladder rung that replaced it, the last rung its reason names. A model that the human rates highest for taste keeps its taste rows, and an unmeasured model keeps the rows the human kept in step 1.
 
 The human may keep a rung that rule 2 or rule 3 removed, most often a higher effort for the hardest rows. Ask about each rung that a current Model Selection row names and the rules removed. Rerun the script with `--keep <slug>[,<slug>…]` for each rung the human keeps. A kept rung rejoins its ladder, marked as kept, and gets a try-first threshold like the others. As of 2026-09-27, the human keeps Astra xhigh, Opus high and Opus xhigh for the hardest rows, on Terminal-Bench's direction alone.
 

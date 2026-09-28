@@ -175,13 +175,14 @@ async function measureRung(slug, family, frontiercode) {
 
 function ladder(rungs) {
   const scored = rungs.filter((r) => r.status === 'ok')
-  // Name the cheapest rung that beats this one, the one a reader would move to instead.
+  const beats = (a, b) => a !== b && a.pass >= b.pass && a.perSolve < b.perSolve
+  const frontier = scored.filter((r) => !scored.some((other) => beats(other, r))).sort((a, b) => b.pass - a.pass)
+  // Name the cheapest unbeaten rung that beats this one, the one a reader would move to instead.
+  // Beating is transitive, so every beaten rung has one, and it either stays on the ladder or ties
+  // the ladder rung that does.
   for (const r of scored) {
-    r.beatenBy = scored
-      .filter((other) => other !== r && other.pass >= r.pass && other.perSolve < r.perSolve)
-      .sort((a, b) => a.cost - b.cost)[0] ?? null
+    r.beatenBy = frontier.filter((other) => beats(other, r)).sort((a, b) => a.cost - b.cost)[0] ?? null
   }
-  const frontier = scored.filter((r) => r.beatenBy === null).sort((a, b) => b.pass - a.pass)
   const on = []
   while (frontier.length > 0) {
     const floor = frontier[0].pass - band / 100
@@ -242,12 +243,15 @@ for (const { family, on, toolRung } of results) {
 console.log('\nOff the ladder:')
 for (const { family, missing, rungs, on, toolRung } of results) {
   for (const { release, why } of missing) console.log(`- ${family}: ${release}: ${why ?? 'no page on Artificial Analysis'}`)
-  for (const r of rungs.filter((x) => !on.includes(x) && x !== toolRung)) {
+  for (const r of rungs.filter((x) => !on.includes(x))) {
+    const tied = (x) => `tied within ${band} points with ${name(x.tiedWith)}, which costs ${usd(x.tiedWith.cost)} to its ${usd(x.cost)}`
     const why = r.status !== 'ok' ? `${r.status}: ${r.why}`
       : r.beatenBy ? `beaten by ${name(r.beatenBy)}, ${pct(r.beatenBy.pass)} at ${usd(r.beatenBy.perSolve)}/solve`
-      : `tied within ${band} points with ${name(r.tiedWith)}, which costs ${usd(r.tiedWith.cost)} to its ${usd(r.cost)}`
+        + (on.includes(r.beatenBy) ? '' : `, itself ${tied(r.beatenBy)}`)
+      : tied(r)
     const numbers = r.status === 'ok' ? ` (${pct(r.pass)}, ${usd(r.perSolve)}/solve)` : ''
-    console.log(`- ${family}: ${name(r)}${numbers}: ${why}`)
+    const tools = r === toolRung ? '; it stays as the tool-call rung' : ''
+    console.log(`- ${family}: ${name(r)}${numbers}: ${why}${tools}`)
   }
 }
 
