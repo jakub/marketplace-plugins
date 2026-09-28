@@ -21,7 +21,7 @@ Native seats get the seat half from a hook, delegated jobs in their preamble; co
 
 ## Model Rankings
 
-As of 2026-09-27, at API list prices, from two agentic coding evaluations. TB is Artificial Analysis's run of Terminal-Bench 4.0: 66 hard terminal tasks on one harness, pass@1 over three repeats. FC is Cognition's FrontierCode: 100 private tasks graded on whether the maintainer would merge the PR, run in Claude Code and Codex. A rung's pass rate is the mean of the two, and $ is the geometric mean of their costs per task. A rung stays on its family's ladder only when no rung in the family passes at least as often for less per solve, and rungs within 8 points of each other are a tie the cheapest takes.
+As of 2026-09-28, at API list prices, from two agentic coding evaluations. TB is Artificial Analysis's run of Terminal-Bench 4.0: 66 hard terminal tasks on one harness, pass@1 over three repeats. FC is Cognition's FrontierCode: 100 private tasks graded on whether the maintainer would merge the PR, run in Claude Code and Codex. A rung's pass rate is the mean of the two, and $ is the geometric mean of their costs per task. A rung stays on its family's ladder only when no rung in the family passes at least as often for less per solve, and rungs within 8 points of each other are a tie the cheapest takes. Sonnet's rungs are from its system card until the index runs it: Cognition's FC, and Anthropic's own TB scaled per effort by Opus's index-to-card ratios.
 
 | Rung | TB | FC | $ | $/solve | Tools | Try first above |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -33,6 +33,7 @@ As of 2026-09-27, at API list prices, from two agentic coding evaluations. TB is
 | Astra high | 54% | 51% | 3.49 | 6.65 | 0.67 | 80% |
 | Astra xhigh, hard rows | 60% | 51% | 4.38 | 7.95 | 0.67 | — |
 | **Claude** | | | | | | |
+| Sonnet medium | 26% | 37% | 0.52 | 1.66 | — | 57% |
 | Opus low, tools | 31% | 47% | 0.92 | 2.33 | 0.53 | 51% |
 | Opus medium | 53% | 55% | 1.80 | 3.36 | 0.61 | 76% |
 | Opus high, hard rows | 57% | 54% | 2.36 | 4.27 | 0.63 | 53% |
@@ -40,9 +41,9 @@ As of 2026-09-27, at API list prices, from two agentic coding evaluations. TB is
 
 $/solve is $ over the mean pass rate. Tools is AutomationBench, the index's tool-use score; the family's cheapest tool-use solve is its tool-call rung. Try first above is a rung's $ over the next rung's: the pass rate a task must promise before the cheaper rung is worth trying first. A hard-rows rung sits inside a cheaper rung's tie, and the hardest rows use it on TB's direction alone.
 
-Off the ladder: Sonnet, because Opus low costs less and passes more than every Sonnet rung. Fable, because Opus medium passes more often than every Fable rung for less, so Fable serves taste alone. Max on every model, which ties xhigh at a higher cost. Daybreak has no public benchmark or price.
+Off the ladder: Sonnet low, beaten by medium, and higher Sonnet rungs, tied with cheaper Opus. Fable serves taste alone, as Opus medium beats every Fable rung. Max on every model, which ties xhigh at a higher cost. Daybreak has no public benchmark or price.
 
-Taste is the human's UI, copy, API and design rating: Opus and Fable 10, Astra 9, Daybreak 5, Luna and Sol unrated. Classifiers can refuse a request: cyber on Luna, Sol and Astra, cyber and bio on Opus and Fable, none on Daybreak. Effort names mean different amounts of thinking on different models. Benchmarks do not measure taste or subscription quota.
+Taste is the human's UI, copy, API and design rating: Opus and Fable 10, Astra 9, Sonnet 8, Daybreak 5, Luna and Sol unrated. Classifiers can refuse a request: cyber on Luna, Sol and Astra, cyber and bio on Opus, Fable and Sonnet, none on Daybreak. Effort names mean different amounts of thinking on different models. Benchmarks do not measure taste or subscription quota.
 
 ## Model Selection
 
@@ -53,7 +54,7 @@ Do not add optional turn, token, or spending caps, or shorten default timeouts, 
 | Task                                                                              | OpenAI         | Claude        |
 | --------------------------------------------------------------------------------- | -------------- | ------------- |
 | File location and prescribed tool calls                                           | Luna medium    | Opus low      |
-| Settled specs and mechanical sweeps with executable checks                        | Luna high      | Opus low      |
+| Settled specs and mechanical sweeps with executable checks                        | Luna high      | Sonnet medium |
 | Bounded code changes                                                              | Sol medium     | Opus medium   |
 | Substantial implementation and code design                                        | Sol xhigh      | Opus high     |
 | Independent code review, from the other family                                    | Astra high     | Opus high     |

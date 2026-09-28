@@ -16,8 +16,8 @@
 // extractReport below. Non-zero exit on a failed or timed-out session so
 // `systemctl --user status flow-<job>` shows it.
 //
-// Env: FLOW_WORKSPACE (default ~/code), FLOW_STATE, FLOW_MODEL (default claude-opus-5-5),
-// FLOW_EFFORT (default low), FLOW_CRON_TIMEOUT_MIN (default 40).
+// Env: FLOW_WORKSPACE (default ~/code), FLOW_STATE, FLOW_MODEL (default claude-sonnet-5-5),
+// FLOW_EFFORT (default medium), FLOW_CRON_TIMEOUT_MIN (default 40).
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -149,8 +149,8 @@ function main() {
   }
   const workspace = process.env.FLOW_WORKSPACE || join(homedir(), "code");
   const state = process.env.FLOW_STATE || join(homedir(), ".local", "state", "flow");
-  const model = process.env.FLOW_MODEL || "claude-opus-5-5";
-  const effort = process.env.FLOW_EFFORT || "low";
+  const model = process.env.FLOW_MODEL || "claude-sonnet-5-5";
+  const effort = process.env.FLOW_EFFORT || "medium";
   const timeoutMs = Number(process.env.FLOW_CRON_TIMEOUT_MIN || 40) * 60_000;
   const reports = join(state, "reports");
   const date = new Date().toISOString().slice(0, 10);
