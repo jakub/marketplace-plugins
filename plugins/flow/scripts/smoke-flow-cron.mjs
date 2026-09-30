@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// Smoke harness for scripts/flow-cron.mjs: its report extraction, and its allowlists against
-// git-guard's cron regex. The jobs deliver their report and then keep talking (filing a gripe,
+// Smoke harness for scripts/flow-cron.mjs: its report extraction, its allowlists against
+// git-guard's cron regex, and the dry run through install-cron.sh. The jobs deliver their report and then keep talking (filing a gripe,
 // answering a question), so the session's last message is routinely not the report. Reading only
 // the type:"result" entry filed ten of twelve runs between 2026-08-24 and 2026-09-01 as failures
 // whose text was "Gripe filed." and nothing else. Every case here is stdout as `claude -p` really
 // writes it.
 // Run: node plugins/flow/scripts/smoke-flow-cron.mjs
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -91,6 +93,32 @@ for (const [job, { allowedTools }] of Object.entries(jobs("/x"))) {
   const line = prefix.endsWith(" survey") ? `${prefix} /home/x/code/r` : `${prefix} delete-branch /home/x/code/r feat/x`;
   check(`${job}: git-guard admits its entry (${line})`, guardAllows(job, line), true);
   check(`${job}: git-guard still refuses git`, guardAllows(job, "git -C /home/x/code/r log -1"), false);
+}
+
+// `install-cron.sh run <job> --dry-run` is how a prompt change is tried without installing
+// anything. It has to pass the flag through (a dropped --dry-run is a real headless session) and
+// run the plugin CLAUDE_PLUGIN_ROOT names, even with a launcher installed that would resolve
+// another one. A fake claude and a fake launcher each leave a marker if anything calls them.
+console.log("install-cron.sh run");
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const tmp = mkdtempSync(join(tmpdir(), "flow-cron-"));
+try {
+  mkdirSync(join(tmp, "bin"));
+  mkdirSync(join(tmp, ".local", "libexec"), { recursive: true });
+  writeFileSync(join(tmp, "bin", "claude"), `#!/bin/sh\ntouch ${tmp}/claude-ran\n`, { mode: 0o755 });
+  writeFileSync(join(tmp, ".local", "libexec", "flow-cron"), `#!/bin/sh\ntouch ${tmp}/launcher-ran\n`, { mode: 0o755 });
+  const run = spawnSync("bash", [join(ROOT, "scripts", "install-cron.sh"), "run", "lint", "--dry-run"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: tmp, PATH: `${join(tmp, "bin")}:${process.env.PATH}`, CLAUDE_PLUGIN_ROOT: ROOT, FLOW_STATE: tmp, FLOW_WORKSPACE: tmp },
+  });
+  const out = run.stdout ?? "";
+  check("exits 0", run.status, 0);
+  check("prints the composed command", /^claude -p .* --permission-mode dontAsk --allowedTools /m.test(out), true);
+  check("from the named plugin", out.includes(join(ROOT, "skills", "flow", "cron", "lint.md")), true);
+  check("starts no session", existsSync(join(tmp, "claude-ran")), false);
+  check("does not go through the installed launcher", existsSync(join(tmp, "launcher-ran")), false);
+} finally {
+  rmSync(tmp, { recursive: true, force: true });
 }
 
 console.log(bad === 0 ? "\nflow-cron: ALL PASS" : `\nflow-cron: ${bad} FAILURE(S)`);
