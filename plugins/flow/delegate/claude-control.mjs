@@ -10,10 +10,11 @@
 // mcp_status must report no MCP server, or the job fails ISOLATION. Either failure sends no
 // prompt. Only then does the prompt go out, as a user message marked client_composed, so the CLI
 // neither expands an @path mention nor runs a slash command in text another model wrote. The
-// system/init frame that follows it names the session's tools, MCP servers and plugins: a tool
-// outside the requested set, any server or any plugin stops the turn before any tool result
-// exists, and the job fails ISOLATION. An init or assistant frame from any model but the expected
-// one stops the turn too, and the job fails MODEL_MISMATCH.
+// system/init frame that follows it names the session's tools, MCP servers and plugins. A tool
+// outside the requested set, any server, or any plugin but the CLI's built-ins stops the turn
+// before any tool result exists, and the job fails ISOLATION. A built-in passes only with path
+// "builtin" and source "<name>@builtin". An init or assistant frame from any model but the
+// expected one stops the turn too, and the job fails MODEL_MISMATCH.
 //
 // The containment is what the CLI is handed: no setting source, no MCP config, and the sandbox and
 // permission rules in claudeSettings.
