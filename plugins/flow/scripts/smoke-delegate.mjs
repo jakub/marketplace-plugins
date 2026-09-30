@@ -3,9 +3,9 @@
 // temp directory, and two fake provider executables first on a temp PATH. Each fake records its
 // argv, cwd and environment in the job's private TMPDIR, and answers in the mode a
 // FLOW_FAKE_MODE=<mode> token in the prompt names. The fake Codex is an App Server peer that also
-// records every request and response; the fake Claude records its stdin and prints the JSONL its
-// CLI emits. The fakes speak the protocol subset the transports use, in the shapes Codex CLI
-// 0.159.0 and Claude Code 2.1.284 answer with. No network, no model.
+// records every request and response; the fake Claude is a stream-json control-channel peer that
+// records every frame it is written. The fakes speak the protocol subset the transports use, in
+// the shapes Codex CLI 0.159.0 and Claude Code 2.1.284 answer with. No network, no model.
 // Run: node plugins/flow/scripts/smoke-delegate.mjs
 
 import assert from 'node:assert/strict'
@@ -52,13 +52,17 @@ const readJob = (id) => JSON.parse(readFileSync(jobPath(id, 'job.json'), 'utf8')
 // turn/start carried.
 const asked = (id, method) => (fakeCall(id)?.requests ?? []).filter((request) => request.method === method).map((request) => request.params)
 const turnText = (id) => asked(id, 'turn/start')[0]?.input.map((part) => part.text).join('')
+// What the fake Claude was written: every frame in order, and the text of each user message.
+const wrote = (id) => fakeCall(id)?.frames ?? []
+const userTexts = (id) => wrote(id).filter((frame) => frame.type === 'user').map((frame) => frame.message.content.map((part) => part.text).join(''))
 const journal = (id) => readFileSync(jobPath(id, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line) } catch { return line } })
 const THREAD = '11111111-1111-4111-8111-111111111111'
 const TURN = '22222222-2222-4222-8222-222222222222'
 
 // One fake, two names. Codex answers `app-server --stdio` as a JSON-RPC peer; Claude answers `-p`
-// stream-json. The App Server takes its prompt only at turn/start, after the handshake the modes
-// under test act in, so the fake Codex reads its mode from the job's prompt.txt beside its TMPDIR.
+// with stream-json in and out as a control-channel peer. Each provider takes its prompt only after
+// a handshake the modes under test act in (turn/start, or the first user message), so each fake
+// reads its mode from the job's prompt.txt beside its TMPDIR.
 const FAKE = String.raw`#!/usr/bin/env node
 const fs = require('node:fs'), path = require('node:path'), { spawn } = require('node:child_process')
 const NAME = path.basename(process.argv[1]), argv = process.argv.slice(2)
@@ -187,36 +191,96 @@ function appServer() {
 }
 
 function claudeCli() {
-  const stdin = fs.readFileSync(0, 'utf8')
-  const mode = modeOf(stdin)
-  const record = { argv, stdin, cwd: process.cwd(), env: process.env, pid: process.pid }
+  let prompt = ''
+  try { prompt = fs.readFileSync(path.join(process.env.TMPDIR, '..', 'prompt.txt'), 'utf8') } catch {}
+  const mode = modeOf(prompt)
+  const record = { argv, cwd: process.cwd(), env: process.env, pid: process.pid, frames: [] }
   const save = () => fs.writeFileSync(path.join(process.env.TMPDIR, 'fake-call.json'), JSON.stringify(record))
   save()
-  const hang = () => { record.childPid = spawn('sleep', ['300'], { stdio: 'ignore' }).pid; save(); setInterval(() => {}, 1000) }
-  if (mode === 'exit-nonzero') { process.stderr.write('SECRET-STDERR-TOKEN\n'); process.exit(3) }
-  if (mode === 'bad-json') console.log('this line is not json')
+  if (argv.slice(0, 5).join(' ') !== '-p --input-format stream-json --output-format stream-json') { process.stderr.write('fake claude: unexpected argv\n'); process.exit(64) }
+  // The catalog initialize answers with: aliases resolving to wire ids, a model with two efforts,
+  // and one with no effort levels. An id outside it is served as itself, or by the alias below.
+  const MODELS = [['default', 'claude-fake-1', true], ['sonnet', 'claude-fake-1', true], ['opus', 'claude-fake-opus-2', true],
+    ['claude-fake-mini', 'claude-fake-mini', ['low', 'medium']], ['haiku', 'claude-fake-haiku-0', false]]
+    .map(([value, resolvedModel, efforts]) => ({ value, resolvedModel, displayName: value, description: value, supportsEffort: efforts !== false,
+      ...(efforts ? { supportedEffortLevels: efforts === true ? ['low', 'medium', 'high', 'xhigh', 'max'] : efforts } : {}) }))
+  const ALIASES = { fable: 'claude-fake-fable-3' }
+  const requested = flag('--model')
+  const model = MODELS.find((entry) => entry.value === requested || entry.resolvedModel === requested)?.resolvedModel ?? ALIASES[requested] ?? requested
+  const session = flag('--session-id') || flag('--resume')
   const schema = flag('--json-schema') ? JSON.parse(flag('--json-schema')) : null
   const answer = answerFor(schema, mode)
-  setTimeout(claude, mode === 'slow' ? 1500 : 0)
-  function claude() {
-    const session = flag('--session-id') || flag('--resume')
-    const model = 'claude-fake-1'
-    out({ type: 'system', subtype: 'init', session_id: session, model })
+  let busy = false, closed = false, hangTimer = null, asked = 0
+  const waiting = new Map()
+  const reply = (request_id, response) => out({ type: 'control_response', response: { subtype: 'success', request_id, response } })
+  const result = (fields) => {
+    busy = false
+    out({ type: 'result', session_id: session, ...fields })
+    if (closed) process.exit(0)
+  }
+  const hang = () => { record.childPid = spawn('sleep', ['300'], { stdio: 'ignore' }).pid; save(); hangTimer = setInterval(() => {}, 1000) }
+  const ask = (request) => new Promise((resolve) => {
+    const request_id = 'cli-' + (++asked)
+    waiting.set(request_id, resolve)
+    out({ type: 'control_request', request_id, request })
+  })
+  function control({ request_id, request }) {
+    if (request.subtype === 'initialize') {
+      return reply(request_id, { commands: [], agents: [], output_style: 'default', available_output_styles: ['default'], models: MODELS, account: { email: 'secret@example.invalid' } })
+    }
+    if (request.subtype === 'mcp_status') {
+      return reply(request_id, { mcpServers: mode === 'mcp-leak' ? [{ name: 'hostDocs', status: 'connected', scope: 'user' }] : [] })
+    }
+    if (request.subtype === 'interrupt') {
+      reply(request_id, {})
+      if (!busy) return undefined
+      clearInterval(hangTimer)
+      return result({ subtype: 'error_during_execution', is_error: true, result: '' })
+    }
+    return out({ type: 'control_response', response: { subtype: 'error', request_id, error: 'unsupported control request ' + request.subtype } })
+  }
+  async function turn() {
+    const served = mode === 'init-swap' ? 'claude-fake-1' : model
     if (mode === 'mismatch') { out({ type: 'assistant', message: { model: 'claude-other-2', content: [{ type: 'text', text: 'swapped' }] } }); return hang() }
-    if (mode === 'hang') return hang()
+    if (['hang', 'tool-leak', 'plugin-leak'].includes(mode)) return hang()
     if (mode === 'refusal') {
-      out({ type: 'assistant', message: { model, stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [] } })
-      return out({ type: 'result', subtype: 'success', is_error: false, result: '', session_id: session })
+      out({ type: 'assistant', message: { model: served, stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [] } })
+      return result({ subtype: 'success', is_error: false, result: '' })
     }
     if (mode === 'command-failure') {
-      out({ type: 'assistant', message: { model, content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'false' } }] } })
+      out({ type: 'assistant', message: { model: served, content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'false' } }] } })
       out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'Exit code 1' }] } })
     }
+    if (mode === 'can-use-tool') await ask({ subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'rm -rf build' }, tool_use_id: 't2' })
     out({ type: 'assistant', message: { model: '<synthetic>', content: [] } })
-    out({ type: 'assistant', message: { model: model + '[1m]', content: [{ type: 'text', text: answer }] } })
-    out({ type: 'result', subtype: 'success', is_error: false, result: answer, session_id: session,
-      ...(schema ? { structured_output: JSON.parse(answer) } : {}), permission_denials: mode === 'approval' ? [{ tool_name: 'Read' }] : [] })
+    out({ type: 'assistant', message: { model: served + '[1m]', content: [{ type: 'text', text: answer }] } })
+    result({ subtype: 'success', is_error: false, result: answer, ...(schema ? { structured_output: JSON.parse(answer) } : {}),
+      permission_denials: mode === 'approval' ? [{ tool_name: 'Read' }] : [] })
   }
+  function user(frame) {
+    if (mode === 'exit-nonzero') { process.stderr.write('SECRET-STDERR-TOKEN\n'); process.exit(3) }
+    busy = true
+    if (mode === 'bad-json') console.log('this line is not json')
+    out({ type: 'system', subtype: 'init', session_id: session, model: mode === 'init-swap' ? 'claude-fake-1' : model, cwd: process.cwd(),
+      tools: [...flag('--tools').split(','), ...(mode === 'tool-leak' ? ['WebFetch'] : [])],
+      mcp_servers: mode === 'plugin-leak' ? [{ name: 'plugin:docs:search', status: 'connected' }] : [],
+      plugins: mode === 'plugin-leak' ? [{ name: 'docs', path: '/plugins/docs' }] : [],
+      permissionMode: 'dontAsk', apiKeySource: 'none', claude_code_version: '0.0.0-fake', slash_commands: [], output_style: 'default', skills: [] })
+    out({ type: 'user', message: frame.message, parent_tool_use_id: null, session_id: session, uuid: frame.uuid, isReplay: true })
+    setTimeout(turn, mode === 'slow' ? 1500 : 0)
+  }
+  const lines = require('node:readline').createInterface({ input: process.stdin })
+  lines.on('line', (line) => {
+    const frame = JSON.parse(line)
+    record.frames.push(frame)
+    save()
+    if (frame.type === 'control_request') return control(frame)
+    if (frame.type === 'control_response') return waiting.get(frame.response.request_id)?.()
+    if (frame.type === 'user') return user(frame)
+    return undefined
+  })
+  // Like the CLI, the fake finishes the turn it is running before it exits on the end of stdin.
+  lines.on('close', () => { closed = true; if (!busy) process.exit(0) })
 }
 `
 
@@ -379,6 +443,7 @@ try {
     assert.deepEqual([turn.threadId, turn.model, turn.effort, turn.approvalPolicy, turn.cwd, 'outputSchema' in turn], [result.job.threadId, 'gpt-fake', 'low', 'never', repo, false])
     assert.deepEqual([result.job.servedModel, result.job.threadId], ['gpt-fake', '11111111-1111-4111-8111-111111111111'])
     assert.deepEqual(result.job.isolation, { profile: 'flow_delegation', mcpServers: ['hostDocs', 'nodeRepl', 'repoProbe'], instructionSources: [join(repo, 'AGENTS.md')] })
+    assert.equal(result.job.catalog, 'listed')
     assert.equal(result.job.promptSent, true)
     assert.deepEqual(asked(result.job.id, 'mcpServerStatus/list').map((params) => [params.threadId, params.detail, params.cursor]),
       [[result.job.threadId, 'toolsAndAuthOnly', null], [result.job.threadId, 'toolsAndAuthOnly', '2']], 'the inventory is read for the thread, page by page')
@@ -399,6 +464,17 @@ try {
     assert.equal(flag('--permission-prompts'), 'none')
     assert.equal(flag('--session-id'), result.job.threadId)
     assert.equal(flag('--tools').includes('Edit'), write)
+    assert.deepEqual(call.argv.slice(0, 6), ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'])
+    assert.ok(call.argv.includes('--replay-user-messages'))
+    assert.ok(!call.argv.some((word) => word.includes('FLOW_FAKE_MODE')), 'the prompt reached argv')
+    assert.deepEqual(wrote(result.job.id).map((frame) => (frame.type === 'control_request' ? frame.request.subtype : frame.type)), ['initialize', 'mcp_status', 'user'],
+      'no user message before initialize and mcp_status have answered')
+    const [message] = wrote(result.job.id).filter((frame) => frame.type === 'user')
+    assert.deepEqual([message.client_composed, message.parent_tool_use_id, message.session_id, message.message.role], [true, null, result.job.threadId, 'user'])
+    assert.match(message.uuid, /^[0-9a-f-]{36}$/)
+    assert.deepEqual(result.job.isolation, { mcpServers: [], tools: flag('--tools').split(',') })
+    assert.equal(result.job.catalog, 'listed')
+    assert.equal(result.job.promptSent, true)
     const settings = JSON.parse(flag('--settings'))
     assert.deepEqual(settings.sandbox.network.allowedDomains, [])
     assert.equal(settings.sandbox.failIfUnavailable, true)
@@ -406,12 +482,12 @@ try {
     assert.ok(settings.permissions.deny.includes(`Read(/${home}/.ssh/**)`))
     assert.ok(settings.sandbox.filesystem.denyRead.includes(join(fakeBin, 'codex')), 'the provider executables are masked')
     assert.deepEqual(settings.permissions.allow, write ? [`Edit(/${repo}/**)`] : [])
-    assert.equal(call.stdin, `FLOW_FAKE_MODE=happy ${write ? 'write' : 'read'}`, 'the Claude task goes to stdin alone')
+    assert.deepEqual(userTexts(result.job.id), [`FLOW_FAKE_MODE=happy ${write ? 'write' : 'read'}`], 'the Claude task goes in one user message alone')
     assert.ok(readFileSync(flag('--append-system-prompt-file'), 'utf8').startsWith(SEAT), 'the Claude seat file starts with the seat bytes')
     assert.equal(call.env.CLAUDE_CODE_NO_MODEL_FALLBACK, '1')
     assert.equal(call.env.SMOKE_LEAK, undefined)
   }
-  ok('the Codex thread carries the flow_delegation profile, every capability off and every configured MCP server disabled; argv per Claude access; the seat bytes first; and only allowlisted variables plus the depth marker reach the provider')
+  ok('the Codex thread carries the flow_delegation profile, every capability off and every configured MCP server disabled; Claude runs over stream-json with its prompt in one client_composed user message after initialize and mcp_status; argv per Claude access; the seat bytes first; and only allowlisted variables plus the depth marker reach the provider')
 
   // Nothing goes out until the live thread reads back its profile, its model and an MCP inventory
   // with every server disabled.
@@ -425,6 +501,53 @@ try {
     assert.ok(await until(() => !alive(fakeCall(refusedEarly.job.id).pid)), `${mode}: the App Server outlived the refusal`)
   }
   ok('a thread that reads back another profile, another model or a reachable MCP server fails before the prompt, and the App Server records no turn/start')
+
+  // Claude: an MCP server in mcp_status stops the job before the prompt, and an init frame that
+  // names a tool outside the requested set, an MCP server or a plugin stops the turn it opened.
+  const claudeLeak = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=mcp-leak' })
+  assert.deepEqual([claudeLeak.job.status, claudeLeak.job.error?.kind, claudeLeak.job.promptSent, claudeLeak.job.threadId, claudeLeak.job.isolation],
+    ['failed', 'ISOLATION', false, null, null], JSON.stringify(claudeLeak.job))
+  assert.deepEqual(claudeLeak.job.error.details, { servers: ['hostDocs'] })
+  assert.deepEqual(userTexts(claudeLeak.job.id), [], 'mcp-leak: a prompt reached the provider')
+  assert.ok(await until(() => !alive(fakeCall(claudeLeak.job.id).pid)), 'the Claude CLI outlived the refusal')
+  for (const [mode, details] of [['tool-leak', { tools: ['WebFetch'], mcpServers: [], plugins: [] }],
+    ['plugin-leak', { tools: [], mcpServers: ['plugin:docs:search'], plugins: ['docs'] }]]) {
+    const leaked = await start(codexHost, { prompt: `FLOW_FAKE_MODE=${mode}` })
+    assert.deepEqual([leaked.job.status, leaked.job.error?.kind, leaked.job.promptSent, leaked.job.isolation], ['failed', 'ISOLATION', true, null], JSON.stringify(leaked.job))
+    assert.deepEqual(leaked.job.error.details, details)
+    assert.ok(wrote(leaked.job.id).some((frame) => frame.request?.subtype === 'interrupt'), `${mode}: the turn was not interrupted`)
+    const flowLines = journal(leaked.job.id).filter((event) => typeof event.type === 'string' && event.type.startsWith('flow.'))
+    assert.deepEqual(flowLines, [{ type: 'flow.stop', reason: 'ISOLATION' }, { type: 'flow.interrupt', method: 'interrupt', delivered: true }])
+    const leakedCall = fakeCall(leaked.job.id)
+    assert.ok(await until(() => !alive(leakedCall.pid) && !alive(leakedCall.childPid)), `${mode}: the provider group outlived the stop`)
+  }
+  ok('Claude: an MCP server in mcp_status fails ISOLATION with no user message written, and an init frame with an extra tool, an MCP server or a plugin interrupts its turn and fails ISOLATION')
+
+  // The catalogs. A listed model at an effort the catalog does not list for it fails BAD_MODEL
+  // before anything else happens; a model listed with no effort levels takes no effort at all; an
+  // unlisted id is admitted and says so; a Claude alias is held to the wire id it resolves to.
+  const codexBad = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', model: 'gpt-fake-mini', effort: 'high' })
+  assert.deepEqual([codexBad.job.status, codexBad.job.error?.kind, codexBad.job.promptSent, codexBad.job.catalog], ['failed', 'BAD_MODEL', false, null])
+  assert.deepEqual(codexBad.job.error.details, { model: 'gpt-fake-mini', efforts: ['low', 'medium'] })
+  assert.deepEqual(fakeCall(codexBad.job.id).requests.map((request) => request.method), ['initialize', 'initialized', 'model/list', 'model/list'],
+    'a refused effort opened no thread')
+  const codexUnlisted = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', model: 'gpt-fake-unlisted' })
+  assert.deepEqual([codexUnlisted.job.status, codexUnlisted.job.catalog, codexUnlisted.job.servedModel], ['succeeded', 'absent', 'gpt-fake-unlisted'])
+  for (const [model, effort, efforts] of [['claude-fake-mini', 'high', ['low', 'medium']], ['haiku', 'low', []]]) {
+    const claudeBad = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy', model, effort })
+    assert.deepEqual([claudeBad.job.status, claudeBad.job.error?.kind, claudeBad.job.promptSent, claudeBad.job.catalog], ['failed', 'BAD_MODEL', false, null])
+    assert.deepEqual(claudeBad.job.error.details, { model, efforts })
+    assert.deepEqual(wrote(claudeBad.job.id).map((frame) => frame.request?.subtype ?? frame.type), ['initialize'], `${model}: the CLI was asked for more than its catalog`)
+  }
+  for (const [model, catalog, servedModel] of [['opus', 'listed', 'claude-fake-opus-2'], ['claude-fake-opus-2', 'listed', 'claude-fake-opus-2'], ['fable', 'absent', 'claude-fake-fable-3']]) {
+    const served = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy', model, effort: 'max' })
+    assert.deepEqual([served.job.status, served.job.catalog, served.job.servedModel], ['succeeded', catalog, servedModel], `${model}: ${JSON.stringify(served.job.error)}`)
+  }
+  const substituted = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=init-swap', model: 'opus' })
+  assert.deepEqual([substituted.job.status, substituted.job.error?.kind, substituted.job.catalog], ['failed', 'MODEL_MISMATCH', 'listed'])
+  assert.deepEqual(substituted.job.error.details, { expected: 'claude-fake-opus-2', served: 'claude-fake-1' })
+  assert.ok(wrote(substituted.job.id).some((frame) => frame.request?.subtype === 'interrupt'), 'the substitute session was not interrupted')
+  ok('the catalogs: a listed model at an unlisted effort, or with no efforts, fails BAD_MODEL before the thread or the prompt on both targets; an unlisted id succeeds with catalog absent; a Claude alias or its wire id is held to the resolved model, and a session that opens on another fails MODEL_MISMATCH')
 
   // Review mode pins SHAs before the job exists and forces read-only and the findings schema.
   const baseSha = git(repo, 'rev-parse', 'HEAD~1')
@@ -494,8 +617,15 @@ try {
   assert.ok(Date.now() - began < 20_000, 'the swap stopped the turn instead of waiting out the budget')
   const swappedCall = fakeCall(swapped.job.id)
   assert.ok(await until(() => !alive(swappedCall.pid) && !alive(swappedCall.childPid)), 'the swapped provider group was killed')
+  assert.ok(wrote(swapped.job.id).some((frame) => frame.request?.subtype === 'interrupt'), 'the swap was not interrupted')
   const denied = await expect(codexHost, 'FLOW_FAKE_MODE=approval', 'failed', 'APPROVAL_REQUIRED')
   assert.equal(denied.job.output, 'fake answer', 'a denied turn keeps its answer')
+  // Claude asks by control request only if something routes a prompt to flow. It is refused, and
+  // the job ends APPROVAL_REQUIRED with the answer kept.
+  const toolAsk = await expect(codexHost, 'FLOW_FAKE_MODE=can-use-tool', 'failed', 'APPROVAL_REQUIRED')
+  assert.deepEqual([toolAsk.job.output, toolAsk.job.error.details], ['fake answer', { denied: ['Bash'] }])
+  assert.deepEqual(wrote(toolAsk.job.id).filter((frame) => frame.type === 'control_response'),
+    [{ type: 'control_response', response: { subtype: 'error', request_id: 'cli-1', error: 'Flow grants a delegated job no approvals.' } }])
   // Codex asks by server request. Each approval gets its method's decline, a request that is not an
   // approval gets -32601, and the job ends APPROVAL_REQUIRED with the answer kept.
   const declined = await expect(claudeHost, 'FLOW_FAKE_MODE=approval', 'failed', 'APPROVAL_REQUIRED')
@@ -504,7 +634,7 @@ try {
   const rejection = { decision: { denied: { rejection: 'Flow grants a delegated job no approvals.' } } }
   assert.deepEqual(answers, { 'srv-1': { decision: 'decline' }, 'srv-2': { decision: 'decline' }, 'srv-3': { permissions: {}, scope: 'turn' },
     'srv-4': rejection, 'srv-5': rejection, 'srv-6': { code: -32601 } })
-  ok('refusals are typed on both targets, a model swap is latched and stopped at once, a denied permission is APPROVAL_REQUIRED, and every Codex approval request is declined in its own shape')
+  ok('refusals are typed on both targets, a model swap is latched and interrupted at once, a denied permission or a Claude tool request is APPROVAL_REQUIRED, and every approval request is declined in its own shape')
 
   const failing = await expect(claudeHost, 'FLOW_FAKE_MODE=exit-nonzero', 'failed', 'PROVIDER_ERROR')
   assert.ok(!failing.text.includes('SECRET-STDERR-TOKEN'), 'provider stderr reached the tool result')
@@ -558,7 +688,7 @@ try {
     } else {
       const argv = fakeCall(steered.job.id).argv
       assert.equal(argv[argv.indexOf('--resume') + 1], thread)
-      assert.match(fakeCall(steered.job.id).stdin, /new direction/)
+      assert.match(userTexts(steered.job.id)[0], /new direction/)
     }
   }
   const early = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=slow', waitSeconds: 0 })
@@ -581,7 +711,14 @@ try {
   const stops = journal(hanging.job.id).filter((event) => typeof event.type === 'string' && event.type.startsWith('flow.'))
   assert.deepEqual(stops, [{ type: 'flow.stop', reason: 'CANCELLED' }, { type: 'flow.interrupt', method: 'turn/interrupt', delivered: true }])
   assert.equal((await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', access: 'workspace-write' })).job.status, 'succeeded', 'cancel released the lease')
-  ok('one writer per worktree, readers alongside it, and cancel interrupts the Codex turn, then kills the provider and its children and frees the lease')
+  const claudeHanging = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=hang', waitSeconds: 0 })
+  const claudeHangCall = await until(() => fakeCall(claudeHanging.job.id)?.childPid && fakeCall(claudeHanging.job.id))
+  assert.equal((await codexHost.call('delegation_cancel', { jobId: claudeHanging.job.id })).job.status, 'cancelled')
+  assert.ok(await until(() => !alive(claudeHangCall.pid) && !alive(claudeHangCall.childPid)), 'cancel left part of the Claude group running')
+  assert.ok(wrote(claudeHanging.job.id).some((frame) => frame.request?.subtype === 'interrupt'), 'the Claude CLI got no interrupt')
+  const claudeStops = journal(claudeHanging.job.id).filter((event) => typeof event.type === 'string' && event.type.startsWith('flow.'))
+  assert.deepEqual(claudeStops, [{ type: 'flow.stop', reason: 'CANCELLED' }, { type: 'flow.interrupt', method: 'interrupt', delivered: true }])
+  ok('one writer per worktree, readers alongside it, and cancel interrupts the Codex turn or the Claude session, then kills the provider and its children and frees the lease')
 
   // The Codex session steers its open turn against that turn's own id, and a turn that has ended
   // takes no steer. The session is driven directly here, over the fake App Server.
