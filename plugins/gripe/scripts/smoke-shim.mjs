@@ -13,13 +13,12 @@
 // Usage: node plugins/gripe/scripts/smoke-shim.mjs
 
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { main, resolveGripeBin } from '../bin/shim.mjs'
-import { pointShim, shimEpoch } from '../lib/shim.mjs'
 import { installFacts } from '../lib/install.mjs'
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -219,28 +218,42 @@ console.log('the exit split')
   }
 }
 
-// ------------------------------------------------------------------------- the epoch ratchet
+// ---------------------------------------------------------- SessionStart publishes by epoch
 
-console.log('the epoch ratchet')
+console.log('SessionStart publishes the shim by epoch')
 {
   const text = readFileSync(SHIM, 'utf8')
   const markers = text.split('\n').filter((line) => line.includes('gripe-shim-epoch:'))
-  check('the shipped shim carries exactly one epoch marker', markers.length === 1, markers[0])
-  const epoch = shimEpoch(text)
-  check('pointShim can parse that marker', Number.isSafeInteger(epoch) && epoch >= 2, String(epoch))
+  const epoch = Number(text.match(/^\/\/ gripe-shim-epoch: (\d+)$/m)?.[1])
+  check('the shipped shim carries exactly one epoch marker', markers.length === 1 && epoch >= 2, markers[0])
 
-  const bin = join(TMP, 'ratchet', 'gripe')
-  check('a missing destination is written', pointShim({ sourcePath: SHIM, shimPath: bin }) === 'written')
-  check('identical bytes are left alone', pointShim({ sourcePath: SHIM, shimPath: bin }) === 'unchanged')
-
-  writeFileSync(bin, `// gripe-shim-epoch: ${epoch - 1}\n`, { mode: 0o755 })
-  check('a lower epoch is replaced', pointShim({ sourcePath: SHIM, shimPath: bin }) === 'written')
-  check('and the replacement is the source', readFileSync(bin, 'utf8') === text)
-
-  const newer = `// gripe-shim-epoch: ${epoch + 1}\n`
-  writeFileSync(bin, newer, { mode: 0o755 })
-  check('a higher epoch survives an older harness',
-    pointShim({ sourcePath: SHIM, shimPath: bin }) === 'kept-newer' && readFileSync(bin, 'utf8') === newer)
+  // The real hook on stdin, with HOME pointed at a synthetic home so ~/.local/bin is ours.
+  const home = makeHome()
+  const bin = join(home, '.local', 'bin', 'gripe')
+  const start = (extra = {}) => spawnSync(
+    process.execPath,
+    [join(PLUGIN, 'hooks', 'scripts', 'session-start.mjs')],
+    { input: '{"session_id":"s1"}', encoding: 'utf8',
+      env: { PATH: process.env.PATH, HOME: home, XDG_STATE_HOME: join(home, 'state'), ...extra } },
+  )
+  const started = start()
+  check('a missing shim is published at 0755',
+    started.status === 0 && readFileSync(bin, 'utf8') === text && (statSync(bin).mode & 0o777) === 0o755,
+    `status ${started.status}`)
+  for (const [label, planted, replaced] of [
+    ['a lower epoch is replaced', `// gripe-shim-epoch: ${epoch - 1}\n`, true],
+    ['a file with no marker is replaced', 'not a shim\n', true],
+    ['an equal epoch is left alone', `// gripe-shim-epoch: ${epoch}\n`, false],
+    ['a higher epoch survives an older harness', `// gripe-shim-epoch: ${epoch + 1}\n`, false],
+  ]) {
+    writeFileSync(bin, planted)
+    start()
+    const now = readFileSync(bin, 'utf8')
+    check(label, replaced ? now === text : now === planted)
+  }
+  writeFileSync(bin, 'not a shim\n')
+  start({ GRIPE_HOME: PLUGIN })
+  check('GRIPE_HOME in the environment publishes nothing', readFileSync(bin, 'utf8') === 'not a shim\n')
 }
 
 // -------------------------------------------------------------------- import, and self-report
