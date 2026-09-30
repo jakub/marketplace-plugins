@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // Smoke for the delegate server: the real server and runner over stdio, real Git repositories in a
 // temp directory, and two fake provider executables first on a temp PATH. Each fake records its
-// argv, stdin, cwd and environment in the job's private TMPDIR and answers in the JSONL shape its
-// CLI emits, in the mode a FLOW_FAKE_MODE=<mode> token in the prompt names. No network, no model.
+// argv, cwd and environment in the job's private TMPDIR, and answers in the mode a
+// FLOW_FAKE_MODE=<mode> token in the prompt names. The fake Codex is an App Server peer that also
+// records every request and response; the fake Claude records its stdin and prints the JSONL its
+// CLI emits. The fakes speak the protocol subset the transports use, in the shapes Codex CLI
+// 0.159.0 and Claude Code 2.1.284 answer with. No network, no model.
 // Run: node plugins/flow/scripts/smoke-delegate.mjs
 
 import assert from 'node:assert/strict'
@@ -14,6 +17,7 @@ import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seatPayload } from '../lib/charter-payload.mjs'
+import { transport as codexTransport } from '../delegate/codex-app-server.mjs'
 import * as jobs from '../delegate/jobs.mjs'
 import { checkAnswer, schemaProblem, validate } from '../delegate/schema.mjs'
 const { FINDINGS_SCHEMA } = jobs
@@ -44,8 +48,17 @@ const alive = (pid) => {
 const jobPath = (id, ...rest) => join(state, 'jobs', id, ...rest)
 const fakeCall = (id) => { try { return JSON.parse(readFileSync(jobPath(id, 'tmp', 'fake-call.json'), 'utf8')) } catch { return null } }
 const readJob = (id) => JSON.parse(readFileSync(jobPath(id, 'job.json'), 'utf8'))
+// What the fake App Server was asked: every request's params for one method, and the text a
+// turn/start carried.
+const asked = (id, method) => (fakeCall(id)?.requests ?? []).filter((request) => request.method === method).map((request) => request.params)
+const turnText = (id) => asked(id, 'turn/start')[0]?.input.map((part) => part.text).join('')
+const journal = (id) => readFileSync(jobPath(id, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line) } catch { return line } })
+const THREAD = '11111111-1111-4111-8111-111111111111'
+const TURN = '22222222-2222-4222-8222-222222222222'
 
-// One fake, two names. Codex answers `exec` and `exec resume`; Claude answers `-p` stream-json.
+// One fake, two names. Codex answers `app-server --stdio` as a JSON-RPC peer; Claude answers `-p`
+// stream-json. The App Server takes its prompt only at turn/start, after the handshake the modes
+// under test act in, so the fake Codex reads its mode from the job's prompt.txt beside its TMPDIR.
 const FAKE = String.raw`#!/usr/bin/env node
 const fs = require('node:fs'), path = require('node:path'), { spawn } = require('node:child_process')
 const NAME = path.basename(process.argv[1]), argv = process.argv.slice(2)
@@ -54,50 +67,156 @@ const flag = (name) => { const at = argv.indexOf(name); return at >= 0 ? argv[at
 if (argv[0] === '--version') { console.log(NAME === 'codex' ? 'codex-cli 0.0.0-fake' : '0.0.0-fake (Claude Code)'); process.exit(0) }
 if (argv[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0) }
 if (argv[0] === 'auth') { console.log(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'secret@example.invalid', orgId: 'org-secret' })); process.exit(0) }
-const stdin = fs.readFileSync(0, 'utf8')
-const mode = (/FLOW_FAKE_MODE=([a-z-]+)/.exec(stdin) || [])[1] || 'happy'
-const record = { argv, stdin, cwd: process.cwd(), env: process.env, pid: process.pid }
-const save = () => fs.writeFileSync(path.join(process.env.TMPDIR, 'fake-call.json'), JSON.stringify(record))
-save()
-const hang = () => { record.childPid = spawn('sleep', ['300'], { stdio: 'ignore' }).pid; save(); setInterval(() => {}, 1000) }
-if (mode === 'exit-nonzero') { process.stderr.write('SECRET-STDERR-TOKEN\n'); process.exit(3) }
-if (mode === 'bad-json') console.log('this line is not json')
-const schema = flag('--output-schema') ? JSON.parse(fs.readFileSync(flag('--output-schema'), 'utf8')) : flag('--json-schema') ? JSON.parse(flag('--json-schema')) : null
-const finding = mode === 'bad-structure' ? { severity: 'urgent', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd' }
+const finding = (mode) => mode === 'bad-structure' ? { severity: 'urgent', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd' }
   : { severity: 'low', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd', systemic: false }
-const answer = !schema ? 'fake answer' : JSON.stringify(schema.properties.findings ? { findings: [finding] } : { answer: '42' })
-setTimeout(NAME === 'codex' ? codex : claude, mode === 'slow' ? 1500 : 0)
-function codex() {
-  out({ type: 'thread.started', thread_id: argv[1] === 'resume' ? argv[argv.length - 2] : '11111111-1111-4111-8111-111111111111' })
-  out({ type: 'turn.started' })
-  if (mode === 'hang') return hang()
-  if (mode === 'refusal') {
-    const message = JSON.stringify({ type: 'error', status: 400, error: { message: 'This request was flagged for possible cyber risk.' } })
-    out({ type: 'error', message }); out({ type: 'turn.failed', error: { message } }); process.exit(1)
+const answerFor = (schema, mode) => !schema ? 'fake answer' : JSON.stringify(schema.properties.findings ? { findings: [finding(mode)] } : { answer: '42' })
+const modeOf = (text) => (/FLOW_FAKE_MODE=([a-z-]+)/.exec(text) || [])[1] || 'happy'
+if (NAME === 'codex') appServer()
+else claudeCli()
+
+function appServer() {
+  let prompt = ''
+  try { prompt = fs.readFileSync(path.join(process.env.TMPDIR, '..', 'prompt.txt'), 'utf8') } catch {}
+  const mode = modeOf(prompt)
+  const record = { argv, cwd: process.cwd(), env: process.env, pid: process.pid, exe: fs.realpathSync('/proc/self/exe'), requests: [], responses: [] }
+  const save = () => fs.writeFileSync(path.join(process.env.TMPDIR, 'fake-call.json'), JSON.stringify(record))
+  save()
+  if (argv.join(' ') !== 'app-server --stdio') { process.stderr.write('fake codex: unexpected argv\n'); process.exit(64) }
+  const THREAD = '11111111-1111-4111-8111-111111111111', TURN = '22222222-2222-4222-8222-222222222222'
+  // The servers this config defines, as config/read reports them: two in the effective config, one
+  // only in a project layer, and one in a layer Codex did not load, which a thread may not name.
+  const LOADED = ['hostDocs', 'nodeRepl', 'repoProbe']
+  const MODELS = [{ id: 'gpt-fake', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }, { id: 'gpt-fake-mini', efforts: ['low', 'medium'] }, { id: 'gpt-fake-other', efforts: ['low'] }]
+    .map(({ id, efforts }) => ({ id, model: id, hidden: false, supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'low' }))
+  let thread = null, threadId = null, turnOpen = false, served = 0
+  const reply = (id, result) => out({ id, result })
+  const refuse = (id, message) => out({ id, error: { code: -32600, message } })
+  const page = (list, params) => {
+    const at = Number(params.cursor || 0)
+    return { data: list.slice(at, at + 2), nextCursor: at + 2 < list.length ? String(at + 2) : null }
   }
-  if (mode === 'command-failure') for (const code of [1, 2]) out({ type: 'item.completed', item: { type: 'command_execution', command: 'false', exit_code: code, status: 'failed' } })
-  out({ type: 'item.completed', item: { type: 'agent_message', text: answer } })
-  fs.writeFileSync(flag('-o'), answer)
-  out({ type: 'turn.completed', usage: {} })
+  const complete = (status, error = null) => {
+    turnOpen = false
+    out({ method: 'turn/completed', params: { threadId, turn: { id: TURN, items: [], status, error } } })
+  }
+  const hang = () => { record.childPid = spawn('sleep', ['300'], { stdio: 'ignore' }).pid; save() }
+  const waiting = new Map()
+  const ask = (method) => new Promise((resolve) => {
+    const id = 'srv-' + (++served)
+    waiting.set(id, resolve)
+    out({ id, method, params: { threadId, turnId: TURN, itemId: 'i' + served } })
+  })
+  async function runTurn(params) {
+    out({ method: 'turn/started', params: { threadId, turn: { id: TURN, items: [], status: 'inProgress', error: null } } })
+    if (mode === 'hang') return hang()
+    if (mode === 'refusal') {
+      const message = 'This request was flagged for possible cyber risk.'
+      out({ method: 'error', params: { error: { message }, willRetry: false, threadId, turnId: TURN } })
+      return complete('failed', { message })
+    }
+    if (mode === 'command-failure') {
+      for (const code of [1, 2]) out({ method: 'item/completed', params: { threadId, turnId: TURN, item: { type: 'commandExecution', id: 'c' + code, command: 'false', exitCode: code, status: 'failed' } } })
+    }
+    if (mode === 'approval') {
+      for (const method of ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'applyPatchApproval', 'execCommandApproval', 'item/tool/requestUserInput']) await ask(method)
+    }
+    out({ method: 'item/completed', params: { threadId, turnId: TURN, item: { type: 'agentMessage', id: 'm1', text: answerFor(params.outputSchema, mode), phase: 'final_answer' } } })
+    complete('completed')
+  }
+  function handle({ id, method, params = {} }) {
+    if (method === 'initialize') return reply(id, { userAgent: 'fake/0.0.0', codexHome: '/nonexistent', platformFamily: 'unix', platformOs: 'linux' })
+    if (method === 'initialized') return undefined
+    if (method === 'model/list') return reply(id, page(MODELS, params))
+    if (method === 'config/read') {
+      const layer = (type, servers, disabledReason = null) => ({ name: { type }, version: '1', config: { mcp_servers: Object.fromEntries(servers.map((name) => [name, { command: '/bin/true' }])) }, disabledReason })
+      return reply(id, { config: { model: 'gpt-fake', mcp_servers: { hostDocs: { url: 'https://example.invalid/mcp' }, nodeRepl: { command: '/bin/true' } } }, origins: {},
+        layers: [layer('user', ['hostDocs', 'nodeRepl']), layer('project', ['repoProbe']), layer('project', ['untrustedProbe'], 'the project is not trusted'), layer('system', [])] })
+    }
+    if (method === 'thread/start' || method === 'thread/resume') {
+      for (const name of Object.keys(params.config?.mcp_servers ?? {})) {
+        if (!LOADED.includes(name)) return refuse(id, 'failed to load configuration: invalid transport in mcp_servers.' + name)
+      }
+      thread = params
+      threadId = method === 'thread/resume' ? params.threadId : THREAD
+      const answer = () => reply(id, {
+        thread: { id: threadId }, model: mode === 'model-swap' ? 'gpt-fake-other' : params.model, modelProvider: 'openai', cwd: params.cwd,
+        instructionSources: [path.join(params.cwd, 'AGENTS.md')], approvalPolicy: params.approvalPolicy, approvalsReviewer: 'user',
+        activePermissionProfile: { id: mode === 'profile-ignored' ? ':read-only' : params.permissions ?? ':read-only', extends: null }, reasoningEffort: null,
+      })
+      return mode === 'slow' ? setTimeout(answer, 1500) : answer()
+    }
+    if (method === 'mcpServerStatus/list') {
+      if (thread?.config?.permissions && !thread.config.default_permissions) return refuse(id, 'failed to reload config')
+      const servers = LOADED.map((name) => ({ name, runtimeStatus: thread?.config?.mcp_servers?.[name]?.enabled === false ? 'disabled' : 'failed', pluginId: null, tools: {} }))
+      if (mode === 'mcp-leak') servers.push({ name: 'pluginDocs', runtimeStatus: 'ready', pluginId: 'docs@fake', tools: { search: {} } })
+      return reply(id, page(servers, params))
+    }
+    if (method === 'turn/start') {
+      if (mode === 'exit-nonzero') { process.stderr.write('SECRET-STDERR-TOKEN\n'); process.exit(3) }
+      turnOpen = true
+      reply(id, { turn: { id: TURN, items: [], status: 'inProgress', error: null } })
+      return setTimeout(runTurn, mode === 'slow' ? 1500 : 0, params)
+    }
+    if (method === 'turn/steer') {
+      if (!turnOpen || params.expectedTurnId !== TURN) return refuse(id, 'no active turn to steer')
+      return reply(id, { turnId: TURN })
+    }
+    if (method === 'turn/interrupt') {
+      if (!turnOpen) return refuse(id, 'no active turn to interrupt')
+      reply(id, {})
+      return complete('interrupted')
+    }
+    return out({ id, error: { code: -32601, message: 'unknown method ' + method } })
+  }
+  if (mode === 'bad-json') console.log('this line is not json')
+  const lines = require('node:readline').createInterface({ input: process.stdin })
+  lines.on('line', (line) => {
+    const message = JSON.parse(line)
+    if (typeof message.method === 'string') {
+      record.requests.push({ method: message.method, params: message.params })
+      save()
+      handle(message)
+    } else {
+      record.responses.push(message)
+      save()
+      waiting.get(message.id)?.()
+    }
+  })
+  // Like the App Server, the fake exits when its client closes stdin.
+  lines.on('close', () => process.exit(0))
 }
-function claude() {
-  const session = flag('--session-id') || flag('--resume')
-  const model = 'claude-fake-1'
-  out({ type: 'system', subtype: 'init', session_id: session, model })
-  if (mode === 'mismatch') { out({ type: 'assistant', message: { model: 'claude-other-2', content: [{ type: 'text', text: 'swapped' }] } }); return hang() }
-  if (mode === 'hang') return hang()
-  if (mode === 'refusal') {
-    out({ type: 'assistant', message: { model, stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [] } })
-    return out({ type: 'result', subtype: 'success', is_error: false, result: '', session_id: session })
+
+function claudeCli() {
+  const stdin = fs.readFileSync(0, 'utf8')
+  const mode = modeOf(stdin)
+  const record = { argv, stdin, cwd: process.cwd(), env: process.env, pid: process.pid }
+  const save = () => fs.writeFileSync(path.join(process.env.TMPDIR, 'fake-call.json'), JSON.stringify(record))
+  save()
+  const hang = () => { record.childPid = spawn('sleep', ['300'], { stdio: 'ignore' }).pid; save(); setInterval(() => {}, 1000) }
+  if (mode === 'exit-nonzero') { process.stderr.write('SECRET-STDERR-TOKEN\n'); process.exit(3) }
+  if (mode === 'bad-json') console.log('this line is not json')
+  const schema = flag('--json-schema') ? JSON.parse(flag('--json-schema')) : null
+  const answer = answerFor(schema, mode)
+  setTimeout(claude, mode === 'slow' ? 1500 : 0)
+  function claude() {
+    const session = flag('--session-id') || flag('--resume')
+    const model = 'claude-fake-1'
+    out({ type: 'system', subtype: 'init', session_id: session, model })
+    if (mode === 'mismatch') { out({ type: 'assistant', message: { model: 'claude-other-2', content: [{ type: 'text', text: 'swapped' }] } }); return hang() }
+    if (mode === 'hang') return hang()
+    if (mode === 'refusal') {
+      out({ type: 'assistant', message: { model, stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [] } })
+      return out({ type: 'result', subtype: 'success', is_error: false, result: '', session_id: session })
+    }
+    if (mode === 'command-failure') {
+      out({ type: 'assistant', message: { model, content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'false' } }] } })
+      out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'Exit code 1' }] } })
+    }
+    out({ type: 'assistant', message: { model: '<synthetic>', content: [] } })
+    out({ type: 'assistant', message: { model: model + '[1m]', content: [{ type: 'text', text: answer }] } })
+    out({ type: 'result', subtype: 'success', is_error: false, result: answer, session_id: session,
+      ...(schema ? { structured_output: JSON.parse(answer) } : {}), permission_denials: mode === 'approval' ? [{ tool_name: 'Read' }] : [] })
   }
-  if (mode === 'command-failure') {
-    out({ type: 'assistant', message: { model, content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'false' } }] } })
-    out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'Exit code 1' }] } })
-  }
-  out({ type: 'assistant', message: { model: '<synthetic>', content: [] } })
-  out({ type: 'assistant', message: { model: model + '[1m]', content: [{ type: 'text', text: answer }] } })
-  out({ type: 'result', subtype: 'success', is_error: false, result: answer, session_id: session,
-    ...(schema ? { structured_output: JSON.parse(answer) } : {}), permission_denials: mode === 'approval' ? [{ tool_name: 'Read' }] : [] })
 }
 `
 
@@ -158,6 +277,8 @@ try {
   writeFileSync(join(repo, 'a.txt'), 'two\n')
   git(repo, 'commit', '-q', '-am', 'two')
   mkdirSync(join(repo, 'sub'))
+  // An untracked .codex directory, which a write job's profile keeps read-only.
+  mkdirSync(join(repo, '.codex'))
   symlinkSync(other, join(repo, 'escape'))
 
   const claudeHost = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo } })
@@ -217,20 +338,50 @@ try {
   }
   ok('a nested server refuses to start a job, and malformed calls get typed refusals')
 
-  // Argv, stdin and environment per target and access mode.
+  // The Codex thread: the flow_delegation profile with its exact grants, every capability off,
+  // every MCP server config/read names disabled, the seat as developer instructions, and the
+  // prompt alone on turn/start. Environment per target and access mode.
   const codexRead = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy read' })
   const codexWrite = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy write', access: 'workspace-write' })
-  for (const [result, access] of [[codexRead, 'read-only'], [codexWrite, 'workspace-write']]) {
-    assert.equal(result.job.status, 'succeeded')
+  const FEATURES = ['plugins', 'apps', 'hooks', 'memories', 'multi_agent', 'multi_agent_v2', 'browser_use', 'computer_use', 'image_generation']
+  for (const [result, write] of [[codexRead, false], [codexWrite, true]]) {
+    assert.equal(result.job.status, 'succeeded', JSON.stringify(result.job.error))
     assert.equal(result.job.output, 'fake answer')
     const call = fakeCall(result.job.id)
-    for (const word of ['exec', '--json', '--ignore-user-config', '--ignore-rules', '-C', '-s', access, 'model_reasoning_effort="low"', 'approval_policy="never"']) {
-      assert.ok(call.argv.includes(word), `codex argv carries ${word}`)
-    }
-    assert.equal(call.argv.at(-1), '-')
+    assert.deepEqual(call.argv, ['app-server', '--stdio'])
     assert.equal(call.cwd, repo)
-    assert.ok(call.stdin.startsWith(SEAT), 'the Codex prompt starts with the seat bytes')
-    assert.ok(call.stdin.includes(access === 'read-only' ? 'This is a read-only job.' : 'You may edit only the assigned Git worktree.'))
+    assert.deepEqual(call.requests.map((request) => request.method),
+      ['initialize', 'initialized', 'model/list', 'model/list', 'config/read', 'thread/start', 'mcpServerStatus/list', 'mcpServerStatus/list', 'turn/start'])
+    const [init] = asked(result.job.id, 'initialize')
+    assert.deepEqual([init.clientInfo.name, init.capabilities.experimentalApi], ['flow-delegate', true])
+    assert.deepEqual(asked(result.job.id, 'config/read'), [{ cwd: repo, includeLayers: true }])
+    const [thread] = asked(result.job.id, 'thread/start')
+    assert.deepEqual([thread.model, thread.cwd, thread.runtimeWorkspaceRoots, thread.approvalPolicy, thread.allowProviderModelFallback, thread.ephemeral],
+      ['gpt-fake', repo, [repo], 'never', false, false])
+    assert.equal(thread.permissions, 'flow_delegation')
+    assert.equal(thread.config.default_permissions, 'flow_delegation')
+    assert.deepEqual(thread.config.permissions.flow_delegation.network, { enabled: false })
+    assert.deepEqual(thread.config.permissions.flow_delegation.filesystem, {
+      ':minimal': 'read', [repo]: write ? 'write' : 'read', [join(repo, '.git')]: 'read',
+      ...(write ? { [join(repo, '.codex')]: 'read' } : {}),
+      [call.exe]: 'read', [join(fakeBin, 'codex')]: 'read', [jobPath(result.job.id, 'tmp')]: 'write',
+    }, 'the grants: :minimal, the worktree, its Git metadata and the running executable read, the job tmp written')
+    for (const name of FEATURES) assert.equal(thread.config[`features.${name}`], false, `features.${name} is off`)
+    assert.deepEqual(thread.config.memories, { use_memories: false, generate_memories: false })
+    assert.deepEqual(thread.config.apps, { _default: { enabled: false } })
+    assert.deepEqual(thread.config.mcp_servers, { hostDocs: { enabled: false }, nodeRepl: { enabled: false }, repoProbe: { enabled: false } },
+      'every server a loaded layer names is disabled, and none from a layer Codex did not load')
+    assert.equal(thread.developerInstructions, readFileSync(jobPath(result.job.id, 'seat.md'), 'utf8'))
+    assert.ok(thread.developerInstructions.startsWith(SEAT), 'the Codex developer instructions start with the seat bytes')
+    assert.ok(thread.developerInstructions.includes(write ? 'You may edit only the assigned Git worktree.' : 'This is a read-only job.'))
+    const [turn] = asked(result.job.id, 'turn/start')
+    assert.deepEqual(turn.input, [{ type: 'text', text: `FLOW_FAKE_MODE=happy ${write ? 'write' : 'read'}`, text_elements: [] }], 'turn/start carries the prompt alone')
+    assert.deepEqual([turn.threadId, turn.model, turn.effort, turn.approvalPolicy, turn.cwd, 'outputSchema' in turn], [result.job.threadId, 'gpt-fake', 'low', 'never', repo, false])
+    assert.deepEqual([result.job.servedModel, result.job.threadId], ['gpt-fake', '11111111-1111-4111-8111-111111111111'])
+    assert.deepEqual(result.job.isolation, { profile: 'flow_delegation', mcpServers: ['hostDocs', 'nodeRepl', 'repoProbe'], instructionSources: [join(repo, 'AGENTS.md')] })
+    assert.equal(result.job.promptSent, true)
+    assert.deepEqual(asked(result.job.id, 'mcpServerStatus/list').map((params) => [params.threadId, params.detail, params.cursor]),
+      [[result.job.threadId, 'toolsAndAuthOnly', null], [result.job.threadId, 'toolsAndAuthOnly', '2']], 'the inventory is read for the thread, page by page')
     assert.equal(call.env.FLOW_DELEGATION_DEPTH, '1')
     assert.equal(call.env.SMOKE_LEAK, undefined, 'a host variable outside the allowlist reached the provider')
     assert.equal(call.env.TMPDIR, jobPath(result.job.id, 'tmp'))
@@ -260,7 +411,20 @@ try {
     assert.equal(call.env.CLAUDE_CODE_NO_MODEL_FALLBACK, '1')
     assert.equal(call.env.SMOKE_LEAK, undefined)
   }
-  ok('argv per target and access, the seat bytes first, and only allowlisted variables plus the depth marker reach the provider')
+  ok('the Codex thread carries the flow_delegation profile, every capability off and every configured MCP server disabled; argv per Claude access; the seat bytes first; and only allowlisted variables plus the depth marker reach the provider')
+
+  // Nothing goes out until the live thread reads back its profile, its model and an MCP inventory
+  // with every server disabled.
+  for (const [mode, kind, details] of [['profile-ignored', 'ISOLATION', { profile: ':read-only' }],
+    ['model-swap', 'MODEL_MISMATCH', { expected: 'gpt-fake', served: 'gpt-fake-other' }], ['mcp-leak', 'ISOLATION', { servers: ['pluginDocs'] }]]) {
+    const refusedEarly = await start(claudeHost, { prompt: `FLOW_FAKE_MODE=${mode}` })
+    assert.deepEqual([refusedEarly.job.status, refusedEarly.job.error?.kind, refusedEarly.job.promptSent, refusedEarly.job.threadId, refusedEarly.job.isolation],
+      ['failed', kind, false, null, null], JSON.stringify(refusedEarly.job))
+    assert.deepEqual(refusedEarly.job.error.details, details)
+    assert.deepEqual(asked(refusedEarly.job.id, 'turn/start'), [], `${mode}: a prompt reached the provider`)
+    assert.ok(await until(() => !alive(fakeCall(refusedEarly.job.id).pid)), `${mode}: the App Server outlived the refusal`)
+  }
+  ok('a thread that reads back another profile, another model or a reachable MCP server fails before the prompt, and the App Server records no turn/start')
 
   // Review mode pins SHAs before the job exists and forces read-only and the findings schema.
   const baseSha = git(repo, 'rev-parse', 'HEAD~1')
@@ -268,10 +432,9 @@ try {
   const review = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', mode: 'adversarial-review', base: 'main~1', access: 'workspace-write' })
   assert.equal(review.job.status, 'succeeded')
   assert.deepEqual([review.job.baseSha, review.job.headSha, review.job.access], [baseSha, headSha, 'read-only'])
-  const reviewCall = fakeCall(review.job.id)
-  assert.ok(reviewCall.argv.includes('read-only'))
-  assert.deepEqual(JSON.parse(readFileSync(reviewCall.argv[reviewCall.argv.indexOf('--output-schema') + 1], 'utf8')), FINDINGS_SCHEMA)
-  assert.ok(reviewCall.stdin.includes(`git diff ${baseSha} ${headSha}`))
+  assert.equal(asked(review.job.id, 'thread/start')[0].config.permissions.flow_delegation.filesystem[repo], 'read')
+  assert.deepEqual(asked(review.job.id, 'turn/start')[0].outputSchema, FINDINGS_SCHEMA)
+  assert.ok(turnText(review.job.id).includes(`git diff ${baseSha} ${headSha}`))
   assert.equal(review.job.structured.findings.length, 1)
   const claudeReview = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy', mode: 'adversarial-review', base: baseSha })
   assert.equal(claudeReview.job.structured.findings[0].file, 'a.txt')
@@ -333,7 +496,15 @@ try {
   assert.ok(await until(() => !alive(swappedCall.pid) && !alive(swappedCall.childPid)), 'the swapped provider group was killed')
   const denied = await expect(codexHost, 'FLOW_FAKE_MODE=approval', 'failed', 'APPROVAL_REQUIRED')
   assert.equal(denied.job.output, 'fake answer', 'a denied turn keeps its answer')
-  ok('refusals are typed on both targets, a model swap is latched and stopped at once, and a denied permission is APPROVAL_REQUIRED')
+  // Codex asks by server request. Each approval gets its method's decline, a request that is not an
+  // approval gets -32601, and the job ends APPROVAL_REQUIRED with the answer kept.
+  const declined = await expect(claudeHost, 'FLOW_FAKE_MODE=approval', 'failed', 'APPROVAL_REQUIRED')
+  assert.deepEqual([declined.job.output, declined.job.error.details], ['fake answer', { method: 'item/commandExecution/requestApproval' }])
+  const answers = Object.fromEntries(fakeCall(declined.job.id).responses.map((response) => [response.id, response.result ?? { code: response.error.code }]))
+  const rejection = { decision: { denied: { rejection: 'Flow grants a delegated job no approvals.' } } }
+  assert.deepEqual(answers, { 'srv-1': { decision: 'decline' }, 'srv-2': { decision: 'decline' }, 'srv-3': { permissions: {}, scope: 'turn' },
+    'srv-4': rejection, 'srv-5': rejection, 'srv-6': { code: -32601 } })
+  ok('refusals are typed on both targets, a model swap is latched and stopped at once, a denied permission is APPROVAL_REQUIRED, and every Codex approval request is declined in its own shape')
 
   const failing = await expect(claudeHost, 'FLOW_FAKE_MODE=exit-nonzero', 'failed', 'PROVIDER_ERROR')
   assert.ok(!failing.text.includes('SECRET-STDERR-TOKEN'), 'provider stderr reached the tool result')
@@ -350,17 +521,18 @@ try {
   const collected = await claudeHost.call('delegation_result', { jobId: detached.job.id, waitSeconds: 30, events: 2 })
   assert.equal(collected.job.status, 'succeeded')
   assert.equal(collected.job.events.length, 2)
-  assert.equal(JSON.parse(collected.job.events.at(-1)).type, 'turn.completed')
+  assert.equal(JSON.parse(collected.job.events.at(-1)).method, 'turn/completed')
   ok('waitSeconds 0 detaches, and delegation_result waits for the outcome and returns the trailing events')
 
   // Continue resumes the provider thread, same cwd and access.
   const resumed = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy again', continue: codexRead.job.id })
   assert.equal(resumed.job.threadId, codexRead.job.threadId)
   assert.equal(resumed.job.parentJobId, codexRead.job.id)
-  const resumeArgv = fakeCall(resumed.job.id).argv
-  assert.deepEqual(resumeArgv.slice(0, 2), ['exec', 'resume'])
-  assert.deepEqual(resumeArgv.slice(-2), [codexRead.job.threadId, '-'])
-  assert.ok(resumeArgv.includes('sandbox_mode="read-only"'))
+  const [resumeThread] = asked(resumed.job.id, 'thread/resume')
+  assert.equal(resumeThread.threadId, codexRead.job.threadId)
+  assert.equal(resumeThread.permissions, 'flow_delegation')
+  assert.equal(resumeThread.config.permissions.flow_delegation.filesystem[repo], 'read')
+  assert.deepEqual(asked(resumed.job.id, 'thread/start'), [], 'a continuation opens no new thread')
   const claudeResumed = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy again', continue: claudeRead.job.id })
   const claudeArgv = fakeCall(claudeResumed.job.id).argv
   assert.equal(claudeArgv[claudeArgv.indexOf('--resume') + 1], claudeRead.job.threadId)
@@ -380,10 +552,14 @@ try {
     assert.deepEqual([steered.job.parentJobId, steered.job.threadId, steered.job.access], [running.job.id, thread, 'workspace-write'])
     assert.deepEqual([readJob(running.job.id).status, readJob(running.job.id).error.kind], ['cancelled', 'CANCELLED'])
     assert.ok(await until(() => !alive(runningCall.pid) && !alive(runningCall.childPid)), 'the steered turn left part of its provider group running')
-    const argv = fakeCall(steered.job.id).argv
-    if (client === claudeHost) assert.deepEqual([argv[1], argv.at(-2)], ['resume', thread])
-    else assert.equal(argv[argv.indexOf('--resume') + 1], thread)
-    assert.match(fakeCall(steered.job.id).stdin, /new direction/)
+    if (client === claudeHost) {
+      assert.equal(asked(steered.job.id, 'thread/resume')[0].threadId, thread)
+      assert.match(turnText(steered.job.id), /new direction/)
+    } else {
+      const argv = fakeCall(steered.job.id).argv
+      assert.equal(argv[argv.indexOf('--resume') + 1], thread)
+      assert.match(fakeCall(steered.job.id).stdin, /new direction/)
+    }
   }
   const early = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=slow', waitSeconds: 0 })
   await refused(claudeHost, { continue: early.job.id }, 'JOB_STATE')
@@ -399,8 +575,38 @@ try {
   assert.equal(cancelled.job.status, 'cancelled')
   assert.equal(cancelled.job.error.kind, 'CANCELLED')
   assert.ok(await until(() => !alive(hangCall.pid) && !alive(hangCall.childPid)), 'cancel left part of the provider group running')
+  // The App Server took turn/interrupt while it was still alive to record it, and the runner
+  // journaled its answer before signalling the group.
+  assert.deepEqual(asked(hanging.job.id, 'turn/interrupt'), [{ threadId: THREAD, turnId: TURN }])
+  const stops = journal(hanging.job.id).filter((event) => typeof event.type === 'string' && event.type.startsWith('flow.'))
+  assert.deepEqual(stops, [{ type: 'flow.stop', reason: 'CANCELLED' }, { type: 'flow.interrupt', method: 'turn/interrupt', delivered: true }])
   assert.equal((await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', access: 'workspace-write' })).job.status, 'succeeded', 'cancel released the lease')
-  ok('one writer per worktree, readers alongside it, and cancel kills the provider and its children and frees the lease')
+  ok('one writer per worktree, readers alongside it, and cancel interrupts the Codex turn, then kills the provider and its children and frees the lease')
+
+  // The Codex session steers its open turn against that turn's own id, and a turn that has ended
+  // takes no steer. The session is driven directly here, over the fake App Server.
+  const steerId = randomUUID()
+  const steerDir = jobs.jobDir(steerId)
+  mkdirSync(join(steerDir, 'tmp'), { recursive: true })
+  writeFileSync(join(steerDir, 'prompt.txt'), 'FLOW_FAKE_MODE=hang')
+  let steerChild = null
+  const session = await codexTransport.open({
+    job: { id: steerId, target: 'codex', cwd: repo, worktree: repo, access: 'read-only', model: 'gpt-fake', effort: 'low', hasSchema: false, resumeThreadId: null },
+    dir: steerDir, bin: join(fakeBin, 'codex'), seat: SEAT, env: { ...ENV, TMPDIR: join(steerDir, 'tmp'), FLOW_DELEGATION_DEPTH: '1', FLOW_DELEGATION_JOB: steerId },
+    onSpawn: (child) => { steerChild = child }, onLine: () => {},
+  })
+  assert.deepEqual(await session.steer('before the prompt'), { delivered: false, error: 'the turn has ended' })
+  await session.send('FLOW_FAKE_MODE=hang')
+  assert.equal(session.turnOpen, true)
+  assert.deepEqual(await session.steer('also count the lines'), { delivered: true })
+  assert.deepEqual(asked(steerId, 'turn/steer'), [{ threadId: THREAD, expectedTurnId: TURN, input: [{ type: 'text', text: 'also count the lines', text_elements: [] }] }])
+  assert.deepEqual(await session.interrupt(), { method: 'turn/interrupt', delivered: true })
+  assert.ok(await until(() => session.turnEnded), 'the interrupted turn never ended')
+  assert.deepEqual(await session.steer('too late'), { delivered: false, error: 'the turn has ended' })
+  assert.equal(await session.interrupt(), null, 'an ended turn takes no interrupt')
+  session.close()
+  try { process.kill(-steerChild.pid, 'SIGKILL') } catch {}
+  ok('the Codex session steers its open turn with turn/steer against the turn id, interrupts it, and takes neither once the turn has ended')
 
   // A runner that dies leaves an unknown outcome, and its lease does not outlive it.
   const orphan = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=hang', waitSeconds: 0, access: 'workspace-write' })
@@ -497,7 +703,8 @@ try {
   const expired = await claudeHost.call('delegation_result', { jobId: timed.job.id, waitSeconds: 60 })
   assert.equal(expired.job.status, 'failed')
   assert.equal(expired.job.error.kind, 'TIMEOUT')
-  ok('a job past its time budget is stopped and fails TIMEOUT')
+  assert.deepEqual(asked(timed.job.id, 'turn/interrupt'), [{ threadId: THREAD, turnId: TURN }], 'the budget interrupts the Codex turn before the group is killed')
+  ok('a job past its time budget is interrupted, stopped and fails TIMEOUT')
 
   const bounded = await claudeHost.call('delegation_result', { jobId: unchecked.job.id, waitSeconds: 60 })
   assert.deepEqual([bounded.job.status, bounded.job.error?.kind, bounded.job.structured], ['failed', 'SCHEMA_OUTPUT', null])
