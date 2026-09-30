@@ -2,17 +2,18 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { stripLiterals } from '../../lib/hook-policy.mjs'
 import { preToolDeny, readHookInput } from './wire.mjs'
-// git guard: enforces the charter's two git non-negotiables at the hook layer -
+// git guard: the charter's git rules at the hook layer, one script registered on both hosts -
 //   1. NEVER `--no-verify` (it exists to skip the checks that catch bad commits)
 //   2. no commit trailers of any kind - not attribution (Co-Authored-By, Generated-with),
 //      not session links (Claude-Session). the git author IS the author.
+//   3. nothing no reflog returns: bare force-push, `checkout .`, `restore .`, `clean -f`.
 //
 // Why a hook and not charter prose: prose is not enforcement. The harness instruction to
 // append Co-Authored-By/Claude-Session arrives in every seat whether or not the seat half of
-// the charter did, a delegated job runs no hooks and reads only its preamble, and a trailer
-// that lands in git history is permanent. Hooks fire on subagent tool calls too, so this layer
-// travels with the tool call rather than with the context.
+// the charter did, and a trailer that lands in git history is permanent. Hooks fire on
+// subagent tool calls too, so this layer travels with the tool call rather than with the context.
 //
 // Escape hatch, for foreign commits that legitimately already carry a trailer (amending or
 // rewording upstream work you did not author):
@@ -21,6 +22,8 @@ import { preToolDeny, readHookInput } from './wire.mjs'
 // PreToolUse protocol: read tool call JSON on stdin; deny via hookSpecificOutput JSON.
 // Deliberately narrow, same posture as the no-backlog guard: false negatives are
 // acceptable (the policy is also in the charter), false positives are not.
+//
+// Cron mode (FLOW_CRON_JOB set) is a separate, fail-closed grammar further down.
 
 const TRAILERS = [
   /^\s*Co-Authored-By\s*:/im,
@@ -39,15 +42,11 @@ const GIT_COMMIT = /\bgit\b(?:\s+\S+)*?\s+commit\b/
 // body is text being handed to some other command - a PR comment, a commit body, a gripe
 // describing this very guard - not a flag being handed to git. Matching the raw command
 // string would block all three, which is how a guard turns into something people route
-// around. Strip shell literals first, then match.
+// around. So every rule but one reads stripLiterals(cmd), the same reading the publish and
+// merge guards use (lib/hook-policy.mjs).
 //
 // The trailer check below deliberately does NOT strip: a trailer lives inside the quoted
 // commit message, which is precisely where it has to be caught.
-const stripLiterals = (s) =>
-  s
-    .replace(/<<-?\s*(['"]?)(\w+)\1[\s\S]*?^\s*\2/gm, ' ')
-    .replace(/'[^']*'/g, ' ')
-    .replace(/"[^"]*"/g, ' ')
 
 // Irreversible git: operations that destroy work no reflog returns. The bar is deliberately
 // narrow. `reset --hard` and `branch -D` are NOT here - the reflog does return those, and
@@ -57,9 +56,13 @@ const stripLiterals = (s) =>
 // Each pattern is bounded to a single shell command with `[^;&|]*`, so a later invocation
 // cannot hide behind an earlier read (`git log && git push --force`), and every one is
 // matched against stripLiterals(cmd) so prose about a rule is not a breach of it.
+//
+// A force-push is bare when it is `-f` or `--force` itself. `--force-with-lease` refuses when
+// the remote moved, and `--force-if-includes` only narrows it further (alone, it is a no-op), so
+// neither is a force this guard stops.
 const DESTRUCTIVE = [
   [
-    /\bgit\b[^;&|]*\bpush\b[^;&|]*(?:--force(?!-with-lease)|\s-f(?=\s|$))/,
+    /\bgit\b[^;&|]*\bpush\b[^;&|]*(?:--force(?![-\w])|\s-f(?=\s|$))/,
     'flow charter: no bare force-push. --force overwrites whatever the remote holds, ' +
       'including commits you pushed from another worktree. Use --force-with-lease: it ' +
       'refuses when the remote moved under you, which is the only thing bare --force gets wrong.',
