@@ -51,7 +51,7 @@ const KINDS = ['feat', 'fix', 'chore']
 const SLUG_MAX = 40
 const USAGE = 'usage: issue-claim.mjs claim <issue-number> [--kind feat|fix|chore]\n'
 
-const git = (cwd, args, timeoutMs = LOCAL_MS) => execCapture('git', ['-C', cwd, ...args], { timeoutMs })
+const git = (cwd, args, timeoutMs = LOCAL_MS, env) => execCapture('git', ['-C', cwd, ...args], { timeoutMs, env })
 
 /** The line git marked as the failure; a failed worktree add opens with progress, not the error. */
 const complaint = (text) => {
@@ -72,7 +72,7 @@ const shaOfRef = (stdout, ref) => {
 
 /** present, absent or unknown. `ls-remote --exit-code` answers 0 or 2; anything else is no answer. */
 const readRef = (ctx, ref) => {
-  const r = git(ctx.cwd, ['ls-remote', '--exit-code', 'origin', ref], REMOTE_MS)
+  const r = git(ctx.cwd, ['ls-remote', '--exit-code', 'origin', ref], REMOTE_MS, ctx.env)
   if (r.code === 2) return { state: 'absent' }
   const sha = r.code === 0 ? shaOfRef(r.stdout, ref) : null
   if (sha !== null) return { state: 'present', sha }
@@ -87,7 +87,8 @@ const pushStatus = (stdout, ref) => {
 }
 
 /**
- * Create the claim tag at origin's main. `ctx` is { cwd, redact }. `observed` says whether a tag
+ * Create the claim tag at origin's main. `ctx` is { cwd, redact, env? }, env being git's environment
+ * when the caller pins one (the nightly lint's non-interactive ssh). `observed` says whether a tag
  * of this run can be on origin: pre-push (nothing was pushed), post-push (a push went out and its
  * outcome is ambiguous: a lost response and a rival's tag read the same) or absent (a push went
  * out and the re-read proved no tag). --no-tags keeps live claim tags out of the clone, where a
@@ -95,11 +96,11 @@ const pushStatus = (stdout, ref) => {
  */
 export const acquire = (ctx, issue) => {
   const ref = tagRef(issue)
-  const fetched = git(ctx.cwd, ['fetch', '--quiet', '--no-tags', 'origin'], FETCH_MS)
+  const fetched = git(ctx.cwd, ['fetch', '--quiet', '--no-tags', 'origin'], FETCH_MS, ctx.env)
   if (fetched.code !== 0) {
     return { result: 'unknown', observed: 'pre-push', detail: `git fetch origin failed: ${firstLine(ctx.redact(fetched.stderr)) || `exit ${fetched.code}`}` }
   }
-  const main = git(ctx.cwd, ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main^{commit}'])
+  const main = git(ctx.cwd, ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main^{commit}'], LOCAL_MS, ctx.env)
   const base = main.stdout.trim()
   if (main.code !== 0 || !SHA.test(base)) {
     return { result: 'refused', reason: 'no-main-branch', observed: 'pre-push', detail: 'origin has no main branch to hang a claim on' }
@@ -108,7 +109,7 @@ export const acquire = (ctx, issue) => {
   if (before.state === 'present') return { result: 'held', sha: before.sha, observed: 'pre-push', detail: 'the tag was on origin before this run pushed' }
   if (before.state === 'unknown') return { result: 'unknown', observed: 'pre-push', detail: before.detail }
 
-  const push = git(ctx.cwd, ['push', '--porcelain', 'origin', `${base}:${ref}`], PUSH_MS)
+  const push = git(ctx.cwd, ['push', '--porcelain', 'origin', `${base}:${ref}`], PUSH_MS, ctx.env)
   const status = pushStatus(push.stdout, ref)
   if (push.code === 0 && status?.flag === '*') return { result: 'acquired', sha: base }
   const said = status === null ? 'no status line' : `${JSON.stringify(status.flag)} ${ctx.redact(status.summary)}`
@@ -135,7 +136,7 @@ export const dropTag = (ctx, issue, receipt) => {
   if (before.sha !== receipt) {
     return { result: 'refused', reason: 'receipt-mismatch', gone: false, found: before.sha, detail: `the tag is at ${before.sha.slice(0, 12)}, not ${receipt.slice(0, 12)}` }
   }
-  const push = git(ctx.cwd, ['push', '--porcelain', `--force-with-lease=${ref}:${receipt}`, 'origin', `:${ref}`], PUSH_MS)
+  const push = git(ctx.cwd, ['push', '--porcelain', `--force-with-lease=${ref}:${receipt}`, 'origin', `:${ref}`], PUSH_MS, ctx.env)
   const after = readRef(ctx, ref)
   if (after.state === 'absent') return { result: 'dropped', gone: true }
   return {

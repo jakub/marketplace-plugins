@@ -13,9 +13,11 @@
 // because the path decides which repository the ambient token acts on. `git fetch --prune --no-tags
 // origin` runs first and a failure refuses. Every gh call is pinned to the repository origin
 // parses to. Every mutation is read back, and nothing is undone: a label present after an edit is
-// no proof this run put it there. stdout is one JSON line {action, repo, target, ok, reason, ...};
-// exit 0 when the action happened (or the survey was read), 1 on a refusal, 2 on usage. Every
-// argument fits git-guard's cron regex, which is why the relabel reason is a single token.
+// no proof this run put it there. A relabel a claim could race holds the issue's claim tag on
+// origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
+// stdout is one JSON line {action, repo, target, ok, reason, ...}; exit 0 when the action happened
+// (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
+// regex, which is why the relabel reason is a single token.
 
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -24,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { execCapture, ghRunner, parseJson, runExecutor } from '../lib/gh-exec.mjs'
 import { firstLine, makeRedactor } from '../lib/redact.mjs'
 import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
+import { acquire, dropTag } from './issue-claim.mjs'
 
 const HOUR = 3_600_000
 const RECENT_MS = 96 * HOUR
@@ -32,8 +35,9 @@ const PROTECTED = new Set(['main', 'master', 'flow-evidence'])
 const LIFECYCLE = ['needs-triage', 'agent-found', 'ready-for-agent', 'in-progress', 'needs-info', 'needs-human', 'needs-rebase', 'wontfix', 'deferred']
 const CONTRACT = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'flow', 'label-contract.md')
 const FLAKES_PATH = '.github/known-flakes.txt'
-// The only label moves the lint may make. `live` re-runs the claim's scan for a run on the issue;
-// `minAge` is the grace a running issue stage needs before its branch reaches origin.
+// The only label moves the lint may make. `live` re-runs the claim's scan for a run on the issue
+// and holds the claim tag while it moves the label; `minAge` is the grace a running issue stage
+// needs before its branch reaches origin.
 const TRANSITIONS = {
   'in-progress>ready-for-agent': { live: true, minAge: ORPHAN_MS },
   'ready-for-agent>needs-triage': { live: true, minAge: 0 },
@@ -213,39 +217,71 @@ function run({ action, repoArg, target, rest, env }) {
       if (!Array.isArray(v?.labels)) refuse('gh issue view did not answer an issue')
       return { state: v.state, labels: v.labels.map((l) => l.name), updatedAt: v.updatedAt }
     }
-    const before = readIssue()
-    if (before.state !== 'OPEN') refuse(`the issue is ${before.state}, not OPEN`)
-    if (!same(lifecycleOf(before), wanted)) refuse(`the issue carries lifecycle labels [${lifecycleOf(before).join(', ')}], and this transition needs ${from === 'none' ? 'none' : `${from} alone`}`)
-    if (Date.parse(before.updatedAt) !== Date.parse(seen)) refuse(`the issue moved since the lint read it (updatedAt ${before.updatedAt}, seen ${seen}), so the judgment is stale`)
-    const age = Date.now() - Date.parse(before.updatedAt)
-    if (age < rule.minAge) refuse(`the issue was updated ${Math.round(age / 60_000)} minutes ago; under six hours it may be a running issue stage whose branch is not on origin yet`)
-    if (rule.live) {
-      const forIssue = new RegExp(`^(feat|fix|chore)/issue-${target}-`)
-      const patterns = ['feat', 'fix', 'chore'].map((k) => `refs/heads/${k}/issue-${target}-*`)
+    const judge = (issue) => {
+      if (issue.state !== 'OPEN') refuse(`the issue is ${issue.state}, not OPEN`)
+      if (!same(lifecycleOf(issue), wanted)) refuse(`the issue carries lifecycle labels [${lifecycleOf(issue).join(', ')}], and this transition needs ${from === 'none' ? 'none' : `${from} alone`}`)
+      if (Date.parse(issue.updatedAt) !== Date.parse(seen)) refuse(`the issue moved since the lint read it (updatedAt ${issue.updatedAt}, seen ${seen}), so the judgment is stale`)
+      const age = Date.now() - Date.parse(issue.updatedAt)
+      if (age < rule.minAge) refuse(`the issue was updated ${Math.round(age / 60_000)} minutes ago; under six hours it may be a running issue stage whose branch is not on origin yet`)
+    }
+    const forIssue = new RegExp(`^(feat|fix|chore)/issue-${target}-`)
+    const patterns = ['feat', 'fix', 'chore'].map((k) => `refs/heads/${k}/issue-${target}-*`)
+    const claimRef = `refs/tags/flow-claim-issue-${target}`
+    /** The claim's own scan for a run on the issue; the tag counts except while this verb holds it. */
+    const liveRun = ({ tagCounts }) => {
       const local = gitIn(repo, ['for-each-ref', '--format=%(refname:short)', ...patterns])
       if (local === null) refuse('git for-each-ref failed')
       const localHit = local.split('\n').find((b) => forIssue.test(b))
       if (localHit) refuse(`live: local branch ${localHit}`)
       const wt = worktrees().find((e) => e.path.includes(`-issue-${target}-`) || forIssue.test(e.branch ?? ''))
       if (wt) refuse(`live: worktree ${wt.path}`)
-      const remote = gitIn(repo, ['ls-remote', 'origin', ...patterns, `refs/tags/flow-claim-issue-${target}`], 60_000)
+      const remote = gitIn(repo, ['ls-remote', 'origin', ...patterns, ...(tagCounts ? [claimRef] : [])], 60_000)
       if (remote === null) refuse('git ls-remote origin failed')
       const remoteHit = remote.split('\n').map((l) => l.split('\t')[1] ?? '')
-        .find((ref) => ref === `refs/tags/flow-claim-issue-${target}` || forIssue.test(ref.replace(/^refs\/heads\//, '')))
+        .find((ref) => (tagCounts && ref === claimRef) || forIssue.test(ref.replace(/^refs\/heads\//, '')))
       if (remoteHit) refuse(`live: ${remoteHit} on origin`)
       const pr = pages(`repos/${id.owner}/${id.repo}/pulls?state=open&per_page=100`, 'gh api over the open pull requests').find((p) => forIssue.test(String(p?.head?.ref ?? '')))
       if (pr) refuse(`live: open pull request #${pr.number} from ${pr.head.ref}`)
     }
-    const edit = runGh(['issue', 'edit', target, '--repo', id.full, ...(from === 'none' ? [] : ['--remove-label', from]), '--add-label', to], { cwd: repo })
-    const after = readIssue()
-    if (after.state !== 'OPEN' || !same(lifecycleOf(after), [to])) {
-      if (after.state === 'OPEN' && same(lifecycleOf(after), wanted)) refuse(`the edit ${edit.code === 0 ? 'was accepted' : 'failed'} and the labels read back unchanged; nothing moved`)
-      refuse(`after the edit the issue reads ${after.state} with [${lifecycleOf(after).join(', ')}] instead of OPEN with ${to} alone; left for a human, nothing undone`)
+    const move = () => {
+      const edit = runGh(['issue', 'edit', target, '--repo', id.full, ...(from === 'none' ? [] : ['--remove-label', from]), '--add-label', to], { cwd: repo })
+      const after = readIssue()
+      if (after.state !== 'OPEN' || !same(lifecycleOf(after), [to])) {
+        if (after.state === 'OPEN' && same(lifecycleOf(after), wanted)) refuse(`the edit ${edit.code === 0 ? 'was accepted' : 'failed'} and the labels read back unchanged; nothing moved`)
+        refuse(`after the edit the issue reads ${after.state} with [${lifecycleOf(after).join(', ')}] instead of OPEN with ${to} alone; left for a human, nothing undone`)
+      }
     }
+    // A move a claim could race runs under the claim's own tag. An issue run takes the tag before
+    // its re-read and label edit, and this verb takes it before its own, so neither edit can land
+    // between the other's read and write: a run that meets the lint's tag stands down as held, and
+    // the lint refuses a tag it did not create. Everything is checked once for free and once more
+    // under the tag, and the tag goes back straight after the read-back, before the comment.
+    const underClaimTag = (act) => {
+      const ctx = { cwd: repo, redact, env: gitEnv }
+      const got = acquire(ctx, target)
+      if (got.result === 'held' && got.observed === 'pre-push') refuse(`live: ${claimRef} on origin`)
+      if (got.result !== 'acquired') refuse(`the claim tag could not be taken, so nothing moved: ${got.detail}`, got.observed === 'post-push' ? { retained: ['claim-tag'] } : {})
+      let failure = null
+      try { act() } catch (error) { failure = error }
+      const dropped = dropTag(ctx, target, got.sha)
+      const kept = dropped.gone ? null : `${claimRef} stays on origin (${dropped.reason ?? dropped.result}: ${dropped.detail ?? 'no detail'}) and holds off every claim of this issue until a human deletes it`
+      if (failure instanceof Verdict && kept) {
+        failure.reason += `; ${kept}`
+        failure.extra = { ...failure.extra, retained: ['claim-tag'] }
+      }
+      if (failure) throw failure
+      return kept
+    }
+    judge(readIssue())
+    let kept = null
+    if (rule.live) {
+      liveRun({ tagCounts: true })
+      kept = underClaimTag(() => { judge(readIssue()); liveRun({ tagCounts: false }); move() })
+    } else move()
     const words = reason.replace(/_/g, ' ').trim()
     const body = `${from === 'none' ? `Added \`${to}\`` : `Moved \`${from}\` to \`${to}\``}: ${words}.\n\n- flow nightly lint`
     const commented = runGh(['issue', 'comment', target, '--repo', id.full, '--body', body], { cwd: repo }).code === 0
-    finish(true, `relabelled ${from} to ${to}${commented ? '' : '; the comment failed, the labels moved'}`)
+    finish(true, `relabelled ${from} to ${to}${commented ? '' : '; the comment failed, the labels moved'}${kept ? `; ${kept}` : ''}`, kept ? { retained: ['claim-tag'] } : {})
   }
 
   // ---- survey: read-only, and every read that fails refuses the whole survey.

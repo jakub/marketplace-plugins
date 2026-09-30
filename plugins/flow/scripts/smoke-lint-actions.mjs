@@ -37,10 +37,16 @@ const fail = (m) => { process.stderr.write('fake gh: ' + m + '\\n'); st.unpinned
 if (process.env.GH_REPO || process.env.GH_HOST) fail('GH_REPO or GH_HOST reached gh')
 const at = (flag) => argv[argv.indexOf(flag) + 1]
 const [group, verb] = argv
+const originGit = (...a) => require('node:child_process').execFileSync('git', ['--git-dir', st.origin, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+const claimTag = () => { try { return originGit('rev-parse', '--verify', '--quiet', 'refs/tags/flow-claim-issue-7') } catch { return null } }
 if (group === 'api') {
   const path = argv[argv.length - 1]
   if (at('--hostname') !== 'github.com' || !path.startsWith('repos/jakub/demo/')) fail('api off the pin: ' + argv.join(' '))
-  if (path.startsWith('repos/jakub/demo/pulls?state=open')) out([st.openPrs])
+  if (path.startsWith('repos/jakub/demo/pulls?state=open')) {
+    // An issue run that takes the claim tag while the lint is still scanning.
+    if (st.claimDuringScan) { originGit('update-ref', 'refs/tags/flow-claim-issue-7', originGit('rev-parse', 'refs/heads/main')); delete st.claimDuringScan }
+    out([st.openPrs])
+  }
   if (path.startsWith('repos/jakub/demo/issues?')) out([st.issues])
   if (path.startsWith('repos/jakub/demo/labels?')) out([st.labels])
   if (path.startsWith('repos/jakub/demo/actions/runs?')) out({ workflow_runs: st.runs.map((r) => ({ id: r.id })) })
@@ -57,6 +63,7 @@ if (group === 'pr' && verb === 'list') {
 }
 if (group === 'issue' && verb === 'view') out(st.issue)
 if (group === 'issue' && verb === 'edit') {
+  st.tagAtEdit = claimTag()
   if (st.applyEdit !== false) {
     const rm = argv.indexOf('--remove-label')
     st.issue.labels = st.issue.labels.filter((l) => rm < 0 || l.name !== argv[rm + 1]).concat({ name: at('--add-label') })
@@ -98,7 +105,7 @@ const makeWorld = (state = {}) => {
   git(repo, 'remote', 'add', 'origin', 'git@github.com:jakub/demo.git')
   git(repo, 'push', '-q', '-u', 'origin', 'main')
   writeFileSync(env.FAKE_GH_STATE, JSON.stringify({
-    calls: [], comments: [], prs: {}, openPrs: [], issues: [], labels: [], runs: [],
+    calls: [], comments: [], prs: {}, openPrs: [], issues: [], labels: [], runs: [], origin,
     issue: { number: 7, state: 'OPEN', labels: [{ name: 'in-progress' }], updatedAt: new Date(Date.now() - 7 * HOUR).toISOString() }, ...state,
   }))
   return { workspace, origin, repo, env, git, tip: git(repo, 'rev-parse', 'HEAD') }
@@ -121,6 +128,8 @@ console.log('relabel moves a label only through a fixed transition')
   check('an orphaned claim goes back to ready-for-agent, read back', r.code === 0 && r.json?.ok === true && r.st.issue.labels.map((l) => l.name).join() === 'ready-for-agent', `${JSON.stringify(r.json)} ${r.stderr}`)
   check('with one comment, underscores read as spaces', r.st.comments.length === 1 && r.st.comments[0].includes('no branch worktree or pull request'), JSON.stringify(r.st.comments))
   check('and no gh call off the pin', !r.st.unpinned, JSON.stringify(r.st.calls))
+  check('the edit landed while the lint held the claim tag at origin\'s main', r.st.tagAtEdit === w.tip, String(r.st.tagAtEdit))
+  check('and the tag was given back', spawnSync('git', ['--git-dir', w.origin, 'rev-parse', '--verify', '--quiet', 'refs/tags/flow-claim-issue-7']).status !== 0)
   const w2 = makeWorld()
   const ghRepo = run(w2, ['relabel', w2.repo, '7', '--from', 'in-progress', '--to', 'ready-for-agent', '--seen', JSON.parse(readFileSync(w2.env.FAKE_GH_STATE, 'utf8')).issue.updatedAt, '--reason', 'x'], { GH_REPO: 'someone/evil', GH_HOST: 'evil.example' })
   check('GH_REPO and GH_HOST in the environment never reach gh', ghRepo.code === 0 && !ghRepo.st.unpinned, `${JSON.stringify(ghRepo.json)} ${JSON.stringify(ghRepo.st.calls)}`)
@@ -146,6 +155,13 @@ console.log('relabel moves a label only through a fixed transition')
     refused(`a live run (${where})`, r, 'live')
     check(`a live run (${where}): no edit reached gh`, edits(r).length === 0, JSON.stringify(edits(r)))
   }
+  ;({ w, seen } = fresh())
+  const state = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify({ ...state, claimDuringScan: true }))
+  const claimed = relabel(w, 'in-progress', 'ready-for-agent', seen)
+  refused('a claim that takes the tag during the scan', claimed, 'live')
+  check('a claim that takes the tag during the scan: no edit reached gh', edits(claimed).length === 0, JSON.stringify(edits(claimed)))
+  check('and the claim\'s tag stays on origin', spawnSync('git', ['--git-dir', w.origin, 'rev-parse', '--verify', '--quiet', 'refs/tags/flow-claim-issue-7']).status === 0)
   const pr = makeWorld({ openPrs: [{ number: 42, head: { ref: 'feat/issue-7-from-a-fork' } }] })
   refused('a live run (an open pull request from a fork)', relabel(pr, 'in-progress', 'ready-for-agent', JSON.parse(readFileSync(pr.env.FAKE_GH_STATE, 'utf8')).issue.updatedAt), '#42')
   const inert = makeWorld({ applyEdit: false })

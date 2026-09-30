@@ -25,7 +25,7 @@ Type modifiers stack with any label and keep GitHub's stock colors and descripti
 - Issues are born only in the two sanctioned lanes, `FLOW_SANCTION=prep` and `FLOW_SANCTION=land`, which the no-backlog hook enforces. Neither lane files into `agent-found`.
 - Nothing promotes itself: only a prep pass sets `ready-for-agent`.
 - A claim is the assignee plus `in-progress`. The claim tag on origin lives only from the claim's scan to the first push of the work branch. After that, the branch, the worktree and the PR mark the run as live, and a tag that stays is a stale claim for the human.
-- The nightly lint moves labels only through `lint-actions.mjs relabel`, in three moves: an orphaned `in-progress` issue back to `ready-for-agent` after six hours, a `ready-for-agent` issue that fails the contract to `needs-triage`, and an issue with no lifecycle label to `needs-triage`.
+- The nightly lint moves labels only through `lint-actions.mjs relabel`, in three moves: an orphaned `in-progress` issue back to `ready-for-agent` after six hours, a `ready-for-agent` issue that fails the contract to `needs-triage`, and an issue with no lifecycle label to `needs-triage`. The first two hold the claim tag while they re-check, edit and read back, so a claim that starts meanwhile stands down as `held`.
 
 ## The ready-for-agent contract
 
