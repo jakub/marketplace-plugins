@@ -79,6 +79,25 @@ const readRef = (ctx, ref) => {
   return { state: 'unknown', detail: `git ls-remote origin ${ref} failed: ${firstLine(ctx.redact(r.stderr)) || `exit ${r.code}`}` }
 }
 
+/**
+ * origin's one URL, or why there is not exactly one. git reads from origin's fetch URL and pushes
+ * to its push URL (`get-url` applies pushurl, insteadOf and pushInsteadOf), so with two URLs a tag
+ * could be pushed to one repository and read back from another.
+ */
+const originUrl = (cwd, env) => {
+  const urls = (push) => {
+    const r = git(cwd, ['remote', 'get-url', ...(push ? ['--push'] : []), '--all', 'origin'], LOCAL_MS, env)
+    return r.code === 0 ? r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : []
+  }
+  const fetchUrls = urls(false)
+  const pushUrls = urls(true)
+  if (fetchUrls.length === 0) return { problem: 'no-origin', detail: 'this directory has no origin remote to claim on' }
+  if (fetchUrls.length !== 1 || pushUrls.length !== 1 || pushUrls[0] !== fetchUrls[0]) {
+    return { problem: 'push-fetch-mismatch', detail: `origin has ${fetchUrls.length} fetch and ${pushUrls.length} push URL(s) that are not one URL, so the tag could land where no read here looks` }
+  }
+  return { url: fetchUrls[0] }
+}
+
 /** The one `git push --porcelain` status line naming this ref, or null when there is not exactly one. */
 const pushStatus = (stdout, ref) => {
   const lines = String(stdout).split('\n').map((l) => l.split('\t'))
@@ -92,10 +111,13 @@ const pushStatus = (stdout, ref) => {
  * of this run can be on origin: pre-push (nothing was pushed), post-push (a push went out and its
  * outcome is ambiguous: a lost response and a rival's tag read the same) or absent (a push went
  * out and the re-read proved no tag). --no-tags keeps live claim tags out of the clone, where a
- * later `git push --tags` would recreate them.
+ * later `git push --tags` would recreate them. An origin without one URL for both is refused before
+ * anything, whoever the caller is: every read below would look where the push did not go.
  */
 export const acquire = (ctx, issue) => {
   const ref = tagRef(issue)
+  const origin = originUrl(ctx.cwd, ctx.env)
+  if (origin.url === undefined) return { result: 'refused', reason: origin.problem, observed: 'pre-push', detail: origin.detail }
   const fetched = git(ctx.cwd, ['fetch', '--quiet', '--no-tags', 'origin'], FETCH_MS, ctx.env)
   if (fetched.code !== 0) {
     return { result: 'unknown', observed: 'pre-push', detail: `git fetch origin failed: ${firstLine(ctx.redact(fetched.stderr)) || `exit ${fetched.code}`}` }
@@ -240,22 +262,14 @@ export function issueClaim({ argv, cwd, env = {}, runGh }) {
   const early = (reason, detail) => emit({ ...base, result: 'refused', reason, retained: [], cleanup: null, detail }, `${detail}. Nothing was claimed.`)
 
   // ---- origin: one URL for fetch and push, parsed down to a host, owner and repository to pin gh to.
-  const urls = (push) => {
-    const r = git(cwd, ['remote', 'get-url', ...(push ? ['--push'] : []), '--all', 'origin'])
-    return r.code === 0 ? r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : []
-  }
-  const fetchUrls = urls(false)
-  const pushUrls = urls(true)
-  if (fetchUrls.length === 0) return early('no-origin', 'this directory has no origin remote to claim on')
-  if (fetchUrls.length !== 1 || pushUrls.length !== 1 || pushUrls[0] !== fetchUrls[0]) {
-    return early('push-fetch-mismatch', `origin has ${fetchUrls.length} fetch and ${pushUrls.length} push URL(s) that are not one URL, so the tag could land where no read here looks`)
-  }
-  const parsed = identityOfRemote(fetchUrls[0], { purpose: 'claim an issue on', allowedHosts: allowedHostsFrom(env) })
+  const origin = originUrl(cwd)
+  if (origin.url === undefined) return early(origin.problem, origin.detail)
+  const parsed = identityOfRemote(origin.url, { purpose: 'claim an issue on', allowedHosts: allowedHostsFrom(env) })
   if (parsed.identity === undefined) return early(parsed.problem === 'host' ? 'origin-host-not-allowed' : 'origin-unparseable', parsed.refusal)
   const id = parsed.identity
   const repo = id.full
   base.repo = repo
-  const ctx = { cwd, redact: makeRedactor(fetchUrls, repo) }
+  const ctx = { cwd, redact: makeRedactor([origin.url], repo) }
   const repoPin = ['--repo', id.full]
   const hostPin = ['--hostname', id.host]
   const failed = (what, r) => `${what} failed: ${firstLine(ctx.redact(r.stderr)) || `exit ${r.code}`}`

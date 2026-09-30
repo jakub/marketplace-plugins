@@ -170,6 +170,18 @@ console.log('relabel moves a label only through a fixed transition')
   const r = relabel(raced, 'in-progress', 'ready-for-agent', JSON.parse(readFileSync(raced.env.FAKE_GH_STATE, 'utf8')).issue.updatedAt)
   refused('a conflicting read-back', r, 'nothing undone')
   check('a conflicting read-back is left as it is, with no second edit', edits(r).length === 1 && r.st.issue.labels.some((l) => l.name === 'wontfix'), JSON.stringify(r.st.issue))
+  // Reads go to origin's fetch URL and pushes to its push URL, so a tag pushed to a second
+  // repository would be a lock no claim reads, and the read-back would call it gone.
+  ;({ w, seen } = fresh())
+  const elsewhere = join(dirname(w.origin), 'other.git')
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', elsewhere])
+  w.git(w.repo, 'config', 'remote.origin.pushurl', 'git@github.com:jakub/other.git')
+  w.git(w.repo, 'push', '-q', 'origin', 'main')
+  const split = relabel(w, 'in-progress', 'ready-for-agent', seen)
+  refused('an origin that pushes to another repository than it fetches from', split, 'not one URL')
+  check('a split origin: no edit reached gh', edits(split).length === 0, JSON.stringify(edits(split)))
+  const tagIn = (bare) => spawnSync('git', ['--git-dir', bare, 'rev-parse', '--verify', '--quiet', 'refs/tags/flow-claim-issue-7']).status === 0
+  check('a split origin: no claim tag in either repository', !tagIn(w.origin) && !tagIn(elsewhere))
 }
 
 console.log('\ndelete-branch needs a death warrant and a recoverable tip')

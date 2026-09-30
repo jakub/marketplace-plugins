@@ -143,6 +143,22 @@ console.log('\ndropTag deletes only the tag this run created')
   check('the right receipt drops the tag and reads it back gone', dropped.result === 'dropped' && dropped.gone && tagIn(o.origin, 15) === null, JSON.stringify(dropped))
 }
 
+console.log('\nacquire refuses an origin that reads from one repository and pushes to another')
+{
+  const split = join(tmp, 'split')
+  execFileSync('git', ['clone', '-q', o.origin, split])
+  const elsewhere = join(tmp, 'elsewhere.git')
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', elsewhere])
+  git(split, 'config', 'remote.origin.pushurl', elsewhere)
+  const r = acquire(ctx(split), 18)
+  check('a push URL that differs from the fetch URL is refused before any push', r.result === 'refused' && r.reason === 'push-fetch-mismatch' && r.observed === 'pre-push', JSON.stringify(r))
+  check('and neither repository holds the tag', tagIn(o.origin, 18) === null && tagIn(elsewhere, 18) === null)
+  git(split, 'config', '--unset', 'remote.origin.pushurl')
+  git(split, 'config', '--add', 'remote.origin.url', elsewhere)
+  const twice = acquire(ctx(split), 18)
+  check('so is an origin with a second URL, which a push reaches and no read does', twice.result === 'refused' && twice.reason === 'push-fetch-mismatch' && tagIn(elsewhere, 18) === null, JSON.stringify(twice))
+}
+
 console.log('\nwhat git says is quoted without the credential in the remote')
 {
   const creds = join(tmp, 'creds')
