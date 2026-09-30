@@ -1,16 +1,16 @@
-// The job store: admission, the job directory, the write lease, the runner spawn, waiting,
-// cancel, steering, reconciliation and pruning. A job is a directory under <state>/jobs/<uuid>/,
-// and job.json is only ever replaced by rename, so a reader sees the old record or the new one.
-// While a runner lives it is the only writer of its job's record; the server writes one only to
-// create it or to settle a job whose runner is gone. A `claim` file, linked into place with its
-// holder inside, decides who may move a queued job, so a late runner and a cancel or a lease
-// takeover never both act on it. A steer is a file the server writes under steer/ and the runner
-// answers beside it, so neither ever writes the other's file.
+// The job store: admission, the job directory, the provider's private TMPDIR, the write lease, the
+// runner spawn, waiting, cancel, steering, reconciliation and pruning. A job is a directory under
+// <state>/jobs/<uuid>/, and job.json is only ever replaced by rename, so a reader sees the old
+// record or the new one. While a runner lives it is the only writer of its job's record; the server
+// writes one only to create it or to settle a job whose runner is gone. A `claim` file, linked into
+// place with its holder inside, decides who may move a queued job, so a late runner and a cancel or
+// a lease takeover never both act on it. A steer is a file the server writes under steer/ and the
+// runner answers beside it, so neither ever writes the other's file.
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, fstatSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { schemaProblem } from './schema.mjs'
@@ -64,6 +64,26 @@ export const FINDINGS_SCHEMA = {
 export const stateDir = () => process.env.FLOW_DELEGATION_STATE_DIR
   || join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'flow')
 export const jobDir = (id) => join(stateDir(), 'jobs', id)
+
+// A provider's private TMPDIR, outside the job directory. Claude Code's sandbox creates its proxy
+// bridge sockets in TMPDIR as claude-http-<16 hex>.sock and claude-socks-<16 hex>.sock. A Unix
+// socket path holds at most 107 bytes, so every sandboxed command fails when TMPDIR is longer than
+// 72 bytes. The job directory's depth follows HOME, and with HOME=/home/jakub a job's tmp under the
+// default state directory was 75 bytes. So each job gets /tmp/flow-<first 8 characters of its
+// id>-<6 random characters>, 25 bytes whatever HOME, the state directory or the host's own TMPDIR
+// say. It is not in $XDG_RUNTIME_DIR, because Codex passes an MCP server no XDG variable, so the
+// location would differ by host, and that directory is a small tmpfs meant for sockets, not for a
+// build's temporary files. mkdtemp creates the directory with mode 0700 under a name no other user
+// can predict or create first, and the sticky bit on /tmp stops another user from moving it. The
+// runner creates it, records it as tmpDir, and removes it when the job ends. When the runner dies,
+// reconcile removes it.
+const tmpPrefix = (id) => `flow-${String(id).slice(0, 8)}-`
+export const makeTmp = (id) => realpathSync(mkdtempSync(join('/tmp', tmpPrefix(id))))
+// Only a directory named for this job is removed, whatever a record says.
+export function dropTmp(id, path) {
+  if (typeof path === 'string' && isAbsolute(path) && basename(path).startsWith(tmpPrefix(id))) rmSync(path, { recursive: true, force: true })
+}
+
 export function readJob(id) {
   try { return JSON.parse(readFileSync(join(jobDir(id), 'job.json'), 'utf8')) } catch { return null }
 }
@@ -276,7 +296,7 @@ export async function admit(input, { host, roots }) {
     sessionId: target === 'claude' && !parent ? randomUUID() : null, threadId: null,
     requestPreview: preview(input.prompt.trim() ? input.prompt : `Review ${baseSha}..${headSha}`),
     baseSha, headSha, hasSchema: schema !== null,
-    servedModel: null, catalog: null, isolation: null, promptSent: false, turnOpen: false, steers: [],
+    servedModel: null, catalog: null, isolation: null, promptSent: false, turnOpen: false, steers: [], tmpDir: null,
     output: null, structured: null, commandFailures: 0, error: null,
   }
   mkdirSync(jobDir(job.id), { recursive: true, mode: 0o700 })
@@ -348,13 +368,15 @@ function spawnRunner(job) {
 }
 
 // A running job whose runner is gone has an unknown outcome: nothing is left that could prove
-// what the provider did. A queued job past a minute is settled once this call holds its claim or
-// the holder is dead, and left alone while a live runner holds it, since that runner is starting.
+// what the provider did. Its provider group is killed and its TMPDIR removed. A queued job past a
+// minute is settled once this call holds its claim or the holder is dead, and left alone while a
+// live runner holds it, since that runner is starting.
 export function reconcile(job) {
   if (job?.status === 'running' && !runnerAlive(job)) {
     const again = readJob(job.id)
     if (again?.status !== 'running') return again
     signalProvider(again)
+    dropTmp(again.id, again.tmpDir)
     releaseLease(again)
     return settle(again, 'unknown', { error: { kind: 'RUNNER_LOST', message: 'The job runner exited without recording an outcome.' } })
   }

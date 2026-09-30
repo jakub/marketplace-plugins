@@ -88,10 +88,11 @@ const pattern = (path) => `/${path.replace(/[\\*?[\]!#]/g, '\\$&')}`
 // The Claude tools' containment. Bash runs in the OS sandbox: no network, the credentials, both
 // provider executables and /proc unreadable, and the worktree writable only on a write job. Read,
 // Grep and Glob are file tools the sandbox does not cover, so the same credentials are denied to
-// them as permission rules; Edit is allowed inside the worktree and nowhere else.
-export function claudeSettings(job, dir) {
+// them as permission rules; Edit is allowed inside the worktree and nowhere else. tmp is the
+// TMPDIR in the provider's environment. Every job may write it, and the sandbox creates its proxy
+// bridge sockets in it.
+export function claudeSettings(job, tmp) {
   const write = job.access === 'workspace-write'
-  const tmp = join(dir, 'tmp')
   const secret = [...credentialPaths(), '/proc']
   return {
     permissions: {
@@ -120,16 +121,16 @@ function toolSets(job) {
 }
 
 // The channel and the containment every Claude process gets, the doctor's included.
-function channel(job, dir) {
+function channel(job, tmp) {
   const { read, all } = toolSets(job)
   return ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--replay-user-messages',
     '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
-    '--setting-sources', '', '--strict-mcp-config', '--settings', JSON.stringify(claudeSettings(job, dir)),
+    '--setting-sources', '', '--strict-mcp-config', '--settings', JSON.stringify(claudeSettings(job, tmp)),
     '--tools', all.join(','), '--allowedTools', read.join(',')]
 }
 
-function argv(job, dir) {
-  return [...channel(job, dir), '--model', job.model, '--effort', job.effort,
+function argv(job, dir, tmp) {
+  return [...channel(job, tmp), '--model', job.model, '--effort', job.effort,
     ...(job.resumeThreadId ? ['--resume', job.resumeThreadId] : ['--session-id', job.sessionId]),
     '--append-system-prompt-file', join(dir, 'seat.md'),
     ...(job.hasSchema ? ['--json-schema', readFileSync(join(dir, 'schema.json'), 'utf8')] : []),
@@ -260,7 +261,7 @@ async function checkServers(peer) {
 export const transport = {
   name: 'Claude',
   async open({ job, dir, bin, env, onSpawn, onLine }) {
-    const child = spawn(bin, argv(job, dir), { cwd: job.cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
+    const child = spawn(bin, argv(job, dir, env.TMPDIR), { cwd: job.cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
     onSpawn(child)
     const requested = new Set(toolSets(job).all)
     let sessionId = null
@@ -446,8 +447,8 @@ export const transport = {
   // The doctor's handshake in cwd: the channel with a read-only job's containment and no model,
   // session or seat, so the CLI starts on its default model, then initialize and mcp_status. Stdin
   // closes with no user message, and the CLI exits without a turn.
-  check({ cwd, dir, bin, env }) {
-    const child = spawn(bin, channel({ access: 'read-only', worktree: cwd, hasSchema: false }, dir), { cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
+  check({ cwd, bin, env }) {
+    const child = spawn(bin, channel({ access: 'read-only', worktree: cwd, hasSchema: false }, env.TMPDIR), { cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
     const peer = connect(child, { onLine: () => {}, onFrame: () => {}, onRequest: (request) => `flow-delegate does not answer ${clip(request.subtype ?? 'unnamed')}.`, diagnostics: DOCTOR_STDERR })
     return handshake('Claude', child, peer, async (report) => {
       report.catalog = catalogOf(await peer.request('initialize'))

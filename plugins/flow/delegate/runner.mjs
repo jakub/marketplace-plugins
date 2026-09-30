@@ -4,12 +4,12 @@
 // the outcome. The lease is released before the outcome is written, and only after the provider's
 // group is dead, so no two writers ever share a worktree.
 import { randomUUID } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { seatPayload } from '../lib/charter-payload.mjs'
 import { transport as claude } from './claude-control.mjs'
 import { transport as codex } from './codex-app-server.mjs'
-import { claim, DelegateError, jobDir, JOB_ID, log, readJob, releaseLease, settle, signalProvider, startToken, writeJob } from './jobs.mjs'
+import { claim, DelegateError, dropTmp, jobDir, JOB_ID, log, makeTmp, readJob, releaseLease, settle, signalProvider, startToken, writeJob } from './jobs.mjs'
 import { findExecutable, providerEnv } from './providers.mjs'
 
 const STALL_SECONDS = 420
@@ -188,7 +188,7 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
   }, 500)
   resetStall()
   try {
-    session = await transport.open({ job, dir, bin, env: providerEnv(job, dir), seat, onSpawn, onLine })
+    session = await transport.open({ job, dir, bin, env: providerEnv(job, job.tmpDir), seat, onSpawn, onLine })
     sync()
     if (!stopped) {
       // The prompt is on its way once send returns, before the provider accepts it.
@@ -228,11 +228,16 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
   return { folded, stopped }
 }
 
+// The runner creates the job's private TMPDIR just before it marks the job running, and records
+// both in one write. It removes the directory once the provider's group is dead and before it
+// writes the outcome, so a caller that sees the job ended never finds the directory left behind.
+// When the runner dies, reconcile in jobs.mjs removes it.
 export async function runJob(id) {
   if (!JOB_ID.test(id)) return
   let job = readJob(id)
   if (job?.status !== 'queued' || !claim(id)) return
   const dir = jobDir(id)
+  let tmp = null
   let result = null
   try {
     const transport = TRANSPORTS[job.target]
@@ -244,9 +249,9 @@ export async function runJob(id) {
     } else {
       const seat = delegatedInstructions(job, transport.name)
       writeFileSync(join(dir, 'seat.md'), seat, { mode: 0o600 })
-      mkdirSync(join(dir, 'tmp'), { recursive: true, mode: 0o700 })
       const prompt = readFileSync(join(dir, 'prompt.txt'), 'utf8')
-      job = writeJob({ ...job, status: 'running', startedAt: new Date().toISOString(), runnerPid: process.pid, runnerStart: startToken(process.pid) })
+      tmp = makeTmp(id)
+      job = writeJob({ ...job, status: 'running', startedAt: new Date().toISOString(), runnerPid: process.pid, runnerStart: startToken(process.pid), tmpDir: tmp })
       const { folded, stopped } = await runProvider(job, dir, bin, transport, seat, prompt)
       job = readJob(id) ?? job
       result = outcome(job, folded, stopped)
@@ -256,6 +261,7 @@ export async function runJob(id) {
     result = { status: 'failed', error: { kind: 'INTERNAL', message: 'The job runner failed; server.log in the state directory has the detail.' } }
   } finally {
     signalProvider(job)
+    dropTmp(id, tmp)
     releaseLease(job)
     const { status = 'failed', ...fields } = result ?? {}
     settle(job, status, fields)

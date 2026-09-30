@@ -29,11 +29,12 @@ export function findExecutable(name) {
 }
 
 // The provider sees a fixed set of variables and nothing else the host carries, plus the depth
-// marker that refuses a second hop and a private TMPDIR under the job.
+// marker that refuses a second hop, and TMPDIR set to tmp, the private directory from makeTmp in
+// jobs.mjs. Each transport grants write on the TMPDIR this environment names.
 const KEEP = /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|TERM|TZ|CODEX_HOME|CLAUDE_CONFIG_DIR|XDG_[A-Z_]+|LC_[A-Z_]+)$/
 const baseEnv = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => KEEP.test(name)))
-export function providerEnv(job, dir) {
-  const env = { ...baseEnv(), TMPDIR: join(dir, 'tmp'), FLOW_DELEGATION_DEPTH: '1', FLOW_DELEGATION_JOB: job.id }
+export function providerEnv(job, tmp) {
+  const env = { ...baseEnv(), TMPDIR: tmp, FLOW_DELEGATION_DEPTH: '1', FLOW_DELEGATION_JOB: job.id }
   if (job.target === 'claude') {
     // Neither fallback switch is public API, so the fold also checks every assistant frame's
     // model. Auto-memory would write this job into the human's project memory.

@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // Smoke for the delegate server: the real server and runner over stdio, real Git repositories in a
 // temp directory, and two fake provider executables first on a temp PATH. Each fake records its
-// argv, cwd and environment in the job's private TMPDIR, and answers in the mode a
-// FLOW_FAKE_MODE=<mode> token in the prompt names. The fake Codex is an App Server peer that also
-// records every request and response; the fake Claude is a stream-json control-channel peer that
-// records every frame it is written. In the steer modes each takes a steer during its turn: the
-// fake Codex through turn/steer, the fake Claude as a second user message that it folds in or runs
-// as the next turn. The fakes speak the protocol subset the transports use, in the shapes Codex
-// CLI 0.159.0 and Claude Code 2.1.284 answer with, and in drift mode each answers the way a CLI
-// that changed its protocol would, for the doctor to catch. Every init frame the fake Claude opens
-// lists the two plugins Claude Code 2.1.285 compiles in, as a live turn listed them. No network,
-// no model.
+// argv, cwd and environment under the job's id in a calls directory, where the job's end cannot
+// remove it, and answers in the mode a FLOW_FAKE_MODE=<mode> token in the prompt names. The fake
+// Codex is an App Server peer that also records every request and response; the fake Claude is a
+// stream-json control-channel peer that records every frame it is written. In the steer modes each
+// takes a steer during its turn: the fake Codex through turn/steer, the fake Claude as a second
+// user message that it folds in or runs as the next turn. The fakes speak the protocol subset the
+// transports use, in the shapes Codex CLI 0.159.0 and Claude Code 2.1.284 answer with, and in drift
+// mode each answers the way a CLI that changed its protocol would, for the doctor to catch. Every
+// init frame the fake Claude opens lists the two plugins Claude Code 2.1.285 compiles in, as a live
+// turn listed them. No network, no model.
 // Run: node plugins/flow/scripts/smoke-delegate.mjs
 
 import assert from 'node:assert/strict'
@@ -18,7 +18,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seatPayload } from '../lib/charter-payload.mjs'
@@ -32,7 +32,9 @@ const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MAIN = join(PLUGIN, 'delegate', 'main.mjs')
 const SEAT = seatPayload(readFileSync(join(PLUGIN, 'charter', 'charter.md'), 'utf8'))
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-smoke-delegate-')))
-const [home, fakeBin, state, repo, other] = ['home', 'bin', 'state', 'repo', 'other'].map((name) => join(tmp, name))
+const [home, fakeBin, state, repo, other, calls] = ['home', 'bin', 'state', 'repo', 'other', 'calls'].map((name) => join(tmp, name))
+// Where every job's private TMPDIR lives, whatever HOME or the state directory is.
+const TMP_ROOT = realpathSync('/tmp')
 const pathWith = (...dirs) => [...dirs, dirname(process.execPath), '/usr/bin', '/bin'].join(':')
 const ENV = { PATH: pathWith(fakeBin), HOME: home, LANG: 'C.UTF-8', FLOW_DELEGATION_STATE_DIR: state, SMOKE_LEAK: 'host-only' }
 // The cases that drive jobs.mjs in this process use the same state directory as the server.
@@ -52,7 +54,7 @@ const alive = (pid) => {
   try { const stat = readFileSync(`/proc/${pid}/stat`, 'utf8'); return stat.slice(stat.lastIndexOf(')') + 2)[0] !== 'Z' } catch { return false }
 }
 const jobPath = (id, ...rest) => join(state, 'jobs', id, ...rest)
-const fakeCall = (id) => { try { return JSON.parse(readFileSync(jobPath(id, 'tmp', 'fake-call.json'), 'utf8')) } catch { return null } }
+const fakeCall = (id) => { try { return JSON.parse(readFileSync(join(calls, `${id}.json`), 'utf8')) } catch { return null } }
 const readJob = (id) => JSON.parse(readFileSync(jobPath(id, 'job.json'), 'utf8'))
 // What the fake App Server was asked: every request's params for one method, and the text a
 // turn/start carried.
@@ -73,10 +75,14 @@ const widenedFor = (call) => ({ profile: call.requests.find((request) => request
 // One fake, two names. Codex answers `app-server --stdio` as a JSON-RPC peer; Claude answers `-p`
 // with stream-json in and out as a control-channel peer. Each provider takes its prompt only after
 // a handshake the modes under test act in (turn/start, or the first user message), so each fake
-// reads its mode from the job's prompt.txt beside its TMPDIR.
+// reads its mode from the prompt.txt of the job FLOW_DELEGATION_JOB names in the smoke's state
+// directory, and runs happy when it finds none.
 const FAKE = String.raw`#!/usr/bin/env node
 const fs = require('node:fs'), path = require('node:path'), { spawn } = require('node:child_process')
 const NAME = path.basename(process.argv[1]), argv = process.argv.slice(2)
+const STATE = ${JSON.stringify(state)}, CALLS = ${JSON.stringify(calls)}, JOB = process.env.FLOW_DELEGATION_JOB
+const promptOf = () => { try { return fs.readFileSync(path.join(STATE, 'jobs', JOB, 'prompt.txt'), 'utf8') } catch { return '' } }
+const saveTo = (record) => () => fs.writeFileSync(path.join(CALLS, JOB + '.json'), JSON.stringify(record))
 const out = (event) => process.stdout.write(JSON.stringify(event) + '\n')
 const flag = (name) => { const at = argv.indexOf(name); return at >= 0 ? argv[at + 1] : undefined }
 if (argv[0] === '--version') { console.log(NAME === 'codex' ? 'codex-cli 0.0.0-fake' : '0.0.0-fake (Claude Code)'); process.exit(0) }
@@ -90,11 +96,9 @@ if (NAME === 'codex') appServer()
 else claudeCli()
 
 function appServer() {
-  let prompt = ''
-  try { prompt = fs.readFileSync(path.join(process.env.TMPDIR, '..', 'prompt.txt'), 'utf8') } catch {}
-  const mode = modeOf(prompt)
+  const mode = modeOf(promptOf())
   const record = { argv, cwd: process.cwd(), env: process.env, pid: process.pid, exe: fs.realpathSync('/proc/self/exe'), requests: [], responses: [] }
-  const save = () => fs.writeFileSync(path.join(process.env.TMPDIR, 'fake-call.json'), JSON.stringify(record))
+  const save = saveTo(record)
   save()
   if (argv.join(' ') !== 'app-server --stdio') { process.stderr.write('fake codex: unexpected argv\n'); process.exit(64) }
   const THREAD = '11111111-1111-4111-8111-111111111111', TURN = '22222222-2222-4222-8222-222222222222'
@@ -222,11 +226,9 @@ function appServer() {
 }
 
 function claudeCli() {
-  let prompt = ''
-  try { prompt = fs.readFileSync(path.join(process.env.TMPDIR, '..', 'prompt.txt'), 'utf8') } catch {}
-  const mode = modeOf(prompt)
+  const mode = modeOf(promptOf())
   const record = { argv, cwd: process.cwd(), env: process.env, pid: process.pid, frames: [] }
-  const save = () => fs.writeFileSync(path.join(process.env.TMPDIR, 'fake-call.json'), JSON.stringify(record))
+  const save = saveTo(record)
   save()
   if (argv.slice(0, 5).join(' ') !== '-p --input-format stream-json --output-format stream-json') { process.stderr.write('fake claude: unexpected argv\n'); process.exit(64) }
   // The catalog initialize answers with: aliases resolving to wire ids, a model with two efforts,
@@ -399,6 +401,7 @@ const start = (client, args) => client.call(`delegate_to_${client.target ?? 'cod
 
 try {
   mkdirSync(fakeBin, { recursive: true })
+  mkdirSync(calls)
   for (const name of ['codex', 'claude']) writeFileSync(join(fakeBin, name), FAKE, { mode: 0o755 })
   // home is a repository's top level too, so the Codex home-directory rule is what refuses it.
   for (const dir of [repo, other, home]) {
@@ -507,8 +510,8 @@ try {
     assert.deepEqual(thread.config.permissions[thread.permissions].filesystem, {
       ':minimal': 'read', [repo]: write ? 'write' : 'read', [join(repo, '.git')]: 'read',
       ...(write ? { [join(repo, '.codex')]: 'read' } : {}),
-      [call.exe]: 'read', [join(fakeBin, 'codex')]: 'read', [jobPath(result.job.id, 'tmp')]: 'write',
-    }, 'the grants: :minimal, the worktree, its Git metadata and the running executable read, the job tmp written')
+      [call.exe]: 'read', [join(fakeBin, 'codex')]: 'read', [call.env.TMPDIR]: 'write',
+    }, 'the grants: :minimal, the worktree, its Git metadata and the running executable read, the job\'s TMPDIR written')
     for (const name of FEATURES) assert.equal(thread.config[`features.${name}`], false, `features.${name} is off`)
     assert.deepEqual(thread.config.memories, { use_memories: false, generate_memories: false })
     assert.deepEqual(thread.config.apps, { _default: { enabled: false } })
@@ -528,7 +531,7 @@ try {
       [[result.job.threadId, 'toolsAndAuthOnly', null], [result.job.threadId, 'toolsAndAuthOnly', '2']], 'the inventory is read for the thread, page by page')
     assert.equal(call.env.FLOW_DELEGATION_DEPTH, '1')
     assert.equal(call.env.SMOKE_LEAK, undefined, 'a host variable outside the allowlist reached the provider')
-    assert.equal(call.env.TMPDIR, jobPath(result.job.id, 'tmp'))
+    assert.equal(call.env.TMPDIR, readJob(result.job.id).tmpDir, 'the provider\'s TMPDIR is the one its job recorded')
   }
   assert.notEqual(asked(codexRead.job.id, 'thread/start')[0].permissions, asked(codexWrite.job.id, 'thread/start')[0].permissions, 'two threads shared a profile name')
   const claudeRead = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy read' })
@@ -1020,14 +1023,16 @@ try {
   // what a job does before its prompt, on a read-only job's containment, reports the catalog and
   // the read-back, sends no prompt, and leaves no provider behind.
   const doctorCheck = async (transport, name, mode) => {
-    const dir = join(tmp, `doctor-${name}-${mode}`)
-    mkdirSync(join(dir, 'tmp'), { recursive: true })
-    writeFileSync(join(dir, 'prompt.txt'), `FLOW_FAKE_MODE=${mode}`)
-    const env = { ...ENV, TMPDIR: join(dir, 'tmp'), FLOW_DELEGATION_DEPTH: '1', FLOW_DELEGATION_JOB: 'doctor' }
-    const report = await transport.check({ cwd: repo, dir, bin: join(fakeBin, name), env })
-    const call = JSON.parse(readFileSync(join(dir, 'tmp', 'fake-call.json'), 'utf8'))
+    const label = `doctor-${name}-${mode}`
+    const tmpDir = join(tmp, label)
+    mkdirSync(tmpDir)
+    mkdirSync(jobPath(label), { recursive: true })
+    writeFileSync(jobPath(label, 'prompt.txt'), `FLOW_FAKE_MODE=${mode}`)
+    const env = { ...ENV, TMPDIR: tmpDir, FLOW_DELEGATION_DEPTH: '1', FLOW_DELEGATION_JOB: label }
+    const report = await transport.check({ cwd: repo, bin: join(fakeBin, name), env })
+    const call = fakeCall(label)
     assert.ok(await until(() => !alive(call.pid)), `${name} ${mode}: the provider outlived the doctor`)
-    return { report, call, dir }
+    return { report, call, tmpDir }
   }
   const everyEffort = ['low', 'medium', 'high', 'xhigh', 'max']
   const codexDoctor = await doctorCheck(codexTransport, 'codex', 'happy')
@@ -1044,7 +1049,7 @@ try {
     doctorThread.allowProviderModelFallback, doctorThread.approvalPolicy, 'model' in doctorThread, 'developerInstructions' in doctorThread],
   [true, repo, [repo], doctorThread.permissions, false, 'never', false, false])
   assert.deepEqual(doctorThread.config.permissions[doctorThread.permissions], { description: 'Flow delegated job', network: { enabled: false }, filesystem: {
-    ':minimal': 'read', [repo]: 'read', [join(repo, '.git')]: 'read', [codexDoctor.call.exe]: 'read', [join(fakeBin, 'codex')]: 'read', [join(codexDoctor.dir, 'tmp')]: 'write',
+    ':minimal': 'read', [repo]: 'read', [join(repo, '.git')]: 'read', [codexDoctor.call.exe]: 'read', [join(fakeBin, 'codex')]: 'read', [codexDoctor.tmpDir]: 'write',
   } }, 'the doctor thread carries a read-only job\'s profile')
   for (const name of FEATURES) assert.equal(doctorThread.config[`features.${name}`], false, `the doctor thread left features.${name} on`)
   assert.deepEqual([doctorThread.config.memories, doctorThread.config.apps, doctorThread.config.mcp_servers],
@@ -1089,11 +1094,18 @@ try {
     [true, 3, ['gpt-fake', 'gpt-fake-mini', 'gpt-fake-other']])
   assert.match(doctor.transport.profile, PROFILE_NAME)
   assert.equal(doctor.summary, `codex codex-cli 0.0.0-fake ready: 3 model(s) listed, profile ${doctor.transport.profile}, 3 MCP server(s) disabled, no turn`)
+  // Each doctor handshake gets a private TMPDIR made the way a job's is, and removes it.
+  const doctorTmpGone = (who) => {
+    const given = fakeCall('doctor').env.TMPDIR
+    assert.deepEqual([dirname(given), /^flow-doctor-[A-Za-z0-9]{6}$/.test(basename(given))], [TMP_ROOT, true], `the ${who} doctor's TMPDIR is ${given}`)
+    assert.equal(existsSync(given), false, `the ${who} doctor left its TMPDIR behind`)
+  }
+  doctorTmpGone('Codex')
   const claudeDoctorCall = await codexHost.call('delegation_doctor', {})
   assert.deepEqual([claudeDoctorCall.ok, claudeDoctorCall.provider.auth.method, claudeDoctorCall.transport.protocol, claudeDoctorCall.transport.profile,
     claudeDoctorCall.transport.catalog.find((model) => model.id === 'opus').resolvedModel], [true, 'claude.ai', ['initialize', 'mcp_status'], null, 'claude-fake-opus-2'])
   assert.ok(!claudeDoctorCall.text.includes('secret@example.invalid'), 'the doctor repeated the account email')
-  assert.deepEqual(readdirSync(join(state, 'doctor')), [], 'the doctor left its directory behind')
+  doctorTmpGone('Claude')
   const bare = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo, PATH: pathWith() } })
   const bareDoctor = await bare.call('delegation_doctor', {})
   assert.deepEqual([bareDoctor.error.kind, bareDoctor.transport], ['PROVIDER_NOT_INSTALLED', null])
@@ -1115,7 +1127,7 @@ try {
     old.close()
   }
   assert.equal(readFileSync(join(state, 'server.log'), 'utf8').match(/doctor handshake failed: .*OLD-CLI-STDERR/g)?.length, 2, 'the old CLIs\' stderr is not in server.log')
-  ok('the doctor reports version, sign-in, roots and the transport handshake without the account identity, removes its directory, and types a missing provider or one whose handshake fails, keeping its stderr out of the result')
+  ok('the doctor reports version, sign-in, roots and the transport handshake without the account identity, removes its TMPDIR, and types a missing provider or one whose handshake fails, keeping its stderr out of the result')
 
   const expired = await claudeHost.call('delegation_result', { jobId: timed.job.id, waitSeconds: 60 })
   assert.equal(expired.job.status, 'failed')

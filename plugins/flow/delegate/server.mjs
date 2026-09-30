@@ -3,9 +3,7 @@
 // so structuredContent needs no validator. Jobs outlive this process: a runner is detached, and
 // stdin closing ends the server and nothing else. The doctor is the one tool that starts a
 // provider in this process, for a handshake that sends no prompt.
-import { randomUUID } from 'node:crypto'
-import { mkdirSync, realpathSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { transport as claude } from './claude-control.mjs'
@@ -143,15 +141,17 @@ export async function serve({ host, version }) {
   }
 
   // The transport's own handshake against the provider a job would run, with a job's environment
-  // and a private tmp directory, in the first usable root or the state directory when there is
-  // none. It sends no prompt, and the directory is removed afterwards.
+  // and a private TMPDIR from makeTmp, like a job's, in the first usable root or the state
+  // directory when there is none. It creates the state directory first, because that directory can
+  // be the cwd and holds the server.log that a failed handshake points to. It sends no prompt, and
+  // it removes the TMPDIR afterwards.
   async function checkTransport(bin, usable) {
-    const dir = join(jobs.stateDir(), 'doctor', randomUUID())
-    mkdirSync(join(dir, 'tmp'), { recursive: true, mode: 0o700 })
+    mkdirSync(jobs.stateDir(), { recursive: true, mode: 0o700 })
+    const tmp = jobs.makeTmp('doctor')
     try {
       const cwd = usable[0] ?? realpathSync(jobs.stateDir())
-      return await TRANSPORTS[target].check({ cwd, dir, bin, env: providerEnv({ id: 'doctor', target }, dir) })
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+      return await TRANSPORTS[target].check({ cwd, bin, env: providerEnv({ id: 'doctor', target }, tmp) })
+    } finally { jobs.dropTmp('doctor', tmp) }
   }
 
   // ok needs the provider installed and signed in, its handshake passed, and a usable root. The

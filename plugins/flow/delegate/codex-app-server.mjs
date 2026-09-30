@@ -13,8 +13,9 @@
 //
 // The flow_delegation permission profile is the containment. Codex's built-in :read-only and
 // :workspace profiles read every credential on the machine. This one grants read on :minimal, the
-// worktree, its Git metadata and the running Codex executable, write on the job's tmp only (and on
-// the worktree for a write job, with .git, .agents and .codex kept read-only), and no network.
+// worktree, its Git metadata and the running Codex executable, write on the TMPDIR the provider's
+// environment names and nothing else (and on the worktree for a write job, with .git, .agents and
+// .codex kept read-only), and no network.
 // Codex runs each shell command by re-executing its own binary inside bubblewrap, so without the
 // executable grant every command fails with execvp ENOENT while the turn still succeeds
 // (openai/codex#29049).
@@ -269,7 +270,7 @@ function runtimePaths(pid, bin) {
   return [...paths]
 }
 
-async function permissionProfile(job, dir, runtime) {
+async function permissionProfile(job, tmp, runtime) {
   const write = job.access === 'workspace-write'
   const filesystem = { ':minimal': 'read', [job.worktree]: write ? 'write' : 'read' }
   if (write) {
@@ -285,7 +286,7 @@ async function permissionProfile(job, dir, runtime) {
     if (path) try { filesystem[realpathSync(path)] = 'read' } catch {}
   }
   for (const path of runtime) filesystem[path] ??= 'read'
-  filesystem[realpathSync(join(dir, 'tmp'))] = 'write'
+  filesystem[realpathSync(tmp)] = 'write'
   return { description: 'Flow delegated job', filesystem, network: { enabled: false } }
 }
 
@@ -408,7 +409,7 @@ export const transport = {
       session.catalog = listing('Codex', session.models.find((model) => model.id === job.model), job)
       const servers = await configuredServers(rpc, job.cwd)
       const name = profileName()
-      const permissions = await permissionProfile(job, dir, runtime)
+      const permissions = await permissionProfile(job, env.TMPDIR, runtime)
       const params = threadParams(job, seat, servers, name, permissions)
       const opened = job.resumeThreadId
         ? await rpc.request('thread/resume', { threadId: job.resumeThreadId, ...params })
@@ -436,7 +437,7 @@ export const transport = {
   // with a read-only job's profile and thread config, read back for its profile and its MCP
   // inventory. The thread gets no model and no seat, so Codex opens it on its default model, and
   // nothing is ever sent to it. An ephemeral thread leaves no rollout behind.
-  check({ cwd, dir, bin, env }) {
+  check({ cwd, bin, env }) {
     const child = spawn(bin, ['app-server', '--stdio'], { cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
     const rpc = connect(child, { onLine: () => {}, onNotification: () => {}, onRequest: decline, diagnostics: DOCTOR_STDERR })
     return handshake('Codex', child, rpc, async (report) => {
@@ -448,7 +449,7 @@ export const transport = {
       report.protocol.push('config/read')
       const job = { cwd, worktree: cwd, access: 'read-only' }
       const name = profileName()
-      const permissions = await permissionProfile(job, dir, runtime)
+      const permissions = await permissionProfile(job, env.TMPDIR, runtime)
       const opened = await rpc.request('thread/start', { ...threadParams(job, undefined, servers, name, permissions), ephemeral: true, serviceName: 'flow-delegate' })
       if (!opened?.thread?.id) throw new DelegateError('PROVIDER_ERROR', 'Codex opened no thread.')
       report.profile = checkProfile(opened, name, permissions)
