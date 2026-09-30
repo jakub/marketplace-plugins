@@ -1,7 +1,8 @@
 // The JSON Schema subset a structured answer is checked against before a job may succeed. A
 // schema is admitted only when every keyword in it is one this file checks or a pure annotation,
 // so an admitted schema is always checked in full; nothing is skipped silently. `$ref` resolves
-// inside the schema itself and nowhere else.
+// inside the schema itself and nowhere else, as a JSON pointer from the root. A nested `$id` would
+// start a resource of its own for the references under it, so `$id` is admitted at the root alone.
 //
 // Admission bounds the schema, not the work of checking an answer against it: references can
 // share a subschema along branches that multiply at every level, and a pattern can backtrack
@@ -30,7 +31,7 @@ const isObject = (value) => value !== null && typeof value === 'object' && !Arra
 const isSchema = (value) => typeof value === 'boolean' || isObject(value)
 
 function resolve(root, ref) {
-  if (typeof ref !== 'string' || !ref.startsWith('#')) return undefined
+  if (typeof ref !== 'string' || (ref !== '#' && !ref.startsWith('#/'))) return undefined
   let node = root
   for (const raw of ref.slice(1).split('/').slice(1)) {
     const key = decodeURIComponent(raw).replace(/~1/g, '/').replace(/~0/g, '~')
@@ -48,6 +49,7 @@ export function schemaProblem(schema, root = schema, at = '#', depth = 0) {
   for (const key of Object.keys(schema)) {
     if (!CHECKED.has(key) && !ANNOTATIONS.has(key)) return `${at} uses ${key}, which the delegate cannot check`
   }
+  if (depth > 0 && schema.$id !== undefined) return `${at} sets $id, and the delegate resolves every $ref from the root`
   if (schema.type !== undefined) {
     const types = [].concat(schema.type)
     if (!types.length || types.some((type) => !TYPES.has(type))) return `${at}/type names no JSON type`

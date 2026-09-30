@@ -294,9 +294,14 @@ try {
   const badReview = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=bad-structure', mode: 'adversarial-review', base: 'main~1' })
   assert.deepEqual([badReview.job.status, badReview.job.error?.kind], ['failed', 'SCHEMA_OUTPUT'])
   assert.deepEqual(badReview.job.error.details.errors, ['$.findings[0]: missing the required property "systemic"', '$.findings[0].severity: not one of the allowed values'])
-  for (const outputSchema of [{ type: 'object', patternProperties: {} }, { type: 'object', properties: { a: { type: 'text' } } }, { type: 'object', properties: { a: { $ref: '#/$defs/missing' } } }]) {
+  // A nested $id starts a resource its own references resolve in, and #name is an anchor, not a
+  // pointer; the checker resolves every $ref as a pointer from the root, so it admits neither.
+  const scoped = { type: 'object', $defs: { value: { type: 'string' }, child: { $id: 'https://example.invalid/child', type: 'object', $defs: { value: { type: 'integer' } }, properties: { value: { $ref: '#/$defs/value' } } } }, properties: { child: { $ref: '#/$defs/child' } } }
+  for (const outputSchema of [{ type: 'object', patternProperties: {} }, { type: 'object', properties: { a: { type: 'text' } } }, { type: 'object', properties: { a: { $ref: '#/$defs/missing' } } },
+    scoped, { type: 'object', properties: { a: { $ref: '#name' } } }]) {
     await refused(claudeHost, { outputSchema }, 'BAD_SCHEMA')
   }
+  assert.equal(schemaProblem({ $id: 'https://example.invalid/root', type: 'object', $defs: { a: { type: 'string' } }, properties: { a: { $ref: '#/$defs/a' }, self: { $ref: '#' } } }), null, 'a root $id and pointers from the root are admitted')
   ok('an answer that breaks its schema fails SCHEMA_OUTPUT on both targets and in review, and a schema the server cannot check is refused')
 
   const slow = join(tmp, 'slow-pattern.json')
