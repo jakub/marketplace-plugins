@@ -5,7 +5,7 @@ description: The operating manual for Flow's `flow_delegate` MCP tools. Read it 
 
 # delegate: reaching the other model family
 
-One MCP server, `flow_delegate`, reaches the other family in both directions. A Claude host runs Codex through `codex exec`, and a Codex host runs Claude through `claude -p`, each as a job the server starts and watches. The charter says when to cross the family line and what to do with a refusal. This skill says how the call works.
+One MCP server, `flow_delegate`, reaches the other family in both directions. A Claude host runs Codex through `codex app-server`, and a Codex host runs Claude through the stream-json control channel of `claude -p`, each as a job the server starts and watches. Each job opens the provider's session, checks your model and effort against the provider's catalog, reads back what the session can reach, and only then sends your prompt. The charter says when to cross the family line and what to do with a refusal. This skill says how the call works.
 
 ## The four tools
 
@@ -19,6 +19,8 @@ To steer a running job, continue it with the new instruction. Its turn stops whe
 ## Start a job
 
 Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`, `fable`) or a full id such as `claude-opus-5-5`, never a charter display name. Codex takes its own ids, such as `gpt-6-sol` or `gpt-6-luna`. `effort` is `low`, `medium`, `high`, `xhigh` or `max`.
+
+The server checks both against the provider's own model catalog before the prompt goes out. If the catalog lists the model but not the effort, the job fails `BAD_MODEL` and costs no turn. On Claude Code 2.1.284, for example, `haiku` takes no effort level, so it fails at every effort. An id the catalog does not list still runs, and the envelope says `catalog: "absent"`.
 
 `cwd` is an absolute directory inside a workspace root and inside a Git worktree. On Claude the roots are the session's MCP roots and `CLAUDE_PROJECT_DIR`. On Codex the one root is the directory the session started in, and only when that directory is a repository's top level and not your home. A worktree under `<repo>/.flow-worktrees/` sits inside its repository's root. A path outside every root, or a symlink that leads out of one, fails `OUTSIDE_ROOTS`.
 
@@ -46,7 +48,11 @@ Every tool answers `{ok, job?, error?}`, and the JSON text opens with a one-line
 
 - `output` is the final answer, and `structured` is the parsed answer when a schema applied.
 - `SCHEMA_OUTPUT` means the answer did not parse, did not conform, or could not be checked against the schema within 10 seconds. `details.errors` lists up to ten `path: problem` lines when it did not conform, `structured` is null and `output` keeps the raw answer. A review is checked against the findings schema the same way.
-- `servedModel` is the model Claude reported serving the session. A Claude answer from any other model fails `MODEL_MISMATCH` and stops at once. Codex reports no served model.
+- `servedModel` is the model the provider reported serving: the thread's model on Codex, and the model the `system/init` frame names on Claude. A session or an answer on any other model fails `MODEL_MISMATCH` and stops at once. A Claude alias that the catalog lists must be served by the model it resolves to, so `opus` reports `claude-opus-5-5`.
+- `catalog` is `listed` when the provider's catalog listed the model and `absent` when it did not. It is null when the job ended before the catalog was read, or failed `BAD_MODEL`.
+- `BAD_MODEL` means the catalog lists the model but not the effort, or lists no effort levels for it. `details.efforts` names the efforts it takes.
+- `ISOLATION` means a check of the live session failed. On Codex, the thread ran under another permission profile than `flow_delegation`, or left an MCP server reachable. On Claude, `mcp_status` reported an MCP server, or the `system/init` frame named a tool you did not ask for, an MCP server or a plugin. `details` names what the check found.
+- `isolation` is what the live session read back: `{profile, mcpServers, instructionSources}` on Codex and `{mcpServers, tools}` on Claude. `promptSent` is false when the job ended before the prompt left the server, so the provider ran no turn for it.
 - `commandFailures` counts shell commands that failed. A succeeded job with a nonzero count answered without working shell evidence.
 - `APPROVAL_REQUIRED` means the provider asked for more than the job grants. Its `output` is kept. Start a new job with the access the task needs.
 - `eventsPath` is the provider's full JSONL journal. `delegation_result` includes the last 20 lines, each cut to 400 characters. Set `events` for more or fewer, and read the file itself for the rest.
@@ -57,4 +63,9 @@ A succeeded review with `findings: []` is not yet a pass. A reviewer that never 
 
 Run `delegation_doctor` as the preflight. It answers without a workspace, which is what you need when the answer is that you have none. Codex starts MCP servers before any hook runs, so on a new machine the flow skill's `setup` runs `node <plugin-root>/scripts/install-delegate.mjs install` once before the first Codex session. After that, the Codex SessionStart hook keeps `~/.local/bin/flow-delegate` current.
 
-The server depends on these provider flags, checked against Codex CLI 0.159.0 and Claude Code 2.1.284 on 2026-09-29. For Codex: `exec --json`, `--ignore-user-config`, `--ignore-rules`, `--skip-git-repo-check`, `-s`, `-C`, `-m`, `-c`, `--output-schema`, `-o` and `exec resume`. For Claude: `-p --output-format stream-json --verbose`, `--model`, `--effort`, `--permission-mode dontAsk`, `--permission-prompts none`, `--setting-sources`, `--strict-mcp-config`, `--settings`, `--tools`, `--allowedTools`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd`. When the doctor reports a newer version and jobs start failing with `PROVIDER_ERROR`, check these flags against the provider's `--help` first.
+The server depends on these provider interfaces, checked against Codex CLI 0.159.0 and Claude Code 2.1.284 on 2026-09-30.
+
+- Codex: `app-server --stdio` with `experimentalApi`, and the methods `initialize`, `model/list`, `config/read`, `thread/start`, `thread/resume`, `mcpServerStatus/list`, `turn/start` and `turn/interrupt`. The thread fields `permissions`, `runtimeWorkspaceRoots`, `allowProviderModelFallback` and `activePermissionProfile` appear only in the experimental schema.
+- Claude: `-p --input-format stream-json --output-format stream-json --verbose --replay-user-messages`, `--model`, `--effort`, `--permission-mode dontAsk`, `--permission-prompts none`, `--setting-sources`, `--strict-mcp-config`, `--settings`, `--tools`, `--allowedTools`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd`, and the control requests `initialize`, `mcp_status` and `interrupt`.
+
+When the doctor reports a newer version and jobs start failing with `PROVIDER_ERROR`, check these first: the Codex methods against `codex app-server generate-ts --experimental --out <dir>`, and the Claude flags against `claude --help`.
