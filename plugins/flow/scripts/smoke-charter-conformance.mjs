@@ -23,7 +23,7 @@ import {
   seatPayload,
   splitCharter,
 } from '../lib/charter-payload.mjs'
-import { delegatedInstructions } from '../src/delegation/instructions.mjs'
+import { delegatedInstructions } from '../delegate/runner.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 

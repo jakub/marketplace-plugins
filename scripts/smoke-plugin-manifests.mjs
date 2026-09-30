@@ -30,21 +30,23 @@ for (const listed of marketplace.plugins) {
   assert.equal(claude.version, listed.version, `${name} Claude version matches marketplace`)
   assert.equal(claude.description, listed.description, `${name} Claude description matches marketplace`)
   if (name === 'flow') {
+    // Both hosts run the same delegate/main.mjs: Claude by plugin-root path, Codex through the
+    // bin/flow-delegate dispatcher on PATH, which resolves the cache copy named by --flow-version.
     const claudeDelegation = claude.mcpServers?.flow_delegate
-    assert.deepEqual(claudeDelegation?.args?.slice(-2), ['--host', 'claude'], 'flow Claude MCP pins its host')
+    assert.equal(claudeDelegation?.command, 'node', 'flow Claude MCP runs under node')
+    assert.deepEqual(claudeDelegation?.args, ['${CLAUDE_PLUGIN_ROOT}/delegate/main.mjs', 'mcp', '--host', 'claude'], 'flow Claude MCP runs the delegate server for its host')
+    assert.ok(existsSync(join(pluginRoot, 'delegate', 'main.mjs')), 'flow delegate entry exists')
     assert.equal(claudeDelegation?.timeout, 7_500_000, 'flow Claude MCP timeout outlives the maximum job budget')
     const codexDelegation = readJson(join(pluginRoot, '.mcp.json')).flow_delegate
     assert.equal(codexDelegation.command, 'flow-delegate', 'flow Codex MCP uses the installed dispatcher')
+    assert.ok(existsSync(join(pluginRoot, 'bin', 'flow-delegate')), 'flow Codex dispatcher exists')
     assert.deepEqual(codexDelegation.args.slice(0, 2), ['--flow-version', listed.version], 'flow Codex MCP pins the manifest version')
     assert.ok(!Object.hasOwn(codexDelegation, 'cwd'), 'flow Codex MCP inherits the host session cwd')
     assert.deepEqual(codexDelegation?.args?.slice(-2), ['--host', 'codex'], 'flow Codex MCP pins its host')
     assert.equal(codexDelegation?.tool_timeout_sec, 7_500, 'flow Codex MCP timeout outlives the maximum job budget')
-    // Codex hands a stdio MCP server a curated environment (HOME, PATH, TERM and a few more), and
-    // systemd-run --user needs the runtime dir to find the user bus. Without the first two, every
-    // provider scope fails with CONTAINMENT_UNAVAILABLE and the Codex host cannot delegate at all.
-    // Omitted cwd makes Codex start the dispatcher at the session directory.
-    // CODEX_HOME selects the install registration, never workspace authority.
-    assert.deepEqual(codexDelegation?.env_vars, ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CODEX_HOME'], 'flow Codex MCP forwards bus and registration environment only')
+    // Omitted cwd makes Codex start the dispatcher in the session directory, which is the server's
+    // only root. CODEX_HOME selects the plugin cache the dispatcher reads, never workspace authority.
+    assert.deepEqual(codexDelegation?.env_vars, ['CODEX_HOME'], 'flow Codex MCP forwards CODEX_HOME only')
   }
 
   // Every ${CLAUDE_PLUGIN_ROOT} path Claude will run has to resolve inside the plugin. Claude
