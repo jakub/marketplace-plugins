@@ -342,10 +342,12 @@ export const transport = {
       // thread from are an assumption; this is the thread itself.
       const profile = opened.activePermissionProfile?.id ?? null
       if (profile !== PROFILE) {
-        throw new DelegateError('ISOLATION', `Codex opened the thread under the ${clip(profile ?? 'no named')} permission profile, not ${PROFILE}, so no prompt was sent.`, { profile })
+        const reported = profile === null ? null : clip(profile)
+        throw new DelegateError('ISOLATION', `Codex opened the thread under the ${reported ?? 'no named'} permission profile, not ${PROFILE}, so no prompt was sent.`, { profile: reported })
       }
       if (opened.model !== job.model) {
-        throw new DelegateError('MODEL_MISMATCH', `Codex opened the thread on ${clip(opened.model)}, not ${job.model}, so no prompt was sent.`, { expected: job.model, served: opened.model ?? null })
+        const served = opened.model == null ? null : clip(opened.model)
+        throw new DelegateError('MODEL_MISMATCH', `Codex opened the thread on ${served ?? 'no named model'}, not ${job.model}, so no prompt was sent.`, { expected: job.model, served })
       }
       const mcpServers = await checkServers(rpc, opened.thread.id)
       session.threadId = opened.thread.id
