@@ -15,7 +15,7 @@
 // parses to. Every mutation is read back, and nothing is undone: a label present after an edit is
 // no proof this run put it there. stdout is one JSON line {action, repo, target, ok, reason, ...};
 // exit 0 when the action happened (or the survey was read), 1 on a refusal, 2 on usage. Every
-// argument fits git-guard's cron grammar, which is why the relabel reason is a single token.
+// argument fits git-guard's cron regex, which is why the relabel reason is a single token.
 
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
