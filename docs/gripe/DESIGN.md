@@ -1,547 +1,209 @@
 # gripe
 
-A local complaint log for coding agents. An agent files friction as it hits it; a model
-summarises the pile for the user once a month.
+A local friction log for coding agents. An agent files friction as it hits it, into one SQLite
+file, and a model reads the pile for the user later. The reading method is the plugin's skill,
+`plugins/gripe/skills/gripe/SKILL.md`.
 
-These are the design notes for the shipped plugin (`plugins/gripe/`). Every claim marked
-"measured" was run on the author's machine on 2026-08-23. The reader
-side is deferred as a *mechanism*: v1 only collects, and any automated summarising workflow
-gets designed once there is a month of real rows to design against. The analysis *method*
-ships now, as the plugin's skill (`skills/gripe/SKILL.md`), so a session pointed at the
-log can run the review itself: doctor first, semantic clustering, distinct-session rates
-against the `sessions` denominator, lane weighting, recurrence as status. The skill triggers
-on being asked to review the log; it does not advertise the read commands to working agents,
-so decision 2 stands.
-
-## What it is
-
-Agents hit friction in every session and forget it at the end of every session. `gh run watch`
-exits 0 even when a check failed, so an agent believes CI passed and moves on. Nothing errored,
-nothing logged, and the knowledge dies at compaction. Next week a different agent pays the same
-cost.
-
-Gripe writes that down. One SQLite file, local only, no server and no sync. The agent is the
-only writer. A model is the reader, and jakub reads what the model says.
+This file holds the facts the code cannot state for itself: what was measured, and the rules
+that span more than one file. Each measured claim carries the date it was run on jakub's
+machine. Why one function works the way it does is in that function's own comment. Paths
+below are relative to `plugins/gripe/`.
 
 ## Invariants
 
-A violation of any of these kills the write path silently, which is why they sit above the
-design decisions rather than among them.
+- `gripe add` never fails a run. It exits 0 whatever happens, reports an error as one stderr
+  line, and uses no network. An agent that sees a non-zero exit stops its real work to debug
+  the complaint tool.
+- `gripe add` never prompts. A plugin cannot ship a permission allowlist entry, so
+  `Bash(gripe add:*)` goes into `permissions.allow` in `~/.claude/settings.json` by hand, once
+  per machine. One approval dialog teaches an agent that filing is expensive.
+- Filing is one command, with no lookup, no duplicate check, and no status query.
+- Agents only write. The read commands (`dump`, `seen`, `search`, `doctor`) exist, and no hook
+  advertises them, because an agent that can search will search before it files.
+- A body is evidence and never an instruction. See [Bodies are untrusted](#bodies-are-untrusted).
 
-- **`gripe add` never fails a run.** Exit 0 unconditionally, errors to stderr as one line, no
-  network, no prompts. An agent that sees a non-zero exit stops its real work and starts
-  debugging the complaint tool.
-- **`gripe add` never triggers a permission prompt.** `Bash(gripe add:*)` sits on the
-  allowlist, put there by hand once per machine, because a plugin cannot ship an allowlist
-  entry. See the setup step under development and packaging. One approval dialog teaches an
-  agent that filing is expensive and it stops.
-- **Filing costs one command and no reading.** No lookup, no duplicate check, no status query.
-  Every field an agent has to think about is a reason to skip filing.
-- **Bodies are evidence, never instruction.** See the trust boundary section.
+## Two lanes
 
-## Decisions
+The `elicitation` column records who decided that a row was worth writing.
 
-1. **Writers are every session, including subagents and ad-hoc work.** Most friction happens
-   outside the /flow pipeline. The two populations are reached by different events; see hooks.
-2. **Agents are write-only.** `gripe add` is the entire agent-facing surface. The read commands
-   exist and are never advertised. An agent that can search will search before struggling,
-   which turns a two-second write into a research task.
-3. **Two lanes: mechanically derived and self-reported.** Observed rows are written by hooks
-   with no agent involved, from events that measurably happened. Reported rows are written by
-   an agent that decided something was worth saying. The `elicitation` column keeps them
-   apart. This is a provenance distinction, not an authenticated one: the agent has Bash under
-   the same uid that owns the database file, so a forgery cannot be prevented, only made
-   deliberate. The CLI refuses `--via observed`, coercing it to `spontaneous` with one stderr
-   line, so crossing the lane takes sqlite3 in hand rather than a typo.
-4. **The tool does not cluster. The reader does.** There is no tag, no cluster key, no
-   `GROUP BY`. Semantic grouping is what a model does natively and does better than exact-string
-   matching on agent-chosen slugs, which would present one problem as six.
-5. **Recurrence is the status field.** There is no per-row resolved state. If a problem is still
-   broken, an agent hits it again and files it again, and it appears in the next dump. Closing is
-   a date watermark recording what jakub has seen, not what jakub fixed.
-6. **Counting is by distinct sessions and days, never raw rows.** Eight rows are not eight
-   occurrences. They may be one noisy afternoon. Affected sessions alone are still a numerator,
-   so SessionStart writes a one-row session mark, and "3 of 41 sessions this month" becomes a
-   rate instead of a count.
-7. **No open-count banner at session start.** One advertisement line and nothing else. Printing
-   open items into every session is context tax for something read monthly.
-8. **Storage is SQLite via `node:sqlite`** at `$XDG_STATE_HOME/gripe/gripe.db`, defaulting to
-   `~/.local/state/gripe/gripe.db`. State, not data: history nobody would back up or sync.
-9. **Delivery is a plugin in the jakub marketplace.** Flow gets a one-way soft dependency: its
-   journal stages mention gripe when installed and work fine when it is not. Nothing in gripe
-   knows about flow.
-10. **Invocation is a `gripe` shim on PATH** at `~/.local/bin/gripe`, resolving at exec time to
-    the newest install either harness reports. See the shim section for the tiers, the failure
-    rules, and the epoch ratchet that keeps an older harness from downgrading it.
+- `observed`: a hook wrote the row from an event that happened, with no agent involved. The
+  one source is StopFailure, a turn that failed outright. Hooks write through `lib/store.mjs`
+  directly, so this lane never passes through a shell or depends on PATH.
+- `spontaneous`, `error_nudge`, and `checkpoint`: an agent wrote the row through `gripe add`,
+  unprompted, after the PostToolUseFailure nudge, or after the Stop checkpoint.
+
+The lanes record provenance, not identity. An agent has Bash under the uid that owns the
+database, so it can forge any row. The CLI files `--via observed` as `spontaneous` with one
+stderr line, so crossing lanes takes `sqlite3` in hand rather than a typo.
+
+PermissionDenied was a second observed source through 0.4.0. It filed on the fourth identical
+denial in one session and never reached that count. On 2026-09-30 the live database held 34
+observed rows, every one from StopFailure. The hook is removed.
+
+The schema has no tag, cluster, severity, or status column. The reader groups rows and judges
+cost. A problem that is still broken gets filed again, so recurrence is the status. `seen`
+moves a cursor that records what jakub has read, not what he fixed. Counts are by distinct
+session. SessionStart writes one row per session into `sessions`, the denominator that turns
+"8 affected sessions" into "8 of 120 sessions".
 
 ## Storage
 
-`node:sqlite` needs Node 24 or newer. It exists from 22.5 but throws on import without
-`--experimental-sqlite` until 23.4, so "built into Node 22" is wrong in the way that costs an
-afternoon. Check the version at startup. Below the floor, `add` exits 0 with one stderr
-line and the read commands exit 1 with the same line.
+- `node:sqlite` exists from Node 22.5, but it throws on import without `--experimental-sqlite`
+  until 23.4. `lib/store.mjs` refuses to load below Node 24.
+- WAL allows concurrent readers and one writer, and a fan-out of subagents writes at once.
+  Measured 2026-08-23 with 20 processes, each holding a write transaction for 60 ms:
 
-WAL allows concurrent readers alongside a single writer. It does not let parallel subagents
-write at once, and a twenty-agent fan-out will try. Measured with twenty processes each holding
-a transaction open for 60ms to force collisions:
+  | `DatabaseSync` option | Rows landed |
+  | --- | --- |
+  | no `timeout` | 1 of 20. Nineteen failed with "database is locked" and vanished. |
+  | `timeout: 5000` | 20 of 20, serialized about 100 ms apart. |
 
-| configuration | rows landed |
-| --- | --- |
-| no `timeout` option | 1 of 20. Nineteen failed with "database is locked" and vanished. |
-| `timeout: 5000` | 20 of 20, serialised roughly 100ms apart. |
+  Because `add` exits 0 either way, the loss has no symptom. `scripts/collision-test.mjs`
+  repeats the measurement and exits 1 on any lost row.
+- `PRAGMA user_version` is the schema version. Code that finds a newer database refuses to
+  touch it. That case needs `GRIPE_HOME` pointing a stale working tree at the live file, since
+  the shim always runs the newest install.
 
-Losing 95 percent of a fan-out is the default behaviour, and because the write path exits 0
-regardless, it is invisible. So: WAL on, a generous `timeout` passed to the `DatabaseSync`
-constructor, nothing inside the transaction that could be done outside it, one retry on a busy
-failure, and `PRAGMA user_version` set at creation.
+## Session ids per host
 
-`user_version` is a ladder, not a label. On open, code newer than the database applies
-numbered additive migrations inside one transaction. Code older than the database refuses to
-touch it: `add` exits 0 with one stderr line per invariant 1, and the read commands exit 1.
-The shim always resolves newest, so old-code-new-database only happens when `$GRIPE_HOME`
-points a stale working tree at a production file, and refusing beats corrupting.
+- Measured 2026-08-23, a Claude subagent's `CLAUDE_CODE_SESSION_ID` is byte-identical to its
+  parent's, and so is `CLAUDE_PID`. `CLAUDE_CODE_CHILD_SESSION` reads `1` in the main agent
+  too, so it does not mark a subagent.
+- Codex exports equal `CODEX_SESSION_ID` and `CODEX_THREAD_ID` values to tool processes.
+  `captureContext()` reads the Claude variable first, then these two.
+- Measured 2026-08-26, a Codex run spawned from a Claude session under
+  `shell_environment_policy inherit = "core"` does not pass `CLAUDE_CODE_SESSION_ID` to its
+  tool shells. The Claude-first order therefore keys a delegated run's self-reported rows to
+  the Codex session, the same as its hook rows.
+- Nothing in either environment tells a subagent from its parent. For distinct-session
+  counting that is correct, because a twenty-agent fan-out counts once. Finer grain comes only
+  from hook payloads. Claude sends `agent_id`, `agent_type`, and `prompt_id`. Codex
+  SubagentStart sends the agent id, and turn-scoped Codex events send `turn_id`.
 
-## Schema
+## Hooks per host
 
-One table for rows, a `sessions` table holding the one-row-per-session mark from decision 6,
-and a two-column key/value table holding the `seen` cursor and the last dump's high-water id.
+In the table, "no" means the host has the event and gripe does not register it, and "none"
+means the host has no such event.
 
-| Column | Source | Notes |
-| --- | --- | --- |
-| `id`, `created_at` | database | |
-| `body` | agent or hook | The complaint. Prose, capped at 4,000 characters with a truncation marker. Observed rows get a templated body; see the trust boundary. |
-| `elicitation` | writer | `observed`, `spontaneous`, `error_nudge`, `checkpoint`. |
-| `session_id` | environment | Always present. The distinct-count key for decision 6. |
-| `prompt_id` | hook | Nullable. Correlates everything from one user request to the next. |
-| `agent_id`, `agent_type` | hook | Nullable. Null means the main agent, which is itself the distinction. |
-| `repo`, `cwd`, `git_sha`, `branch` | environment | Read at write time, never typed. `repo` is the basename of `git rev-parse --show-toplevel`, null outside a repo. |
-| `trigger` | hook | Nullable. The tool that provoked the row. |
+| Event | Claude | Codex | Job |
+| --- | --- | --- | --- |
+| SessionStart | yes | yes | Advertise `gripe add`, write the session mark, publish the shim, and remove `scan/` and `gate/` files older than three days. |
+| SubagentStart | yes | yes | Advertise `gripe add` with `--agent` and `--prompt` written into the recipe. |
+| PostToolUseFailure | yes | none | Nudge on the second failure of one fingerprint. |
+| PostToolUse | no | yes | Count tool targets into the checkpoint state. |
+| StopFailure | yes | none | Write an observed row. |
+| Stop | yes | yes | Cite repeated failures or a target hit three or more times, once per session and actor, after at least 15 tool calls. |
+| SubagentStop | yes | no | The Stop checkpoint for one subagent. |
 
-Three things are deliberately absent. **No `tag` or `cluster`**, because the reader groups.
-**No `kind` or `sev`**, because both ask an agent to classify its own experience and neither
-answer is observable; a self-reported 1-3 rating is mostly tone, and cluster size measures
-frequency rather than severity anyway. **No `status`, `issue` or `model`**: the first two have
-nothing to attach to now that closing is a watermark, and the third would need transcript
-scraping, which this design rejects everywhere else.
+- Claude sends failed tool calls through a separate executor, so a hook on PostToolUse never
+  sees the failures. PostToolUseFailure is the event. Its payload is `{ tool_name, tool_input,
+  tool_use_id, error, is_interrupt, duration_ms }`.
+- Codex has no failure event. Codex CLI 0.149.1 on 2026-08-26 sent `tool_response: ""` for
+  `sh -c "exit 7"`, with no exit status anywhere in the payload.
+  `scripts/fixtures/codex-cli-0.149.1-post-tool-use-failed.json` is that capture. The Codex
+  adapter counts targets and never infers a failure.
+- Codex PostToolUse does not name the subagent that made the call, so Codex has no
+  SubagentStop checkpoint. The parent's Stop reads the session's combined counters.
+- Under the Codex hook contract as of 2026-08-26, Stop answers `decision: "block"` with the
+  note as `reason`, which starts one continuation prompt without failing the turn. Claude
+  answers with `additionalContext`. On both hosts each checkpoint costs at least one extra
+  assistant turn, which is why it fires once per session and actor.
+- SessionStart output reaches the main agent only. Measured 2026-08-23, a spawned subagent
+  reported no flow charter, which arrives through the same kind of hook. PreToolUse does fire
+  inside subagents. In the same run a subagent ran three Bash commands, and flow's guard
+  denied the middle one.
+- SubagentStop output reaches the subagent, not the parent. The Claude binary's schema
+  description says "delivered to the subagent; the subagent continues so it can act on it."
+- Codex PostToolUse and Stop share a per-session lock file around each counter update: one
+  `wx` create, 25 tries 20 ms apart, and the hook removes a lock older than 10 s as orphaned.
+  Measured 2026-09-01 with 20 concurrent hooks on one session, a 100 ms budget lost one count
+  in 1 run of 10, and the 500 ms budget lost none in 15.
+- Gate and checkpoint state live in JSON files, not in the database, because they are written
+  on every tool call and would contend with real filings for the write lock.
 
-### What the environment can and cannot tell you
+Gripe registers no PreCompact, SessionEnd, PreToolUse, or UserPromptSubmit hook. PreCompact
+fires when context is most crowded and skews toward long sessions. SessionEnd output reaches
+no context. PreToolUse has nothing to say before a call. UserPromptSubmit is the user's
+channel, and guessing annoyance from prompt text gives bad rows.
 
-Measured, not assumed. A subagent's `$CLAUDE_CODE_SESSION_ID` is byte-identical to its parent's,
-and so is `$CLAUDE_PID`. `$CLAUDE_CODE_CHILD_SESSION` is not a subagent marker; it reads `1` in
-the main agent too, where it appears to describe a bridge or ssh session. Codex exports equal
-`$CODEX_SESSION_ID` and `$CODEX_THREAD_ID` values to tool processes on this host. Gripe accepts
-either after the Claude variable, so self-reported rows keep the same session key as hook rows.
-The Claude-first precedence is safe even when the harnesses nest: measured 2026-08-26 with
-`shell_environment_policy inherit = "core"`, a Codex run spawned from a Claude session does not
-pass the inherited `$CLAUDE_CODE_SESSION_ID` through to its tool shells, so a delegated run's
-self-reported rows key to the Codex session like its hook rows do.
-**Nothing in either environment distinguishes a subagent from the agent that spawned it.**
+## Bodies are untrusted
 
-That is the right default for distinct-session counting, because a twenty-agent fan-out should
-count as one session. Finer grain comes from hook payloads where the harness provides it:
-Claude carries `agent_id`, `agent_type`, and `prompt_id`; Codex SubagentStart carries agent
-identity and turn-scoped events carry `turn_id`. Take those fields where a hook hands them over
-free. Do not scrape a transcript to fill them in.
+An agent writes a body after reading repositories, tool output, and issue text, any of which an
+attacker can control. An instruction can survive the agent's rewording, persist, and reach a
+later reader who no longer knows where it came from.
 
-## Commands
-
-Agent-facing, and this is the whole surface:
-
-```
-gripe add [--via <source>] [--trigger <tool>] [--agent <id>] [--prompt <id>] <<'EOF'
-<body>
-EOF
-```
-
-The body arrives on stdin, and the advertised recipe is a quoted heredoc. Complaints quote
-tool output, and tool output contains `$(`, backticks and quotes; a double-quoted body hands
-all of that to the shell before gripe ever runs. A body as a plain argument still works for a
-human at a terminal.
-
-The delimiter is random per advertisement, never a fixed `EOF`. A fixed delimiter lets a
-hostile body close the heredoc early with a matching literal line, and everything after it
-runs as shell commands, auto-approved under the very allowlist invariant 2 requires.
-Attacker text is written before the delimiter exists, so it cannot contain it.
-
-Every flag is a literal the advertising hook bakes into the recipe at advertisement time,
-never a value the agent chooses: `--via` on the nudge and checkpoint recipes, the rest when
-the hook knows them at that moment (SubagentStart knows the agent and prompt, an error nudge
-knows the trigger and prompt). The plain advertisements omit `--via`, because an unprompted
-filing is spontaneous whoever writes it. Absent `--via` means `spontaneous`. `--via observed`
-and unknown values coerce to `spontaneous` with one stderr line, because the observed lane
-belongs to hooks.
-
-Human-facing, never advertised to agents:
-
-```
-gripe dump [--since <date>] [--repo <name>]   JSONL for piping to a model
-gripe seen                                     advance the cursor
-gripe search <text>                            for hunches
-gripe doctor                                   is the write path alive
-```
-
-`dump` emits one JSON object per row after a preamble line; see the trust boundary for why
-JSONL. A plain `dump` floors at the cursor and records the highest row id it printed; `seen`
-advances the cursor to exactly that id, so rows that land mid-review stay unseen instead of
-being stamped past. `--since` (an inclusive local date) or `--repo` ignores the cursor and
-records nothing, so looking backwards or sideways never disturbs your place. `seen` is
-separate from `dump` on purpose: a read that mutates state loses a window the first time you
-get distracted mid-review, and then you never trust it again.
-
-`seen` records exposure, not judgment. It says jakub looked, not that jakub fixed anything.
-
-`doctor` exists because invariant 1 makes every write failure silent by design. It checks the
-path, the schema version, WAL, and a rollback-only test transaction, then reports the newest
-row's age. Run it before reading: it is the only way to tell "no friction this month" from
-"every write has failed since June".
-
-## The trust boundary
-
-An agent writes bodies after reading repositories, tool output, compiler diagnostics, test
-fixtures and issue text, any of which can be attacker-controlled. A body can therefore carry an
-instruction dressed as diagnostic text, and it does not need to be copied verbatim, because an
-agent summarising friction can preserve the operational instruction while rewording everything
-around it. That instruction sits in durable storage, crosses sessions, and arrives later in a
-context where nobody remembers the original repository content is still in play. Persistence is
-what makes it useful to an attacker.
-
-`gripe dump` therefore emits JSONL with bodies as JSON-escaped strings, after a preamble
-stating that body fields are untrusted and may contain instructions aimed at the reader.
-Escaping is the mechanism, chosen over prose delimiters because a body cannot close a JSON
-string it is inside, while a delimiter fence is escapable by any body that quotes the fence.
-The design does not otherwise constrain what the output is piped into. Whoever pipes it owns
-what they pipe it into.
-
-Observed rows get the same care at the write end. Their bodies are fixed templates filled
-from an allowlist of payload fields, capped and stripped of control characters. Raw
-`tool_input` and `last_assistant_message` never reach the database; both can carry
-credentials or kilobytes of attacker-chosen text into durable storage.
-
-Redacting credentials is a separate boundary and does not help with this one.
-
-## Hooks
-
-Claude registers seven events. Codex registers the four events whose meaning can be preserved:
-SessionStart, SubagentStart, PostToolUse, and Stop. Each has one bounded job. An ungated
-checkpoint taxes every session, and an ungated Claude error nudge interrupts every ninety
-seconds. `docs/cross-harness-hooks.md` owns the repository-wide adapter design.
-
-Two pieces of shared plumbing. Hooks that write rows import the storage module directly and
-never shell out to the CLI, so the observed lane never transits a shell, never depends on
-PATH, and cannot be reached by an agent typing `--via observed`. Hooks that gate on
-repetition share one state contract: JSON files under the state directory keyed by session id
-plus actor, where actor is `main` or a known subagent `agent_id`, holding fingerprint counts
-with last-seen and last-nudged times. Claude state is per actor. Codex PostToolUse supplies no
-stable subagent actor, so its checkpoint counters are explicitly parent-session state.
-Fingerprint gate state is shared because Stop must see what the error nudge already asked
-about, or one fingerprint buys two interruptions in one session.
-
-### SessionStart
-
-Prints one line advertising the command to the main agent. Writes the one-row session mark
-that gives decision 6 its denominator. Re-points the PATH shim through the epoch ratchet in the
-shim section. Sweeps state files older than a few days on the way past.
-
-**Reaches the main agent only.** Measured: a spawned subagent reported no flow charter in its
-context, and the charter is injected by exactly this kind of hook.
-
-### SubagentStart
-
-The same advertisement for subagents, which is the only reason they hear about gripe at all.
-The hook reads `agent_id` and `prompt_id` (Claude) or `turn_id` (Codex) from the payload,
-and it accepts `additionalContext`. Bake `--agent` and `--prompt` into the advertised
-recipe so attribution survives; a subagent lives inside one
-prompt, so both stay valid for its whole life, and the agent copies a literal rather than
-deciding anything.
-
-### PostToolUseFailure and Codex PostToolUse
-
-For Claude, **PostToolUseFailure is the correct event and it is not PostToolUse.** Failed calls
-dispatch through a separate executor, so a Claude hook registered on PostToolUse never fires on
-the failures this exists to catch. Payload is
-`{ tool_name, tool_input, tool_use_id, error, is_interrupt, duration_ms }`.
-
-Codex has no PostToolUseFailure event. Its PostToolUse fires for non-zero Bash commands, but
-`tool_response` is tool-specific model-facing output, not a stable result envelope. A
-2026-08-26 capture from Codex CLI 0.149.1 recorded `tool_response: ""` for `sh -c "exit 7"`;
-the hook received no exit status. The Codex adapter therefore does not infer failures from
-prose or guessed object fields and does not call the repeated-failure policy. It folds only
-the tool and target into bounded checkpoint state. This is reduced coverage, but it is an
-honest non-equivalence rather than a silent classifier that never sees real failure metadata.
-
-The Claude gates, in order. Skip when `is_interrupt` is set, because that is jakub pressing escape rather
-than the tooling fighting the agent. Then fire on repeats, not firsts: the first failure of a
-given tool with a given error shape is ordinary work, the second is a pattern. Hold a cooldown
-on the fingerprint so a retry loop asks once rather than forty times. The repeat gate has held
-on its own since 0.1.0, so there is no per-command blocklist; if one tool ever proves it needs
-suppressing, that is the day to add one.
-
-Advertises `--via error_nudge` with `--trigger` and `--prompt` baked from the payload. Every
-fingerprint it nudges on goes into the shared gate state so the Stop checkpoint does not cite
-the same fight a second time.
-
-### PermissionDenied
-
-Writes an observed row directly. Payload is `{ tool_name, tool_input, tool_use_id, reason }`.
-Repeat-gated, and the gate matters here more than anywhere: jakub's own hooks deny by design, so
-a first denial is a guard working correctly. The fourth identical denial means the agent kept
-trying and kept being stopped, which is real friction, and points at either a policy the agent
-does not understand or a policy that is wrong. The observed body is a template over
-`tool_name`, `reason` and a normalised target, never raw `tool_input`.
-
-Claude only. Codex PermissionRequest happens before the user decides and cannot report an
-after-the-fact denial, so mapping it here would change the provenance of the row.
-
-### StopFailure
-
-Writes an observed row directly. Payload is `{ error, error_details, last_assistant_message }`.
-A turn that failed outright is unambiguous and needs no gate. The body is the error plus a
-capped slice of `error_details`; `last_assistant_message` is never stored.
-
-Claude only. Codex Stop is a normal completion event and has no equivalent failure payload.
-
-### Stop
-
-The end-of-turn checkpoint, and **the only coverage for friction that never errored**. Everything
-else in this list is error-shaped. The `gh run watch` case, the ambiguous instruction, the
-ten-call dead end where every call succeeded: none of it reaches the database any other way.
-
-It never asks the agent whether it was annoyed. That framing tells the model a complaint is the
-expected answer, and models supply expected answers; ask every session and you get either
-invented grievances or a reflexive "none" because that ends the prompt fastest. Claude reads
-the transcript incrementally. Codex evaluates counters already folded from PostToolUse, because
-its transcript format is not a stable hook interface. Claude can cite repeated identical
-failures, fingerprinted with paths, shas and digits normalised out, or repetition without
-failure: the same tool aimed at the same target three or more times. Codex can cite only the
-second form because PostToolUse does not expose reliable failure status. With no qualifying
-evidence, or fewer than fifteen tool calls, the checkpoint stays silent. Two unrelated Claude
-failures are not evidence; only repeats of one shape count, or the checkpoint fires on every
-ordinary session that hit two different transient errors. No evidence means no honest question.
-
-Other gates: skip when `stop_hook_active` is set or it loops on its own continuation, and skip
-when `background_tasks` shows anything running, because a paused session is not a finished one.
-Once per session, stated as the tradeoff it is: friction that develops after the first
-checkpoint in a long session goes unrecorded, and that is the accepted price of never teaching
-the agent that "none" ends the conversation fastest. Cited text is stripped of control
-characters before it enters the note, because the note speaks in the hook's trusted voice and
-its raw material comes out of the transcript.
-
-Claude sends `additionalContext`. Under the Codex hook contract as of 2026-08-26, Codex returns
-`decision: "block"` with the note as `reason`, which creates one continuation prompt rather
-than rejecting the turn. In either harness the agent can act on it without the turn being
-marked as failed. **That continuation is the real cost.**
-The hook itself is a few milliseconds of local string matching with no model call, but every
-fire buys at least one extra assistant turn.
-
-Claude scanning is incremental. Scan state carries a byte offset and running counters, so a
-quiet session does not re-parse a growing transcript at every turn end. It is keyed by session
-id plus actor, like the gate state and for the same reason: a fan-out shares one session id,
-and one shared byte offset would apply one transcript's position to another. Codex counters
-use a separate `codex-` state filename and no byte offset. PostToolUse and Stop use a bounded
-per-session file lock around each Codex read-modify-write, so concurrent hook processes do not
-drop each other's counters. The lock is one `wx` create with 25 retries 20ms apart, and a lock
-file older than ten seconds is read as orphaned by a killed holder and unlinked. Half a second
-is sized against the worst burst here, 20 concurrent PostToolUse hooks on one session: measured
-2026-09-01, a 100ms budget lost one writer's count in 1 run of 10, and 500ms lost none in 15.
-Giving up loses advisory evidence and exits quietly. State lives in files rather than the
-database, because it is written on the hot path and would otherwise contend for the write lock
-with actual gripe writes.
-
-### SubagentStop
-
-Claude uses the same checkpoint for subagents, which Stop never fires for, served by the same script.
-Payload is `{ stop_hook_active, agent_id, agent_transcript_path }`, so the script reads
-either transcript field, keys its state by the agent id when one is present, and echoes the
-incoming `hook_event_name` back in its output.
-
-Injection reaches the subagent, not the parent. The product binary's own schema description
-reads: "delivered to the subagent; the subagent continues so it can act on it."
-
-The objection that a fan-out produces correlated reports is real but neutralised by decision 6,
-since subagents share their parent's session id and a whole fan-out therefore counts once.
-
-Codex deliberately has no SubagentStop checkpoint. PostToolUse does not identify which
-subagent produced an observation, so a per-subagent checkpoint could cite sibling evidence or
-find no evidence at all. Parent Stop evaluates the aggregate session counters instead.
-
-### Considered and rejected
-
-The full event list: PreToolUse, PostToolUse,
-PostToolUseFailure, PostToolBatch, Notification, UserPromptSubmit, UserPromptExpansion,
-SessionStart, SessionEnd, Setup, Stop, StopFailure, SubagentStart, SubagentStop, PreCompact,
-PostCompact, PermissionRequest, PermissionDenied, TeammateIdle, TaskCreated, TaskCompleted,
-Elicitation, ElicitationResult, ConfigChange, InstructionsLoaded, DirectoryAdded, CwdChanged,
-FileChanged.
-
-- **PreCompact** duplicates Stop's question in a subset of sessions, fires when context is most
-  crowded and introspection least reliable, and skews toward long sessions in a way that
-  corrupts the distinct-days metric.
-- **SessionEnd** cannot nudge anything, since its output reaches no context. Its only real job
-  was pruning state files, and SessionStart does that for free while managing the shim. Running
-  `wal_checkpoint(TRUNCATE)` there is unnecessary at this volume and can collide with a session
-  still writing.
-- **PreToolUse** fires before every call and has nothing to say. Worth recording that it does
-  fire for subagents: measured by having a subagent run three Bash commands, where the middle
-  one tripped flow's PreToolUse guard and came back denied while the controls either side ran
-  normally. That is the evidence that tool-call hooks reach subagents at all.
-- **Notification** covers permission prompts and idle, but `PermissionDenied` carries the same
-  friction with a structured payload.
-- **UserPromptSubmit** could sniff for the user correcting the agent, but that is the user's
-  channel, and inferring annoyance from prompt text produces garbage rows.
+- `gripe dump` prints JSONL after a preamble line that calls the bodies untrusted. A body
+  cannot close a JSON string it sits inside, while any body can quote a prose fence.
+- Observed bodies are fixed templates over allowlisted payload fields, stripped of control
+  characters and capped. Raw `tool_input` and `last_assistant_message` never reach the
+  database, since either can carry a credential.
+- Every advertised recipe is a quoted heredoc with a delimiter that is random per
+  advertisement, so a body cannot end the heredoc early.
+- `readHookEvent()` in `lib/context.mjs` validates `session_id` and `agent_id` before either
+  reaches a filename.
 
 ## The shim
 
-Installed plugins live under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` on
-Claude and `~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/` on Codex. Claude Code does
-sweep old versions eventually, on its own schedule rather than at upgrade: measured 2026-09-01,
-`~/.claude/plugins/.last_inuse_sweep` was stamped that morning and flow's oldest surviving
-directory was 0.16.1, with every release below it gone. Gripe still had 0.1.0, 0.1.1, 0.2.0,
-0.2.1 and 0.3.0 sitting side by side.
+Plugins install under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` and
+`${CODEX_HOME:-~/.codex}/plugins/cache/<marketplace>/<plugin>/<version>/`. Claude Code removes
+old versions on its own schedule, not at upgrade. Measured 2026-09-01:
+`~/.claude/plugins/.last_inuse_sweep` was stamped that morning, flow's oldest directory was
+0.16.1, and gripe still had 0.1.0, 0.1.1, 0.2.0, 0.2.1, and 0.3.0 side by side. A symlink to one
+version would keep running old code against a newer database with no symptom, so
+`~/.local/bin/gripe` is a copy of `bin/shim.mjs` that resolves the install at exec time. It
+imports Node built-ins only, because it runs before any plugin root is known.
 
-A shim symlinked to `gripe/0.1.0/bin/gripe` therefore does not break after an upgrade, which
-would at least be visible. It keeps working, running 0.1.0 code against a 0.5.0 database for as
-long as the sweep leaves that directory alone, and invariant 1 means that failure has no symptom
-at all. So `~/.local/bin/gripe` is a copy of `bin/shim.mjs` rather than a symlink to a versioned
-path, and **it resolves the plugin at exec time**, every time.
+Both hosts install gripe and share one database, and their versions drift. On 2026-08-31
+Claude had 0.2.0 and Codex had 0.2.1. The shim picks the newest:
 
-`bin/shim.mjs` imports node builtins and nothing else. It runs before any plugin root is known,
-so it cannot import one. A shared helper under `lib/` would only move the resolution problem
-into an import statement.
+1. List `<cache>/jakub/gripe/*/bin/gripe` under both cache roots. The marketplace is the
+   constant `jakub`, because both roots hold other marketplaces and a plugin named gripe from
+   one of them could otherwise win the sort.
+2. Skip a directory whose name is not dotted integers, one that holds `.orphaned_at`, and one
+   whose `bin/gripe` is not a regular file.
+3. Run the highest version, compared numerically, with the path as the tie-break.
 
-### Which install wins
+Claude Code writes `.orphaned_at` into a version it uninstalled or superseded and leaves the
+files until a later sweep. On 2026-09-01 every gripe directory in the Claude cache but the
+installed 0.3.0 had one. Without the skip, a rollback keeps running the version it rolled back
+from. Codex writes no marker, so a Codex rollback takes two steps: `codex plugin remove`, then
+delete `${CODEX_HOME:-~/.codex}/plugins/cache/jakub/gripe/<version>`.
 
-Registered in both harnesses is the normal case here, and the versions drift. Measured
-2026-08-31: Claude was on gripe 0.2.0 while the Codex cache held 0.2.1. One shim serves both,
-they share one database, so the shim has to pick.
+The shim reads neither host's plugin registry. The directory name is the version the plugin
+manager wrote, and a registry can describe an install that is no longer on disk. The scan does
+not realpath its candidates either. Whoever can plant a symlink in the cache can already
+rewrite the plugin files that every session runs.
 
-The whole rule is a glob and a sort. Take `<cache>/jakub/gripe/*/bin/gripe` under both cache
-roots, `~/.claude/plugins/cache` and `${CODEX_HOME:-~/.codex}/plugins/cache`. Read each version
-directory's name as dotted integers, skip the ones that do not parse, so `latest` and
-`0.4.0-rc1` never become candidates. Skip a version directory holding `.orphaned_at`. Keep the
-ones whose `bin/gripe` is a regular file. Sort highest version first, comparing component by
-component so 0.10.0 beats 0.9.0, with the path as the tie-break so two installs of the same
-version always resolve the same way. Run the first. Nothing resolved prints one bounded line
-naming the directory scanned under each cache root and never the versions under it, because a
-diagnostic that pastes a hundred directory names into an agent's context is its own kind of
-failure.
+`GRIPE_HOME` is the override, judged by whether the key is present, not by its value. Set and
+holding a readable `bin/gripe`, it is the only candidate. Set and broken, the shim stops with
+one line naming `GRIPE_HOME` instead of filing into the live database through installed code.
 
-The marketplace segment is the constant `jakub`, not a wildcard. Every plugin in this repo
-installs as `<plugin>@jakub`, so our own copy is always at `cache/jakub/gripe/<version>` on
-either harness. A wildcard there let any plugin merely named gripe, from a
-marketplace we never published to, join the sort and win it with a higher number. Both cache
-roots already hold other marketplaces, `claude-plugins-official` under Claude and five OpenAI
-ones under Codex, so the collision needs no imagination. Renaming the marketplace means editing
-the `MARKETPLACES` constant in `bin/shim.mjs`, which is the right amount of friction for a
-change that decides whose code runs against the database.
+What each exit code promises:
 
-The `.orphaned_at` skip is the rollback fix. Claude Code writes that file, one millisecond
-timestamp, into a version directory when it uninstalls or supersedes that version, then leaves
-the directory in place until a later sweep. Without the skip, uninstalling 0.4.0 and going back
-to 0.3.0 changes nothing: 0.4.0 is still the highest number on disk with a readable `bin/gripe`,
-so it keeps running, and invariant 1 means the rollback that did not happen has no symptom.
-Measured 2026-09-01, of the five gripe directories under
-`~/.claude/plugins/cache/jakub/gripe` every one but the installed 0.3.0 carried the marker.
+- `gripe add` and a bare `gripe` exit 0 whatever happens: nothing resolved, a broken override,
+  a spawn error, or a child killed by a signal.
+- `doctor`, `dump`, `search`, and `seen` pass the child's status through, and exit 1 when no
+  child ran.
+- A shim failure is one bounded line with control characters flattened. A numeric child status
+  adds no shim line, because the child owns stderr. The shim never reads stdin.
 
-Codex writes no such marker, so on Codex a removed but still cached newer version keeps winning
-until its directory is gone. Rolling back there is two steps: `codex plugin remove` and then
-delete `${CODEX_HOME:-~/.codex}/plugins/cache/jakub/gripe/<version>`. The shim honours the
-marker under either cache root, so if Codex ever starts writing one the skip already covers it.
+`doctor` reports `plugin_root` and `plugin_version` from `bin/gripe`'s own path and manifest,
+so it shows which install won. `healthy` covers storage alone and never rules on version skew.
 
-`$GRIPE_HOME` is the override, judged by key presence and not by value. Present and holding a
-readable `bin/gripe`, it is the only candidate and no cache is scanned. Present and broken,
-meaning empty, missing, or without that file, the shim stops with one stderr line naming
-`GRIPE_HOME`. An earlier design let a broken override fall through to installed code, so a typo
-in a development export filed into the live database with no sign anything was wrong.
-
-Both plugin managers write a registry, and the shim reads neither. It used to read both, and
-that cost 275 lines of hand-written TOML scanning to answer two questions: is gripe registered
-under this harness, and under which marketplace. The marketplace is ours to pin, and the glob
-answers the rest better, because the cache directory name is the version the plugin manager
-itself wrote there. The registry can add exactly one fact the directory cannot, "installed here
-but disabled", and a disabled plugin whose files are still on disk is not a reason to refuse the
-only gripe on the machine. The one
-skew ever measured is the 0.2.0-against-0.2.1 case above, and newest-wins is precisely the rule
-that handles it. Worse, a registry read has a failure the glob cannot have: a registry that
-parses cleanly and describes an install that is no longer there. Surviving that took a
-confirmed tier, a fallback tier, and a per-harness authority rule, all of it machinery for a
-file that was never the authority on which code is on disk.
-
-The scan trusts the cache directories, with no realpath confinement. A symlink planted at
-`<cache>/jakub/gripe/9.9.9` pointing at older code would be believed. Whoever can plant it can
-also rewrite the plugin's own files, which every harness executes on every session, so
-confining the shim alone buys nothing.
-
-### What each exit code promises
-
-Invariant 1 is about filing, not about every command. `gripe add`, and a bare `gripe`, exit 0
-whatever happened: nothing resolved, a broken override, a spawn ENOENT, a child killed by a
-signal. `doctor`, `dump`, `search`, and `seen` are honest instead. They pass a real child status
-through unchanged and exit 1 when the shim never got as far as running a child. Someone asking
-whether the write path works deserves a real answer; an agent mid-task does not deserve a failed
-command.
-
-The shim never reads stdin. A synchronous read on an inherited pipe can block forever, and `add`
-costing the caller nothing is the whole invariant. A shim-authored failure is one line with
-control characters flattened and no stack trace. A numeric child status carries no shim line at
-all, because the child already owns stderr.
-
-Importing `bin/shim.mjs` runs nothing. The module compares `import.meta.url` against
-`process.argv[1]`, and no `argv[1]` means no script path, which means an import. The smoke suite
-imports the resolver, so a version of this check that guessed "run it" would have every import
-print the usage line.
-
-`doctor` reports `plugin_root` and `plugin_version`, which `bin/gripe` derives from its own
-module path and manifest with no cooperation from the shim. That is how you find out which
-install won, instead of inferring it from a command that printed nothing. `healthy` still
-answers for storage alone and never rules on version skew. Report the skew, don't judge it.
-
-### The epoch ratchet
-
-SessionStart maintains `~/.local/bin/gripe`, and the naive version of that is last writer wins.
-On a host with two harnesses at different versions, the older one reverts the newer shim every
-session, so a fix to this file becomes a fix that keeps disappearing.
-
-The shim therefore carries one `// gripe-shim-epoch: <n>` line and `pointShim` is upgrade-only.
-It rewrites the destination when that file is missing, carries a lower or unparseable marker, or
-carries an equal marker over bytes that no longer match the source. Identical bytes are left
-alone, and so is a destination whose marker parses as strictly higher. Corruption repairs itself
-and a newer shim survives an older harness. Writes go through a same-directory temp file opened with `wx` and a rename
-over the target, which replaces the directory entry rather than writing through a symlink
-somebody left there. Contention is accepted, since the loser's next SessionStart writes again.
-
-The epoch counts shim protocol changes, never releases. It is at 2, moved when the resolver
-stopped reading the two registry files and became the cache glob above. It also fixes nothing
-retroactively.
-Gripe 0.2.x has no marker logic at all, so the release that introduces the ratchet needs both
-harnesses re-registered in one sitting, and the README says so.
-
-SessionStart skips re-pointing entirely when `$GRIPE_HOME` is set. Without that skip it would
-clobber a working-tree copy every session and silently send development traffic to the stale
-installed one.
+SessionStart publishes the shim. It copies `bin/shim.mjs` to `~/.local/bin/gripe` when that
+file is missing or its `// gripe-shim-epoch: <n>` line is lower than the source's. A file with
+no marker counts as lower. An equal or higher epoch is left alone, so an older install on the
+other host never reverts a newer shim. The epoch counts shim behavior changes, never releases,
+and is at 2. A lost race is fixed by the next SessionStart. The hook publishes nothing while
+`GRIPE_HOME` is set, so a working tree under test keeps its own shim.
 
 ## Development and packaging
 
-These are separate mechanisms.
+An install is a byte-for-byte copy of `plugins/gripe/`. Measured against flow on 2026-08-23,
+the cache matched the source tree file for file, apart from a zero-byte `.in_use` marker.
+Everything in that directory ships to every install, which is why this file lives under
+`docs/`.
 
-The CLI is an ordinary Node script and runs from anywhere. Only *hook registration* needs the
-plugin system, and that is not the only route: either harness can register working-tree hooks
-from its user or project settings.
-
-So the development loop needs no install. Point a temporary registration at the working tree,
-export `GRIPE_HOME`, and iterate with instant feedback. Piping a JSON event into a hook script
-with node tests the script; it does not test product wiring or hook trust.
-
-Packaging is the last step, not the loop. An install is a byte-for-byte copy of the
-`plugins/gripe/` subdirectory: measured against flow, the cache matches the source tree file
-for file, identical apart from a zero-byte `.in_use` marker.
-Nothing is filtered. **Everything in that directory ships to every install, forever**, which is
-why these design notes live in `docs/gripe/` rather than inside the plugin.
-
-One install step is manual: a plugin cannot ship a permission allowlist entry (installing
-registers only an enabled-plugin flag), so `Bash(gripe add:*)` goes into
-`~/.claude/settings.json` `permissions.allow` by hand, once per machine. That line is what
-makes invariant 2 ("never prompts after setup") hold.
-
-Publishing is the version ritual documented in the marketplace repo's AGENTS.md: matching
-versions in `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and the marketplace entry.
-There is no catalog version.
+The development loop needs no install. Export `GRIPE_HOME` pointing at the working tree, and
+pipe a JSON event into a hook script with node. That tests the script, not the host's hook
+wiring or trust prompt. Publishing is the version rule in the repository's `AGENTS.md`.
