@@ -123,6 +123,8 @@ function appServer() {
   async function runTurn(params) {
     out({ method: 'turn/started', params: { threadId, turn: { id: TURN, items: [], status: 'inProgress', error: null } } })
     if (mode === 'hang' || mode === 'steer-refused') return hang()
+    // The backend moves the turn to another model, and the turn answers and completes on it.
+    if (mode === 'reroute') out({ method: 'model/rerouted', params: { threadId, turnId: TURN, fromModel: params.model, toModel: 'gpt-fake-other', reason: 'highRiskCyberActivity' } })
     // A steered turn waits for its steer, then answers with it folded in.
     if (mode === 'steer') await new Promise((resolve) => { onSteer = resolve; setTimeout(resolve, 20000) })
     if (mode === 'refusal') {
@@ -679,6 +681,13 @@ try {
   const swappedCall = fakeCall(swapped.job.id)
   assert.ok(await until(() => !alive(swappedCall.pid) && !alive(swappedCall.childPid)), 'the swapped provider group was killed')
   assert.ok(wrote(swapped.job.id).some((frame) => frame.request?.subtype === 'interrupt'), 'the swap was not interrupted')
+  // A Codex turn the backend reroutes to another model fails on the model it moved to, and is
+  // interrupted, even though the turn completes with an answer.
+  const rerouted = await expect(claudeHost, 'FLOW_FAKE_MODE=reroute', 'failed', 'MODEL_MISMATCH')
+  assert.deepEqual([rerouted.job.servedModel, rerouted.job.output, rerouted.job.error.details],
+    ['gpt-fake-other', null, { expected: 'gpt-fake', served: 'gpt-fake-other', reason: 'highRiskCyberActivity' }])
+  assert.deepEqual(journal(rerouted.job.id).find((event) => event.type === 'flow.stop'), { type: 'flow.stop', reason: 'MODEL_MISMATCH' })
+  assert.deepEqual(asked(rerouted.job.id, 'turn/interrupt'), [{ threadId: THREAD, turnId: TURN }], 'the rerouted turn was not interrupted')
   const denied = await expect(codexHost, 'FLOW_FAKE_MODE=approval', 'failed', 'APPROVAL_REQUIRED')
   assert.equal(denied.job.output, 'fake answer', 'a denied turn keeps its answer')
   // Claude asks by control request only if something routes a prompt to flow. It is refused, and
@@ -695,7 +704,7 @@ try {
   const rejection = { decision: { denied: { rejection: 'Flow grants a delegated job no approvals.' } } }
   assert.deepEqual(answers, { 'srv-1': { decision: 'decline' }, 'srv-2': { decision: 'decline' }, 'srv-3': { permissions: {}, scope: 'turn' },
     'srv-4': rejection, 'srv-5': rejection, 'srv-6': { code: -32601 } })
-  ok('refusals are typed on both targets, a model swap is latched and interrupted at once, a denied permission or a Claude tool request is APPROVAL_REQUIRED, and every approval request is declined in its own shape')
+  ok('refusals are typed on both targets, a model swap or a Codex reroute is latched and interrupted at once, a denied permission or a Claude tool request is APPROVAL_REQUIRED, and every approval request is declined in its own shape')
 
   const failing = await expect(claudeHost, 'FLOW_FAKE_MODE=exit-nonzero', 'failed', 'PROVIDER_ERROR')
   assert.ok(!failing.text.includes('SECRET-STDERR-TOKEN'), 'provider stderr reached the tool result')

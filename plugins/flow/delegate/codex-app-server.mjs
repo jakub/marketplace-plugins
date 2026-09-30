@@ -30,6 +30,10 @@
 // No approval is ever granted. Each approval request gets its method's decline, and any request
 // that names an approval fails the job APPROVAL_REQUIRED once its turn ends, with the answer kept.
 //
+// The thread's model is read back once, when the thread opens. A model/rerouted notification that
+// moves the turn to any other model stops the turn, and the job fails MODEL_MISMATCH with the model
+// Codex moved to as its served model.
+//
 // A steer goes into the open turn as turn/steer with expectedTurnId set to that turn's id, so Codex
 // refuses it rather than let it land anywhere else. The turn keeps running, and stdin closes only
 // at turn/completed.
@@ -317,6 +321,7 @@ export const transport = {
     let failures = 0
     let lastError = null
     let approvalMethod = null
+    let rerouted = null
     const session = {
       threadId: null, servedModel: null, models: null, catalog: null, isolation: null, stopReason: null, promptSent: false, turnOpen: false, turnEnded: false,
       async send(prompt) {
@@ -347,6 +352,7 @@ export const transport = {
       close() { rpc.close() },
       finish({ code, signal }) {
         const base = { threadId: session.threadId, servedModel: session.servedModel, output: null, structured: null, commandFailures: failures, error: null }
+        if (rerouted) return { ...base, status: 'failed', error: { kind: 'MODEL_MISMATCH', message: `Codex rerouted the turn to ${rerouted.served}, not ${rerouted.expected}, and the turn was stopped.`, details: rerouted } }
         if (turn?.status === 'failed' || (!turn && lastError)) {
           const problem = (turn?.error?.message && errorText(turn.error.message)) || lastError || 'the turn failed'
           return { ...base, status: 'failed', error: { kind: classify(problem), message: `Codex: ${problem}` } }
@@ -382,6 +388,12 @@ export const transport = {
         session.turnEnded = true
       } else if (method === 'error' && params.willRetry !== true) {
         lastError = errorText(params.error?.message)
+      } else if (method === 'model/rerouted' && !rerouted && typeof params.toModel === 'string' && params.toModel !== job.model) {
+        // The backend moved the turn to another model, whatever the thread read back when it
+        // opened, so the answer would not be the requested model's. The turn stops now.
+        rerouted = { expected: job.model, served: clip(params.toModel), reason: params.reason == null ? null : clip(params.reason) }
+        session.servedModel = rerouted.served
+        session.stopReason ??= 'MODEL_MISMATCH'
       }
     }
     const onRequest = (method) => {
