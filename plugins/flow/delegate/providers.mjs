@@ -168,6 +168,7 @@ const codex = {
     let failure = null
     let lastError = null
     return {
+      thread: () => threadId,
       event(event) {
         const item = event.item
         if (event.type === 'thread.started') threadId = event.thread_id ?? threadId
@@ -240,6 +241,7 @@ const claude = {
     let failures = 0
     const bash = new Set()
     return {
+      thread: () => session,
       event(event) {
         if (event.type === 'system' && event.subtype === 'init') {
           session = event.session_id ?? session

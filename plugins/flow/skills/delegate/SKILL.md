@@ -14,7 +14,7 @@ One MCP server, `flow_delegate`, reaches the other family in both directions. A 
 - `delegation_cancel` stops a queued or running job and kills its provider's whole process group.
 - `delegation_doctor` reports whether the provider is installed and signed in, the usable workspace roots and the state directory.
 
-There is no live steering. To change a running job, cancel it and start again, or let it end and continue it.
+To steer a running job, continue it with the new instruction. Its turn stops where it stands, and a new job resumes the same provider thread with everything the first one had done. The stop is an interrupt, not an injection: a command in flight is killed, and the new turn starts from the last thing the thread recorded.
 
 ## Start a job
 
@@ -28,7 +28,7 @@ Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`,
 
 `outputSchema` gets a typed answer from a task, parsed into `structured`. The root must be `type: "object"`, and the schema can be at most 64 KiB. Write closed objects with every property required, because Codex quietly narrows a schema outside that subset. The server checks the answer against your schema before the job can succeed, so it admits only the keywords it can check: `type`, `properties`, `required`, `additionalProperties`, `items`, `enum`, `const`, the numeric, length, item and property-count bounds, `pattern`, `uniqueItems`, `anyOf`, `oneOf`, `allOf`, `not`, and `$ref` into the schema's own `$defs`, plus annotations such as `description` and `format`. Any other keyword is refused as `BAD_SCHEMA`.
 
-`continue` takes the id of a finished job and starts a new task on the same provider thread, in the same `cwd` and with the same access. A job whose outcome is `unknown` cannot be continued.
+`continue` takes the id of an earlier job and starts a new task on the same provider thread, in the same `cwd` and with the same access. A job still running is stopped first and ends `cancelled`. A job that has not opened its provider thread yet is refused with `JOB_STATE` and left running, and a job whose outcome is `unknown` cannot be continued.
 
 `timeBudgetSeconds` runs from 30 to 7200 and defaults to 900. A Claude target also takes `maxTurns` and `maxBudgetUsd`. Set them only when the human asks for a cap.
 

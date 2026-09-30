@@ -27,7 +27,7 @@ function tools(target) {
     base: { type: 'string', description: 'Review mode: the base revision, pinned to a SHA before the job starts.' },
     head: { type: 'string', default: 'HEAD', description: 'Review mode: the head revision, pinned to a SHA.' },
     outputSchema: { type: 'object', description: 'Task mode: a JSON Schema (type object, at most 64 KiB) the answer must follow; the answer is checked against it before the job succeeds. Write closed objects with every property required.' },
-    continue: { type: 'string', description: 'The id of a finished job whose provider thread this new task resumes, in the same cwd and access.' },
+    continue: { type: 'string', description: 'The id of an earlier job whose provider thread this new task resumes, in the same cwd and access. A job still running is stopped first, so this is also how to steer one: its turn ends where it stands and its thread resumes with this prompt.' },
     timeBudgetSeconds: { type: 'integer', minimum: 30, maximum: 7200, default: 900 },
     waitSeconds: { type: 'integer', minimum: 0, maximum: 7200, description: 'How long to wait for the outcome; default the whole budget. 0 detaches: collect it with delegation_result.' },
     ...(target === 'claude' ? {
@@ -40,7 +40,7 @@ function tools(target) {
     {
       name: `delegate_to_${target}`,
       title: `Delegate to ${title}`,
-      description: `Run a ${title} job: a task, or an adversarial review of a pinned base..head diff that returns typed findings. Waits for the outcome unless waitSeconds is 0. continue resumes a finished job's thread.`,
+      description: `Run a ${title} job: a task, or an adversarial review of a pinned base..head diff that returns typed findings. Waits for the outcome unless waitSeconds is 0. continue resumes an earlier job's thread, and steers a running job by stopping its turn first.`,
       inputSchema: object(start, ['prompt', 'model', 'effort', 'cwd']),
     },
     {

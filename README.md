@@ -83,7 +83,7 @@ Claude can delegate to Codex and Codex can delegate to Claude, through one MCP s
 
 | Tool | What it does |
 |---|---|
-| `delegate_to_codex` on Claude, `delegate_to_claude` on Codex | Starts a job with an explicit model and effort: a task, or an adversarial review of a pinned `base..head` diff that returns typed findings. It takes an `outputSchema` for a typed answer, `read-only` or `workspace-write` access confined to the named worktree, and `continue: <jobId>` to carry on a finished job's thread. It waits for the answer, or returns at once with `waitSeconds: 0`. |
+| `delegate_to_codex` on Claude, `delegate_to_claude` on Codex | Starts a job with an explicit model and effort: a task, or an adversarial review of a pinned `base..head` diff that returns typed findings. It takes an `outputSchema` for a typed answer, `read-only` or `workspace-write` access confined to the named worktree, and `continue: <jobId>` to carry on a job's thread, which steers a running job by stopping its turn first. It waits for the answer, or returns at once with `waitSeconds: 0`. |
 | `delegation_result` | Reads a job's status, outcome and last event lines, and can wait for the job to end. |
 | `delegation_cancel` | Stops a job and kills its provider's process group. |
 | `delegation_doctor` | Reports whether the provider is installed and signed in, the usable workspace roots and the state directory. |

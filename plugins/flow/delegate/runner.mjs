@@ -80,7 +80,7 @@ function runProvider(job, dir, bin, provider, stdin) {
     }
     child.on('error', (error) => { log(`provider spawn failed for ${job.id}: ${error.message}`); finish(error) })
     if (!child.pid) return
-    writeJob({ ...job, ...group })
+    let record = writeJob({ ...job, ...group })
     resetStall()
     child.stdin.on('error', () => {})
     child.stdin.end(stdin)
@@ -91,6 +91,9 @@ function runProvider(job, dir, bin, provider, stdin) {
       let event
       try { event = JSON.parse(line) } catch { return }
       try { if (fold.event(event) === 'interrupt') stop('MODEL_MISMATCH') } catch (error) { log(`fold failed for ${job.id}: ${error?.stack || error}`) }
+      // The provider thread is recorded the moment it is known, so a running job can be steered.
+      const thread = fold.thread()
+      if (thread && thread !== record.threadId) record = writeJob({ ...record, threadId: thread })
     })
     // Once the provider itself has exited, whatever is left in its group is a straggler that may
     // hold stdout open; killing the group lets 'close' arrive.
