@@ -49,6 +49,11 @@ const STEER_MS = 10_000
 const NAMED = 20
 const REJECTION = 'Flow grants a delegated job no approvals.'
 const names = (list, name) => list.slice(0, NAMED).map((entry) => clip(name(entry) ?? 'unnamed'))
+// Claude Code compiles plugins into the CLI and lists them in every init frame, and no flag turns
+// them off: 2.1.285 lists cc-plugin-agents-md and cc-plugin-telemetry. An entry passes only in the
+// shape the CLI gives a built-in, path "builtin" and source "<name>@builtin". A built-in name with
+// any other path or source is a plugin the session loaded.
+const builtIn = (plugin) => typeof plugin?.name === 'string' && plugin.name !== '' && plugin.path === 'builtin' && plugin.source === `${plugin.name}@builtin`
 
 // Local sign-in and credential state no delegated seat reads.
 function credentialPaths() {
@@ -346,20 +351,22 @@ export const transport = {
       },
     }
     // The init frame is the session's own account of what it can reach. Anything beyond the
-    // requested tools, or any MCP server or plugin at all, stops the turn now: the prompt is in,
-    // but no tool has answered yet. A frame that does not list all three is not a pass.
+    // requested tools, any MCP server, or any plugin but the CLI's built-ins stops the turn now:
+    // the prompt is in, but no tool has answered yet. A frame that does not list all three is not
+    // a pass.
     const checkInit = (frame) => {
       const [tools, servers, plugins] = [frame.tools, frame.mcp_servers, frame.plugins].map((list) => (Array.isArray(list) ? list : null))
       const extra = (tools ?? []).filter((tool) => typeof tool !== 'string' || !requested.has(tool))
-      if (tools && servers && plugins && !extra.length && !servers.length && !plugins.length) {
+      const loaded = (plugins ?? []).filter((plugin) => !builtIn(plugin))
+      if (tools && servers && plugins && !extra.length && !servers.length && !loaded.length) {
         session.isolation ??= { mcpServers, tools: [...tools] }
         return
       }
       const found = [tools ? `${extra.length} tool(s) outside the requested set` : 'no tool list', servers ? `${servers.length} MCP server(s)` : 'no MCP server list',
-        plugins ? `${plugins.length} plugin(s)` : 'no plugin list']
+        plugins ? `${loaded.length} plugin(s) beyond the CLI's built-ins` : 'no plugin list']
       leak ??= {
         message: `Claude opened the session with ${found.join(', ')}, and the turn was stopped.`,
-        details: { tools: names(extra, String), mcpServers: names(servers ?? [], (server) => server?.name), plugins: names(plugins ?? [], (plugin) => plugin?.name) },
+        details: { tools: names(extra, String), mcpServers: names(servers ?? [], (server) => server?.name), plugins: names(loaded, (plugin) => plugin?.name) },
       }
       session.stopReason ??= 'ISOLATION'
     }

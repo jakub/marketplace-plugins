@@ -8,7 +8,9 @@
 // fake Codex through turn/steer, the fake Claude as a second user message that it folds in or runs
 // as the next turn. The fakes speak the protocol subset the transports use, in the shapes Codex
 // CLI 0.159.0 and Claude Code 2.1.284 answer with, and in drift mode each answers the way a CLI
-// that changed its protocol would, for the doctor to catch. No network, no model.
+// that changed its protocol would, for the doctor to catch. Every init frame the fake Claude opens
+// lists the two plugins Claude Code 2.1.285 compiles in, as a live turn listed them. No network,
+// no model.
 // Run: node plugins/flow/scripts/smoke-delegate.mjs
 
 import assert from 'node:assert/strict'
@@ -234,6 +236,17 @@ function claudeCli() {
     .map(([value, resolvedModel, efforts]) => ({ value, resolvedModel, displayName: value, description: value, supportsEffort: efforts !== false,
       ...(efforts ? { supportedEffortLevels: efforts === true ? ['low', 'medium', 'high', 'xhigh', 'max'] : efforts } : {}) }))
   const ALIASES = { fable: 'claude-fake-fable-3' }
+  // The plugins an init frame lists. The CLI's two built-ins are always there, as on 2.1.285, where
+  // no flag turns them off. plugin-leak adds a plugin that brings an MCP server, and plugin-user a
+  // plugin alone. Each spoof mode swaps the telemetry built-in for an entry that keeps its name but
+  // not its shape: another path, or another source.
+  const BUILTINS = ['cc-plugin-agents-md', 'cc-plugin-telemetry'].map((name) => ({ name, path: 'builtin', source: name + '@builtin' }))
+  const PLUGINS = {
+    'plugin-leak': [...BUILTINS, { name: 'docs', path: '/plugins/docs' }],
+    'plugin-user': [...BUILTINS, { name: 'docs', path: '/home/user/.claude/plugins/docs', source: 'docs@market' }],
+    'plugin-spoof-path': [BUILTINS[0], { name: 'cc-plugin-telemetry', path: '/home/user/.claude/plugins/telemetry', source: 'cc-plugin-telemetry@builtin' }],
+    'plugin-spoof-source': [BUILTINS[0], { name: 'cc-plugin-telemetry', path: 'builtin', source: 'cc-plugin-telemetry@market' }],
+  }
   const requested = flag('--model')
   const model = MODELS.find((entry) => entry.value === requested || entry.resolvedModel === requested)?.resolvedModel ?? ALIASES[requested] ?? requested
   const session = flag('--session-id') || flag('--resume')
@@ -273,7 +286,7 @@ function claudeCli() {
   async function turn() {
     const served = mode === 'init-swap' ? 'claude-fake-1' : model
     if (mode === 'mismatch') { out({ type: 'assistant', message: { model: 'claude-other-2', content: [{ type: 'text', text: 'swapped' }] } }); return hang() }
-    if (['hang', 'tool-leak', 'plugin-leak'].includes(mode)) return hang()
+    if (mode === 'hang' || mode === 'tool-leak' || PLUGINS[mode]) return hang()
     if (mode === 'refusal') {
       out({ type: 'assistant', message: { model: served, stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [] } })
       return result({ subtype: 'success', is_error: false, result: '' })
@@ -320,7 +333,7 @@ function claudeCli() {
     out({ type: 'system', subtype: 'init', session_id: session, model: mode === 'init-swap' ? 'claude-fake-1' : model, cwd: process.cwd(),
       tools: [...flag('--tools').split(','), ...(mode === 'tool-leak' ? ['WebFetch'] : [])],
       mcp_servers: mode === 'plugin-leak' ? [{ name: 'plugin:docs:search', status: 'connected' }] : [],
-      plugins: mode === 'plugin-leak' ? [{ name: 'docs', path: '/plugins/docs' }] : [],
+      plugins: PLUGINS[mode] ?? BUILTINS,
       permissionMode: 'dontAsk', apiKeySource: 'none', claude_code_version: '0.0.0-fake', slash_commands: [], output_style: 'default', skills: [] })
     if (!replayed) replay(frame)
     setTimeout(turn, mode === 'slow' ? 1500 : 0)
@@ -577,7 +590,12 @@ try {
   ok('a thread that reads back another profile, a widened profile, another model or a reachable MCP server fails before the prompt, the App Server records no turn/start, and a layer\'s own flow_delegation profile never reaches a thread')
 
   // Claude: an MCP server in mcp_status stops the job before the prompt, and an init frame that
-  // names a tool outside the requested set, an MCP server or a plugin stops the turn it opened.
+  // names a tool outside the requested set, an MCP server or a plugin stops the turn it opened. The
+  // CLI's own built-ins pass only in the exact shape it gives them: path "builtin" and source
+  // "<name>@builtin". Every Claude job that succeeds here passed with both listed.
+  const [happyInit] = journal(claudeRead.job.id).filter((event) => event.type === 'system' && event.subtype === 'init')
+  assert.deepEqual([claudeRead.job.status, happyInit.plugins], ['succeeded', ['cc-plugin-agents-md', 'cc-plugin-telemetry'].map((name) => ({ name, path: 'builtin', source: `${name}@builtin` }))],
+    'an init frame with the CLI\'s two built-in plugins passes')
   const claudeLeak = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=mcp-leak' })
   assert.deepEqual([claudeLeak.job.status, claudeLeak.job.error?.kind, claudeLeak.job.promptSent, claudeLeak.job.threadId, claudeLeak.job.isolation],
     ['failed', 'ISOLATION', false, null, null], JSON.stringify(claudeLeak.job))
@@ -585,7 +603,10 @@ try {
   assert.deepEqual(userTexts(claudeLeak.job.id), [], 'mcp-leak: a prompt reached the provider')
   assert.ok(await until(() => !alive(fakeCall(claudeLeak.job.id).pid)), 'the Claude CLI outlived the refusal')
   for (const [mode, details] of [['tool-leak', { tools: ['WebFetch'], mcpServers: [], plugins: [] }],
-    ['plugin-leak', { tools: [], mcpServers: ['plugin:docs:search'], plugins: ['docs'] }]]) {
+    ['plugin-leak', { tools: [], mcpServers: ['plugin:docs:search'], plugins: ['docs'] }],
+    ['plugin-user', { tools: [], mcpServers: [], plugins: ['docs'] }],
+    ['plugin-spoof-path', { tools: [], mcpServers: [], plugins: ['cc-plugin-telemetry'] }],
+    ['plugin-spoof-source', { tools: [], mcpServers: [], plugins: ['cc-plugin-telemetry'] }]]) {
     const leaked = await start(codexHost, { prompt: `FLOW_FAKE_MODE=${mode}` })
     assert.deepEqual([leaked.job.status, leaked.job.error?.kind, leaked.job.promptSent, leaked.job.isolation], ['failed', 'ISOLATION', true, null], JSON.stringify(leaked.job))
     assert.deepEqual(leaked.job.error.details, details)
@@ -595,7 +616,7 @@ try {
     const leakedCall = fakeCall(leaked.job.id)
     assert.ok(await until(() => !alive(leakedCall.pid) && !alive(leakedCall.childPid)), `${mode}: the provider group outlived the stop`)
   }
-  ok('Claude: an MCP server in mcp_status fails ISOLATION with no user message written, and an init frame with an extra tool, an MCP server or a plugin interrupts its turn and fails ISOLATION')
+  ok('Claude: an MCP server in mcp_status fails ISOLATION with no user message written; the CLI\'s built-in plugins pass in their exact shape; and an init frame with an extra tool, an MCP server, a user plugin or a built-in name on another path or source interrupts its turn and fails ISOLATION naming it')
 
   // The catalogs. A listed model at an effort the catalog does not list for it fails BAD_MODEL
   // before anything else happens; a model listed with no effort levels takes no effort at all; an
