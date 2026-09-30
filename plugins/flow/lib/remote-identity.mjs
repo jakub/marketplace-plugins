@@ -285,26 +285,26 @@ export function identityOfRemote(url, { purpose, allowedHosts }) {
   const shape = parseRemoteShape(url)
 
   if (shape.problem !== undefined) {
-    if (shape.problem === 'absent') return { refusal: REMOTE_ABSENT(purpose) }
-    if (shape.problem === 'query') return { refusal: REMOTE_QUERY }
-    if (shape.problem === 'port') return { refusal: REMOTE_PORT(purpose) }
-    if (shape.problem === 'path') return { refusal: REMOTE_PATH(purpose) }
+    if (shape.problem === 'absent') return { problem: 'absent', refusal: REMOTE_ABSENT(purpose) }
+    if (shape.problem === 'query') return { problem: 'query', refusal: REMOTE_QUERY }
+    if (shape.problem === 'port') return { problem: 'port', refusal: REMOTE_PORT(purpose) }
+    if (shape.problem === 'path') return { problem: 'path', refusal: REMOTE_PATH(purpose) }
     // `local-path` and `unreadable` both mean this is not a remote naming a repository on a
     // forge, which is the only kind these executors can do anything with.
-    return { refusal: REMOTE_UNREADABLE(purpose) }
+    return { problem: 'unreadable', refusal: REMOTE_UNREADABLE(purpose) }
   }
 
   // A bare filesystem path parses, and it is still nothing to gate or merge in: there is no host
   // to pin gh to. It is unreadable rather than a path refusal, because what is wrong with it is
   // the spelling and not the number of directories in it. A hostless URL, file:///srv/repo.git,
   // gets the path refusal, which is the honest thing to say about that one.
-  if (shape.spelling === 'path') return { refusal: REMOTE_UNREADABLE(purpose) }
-  if (shape.host === '') return { refusal: REMOTE_PATH(purpose) }
+  if (shape.spelling === 'path') return { problem: 'unreadable', refusal: REMOTE_UNREADABLE(purpose) }
+  if (shape.host === '') return { problem: 'path', refusal: REMOTE_PATH(purpose) }
 
   // The host is on the allowlist or it is not. Everything above this line is about reading the
   // remote; this is about which hosts are worth a credential, and it is last because a remote
   // that will not parse has no host to judge.
-  if (!hostIsAllowed(shape.host, allowedHosts)) return { refusal: REMOTE_HOST(purpose, shape.host) }
+  if (!hostIsAllowed(shape.host, allowedHosts)) return { problem: 'host', refusal: REMOTE_HOST(purpose, shape.host) }
   const { host, owner, repo } = shape
   return { identity: { host, owner, repo, slug: `${owner}/${repo}`, full: `${host}/${owner}/${repo}` } }
 }

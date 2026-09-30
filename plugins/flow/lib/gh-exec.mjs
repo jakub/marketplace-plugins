@@ -85,6 +85,19 @@ export const execCapture = (bin, args, { cwd, timeoutMs, env } = {}) => {
 }
 
 /**
+ * The gh runner every executor's main block hands in: the binary resolved once, the pinned
+ * environment, and a timeout per call.
+ *
+ * @param {Record<string,string|undefined>} [env]
+ * @returns {(args: string[], options?: {cwd?: string, timeoutMs?: number}) => {code: number, stdout: string, stderr: string}}
+ */
+export const ghRunner = (env = process.env) => {
+  const bin = resolveGh(env)
+  const childEnv = pinnedGhEnv(env)
+  return (args, { cwd, timeoutMs = 60_000 } = {}) => execCapture(bin, args, { cwd, timeoutMs, env: childEnv })
+}
+
+/**
  * Put an executor's result on the wire and exit with its code. Every executor returns
  * { code, stdout, stderr } instead of writing and exiting itself, which is what lets a smoke
  * drive it in process; this is the one place that turns that value back into a process outcome.
