@@ -1,13 +1,17 @@
 // What the targets share: where a provider CLI is, what environment it runs in, its version and
-// sign-in, and how a finished answer becomes an outcome. Each target is a transport of its own:
-// codex-app-server.mjs speaks the Codex App Server, and claude-control.mjs speaks the Claude CLI's
-// stream-json control channel. The runner drives both through one session shape: open, send,
-// interrupt, close, then finish, which folds the provider's lines into an outcome.
+// sign-in, how the doctor's handshake starts and ends, and how a finished answer becomes an
+// outcome. Each target is a transport of its own: codex-app-server.mjs speaks the Codex App
+// Server, and claude-control.mjs speaks the Claude CLI's stream-json control channel. The runner
+// drives both through one session shape: open, send, interrupt, close, then finish, which folds
+// the provider's lines into an outcome. The doctor calls each one's check, which runs the same
+// handshake with no prompt.
 import { execFile } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
-import { DelegateError } from './jobs.mjs'
+import { DelegateError, log, signalProvider, startToken } from './jobs.mjs'
 import { CHECK_SECONDS, checkAnswer } from './schema.mjs'
+
+const CLOSE_MS = 5_000
 
 // Only absolute PATH entries count. An empty or relative entry resolves against the job's cwd,
 // and a worktree must never be able to supply the provider executable.
@@ -87,6 +91,39 @@ export function listing(provider, entry, job) {
     ? `${provider}'s catalog lists ${job.model} at effort ${efforts.join(', ')}, not ${job.effort}, so no prompt was sent.`
     : `${provider}'s catalog lists ${job.model} with no effort levels, so it cannot honour effort ${job.effort}, and no prompt was sent.`,
   { model: job.model, efforts })
+}
+
+// Where a doctor's failure points the reader: the provider's stderr has no job directory to go to.
+export const DOCTOR_STDERR = 'server.log in the state directory has its stderr'
+
+// The doctor's handshake, for either transport. steps drives the provider the transport spawned,
+// never sends it a prompt, and fills in the report: each step's name in protocol once it passes,
+// and what it read. A step that fails leaves ok false with a typed error, and the provider's
+// stderr goes to server.log, never into the report. The provider then goes the way a job's does:
+// stdin closes, it exits on its own, and whatever is left of its group after a short grace is
+// killed.
+export async function handshake(name, child, peer, steps) {
+  const group = { providerPgid: child.pid, providerStart: child.pid ? startToken(child.pid, { zombie: true }) : null }
+  const closed = new Promise((done) => child.on('close', done))
+  let stderr = ''
+  child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-500) })
+  const report = { ok: false, protocol: [], catalog: null, profile: null, mcpServersDisabled: null, error: null }
+  try {
+    await steps(report)
+    report.ok = true
+  } catch (error) {
+    const typed = error instanceof DelegateError
+    report.error = typed ? { kind: error.kind, message: error.message, ...(error.details ? { details: error.details } : {}) }
+      : { kind: 'INTERNAL', message: `The doctor could not finish the ${name} handshake; server.log in the state directory has the detail.` }
+    log(`${name} doctor handshake failed: ${typed ? error.message : error?.stack || error}${stderr.trim() ? ` | stderr: ${clip(stderr)}` : ''}`)
+  } finally {
+    peer.close()
+    let timer
+    await Promise.race([closed, new Promise((done) => { timer = setTimeout(done, CLOSE_MS) })])
+    clearTimeout(timer)
+    signalProvider(group)
+  }
+  return report
 }
 
 // A completed turn is a success only with an answer, and, when a schema was asked for, with a

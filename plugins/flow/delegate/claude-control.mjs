@@ -26,6 +26,10 @@
 // awaited; the CLI then works through anything queued and exits, and the outcome is the last
 // result frame before it does. A steer the CLI has not replayed within 10 seconds is reported
 // failed and no longer holds stdin open, so a message the CLI dropped cannot keep the job alive.
+//
+// The doctor's check opens the same channel with a read-only job's containment, sends initialize
+// and mcp_status, and closes stdin with no user message, so a Claude Code release that changes
+// either answer fails the preflight instead of a job.
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, realpathSync } from 'node:fs'
@@ -33,7 +37,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { DelegateError, log } from './jobs.mjs'
-import { answered, candidates, classify, clip, listing } from './providers.mjs'
+import { answered, candidates, classify, clip, DOCTOR_STDERR, handshake, listing } from './providers.mjs'
 
 const STEP_MS = 30_000
 const INTERRUPT_MS = 10_000
@@ -105,12 +109,17 @@ function toolSets(job) {
   return { read, all: job.access === 'workspace-write' ? [...read, 'Edit', 'Write', 'NotebookEdit'] : read }
 }
 
-function argv(job, dir) {
+// The channel and the containment every Claude process gets, the doctor's included.
+function channel(job, dir) {
   const { read, all } = toolSets(job)
   return ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--replay-user-messages',
-    '--model', job.model, '--effort', job.effort, '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
+    '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
     '--setting-sources', '', '--strict-mcp-config', '--settings', JSON.stringify(claudeSettings(job, dir)),
-    '--tools', all.join(','), '--allowedTools', read.join(','),
+    '--tools', all.join(','), '--allowedTools', read.join(',')]
+}
+
+function argv(job, dir) {
+  return [...channel(job, dir), '--model', job.model, '--effort', job.effort,
     ...(job.resumeThreadId ? ['--resume', job.resumeThreadId] : ['--session-id', job.sessionId]),
     '--append-system-prompt-file', join(dir, 'seat.md'),
     ...(job.hasSchema ? ['--json-schema', readFileSync(join(dir, 'schema.json'), 'utf8')] : []),
@@ -147,12 +156,12 @@ function lookup(models, id) {
 // The control peer over the child's stdio. Each stdout line is dispatched, then handed to onLine
 // unchanged. A control request fails when the CLI answers it with an error, stays silent past its
 // timeout, or exits first.
-function connect(child, { onLine, onFrame, onRequest }) {
+function connect(child, { onLine, onFrame, onRequest, diagnostics = 'stderr.txt beside the events file has its diagnostics' }) {
   const pending = new Map()
   let next = 0
   let gone = null
   let ended = false
-  const lost = (subtype) => new DelegateError('PROVIDER_ERROR', `Claude ${gone} before it answered ${subtype}; stderr.txt beside the events file has its diagnostics.`)
+  const lost = (subtype) => new DelegateError('PROVIDER_ERROR', `Claude ${gone} before it answered ${subtype}; ${diagnostics}.`)
   const write = (frame) => { if (!gone && !ended) child.stdin.write(`${JSON.stringify(frame)}\n`) }
   const end = (why) => {
     gone ??= why
@@ -410,5 +419,18 @@ export const transport = {
       throw error
     }
     return session
+  },
+  // The doctor's handshake in cwd: the channel with a read-only job's containment and no model,
+  // session or seat, so the CLI starts on its default model, then initialize and mcp_status. Stdin
+  // closes with no user message, and the CLI exits without a turn.
+  check({ cwd, dir, bin, env }) {
+    const child = spawn(bin, channel({ access: 'read-only', worktree: cwd, hasSchema: false }, dir), { cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
+    const peer = connect(child, { onLine: () => {}, onFrame: () => {}, onRequest: (request) => `flow-delegate does not answer ${clip(request.subtype ?? 'unnamed')}.`, diagnostics: DOCTOR_STDERR })
+    return handshake('Claude', child, peer, async (report) => {
+      report.catalog = catalogOf(await peer.request('initialize'))
+      report.protocol.push('initialize')
+      report.mcpServersDisabled = (await checkServers(peer)).length
+      report.protocol.push('mcp_status')
+    })
   },
 }

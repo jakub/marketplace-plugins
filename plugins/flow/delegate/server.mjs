@@ -1,15 +1,22 @@
 // The delegate MCP server, spoken by hand over stdio: initialize, ping, tools/list, tools/call,
 // the cancelled notification, and one outbound request, roots/list. It declares no outputSchema,
 // so structuredContent needs no validator. Jobs outlive this process: a runner is detached, and
-// stdin closing ends the server and nothing else.
+// stdin closing ends the server and nothing else. The doctor is the one tool that starts a
+// provider in this process, for a handshake that sends no prompt.
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, realpathSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
+import { transport as claude } from './claude-control.mjs'
+import { transport as codex } from './codex-app-server.mjs'
 import * as jobs from './jobs.mjs'
-import { probe } from './providers.mjs'
+import { findExecutable, probe, providerEnv } from './providers.mjs'
 
 const PROTOCOLS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']
 const RESULT_KEYS = ['jobId', 'waitSeconds', 'events']
 const WAIT_GRACE_SECONDS = 15
+const TRANSPORTS = { codex, claude }
 
 function tools(target) {
   const title = target === 'codex' ? 'Codex' : 'Claude'
@@ -73,7 +80,7 @@ function tools(target) {
     {
       name: 'delegation_doctor',
       title: 'Delegation doctor',
-      description: `Report whether ${title} is installed and signed in, the usable workspace roots and the state directory.`,
+      description: `Report whether ${title} is installed and signed in, the usable workspace roots and the state directory, and prove the transport with a handshake that runs no turn: ${title}'s model catalog, ${target === 'codex' ? 'the permission profile and ' : ''}the MCP servers a job's session would see.`,
       inputSchema: object({}),
       annotations: { readOnlyHint: true },
     },
@@ -135,15 +142,33 @@ export async function serve({ host, version }) {
     return jobs.canonicalRoots(paths)
   }
 
+  // The transport's own handshake against the provider a job would run, with a job's environment
+  // and a private tmp directory, in the first usable root or the state directory when there is
+  // none. It sends no prompt, and the directory is removed afterwards.
+  async function checkTransport(bin, usable) {
+    const dir = join(jobs.stateDir(), 'doctor', randomUUID())
+    mkdirSync(join(dir, 'tmp'), { recursive: true, mode: 0o700 })
+    try {
+      const cwd = usable[0] ?? realpathSync(jobs.stateDir())
+      return await TRANSPORTS[target].check({ cwd, dir, bin, env: providerEnv({ id: 'doctor', target }, dir) })
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  // ok needs the provider installed and signed in, its handshake passed, and a usable root. The
+  // handshake is the protocol drift check: a CLI release that changes a method or a field the
+  // transport depends on fails it here, with a typed kind, before any job runs.
   async function doctor() {
     const usable = await roots()
-    const provider = await probe(target)
-    const error = !provider.installed ? { kind: 'PROVIDER_NOT_INSTALLED', message: `${target} is not on the PATH this server sees.` }
+    const bin = findExecutable(target)
+    const [provider, transport] = await Promise.all([probe(target), bin ? checkTransport(bin, usable) : null])
+    const error = !bin || !provider.installed ? { kind: 'PROVIDER_NOT_INSTALLED', message: `${target} is not on the PATH this server sees.` }
       : provider.auth?.loggedIn !== true ? { kind: 'PROVIDER_AUTH', message: `${target} is not signed in.` }
-        : !usable.length ? { kind: 'NO_ROOTS', message: 'The host supplied no usable workspace root.' } : null
+        : !transport.ok ? transport.error
+          : !usable.length ? { kind: 'NO_ROOTS', message: 'The host supplied no usable workspace root.' } : null
+    const ready = transport?.ok && `${target} ${provider.version} ready: ${transport.catalog.length} model(s) listed, ${transport.profile ? `profile ${transport.profile}, ` : ''}${transport.mcpServersDisabled} MCP server(s) disabled, no turn`
     return toolResult({
-      ok: !error, summary: error ? `${error.kind}: ${error.message}` : `${target} ${provider.version} ready`,
-      host, target, provider, roots: usable, stateDir: jobs.stateDir(), node: process.version, client: clientInfo,
+      ok: !error, summary: error ? `${error.kind}: ${error.message}` : ready,
+      host, target, provider, transport, roots: usable, stateDir: jobs.stateDir(), node: process.version, client: clientInfo,
       ...(error ? { error } : {}),
     })
   }

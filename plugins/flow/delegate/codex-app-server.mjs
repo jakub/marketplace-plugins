@@ -25,12 +25,16 @@
 // A steer goes into the open turn as turn/steer with expectedTurnId set to that turn's id, so Codex
 // refuses it rather than let it land anywhere else. The turn keeps running, and stdin closes only
 // at turn/completed.
+//
+// The doctor's check runs the same handshake up to the read-back, on an ephemeral thread that
+// takes no model or seat of its own, and closes without a turn, so a Codex release that changes a
+// method or a field this file depends on fails the preflight instead of a job.
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 import { DelegateError, git, log } from './jobs.mjs'
-import { answered, classify, clip, listing } from './providers.mjs'
+import { answered, classify, clip, DOCTOR_STDERR, handshake, listing } from './providers.mjs'
 
 export const PROFILE = 'flow_delegation'
 const VERSION = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version
@@ -48,6 +52,7 @@ const DECLINE = {
   applyPatchApproval: { decision: { denied: { rejection: REJECTION } } },
   execCommandApproval: { decision: { denied: { rejection: REJECTION } } },
 }
+const decline = (method) => (Object.hasOwn(DECLINE, method) ? { result: DECLINE[method] } : { error: { code: -32601, message: `flow-delegate does not answer ${method}.` } })
 const textInput = (text) => [{ type: 'text', text, text_elements: [] }]
 const keys = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : [])
 
@@ -62,12 +67,12 @@ function errorText(text) {
 // One JSON-RPC peer over the child's stdio. Each stdout line is dispatched, then handed to onLine
 // unchanged. A request fails when the provider refuses it, stays silent past its timeout, or exits
 // first.
-function connect(child, { onLine, onNotification, onRequest }) {
+function connect(child, { onLine, onNotification, onRequest, diagnostics = 'stderr.txt beside the events file has its diagnostics' }) {
   const pending = new Map()
   let next = 0
   let gone = null
   let ended = false
-  const lost = (method) => new DelegateError('PROVIDER_ERROR', `The Codex App Server ${gone} before it answered ${method}; stderr.txt beside the events file has its diagnostics.`)
+  const lost = (method) => new DelegateError('PROVIDER_ERROR', `The Codex App Server ${gone} before it answered ${method}; ${diagnostics}.`)
   const write = (message) => { if (!gone && !ended) child.stdin.write(`${JSON.stringify(message)}\n`) }
   const end = (why) => {
     gone ??= why
@@ -150,6 +155,23 @@ async function pages(rpc, method, params, kind) {
   throw new DelegateError(kind, `Codex answered ${method} in more than ${MAX_PAGES} pages.`)
 }
 
+// The first step on every connection: initialize with the experimental API, which the thread
+// fields below need, then the running executable the sandbox must be able to re-exec.
+async function initialize(rpc, child, bin) {
+  await rpc.request('initialize', { clientInfo: { name: 'flow-delegate', title: 'Flow delegate', version: VERSION }, capabilities: { experimentalApi: true } })
+  rpc.notify('initialized')
+  return runtimePaths(child.pid, bin)
+}
+
+// Codex's catalog with hidden models, so an id the account may use is not read as unlisted: each
+// model and the efforts it accepts.
+async function listModels(rpc) {
+  return (await pages(rpc, 'model/list', { limit: 100, includeHidden: true }, 'PROVIDER_ERROR')).filter((model) => typeof model?.id === 'string').map((model) => ({
+    id: model.id,
+    efforts: (Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : []).map((option) => option?.reasoningEffort).filter((effort) => typeof effort === 'string'),
+  }))
+}
+
 // Every MCP server name in the effective config and in each layer Codex loaded. A thread config
 // that disables a name no loaded layer defines fails with "invalid transport" (0.159.0), so a
 // layer Codex reports as disabled, such as an untrusted project's, contributes no names; if the
@@ -180,6 +202,15 @@ async function checkServers(rpc, threadId) {
       { servers: exposed.slice(0, 20).map((status) => clip(status?.name ?? 'unnamed')) })
   }
   return statuses.map((status) => String(status?.name)).sort()
+}
+
+// The profile the live thread reports. Anything but flow_delegation fails ISOLATION, and nothing
+// goes to the thread.
+function checkProfile(opened) {
+  const profile = opened.activePermissionProfile?.id ?? null
+  if (profile === PROFILE) return profile
+  const reported = profile === null ? null : clip(profile)
+  throw new DelegateError('ISOLATION', `Codex opened the thread under the ${reported ?? 'no named'} permission profile, not ${PROFILE}, so no prompt was sent.`, { profile: reported })
 }
 
 function packageRoot(path) {
@@ -326,19 +357,13 @@ export const transport = {
     }
     const onRequest = (method) => {
       if (/approval/i.test(method)) approvalMethod ??= method
-      return Object.hasOwn(DECLINE, method) ? { result: DECLINE[method] } : { error: { code: -32601, message: `flow-delegate does not answer ${method}.` } }
+      return decline(method)
     }
     const rpc = connect(child, { onLine, onNotification, onRequest })
     try {
-      await rpc.request('initialize', { clientInfo: { name: 'flow-delegate', title: 'Flow delegate', version: VERSION }, capabilities: { experimentalApi: true } })
-      rpc.notify('initialized')
-      const runtime = runtimePaths(child.pid, bin)
-      // The catalog with hidden models, so an id the account may use is not read as unlisted. A
-      // listed model at an effort it does not list stops here, before config/read and the thread.
-      session.models = (await pages(rpc, 'model/list', { limit: 100, includeHidden: true }, 'PROVIDER_ERROR')).filter((model) => typeof model?.id === 'string').map((model) => ({
-        id: model.id,
-        efforts: (Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : []).map((option) => option?.reasoningEffort).filter((effort) => typeof effort === 'string'),
-      }))
+      const runtime = await initialize(rpc, child, bin)
+      // A listed model at an effort it does not list stops here, before config/read and the thread.
+      session.models = await listModels(rpc)
       session.catalog = listing('Codex', session.models.find((model) => model.id === job.model), job)
       const servers = await configuredServers(rpc, job.cwd)
       const params = threadParams(job, seat, servers, await permissionProfile(job, dir, runtime))
@@ -349,11 +374,7 @@ export const transport = {
       // Nothing goes out until the live thread reads back what was asked for: the profile, the
       // model, and an MCP inventory with every server disabled. The config layers flow built the
       // thread from are an assumption; this is the thread itself.
-      const profile = opened.activePermissionProfile?.id ?? null
-      if (profile !== PROFILE) {
-        const reported = profile === null ? null : clip(profile)
-        throw new DelegateError('ISOLATION', `Codex opened the thread under the ${reported ?? 'no named'} permission profile, not ${PROFILE}, so no prompt was sent.`, { profile: reported })
-      }
+      const profile = checkProfile(opened)
       if (opened.model !== job.model) {
         const served = opened.model == null ? null : clip(opened.model)
         throw new DelegateError('MODEL_MISMATCH', `Codex opened the thread on ${served ?? 'no named model'}, not ${job.model}, so no prompt was sent.`, { expected: job.model, served })
@@ -367,5 +388,29 @@ export const transport = {
       throw error
     }
     return session
+  },
+  // The doctor's handshake in cwd: initialize, the catalog, config/read, then an ephemeral thread
+  // with a read-only job's profile and thread config, read back for its profile and its MCP
+  // inventory. The thread gets no model and no seat, so Codex opens it on its default model, and
+  // nothing is ever sent to it. An ephemeral thread leaves no rollout behind.
+  check({ cwd, dir, bin, env }) {
+    const child = spawn(bin, ['app-server', '--stdio'], { cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
+    const rpc = connect(child, { onLine: () => {}, onNotification: () => {}, onRequest: decline, diagnostics: DOCTOR_STDERR })
+    return handshake('Codex', child, rpc, async (report) => {
+      const runtime = await initialize(rpc, child, bin)
+      report.protocol.push('initialize')
+      report.catalog = await listModels(rpc)
+      report.protocol.push('model/list')
+      const servers = await configuredServers(rpc, cwd)
+      report.protocol.push('config/read')
+      const job = { cwd, worktree: cwd, access: 'read-only' }
+      const params = threadParams(job, undefined, servers, await permissionProfile(job, dir, runtime))
+      const opened = await rpc.request('thread/start', { ...params, ephemeral: true, serviceName: 'flow-delegate' })
+      if (!opened?.thread?.id) throw new DelegateError('PROVIDER_ERROR', 'Codex opened no thread.')
+      report.profile = checkProfile(opened)
+      report.protocol.push('thread/start')
+      report.mcpServersDisabled = (await checkServers(rpc, opened.thread.id)).length
+      report.protocol.push('mcpServerStatus/list')
+    })
   },
 }
