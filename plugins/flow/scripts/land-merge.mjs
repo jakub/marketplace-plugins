@@ -1,333 +1,104 @@
 #!/usr/bin/env node
-// The only thing in flow that merges a pull request from inside an agent session.
+// land-merge.mjs <pr> <expected-head-sha>
 //
-// This is the same shape as scripts/lint-actions.mjs: the model proposes, deterministic code
-// re-derives the conditions from fresh state and decides. The session runs
-// `node <flow>/scripts/land-merge.mjs <pr-number> <expected-head-sha>` and those two values are
-// the whole of what this program takes from its caller. Everything else it needs - which host,
-// which repository, which branch, whether the pull request is open, whether it is a draft, what
-// it targets - it reads for itself from the origin remote and from GitHub.
+// The only merge, on either host. The caller passes the pull request and the head its gates ran
+// against, and nothing else is taken from the conversation: the repository comes from origin, and
+// the pull request must read back open, not a draft, at exactly that head, based on the default
+// branch, with no auto-merge armed and no merge queue on the base. Reading the head here and
+// pinning to that alone would only prove the pull request held still during this run; the head
+// has to be the gated one. The merge is `gh pr merge --squash --match-head-commit <head>`, so
+// GitHub re-checks the head itself, and the outcome is proven by re-reading the pull request's
+// url, state, head and base rather than trusted from gh's exit code.
 //
-// The second argument is the head every gate upstream inspected, and it is what makes the pin
-// mean something. Reading the head here and merging with `--match-head-commit` on that same
-// value proves only that the pull request did not move during this program's own run: if it
-// moved from the gated commit A to some B before the first read, the executor would merge B
-// consistently and confidently. So GitHub's head has to equal the head the caller was gated on,
-// or nothing merges and the caller re-runs its gates against the new head.
-//
-// The authorization is the human's explicit request to land this pull request plus the stage's
-// own gates, and there is nothing else: no approval file, no ceremony. What this adds over a raw
-// `gh pr merge` is that nothing about the merge is taken from the conversation: the facts are
-// re-derived, the merge is pinned to the head that was just verified, and the outcome is
-// proven by re-reading rather than inferred from an exit code.
-//
-// A cooperative guardrail, not a security boundary. Everything here runs as one uid. A
-// determined model with a shell could ignore this program and substitute its own gh, call the
-// GitHub API with the token, or curl the merge endpoint, and nothing in flow could stop it.
-// What this program is for is the ordinary case and the accident: it makes the normal land
-// path re-derive every fact and refuse the moment one does not match, so a merge of the wrong
-// pull request, of a head nobody saw, onto a base nobody was shown, does not happen by
-// mistake. `--match-head-commit` is the one check that runs on GitHub's side rather than on
-// the machine asking for the merge; there is no matching flag for the base, so a retarget
-// between the last re-read and the merge is an unclosable client-side race.
-//
-// One accepted race, stated so nobody rediscovers it: two attended sessions asked to land the
-// same pull request can both exit 0. If the second session's merge call fails because the
-// first already landed it, the confirming read still shows MERGED at the verified head and
-// base, and this program reports success - deliberately, because a lost merge response with a
-// real landed merge must read as success, and the two cases are indistinguishable from here.
-// What landed is exactly the head both sessions verified, so the cost is double-claimed
-// credit and an idempotent second cleanup, not a wrong merge.
-//
-// Hardening that keeps the ordinary path honest. Every gh call pins `--repo host/owner/repo`,
-// derived from the origin remote, and the child environment has GH_REPO and GH_HOST removed, so
-// a stray or injected redirect cannot point gh at a different repository than the one this
-// directory works on. After the pull request is read, its url is checked against that same
-// derived identity before anything else runs. If the base carries a merge queue, or the
-// pull request already has auto-merge armed, the executor refuses rather than leave an armed
-// future merge behind: it only ever performs an immediate squash-merge.
+// Exit 0 is a merge this run can prove, described on stdout. Exit 1 with `land-merge: refused,`
+// on stderr is a clean refusal: nothing merged. Any other exit 1 is an outcome that cannot be
+// proven either way (a lost response, an armed auto-merge or queue, a foreign merge of the same
+// number), and a human looks before anything is retried. It refuses outright under FLOW_CRON_JOB.
+// A cooperative guardrail at one uid: it makes the ordinary path re-derive every fact, and a
+// retarget between the last re-read and the merge is a race no client can close.
 
 import { fileURLToPath } from 'node:url'
 
-// The gh plumbing is shared with scripts/land-gates.mjs and scripts/issue-claim.mjs: finding gh,
-// taking GH_REPO and GH_HOST off the child environment, and reading what a command printed.
-import { execCapture, parseObject, pinnedGhEnv, resolveGh, runExecutor } from '../lib/gh-exec.mjs'
-// The origin parse is shared with scripts/land-gates.mjs. It used to be a copy in each file,
-// identical but for the word the refusals use for what they are refusing to do, which is now the
-// purpose this one passes: a fix to the parse is a fix to both halves of the land.
-import { allowedHostsFrom, identityOfRemote, prUrlMatches } from '../lib/remote-identity.mjs'
-
-const READ_TIMEOUT_MS = 60_000
-const MERGE_TIMEOUT_MS = 120_000
-const GIT_TIMEOUT_MS = 5_000
-
-const USAGE = `land-merge.mjs <pull-request-number> <expected-head-sha>
-
-Merges one pull request, once. The expected head is the full 40-character SHA your gates ran
-against; if GitHub reports a different head, nothing merges. The host, the repository, the
-branch, the pull request state and the merge target are all re-read from the origin remote and
-GitHub, the merge is pinned to the verified head with --match-head-commit, and the outcome is
-confirmed by re-reading the pull request.
-
-The origin remote has to name github.com, or a host listed in FLOW_GH_HOSTS in this program's own
-environment, as a comma-separated list of hostnames. gh sends the credential it holds for a host to
-whichever host it is pinned to, and the pin is derived from .git/config, which is a file the
-repository itself can rewrite, so the list of hosts worth a token is never read from the
-repository. An origin that names a port is refused for a related reason: gh's --hostname and
---repo take a bare host, so the merge would be asked of one endpoint while git pushes to another.
-`
+import { execCapture, ghRunner, parseObject, runExecutor } from '../lib/gh-exec.mjs'
+import { allowedHostsFrom, identityOfRemote, prUrlMismatch } from '../lib/remote-identity.mjs'
 
 const SHA = /^[0-9a-f]{40}$/
-
-/** Read git output, or null when git fails. Reads are host-neutral and need no config. */
-const tryGit = (args, cwd) => {
-  const read = execCapture('git', ['-C', cwd, ...args], { timeoutMs: GIT_TIMEOUT_MS })
-  return read.code === 0 ? read.stdout.trim() : null
-}
-
-const MERGE_QUEUE_QUERY =
-  'query($owner: String!, $name: String!, $base: String!) { ' +
-  'repository(owner: $owner, name: $name) { mergeQueue(branch: $base) { id } } }'
+const USAGE = 'usage: land-merge.mjs <pull-request-number> <expected-head-sha>\n'
+const QUEUE_QUERY = 'query($owner: String!, $name: String!, $base: String!) { repository(owner: $owner, name: $name) { mergeQueue(branch: $base) { id } } }'
 
 /**
- * Decide and perform the merge. Pure of process globals: it takes the argument vector, the
- * environment, the working directory and an injected gh runner, and returns a
- * { code, stdout, stderr } result instead of exiting. That is what lets the smoke drive it in
- * process with a fake gh across the module boundary, rather than selecting a binary through an
- * environment variable that a session could also set.
- *
- * @param {object} args
- * @param {string[]} args.argv the argument vector after the script name
- * @param {Record<string,string|undefined>} args.env
- * @param {string} args.cwd where the origin remote is read from
- * @param {(ghArgs: string[], timeoutMs: number) => {code: number, stdout: string, stderr: string}} args.runGh
- * @returns {{code: number, stdout: string, stderr: string}}
+ * Decide and merge. Returns { code, stdout, stderr } rather than exiting. `runGh(args, { timeoutMs })`
+ * is injected; `env` is read for FLOW_CRON_JOB and FLOW_GH_HOSTS.
  */
 export function landMerge({ argv, env, cwd, runGh }) {
   const refuse = (reason) => ({ code: 1, stdout: '', stderr: `land-merge: refused, ${reason}\n` })
-  const ghJson = (ghArgs, timeout) => {
-    const result = runGh(ghArgs, timeout)
-    return result.code === 0 ? parseObject(result.stdout) : null
-  }
+  const unproven = (text) => ({ code: 1, stdout: '', stderr: `land-merge: ${text} Look at the pull request before doing anything else, and do not re-run this blindly.\n` })
+  const ghJson = (args, timeoutMs) => { const r = runGh(args, { timeoutMs }); return r.code === 0 ? parseObject(r.stdout) : null }
 
-  // Scheduled jobs run unattended, and a merge is the one thing nobody should discover after
-  // the fact. An injected instruction cannot set this variable, which is the same reasoning
-  // git-guard's cron mode rests on.
-  if (env.FLOW_CRON_JOB) {
-    return refuse(`FLOW_CRON_JOB=${env.FLOW_CRON_JOB} means nobody is watching this run, ` +
-      'and a merge is not something an unattended job does')
-  }
+  if (env.FLOW_CRON_JOB) return refuse(`FLOW_CRON_JOB=${env.FLOW_CRON_JOB} means nobody is watching this run, and an unattended job does not merge`)
+  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) return { code: 0, stdout: USAGE, stderr: '' }
+  if (argv.length !== 2) return refuse(`expected the pull request number and the head SHA the gates ran against.\n\n${USAGE}`)
+  const pr = Number(argv[0])
+  if (!/^[0-9]+$/.test(argv[0]) || pr <= 0) return refuse(`${JSON.stringify(argv[0])} is not a pull request number.\n\n${USAGE}`)
+  const expected = argv[1]
+  if (!SHA.test(expected)) return refuse(`${JSON.stringify(expected)} is not a full 40-character lowercase commit SHA.\n\n${USAGE}`)
 
-  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
-    return { code: 0, stdout: USAGE, stderr: '' }
-  }
-  // Two arguments, both required. A missing expected head is not a thing to default: the whole
-  // point of the second argument is that it comes from outside this program.
-  if (argv.length !== 2) {
-    return refuse(`expected two arguments, the pull request number and the head SHA your gates ran against.\n\n${USAGE}`)
-  }
-  const prNumber = Number(argv[0])
-  if (!Number.isInteger(prNumber) || prNumber <= 0) {
-    return refuse(`${JSON.stringify(argv[0])} is not a pull request number.\n\n${USAGE}`)
-  }
-  const expectedHead = argv[1]
-  if (typeof expectedHead !== 'string' || !SHA.test(expectedHead)) {
-    return refuse(`${JSON.stringify(argv[1])} is not a full 40-character lowercase commit SHA.\n\n${USAGE}`)
-  }
-
-  // The refusal describes the remote and never quotes it, and nothing has been built from it yet,
-  // so a remote refused here reaches no output and no gh call at all.
-  const remote = identityOfRemote(tryGit(['remote', 'get-url', 'origin'], cwd),
-    { purpose: 'merge in', allowedHosts: allowedHostsFrom(env) })
+  const origin = execCapture('git', ['-C', cwd, 'remote', 'get-url', 'origin'], { timeoutMs: 5_000 })
+  const remote = identityOfRemote(origin.code === 0 ? origin.stdout.trim() : '', { purpose: 'merge in', allowedHosts: allowedHostsFrom(env) })
   if (remote.identity === undefined) return refuse(remote.refusal)
-  const identity = remote.identity
+  const id = remote.identity
+  const view = (fields) => ghJson(['pr', 'view', String(pr), '--repo', id.full, '--json', fields], 60_000)
+  const queueOn = (base) => ghJson(['api', 'graphql', '--hostname', id.host, '-f', `query=${QUEUE_QUERY}`, '-f', `owner=${id.owner}`, '-f', `name=${id.repo}`, '-f', `base=${base}`], 60_000)
 
-  const view = ghJson(
-    ['pr', 'view', String(prNumber), '--repo', identity.full,
-      '--json', 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest'],
-    READ_TIMEOUT_MS,
-  )
-  if (view === null) return refuse(`\`gh pr view ${prNumber}\` gave no readable JSON, so the live state of the pull request is unknown`)
+  const first = view('headRefOid,state,isDraft,baseRefName,url,autoMergeRequest')
+  if (first === null) return refuse(`gh pr view ${pr} gave no readable JSON, so the live state of the pull request is unknown`)
+  if (prUrlMismatch(first.url, id, pr) !== null) return refuse(`the pull request GitHub returned (${JSON.stringify(first.url ?? null)}) is not #${pr} of ${id.full}, so the read was redirected`)
+  if (first.state !== 'OPEN') return refuse(`#${pr} is ${JSON.stringify(first.state ?? null)}, and only an open pull request is merged`)
+  if (first.isDraft !== false) return refuse(first.isDraft === true ? `#${pr} is a draft` : `the draft status of #${pr} could not be read, so it cannot be shown ready`)
+  const head = first.headRefOid
+  if (!SHA.test(String(head))) return refuse(`the head of #${pr} did not read back as a 40-character SHA (found ${JSON.stringify(head ?? null)})`)
+  if (head !== expected) return refuse(`head moved (expected ${expected}, GitHub reports ${head}); run the gates again against the new head and land that`)
+  const base = first.baseRefName
+  if (typeof base !== 'string' || base.trim() === '') return refuse(`the base branch of #${pr} could not be read`)
+  const defaultBranch = ghJson(['repo', 'view', id.full, '--json', 'defaultBranchRef'], 60_000)?.defaultBranchRef?.name
+  if (typeof defaultBranch !== 'string' || defaultBranch === '') return refuse('the repository default branch could not be read, so the merge target cannot be checked')
+  if (base !== defaultBranch) return refuse(`#${pr} targets ${JSON.stringify(base)} and the default branch is ${JSON.stringify(defaultBranch)}; land the parent first or retarget`)
+  if (first.autoMergeRequest != null) return refuse(`#${pr} already has auto-merge armed; this only performs an immediate squash-merge, so cancel it first or let it run`)
+  const queue = queueOn(base)
+  if (queue === null) return refuse(`the merge-queue status of ${base} could not be read, and this will not merge without knowing whether a queue is required`)
+  if (queue.data?.repository?.mergeQueue != null) return refuse(`${id.slug} uses a merge queue on ${base}; land it through the queue by hand`)
 
-  // The pull request GitHub answered with must be the one the origin remote names. This is the
-  // second lock on the repository, after pinning --repo: a redirect that somehow got past the
-  // pin still cannot pass a url that names a different host, owner or repo.
-  if (!prUrlMatches(view.url, identity, prNumber)) {
-    return refuse(`the pull request GitHub returned (${JSON.stringify(view.url ?? null)}) is not ${identity.full}, so the read was redirected`)
-  }
-
-  // The facts this run binds to. Everything after this point - the pre-merge recheck, the
-  // merge's --match-head-commit, and the post-merge confirmation - compares against these,
-  // so any movement between the human's request and the mutation is a refusal.
-  if (view.state !== 'OPEN') return refuse(`#${prNumber} is ${JSON.stringify(view.state ?? null)} on GitHub, and only an open pull request can be merged`)
-  if (view.isDraft !== false) {
-    return refuse(view.isDraft === true
-      ? `#${prNumber} is a draft; mark it ready for review before it lands`
-      : `the draft status of #${prNumber} could not be read, so it cannot be shown ready`)
-  }
-  const head = view.headRefOid
-  if (typeof head !== 'string' || !SHA.test(head)) {
-    return refuse(`the head of #${prNumber} did not read back as a 40-character lowercase SHA (found ${JSON.stringify(view.headRefOid ?? null)})`)
-  }
-  // The one check that makes --match-head-commit worth anything. Everything below pins to
-  // `head`, which from here on is the same commit the caller was gated on.
-  if (head !== expectedHead) {
-    return refuse(`head moved (expected ${expectedHead}, GitHub reports ${head}). ` +
-      `#${prNumber} changed after the gates ran, so run them again against the new head and land that`)
-  }
-  const base = view.baseRefName
-  if (typeof base !== 'string' || base.trim() === '') return refuse(`the base branch of #${prNumber} could not be read`)
-
-  // A base other than the default branch means the merge would land somewhere other than
-  // where landed work lives - a stacked pull request, which the stage retargets first.
-  const repoView = ghJson(['repo', 'view', identity.full, '--json', 'defaultBranchRef'], READ_TIMEOUT_MS)
-  const defaultBranch = repoView?.defaultBranchRef?.name ?? null
-  if (typeof defaultBranch !== 'string' || defaultBranch.trim() === '') {
-    return refuse('the repository default branch could not be read, so the merge target cannot be checked')
-  }
-  if (base !== defaultBranch) {
-    return refuse(`#${prNumber} targets ${JSON.stringify(base)} and the default branch is ${JSON.stringify(defaultBranch)}; land the parent first or retarget`)
-  }
-
-  // Never leave an armed future merge behind. Auto-merge already set on the pull request would
-  // land it later, out of sight; a merge queue on the base means gh would enqueue rather than
-  // merge now. The executor only performs an immediate squash-merge, so both are a refusal, not
-  // a thing to work around.
-  if (view.autoMergeRequest != null) {
-    return refuse(`#${prNumber} already has auto-merge armed. The executor only performs an immediate squash-merge, ` +
-      'so cancel the auto-merge first and land it here, or let the armed merge run on its own')
-  }
-  const queue = ghJson(
-    ['api', 'graphql', '--hostname', identity.host,
-      '-f', `query=${MERGE_QUEUE_QUERY}`, '-f', `owner=${identity.owner}`, '-f', `name=${identity.repo}`, '-f', `base=${base}`],
-    READ_TIMEOUT_MS,
-  )
-  if (queue === null) {
-    return refuse(`the merge-queue status of ${base} could not be read, and the executor will not merge without knowing whether a queue is required`)
-  }
-  if (queue?.data?.repository?.mergeQueue != null) {
-    return refuse(`${identity.slug} uses a merge queue on ${base}. The executor only performs immediate squash-merges, ` +
-      'so land this pull request through the queue by hand')
-  }
-
-  // One more read of the base and head, right before the merge, to shrink the retarget window.
-  // It cannot close it: a retarget after this read but before GitHub acts is the unclosable
-  // client-side race the header describes. A moved head here is not a race to ride out - it
-  // means the pull request changed under the run, and the gates saw a different commit.
-  const recheck = ghJson(['pr', 'view', String(prNumber), '--repo', identity.full, '--json', 'baseRefName,headRefOid'], READ_TIMEOUT_MS)
+  // One more read right before the merge, to shrink the retarget window it cannot close.
+  const recheck = view('baseRefName,headRefOid')
   if (recheck === null) return refuse('the pull request could not be re-read immediately before the merge')
-  if (recheck.baseRefName !== base) {
-    return refuse(`#${prNumber} was retargeted to ${JSON.stringify(recheck.baseRefName ?? null)} mid-run; it was read as targeting ${JSON.stringify(base)}`)
-  }
-  if (recheck.headRefOid !== head) {
-    return refuse(`the head of #${prNumber} moved mid-run (read ${head.slice(0, 12)}, now ${String(recheck.headRefOid ?? '').slice(0, 12) || 'unreadable'}); re-run the gates against the new head`)
-  }
+  if (recheck.baseRefName !== base) return refuse(`#${pr} was retargeted to ${JSON.stringify(recheck.baseRefName ?? null)} mid-run; it was read as targeting ${JSON.stringify(base)}`)
+  if (recheck.headRefOid !== head) return refuse(`the head of #${pr} moved mid-run (read ${head.slice(0, 12)}, now ${String(recheck.headRefOid ?? '').slice(0, 12) || 'unreadable'}); re-run the gates`)
 
-  // argv, not a shell line. There is no quoting to get wrong and nothing for a later reader to
-  // re-parse. --match-head-commit is GitHub's own re-check of the SHA that was just verified,
-  // which is the caller's expected head: the argument check above is what makes those equal.
-  const mergeResult = runGh(
-    ['pr', 'merge', String(prNumber), '--repo', identity.full, '--squash', '--match-head-commit', head],
-    MERGE_TIMEOUT_MS,
-  )
-  const mergeFailure = mergeResult.code !== 0
-    ? String(mergeResult.stderr || mergeResult.stdout || `exit ${mergeResult.code}`).trim().split('\n')[0].slice(0, 200)
-    : null
+  const merge = runGh(['pr', 'merge', String(pr), '--repo', id.full, '--squash', '--match-head-commit', head], { timeoutMs: 120_000 })
+  const failure = merge.code === 0 ? null : String(merge.stderr || merge.stdout || `exit ${merge.code}`).trim().split('\n')[0].slice(0, 200)
+  const said = failure === null ? '' : ` (gh pr merge said: ${failure})`
 
-  // Always re-read, even on a nonzero exit: a lost response does not prove the merge failed. This
-  // read pulls the same identity-bearing fields as the first one, because "MERGED" alone does not
-  // prove we merged what was verified - a concurrent foreign merge of the same number is also
-  // MERGED. An unreadable read is UNKNOWN; saying "denied" there would be a lie.
-  const after = ghJson(
-    ['pr', 'view', String(prNumber), '--repo', identity.full,
-      '--json', 'state,headRefOid,baseRefName,url,autoMergeRequest'],
-    READ_TIMEOUT_MS,
-  )
-  if (after === null || typeof after.state !== 'string') {
-    return {
-      code: 1, stdout: '',
-      stderr: `land-merge: could not confirm whether #${prNumber} merged` +
-        (mergeFailure ? ` (\`gh pr merge\` said: ${mergeFailure})` : '') +
-        '. The merge may or may not have landed - look at the pull request before doing anything else.\n',
-    }
-  }
-
-  // A MERGED pull request is our success only if it is still the merge this run verified:
-  // same host-qualified repository, same head, same base. If any of those moved, someone else
-  // merged this number while we were working, and claiming it as our merge would be wrong.
+  // Always re-read: a lost response does not prove the merge failed, and MERGED alone does not prove
+  // this run merged what it verified, because a foreign merge of the same number is MERGED too.
+  const after = view('state,headRefOid,baseRefName,url,autoMergeRequest')
+  if (after === null || typeof after.state !== 'string') return unproven(`could not confirm whether #${pr} merged${said}; it may or may not have landed.`)
   if (after.state === 'MERGED') {
-    const ours = prUrlMatches(after.url, identity, prNumber) &&
-      after.headRefOid === head &&
-      after.baseRefName === base
-    if (ours) {
-      return {
-        code: 0,
-        stdout: `land-merge: merged #${prNumber} on ${identity.full} as a squash of ${head.slice(0, 12)}\n`,
-        stderr: '',
-      }
+    if (prUrlMismatch(after.url, id, pr) === null && after.headRefOid === head && after.baseRefName === base) {
+      return { code: 0, stdout: `land-merge: merged #${pr} on ${id.full} as a squash of ${head.slice(0, 12)}\n`, stderr: '' }
     }
-    return {
-      code: 1, stdout: '',
-      stderr: `land-merge: #${prNumber} reads back MERGED, but its repository, head or base no longer matches the ` +
-        `verified merge (url ${JSON.stringify(after.url ?? null)}, head ${JSON.stringify(after.headRefOid ?? null)}, ` +
-        `base ${JSON.stringify(after.baseRefName ?? null)}). Someone else may have merged this number - look at the ` +
-        'pull request before doing anything else, and do not treat this as your merge.\n',
-    }
+    return unproven(`#${pr} reads back MERGED, but its url, head or base no longer match the verified merge (head ${JSON.stringify(after.headRefOid ?? null)}, base ${JSON.stringify(after.baseRefName ?? null)}); someone else may have merged it, so do not treat it as this merge.`)
   }
-
-  // Not MERGED. A readable non-MERGED state after the merge call is not automatically a clean
-  // failure: the call may have armed an auto-merge or enqueued the pull request, or its response
-  // may have been lost. Re-read the arm-able state. An armed auto-merge, an armed or unreadable
-  // merge queue, or any other inconsistency is UNKNOWN, because the merge may still land and a
-  // blind retry would be wrong. Only a clean OPEN with nothing armed and an authoritative
-  // rejection from gh is a failure.
-  const verifyByHand = 'Look at the pull request before doing anything else, and do not re-run this blindly.'
-  if (after.autoMergeRequest != null) {
-    return {
-      code: 1, stdout: '',
-      stderr: `land-merge: #${prNumber} is not merged, but it now has auto-merge armed` +
-        (mergeFailure ? ` (\`gh pr merge\` said: ${mergeFailure})` : '') +
-        `. It may still land on its own. ${verifyByHand}\n`,
-    }
+  // Not merged. Only a clean OPEN with nothing armed and a failure from gh is a refusal; an armed
+  // auto-merge or queue may still land it, and anything else is inconsistent.
+  if (after.autoMergeRequest != null) return unproven(`#${pr} is not merged, but it now has auto-merge armed${said}, so it may still land on its own.`)
+  const queueAfter = queueOn(after.baseRefName ?? base)
+  if (queueAfter === null || queueAfter.data?.repository?.mergeQueue != null) {
+    return unproven(`#${pr} is not merged, and its base's merge-queue status is ${queueAfter === null ? 'unreadable' : 'armed'}${said}, so it may be queued to land later.`)
   }
-  const queueAfter = ghJson(
-    ['api', 'graphql', '--hostname', identity.host,
-      '-f', `query=${MERGE_QUEUE_QUERY}`, '-f', `owner=${identity.owner}`, '-f', `name=${identity.repo}`,
-      '-f', `base=${after.baseRefName ?? base}`],
-    READ_TIMEOUT_MS,
-  )
-  if (queueAfter === null || queueAfter?.data?.repository?.mergeQueue != null) {
-    return {
-      code: 1, stdout: '',
-      stderr: `land-merge: #${prNumber} is not merged, and its base branch's merge-queue status is ` +
-        `${queueAfter === null ? 'unreadable' : 'armed'}` +
-        (mergeFailure ? ` (\`gh pr merge\` said: ${mergeFailure})` : '') +
-        `. The merge may be queued to land later. ${verifyByHand}\n`,
-    }
-  }
-  if (after.state === 'OPEN' && mergeFailure !== null) {
-    return refuse(`\`gh pr merge\` failed: ${mergeFailure}`)
-  }
-  // Nothing armed, yet the pull request is not MERGED and gh either reported success or left it in
-  // a state other than a clean OPEN. That is inconsistent, not an authoritative rejection.
-  return {
-    code: 1, stdout: '',
-    stderr: `land-merge: could not confirm the merge of #${prNumber}: \`gh pr merge\` ` +
-      (mergeFailure ? `said: ${mergeFailure}` : 'reported success') +
-      `, but the pull request reads back as ${JSON.stringify(after.state)} rather than MERGED. ${verifyByHand}\n`,
-  }
+  if (after.state === 'OPEN' && failure !== null) return refuse(`gh pr merge failed: ${failure}`)
+  return unproven(`could not confirm the merge of #${pr}: gh pr merge ${failure === null ? 'reported success' : `said: ${failure}`}, but the pull request reads back ${JSON.stringify(after.state)} rather than MERGED.`)
 }
 
-// ------------------------------------------------------------------------------- CLI entry
-//
-// The gh binary, the pinned child environment and the exit are lib/gh-exec.mjs, which holds the
-// reasoning for each. What stays here is the runner's shape, because it is this program's
-// contract with its smoke: a timeout per call, decided by the caller.
-
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
-if (isMain) {
-  const ghBin = resolveGh(process.env)
-  const ghEnv = pinnedGhEnv(process.env)
-  const runGh = (ghArgs, timeoutMs) => execCapture(ghBin, ghArgs, { timeoutMs, env: ghEnv })
-  runExecutor(landMerge({ argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), runGh }))
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  runExecutor(landMerge({ argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), runGh: ghRunner(process.env) }))
 }
