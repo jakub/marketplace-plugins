@@ -6,12 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" session claude 1",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" session claude 2",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs\" session claude",
             "timeout": 5
           }
         ]
@@ -29,16 +24,6 @@
       }
     ],
     "PreToolUse": [
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bridge-model.mjs\"",
-            "timeout": 5
-          }
-        ]
-      },
       {
         "matcher": "Bash",
         "hooks": [
