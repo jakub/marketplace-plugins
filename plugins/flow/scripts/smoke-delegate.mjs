@@ -62,6 +62,11 @@ const userTexts = (id) => wrote(id).filter((frame) => frame.type === 'user').map
 const journal = (id) => readFileSync(jobPath(id, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line) } catch { return line } })
 const THREAD = '11111111-1111-4111-8111-111111111111'
 const TURN = '22222222-2222-4222-8222-222222222222'
+const PROFILE_NAME = /^flow_delegation_[0-9a-f]{32}$/
+// What the read-back reports for a profile another layer widened: the name the thread asked for,
+// the layer's parent, and the root it granted write.
+const widenedFor = (call) => ({ profile: call.requests.find((request) => request.method === 'thread/start').params.permissions,
+  extends: ':read-only', sandbox: 'workspaceWrite', networkAccess: false, writableRoots: ['/outside'] })
 
 // One fake, two names. Codex answers `app-server --stdio` as a JSON-RPC peer; Claude answers `-p`
 // with stream-json in and out as a control-channel peer. Each provider takes its prompt only after
@@ -150,10 +155,21 @@ function appServer() {
       }
       thread = params
       threadId = method === 'thread/resume' ? params.threadId : THREAD
+      // Codex merges the thread config into the loaded layers table by table. In planted-profile
+      // mode a user layer already defines flow_delegation, so a thread that names it inherits the
+      // layer's parent and grants; profile-widened adds them whatever the name. The sandbox is
+      // Codex's projection of the result: every root granted write except the cwd, and the network.
+      const name = params.permissions
+      let profile = params.config?.permissions?.[name] ?? {}
+      if ((mode === 'planted-profile' && name === 'flow_delegation') || mode === 'profile-widened') {
+        profile = { extends: ':read-only', ...profile, filesystem: { ':root': 'read', '/outside': 'write', ...profile.filesystem } }
+      }
+      const writableRoots = Object.entries(profile.filesystem ?? {}).filter(([root, access]) => access === 'write' && root !== params.cwd).map(([root]) => root)
       const answer = () => reply(id, {
         thread: { id: threadId }, model: mode === 'model-swap' ? 'gpt-fake-other' : params.model, modelProvider: 'openai', cwd: params.cwd,
         instructionSources: [path.join(params.cwd, 'AGENTS.md')], approvalPolicy: params.approvalPolicy, approvalsReviewer: 'user',
-        activePermissionProfile: { id: mode === 'profile-ignored' ? ':read-only' : params.permissions ?? ':read-only', extends: null }, reasoningEffort: null,
+        sandbox: { type: 'workspaceWrite', writableRoots, networkAccess: profile.network?.enabled === true, excludeTmpdirEnvVar: false, excludeSlashTmp: true },
+        activePermissionProfile: { id: mode === 'profile-ignored' ? ':read-only' : name ?? ':read-only', extends: profile.extends ?? null }, reasoningEffort: null,
       })
       return mode === 'slow' ? setTimeout(answer, 1500) : answer()
     }
@@ -457,10 +473,11 @@ try {
     const [thread] = asked(result.job.id, 'thread/start')
     assert.deepEqual([thread.model, thread.cwd, thread.runtimeWorkspaceRoots, thread.approvalPolicy, thread.allowProviderModelFallback, thread.ephemeral],
       ['gpt-fake', repo, [repo], 'never', false, false])
-    assert.equal(thread.permissions, 'flow_delegation')
-    assert.equal(thread.config.default_permissions, 'flow_delegation')
-    assert.deepEqual(thread.config.permissions.flow_delegation.network, { enabled: false })
-    assert.deepEqual(thread.config.permissions.flow_delegation.filesystem, {
+    assert.match(thread.permissions, PROFILE_NAME, 'the thread names a profile of its own')
+    assert.equal(thread.config.default_permissions, thread.permissions)
+    assert.deepEqual(Object.keys(thread.config.permissions), [thread.permissions])
+    assert.deepEqual(thread.config.permissions[thread.permissions].network, { enabled: false })
+    assert.deepEqual(thread.config.permissions[thread.permissions].filesystem, {
       ':minimal': 'read', [repo]: write ? 'write' : 'read', [join(repo, '.git')]: 'read',
       ...(write ? { [join(repo, '.codex')]: 'read' } : {}),
       [call.exe]: 'read', [join(fakeBin, 'codex')]: 'read', [jobPath(result.job.id, 'tmp')]: 'write',
@@ -477,7 +494,7 @@ try {
     assert.deepEqual(turn.input, [{ type: 'text', text: `FLOW_FAKE_MODE=happy ${write ? 'write' : 'read'}`, text_elements: [] }], 'turn/start carries the prompt alone')
     assert.deepEqual([turn.threadId, turn.model, turn.effort, turn.approvalPolicy, turn.cwd, 'outputSchema' in turn], [result.job.threadId, 'gpt-fake', 'low', 'never', repo, false])
     assert.deepEqual([result.job.servedModel, result.job.threadId], ['gpt-fake', '11111111-1111-4111-8111-111111111111'])
-    assert.deepEqual(result.job.isolation, { profile: 'flow_delegation', mcpServers: ['hostDocs', 'nodeRepl', 'repoProbe'], instructionSources: [join(repo, 'AGENTS.md')] })
+    assert.deepEqual(result.job.isolation, { profile: thread.permissions, mcpServers: ['hostDocs', 'nodeRepl', 'repoProbe'], instructionSources: [join(repo, 'AGENTS.md')] })
     assert.equal(result.job.catalog, 'listed')
     assert.equal(result.job.promptSent, true)
     assert.deepEqual(asked(result.job.id, 'mcpServerStatus/list').map((params) => [params.threadId, params.detail, params.cursor]),
@@ -486,6 +503,7 @@ try {
     assert.equal(call.env.SMOKE_LEAK, undefined, 'a host variable outside the allowlist reached the provider')
     assert.equal(call.env.TMPDIR, jobPath(result.job.id, 'tmp'))
   }
+  assert.notEqual(asked(codexRead.job.id, 'thread/start')[0].permissions, asked(codexWrite.job.id, 'thread/start')[0].permissions, 'two threads shared a profile name')
   const claudeRead = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy read' })
   const claudeWrite = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy write', access: 'workspace-write' })
   for (const [result, write] of [[claudeRead, false], [claudeWrite, true]]) {
@@ -522,20 +540,27 @@ try {
     assert.equal(call.env.CLAUDE_CODE_NO_MODEL_FALLBACK, '1')
     assert.equal(call.env.SMOKE_LEAK, undefined)
   }
-  ok('the Codex thread carries the flow_delegation profile, every capability off and every configured MCP server disabled; Claude runs over stream-json with its prompt in one client_composed user message after initialize and mcp_status; argv per Claude access; the seat bytes first; and only allowlisted variables plus the depth marker reach the provider')
+  ok('the Codex thread carries a flow_delegation profile named for it alone, every capability off and every configured MCP server disabled; Claude runs over stream-json with its prompt in one client_composed user message after initialize and mcp_status; argv per Claude access; the seat bytes first; and only allowlisted variables plus the depth marker reach the provider')
 
   // Nothing goes out until the live thread reads back its profile, its model and an MCP inventory
-  // with every server disabled.
-  for (const [mode, kind, details] of [['profile-ignored', 'ISOLATION', { profile: ':read-only' }],
-    ['model-swap', 'MODEL_MISMATCH', { expected: 'gpt-fake', served: 'gpt-fake-other' }], ['mcp-leak', 'ISOLATION', { servers: ['pluginDocs'] }]]) {
+  // with every server disabled. A profile that came back with a parent profile or a writable root
+  // it did not grant was widened by another config layer.
+  const widened = (id) => widenedFor(fakeCall(id))
+  for (const [mode, kind, details] of [['profile-ignored', 'ISOLATION', () => ({ profile: ':read-only' })], ['profile-widened', 'ISOLATION', widened],
+    ['model-swap', 'MODEL_MISMATCH', () => ({ expected: 'gpt-fake', served: 'gpt-fake-other' })], ['mcp-leak', 'ISOLATION', () => ({ servers: ['pluginDocs'] })]]) {
     const refusedEarly = await start(claudeHost, { prompt: `FLOW_FAKE_MODE=${mode}` })
     assert.deepEqual([refusedEarly.job.status, refusedEarly.job.error?.kind, refusedEarly.job.promptSent, refusedEarly.job.threadId, refusedEarly.job.isolation],
       ['failed', kind, false, null, null], JSON.stringify(refusedEarly.job))
-    assert.deepEqual(refusedEarly.job.error.details, details)
+    assert.deepEqual(refusedEarly.job.error.details, details(refusedEarly.job.id))
     assert.deepEqual(asked(refusedEarly.job.id, 'turn/start'), [], `${mode}: a prompt reached the provider`)
     assert.ok(await until(() => !alive(fakeCall(refusedEarly.job.id).pid)), `${mode}: the App Server outlived the refusal`)
   }
-  ok('a thread that reads back another profile, another model or a reachable MCP server fails before the prompt, and the App Server records no turn/start')
+  // A config layer that already defines flow_delegation reaches no thread, because no thread names it.
+  const planted = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=planted-profile' })
+  const plantedName = asked(planted.job.id, 'thread/start')[0].permissions
+  assert.deepEqual([planted.job.status, planted.job.isolation?.profile], ['succeeded', plantedName], JSON.stringify(planted.job))
+  assert.match(plantedName, PROFILE_NAME)
+  ok('a thread that reads back another profile, a widened profile, another model or a reachable MCP server fails before the prompt, the App Server records no turn/start, and a layer\'s own flow_delegation profile never reaches a thread')
 
   // Claude: an MCP server in mcp_status stops the job before the prompt, and an init frame that
   // names a tool outside the requested set, an MCP server or a plugin stops the turn it opened.
@@ -590,7 +615,8 @@ try {
   const review = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', mode: 'adversarial-review', base: 'main~1', access: 'workspace-write' })
   assert.equal(review.job.status, 'succeeded')
   assert.deepEqual([review.job.baseSha, review.job.headSha, review.job.access], [baseSha, headSha, 'read-only'])
-  assert.equal(asked(review.job.id, 'thread/start')[0].config.permissions.flow_delegation.filesystem[repo], 'read')
+  const [reviewThread] = asked(review.job.id, 'thread/start')
+  assert.equal(reviewThread.config.permissions[reviewThread.permissions].filesystem[repo], 'read')
   assert.deepEqual(asked(review.job.id, 'turn/start')[0].outputSchema, FINDINGS_SCHEMA)
   assert.ok(turnText(review.job.id).includes(`git diff ${baseSha} ${headSha}`))
   assert.equal(review.job.structured.findings.length, 1)
@@ -695,8 +721,8 @@ try {
   assert.equal(resumed.job.parentJobId, codexRead.job.id)
   const [resumeThread] = asked(resumed.job.id, 'thread/resume')
   assert.equal(resumeThread.threadId, codexRead.job.threadId)
-  assert.equal(resumeThread.permissions, 'flow_delegation')
-  assert.equal(resumeThread.config.permissions.flow_delegation.filesystem[repo], 'read')
+  assert.match(resumeThread.permissions, PROFILE_NAME)
+  assert.equal(resumeThread.config.permissions[resumeThread.permissions].filesystem[repo], 'read')
   assert.deepEqual(asked(resumed.job.id, 'thread/start'), [], 'a continuation opens no new thread')
   const claudeResumed = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy again', continue: claudeRead.job.id })
   const claudeArgv = fakeCall(claudeResumed.job.id).argv
@@ -954,18 +980,19 @@ try {
   }
   const everyEffort = ['low', 'medium', 'high', 'xhigh', 'max']
   const codexDoctor = await doctorCheck(codexTransport, 'codex', 'happy')
+  const doctorThread = codexDoctor.call.requests.find((request) => request.method === 'thread/start').params
   assert.deepEqual(codexDoctor.report, {
     ok: true, protocol: ['initialize', 'model/list', 'config/read', 'thread/start', 'mcpServerStatus/list'],
     catalog: [{ id: 'gpt-fake', efforts: everyEffort }, { id: 'gpt-fake-mini', efforts: ['low', 'medium'] }, { id: 'gpt-fake-other', efforts: ['low'] }],
-    profile: 'flow_delegation', mcpServersDisabled: 3, error: null,
+    profile: doctorThread.permissions, mcpServersDisabled: 3, error: null,
   })
   assert.deepEqual(codexDoctor.call.requests.map((request) => request.method),
     ['initialize', 'initialized', 'model/list', 'model/list', 'config/read', 'thread/start', 'mcpServerStatus/list', 'mcpServerStatus/list'], 'the doctor went past the read-back')
-  const doctorThread = codexDoctor.call.requests.find((request) => request.method === 'thread/start').params
-  assert.deepEqual([doctorThread.ephemeral, doctorThread.cwd, doctorThread.runtimeWorkspaceRoots, doctorThread.permissions, doctorThread.config.default_permissions,
+  assert.match(doctorThread.permissions, PROFILE_NAME)
+  assert.deepEqual([doctorThread.ephemeral, doctorThread.cwd, doctorThread.runtimeWorkspaceRoots, doctorThread.config.default_permissions,
     doctorThread.allowProviderModelFallback, doctorThread.approvalPolicy, 'model' in doctorThread, 'developerInstructions' in doctorThread],
-  [true, repo, [repo], 'flow_delegation', 'flow_delegation', false, 'never', false, false])
-  assert.deepEqual(doctorThread.config.permissions.flow_delegation, { description: 'Flow delegated job', network: { enabled: false }, filesystem: {
+  [true, repo, [repo], doctorThread.permissions, false, 'never', false, false])
+  assert.deepEqual(doctorThread.config.permissions[doctorThread.permissions], { description: 'Flow delegated job', network: { enabled: false }, filesystem: {
     ':minimal': 'read', [repo]: 'read', [join(repo, '.git')]: 'read', [codexDoctor.call.exe]: 'read', [join(fakeBin, 'codex')]: 'read', [join(codexDoctor.dir, 'tmp')]: 'write',
   } }, 'the doctor thread carries a read-only job\'s profile')
   for (const name of FEATURES) assert.equal(doctorThread.config[`features.${name}`], false, `the doctor thread left features.${name} on`)
@@ -992,23 +1019,25 @@ try {
   // the thread ignores, an MCP server left reachable, and a CLI whose protocol moved.
   for (const [transport, name, mode, kind, protocol, details] of [
     [codexTransport, 'codex', 'profile-ignored', 'ISOLATION', ['initialize', 'model/list', 'config/read'], { profile: ':read-only' }],
+    [codexTransport, 'codex', 'profile-widened', 'ISOLATION', ['initialize', 'model/list', 'config/read'], (call) => widenedFor(call)],
     [codexTransport, 'codex', 'mcp-leak', 'ISOLATION', ['initialize', 'model/list', 'config/read', 'thread/start'], { servers: ['pluginDocs'] }],
     [codexTransport, 'codex', 'drift', 'PROVIDER_ERROR', ['initialize'], undefined],
     [claudeTransport, 'claude', 'mcp-leak', 'ISOLATION', ['initialize'], { servers: ['hostDocs'] }],
     [claudeTransport, 'claude', 'drift', 'PROVIDER_ERROR', [], undefined]]) {
     const { report, call } = await doctorCheck(transport, name, mode)
-    assert.deepEqual([report.ok, report.error?.kind, report.protocol, report.error?.details], [false, kind, protocol, details], `${name} ${mode}: ${JSON.stringify(report)}`)
+    assert.deepEqual([report.ok, report.error?.kind, report.protocol, report.error?.details], [false, kind, protocol, typeof details === 'function' ? details(call) : details], `${name} ${mode}: ${JSON.stringify(report)}`)
     const sent = name === 'codex' ? call.requests.filter((request) => request.method === 'turn/start') : call.frames.filter((frame) => frame.type === 'user')
     assert.deepEqual(sent, [], `${name} ${mode}: the doctor sent a prompt`)
   }
-  ok('a doctor handshake that meets an ignored profile, a reachable MCP server or a moved protocol step fails with a typed kind, names the steps that passed, and sends no prompt')
+  ok('a doctor handshake that meets an ignored or widened profile, a reachable MCP server or a moved protocol step fails with a typed kind, names the steps that passed, and sends no prompt')
 
   const doctor = await claudeHost.call('delegation_doctor', {})
   assert.equal(doctor.ok, true)
   assert.deepEqual([doctor.host, doctor.target, doctor.provider.version, doctor.roots], ['claude', 'codex', 'codex-cli 0.0.0-fake', [repo]])
-  assert.deepEqual([doctor.transport.ok, doctor.transport.profile, doctor.transport.mcpServersDisabled, doctor.transport.catalog.map((model) => model.id)],
-    [true, 'flow_delegation', 3, ['gpt-fake', 'gpt-fake-mini', 'gpt-fake-other']])
-  assert.equal(doctor.summary, 'codex codex-cli 0.0.0-fake ready: 3 model(s) listed, profile flow_delegation, 3 MCP server(s) disabled, no turn')
+  assert.deepEqual([doctor.transport.ok, doctor.transport.mcpServersDisabled, doctor.transport.catalog.map((model) => model.id)],
+    [true, 3, ['gpt-fake', 'gpt-fake-mini', 'gpt-fake-other']])
+  assert.match(doctor.transport.profile, PROFILE_NAME)
+  assert.equal(doctor.summary, `codex codex-cli 0.0.0-fake ready: 3 model(s) listed, profile ${doctor.transport.profile}, 3 MCP server(s) disabled, no turn`)
   const claudeDoctorCall = await codexHost.call('delegation_doctor', {})
   assert.deepEqual([claudeDoctorCall.ok, claudeDoctorCall.provider.auth.method, claudeDoctorCall.transport.protocol, claudeDoctorCall.transport.profile,
     claudeDoctorCall.transport.catalog.find((model) => model.id === 'opus').resolvedModel], [true, 'claude.ai', ['initialize', 'mcp_status'], null, 'claude-fake-opus-2'])

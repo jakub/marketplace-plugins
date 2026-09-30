@@ -19,6 +19,14 @@
 // executable grant every command fails with execvp ENOENT while the turn still succeeds
 // (openai/codex#29049).
 //
+// Codex merges the thread config into every loaded layer table by table, so a profile that a user
+// or project layer already defines under the same name keeps that layer's parent and grants beside
+// flow's own (0.159.2: a user-layer [permissions.flow_delegation] with `extends = ":read-only"` and
+// a "/outside" write grant survived into a read-only thread). Each thread therefore names a profile
+// no layer can know in advance, flow_delegation_ and a random suffix, and the read-back holds the
+// thread to it: its id, no parent, no network, and no writable root the profile did not grant.
+// Codex reports no read grant, so the unique name is what keeps a layer's read grants out.
+//
 // No approval is ever granted. Each approval request gets its method's decline, and any request
 // that names an approval fails the job APPROVAL_REQUIRED once its turn ends, with the answer kept.
 //
@@ -30,6 +38,7 @@
 // takes no model or seat of its own, and closes without a turn, so a Codex release that changes a
 // method or a field this file depends on fails the preflight instead of a job.
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -204,13 +213,30 @@ async function checkServers(rpc, threadId) {
   return statuses.map((status) => String(status?.name)).sort()
 }
 
-// The profile the live thread reports. Anything but flow_delegation fails ISOLATION, and nothing
-// goes to the thread.
-function checkProfile(opened) {
-  const profile = opened.activePermissionProfile?.id ?? null
-  if (profile === PROFILE) return profile
-  const reported = profile === null ? null : clip(profile)
-  throw new DelegateError('ISOLATION', `Codex opened the thread under the ${reported ?? 'no named'} permission profile, not ${PROFILE}, so no prompt was sent.`, { profile: reported })
+// The profile the live thread reports, and the sandbox Codex projects from it. Anything but the
+// profile this thread named fails ISOLATION, and so does that profile with a parent, with network
+// access, or with a writable root it did not grant, which only another layer can have added.
+// Nothing goes to the thread.
+function checkProfile(opened, name, profile) {
+  const active = opened.activePermissionProfile ?? {}
+  if (active.id !== name) {
+    const reported = active.id == null ? null : clip(active.id)
+    throw new DelegateError('ISOLATION', `Codex opened the thread under the ${reported ?? 'no named'} permission profile, not ${name}, so no prompt was sent.`, { profile: reported })
+  }
+  const sandbox = opened.sandbox ?? {}
+  const granted = Object.keys(profile.filesystem).filter((path) => profile.filesystem[path] === 'write')
+  const extra = (Array.isArray(sandbox.writableRoots) ? sandbox.writableRoots : []).filter((root) => !granted.includes(root))
+  const found = [
+    active.extends != null && `a parent profile, ${clip(active.extends)}`,
+    !['readOnly', 'workspaceWrite'].includes(sandbox.type) && `a ${clip(sandbox.type ?? 'missing')} sandbox`,
+    sandbox.networkAccess !== false && 'network access',
+    extra.length > 0 && `${extra.length} writable root(s) it did not grant`,
+  ].filter(Boolean)
+  if (found.length) {
+    throw new DelegateError('ISOLATION', `Codex opened the thread under ${name} with ${found.join(', ')}, so no prompt was sent.`,
+      { profile: name, extends: active.extends == null ? null : clip(active.extends), sandbox: clip(sandbox.type ?? 'missing'), networkAccess: sandbox.networkAccess ?? null, writableRoots: extra.slice(0, 20).map(clip) })
+  }
+  return name
 }
 
 function packageRoot(path) {
@@ -259,20 +285,23 @@ async function permissionProfile(job, dir, runtime) {
   return { description: 'Flow delegated job', filesystem, network: { enabled: false } }
 }
 
-function threadParams(job, seat, servers, profile) {
+// A profile name for one thread, which no config layer can have defined before it.
+const profileName = () => `${PROFILE}_${randomUUID().replaceAll('-', '')}`
+
+function threadParams(job, seat, servers, name, profile) {
   return {
     model: job.model, cwd: job.cwd, runtimeWorkspaceRoots: [job.worktree],
     approvalPolicy: 'never', approvalsReviewer: 'user', serviceTier: 'default',
     allowProviderModelFallback: false,
-    permissions: PROFILE,
+    permissions: name,
     developerInstructions: seat,
     config: {
-      ...Object.fromEntries(FEATURES_OFF.map((name) => [`features.${name}`, false])),
+      ...Object.fromEntries(FEATURES_OFF.map((feature) => [`features.${feature}`, false])),
       memories: { use_memories: false, generate_memories: false },
       apps: { _default: { enabled: false } },
-      mcp_servers: Object.fromEntries(servers.map((name) => [name, { enabled: false }])),
-      default_permissions: PROFILE,
-      permissions: { [PROFILE]: profile },
+      mcp_servers: Object.fromEntries(servers.map((server) => [server, { enabled: false }])),
+      default_permissions: name,
+      permissions: { [name]: profile },
     },
   }
 }
@@ -366,7 +395,9 @@ export const transport = {
       session.models = await listModels(rpc)
       session.catalog = listing('Codex', session.models.find((model) => model.id === job.model), job)
       const servers = await configuredServers(rpc, job.cwd)
-      const params = threadParams(job, seat, servers, await permissionProfile(job, dir, runtime))
+      const name = profileName()
+      const permissions = await permissionProfile(job, dir, runtime)
+      const params = threadParams(job, seat, servers, name, permissions)
       const opened = job.resumeThreadId
         ? await rpc.request('thread/resume', { threadId: job.resumeThreadId, ...params })
         : await rpc.request('thread/start', { ...params, ephemeral: false, serviceName: 'flow-delegate' })
@@ -374,7 +405,7 @@ export const transport = {
       // Nothing goes out until the live thread reads back what was asked for: the profile, the
       // model, and an MCP inventory with every server disabled. The config layers flow built the
       // thread from are an assumption; this is the thread itself.
-      const profile = checkProfile(opened)
+      const profile = checkProfile(opened, name, permissions)
       if (opened.model !== job.model) {
         const served = opened.model == null ? null : clip(opened.model)
         throw new DelegateError('MODEL_MISMATCH', `Codex opened the thread on ${served ?? 'no named model'}, not ${job.model}, so no prompt was sent.`, { expected: job.model, served })
@@ -404,10 +435,11 @@ export const transport = {
       const servers = await configuredServers(rpc, cwd)
       report.protocol.push('config/read')
       const job = { cwd, worktree: cwd, access: 'read-only' }
-      const params = threadParams(job, undefined, servers, await permissionProfile(job, dir, runtime))
-      const opened = await rpc.request('thread/start', { ...params, ephemeral: true, serviceName: 'flow-delegate' })
+      const name = profileName()
+      const permissions = await permissionProfile(job, dir, runtime)
+      const opened = await rpc.request('thread/start', { ...threadParams(job, undefined, servers, name, permissions), ephemeral: true, serviceName: 'flow-delegate' })
       if (!opened?.thread?.id) throw new DelegateError('PROVIDER_ERROR', 'Codex opened no thread.')
-      report.profile = checkProfile(opened)
+      report.profile = checkProfile(opened, name, permissions)
       report.protocol.push('thread/start')
       report.mcpServersDisabled = (await checkServers(rpc, opened.thread.id)).length
       report.protocol.push('mcpServerStatus/list')

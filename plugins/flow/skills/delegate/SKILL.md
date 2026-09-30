@@ -64,7 +64,7 @@ Every tool answers `{ok, job?, error?}`, and the JSON text opens with a one-line
 - `servedModel` is the model the provider reported serving: the thread's model on Codex, and the model the `system/init` frame names on Claude. A session or an answer on any other model fails `MODEL_MISMATCH` and stops at once. A Claude alias that the catalog lists must be served by the model it resolves to, so `opus` reports `claude-opus-5-5`.
 - `catalog` is `listed` when the provider's catalog listed the model and `absent` when it did not. It is null when the job ended before the catalog was read, or failed `BAD_MODEL`.
 - `BAD_MODEL` means the catalog lists the model but not the effort, or lists no effort levels for it. `details.efforts` names the efforts it takes.
-- `ISOLATION` means a check of the live session failed. On Codex, the thread ran under another permission profile than `flow_delegation`, or left an MCP server reachable. On Claude, `mcp_status` reported an MCP server, or the `system/init` frame named a tool you did not ask for, an MCP server or a plugin. `details` names what the check found.
+- `ISOLATION` means a check of the live session failed. On Codex, the thread ran under another permission profile than the one flow named for it, that profile came back with a parent profile, network access or a writable root flow did not grant, or the thread left an MCP server reachable. On Claude, `mcp_status` reported an MCP server, or the `system/init` frame named a tool you did not ask for, an MCP server or a plugin. `details` names what the check found.
 - `isolation` is what the live session read back: `{profile, mcpServers, instructionSources}` on Codex and `{mcpServers, tools}` on Claude. `promptSent` is false when the job ended before the prompt left the server, so the provider ran no turn for it.
 - `steers` lists every steer the job answered, in order, as `{id, at, status, error}`.
 - `commandFailures` counts shell commands that failed. A succeeded job with a nonzero count answered without working shell evidence.
@@ -79,10 +79,10 @@ Run `delegation_doctor` as the preflight. It answers without a workspace, which 
 
 The handshake's result is `transport`:
 
-- `ok` and `error` say whether it passed. A failure is typed like a job's. The two common kinds are `ISOLATION` and `PROVIDER_ERROR`. `ISOLATION` means the session could reach an MCP server, or the Codex thread ran under another permission profile. `PROVIDER_ERROR` means the CLI refused a step, answered in a shape the server does not know, stayed silent for 30 seconds, or exited.
+- `ok` and `error` say whether it passed. A failure is typed like a job's. The two common kinds are `ISOLATION` and `PROVIDER_ERROR`. `ISOLATION` means the session could reach an MCP server, or the Codex thread ran under another permission profile or a widened one. `PROVIDER_ERROR` means the CLI refused a step, answered in a shape the server does not know, stayed silent for 30 seconds, or exited.
 - `protocol` lists the steps that passed, in order: `initialize`, `model/list`, `config/read`, `thread/start` and `mcpServerStatus/list` on Codex, and `initialize` and `mcp_status` on Claude. After a failure, the step that failed is the first one missing.
 - `catalog` is the provider's model catalog: `{id, efforts}` on Codex, and `{id, resolvedModel, efforts}` on Claude, where `resolvedModel` is the model an alias runs.
-- `profile` is the permission profile the Codex thread read back, `flow_delegation`. It is null on Claude.
+- `profile` is the permission profile the Codex thread read back: `flow_delegation_` and a random suffix, a name no config layer can define first. It is null on Claude.
 - `mcpServersDisabled` counts the MCP servers the session read back as disabled. On Codex these are the servers your Codex config defines. On Claude it is 0, because the CLI loads none.
 
 Codex starts MCP servers before any hook runs, so on a new machine the flow skill's `setup` runs `node <plugin-root>/scripts/install-delegate.mjs install` once before the first Codex session. After that, the Codex SessionStart hook keeps `~/.local/bin/flow-delegate` current.
