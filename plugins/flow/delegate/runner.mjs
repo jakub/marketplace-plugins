@@ -84,12 +84,13 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
     if (!settled) stallTimer = setTimeout(() => stop('STALL'), STALL_SECONDS * 1000)
   }
   // The session's state after each line: the provider thread is recorded the moment it is known,
-  // so a running job can be steered; so are what the session read back and whether the prompt has
-  // gone out; a stop the fold asked for starts now; an ended turn closes the session so the
-  // provider can exit.
+  // so a running job can be steered; so are whether the provider's catalog listed the model, what
+  // the session read back and whether the prompt has gone out; a stop the fold asked for starts
+  // now; an ended turn closes the session so the provider can exit.
   const sync = () => {
     if (!session) return
     if (session.threadId && session.threadId !== record.threadId) record = writeJob({ ...record, threadId: session.threadId })
+    if (session.catalog && !record.catalog) record = writeJob({ ...record, catalog: session.catalog })
     if (session.isolation && !record.isolation) record = writeJob({ ...record, isolation: session.isolation })
     if (session.promptSent && !record.promptSent) record = writeJob({ ...record, promptSent: true })
     if (session.stopReason) stop(session.stopReason)

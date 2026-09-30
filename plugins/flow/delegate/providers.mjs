@@ -6,6 +6,7 @@
 import { execFile } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
+import { DelegateError } from './jobs.mjs'
 import { CHECK_SECONDS, checkAnswer } from './schema.mjs'
 
 // Only absolute PATH entries count. An empty or relative entry resolves against the job's cwd,
@@ -72,6 +73,20 @@ export function classify(message) {
   if (/timed? ?out|timeout|deadline exceeded/i.test(message)) return 'TIMEOUT'
   if (/output schema|json schema|response_format|invalid schema/i.test(message)) return 'BAD_SCHEMA'
   return 'PROVIDER_ERROR'
+}
+
+// The provider's own catalog, read before the prompt. A model it lists must be asked for at an
+// effort it lists for that model, or the call names an effort the provider cannot honour, and the
+// job fails BAD_MODEL with nothing sent. An id it does not list is admitted, because a catalog can
+// lag the models an account may use, and the envelope says the catalog was absent.
+export function listing(provider, entry, job) {
+  if (!entry) return 'absent'
+  if (entry.efforts.includes(job.effort)) return 'listed'
+  const efforts = entry.efforts.slice(0, 10).map(clip)
+  throw new DelegateError('BAD_MODEL', efforts.length
+    ? `${provider}'s catalog lists ${job.model} at effort ${efforts.join(', ')}, not ${job.effort}, so no prompt was sent.`
+    : `${provider}'s catalog lists ${job.model} with no effort levels, so it cannot honour effort ${job.effort}, and no prompt was sent.`,
+  { model: job.model, efforts })
 }
 
 // A completed turn is a success only with an answer, and, when a schema was asked for, with a

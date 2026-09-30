@@ -4,14 +4,16 @@
 // request_id, request}) and matches the control_response frames by request_id. A control request
 // from the CLI gets an error answer, and one asking to use a tool fails the job APPROVAL_REQUIRED.
 //
-// The CLI opens its session before it takes a prompt, so the session is read back first:
-// initialize must answer, and mcp_status must report no MCP server, or the job fails ISOLATION
-// with no prompt sent. Only then does the prompt go out, as a user message marked client_composed,
-// so the CLI neither expands an @path mention nor runs a slash command in text another model
-// wrote. The system/init frame that follows it names the session's tools, MCP servers and plugins:
-// a tool outside the requested set, any server or any plugin stops the turn before any tool result
-// exists, and the job fails ISOLATION. Every assistant frame must come from the model the session
-// serves, or the turn stops and the job fails MODEL_MISMATCH.
+// The CLI opens its session before it takes a prompt, so the session is read back first.
+// initialize answers with the CLI's model catalog: a model it lists must be asked for at an effort
+// it lists (BAD_MODEL otherwise), and the model it resolves to is the one every frame must name.
+// mcp_status must report no MCP server, or the job fails ISOLATION. Either failure sends no
+// prompt. Only then does the prompt go out, as a user message marked client_composed, so the CLI
+// neither expands an @path mention nor runs a slash command in text another model wrote. The
+// system/init frame that follows it names the session's tools, MCP servers and plugins: a tool
+// outside the requested set, any server or any plugin stops the turn before any tool result
+// exists, and the job fails ISOLATION. An init or assistant frame from any model but the expected
+// one stops the turn too, and the job fails MODEL_MISMATCH.
 //
 // The containment is what the CLI is handed: no setting source, no MCP config, and the sandbox and
 // permission rules in claudeSettings. Stdin stays open while the turn runs; the runner closes it
@@ -23,7 +25,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { DelegateError, log } from './jobs.mjs'
-import { answered, candidates, classify, clip } from './providers.mjs'
+import { answered, candidates, classify, clip, listing } from './providers.mjs'
 
 const STEP_MS = 30_000
 const INTERRUPT_MS = 10_000
@@ -116,6 +118,21 @@ function claudeFailure(result, assistantError, text) {
   if (result.subtype === 'error_max_structured_output_retries') return { kind: 'SCHEMA_OUTPUT', message: 'Claude could not answer in the requested schema.' }
   const detail = clip(text || assistantError || result.subtype)
   return { kind: classify(detail), message: `Claude: ${detail}` }
+}
+
+// The catalog initialize answers with. A requested id matches an entry's alias or the wire id it
+// resolves to, ignoring case and a [1m] suffix; the alias wins when both match.
+function catalogOf(initialized) {
+  if (!Array.isArray(initialized?.models)) throw new DelegateError('PROVIDER_ERROR', 'Claude answered initialize without a model catalog, so no prompt was sent.')
+  return initialized.models.filter((model) => typeof model?.value === 'string').map((model) => ({
+    id: model.value,
+    resolvedModel: typeof model.resolvedModel === 'string' ? model.resolvedModel : null,
+    efforts: Array.isArray(model.supportedEffortLevels) ? model.supportedEffortLevels.filter((effort) => typeof effort === 'string') : [],
+  }))
+}
+function lookup(models, id) {
+  const key = modelKey(id)
+  return models.find((model) => modelKey(model.id) === key) ?? models.find((model) => model.resolvedModel && modelKey(model.resolvedModel) === key) ?? null
 }
 
 // The control peer over the child's stdio. Each stdout line is dispatched, then handed to onLine
@@ -220,6 +237,7 @@ export const transport = {
     const requested = new Set(toolSets(job).all)
     let sessionId = null
     let served = null
+    let expected = null
     let mcpServers = null
     let leak = null
     let mismatch = null
@@ -230,7 +248,7 @@ export const transport = {
     const asked = []
     const bash = new Set()
     const session = {
-      servedModel: null, isolation: null, stopReason: null, promptSent: false, turnOpen: false, turnEnded: false,
+      servedModel: null, models: null, catalog: null, isolation: null, stopReason: null, promptSent: false, turnOpen: false, turnEnded: false,
       get threadId() { return result?.session_id ?? sessionId },
       send(prompt) {
         if (!peer.writable()) throw new DelegateError('PROVIDER_ERROR', 'Claude exited before it took the prompt; stderr.txt beside the events file has its diagnostics.')
@@ -285,11 +303,23 @@ export const transport = {
       }
       session.stopReason ??= 'ISOLATION'
     }
+    // A listed model resolves to the wire id every frame must name; an unlisted one is held to the
+    // model its init frame names, Fable's rule. Any other model on an init or assistant frame is a
+    // swap, and the turn stops now rather than at its end: on a write job the wrong model would be
+    // editing the worktree meanwhile.
+    const swapped = (model) => {
+      const want = expected ?? served
+      if (mismatch || !want || !model || model === '<synthetic>' || modelKey(model) === modelKey(want)) return
+      mismatch = { expected: clip(want), served: clip(model) }
+      session.stopReason ??= 'MODEL_MISMATCH'
+    }
     const onFrame = (frame) => {
       if (frame.type === 'system' && frame.subtype === 'init') {
         sessionId = frame.session_id ?? sessionId
-        served = frame.model ?? served
+        // The served model reaches the envelope, so it is clipped like any provider string.
+        if (typeof frame.model === 'string') served = clip(frame.model)
         session.servedModel = served
+        swapped(frame.model)
         checkInit(frame)
       } else if (frame.type === 'system' && /^model_refusal/.test(frame.subtype ?? '')) {
         refusal ??= { category: frame.api_refusal_category ?? null }
@@ -306,13 +336,7 @@ export const transport = {
         assistantError = frame.error ?? assistantError
         for (const block of Array.isArray(message.content) ? message.content : []) if (block?.type === 'tool_use' && block.name === 'Bash') bash.add(block.id)
         if (message.stop_reason === 'refusal') refusal ??= { category: message.stop_details?.category ?? null }
-        // The init frame names the model that serves the session. Any other model on an
-        // assistant frame is a swap, and the turn stops now rather than at its end: on a write
-        // job the wrong model would be editing the worktree meanwhile.
-        if (!mismatch && served && message.model && message.model !== '<synthetic>' && modelKey(message.model) !== modelKey(served)) {
-          mismatch = { expected: clip(served), served: clip(message.model) }
-          session.stopReason ??= 'MODEL_MISMATCH'
-        }
+        swapped(message.model)
       }
     }
     const onRequest = (request) => {
@@ -324,7 +348,10 @@ export const transport = {
     }
     const peer = connect(child, { onLine, onFrame, onRequest })
     try {
-      await peer.request('initialize')
+      session.models = catalogOf(await peer.request('initialize'))
+      const entry = lookup(session.models, job.model)
+      session.catalog = listing('Claude', entry, job)
+      expected = entry?.resolvedModel ?? null
       mcpServers = await checkServers(peer)
     } catch (error) {
       peer.close()

@@ -3,7 +3,8 @@
 // App Server opens a thread first and takes the prompt later, so the thread is configured before
 // any prompt exists, and turn/start goes out only once the live thread reads back the profile,
 // the requested model and an MCP inventory with every server disabled. A failed read-back fails
-// the job ISOLATION or MODEL_MISMATCH with no prompt sent.
+// the job ISOLATION or MODEL_MISMATCH with no prompt sent. Before the thread exists, model/list is
+// Codex's own catalog: a model it lists at an effort it does not list fails BAD_MODEL.
 //
 // The App Server has no --ignore-user-config and loads the human's config.toml,
 // so everything that grants a capability is named off in the thread config: the plugin, app,
@@ -25,7 +26,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { createInterface } from 'node:readline'
 import { DelegateError, git, log } from './jobs.mjs'
-import { answered, classify, clip } from './providers.mjs'
+import { answered, classify, clip, listing } from './providers.mjs'
 
 export const PROFILE = 'flow_delegation'
 const VERSION = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version
@@ -253,7 +254,7 @@ export const transport = {
     let lastError = null
     let approvalMethod = null
     const session = {
-      threadId: null, servedModel: null, catalog: null, isolation: null, stopReason: null, promptSent: false, turnOpen: false, turnEnded: false,
+      threadId: null, servedModel: null, models: null, catalog: null, isolation: null, stopReason: null, promptSent: false, turnOpen: false, turnEnded: false,
       async send(prompt) {
         const outputSchema = job.hasSchema ? JSON.parse(readFileSync(join(dir, 'schema.json'), 'utf8')) : null
         session.promptSent = true
@@ -328,9 +329,13 @@ export const transport = {
       await rpc.request('initialize', { clientInfo: { name: 'flow-delegate', title: 'Flow delegate', version: VERSION }, capabilities: { experimentalApi: true } })
       rpc.notify('initialized')
       const runtime = runtimePaths(child.pid, bin)
-      session.catalog = (await pages(rpc, 'model/list', { limit: 100, includeHidden: true }, 'PROVIDER_ERROR')).map((model) => ({
-        id: model?.id, efforts: (Array.isArray(model?.supportedReasoningEfforts) ? model.supportedReasoningEfforts : []).map((option) => option?.reasoningEffort),
+      // The catalog with hidden models, so an id the account may use is not read as unlisted. A
+      // listed model at an effort it does not list stops here, before config/read and the thread.
+      session.models = (await pages(rpc, 'model/list', { limit: 100, includeHidden: true }, 'PROVIDER_ERROR')).filter((model) => typeof model?.id === 'string').map((model) => ({
+        id: model.id,
+        efforts: (Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : []).map((option) => option?.reasoningEffort).filter((effort) => typeof effort === 'string'),
       }))
+      session.catalog = listing('Codex', session.models.find((model) => model.id === job.model), job)
       const servers = await configuredServers(rpc, job.cwd)
       const params = threadParams(job, seat, servers, await permissionProfile(job, dir, runtime))
       const opened = job.resumeThreadId
