@@ -24,10 +24,11 @@ export function delegatedInstructions(job, provider) {
   return `${seatPayload(readFileSync(CHARTER, 'utf8'))}\n<delegated-seat>\nYou are a delegated ${provider} worker. ${access} Read and follow the applicable AGENTS.md or CLAUDE.md files before acting.\n</delegated-seat>`
 }
 
-// A diagnosis the provider itself showed (a refusal, a swapped model) outranks the interrupt that
-// followed it, and a native success stands even when a stop raced it.
+// A diagnosis the provider itself showed (a refusal, a swapped model, a failed isolation
+// read-back) outranks the interrupt that followed it, and a native success stands even when a
+// stop raced it.
 function outcome(job, folded, stopped) {
-  if (folded.status === 'succeeded' || ['REFUSAL', 'MODEL_MISMATCH'].includes(folded.error?.kind)) return folded
+  if (folded.status === 'succeeded' || ['REFUSAL', 'MODEL_MISMATCH', 'ISOLATION'].includes(folded.error?.kind)) return folded
   if (!['CANCELLED', 'TIMEOUT', 'STALL'].includes(stopped)) return folded
   if (stopped === 'CANCELLED') return { ...folded, status: 'cancelled', error: { kind: 'CANCELLED', message: 'The job was cancelled.' } }
   const message = stopped === 'TIMEOUT' ? `The job ran past its ${job.timeBudgetSeconds}s budget.` : `The provider was silent for ${STALL_SECONDS}s.`
@@ -82,11 +83,14 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
     if (!settled) stallTimer = setTimeout(() => stop('STALL'), STALL_SECONDS * 1000)
   }
   // The session's state after each line: the provider thread is recorded the moment it is known,
-  // so a running job can be steered; a stop the fold asked for starts now; an ended turn closes
-  // the session so the provider can exit.
+  // so a running job can be steered; so are what the session read back and whether the prompt has
+  // gone out; a stop the fold asked for starts now; an ended turn closes the session so the
+  // provider can exit.
   const sync = () => {
     if (!session) return
     if (session.threadId && session.threadId !== record.threadId) record = writeJob({ ...record, threadId: session.threadId })
+    if (session.isolation && !record.isolation) record = writeJob({ ...record, isolation: session.isolation })
+    if (session.promptSent && !record.promptSent) record = writeJob({ ...record, promptSent: true })
     if (session.stopReason) stop(session.stopReason)
     if (session.turnEnded) session.close()
   }
@@ -116,7 +120,12 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
   try {
     session = await transport.open({ job, dir, bin, env: providerEnv(job, dir), seat, onSpawn, onLine })
     sync()
-    if (!stopped) await session.send(prompt)
+    if (!stopped) {
+      // The prompt is on its way once send returns, before the provider accepts it.
+      const sending = session.send(prompt)
+      sync()
+      await sending
+    }
   } catch (error) {
     failure = error
     session?.close()

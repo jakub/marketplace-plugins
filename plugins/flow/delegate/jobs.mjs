@@ -278,7 +278,7 @@ export async function admit(input, { host, roots }) {
     sessionId: target === 'claude' && !parent ? randomUUID() : null, threadId: null,
     requestPreview: preview(input.prompt.trim() ? input.prompt : `Review ${baseSha}..${headSha}`),
     baseSha, headSha, hasSchema: schema !== null,
-    servedModel: null, output: null, structured: null, commandFailures: 0, error: null,
+    servedModel: null, isolation: null, promptSent: false, output: null, structured: null, commandFailures: 0, error: null,
   }
   mkdirSync(jobDir(job.id), { recursive: true, mode: 0o700 })
   writeFileSync(join(jobDir(job.id), 'prompt.txt'), prompt, { mode: 0o600 })
@@ -435,11 +435,13 @@ function tail(path, count) {
   return lines.slice(-count).map((line) => (line.length > 400 ? `${line.slice(0, 399)}…` : line))
 }
 
+// isolation is what the provider's live session read back before the prompt, and promptSent says
+// whether the prompt ever left the runner: a job refused before it has no provider turn to explain.
 export function envelope(job, events = 0) {
   const { id, host, target, mode, access, cwd, model, effort, status, createdAt, endedAt, threadId, parentJobId,
-    requestPreview, baseSha, headSha, servedModel, output, structured, commandFailures, error } = job
+    requestPreview, baseSha, headSha, servedModel, isolation, promptSent, output, structured, commandFailures, error } = job
   const eventsPath = join(jobDir(id), 'events.jsonl')
   return { id, host, target, mode, access, cwd, model, effort, status, createdAt, endedAt, threadId, parentJobId,
-    requestPreview, baseSha, headSha, servedModel, output, structured, commandFailures, error, eventsPath,
+    requestPreview, baseSha, headSha, servedModel, isolation, promptSent, output, structured, commandFailures, error, eventsPath,
     events: events ? tail(eventsPath, events) : [] }
 }

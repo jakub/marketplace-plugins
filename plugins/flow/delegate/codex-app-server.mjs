@@ -1,7 +1,11 @@
 // The Codex target over `codex app-server --stdio`, spoken by hand: line-delimited JSON-RPC with
 // requests by id, their responses, notifications, and server requests that must be answered. The
 // App Server opens a thread first and takes the prompt later, so the thread is configured before
-// any prompt exists. The App Server has no --ignore-user-config and loads the human's config.toml,
+// any prompt exists, and turn/start goes out only once the live thread reads back the profile,
+// the requested model and an MCP inventory with every server disabled. A failed read-back fails
+// the job ISOLATION or MODEL_MISMATCH with no prompt sent.
+//
+// The App Server has no --ignore-user-config and loads the human's config.toml,
 // so everything that grants a capability is named off in the thread config: the plugin, app,
 // hook, memory, multi-agent, browser, computer-use and image features, memories, every app, and
 // every MCP server config/read names.
@@ -106,7 +110,9 @@ function connect(child, { onLine, onNotification, onRequest }) {
           refuse: (error) => {
             clearTimeout(timer)
             const text = errorText(error?.message)
-            reject(new DelegateError(classify(text), `Codex refused ${method}: ${text}`))
+            const refusal = new DelegateError(classify(text), `Codex refused ${method}: ${text}`)
+            refusal.refused = true
+            reject(refusal)
           },
           lose: () => { clearTimeout(timer); reject(lost(method)) },
         })
@@ -150,6 +156,25 @@ async function configuredServers(rpc, cwd) {
     if (layer?.disabledReason == null) for (const name of keys(layer?.config?.mcp_servers)) names.add(name)
   }
   return [...names].sort()
+}
+
+// The thread's own MCP inventory. Every server must read disabled with no tools, whatever layer
+// defined it, so a server the thread config did not know about still stops the job. An inventory
+// Codex refuses to report is a failed read-back too.
+async function checkServers(rpc, threadId) {
+  let statuses
+  try {
+    statuses = await pages(rpc, 'mcpServerStatus/list', { threadId, detail: 'toolsAndAuthOnly', limit: 100 }, 'ISOLATION')
+  } catch (error) {
+    if (error.refused) throw new DelegateError('ISOLATION', `${error.message}; no prompt was sent.`)
+    throw error
+  }
+  const exposed = statuses.filter((status) => status?.runtimeStatus !== 'disabled' || keys(status?.tools).length > 0)
+  if (exposed.length) {
+    throw new DelegateError('ISOLATION', `Codex left ${exposed.length} MCP server(s) reachable in the thread, so no prompt was sent.`,
+      { servers: exposed.slice(0, 20).map((status) => clip(status?.name ?? 'unnamed')) })
+  }
+  return statuses.map((status) => String(status?.name)).sort()
 }
 
 function packageRoot(path) {
@@ -228,9 +253,10 @@ export const transport = {
     let lastError = null
     let approvalMethod = null
     const session = {
-      threadId: null, servedModel: null, catalog: null, stopReason: null, turnOpen: false, turnEnded: false,
+      threadId: null, servedModel: null, catalog: null, isolation: null, stopReason: null, promptSent: false, turnOpen: false, turnEnded: false,
       async send(prompt) {
         const outputSchema = job.hasSchema ? JSON.parse(readFileSync(join(dir, 'schema.json'), 'utf8')) : null
+        session.promptSent = true
         const started = await rpc.request('turn/start', {
           threadId: session.threadId, input: textInput(prompt), cwd: job.cwd, approvalPolicy: 'never',
           model: job.model, effort: job.effort, summary: 'detailed', serviceTier: 'default', ...(outputSchema ? { outputSchema } : {}),
@@ -311,8 +337,20 @@ export const transport = {
         ? await rpc.request('thread/resume', { threadId: job.resumeThreadId, ...params })
         : await rpc.request('thread/start', { ...params, ephemeral: false, serviceName: 'flow-delegate' })
       if (!opened?.thread?.id) throw new DelegateError('PROVIDER_ERROR', 'Codex opened no thread.')
+      // Nothing goes out until the live thread reads back what was asked for: the profile, the
+      // model, and an MCP inventory with every server disabled. The config layers flow built the
+      // thread from are an assumption; this is the thread itself.
+      const profile = opened.activePermissionProfile?.id ?? null
+      if (profile !== PROFILE) {
+        throw new DelegateError('ISOLATION', `Codex opened the thread under the ${clip(profile ?? 'no named')} permission profile, not ${PROFILE}, so no prompt was sent.`, { profile })
+      }
+      if (opened.model !== job.model) {
+        throw new DelegateError('MODEL_MISMATCH', `Codex opened the thread on ${clip(opened.model)}, not ${job.model}, so no prompt was sent.`, { expected: job.model, served: opened.model ?? null })
+      }
+      const mcpServers = await checkServers(rpc, opened.thread.id)
       session.threadId = opened.thread.id
-      session.servedModel = opened.model ?? null
+      session.servedModel = opened.model
+      session.isolation = { profile, mcpServers, instructionSources: Array.isArray(opened.instructionSources) ? opened.instructionSources : [] }
     } catch (error) {
       rpc.close()
       throw error

@@ -252,9 +252,13 @@ function oneShot(provider) {
       const fold = provider.fold(job, dir)
       const session = {
         stopReason: null,
+        promptSent: false,
         turnEnded: false,
         get threadId() { return fold.thread() },
-        send(prompt) { child.stdin.end(provider.stdin(seat, prompt)) },
+        send(prompt) {
+          session.promptSent = true
+          child.stdin.end(provider.stdin(seat, prompt))
+        },
         interrupt: async () => null,
         close() {},
         finish: (exit) => fold.finish(exit),
