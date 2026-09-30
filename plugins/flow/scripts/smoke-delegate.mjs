@@ -7,7 +7,8 @@
 // records every frame it is written. In the steer modes each takes a steer during its turn: the
 // fake Codex through turn/steer, the fake Claude as a second user message that it folds in or runs
 // as the next turn. The fakes speak the protocol subset the transports use, in the shapes Codex
-// CLI 0.159.0 and Claude Code 2.1.284 answer with. No network, no model.
+// CLI 0.159.0 and Claude Code 2.1.284 answer with, and in drift mode each answers the way a CLI
+// that changed its protocol would, for the doctor to catch. No network, no model.
 // Run: node plugins/flow/scripts/smoke-delegate.mjs
 
 import assert from 'node:assert/strict'
@@ -19,6 +20,7 @@ import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seatPayload } from '../lib/charter-payload.mjs'
+import { transport as claudeTransport } from '../delegate/claude-control.mjs'
 import { transport as codexTransport } from '../delegate/codex-app-server.mjs'
 import * as jobs from '../delegate/jobs.mjs'
 import { checkAnswer, schemaProblem, validate } from '../delegate/schema.mjs'
@@ -136,7 +138,7 @@ function appServer() {
   function handle({ id, method, params = {} }) {
     if (method === 'initialize') return reply(id, { userAgent: 'fake/0.0.0', codexHome: '/nonexistent', platformFamily: 'unix', platformOs: 'linux' })
     if (method === 'initialized') return undefined
-    if (method === 'model/list') return reply(id, page(MODELS, params))
+    if (method === 'model/list') return mode === 'drift' ? out({ id, error: { code: -32601, message: 'unknown method model/list' } }) : reply(id, page(MODELS, params))
     if (method === 'config/read') {
       const layer = (type, servers, disabledReason = null) => ({ name: { type }, version: '1', config: { mcp_servers: Object.fromEntries(servers.map((name) => [name, { command: '/bin/true' }])) }, disabledReason })
       return reply(id, { config: { model: 'gpt-fake', mcp_servers: { hostDocs: { url: 'https://example.invalid/mcp' }, nodeRepl: { command: '/bin/true' } } }, origins: {},
@@ -237,7 +239,7 @@ function claudeCli() {
   })
   function control({ request_id, request }) {
     if (request.subtype === 'initialize') {
-      return reply(request_id, { commands: [], agents: [], output_style: 'default', available_output_styles: ['default'], models: MODELS, account: { email: 'secret@example.invalid' } })
+      return reply(request_id, { commands: [], agents: [], output_style: 'default', available_output_styles: ['default'], ...(mode === 'drift' ? { availableModels: MODELS } : { models: MODELS }), account: { email: 'secret@example.invalid' } })
     }
     if (request.subtype === 'mcp_status') {
       return reply(request_id, { mcpServers: mode === 'mcp-leak' ? [{ name: 'hostDocs', status: 'connected', scope: 'user' }] : [] })
@@ -937,16 +939,103 @@ try {
   assert.equal(readJob(late.id).status, 'failed')
   ok('a queued writer past its grace is claimed and settled before its lease goes, so its late runner never starts')
 
+  // The doctor's handshake, driven directly so the fakes' records survive it: each transport does
+  // what a job does before its prompt, on a read-only job's containment, reports the catalog and
+  // the read-back, sends no prompt, and leaves no provider behind.
+  const doctorCheck = async (transport, name, mode) => {
+    const dir = join(tmp, `doctor-${name}-${mode}`)
+    mkdirSync(join(dir, 'tmp'), { recursive: true })
+    writeFileSync(join(dir, 'prompt.txt'), `FLOW_FAKE_MODE=${mode}`)
+    const env = { ...ENV, TMPDIR: join(dir, 'tmp'), FLOW_DELEGATION_DEPTH: '1', FLOW_DELEGATION_JOB: 'doctor' }
+    const report = await transport.check({ cwd: repo, dir, bin: join(fakeBin, name), env })
+    const call = JSON.parse(readFileSync(join(dir, 'tmp', 'fake-call.json'), 'utf8'))
+    assert.ok(await until(() => !alive(call.pid)), `${name} ${mode}: the provider outlived the doctor`)
+    return { report, call, dir }
+  }
+  const everyEffort = ['low', 'medium', 'high', 'xhigh', 'max']
+  const codexDoctor = await doctorCheck(codexTransport, 'codex', 'happy')
+  assert.deepEqual(codexDoctor.report, {
+    ok: true, protocol: ['initialize', 'model/list', 'config/read', 'thread/start', 'mcpServerStatus/list'],
+    catalog: [{ id: 'gpt-fake', efforts: everyEffort }, { id: 'gpt-fake-mini', efforts: ['low', 'medium'] }, { id: 'gpt-fake-other', efforts: ['low'] }],
+    profile: 'flow_delegation', mcpServersDisabled: 3, error: null,
+  })
+  assert.deepEqual(codexDoctor.call.requests.map((request) => request.method),
+    ['initialize', 'initialized', 'model/list', 'model/list', 'config/read', 'thread/start', 'mcpServerStatus/list', 'mcpServerStatus/list'], 'the doctor went past the read-back')
+  const doctorThread = codexDoctor.call.requests.find((request) => request.method === 'thread/start').params
+  assert.deepEqual([doctorThread.ephemeral, doctorThread.cwd, doctorThread.runtimeWorkspaceRoots, doctorThread.permissions, doctorThread.config.default_permissions,
+    doctorThread.allowProviderModelFallback, doctorThread.approvalPolicy, 'model' in doctorThread, 'developerInstructions' in doctorThread],
+  [true, repo, [repo], 'flow_delegation', 'flow_delegation', false, 'never', false, false])
+  assert.deepEqual(doctorThread.config.permissions.flow_delegation, { description: 'Flow delegated job', network: { enabled: false }, filesystem: {
+    ':minimal': 'read', [repo]: 'read', [join(repo, '.git')]: 'read', [codexDoctor.call.exe]: 'read', [join(fakeBin, 'codex')]: 'read', [join(codexDoctor.dir, 'tmp')]: 'write',
+  } }, 'the doctor thread carries a read-only job\'s profile')
+  for (const name of FEATURES) assert.equal(doctorThread.config[`features.${name}`], false, `the doctor thread left features.${name} on`)
+  assert.deepEqual([doctorThread.config.memories, doctorThread.config.apps, doctorThread.config.mcp_servers],
+    [{ use_memories: false, generate_memories: false }, { _default: { enabled: false } }, { hostDocs: { enabled: false }, nodeRepl: { enabled: false }, repoProbe: { enabled: false } }])
+  const claudeDoctor = await doctorCheck(claudeTransport, 'claude', 'happy')
+  assert.deepEqual(claudeDoctor.report, {
+    ok: true, protocol: ['initialize', 'mcp_status'],
+    catalog: [{ id: 'default', resolvedModel: 'claude-fake-1', efforts: everyEffort }, { id: 'sonnet', resolvedModel: 'claude-fake-1', efforts: everyEffort },
+      { id: 'opus', resolvedModel: 'claude-fake-opus-2', efforts: everyEffort }, { id: 'claude-fake-mini', resolvedModel: 'claude-fake-mini', efforts: ['low', 'medium'] },
+      { id: 'haiku', resolvedModel: 'claude-fake-haiku-0', efforts: [] }],
+    profile: null, mcpServersDisabled: 0, error: null,
+  })
+  assert.deepEqual(claudeDoctor.call.frames.map((frame) => frame.request?.subtype ?? frame.type), ['initialize', 'mcp_status'], 'the doctor wrote a user message')
+  const doctorArgv = claudeDoctor.call.argv
+  const doctorFlag = (name) => doctorArgv[doctorArgv.indexOf(name) + 1]
+  assert.deepEqual(doctorArgv.slice(0, 7), ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--replay-user-messages'])
+  assert.deepEqual([doctorFlag('--setting-sources'), doctorFlag('--permission-mode'), doctorFlag('--tools'), doctorArgv.includes('--strict-mcp-config')], ['', 'dontAsk', 'Read,Grep,Glob,Bash', true])
+  assert.deepEqual(JSON.parse(doctorFlag('--settings')).sandbox.filesystem.denyWrite, [repo], 'the doctor CLI carries a read-only job\'s sandbox')
+  for (const name of ['--model', '--effort', '--session-id', '--resume', '--append-system-prompt-file']) assert.ok(!doctorArgv.includes(name), `the doctor CLI took ${name}`)
+  ok('the doctor handshake runs each transport up to the read-back on a read-only job\'s containment, reports the catalog, the profile and the disabled servers, and sends no turn/start and no user message')
+
+  // A step that fails is typed, protocol stops before it, and nothing is sent after it: a profile
+  // the thread ignores, an MCP server left reachable, and a CLI whose protocol moved.
+  for (const [transport, name, mode, kind, protocol, details] of [
+    [codexTransport, 'codex', 'profile-ignored', 'ISOLATION', ['initialize', 'model/list', 'config/read'], { profile: ':read-only' }],
+    [codexTransport, 'codex', 'mcp-leak', 'ISOLATION', ['initialize', 'model/list', 'config/read', 'thread/start'], { servers: ['pluginDocs'] }],
+    [codexTransport, 'codex', 'drift', 'PROVIDER_ERROR', ['initialize'], undefined],
+    [claudeTransport, 'claude', 'mcp-leak', 'ISOLATION', ['initialize'], { servers: ['hostDocs'] }],
+    [claudeTransport, 'claude', 'drift', 'PROVIDER_ERROR', [], undefined]]) {
+    const { report, call } = await doctorCheck(transport, name, mode)
+    assert.deepEqual([report.ok, report.error?.kind, report.protocol, report.error?.details], [false, kind, protocol, details], `${name} ${mode}: ${JSON.stringify(report)}`)
+    const sent = name === 'codex' ? call.requests.filter((request) => request.method === 'turn/start') : call.frames.filter((frame) => frame.type === 'user')
+    assert.deepEqual(sent, [], `${name} ${mode}: the doctor sent a prompt`)
+  }
+  ok('a doctor handshake that meets an ignored profile, a reachable MCP server or a moved protocol step fails with a typed kind, names the steps that passed, and sends no prompt')
+
   const doctor = await claudeHost.call('delegation_doctor', {})
   assert.equal(doctor.ok, true)
   assert.deepEqual([doctor.host, doctor.target, doctor.provider.version, doctor.roots], ['claude', 'codex', 'codex-cli 0.0.0-fake', [repo]])
-  assert.equal((await codexHost.call('delegation_doctor', {})).provider.auth.method, 'claude.ai')
-  assert.ok(!(await codexHost.call('delegation_doctor', {})).text.includes('secret@example.invalid'), 'the doctor repeated the account email')
+  assert.deepEqual([doctor.transport.ok, doctor.transport.profile, doctor.transport.mcpServersDisabled, doctor.transport.catalog.map((model) => model.id)],
+    [true, 'flow_delegation', 3, ['gpt-fake', 'gpt-fake-mini', 'gpt-fake-other']])
+  assert.equal(doctor.summary, 'codex codex-cli 0.0.0-fake ready: 3 model(s) listed, profile flow_delegation, 3 MCP server(s) disabled, no turn')
+  const claudeDoctorCall = await codexHost.call('delegation_doctor', {})
+  assert.deepEqual([claudeDoctorCall.ok, claudeDoctorCall.provider.auth.method, claudeDoctorCall.transport.protocol, claudeDoctorCall.transport.profile,
+    claudeDoctorCall.transport.catalog.find((model) => model.id === 'opus').resolvedModel], [true, 'claude.ai', ['initialize', 'mcp_status'], null, 'claude-fake-opus-2'])
+  assert.ok(!claudeDoctorCall.text.includes('secret@example.invalid'), 'the doctor repeated the account email')
+  assert.deepEqual(readdirSync(join(state, 'doctor')), [], 'the doctor left its directory behind')
   const bare = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo, PATH: pathWith() } })
-  assert.equal((await bare.call('delegation_doctor', {})).error.kind, 'PROVIDER_NOT_INSTALLED')
+  const bareDoctor = await bare.call('delegation_doctor', {})
+  assert.deepEqual([bareDoctor.error.kind, bareDoctor.transport], ['PROVIDER_NOT_INSTALLED', null])
   assert.equal((await start(bare, { prompt: 'x' })).job.error.kind, 'PROVIDER_NOT_INSTALLED')
   bare.close()
-  ok('the doctor reports version, sign-in and roots without the account identity, and a missing provider is typed')
+  // A CLI that is installed and signed in but does not speak the protocol, like one from before
+  // app-server or --replay-user-messages: the doctor is not ok, and its kind is typed. The CLI's
+  // stderr reaches server.log and never the result.
+  const oldBin = join(tmp, 'old-bin')
+  mkdirSync(oldBin)
+  writeFileSync(join(oldBin, 'codex'), '#!/bin/sh\ncase "$1" in\n  --version) echo "codex-cli 0.0.1-old" ;;\n  login) echo "Logged in using ChatGPT" >&2 ;;\n  *) echo "OLD-CLI-STDERR unrecognized subcommand $1" >&2; exit 2 ;;\nesac\n', { mode: 0o755 })
+  writeFileSync(join(oldBin, 'claude'), '#!/bin/sh\ncase "$1" in\n  --version) echo "0.0.1-old (Claude Code)" ;;\n  auth) echo \'{"loggedIn":true,"authMethod":"claude.ai"}\' ;;\n  *) echo "OLD-CLI-STDERR unknown option $1" >&2; exit 1 ;;\nesac\n', { mode: 0o755 })
+  for (const [host, who] of [['claude', 'The Codex App Server'], ['codex', 'Claude']]) {
+    const old = await connect({ host, cwd: repo, env: { CLAUDE_PROJECT_DIR: repo, PATH: pathWith(oldBin) } })
+    const report = await old.call('delegation_doctor', {})
+    assert.deepEqual([report.ok, report.error?.kind, report.transport.ok, report.transport.protocol, report.provider.auth.loggedIn], [false, 'PROVIDER_ERROR', false, [], true], JSON.stringify(report))
+    assert.equal(report.error.message, `${who} exited before it answered initialize; server.log in the state directory has its stderr.`)
+    assert.ok(!report.text.includes('OLD-CLI-STDERR'), 'provider stderr reached the doctor result')
+    old.close()
+  }
+  assert.equal(readFileSync(join(state, 'server.log'), 'utf8').match(/doctor handshake failed: .*OLD-CLI-STDERR/g)?.length, 2, 'the old CLIs\' stderr is not in server.log')
+  ok('the doctor reports version, sign-in, roots and the transport handshake without the account identity, removes its directory, and types a missing provider or one whose handshake fails, keeping its stderr out of the result')
 
   const expired = await claudeHost.call('delegation_result', { jobId: timed.job.id, waitSeconds: 60 })
   assert.equal(expired.job.status, 'failed')
