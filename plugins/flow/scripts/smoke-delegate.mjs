@@ -4,14 +4,16 @@
 // argv, cwd and environment in the job's private TMPDIR, and answers in the mode a
 // FLOW_FAKE_MODE=<mode> token in the prompt names. The fake Codex is an App Server peer that also
 // records every request and response; the fake Claude is a stream-json control-channel peer that
-// records every frame it is written. The fakes speak the protocol subset the transports use, in
-// the shapes Codex CLI 0.159.0 and Claude Code 2.1.284 answer with. No network, no model.
+// records every frame it is written. In the steer modes each takes a steer during its turn: the
+// fake Codex through turn/steer, the fake Claude as a second user message that it folds in or runs
+// as the next turn. The fakes speak the protocol subset the transports use, in the shapes Codex
+// CLI 0.159.0 and Claude Code 2.1.284 answer with. No network, no model.
 // Run: node plugins/flow/scripts/smoke-delegate.mjs
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -92,7 +94,8 @@ function appServer() {
   const LOADED = ['hostDocs', 'nodeRepl', 'repoProbe']
   const MODELS = [{ id: 'gpt-fake', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }, { id: 'gpt-fake-mini', efforts: ['low', 'medium'] }, { id: 'gpt-fake-other', efforts: ['low'] }]
     .map(({ id, efforts }) => ({ id, model: id, hidden: false, supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'low' }))
-  let thread = null, threadId = null, turnOpen = false, served = 0
+  let thread = null, threadId = null, turnOpen = false, served = 0, onSteer = null
+  const steered = []
   const reply = (id, result) => out({ id, result })
   const refuse = (id, message) => out({ id, error: { code: -32600, message } })
   const page = (list, params) => {
@@ -112,7 +115,9 @@ function appServer() {
   })
   async function runTurn(params) {
     out({ method: 'turn/started', params: { threadId, turn: { id: TURN, items: [], status: 'inProgress', error: null } } })
-    if (mode === 'hang') return hang()
+    if (mode === 'hang' || mode === 'steer-refused') return hang()
+    // A steered turn waits for its steer, then answers with it folded in.
+    if (mode === 'steer') await new Promise((resolve) => { onSteer = resolve; setTimeout(resolve, 20000) })
     if (mode === 'refusal') {
       const message = 'This request was flagged for possible cyber risk.'
       out({ method: 'error', params: { error: { message }, willRetry: false, threadId, turnId: TURN } })
@@ -124,7 +129,8 @@ function appServer() {
     if (mode === 'approval') {
       for (const method of ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'applyPatchApproval', 'execCommandApproval', 'item/tool/requestUserInput']) await ask(method)
     }
-    out({ method: 'item/completed', params: { threadId, turnId: TURN, item: { type: 'agentMessage', id: 'm1', text: answerFor(params.outputSchema, mode), phase: 'final_answer' } } })
+    const text = answerFor(params.outputSchema, mode) + (steered.length ? '; steered: ' + steered.join(' | ') : '')
+    out({ method: 'item/completed', params: { threadId, turnId: TURN, item: { type: 'agentMessage', id: 'm1', text, phase: 'final_answer' } } })
     complete('completed')
   }
   function handle({ id, method, params = {} }) {
@@ -162,8 +168,11 @@ function appServer() {
       return setTimeout(runTurn, mode === 'slow' ? 1500 : 0, params)
     }
     if (method === 'turn/steer') {
+      if (mode === 'steer-refused') return refuse(id, 'this turn cannot be steered right now')
       if (!turnOpen || params.expectedTurnId !== TURN) return refuse(id, 'no active turn to steer')
-      return reply(id, { turnId: TURN })
+      steered.push(params.input.map((part) => part.text).join(''))
+      reply(id, { turnId: TURN })
+      return onSteer?.()
     }
     if (method === 'turn/interrupt') {
       if (!turnOpen) return refuse(id, 'no active turn to interrupt')
@@ -186,8 +195,8 @@ function appServer() {
       waiting.get(message.id)?.()
     }
   })
-  // Like the App Server, the fake exits when its client closes stdin.
-  lines.on('close', () => process.exit(0))
+  // Like the App Server, the fake exits when its client closes stdin; in linger mode, a while later.
+  lines.on('close', () => setTimeout(() => process.exit(0), mode === 'linger' ? 4000 : 0))
 }
 
 function claudeCli() {
@@ -210,8 +219,10 @@ function claudeCli() {
   const session = flag('--session-id') || flag('--resume')
   const schema = flag('--json-schema') ? JSON.parse(flag('--json-schema')) : null
   const answer = answerFor(schema, mode)
-  let busy = false, closed = false, hangTimer = null, asked = 0
-  const waiting = new Map()
+  let busy = false, closed = false, hangTimer = null, asked = 0, onSteer = null
+  const waiting = new Map(), steered = [], queue = []
+  const replay = (frame) => out({ type: 'user', message: frame.message, parent_tool_use_id: null, session_id: session, uuid: frame.uuid, isReplay: true })
+  const textOf = (frame) => frame.message.content.map((part) => part.text).join('')
   const reply = (request_id, response) => out({ type: 'control_response', response: { subtype: 'success', request_id, response } })
   const result = (fields) => {
     busy = false
@@ -252,13 +263,35 @@ function claudeCli() {
       out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'Exit code 1' }] } })
     }
     if (mode === 'can-use-tool') await ask({ subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'rm -rf build' }, tool_use_id: 't2' })
+    // A steered first turn waits for its steer.
+    if (mode.startsWith('steer') && !steered.length && !queue.length) await new Promise((resolve) => { onSteer = resolve; setTimeout(resolve, 20000) })
+    onSteer = null
+    const text = steered.length ? answer + '; steered: ' + steered.join(' | ') : answer
     out({ type: 'assistant', message: { model: '<synthetic>', content: [] } })
-    out({ type: 'assistant', message: { model: served + '[1m]', content: [{ type: 'text', text: answer }] } })
-    result({ subtype: 'success', is_error: false, result: answer, ...(schema ? { structured_output: JSON.parse(answer) } : {}),
+    out({ type: 'assistant', message: { model: served + '[1m]', content: [{ type: 'text', text }] } })
+    result({ subtype: 'success', is_error: false, result: text, ...(schema ? { structured_output: JSON.parse(text) } : {}),
       permission_denials: mode === 'approval' ? [{ tool_name: 'Read' }] : [] })
+    // A steer that was not folded in runs as the next turn. steer-drain replayed it on receipt and
+    // starts it at once, before the end of stdin can arrive; steer-next replays it only when it
+    // dequeues it, 300 ms later, and a CLI whose stdin closed in between has already exited.
+    const next = queue.shift()
+    if (!next) return
+    steered.push(textOf(next))
+    if (mode === 'steer-drain') return begin(next, true)
+    setTimeout(() => { replay(next); begin(next, true) }, 300)
   }
   function user(frame) {
     if (mode === 'exit-nonzero') { process.stderr.write('SECRET-STDERR-TOKEN\n'); process.exit(3) }
+    if (!busy) return begin(frame)
+    // A message during a turn: steer folds it into the running turn, steer-drain replays it now and
+    // queues it, and steer-next queues it unreplayed.
+    if (mode === 'steer') { replay(frame); steered.push(textOf(frame)) } else {
+      if (mode === 'steer-drain') replay(frame)
+      queue.push(frame)
+    }
+    return onSteer?.()
+  }
+  function begin(frame, replayed = false) {
     busy = true
     if (mode === 'bad-json') console.log('this line is not json')
     out({ type: 'system', subtype: 'init', session_id: session, model: mode === 'init-swap' ? 'claude-fake-1' : model, cwd: process.cwd(),
@@ -266,7 +299,7 @@ function claudeCli() {
       mcp_servers: mode === 'plugin-leak' ? [{ name: 'plugin:docs:search', status: 'connected' }] : [],
       plugins: mode === 'plugin-leak' ? [{ name: 'docs', path: '/plugins/docs' }] : [],
       permissionMode: 'dontAsk', apiKeySource: 'none', claude_code_version: '0.0.0-fake', slash_commands: [], output_style: 'default', skills: [] })
-    out({ type: 'user', message: frame.message, parent_tool_use_id: null, session_id: session, uuid: frame.uuid, isReplay: true })
+    if (!replayed) replay(frame)
     setTimeout(turn, mode === 'slow' ? 1500 : 0)
   }
   const lines = require('node:readline').createInterface({ input: process.stdin })
@@ -732,6 +765,96 @@ try {
   session.close()
   try { process.kill(-steerChild.pid, 'SIGKILL') } catch {}
   ok('the Codex session steers its open turn with turn/steer against the turn id, interrupts it, and takes neither once the turn has ended')
+
+  // delegation_steer puts an instruction into the running turn of the same job. Codex takes it as
+  // turn/steer against the open turn's id. Claude takes it as a priority 'next' user message and
+  // acknowledges it by replaying its uuid: folded into the running turn (steer), replayed on receipt
+  // and run as the next turn (steer-drain), or replayed only when it runs as the next turn
+  // (steer-next). The answer carries the steer, and the job keeps its id.
+  const steerOn = async (client, mode) => {
+    const running = await start(client, { prompt: `FLOW_FAKE_MODE=${mode} count the files`, waitSeconds: 0 })
+    assert.ok(await until(() => readJob(running.job.id).turnOpen), `${mode}: the turn never opened`)
+    const steered = await client.call('delegation_steer', { jobId: running.job.id, prompt: 'also give the total' })
+    assert.deepEqual([steered.ok, steered.steer.status, steered.job.id], [true, 'delivered', running.job.id], JSON.stringify(steered))
+    assert.match(steered.summary, /^steer delivered \| /)
+    const done = await client.call('delegation_result', { jobId: running.job.id, waitSeconds: 30 })
+    assert.deepEqual([done.job.status, done.job.output], ['succeeded', 'fake answer; steered: also give the total'], JSON.stringify(done.job))
+    assert.deepEqual(done.job.steers.map(({ id, status, error }) => ({ id, status, error })), [{ id: steered.steer.id, status: 'delivered', error: null }])
+    assert.deepEqual(journal(running.job.id).filter((event) => event.type === 'flow.steer'), [{ type: 'flow.steer', id: steered.steer.id, delivered: true, error: null }])
+    return running.job.id
+  }
+  const codexSteered = await steerOn(claudeHost, 'steer')
+  assert.deepEqual(asked(codexSteered, 'turn/steer'), [{ threadId: THREAD, expectedTurnId: TURN, input: [{ type: 'text', text: 'also give the total', text_elements: [] }] }])
+  for (const [mode, results] of [['steer', 1], ['steer-drain', 2], ['steer-next', 2]]) {
+    const id = await steerOn(codexHost, mode)
+    const users = wrote(id).filter((frame) => frame.type === 'user')
+    assert.deepEqual(users.map((frame) => [frame.message.content[0].text, frame.priority ?? null, frame.client_composed, frame.session_id]),
+      [[`FLOW_FAKE_MODE=${mode} count the files`, null, true, readJob(id).threadId], ['also give the total', 'next', true, readJob(id).threadId]])
+    assert.notEqual(users[0].uuid, users[1].uuid)
+    assert.equal(journal(id).filter((event) => event.type === 'result').length, results, `${mode}: the steer ran in the wrong turn`)
+  }
+  ok('a steer reaches the running turn of the same job on both targets: Codex through turn/steer against the open turn, Claude as a priority next message acknowledged by its replay, folded in or run as the next turn, with stdin closed only after a result that follows the replay and the last result as the answer')
+
+  // A steer is refused, and nothing is written, for a malformed call, a job not visible here, a
+  // queued job, a job whose turn has not opened, and a finished job.
+  const steerRefused = async (client, args, kind) => {
+    const result = await client.call('delegation_steer', args)
+    assert.deepEqual([result.ok, result.error?.kind], [false, kind], JSON.stringify(result))
+    if (args.jobId) assert.equal(existsSync(jobPath(args.jobId, 'steer')), false, `${kind}: a refused steer wrote a file`)
+  }
+  await steerRefused(claudeHost, { jobId: codexRead.job.id, prompt: ' ' }, 'BAD_REQUEST')
+  await steerRefused(claudeHost, { jobId: codexRead.job.id, prompt: 'x'.repeat(65_537) }, 'BAD_REQUEST')
+  await steerRefused(claudeHost, { jobId: codexRead.job.id, prompt: 'x', waitSeconds: 1 }, 'BAD_REQUEST')
+  await steerRefused(claudeHost, { jobId: claudeRead.job.id, prompt: 'x' }, 'JOB_NOT_FOUND')
+  const queued = { ...readJob(codexRead.job.id), id: randomUUID(), status: 'queued', createdAt: new Date().toISOString(), endedAt: null, turnOpen: false }
+  mkdirSync(jobs.jobDir(queued.id), { recursive: true })
+  jobs.writeJob(queued)
+  await steerRefused(claudeHost, { jobId: queued.id, prompt: 'x' }, 'JOB_STATE')
+  jobs.settle(queued, 'cancelled')
+  const unopened = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=slow', waitSeconds: 0 })
+  assert.ok(await until(() => readJob(unopened.job.id).status === 'running'))
+  await steerRefused(claudeHost, { jobId: unopened.job.id, prompt: 'x' }, 'JOB_STATE')
+  assert.equal((await claudeHost.call('delegation_result', { jobId: unopened.job.id, waitSeconds: 30 })).job.status, 'succeeded', 'a refused steer stopped the job')
+  await steerRefused(claudeHost, { jobId: codexRead.job.id, prompt: 'x' }, 'JOB_STATE')
+  await steerRefused(codexHost, { jobId: claudeRead.job.id, prompt: 'x' }, 'JOB_STATE')
+  ok('a steer with an empty or oversized prompt, an unknown argument, an invisible job, a queued job, a job with no open turn or a finished job is refused, and nothing is written')
+
+  // A provider that refuses the steer makes it failed, with its message, and the job runs on.
+  const refusing = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=steer-refused', waitSeconds: 0 })
+  assert.ok(await until(() => readJob(refusing.job.id).turnOpen))
+  const refusedSteer = await claudeHost.call('delegation_steer', { jobId: refusing.job.id, prompt: 'change course' })
+  assert.deepEqual([refusedSteer.ok, refusedSteer.steer.status, refusedSteer.job.status], [false, 'failed', 'running'], JSON.stringify(refusedSteer))
+  assert.match(refusedSteer.steer.error, /this turn cannot be steered right now/)
+  assert.equal((await claudeHost.call('delegation_cancel', { jobId: refusing.job.id })).job.status, 'cancelled')
+  // A steer the server wrote just before the Codex turn completed finds no open turn in the runner:
+  // it is answered failed, and turn/steer is never sent. The server itself refuses it from then on.
+  const lingering = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=linger', waitSeconds: 0 })
+  assert.ok(await until(() => existsSync(jobPath(lingering.job.id, 'events.jsonl')) && journal(lingering.job.id).some((event) => event.method === 'turn/completed')
+    && readJob(lingering.job.id).status === 'running' && !readJob(lingering.job.id).turnOpen), 'the lingering job never showed a completed turn while its runner ran')
+  await steerRefused(claudeHost, { jobId: lingering.job.id, prompt: 'too late' }, 'JOB_STATE')
+  const lateSteer = randomUUID()
+  mkdirSync(jobPath(lingering.job.id, 'steer'))
+  writeFileSync(jobPath(lingering.job.id, 'steer', '.late'), JSON.stringify({ id: lateSteer, prompt: 'too late', at: new Date().toISOString() }))
+  renameSync(jobPath(lingering.job.id, 'steer', '.late'), jobPath(lingering.job.id, 'steer', `${lateSteer}.json`))
+  const lateAck = await until(() => { try { return JSON.parse(readFileSync(jobPath(lingering.job.id, 'steer', `${lateSteer}.ack.json`), 'utf8')) } catch { return null } })
+  assert.deepEqual(lateAck, { id: lateSteer, delivered: false, error: 'the turn has ended' })
+  const lingered = await claudeHost.call('delegation_result', { jobId: lingering.job.id, waitSeconds: 30 })
+  assert.equal(lingered.job.status, 'succeeded')
+  assert.deepEqual(lingered.job.steers.map(({ id, status, error }) => [id, status, error]), [[lateSteer, 'failed', 'the turn has ended']])
+  assert.deepEqual(asked(lingering.job.id, 'turn/steer'), [], 'a steer reached a turn that had completed')
+  // A runner that never answers leaves the steer unknown, never delivered.
+  const frozen = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=hang', waitSeconds: 0 })
+  const frozenCall = await until(() => fakeCall(frozen.job.id)?.childPid && fakeCall(frozen.job.id))
+  assert.ok(await until(() => readJob(frozen.job.id).turnOpen))
+  const frozenRunner = readJob(frozen.job.id).runnerPid
+  process.kill(frozenRunner, 'SIGSTOP')
+  const pendingSteer = claudeHost.call('delegation_steer', { jobId: frozen.job.id, prompt: 'anyone there' })
+  await sleep(1000)
+  process.kill(frozenRunner, 'SIGKILL')
+  const lostSteer = await pendingSteer
+  assert.deepEqual([lostSteer.ok, lostSteer.steer.status, lostSteer.job.status, lostSteer.job.error?.kind], [false, 'unknown', 'unknown', 'RUNNER_LOST'], JSON.stringify(lostSteer))
+  assert.ok(await until(() => !alive(frozenCall.pid) && !alive(frozenCall.childPid)), 'the frozen runner left its provider group running')
+  ok('a steer the provider refuses is failed with its message and the job runs on, a steer that finds the Codex turn completed is failed without turn/steer, and a steer no runner answers is unknown')
 
   // A runner that dies leaves an unknown outcome, and its lease does not outlive it.
   const orphan = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=hang', waitSeconds: 0, access: 'workspace-write' })
