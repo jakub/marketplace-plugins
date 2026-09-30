@@ -1062,6 +1062,21 @@ try {
   assert.equal(readJob(late.id).status, 'failed')
   ok('a queued writer past its grace is claimed and settled before its lease goes, so its late runner never starts')
 
+  // A runner records its job's TMPDIR while the job is still queued, then makes it, then marks the
+  // job running. One that dies between the last two leaves a queued record naming a directory that
+  // exists, under a claim whose holder is dead. Settling the job past its grace removes it.
+  const starting = { ...late, id: randomUUID(), access: 'read-only', tmpDir: null }
+  starting.tmpDir = jobs.tmpPath(starting.id)
+  mkdirSync(jobs.jobDir(starting.id), { recursive: true })
+  jobs.writeJob(starting)
+  jobs.makeTmp(starting.tmpDir)
+  writeFileSync(join(starting.tmpDir, 'left'), '')
+  writeFileSync(jobPath(starting.id, 'claim'), JSON.stringify({ pid: deadPid, start: '1' }))
+  const neverRan = await claudeHost.call('delegation_result', { jobId: starting.id })
+  assert.deepEqual([neverRan.job.status, neverRan.job.error?.kind], ['failed', 'RUNNER_LOST'], JSON.stringify(neverRan))
+  assert.equal(existsSync(starting.tmpDir), false, 'a runner that died before it marked its job running left its TMPDIR behind')
+  ok('a runner that dies after it made its job\'s TMPDIR but before the job ran leaves the path on record, and settling the job removes the directory')
+
   // The doctor's handshake, driven directly so the fakes' records survive it: each transport does
   // what a job does before its prompt, on a read-only job's containment, reports the catalog and
   // the read-back, sends no prompt, and leaves no provider behind.
@@ -1141,7 +1156,7 @@ try {
   // Each doctor handshake gets a private TMPDIR made the way a job's is, and removes it.
   const doctorTmpGone = (who) => {
     const given = fakeCall('doctor').env.TMPDIR
-    assert.deepEqual([dirname(given), /^flow-doctor-[A-Za-z0-9]{6}$/.test(basename(given))], [TMP_ROOT, true], `the ${who} doctor's TMPDIR is ${given}`)
+    assert.deepEqual([dirname(given), /^flow-doctor-[0-9a-f]{8}$/.test(basename(given))], [TMP_ROOT, true], `the ${who} doctor's TMPDIR is ${given}`)
     assert.equal(existsSync(given), false, `the ${who} doctor left its TMPDIR behind`)
   }
   doctorTmpGone('Codex')

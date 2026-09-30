@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { seatPayload } from '../lib/charter-payload.mjs'
 import { transport as claude } from './claude-control.mjs'
 import { transport as codex } from './codex-app-server.mjs'
-import { claim, DelegateError, dropTmp, jobDir, JOB_ID, log, makeTmp, readJob, releaseLease, settle, signalProvider, startToken, writeJob } from './jobs.mjs'
+import { claim, DelegateError, dropTmp, jobDir, JOB_ID, log, makeTmp, readJob, releaseLease, settle, signalProvider, startToken, tmpPath, writeJob } from './jobs.mjs'
 import { findExecutable, providerEnv } from './providers.mjs'
 
 const STALL_SECONDS = 420
@@ -228,10 +228,11 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
   return { folded, stopped }
 }
 
-// The runner creates the job's private TMPDIR just before it marks the job running, and records
-// both in one write. It removes the directory once the provider's group is dead and before it
-// writes the outcome, so a caller that sees the job ended never finds the directory left behind.
-// When the runner dies, reconcile in jobs.mjs removes it.
+// The runner records the path of the job's private TMPDIR while the job is still queued, then
+// creates the directory, then marks the job running, so a runner that dies at any point leaves a
+// record naming every directory it made. It removes the directory once the provider's group is
+// dead and before it writes the outcome, so a caller that sees the job ended never finds the
+// directory left behind. When the runner dies, reconcile in jobs.mjs removes it.
 export async function runJob(id) {
   if (!JOB_ID.test(id)) return
   let job = readJob(id)
@@ -250,8 +251,10 @@ export async function runJob(id) {
       const seat = delegatedInstructions(job, transport.name)
       writeFileSync(join(dir, 'seat.md'), seat, { mode: 0o600 })
       const prompt = readFileSync(join(dir, 'prompt.txt'), 'utf8')
-      tmp = makeTmp(id)
-      job = writeJob({ ...job, status: 'running', startedAt: new Date().toISOString(), runnerPid: process.pid, runnerStart: startToken(process.pid), tmpDir: tmp })
+      job = writeJob({ ...job, tmpDir: tmpPath(id) })
+      makeTmp(job.tmpDir)
+      tmp = job.tmpDir
+      job = writeJob({ ...job, status: 'running', startedAt: new Date().toISOString(), runnerPid: process.pid, runnerStart: startToken(process.pid) })
       const { folded, stopped } = await runProvider(job, dir, bin, transport, seat, prompt)
       job = readJob(id) ?? job
       result = outcome(job, folded, stopped)

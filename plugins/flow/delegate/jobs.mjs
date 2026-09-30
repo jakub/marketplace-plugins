@@ -7,8 +7,8 @@
 // a lease takeover never both act on it. A steer is a file the server writes under steer/ and the
 // runner answers beside it, so neither ever writes the other's file.
 import { execFile, spawn } from 'node:child_process'
-import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, fstatSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { appendFileSync, closeSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -70,15 +70,18 @@ export const jobDir = (id) => join(stateDir(), 'jobs', id)
 // socket path holds at most 107 bytes, so every sandboxed command fails when TMPDIR is longer than
 // 72 bytes. The job directory's depth follows HOME, and with HOME=/home/jakub a job's tmp under the
 // default state directory was 75 bytes. So each job gets /tmp/flow-<first 8 characters of its
-// id>-<6 random characters>, 25 bytes whatever HOME, the state directory or the host's own TMPDIR
-// say. It is not in $XDG_RUNTIME_DIR, because Codex passes an MCP server no XDG variable, so the
-// location would differ by host, and that directory is a small tmpfs meant for sockets, not for a
-// build's temporary files. mkdtemp creates the directory with mode 0700 under a name no other user
-// can predict or create first, and the sticky bit on /tmp stops another user from moving it. The
-// runner creates it, records it as tmpDir, and removes it when the job ends. When the runner dies,
-// reconcile removes it.
+// id>-<8 random hex characters>, 27 bytes whatever HOME, the state directory or the host's own
+// TMPDIR say. It is not in $XDG_RUNTIME_DIR, because Codex passes an MCP server no XDG variable, so
+// the location would differ by host, and that directory is a small tmpfs meant for sockets, not for
+// a build's temporary files. The path is chosen first and recorded as tmpDir while the job is still
+// queued, and only then created, so the directory never exists before its job's record names it.
+// makeTmp creates it with mode 0700 and fails if the name is taken, the random part keeps other
+// users from predicting it, and the sticky bit on /tmp stops another user from moving it. The
+// runner removes it when the job ends. When the runner dies, reconcile removes it, whether the job
+// reached running or not.
 const tmpPrefix = (id) => `flow-${String(id).slice(0, 8)}-`
-export const makeTmp = (id) => realpathSync(mkdtempSync(join('/tmp', tmpPrefix(id))))
+export const tmpPath = (id) => join(realpathSync('/tmp'), `${tmpPrefix(id)}${randomBytes(4).toString('hex')}`)
+export const makeTmp = (path) => mkdirSync(path, { mode: 0o700 })
 // Only a directory named for this job is removed, whatever a record says.
 export function dropTmp(id, path) {
   if (typeof path === 'string' && isAbsolute(path) && basename(path).startsWith(tmpPrefix(id))) rmSync(path, { recursive: true, force: true })
@@ -370,7 +373,8 @@ function spawnRunner(job) {
 // A running job whose runner is gone has an unknown outcome: nothing is left that could prove
 // what the provider did. Its provider group is killed and its TMPDIR removed. A queued job past a
 // minute is settled once this call holds its claim or the holder is dead, and left alone while a
-// live runner holds it, since that runner is starting.
+// live runner holds it, since that runner is starting. A runner that died while starting may have
+// recorded and made the TMPDIR already, so that one is removed too.
 export function reconcile(job) {
   if (job?.status === 'running' && !runnerAlive(job)) {
     const again = readJob(job.id)
@@ -385,6 +389,7 @@ export function reconcile(job) {
     const again = readJob(job.id)
     if (again?.status === 'running') return reconcile(again)
     if (again?.status !== 'queued') return again
+    dropTmp(again.id, again.tmpDir)
     releaseLease(again)
     return settle(again, 'failed', { error: { kind: 'RUNNER_LOST', message: 'The job runner never started.' } })
   }

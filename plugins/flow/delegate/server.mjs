@@ -141,13 +141,14 @@ export async function serve({ host, version }) {
   }
 
   // The transport's own handshake against the provider a job would run, with a job's environment
-  // and a private TMPDIR from makeTmp, like a job's, in the first usable root or the state
+  // and a private TMPDIR named and made the way a job's is, in the first usable root or the state
   // directory when there is none. It creates the state directory first, because that directory can
   // be the cwd and holds the server.log that a failed handshake points to. It sends no prompt, and
   // it removes the TMPDIR afterwards.
   async function checkTransport(bin, usable) {
     mkdirSync(jobs.stateDir(), { recursive: true, mode: 0o700 })
-    const tmp = jobs.makeTmp('doctor')
+    const tmp = jobs.tmpPath('doctor')
+    jobs.makeTmp(tmp)
     try {
       const cwd = usable[0] ?? realpathSync(jobs.stateDir())
       return await TRANSPORTS[target].check({ cwd, bin, env: providerEnv({ id: 'doctor', target }, tmp) })
