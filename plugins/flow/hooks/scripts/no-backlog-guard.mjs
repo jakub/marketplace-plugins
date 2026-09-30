@@ -6,15 +6,17 @@
 // Policy: PRs ship complete; nothing enters the tracker except through the front door.
 // PreToolUse protocol: read tool call JSON on stdin; deny via hookSpecificOutput JSON.
 
+import { stripLiterals } from '../../lib/hook-policy.mjs'
 import { preToolDeny, readHookInput } from './wire.mjs'
 
 // An unparseable body is the harness's problem, not a policy breach: never block on our own bug.
 const input = await readHookInput()
 const cmd = input?.tool_input?.command || ''
-// Match `gh issue create` allowing flag/quote noise between the words, but not
-// substrings of other commands. Cheap heuristic, deliberately narrow: false negatives
-// are acceptable (the policy is also in the charter), false positives are not.
-const creates = /\bgh\s+issue\s+create\b/.test(cmd)
+// Match the words `gh issue create`, not substrings of other commands. Cheap heuristic,
+// deliberately narrow: false negatives are acceptable (the policy is also in the charter), false
+// positives are not. So the words are read with heredoc bodies and quoted strings removed: a
+// commit message or a script body that names the command is prose.
+const creates = /\bgh\s+issue\s+create\b/.test(stripLiterals(cmd))
 const sanctioned = /\bFLOW_SANCTION=(prep|land)\b/.test(cmd)
 if (creates && !sanctioned) {
   process.stdout.write(JSON.stringify(preToolDeny(

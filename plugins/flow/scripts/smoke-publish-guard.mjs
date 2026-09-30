@@ -113,7 +113,6 @@ denies('a plain merge is denied', MERGE, 'land-merge.mjs', { cwd: managed })
 denies('and the denial names the executor', MERGE, EXECUTOR, { cwd: managed })
 denies('and shows the two-argument form', MERGE, '<pr-number> <expected-head-sha>', { cwd: managed })
 denies('and says the repository opted in', MERGE, '.flow/managed', { cwd: managed })
-denies('a merge wrapped in bash -lc is denied', `bash -lc '${MERGE}'`, 'land-merge.mjs', { cwd: managed })
 allows('the executor invocation itself passes', RUN_EXECUTOR, { cwd: managed })
 
 console.log('in a repo with no committed marker, flow gates no merges')

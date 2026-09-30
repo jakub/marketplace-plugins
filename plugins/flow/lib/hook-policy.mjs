@@ -1,5 +1,11 @@
-// Harness-neutral policy for flow's protected-file, public-registry and merge guards.
-// Adapters own wire formats: policy receives commands or paths and returns a reason.
+// Harness-neutral policy for flow's protected-file, registry-publication and merge guards.
+// Policy takes a path or a command and returns a reason or null; the adapters in
+// hooks/scripts/ own the wire formats and each host's answer.
+//
+// A cooperative guardrail, not a security boundary. Each guard stops the ordinary mistake,
+// and a model at the same uid can reach the same effect through a command none of this reads.
+// Over-matching costs one rephrase, so the reading below is regex over shell text, not a
+// shell parser: a string built to look like a quote or a heredoc can hide a command from it.
 
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
@@ -13,25 +19,6 @@ const LOCKFILES = new Set([
   'composer.lock', 'go.sum', 'gradle.lockfile', 'pubspec.lock',
 ])
 const BUILD_DIR = /(^|\/)(target|node_modules|dist|build|out|\.next|\.nuxt|\.venv|venv|__pycache__|\.tox|coverage|vendor)\//
-
-// The publication table. One entry per spelling, several spellings per operation, and the
-// `op` id is the stable name the rest of the system uses for "this exact kind of release".
-//
-// `kind` splits the two consumers. `registry` is the irreversible-publication set the
-// Claude ask-gate has always covered. `github` names the merge so it has a stable id.
-// publishReason ignores it, and the Codex merge deny reads mergeShapes() at the bottom of
-// this file rather than this table, so adding merge here changed no guard's answer.
-const PUBLISH = [
-  { op: 'cargo-publish', kind: 'registry', re: /\bcargo\s+publish\b/, registry: 'crates.io', why: 'crates.io has no unpublish at all' },
-  { op: 'npm-publish', kind: 'registry', re: /\bnpm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
-  { op: 'npm-publish', kind: 'registry', re: /\bpnpm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
-  { op: 'npm-publish', kind: 'registry', re: /\byarn\s+npm\s+publish\b/, registry: 'npm', why: 'npm unpublish is a 72-hour window, and only while nothing depends on it' },
-  { op: 'gem-push', kind: 'registry', re: /\bgem\s+push\b/, registry: 'RubyGems', why: 'a yanked gem keeps its version number forever' },
-  { op: 'pypi-upload', kind: 'registry', re: /\btwine\s+upload\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
-  { op: 'pypi-upload', kind: 'registry', re: /\bpoetry\s+publish\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
-  { op: 'pypi-upload', kind: 'registry', re: /\buv\s+publish\b/, registry: 'PyPI', why: 'PyPI will not let you reuse a version number, even after deletion' },
-  { op: 'gh-pr-merge', kind: 'github', re: /\bgh\s+pr\s+merge\b/ },
-]
 
 export function protectedFileReason(file) {
   const base = String(file).split('/').pop()
@@ -63,316 +50,150 @@ export function protectedFileReason(file) {
   return null
 }
 
-// Prose about publishing is not publishing. This deliberately matches the existing
-// Claude guard: simple quoted literals are removed before policy sees the command.
-// A backslash continuation is the same command, and the `&` inside a fd redirect is
-// not the background separator - `npm publish \<newline> --dry-run` and
-// `npm publish 2>&1 --dry-run` must each keep their own exemption. Only an odd run
-// of backslashes escapes the newline: after `\\` the newline still separates
-// commands, so joining there would let a dry-run segment exempt a real publish.
+// ------------------------------------------------------------------- reading a command
 //
-// A dry-run exempts only its own shell segment. A global check lets
-// `cargo publish --dry-run && cargo publish` bypass the second, real publication.
-// There is no dry run for a merge, but the segment discipline is one mechanism and the
-// merge classification rides on it unchanged.
-const liveSegments = (command) =>
-  String(command)
-    .replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
-    .replace(/'[^']*'/g, ' ')
-    .replace(/"[^"]*"/g, ' ')
-    .replace(/\d*>&\d*|&>>?/g, ' ')
-    .split(/&&|\|\||[;&|\n]/)
-    .filter((segment) => !/--dry-run\b/.test(segment))
+// Prose about an operation is not the operation. A heredoc body, a single-quoted string and a
+// double-quoted string are text handed to some other command (a commit message, a PR comment,
+// a gripe), so each one is masked before a rule reads the command. The consequence is chosen:
+// an operation inside a string a shell will run (`bash -lc '...'`, eval, a heredoc fed to a
+// shell) reads as text too, and passes.
+//
+// A heredoc's body is the lines after its opener, so the rest of the opener line stays live:
+// `cat <<'G' && git push --force` still pushes. A backslash-newline is one command, and only an
+// odd run of backslashes escapes the newline. The `&` in a fd redirect is not the separator, so
+// `npm publish 2>&1 --dry-run` stays one segment.
+const HEREDOC = /(?<!<)<<(?!<)-?[ \t]*(['"]?)([\w-]+)\1([^\n]*)\n([\s\S]*?)^[ \t]*\2(?=[ \t)]*$)/gm
+const CONTINUATION = /(?<!\\)((?:\\\\)*)\\\r?\n/g
+const LITERAL = /(?<!\\)'[^']*'|(?<!\\)"(?:\\[\s\S]|[^"\\])*"/g
+const FD_REDIRECT = /\d*>&\d*|&>>?/g
+const SEPARATOR = /&&|\|\||[;&|\n]/
+const PLACEHOLDER = /\0(\d+)\0/g
 
-/**
- * Every publication operation this command performs, as deduped op ids in the order the
- * command reaches them. `[]` means nothing in the command publishes anything.
- */
-export function publishOperations(command) {
-  const ops = []
-  for (const segment of liveSegments(command)) {
-    for (const entry of PUBLISH) {
-      if (entry.re.test(segment) && !ops.includes(entry.op)) ops.push(entry.op)
-    }
-  }
-  return ops
+// Every literal becomes a numbered placeholder, so the bare and the open reading of a command
+// split into the same segments by construction.
+function mask(command) {
+  const literals = []
+  const hold = (text) => `\0${literals.push(text) - 1}\0`
+  const text = String(command)
+    .replace(/\0/g, '')
+    .replace(HEREDOC, (_m, _q, _d, rest, body) => `${hold(body)}${rest}`)
+    .replace(CONTINUATION, '$1 ')
+    .replace(LITERAL, (literal) => hold(literal.slice(1, -1)))
+    .replace(FD_REDIRECT, ' ')
+  return { text, literals }
 }
 
-/**
- * The same wording, from op ids that are already classified. A caller that had to do its own
- * classification - the Codex guard reaches inside quoted payloads - asks with the ids it found
- * rather than handing the command over to be classified a second, weaker way.
- */
-export function registryReason(operations) {
-  for (const op of Array.isArray(operations) ? operations : []) {
-    const entry = PUBLISH.find((e) => e.op === op && e.kind === 'registry')
-    if (entry) {
-      return `This publishes to ${entry.registry}, which you cannot take back, because ${entry.why}. ` +
+/** The command with every heredoc body and quoted string blanked. */
+export const stripLiterals = (command) => mask(command).text.replace(PLACEHOLDER, ' ')
+
+// Each shell segment twice: `bare` with literals blanked, `open` with their text restored.
+function segments(command) {
+  const { text, literals } = mask(command)
+  return text.split(SEPARATOR).map((segment) => ({
+    bare: segment.replace(PLACEHOLDER, ' '),
+    open: segment.replace(PLACEHOLDER, (_m, i) => ` ${literals[i]} `),
+  }))
+}
+
+// -------------------------------------------------------------------- registry publication
+//
+// These registries have no real undo, so a publication needs a human. A dry run exempts only
+// its own segment: a global check would let `cargo publish --dry-run && cargo publish` through.
+const REGISTRIES = [
+  [/\bcargo\s+publish\b/, 'crates.io', 'crates.io has no unpublish at all'],
+  [/\b(?:npm|pnpm|yarn\s+npm)\s+publish\b/, 'npm', 'npm unpublish is a 72-hour window, and only while nothing depends on it'],
+  [/\bgem\s+push\b/, 'RubyGems', 'a yanked gem keeps its version number forever'],
+  [/\b(?:twine\s+upload|poetry\s+publish|uv\s+publish)\b/, 'PyPI', 'PyPI will not let you reuse a version number, even after deletion'],
+]
+const DRY_RUN = /(?:^|\s)--dry-run(?=\s|$)/
+
+/** Why this command needs a human before it runs, or null when it publishes nothing. */
+export function publishReason(command) {
+  for (const { bare } of segments(command)) {
+    if (DRY_RUN.test(bare)) continue
+    const hit = REGISTRIES.find(([re]) => re.test(bare))
+    if (hit) {
+      return `This publishes to ${hit[1]}, which you cannot take back, because ${hit[2]}. ` +
         'Confirm the version number and the contents are what you mean to ship.'
     }
   }
   return null
 }
 
-/**
- * The human-facing reason a command needs a second look before it runs, or null. Reads
- * registry operations only: a GitHub merge is classified, not asked about, because the
- * Claude guard's behavior predates the merge op and must not change.
- */
-export function publishReason(command) {
-  return registryReason(publishOperations(command))
-}
-
-// ------------------------------------------------------------------ reading through a shell
+// ---------------------------------------------------------------------- the merge tripwire
 //
-// Everything above treats a quoted string as inert text, which is right for prose and wrong
-// for `bash -lc 'gh pr merge 12'`. There the quotes hold a command the shell will run, so
-// stripping them classifies a real merge as nothing at all. The rest of this file reads
-// through that wrapper: when the command names a form that executes a string, the payload
-// of every quoted string is classified too.
+// A repository opts in by committing `.flow/managed`. There, every merge command these regexes
+// recognize is denied, and the denial names scripts/land-merge.mjs, which merges after deriving
+// the repository from origin and the pull request's facts from GitHub. The human asking to land
+// is the authorization; the deny only keeps the merge on the path that verifies what it merges.
+// Elsewhere nothing here gates a merge, and scheduled jobs merge nothing, executor included.
 //
-// This is deliberately one-sided. Prose that sits inside an exec form classifies as
-// publication and gets denied, which costs a human one rephrase; the opposite mistake lands
-// a merge nobody approved. Only the deny-by-default Codex path uses these functions, so the
-// Claude ask-gate keeps the prose exemption it has always had.
+// The one hard requirement is that the tripwire never matches the executor's own invocation.
+// Each regex needs a `gh` command word in the bare segment, and the executor's argv is a pull
+// request number and a SHA, so it has none. The REST path and the GraphQL mutation are nearly
+// always quoted, so those two read the segment's open text once its bare text is a `gh api` call.
+const GH = String.raw`(?:^|\s)(?:\S*/)?gh\s+(?:\S+\s+)*?`
+const PR_MERGE = new RegExp(`${GH}pr\\s+merge(?:\\s|$)`)
+const GH_API = new RegExp(`${GH}api(?:\\s|$)`)
+const REST_MERGE = /\/merges?\b/
+const GRAPHQL_MERGE = /\bmergePullRequest\b/
 
-const EXEC_FORM = /(?:^|[\s;&|(])(?:[^\s;&|(]*\/)?(?:sh|bash|zsh|ksh|dash)\s+-[A-Za-z]*c\b|(?:^|[\s;&|(])(?:eval|xargs)\b/
-
-const quotedPayloads = (text) =>
-  [...String(text).matchAll(/'([^']*)'|"((?:\\.|[^"])*)"/g)].map((match) => match[1] ?? match[2] ?? '')
-
-/**
- * Run `classify` over the command, and over every quoted payload a shell-execution form would
- * hand to a shell. Results are deduped in the order they are reached, so a classifier that
- * returns op ids and one that returns English reasons both work. Recursion terminates because
- * a payload is always shorter than the text it came out of.
- *
- * @param {string} command
- * @param {(text: string) => string[]} classify
- * @returns {string[]}
- */
-function scanThroughShell(command, classify) {
-  const found = []
-  const add = (items) => {
-    for (const item of items) if (!found.includes(item)) found.push(item)
+function mergeShapes(command) {
+  const found = new Set()
+  for (const { bare, open } of segments(command)) {
+    if (PR_MERGE.test(bare)) found.add('it runs `gh pr merge`')
+    if (!GH_API.test(bare)) continue
+    if (REST_MERGE.test(open)) found.add('it calls a GitHub merge endpoint through `gh api`')
+    if (GRAPHQL_MERGE.test(open)) found.add('it sends a mergePullRequest GraphQL mutation')
   }
-  add(classify(String(command)))
-  if (EXEC_FORM.test(String(command))) {
-    for (const payload of quotedPayloads(command)) add(scanThroughShell(payload, classify))
-  }
-  return found
+  return [...found]
 }
 
-/**
- * Every publication operation the command performs, including the ones hidden in a quoted
- * payload that a shell-execution form will run.
- */
-export const publishOperationsStrict = (command) => scanThroughShell(command, publishOperations)
+const EXECUTOR = join(dirname(dirname(fileURLToPath(import.meta.url))), 'scripts', 'land-merge.mjs')
 
-// liveSegments destroys quoting, which is what its callers want and the opposite of what a
-// word-level parse needs. This splits on the same separators while leaving quoted text
-// intact, so `gh pr merge 12 -b "a; b"` stays one segment instead of two.
-function rawSegments(text) {
-  const source = String(text).replace(/(?<!\\)((?:\\\\)*)\\\r?\n/g, '$1 ')
-  const segments = []
-  let current = ''
-  let quote = null
-  for (let i = 0; i < source.length; i++) {
-    const char = source[i]
-    if (quote) {
-      current += char
-      if (char === '\\' && quote === '"' && i + 1 < source.length) current += source[++i]
-      else if (char === quote) quote = null
-      continue
-    }
-    if (char === '"' || char === "'") { quote = char; current += char; continue }
-    if (char === '\\' && i + 1 < source.length) { current += char + source[++i]; continue }
-    if (char === ';' || char === '&' || char === '|' || char === '\n') { segments.push(current); current = ''; continue }
-    current += char
-  }
-  segments.push(current)
-  return segments.filter((segment) => segment.trim() !== '')
-}
-
-// The word split from src/delegation/claude-policy.mjs, copied rather than imported: that
-// module imports this one, and a hook script must not drag the delegation tree in to read
-// a flag off a command line.
-function shellWords(segment) {
-  const words = []
-  const pattern = /"((?:\\.|[^"])*)"|'([^']*)'|([^\s]+)/g
-  for (const match of String(segment).matchAll(pattern)) {
-    words.push((match[1] ?? match[2] ?? match[3] ?? '').replace(/\\([\\"'])/g, '$1'))
-  }
-  return words
-}
-
-// --------------------------------------------------------------------- the merge tripwire
-//
-// This used to be an authorization boundary. The Codex guard parsed the merge command word
-// by word, matched every flag against a human-written sanction, and let the one approved
-// spelling through. Reading shell text well enough to authorize on it is not a fight this
-// code can win, and losing it once lands a merge nobody approved.
-//
-// So the merge no longer happens through a command the model writes. In a repo that opts in
-// with a committed `.flow/managed` file, the Codex guard denies every merge shape it can
-// recognize, and scripts/land-merge.mjs performs the merge after re-deriving the repository,
-// the pull request, its head, its state and its base from GitHub itself. That makes the
-// functions below a coarse tripwire whose job is to catch the ordinary spellings and say
-// where the executor is.
-//
-// Over-matching is the cheap mistake here: a false positive costs one rephrase. The one thing
-// these must never match is the executor's own invocation, which names no merge surface at
-// all, because a tripwire that fires on the way out is a gate with nothing behind it.
-//
-// This is a cooperative guardrail, not a security boundary, so the ways past this text match -
-// a shell option before -c, a gh flag between `pr` and `merge`, a cd into the repo, a GH_REPO
-// redirect - are known and accepted. They do not matter, because a model at the same uid could
-// merge without any command this classifier ever sees. The enforcement that counts is the
-// committed `.flow/managed` marker plus the executor, which re-derives what it merges from the
-// origin remote and GitHub rather than trusting this classifier or the conversation.
-
-const isGh = (word) => String(word).split('/').pop() === 'gh'
-
-// One rendering of one command. `gh` has to be a word, and the merge has to be in its
-// arguments, so `git commit -m "gh pr merge later"` is the prose it is.
-function mergeShapesIn(text) {
-  const found = []
-  const add = (reason) => { if (!found.includes(reason)) found.push(reason) }
-  for (const segment of rawSegments(text)) {
-    const words = shellWords(segment)
-    const at = words.findIndex(isGh)
-    if (at === -1) continue
-    const args = words.slice(at + 1)
-    if (args.some((word, i) => word === 'pr' && args[i + 1] === 'merge')) add('it runs `gh pr merge`')
-    if (args.includes('api')) {
-      // The REST merge endpoint is `PUT /repos/{owner}/{repo}/pulls/{n}/merge`, and the
-      // branch-merge endpoint next to it ends in `/merges`. Both count.
-      if (args.some((word) => word.includes('/merge'))) add('it calls a GitHub merge endpoint through `gh api`')
-      if (/mergePullRequest/.test(segment)) add('it sends a mergePullRequest GraphQL mutation')
-    }
-  }
-  return found
-}
-
-/**
- * Reasons this command looks like it merges a pull request, or `[]` when nothing in it does.
- *
- * Each command is read twice. Once with quoted text intact, because that is the text a shell
- * would act on and it is where a quoted API path or GraphQL body lives. Once with quoted
- * literals removed, the same rendering the publication table sees, because a quote that never
- * closes parses differently in the two passes and only one of them has to notice.
- */
-export function mergeShapes(command) {
-  return scanThroughShell(command, (text) => [
-    ...mergeShapesIn(text),
-    ...mergeShapesIn(String(text).replace(/'[^']*'/g, ' ').replace(/"[^"]*"/g, ' ')),
-  ])
-}
-
-// ------------------------------------------------- the merge decision, shared by both guards
-//
-// Both hosts route a pull request merge the same way, so the decision lives here once and each
-// adapter calls mergeDenialFor() and emits its own host's deny shape. What follows is the whole
-// rationale; the two guard scripts carry a pointer to it instead of a copy.
-//
-// A repository opts in by committing a `.flow/managed` file, which is how flow tells "a repo
-// whose merges I am responsible for" from "some clone the session happens to be sitting in".
-// The marker being committed at HEAD is the opt-in, so deleting the working-tree copy does not
-// turn the guardrail off. In an opted-in repository every merge command these guards can
-// recognize is denied and the denial names scripts/land-merge.mjs, the executor that performs
-// the merge after deriving the repository from the origin remote and the pull request's live
-// facts from GitHub. This is routing, not approval: the human asking to land is the
-// authorization, and in an attended session the executor invocation passes both guards
-// untouched - the deny just keeps the merge on the path that verifies what it merges.
-// (Scheduled jobs are the exception: cron merges nothing, executor included.) In any other
-// repository these guards do no merge gating at all.
-//
-// Ordinary work must not notice this. A command that is not merge-shaped takes a few passes
-// over its own text and starts no subprocess; only a merge-shaped command pays for the one
-// `git rev-parse`.
-
-const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const EXECUTOR = join(PLUGIN_ROOT, 'scripts', 'land-merge.mjs')
-
-const git = (root, args) => execFileSync('git', ['-C', root, ...args], {
-  encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'pipe'],
-})
-
-/**
- * Does this session's repository opt into flow's merge guardrail?
- *
- * Two bounded git reads, and only for a command that already looks like a merge. The hook runs
- * before every Bash call and the hook registrations give the whole hook 10 seconds, so a git
- * that cannot answer is treated as an answer of "managed": failing closed here costs a denial
- * the human can resolve, and failing open costs a merge that skipped the verifying path.
- *
- * The opt-in lives in git, not in the working tree: the marker committed at HEAD is what
- * enrolls the repository, exactly as documented, so a deleted worktree copy does not un-enroll
- * it and an untracked or merely staged copy does not enroll some unrelated clone the session
- * happens to be sitting in. `git ls-tree` lists the
- * path when it is committed at HEAD and prints nothing when it is not, both on a clean exit 0.
- * Empty output is a real "not committed" and leaves the repository unmanaged; non-empty output
- * is managed. Any nonzero exit or error from the probe - a repository with no HEAD yet, a broken
- * object store - is treated as managed, because failing closed here costs a denial the human can
- * resolve. `git cat-file -e` could not tell an absent path from an operational failure: both
- * exit nonzero, so it failed open on the second.
- */
-export const isManagedRepo = (cwd) => {
-  let root
+// The marker committed at HEAD is the opt-in, so a deleted working-tree copy does not opt out
+// and an untracked one does not opt in. `ls-tree` prints the path when it is committed and
+// nothing when it is not, both on exit 0, so empty output is a real "unmanaged". Any failure (no
+// repository, an unborn HEAD, a git that does not answer within 2 s) reads as managed: a false
+// deny costs the human a look, a false allow a merge that skipped the executor. Only a
+// merge-shaped command pays for this read.
+function isManagedRepo(cwd) {
   try {
-    root = git(cwd, ['rev-parse', '--show-toplevel']).trim()
-  } catch {
-    return true
-  }
-  if (root === '') return true
-  try {
-    return git(root, ['ls-tree', '--name-only', 'HEAD', '--', '.flow/managed']).trim() !== ''
+    return execFileSync('git', ['-C', cwd, 'ls-tree', '--full-tree', '--name-only', 'HEAD', '--', '.flow/managed'], {
+      encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() !== ''
   } catch {
     return true
   }
 }
-
-/** The denial that names the executor, from shapes mergeShapes() already found. */
-export const mergeDenial = (shapes) =>
-  `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
-  'merge guardrail with a committed .flow/managed file. Merges here run through the executor, not a raw gh ' +
-  `command: \`node "${EXECUTOR}" <pr-number> <expected-head-sha>\`. It takes the pull request number and the ` +
-  'full 40-character head SHA your gates ran against, and nothing else. It derives the repository from the ' +
-  'origin remote, reads the head SHA, the state, the draft flag and the base branch from GitHub, refuses if ' +
-  'GitHub\'s head is not the one you passed, merges with --match-head-commit pinned to that verified head, and ' +
-  'confirms the outcome by re-reading the pull request. Run it when the human has asked to land this pull ' +
-  'request and the land gates have passed.'
 
 /**
  * The reason this command must not run as written, or null. One decision, both hosts.
  *
  * `cwd` is the session's directory as the hook reported it, and `env` is the hook process's own
- * environment - the cron session's when a scheduled job is what launched it.
+ * environment: the cron session's when a scheduled job launched it, so a command that strips
+ * FLOW_CRON_JOB off its own child is still denied here.
  *
  * @param {{ command: unknown, cwd?: unknown, env?: Record<string, string | undefined> }} call
  * @returns {string | null}
  */
 export function mergeDenialFor({ command, cwd, env = {} }) {
   if (typeof command !== 'string') return null
-
   const shapes = mergeShapes(command)
-  const invokesExecutor = /\bland-merge\.mjs\b/.test(command)
 
-  // Scheduled jobs read untrusted text and nobody is watching them, so merging is simply off
-  // there, opted-in repository or not, and that includes the executor. FLOW_CRON_JOB is read
-  // from the hook's own environment, which is the cron session's, so a command that strips the
-  // variable off its own child - `env -u FLOW_CRON_JOB node land-merge.mjs 12 <sha>` - is still
-  // denied here even though the executor it launches would no longer see the variable itself.
-  // This is checked before the merge-shape early return so the executor invocation, which is
-  // not merge-shaped, is caught too.
-  if (env.FLOW_CRON_JOB && (shapes.length > 0 || invokesExecutor)) {
+  if (env.FLOW_CRON_JOB && (shapes.length > 0 || /\bland-merge\.mjs\b/.test(command))) {
     const what = shapes.length > 0 ? `this looks like a pull request merge (${shapes.join('; ')})` : 'this runs flow\'s merge executor'
     return `flow: ${what}, and scheduled jobs do not merge anything. FLOW_CRON_JOB is set, which means ` +
       'nobody is watching this run. Leave the pull request for a human session to land.'
   }
 
   if (shapes.length === 0) return null
+  if (!isManagedRepo(typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd())) return null
 
-  const dir = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd()
-  return isManagedRepo(dir) ? mergeDenial(shapes) : null
+  return `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
+    'merge guardrail with a committed .flow/managed file. Merges here run through the executor: ' +
+    `\`node "${EXECUTOR}" <pr-number> <expected-head-sha>\`, with the full 40-character head SHA the land ` +
+    'gates ran against. It derives the repository from origin, refuses if GitHub\'s head, state, draft flag or ' +
+    'base is not what it should be, merges with --match-head-commit, and confirms by re-reading the pull ' +
+    'request. Run it when the human has asked to land this pull request and the gates have passed.'
 }
