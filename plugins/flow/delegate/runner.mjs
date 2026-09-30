@@ -67,9 +67,14 @@ function runProvider(job, dir, bin, provider, stdin) {
       killGroup(child.pid)
       events.end()
       stderr.end()
-      resolve({ folded: spawnError
-        ? { status: 'failed', error: { kind: 'PROVIDER_ERROR', message: `${provider.name} could not be started.` } }
-        : fold.finish(exit ?? {}), stopped })
+      let folded = { status: 'failed', error: { kind: 'PROVIDER_ERROR', message: `${provider.name} could not be started.` } }
+      if (!spawnError) {
+        try { folded = fold.finish(exit ?? {}) } catch (error) {
+          log(`fold failed for ${job.id}: ${error?.stack || error}`)
+          folded = { status: 'failed', error: { kind: 'INTERNAL', message: 'The runner could not read the provider outcome; server.log in the state directory has the detail.' } }
+        }
+      }
+      resolve({ folded, stopped })
     }
     child.on('error', (error) => { log(`provider spawn failed for ${job.id}: ${error.message}`); finish(error) })
     if (!child.pid) return
@@ -83,7 +88,7 @@ function runProvider(job, dir, bin, provider, stdin) {
       events.write(`${line}\n`)
       let event
       try { event = JSON.parse(line) } catch { return }
-      if (fold.event(event) === 'interrupt') stop('MODEL_MISMATCH')
+      try { if (fold.event(event) === 'interrupt') stop('MODEL_MISMATCH') } catch (error) { log(`fold failed for ${job.id}: ${error?.stack || error}`) }
     })
     // Once the provider itself has exited, whatever is left in its group is a straggler that may
     // hold stdout open; killing the group lets 'close' arrive.
