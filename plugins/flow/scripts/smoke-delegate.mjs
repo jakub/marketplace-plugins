@@ -82,6 +82,8 @@ const fs = require('node:fs'), path = require('node:path'), { spawn } = require(
 const NAME = path.basename(process.argv[1]), argv = process.argv.slice(2)
 const STATE = ${JSON.stringify(state)}, CALLS = ${JSON.stringify(calls)}, JOB = process.env.FLOW_DELEGATION_JOB
 const promptOf = () => { try { return fs.readFileSync(path.join(STATE, 'jobs', JOB, 'prompt.txt'), 'utf8') } catch { return '' } }
+// TMPDIR's type, mode and owner when the provider started, read now because the job's end removes it.
+const tmpdirOf = () => { try { const stat = fs.lstatSync(process.env.TMPDIR); return { directory: stat.isDirectory(), mode: stat.mode & 0o7777, uid: stat.uid } } catch { return null } }
 const saveTo = (record) => () => fs.writeFileSync(path.join(CALLS, JOB + '.json'), JSON.stringify(record))
 const out = (event) => process.stdout.write(JSON.stringify(event) + '\n')
 const flag = (name) => { const at = argv.indexOf(name); return at >= 0 ? argv[at + 1] : undefined }
@@ -97,7 +99,7 @@ else claudeCli()
 
 function appServer() {
   const mode = modeOf(promptOf())
-  const record = { argv, cwd: process.cwd(), env: process.env, pid: process.pid, exe: fs.realpathSync('/proc/self/exe'), requests: [], responses: [] }
+  const record = { argv, cwd: process.cwd(), env: process.env, tmpdir: tmpdirOf(), pid: process.pid, exe: fs.realpathSync('/proc/self/exe'), requests: [], responses: [] }
   const save = saveTo(record)
   save()
   if (argv.join(' ') !== 'app-server --stdio') { process.stderr.write('fake codex: unexpected argv\n'); process.exit(64) }
@@ -227,7 +229,7 @@ function appServer() {
 
 function claudeCli() {
   const mode = modeOf(promptOf())
-  const record = { argv, cwd: process.cwd(), env: process.env, pid: process.pid, frames: [] }
+  const record = { argv, cwd: process.cwd(), env: process.env, tmpdir: tmpdirOf(), pid: process.pid, frames: [] }
   const save = saveTo(record)
   save()
   if (argv.slice(0, 5).join(' ') !== '-p --input-format stream-json --output-format stream-json') { process.stderr.write('fake claude: unexpected argv\n'); process.exit(64) }
@@ -572,6 +574,45 @@ try {
   }
   ok('the Codex thread carries a flow_delegation profile named for it alone, every capability off and every configured MCP server disabled; Claude runs over stream-json with its prompt in one client_composed user message after initialize and mcp_status; argv per Claude access; the seat bytes first; and only allowlisted variables plus the depth marker reach the provider')
 
+  // A provider's TMPDIR leaves the Claude sandbox room for its proxy bridge sockets, whatever HOME
+  // is. The sandbox creates claude-http-<16 hex>.sock and claude-socks-<16 hex>.sock in TMPDIR,
+  // and a Unix socket path holds at most 107 bytes. Here the state directory is the default one,
+  // under a HOME longer than /home/abcdefghijklmnop, where a TMPDIR inside the job directory has
+  // no room for any socket name. The name below is 40 bytes, 6 more than the sandbox's longest.
+  const longHome = join(tmp, 'home-abcdefghijklmnop')
+  assert.ok(longHome.length >= '/home/abcdefghijklmnop'.length)
+  const defaultState = join(longHome, '.local', 'state', 'flow')
+  mkdirSync(longHome)
+  const SOCKET_NAME = 'x'.repeat(40)
+  const covers = (roots, path) => roots.some((root) => path === root || path.startsWith(`${root}/`))
+  for (const [host, target] of [['claude', 'codex'], ['codex', 'claude']]) {
+    const client = await connect({ host, cwd: repo, env: { HOME: longHome, FLOW_DELEGATION_STATE_DIR: '', ...(host === 'claude' ? { CLAUDE_PROJECT_DIR: repo } : {}) } })
+    client.target = target
+    for (const access of ['read-only', 'workspace-write']) {
+      const where = `${target} ${access}`
+      const result = await start(client, { prompt: `FLOW_FAKE_MODE=happy ${access}`, access })
+      assert.equal(result.job.status, 'succeeded', `${where}: ${JSON.stringify(result.job.error)}`)
+      assert.ok(existsSync(join(defaultState, 'jobs', result.job.id, 'job.json')), `${where}: the job is not in the default state directory`)
+      const call = fakeCall(result.job.id)
+      const given = call.env.TMPDIR
+      assert.ok(Buffer.byteLength(join(given, SOCKET_NAME)) <= 107, `${where}: TMPDIR ${given} leaves no room for a 40-byte socket name`)
+      assert.deepEqual([dirname(given), basename(given).startsWith(`flow-${result.job.id.slice(0, 8)}-`)], [TMP_ROOT, true], `${where}: TMPDIR ${given} is not the job's own`)
+      assert.equal(given, JSON.parse(readFileSync(join(defaultState, 'jobs', result.job.id, 'job.json'), 'utf8')).tmpDir, `${where}: the job did not record its TMPDIR`)
+      assert.deepEqual(call.tmpdir, { directory: true, mode: 0o700, uid: process.getuid() }, `${where}: TMPDIR was not a 0700 directory of this user when the provider started`)
+      if (target === 'claude') {
+        const { allowWrite, denyWrite = [] } = JSON.parse(call.argv[call.argv.indexOf('--settings') + 1]).sandbox.filesystem
+        assert.ok(covers(allowWrite, given) && !covers(denyWrite, given), `${where}: the sandbox cannot write TMPDIR: ${JSON.stringify({ allowWrite, denyWrite })}`)
+      } else {
+        const [thread] = asked(result.job.id, 'thread/start')
+        const grants = thread.config.permissions[thread.permissions].filesystem
+        assert.ok(covers(Object.keys(grants).filter((path) => grants[path] === 'write'), given), `${where}: the profile cannot write TMPDIR: ${JSON.stringify(grants)}`)
+      }
+      assert.equal(existsSync(given), false, `${where}: TMPDIR ${given} outlived the job`)
+    }
+    client.close()
+  }
+  ok('under the default state directory and a long HOME, each job\'s TMPDIR is its own 0700 directory in /tmp with room for a 40-byte socket name, the Claude sandbox and the Codex profile both grant write on it, and it is gone once the job ends')
+
   // Nothing goes out until the live thread reads back its profile, its model and an MCP inventory
   // with every server disabled. A profile that came back with a parent profile or a writable root
   // it did not grant was widened by another config layer.
@@ -799,6 +840,7 @@ try {
   assert.equal(cancelled.job.status, 'cancelled')
   assert.equal(cancelled.job.error.kind, 'CANCELLED')
   assert.ok(await until(() => !alive(hangCall.pid) && !alive(hangCall.childPid)), 'cancel left part of the provider group running')
+  assert.equal(existsSync(hangCall.env.TMPDIR), false, 'the cancelled job kept its TMPDIR')
   // The App Server took turn/interrupt while it was still alive to record it, and the runner
   // journaled its answer before signalling the group.
   assert.deepEqual(asked(hanging.job.id, 'turn/interrupt'), [{ threadId: THREAD, turnId: TURN }])
@@ -812,7 +854,7 @@ try {
   assert.ok(wrote(claudeHanging.job.id).some((frame) => frame.request?.subtype === 'interrupt'), 'the Claude CLI got no interrupt')
   const claudeStops = journal(claudeHanging.job.id).filter((event) => typeof event.type === 'string' && event.type.startsWith('flow.'))
   assert.deepEqual(claudeStops, [{ type: 'flow.stop', reason: 'CANCELLED' }, { type: 'flow.interrupt', method: 'interrupt', delivered: true }])
-  ok('one writer per worktree, readers alongside it, and cancel interrupts the Codex turn or the Claude session, then kills the provider and its children and frees the lease')
+  ok('one writer per worktree, readers alongside it, and cancel interrupts the Codex turn or the Claude session, then kills the provider and its children, removes its TMPDIR and frees the lease')
 
   // The Codex session steers its open turn against that turn's own id, and a turn that has ended
   // takes no steer. The session is driven directly here, over the fake App Server.
@@ -947,9 +989,10 @@ try {
   assert.equal(lost.job.status, 'unknown')
   assert.equal(lost.job.error.kind, 'RUNNER_LOST')
   assert.ok(await until(() => !alive(orphanCall.pid) && !alive(orphanCall.childPid)), 'the orphaned provider group was killed')
+  assert.equal(existsSync(orphanCall.env.TMPDIR), false, 'a dead runner\'s TMPDIR outlived the settled job')
   await refused(claudeHost, { continue: orphan.job.id }, 'JOB_STATE')
   assert.equal((await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', access: 'workspace-write' })).job.status, 'succeeded', 'a dead writer kept its lease')
-  ok('a dead runner reads unknown with RUNNER_LOST, cannot be continued, and its lease is reclaimed')
+  ok('a dead runner reads unknown with RUNNER_LOST, its TMPDIR is removed, it cannot be continued, and its lease is reclaimed')
 
   // A job settled long after its runner died records a group id that now names someone else's
   // group: a process with that pid and a different start. Nothing may be signalled.
@@ -1067,7 +1110,8 @@ try {
   const doctorFlag = (name) => doctorArgv[doctorArgv.indexOf(name) + 1]
   assert.deepEqual(doctorArgv.slice(0, 7), ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--replay-user-messages'])
   assert.deepEqual([doctorFlag('--setting-sources'), doctorFlag('--permission-mode'), doctorFlag('--tools'), doctorArgv.includes('--strict-mcp-config')], ['', 'dontAsk', 'Read,Grep,Glob,Bash', true])
-  assert.deepEqual(JSON.parse(doctorFlag('--settings')).sandbox.filesystem.denyWrite, [repo], 'the doctor CLI carries a read-only job\'s sandbox')
+  const doctorSandbox = JSON.parse(doctorFlag('--settings')).sandbox.filesystem
+  assert.deepEqual([doctorSandbox.denyWrite, doctorSandbox.allowWrite], [[repo], [claudeDoctor.tmpDir]], 'the doctor CLI carries a read-only job\'s sandbox, writing its TMPDIR alone')
   for (const name of ['--model', '--effort', '--session-id', '--resume', '--append-system-prompt-file']) assert.ok(!doctorArgv.includes(name), `the doctor CLI took ${name}`)
   ok('the doctor handshake runs each transport up to the read-back on a read-only job\'s containment, reports the catalog, the profile and the disabled servers, and sends no turn/start and no user message')
 
