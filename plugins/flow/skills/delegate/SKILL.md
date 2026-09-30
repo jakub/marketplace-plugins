@@ -1,185 +1,59 @@
 ---
 name: delegate
-description: The operating manual for Flow's `flow_delegate` MCP tools. Read it before the first bridge call of a session, and for any question about cross-model or cross-family work, `delegate_to_codex`, `delegate_to_claude`, a delegation job, its result envelope, or the approval fork. Apply this when the user says "ask Sol", "ask Codex", "ask Fable", "ask Claude", etc.
+description: The operating manual for Flow's `flow_delegate` MCP tools. Read it before the first bridge call of a session, and for any question about cross-model or cross-family work, `delegate_to_codex`, `delegate_to_claude`, `delegation_result`, a delegation job or its result envelope. Apply this when the user says "ask Sol", "ask Codex", "ask Fable", "ask Claude", etc.
 ---
 
-# delegate - reaching the other model family
+# delegate: reaching the other model family
 
-Flow runs one durable delegation service in both directions. A Claude host reaches Codex through
-Codex App Server; a Codex host reaches Claude through the Claude Agent SDK. Either way it is one
-MCP server named `flow_delegate`, never a shell wrapper.
+One MCP server, `flow_delegate`, reaches the other family in both directions. A Claude host runs Codex through `codex exec`, and a Codex host runs Claude through `claude -p`, each as a job the server starts and watches. The charter says when to cross the family line and what to do with a refusal. This skill says how the call works.
 
-The charter says when to cross the family line and what to do with a refusal. This skill says
-how the call works.
+## The four tools
 
-## The tools
+- `delegate_to_codex` on a Claude host, or `delegate_to_claude` on a Codex host, starts a job. It waits for the outcome unless you detach.
+- `delegation_result` reads one job: its status, its outcome and its last event lines. With `waitSeconds` it blocks until the job ends or the wait runs out.
+- `delegation_cancel` stops a queued or running job and kills its provider's whole process group.
+- `delegation_doctor` reports whether the provider is installed and signed in, the usable workspace roots and the state directory.
 
-Your host registers the new-call tool for the other family only. A Claude host has
-`delegate_to_codex`, a Codex host has `delegate_to_claude`. Asking for your own family is
-rejected as `SAME_FAMILY`, and a delegated job that tries to start another one is rejected as
-`NESTED_DELEGATION`. The bridge is one hop deep.
+There is no live steering. To change a running job, cancel it and start again, or let it end and continue it.
 
-Beside it you get `delegation_status` (read and reconcile one job), `delegation_result` (its
-typed envelope), `delegation_events` (an ordered page of the durable journal),
-`delegation_cancel`, `delegation_continue` (a new job resuming the provider's thread or
-session), and `delegation_doctor`. `delegation_steer` adds text to an active turn and exists
-only where the target is Codex, so only on a Claude host.
+## Start a job
 
-The job record is also readable as MCP resources: `flow://jobs` for this route's jobs newest
-first, then `flow://jobs/{jobId}`, `flow://jobs/{jobId}/events` and
-`flow://jobs/{jobId}/capabilities`. All JSON, filtered to jobs inside your workspace roots,
-since the database is shared across workspaces.
+Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`, `fable`) or a full id such as `claude-opus-5-5`, never a charter display name. Codex takes its own ids, such as `gpt-6-sol` or `gpt-6-luna`. `effort` is `low`, `medium`, `high`, `xhigh` or `max`.
 
-Set model and effort on every call. Claude takes an alias (`sonnet`, `opus`, `fable`) or a
-full provider id, never its charter display name. Codex takes the full id from the charter.
-Use the tool's supported effort values. Codex turns use the `default` service tier.
+`cwd` is an absolute directory inside a workspace root and inside a Git worktree. On Claude the roots are the session's MCP roots and `CLAUDE_PROJECT_DIR`. On Codex the one root is the directory the session started in, and only when that directory is a repository's top level and not your home. A worktree under `<repo>/.flow-worktrees/` sits inside its repository's root. A path outside every root, or a symlink that leads out of one, fails `OUTSIDE_ROOTS`.
 
-## Arguments that matter
+`access` is `read-only` (the default) or `workspace-write`. A write job may edit its worktree and nothing else, and it holds that worktree's one write lease, so a second write job there fails `WORKSPACE_BUSY` while read-only jobs still run beside it. No Flow hook runs inside a delegated job, so the access level is the whole confinement. Never point a writer at a worktree that holds another seat's uncommitted work. The job sees no host MCP server, plugin or hook, so anything it needs that is not in the repository goes inline in `prompt`.
 
-`cwd` is an absolute directory inside an authorized canonical workspace root. Both the requested
-path and its resolved Git top-level directory must stay inside that root. Nested worktrees under
-`<repoRoot>/.flow-worktrees/` pass. Registered siblings outside the root and symlink escapes fail
-`OUTSIDE_ROOTS`.
+`mode` is `task` (the default) or `adversarial-review`. A review needs `base` and takes `head` (default `HEAD`). The server resolves both to commit SHAs before the job exists, so the diff under review cannot move. It writes the reviewer instruction itself, keeps your `prompt` as extra focus, forces read-only access and answers in the fixed findings schema.
 
-Claude gets roots from MCP and `CLAUDE_PROJECT_DIR`. Native Codex launches `flow-delegate` in the
-thread's project directory with no MCP cwd override. Flow requires that actual process cwd to be
-an exact canonical Git top-level directory, and ignores inherited `PWD`, `CODEX_PROJECT_DIR`
-and `CLAUDE_PROJECT_DIR`. A home, nonrepository or repository-subdirectory launch has `NO_ROOTS`;
-naming a real repository in tool input cannot repair it.
+`outputSchema` gets a typed answer from a task, parsed into `structured`. The root must be `type: "object"`, and the schema can be at most 64 KiB. Write closed objects with every property required: Codex quietly narrows a schema outside that subset, and nothing checks the answer against your schema beyond parsing it.
 
-`access` is `read-only` or `workspace-write`, and it is the whole confinement of a delegated
-writer. No plugin hook fires inside a delegated job: the delegated Claude query loads no
-settings, plugins or skills, and the delegated Codex thread has plugin loading and every
-discovered MCP server disabled. A `workspace-write` job leases that worktree exclusively, so a
-second one fails with `WORKSPACE_BUSY` before a provider starts. A `workspace-write` job in a
-linked worktree can edit but not commit: the worktree's object store and refs live in the parent
-repository's git directory outside the grant, and network is off. The caller commits what the
-job edited, staging only that job's paths. Nothing denies `git checkout .` or `git clean -f`
-inside the grant, so never point a writer at a worktree holding another seat's uncommitted work.
-Either access level sees the workspace, its git metadata, a private scratch directory and the
-system paths the provider itself needs, and nothing else: not `/tmp`, not your home, not a file
-another seat dropped. Material a job needs that is not in the repository travels inline in `prompt`.
+`continue` takes the id of a finished job and starts a new task on the same provider thread, in the same `cwd` and with the same access. A job whose outcome is `unknown` cannot be continued.
 
-`delivery` is `attached` or `detached`. Attached blocks the tool call, streams progress, and
-returns the finished envelope. Detached returns a job id straight away; poll `delegation_status`
-or read `delegation_result` later. On Claude Code, detached is for a job you will not wait on:
-nothing notifies the session when it ends, and the shell cannot reach these tools, so a
-background waiter has nothing to poll but the job store's private files. A call that must run
-beside other work goes through the `flow:bridge` seat with `attached` delivery, which returns
-the envelope as a task notification when the job ends (see "Running a call beside other work").
+`timeBudgetSeconds` runs from 30 to 7200 and defaults to 900. A Claude target also takes `maxTurns` and `maxBudgetUsd`. Set them only when the human asks for a cap.
 
-`mode` is `task` or `adversarial-review`. Review requires `base` and takes `head` (default
-`HEAD`), and Flow resolves both to full commit ids before the worker starts, so the diff under
-review cannot move. It writes the reviewer instruction itself, keeps your `prompt` as extra
-focus, and forces the strict findings schema.
+## Wait or detach
 
-`outputSchema` gets you a typed result on a task. Codex accepts only a subset, which Flow checks
-before creating the job: an object root, an explicit type on every node,
-`additionalProperties: false`, `required` listing every property, an item schema on every
-array. Anything else is `BAD_SCHEMA`, as is a schema over 64 KiB.
+By default the call waits for the whole budget and returns the finished job. `waitSeconds: 0` returns as soon as the job starts. Collect it later with `delegation_result` and a `waitSeconds` of your own. A job keeps running when the session that started it ends, and any later session in the same workspace can collect it. If you interrupt a `delegate_to_*` call while it waits, the job is cancelled with it. An interrupted `delegation_result` wait leaves the job running.
 
-`timeBudgetSeconds` runs from 30 to 7200 and defaults to 900. A Claude target also takes
-`maxTurns` and `maxBudgetUsd` as native hard limits. A Codex target takes neither.
+On Claude Code, run a call beside other work through the `flow:bridge` seat. It returns the envelope when the job ends. Its definition fixes its model, so do not pass one. On Codex there is no transport seat. Detach with `waitSeconds: 0` and collect with `delegation_result`.
 
-## Reading the envelope
+## Read the envelope
 
-Every tool answers `{ ok, job?, error? }`, and `delegation_events` answers
-`{ ok, job?, events?, error? }`, with compact job context on every event page. Job responses also
-include a `summary` on the first line of the JSON text for tool previews. The job's `requestPreview`
-is a single-line excerpt of at most 240 Unicode code points; older jobs return null.
-A rejected request is `{ ok: false, error }`; an attached job that
-ended badly is `{ ok: false, job }` with the whole envelope still in it.
+Every tool answers `{ok, job?, error?}`, and the JSON text opens with a one-line `summary`. A refused call is `{ok: false, error}`. A job that ended badly is `{ok: false, job}` with the whole job in it. `job.status` is `queued`, `running`, `succeeded`, `failed`, `cancelled` or `unknown`.
 
-`status` is an active state (`queued`, `starting`, `running`, `reconciling`), or `quarantined`
-(a provider outlived termination and still holds the write lease, so it is settled for you but
-not terminal), or terminal: `succeeded`, `failed`, `cancelled`, `unknown`, `awaiting_approval`.
+`job.error.kind` is one of `BAD_REQUEST`, `BAD_SCHEMA`, `NO_ROOTS`, `OUTSIDE_ROOTS`, `WORKSPACE_BUSY`, `NESTED_DELEGATION`, `JOB_NOT_FOUND`, `JOB_STATE`, `GIT_REF`, `PROVIDER_NOT_INSTALLED`, `PROVIDER_AUTH`, `PROVIDER_ERROR`, `APPROVAL_REQUIRED`, `REFUSAL`, `MODEL_MISMATCH`, `SCHEMA_OUTPUT`, `EMPTY_OUTPUT`, `TIMEOUT`, `STALL`, `CANCELLED`, `RUNNER_LOST` or `INTERNAL`. A `REFUSAL` carries the provider's category in `details` when it names one.
 
-`error.kind` comes from `ERROR_KINDS` in `src/delegation/contracts.mjs`, declared by every tool.
-A `REFUSAL` carries its category in `details`; the charter says where the single retry goes.
+- `output` is the final answer, and `structured` is the parsed answer when a schema applied.
+- `servedModel` is the model Claude reported serving the session. A Claude answer from any other model fails `MODEL_MISMATCH` and stops at once. Codex reports no served model.
+- `commandFailures` counts shell commands that failed. A succeeded job with a nonzero count answered without working shell evidence.
+- `APPROVAL_REQUIRED` means the provider asked for more than the job grants. Its `output` is kept. Start a new job with the access the task needs.
+- `eventsPath` is the provider's full JSONL journal. `delegation_result` includes the last 20 lines, each cut to 400 characters. Set `events` for more or fewer, and read the file itself for the rest.
 
-`commandFailures` counts recorded command completions that failed or exited nonzero, so a
-succeeded job with a nonzero count answered without working shell evidence. On the Claude route
-the field is always 0: the Agent SDK never reports an exit status, so Flow records nothing to
-count and a zero there means the question was not asked.
-
-A succeeded review with `findings: []` is not yet a pass. That is also the shape of a runner
-that never started, and the review schema has no room for a coverage note, so do not ask for
-one. Call `delegation_continue` on the finished job as a plain task and ask which files it read
-and which it skipped, before you treat an empty array as clean. An `unknown` job is never a pass; the
-charter's UNKNOWN rule covers these exactly as it covers a native seat.
-
-## What each provider can do
-
-Provider differences:
-
-- Steering an active turn works only against Codex.
-- Recovering a result after the worker dies works only against Codex, through `thread/read`.
-  An accepted Claude write whose worker died stays `unknown`: the SDK has nothing that could
-  prove what the turn did.
-- `maxTurns` and `maxBudgetUsd` exist only against Claude.
-
-Do not infer symmetry from the tool names. `capabilities.json` at the plugin root is the
-hand-maintained host table, biased false on purpose, and `delegation_doctor` returns it beside
-the live target capabilities. Doctor also computes `hostCapabilities.drift` between the version
-your host CLI reports now and the table's `verifiedAgainst`: `match`, `newer`, `older` or
-`unknown`. Stop on `older` or `unknown`, because a record you cannot read has verified nothing.
-Journal `newer` as a re-check and carry on. Verified against Codex CLI 0.152.0 and Claude Code
-2.1.257 as of 2026-09-01.
-
-## When the provider asks permission
-
-A delegated provider runs with approvals off, so a request means it hit the edge of the sandbox
-you gave it. When your MCP client advertises `elicitation.form` and the call is attached, the
-envelope carries `elicitation: true` and Flow puts the request to the human as a two-value form:
-the whole command with its working directory, the whole path list for a file change, or the tool
-with its host title and its whole input.
-
-A request Flow cannot show whole is declined without asking anyone, journaled as
-`approval.undisclosed`. That covers a command or input over 4,000 characters, a file change with
-no item on record, and network or stdin kinds with no command. A form that hides part of the
-action would approve something the human did not see.
-
-Anything other than an explicit accept is a decline: a dismissed or declined form, a client
-error, or the 240-second window closing, which sits under the 420-second stall ceiling. A
-decline ends the job as `awaiting_approval`, which is terminal and cannot be continued. Start a
-new job with a different contract: wider `access`, or a prompt that does not need that command.
-A permissions request is never put to the human, and a detached job is never asked because
-nobody is waiting to answer.
-
-## Running a call beside other work
-
-Claude Code. The transport seat for a bridge call is `flow:bridge`, whose toolset is the
-`flow_delegate` tools and ToolSearch and nothing else. Its definition sets Sonnet at low effort.
-Native `Agent` calls naming `flow:bridge` have their model normalized to that definition by a
-PreToolUse hook. The delegated worker's model and effort remain unchanged inside the prompt.
-In a workflow script use
-`agent(prompt, {agentType: 'flow:bridge', model: 'sonnet', effort: 'low', schema})`, where the schema is what
-`node <plugin-root>/dist/delegation.mjs schema envelope` prints.
-It returns the envelope verbatim, and you read that as the tool result. Call the tool directly
-instead when you want a synchronous answer.
-
-The native hook is not verified for Workflow's internal spawns. Workflow model and effort are
-explicit defaults, not an enforced lock. Host-wide model overrides and provider substitutions
-can also change the model actually served. Check the host's task display when diagnosing cost.
-
-Codex. This host binds no transport seat: `spawn_agent` narrows nothing, so a child carrying a
-bridge call would hold the whole session's authority for one tool call. Call the tool directly.
-A call that must not block the turn is `delivery: detached`, polled with `delegation_status`.
+A succeeded review with `findings: []` is not yet a pass. A reviewer that never looked answers in the same shape. Continue the finished job as a task and ask which files it read and which it skipped before you treat the empty array as clean. An `unknown` job is never a pass.
 
 ## Before the first call
 
-Delegation needs Linux with cgroup v2 and a working systemd user manager, because every provider
-process runs in a transient systemd scope, which is what makes releasing a write lease safe.
-There is no path on another platform: containment fails closed with `UNSUPPORTED_HOST` and no
-job starts. Before the first Codex Flow session on a machine, the flow setup action installs the
-stable dispatcher and pins the installed Flow package cache directory for the canonical Codex
-home. Setup runs `node <plugin-root>/scripts/install-delegate.mjs install` itself. SessionStart maintains that
-registration idempotently, but Codex starts MCP before SessionStart. First setup therefore needs
-a new session or an explicit app MCP reload after installation. Disabled or untrusted hooks do
-not replace setup. Versioned plugin upgrades under that registered directory select the exact
-version in the MCP definition without rerunning the installer or waiting for a hook. A local
-cache must match the requested manifest version. The dispatcher never selects the newest cache
-or falls back to Claude. No dispatcher installation is needed per issue.
+Run `delegation_doctor` as the preflight. It answers without a workspace, which is what you need when the answer is that you have none. Codex starts MCP servers before any hook runs, so on a new machine Flow setup runs `node <plugin-root>/scripts/install-delegate.mjs install` once before the first Codex session. After that, the Codex SessionStart hook keeps `~/.local/bin/flow-delegate` current.
 
-Run `delegation_doctor` as the preflight. It is the one tool that answers without a
-workspace, which is what you need when the answer is that you have no workspace.
+The server depends on these provider flags, checked against Codex CLI 0.159.0 and Claude Code 2.1.284 on 2026-09-29. For Codex: `exec --json`, `--ignore-user-config`, `--ignore-rules`, `--skip-git-repo-check`, `-s`, `-C`, `-m`, `-c`, `--output-schema`, `-o` and `exec resume`. For Claude: `-p --output-format stream-json --verbose`, `--model`, `--effort`, `--permission-mode dontAsk`, `--permission-prompts none`, `--setting-sources`, `--strict-mcp-config`, `--settings`, `--tools`, `--allowedTools`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd`. When the doctor reports a newer version and jobs start failing with `PROVIDER_ERROR`, check these flags against the provider's `--help` first.
