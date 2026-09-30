@@ -1,23 +1,40 @@
 #!/usr/bin/env node
-// Smoke harness for hooks/scripts/git-guard.mjs - the charter git rules that must survive
-// delegation. Deny cases are the rules; allow cases are the false positives that would make
-// the guard something people route around. Run: node plugins/flow/scripts/smoke-git-guard.mjs
+// Smoke harness for the two Bash guards that are one script on both hosts: hooks/scripts/
+// git-guard.mjs (the charter git rules, plus the cron grammar) and no-backlog-guard.mjs. Deny
+// cases are the rules; allow cases are the false positives that would make a guard something
+// people route around. Every interactive case runs once in each host's PreToolUse envelope.
+// Run: node plugins/flow/scripts/smoke-git-guard.mjs
 import { execFileSync } from 'node:child_process'
-const G = 'plugins/flow/hooks/scripts/git-guard.mjs'
-const run = (command, env = {}) => {
-  const out = execFileSync('node', [G], {
-    input: JSON.stringify({ tool_input: { command } }),
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const G = join(ROOT, 'hooks', 'scripts', 'git-guard.mjs')
+const NB = join(ROOT, 'hooks', 'scripts', 'no-backlog-guard.mjs')
+// Claude's Bash envelope, and Codex's as captured on CLI 0.149.1 (the PostToolUse fixture in
+// plugins/gripe/scripts/fixtures carries the same envelope). Both put the command in
+// tool_input.command, and these prove the guards read it from each.
+const SHAPES = {
+  claude: (command) => ({ session_id: 's', transcript_path: '/tmp/t.jsonl', cwd: '/tmp', permission_mode: 'default', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, description: 'x' } }),
+  codex: (command) => ({ session_id: 's', turn_id: 't', transcript_path: null, cwd: '/tmp', hook_event_name: 'PreToolUse', model: 'gpt-6-luna', permission_mode: 'default', tool_name: 'Bash', tool_input: { command }, tool_use_id: 'u' }),
+}
+const run = (command, env = {}, shape = 'claude', script = G) => {
+  const out = execFileSync(process.execPath, [script], {
+    input: JSON.stringify(SHAPES[shape](command)),
     env: { ...process.env, FLOW_CRON_JOB: '', ...env },
   }).toString()
   return out.trim().length > 0
 }
 let bad = 0
-const expect = (want, command, name) => {
-  const got = run(command)
-  const ok = got === want
-  if (!ok) bad++
-  console.log(`  ${ok ? 'ok' : 'FAIL'}: ${name} → ${got ? 'DENY' : 'allow'} (want ${want ? 'DENY' : 'allow'})`)
+const expectIn = (script, label) => (want, command, name) => {
+  for (const shape of Object.keys(SHAPES)) {
+    const got = run(command, {}, shape, script)
+    const ok = got === want
+    if (!ok) bad++
+    console.log(`  ${ok ? 'ok' : 'FAIL'}: ${label}${name} (${shape}) → ${got ? 'DENY' : 'allow'} (want ${want ? 'DENY' : 'allow'})`)
+  }
 }
+const expect = expectIn(G, '')
 console.log('must DENY')
 expect(true, 'git commit -m "feat: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"', 'Co-Authored-By')
 expect(true, 'git commit -m "fix: y\n\nClaude-Session: https://claude.ai/code/x"', 'Claude-Session')
@@ -178,7 +195,7 @@ expectEnv(false, 'git log -1 >/dev/null 2>&1', lint, 'lint: redirection to /dev/
 expectEnv(false, 'gh pr list --state all --json number,state,headRefName | jq -r ".[] | .number"', lint, 'lint: pipe into jq')
 expectEnv(false, 'git -C /home/x/code/r branch --format="%(refname:short)" | sort | head -50', lint, 'lint: a filter chain')
 expectEnv(true, 'git -C "$repo" log -1', lint, 'lint: a variable in an argument')
-expectEnv(false, 'bash ' + process.cwd() + '/plugins/flow/scripts/worktree-audit.sh /home/x/code/r', { ...lint, CLAUDE_PLUGIN_ROOT: process.cwd() + '/plugins/flow' }, 'lint: the worktree audit script under the plugin root')
+expectEnv(false, 'bash ' + ROOT + '/scripts/worktree-audit.sh /home/x/code/r', { ...lint, CLAUDE_PLUGIN_ROOT: ROOT }, 'lint: the worktree audit script under the plugin root')
 expectEnv(false, 'node /x/scripts/lint-actions.mjs delete-branch /home/x/code/r feat/x', { ...lint, CLAUDE_PLUGIN_ROOT: '/x' }, 'lint: executor with a positional')
 expectEnv(true, 'git -C /home/x/code/r branch -D feat/done', sweep, 'sweep: branch -D denied')
 expectEnv(true, 'git -C /home/x/code/r worktree remove /p', sweep, 'sweep: worktree remove denied')
@@ -211,5 +228,18 @@ expect(false, 'git clean --dry-run -d', 'clean --dry-run')
 expect(false, 'gh pr comment -b "this repo bans git push --force"', 'force-push named in prose')
 expect(false, 'cargo test --no-fail-fast', 'non-git')
 expect(false, 'gh pr create --title x', 'gh')
+// A body the guard cannot read blocks nothing: never block on our own bug.
+const unparseable = execFileSync(process.execPath, [G], { input: '{', env: { ...process.env, FLOW_CRON_JOB: '' } }).toString().trim()
+if (unparseable !== '') bad++
+console.log(`  ${unparseable === '' ? 'ok' : 'FAIL'}: an unparseable body → allow`)
+console.log('no-backlog-guard: issues enter the tracker only through the two sanctioned lanes')
+const backlog = expectIn(NB, 'no-backlog: ')
+backlog(true, 'gh issue create --title x --body y', 'an unsanctioned issue')
+backlog(true, 'cd /home/x/code/r && gh issue create -t x -b y', 'an issue after a cd')
+backlog(false, 'FLOW_SANCTION=prep gh issue create --title x', 'the prep lane')
+backlog(false, 'FLOW_SANCTION=land gh issue create --title x', 'the land lane after the human acks')
+backlog(false, 'gh issue list --label ready-for-agent', 'reading issues')
+backlog(false, 'git commit -m "docs: no gh issue create for minor findings"', 'the command named in a commit message')
+backlog(false, "python3 - <<'PY'\ns = s.replace('gh issue create', 'FLOW_SANCTION=prep gh issue create')\nPY", 'the command named in a script heredoc')
 console.log(bad === 0 ? '\ngit-guard: ALL PASS' : `\ngit-guard: ${bad} FAILURE(S)`)
 process.exit(bad === 0 ? 0 : 1)
