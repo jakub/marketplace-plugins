@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process'
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
-import { validate } from './schema.mjs'
+import { CHECK_SECONDS, checkAnswer } from './schema.mjs'
 
 // Only absolute PATH entries count. An empty or relative entry resolves against the job's cwd,
 // and a worktree must never be able to supply the provider executable.
@@ -140,7 +140,10 @@ function answered(job, dir, base, output, structured) {
   if (structured === undefined || structured === null || typeof structured !== 'object') {
     return { ...base, output, status: 'failed', error: { kind: 'SCHEMA_OUTPUT', message: 'The provider did not return JSON in the requested schema.' } }
   }
-  const errors = validate(JSON.parse(readFileSync(join(dir, 'schema.json'), 'utf8')), structured)
+  const errors = checkAnswer(join(dir, 'schema.json'), structured)
+  if (errors === null) {
+    return { ...base, output, status: 'failed', error: { kind: 'SCHEMA_OUTPUT', message: `The provider's answer could not be checked against the requested schema within ${CHECK_SECONDS} seconds.` } }
+  }
   if (errors.length) {
     return { ...base, output, status: 'failed', error: { kind: 'SCHEMA_OUTPUT', message: 'The provider\'s answer does not match the requested schema.', details: { errors } } }
   }

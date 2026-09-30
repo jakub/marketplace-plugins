@@ -2,6 +2,17 @@
 // schema is admitted only when every keyword in it is one this file checks or a pure annotation,
 // so an admitted schema is always checked in full; nothing is skipped silently. `$ref` resolves
 // inside the schema itself and nowhere else.
+//
+// Admission bounds the schema, not the work of checking an answer against it: references can
+// share a subschema along branches that multiply at every level, and a pattern can backtrack
+// without end on the string it meets. The runner holds the job and its lease until the outcome is
+// written, so checkAnswer runs this file as a child process and kills it after CHECK_SECONDS.
+import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+export const CHECK_SECONDS = 10
+const SELF = fileURLToPath(import.meta.url)
 
 const CHECKED = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const',
   'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'pattern',
@@ -146,4 +157,23 @@ export function validate(schema, value, root = schema, depth = 0) {
   const errors = []
   check(schema, value, '$', root, errors, depth)
   return errors
+}
+
+/** validate() against the schema file, in a child process: its lines, or null when it was killed unfinished. */
+export function checkAnswer(schemaPath, value, timeoutMs = CHECK_SECONDS * 1000) {
+  const child = spawnSync(process.execPath, [SELF, schemaPath], {
+    input: JSON.stringify(value), encoding: 'utf8', env: {}, timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024,
+  })
+  if (child.error?.code === 'ETIMEDOUT') return null
+  let errors
+  try { errors = child.status === 0 ? JSON.parse(child.stdout) : undefined } catch {}
+  if (!Array.isArray(errors)) {
+    throw new Error(`the schema check ended without a verdict (${child.error?.message ?? `exit ${child.status ?? child.signal}`}): ${String(child.stderr ?? '').split('\n')[0]}`)
+  }
+  return errors
+}
+
+if (process.argv[1] === SELF) {
+  const schema = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+  process.stdout.write(JSON.stringify(validate(schema, JSON.parse(readFileSync(0, 'utf8')))))
 }

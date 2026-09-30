@@ -15,6 +15,7 @@ import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seatPayload } from '../lib/charter-payload.mjs'
 import * as jobs from '../delegate/jobs.mjs'
+import { checkAnswer, schemaProblem } from '../delegate/schema.mjs'
 const { FINDINGS_SCHEMA } = jobs
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -165,6 +166,12 @@ try {
 
   // The timeout case runs its 30-second budget while everything else proceeds.
   const timed = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=hang', timeBudgetSeconds: 30, waitSeconds: 0 })
+  // So does a conforming answer to an admitted schema whose check branches two ways on each of 32
+  // levels of references, which only the check's kill timer ends.
+  const costly = { type: 'object', required: ['answer'], $defs: { d0: { type: 'number' } }, properties: { answer: { anyOf: [{ $ref: '#/$defs/d32' }, { type: 'string' }] } } }
+  for (let level = 1; level <= 32; level++) costly.$defs[`d${level}`] = { anyOf: [{ $ref: `#/$defs/d${level - 1}` }, { $ref: `#/$defs/d${level - 1}` }] }
+  assert.equal(schemaProblem(costly), null)
+  const unchecked = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', outputSchema: costly, waitSeconds: 0 })
 
   const names = async (client) => (await client.request('tools/list', {})).result.tools
   const claudeTools = await names(claudeHost)
@@ -291,6 +298,15 @@ try {
     await refused(claudeHost, { outputSchema }, 'BAD_SCHEMA')
   }
   ok('an answer that breaks its schema fails SCHEMA_OUTPUT on both targets and in review, and a schema the server cannot check is refused')
+
+  const slow = join(tmp, 'slow-pattern.json')
+  writeFileSync(slow, JSON.stringify({ type: 'object', properties: { title: { type: 'string', pattern: '^([a-z]+\\s?)*$' } } }))
+  const checkStarted = Date.now()
+  assert.equal(checkAnswer(slow, { title: `${'a'.repeat(40)}!` }, 1000), null, 'a pattern that backtracks without end is killed, not waited on')
+  assert.ok(Date.now() - checkStarted < 5000, `the kill took ${Date.now() - checkStarted} ms`)
+  assert.deepEqual(checkAnswer(slow, { title: 'a b' }), [])
+  assert.deepEqual(checkAnswer(slow, { title: 'A' }), ['$.title: does not match the pattern'])
+  ok('the answer is checked in a child process that a timer kills, so a backtracking pattern cannot hold the runner')
 
   const expect = async (client, prompt, status, kind) => {
     const result = await start(client, { prompt })
@@ -474,6 +490,11 @@ try {
   assert.equal(expired.job.status, 'failed')
   assert.equal(expired.job.error.kind, 'TIMEOUT')
   ok('a job past its time budget is stopped and fails TIMEOUT')
+
+  const bounded = await claudeHost.call('delegation_result', { jobId: unchecked.job.id, waitSeconds: 60 })
+  assert.deepEqual([bounded.job.status, bounded.job.error?.kind, bounded.job.structured], ['failed', 'SCHEMA_OUTPUT', null])
+  assert.match(bounded.job.error.message, /could not be checked against the requested schema within 10 seconds/)
+  ok('an answer whose check branches exponentially fails SCHEMA_OUTPUT once the check is killed, and the job settles')
   claudeHost.close()
   codexHost.close()
 

@@ -45,7 +45,7 @@ Every tool answers `{ok, job?, error?}`, and the JSON text opens with a one-line
 `job.error.kind` is one of `BAD_REQUEST`, `BAD_SCHEMA`, `NO_ROOTS`, `OUTSIDE_ROOTS`, `WORKSPACE_BUSY`, `NESTED_DELEGATION`, `JOB_NOT_FOUND`, `JOB_STATE`, `GIT_REF`, `PROVIDER_NOT_INSTALLED`, `PROVIDER_AUTH`, `PROVIDER_ERROR`, `APPROVAL_REQUIRED`, `REFUSAL`, `MODEL_MISMATCH`, `SCHEMA_OUTPUT`, `EMPTY_OUTPUT`, `TIMEOUT`, `STALL`, `CANCELLED`, `RUNNER_LOST` or `INTERNAL`. A `REFUSAL` carries the provider's category in `details` when it names one.
 
 - `output` is the final answer, and `structured` is the parsed answer when a schema applied.
-- `SCHEMA_OUTPUT` means the answer did not parse or did not conform. `details.errors` lists up to ten `path: problem` lines, `structured` is null and `output` keeps the raw answer. A review is checked against the findings schema the same way.
+- `SCHEMA_OUTPUT` means the answer did not parse, did not conform, or could not be checked against the schema within 10 seconds. `details.errors` lists up to ten `path: problem` lines when it did not conform, `structured` is null and `output` keeps the raw answer. A review is checked against the findings schema the same way.
 - `servedModel` is the model Claude reported serving the session. A Claude answer from any other model fails `MODEL_MISMATCH` and stops at once. Codex reports no served model.
 - `commandFailures` counts shell commands that failed. A succeeded job with a nonzero count answered without working shell evidence.
 - `APPROVAL_REQUIRED` means the provider asked for more than the job grants. Its `output` is kept. Start a new job with the access the task needs.
