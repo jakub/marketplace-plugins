@@ -1,6 +1,6 @@
 ---
 name: land
-description: Land one named pull request through the flow gates - the CI and unresolved-thread checks, the escape-hatch ack, the squash-merge, explicit issue closure, worktree retirement, and a survey of what to do next. The only merge path. MUST only run when the human explicitly asks to land a specific PR; never start it from adjacent work, a finished review, or a green build.
+description: Land one named pull request through the flow gates: the CI and unresolved-thread checks, the follow-up-draft ack, the squash-merge, explicit issue closure, worktree retirement, and a survey of what to do next. The only merge path. MUST only run when the human explicitly asks to land a specific PR; never start it from adjacent work, a finished review, or a green build.
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(node:*), Bash(docker:*), Bash(ls:*), Read, Edit, AskUserQuestion, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_doctor
 ---
 

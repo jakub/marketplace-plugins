@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: The operating manual for Flow's `flow_delegate` MCP tools. Read it before the first bridge call of a session, and for any question about cross-model or cross-family work, `delegate_to_codex`, `delegate_to_claude`, `delegation_result`, a delegation job or its result envelope. Apply this when the user says "ask Sol", "ask Codex", "ask Fable", "ask Claude", etc.
+description: The operating manual for Flow's `flow_delegate` MCP tools. Read it before the first bridge call of a session, and for any question about cross-model or cross-family work, `delegate_to_codex`, `delegate_to_claude`, `delegation_result`, a delegation job or its result envelope. Apply this when the user says "ask Sol", "ask Codex", "ask Fable" or "ask Claude".
 ---
 
 # delegate: reaching the other model family
@@ -54,6 +54,6 @@ A succeeded review with `findings: []` is not yet a pass. A reviewer that never 
 
 ## Before the first call
 
-Run `delegation_doctor` as the preflight. It answers without a workspace, which is what you need when the answer is that you have none. Codex starts MCP servers before any hook runs, so on a new machine Flow setup runs `node <plugin-root>/scripts/install-delegate.mjs install` once before the first Codex session. After that, the Codex SessionStart hook keeps `~/.local/bin/flow-delegate` current.
+Run `delegation_doctor` as the preflight. It answers without a workspace, which is what you need when the answer is that you have none. Codex starts MCP servers before any hook runs, so on a new machine the flow skill's `setup` runs `node <plugin-root>/scripts/install-delegate.mjs install` once before the first Codex session. After that, the Codex SessionStart hook keeps `~/.local/bin/flow-delegate` current.
 
 The server depends on these provider flags, checked against Codex CLI 0.159.0 and Claude Code 2.1.284 on 2026-09-29. For Codex: `exec --json`, `--ignore-user-config`, `--ignore-rules`, `--skip-git-repo-check`, `-s`, `-C`, `-m`, `-c`, `--output-schema`, `-o` and `exec resume`. For Claude: `-p --output-format stream-json --verbose`, `--model`, `--effort`, `--permission-mode dontAsk`, `--permission-prompts none`, `--setting-sources`, `--strict-mcp-config`, `--settings`, `--tools`, `--allowedTools`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd`. When the doctor reports a newer version and jobs start failing with `PROVIDER_ERROR`, check these flags against the provider's `--help` first.
