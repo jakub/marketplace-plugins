@@ -26,12 +26,15 @@
 // --accept-flake names it: the caller's statement that the job log shows that test as the check's
 // only failure, so one flag speaks for exactly one failed job, and two flags cannot share a check.
 //
-// With no stop, it re-reads base and head, runs `gh pr merge --squash --match-head-commit <head>`
-// so GitHub re-checks the head itself, and proves the outcome by re-reading the url, state, head
-// and base rather than trusting gh's exit code. It prints one JSON line: exit 0 `merged`, exit 1
+// With no stop, it re-reads base and head, then the default branch's tip, which has to be the one
+// the compare was made against: a land elsewhere during the reads above moves that tip, and the
+// merge pins only the head. Then it runs `gh pr merge --squash --match-head-commit <head>` so
+// GitHub re-checks the head itself, and proves the outcome by re-reading the url, state, head and
+// base rather than trusting gh's exit code. It prints one JSON line: exit 0 `merged`, exit 1
 // `refused` with every stop found (nothing merged), exit 4 `unknown`, which a human looks at before
 // anything is retried. stderr carries one human line. A cooperative guardrail at one uid: a
-// retarget between the last re-read and the merge is a race no client can close.
+// retarget or a land elsewhere between the last re-read and the merge is a race no client can
+// close, and only branch protection's up-to-date rule closes it on the server.
 
 import { fileURLToPath } from 'node:url'
 
@@ -204,13 +207,19 @@ export function landMerge({ argv, env, cwd, runGh }) {
     else if (queued) stop('merge-queue', `${id.slug} uses a merge queue on ${base}; land it through the queue by hand`)
   }
 
-  // ---- 8: behind the default branch
+  // ---- 8: behind the default branch, at a tip kept for the re-read before the merge
+  let baseTip = null
   if (defaultBranch !== null) {
     const r = api(`repos/${id.owner}/${id.repo}/compare/${refPath(defaultBranch)}...${head}`)
-    const behind = r.code === 0 ? parseObject(r.stdout)?.behind_by : undefined
-    if (!Number.isSafeInteger(behind) || behind < 0) {
-      stop('read-failed', `the compare of ${defaultBranch}...${head.slice(0, 12)} ${r.code === 0 ? 'gave no behind_by count' : `failed (${said(r)})`}, so whether the head is behind ${defaultBranch} is unknown`)
-    } else if (behind > 0) stop('behind-base', `${head.slice(0, 12)} is ${behind} commit(s) behind ${defaultBranch}; rebase onto it, push, wait for CI on the new head and land that`)
+    const compared = r.code === 0 ? parseObject(r.stdout) : null
+    const behind = compared?.behind_by
+    const unread = r.code !== 0 ? `failed (${said(r)})` : !Number.isSafeInteger(behind) || behind < 0 ? 'gave no behind_by count'
+      : !SHA.test(String(compared?.base_commit?.sha ?? '')) ? 'gave no base commit SHA' : null
+    if (unread !== null) stop('read-failed', `the compare of ${defaultBranch}...${head.slice(0, 12)} ${unread}, so whether the head is behind ${defaultBranch} is unknown`)
+    else {
+      baseTip = compared.base_commit.sha
+      if (behind > 0) stop('behind-base', `${head.slice(0, 12)} is ${behind} commit(s) behind ${defaultBranch}; rebase onto it, push, wait for CI on the new head and land that`)
+    }
   }
 
   // ---- 9: every check on the argument head, both sources to the end
@@ -340,14 +349,23 @@ export function landMerge({ argv, env, cwd, runGh }) {
   }
   if (threads.length > 0) stop('threads-unresolved', `${threads.length} review thread(s) are unresolved: ${threads.map((t) => t.path ?? t.id).join(', ')}`)
 
-  // ---- 13 and 14: any stop refuses; else one more read right before the merge, to shrink the
-  // retarget window it cannot close.
+  // ---- 13 and 14: any stop refuses; else the reads right before the merge, to shrink the
+  // retarget and land-elsewhere windows it cannot close. The tip goes last, nearest the merge.
   if (stops.length > 0) return refused()
   const recheck = view('baseRefName,headRefOid')
   if (recheck.value === null) return refuseNow('read-failed', `the pull request could not be re-read immediately before the merge: gh pr view ${recheck.why}`)
   if (recheck.value.baseRefName !== base) stop('retargeted', `#${pr} was retargeted to ${JSON.stringify(recheck.value.baseRefName ?? null)} mid-run; it was read as targeting ${JSON.stringify(base)}`)
   if (recheck.value.headRefOid !== head) {
     stop('head-moved', `the head of #${pr} moved mid-run (read ${head.slice(0, 12)}, now ${String(recheck.value.headRefOid ?? '').slice(0, 12) || 'unreadable'}); wait for CI on the new head and land that`)
+  }
+  const tipRead = api(`repos/${id.owner}/${id.repo}/git/ref/heads/${refPath(defaultBranch)}`)
+  const tipNow = tipRead.code === 0 ? parseObject(tipRead.stdout)?.object?.sha : undefined
+  if (!SHA.test(String(tipNow ?? ''))) {
+    return refuseNow('read-failed', `the tip of ${defaultBranch} could not be re-read immediately before the merge ${tipRead.code === 0 ? '(no commit SHA in the answer)' : `(${said(tipRead)})`}, so the head cannot be shown still current with it`)
+  }
+  if (tipNow !== baseTip) {
+    stop('behind-base', `${defaultBranch} moved from ${baseTip.slice(0, 12)} to ${tipNow.slice(0, 12)} after the compare showed ${head.slice(0, 12)} current with it, ` +
+      'so that comparison no longer holds; rebase onto it, push, wait for CI on the new head and land that')
   }
   if (stops.length > 0) return refused()
 

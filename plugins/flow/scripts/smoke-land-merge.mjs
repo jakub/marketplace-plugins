@@ -55,7 +55,7 @@ const pagesOf = (list) => { const pages = []; for (let i = 0; i < list.length; i
 // `fail` names one read that answers HTTP 500, and `malformed` one that answers in the wrong shape.
 const freshState = (over = {}) => ({
   defaultBranch: 'main', mergeExit: 0, landsNothing: false, confirmFails: false, queue: null, queueFails: false, recheck: {}, after: {},
-  queueAfter: undefined, queueAfterFails: false, merged: false, fail: null, malformed: null, behindBy: 0,
+  queueAfter: undefined, queueAfterFails: false, merged: false, fail: null, malformed: null, behindBy: 0, baseTip: 'f'.repeat(40), tipAtMerge: null,
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')], totalCount: null, statuses: [],
   threadPages: [[thread('T1')]], threadsNoCursor: false, baseFlakes: null, headFlakes: null, flakesHttp: null, flakesEncoding: 'base64',
   calls: [], merges: [], ...over,
@@ -104,7 +104,13 @@ const makeRunGh = (st) => (args) => {
     }
     if (path.includes('/compare/')) {
       if (st.fail === 'compare') return serverError()
-      return ok(st.malformed === 'compare' ? { status: 'behind' } : { status: st.behindBy > 0 ? 'diverged' : 'ahead', ahead_by: 1, behind_by: st.behindBy })
+      if (st.malformed === 'compare') return ok({ status: 'behind' })
+      return ok({ status: st.behindBy > 0 ? 'diverged' : 'ahead', ahead_by: 1, behind_by: st.behindBy, ...(st.malformed === 'compare-base' ? {} : { base_commit: { sha: st.baseTip } }) })
+    }
+    // The default branch's tip, read again straight before the merge: tipAtMerge is a land elsewhere meanwhile.
+    if (path.includes('/git/ref/heads/')) {
+      if (st.fail === 'tip') return serverError()
+      return ok({ ref: `refs/heads/${st.defaultBranch}`, object: { type: 'commit', sha: st.tipAtMerge ?? st.baseTip } })
     }
     const endpoint = ['check-runs', 'statuses'].find((e) => path.includes(`/${e}?`))
     if (endpoint !== undefined && args.includes('--paginate') && args.includes('--slurp')) {
@@ -267,6 +273,7 @@ console.log('\na read that fails or answers in the wrong shape refuses read-fail
     ['the repository read', { fail: 'repo' }, 'default branch could not be read'],
     ['the compare', { fail: 'compare' }, 'HTTP 500'],
     ['a compare with no behind_by', { malformed: 'compare' }, 'behind_by'],
+    ['a compare with no base commit', { malformed: 'compare-base' }, 'base commit'],
     ['the check runs', { fail: 'check-runs' }, 'HTTP 500'],
     ['a check-runs page with no check_runs', { malformed: 'check-runs' }, 'check_runs'],
     ['the commit statuses', { fail: 'statuses' }, 'HTTP 500'],
@@ -275,6 +282,7 @@ console.log('\na read that fails or answers in the wrong shape refuses read-fail
     ['a known-flakes file with no base64 contents', { baseFlakes: 'e2e\n', flakesEncoding: 'none' }, 'base64'],
     ['the review threads', { fail: 'threads' }, 'reviewThreads'],
     ['the re-read before the merge', { fail: 'recheck' }, 're-read'],
+    ['the default branch tip before the merge', { fail: 'tip' }, 'tip of main'],
   ]) {
     const r = run(ARGS, { st: freshState(over) })
     check(name, refusedWith(r, 'read-failed', text), shown(r))
@@ -336,6 +344,13 @@ console.log('\nreview threads, the base, and every stop at once')
   check('a red check and an open thread refuse with both codes in one run', refusedWith(both, 'ci-failed') && refusedWith(both, 'threads-unresolved') &&
     both.json?.checks?.failed[0]?.name === 'e2e' && both.json?.threads?.[0]?.id === 'T1', shown(both))
   check('and a gate stop refuses before the re-read', !both.st.calls.some((a) => a[0] === 'pr' && a[a.indexOf('--json') + 1] === 'baseRefName,headRefOid'), JSON.stringify(both.st.calls.filter((a) => a[0] === 'pr')))
+  const current = run()
+  const mergeAt = current.st.calls.findIndex((a) => a[0] === 'pr' && a[1] === 'merge')
+  check('the default branch tip is the last read before the merge', mergeAt > 0 &&
+    JSON.stringify(current.st.calls[mergeAt - 1]) === JSON.stringify(['api', '--hostname', 'github.com', `repos/${SLUG}/git/ref/heads/main`]), JSON.stringify(current.st.calls.slice(-3)))
+  const landedMeanwhile = run(ARGS, { st: freshState({ tipAtMerge: 'a'.repeat(40) }) })
+  check('a land elsewhere after the compare refuses behind-base, and nothing merges', refusedWith(landedMeanwhile, 'behind-base', 'moved from') &&
+    ['f'.repeat(12), 'a'.repeat(12), HEAD.slice(0, 12)].every((s) => detailOf(landedMeanwhile, 'behind-base').includes(s)), shown(landedMeanwhile))
   const closedBehind = run(ARGS, { st: freshState({ pr: { state: 'MERGED' }, behindBy: 1 }) })
   check('a merged pull request behind main reports not-open and behind-base together', codes(closedBehind).join() === 'not-open,behind-base' && closedBehind.st.merges.length === 0, shown(closedBehind))
 }
