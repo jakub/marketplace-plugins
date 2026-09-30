@@ -391,6 +391,24 @@ try {
   }
   ok('twelve admissions racing over one stale lease leave exactly one holder, eight rounds running')
 
+  // A write job still queued past its grace: a new writer takes its lease, and its runner, arriving
+  // late, must find the job already settled rather than start a second writer.
+  const late = { id: randomUUID(), host: 'claude', target: 'codex', mode: 'task', access: 'workspace-write', cwd: repo, worktree: repo,
+    model: 'gpt-fake', effort: 'low', status: 'queued', createdAt: new Date(Date.now() - 120_000).toISOString(), endedAt: null,
+    timeBudgetSeconds: 60, maxTurns: null, maxBudgetUsd: null, parentJobId: null, resumeThreadId: null, sessionId: null, threadId: null,
+    requestPreview: 'late', baseSha: null, headSha: null, hasSchema: false, servedModel: null, output: null, structured: null, commandFailures: 0, error: null }
+  mkdirSync(jobs.jobDir(late.id), { recursive: true })
+  writeFileSync(jobPath(late.id, 'prompt.txt'), 'FLOW_FAKE_MODE=happy late')
+  jobs.writeJob(late)
+  jobs.acquireLease(late)
+  const taker = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', access: 'workspace-write' })
+  assert.equal(taker.job.status, 'succeeded', JSON.stringify(taker.job.error))
+  assert.deepEqual([readJob(late.id).status, readJob(late.id).error?.kind], ['failed', 'RUNNER_LOST'])
+  spawnSync(process.execPath, [MAIN, 'run', '--job', late.id], { env: ENV })
+  assert.equal(fakeCall(late.id), null, 'the late runner started a provider in a worktree another writer held')
+  assert.equal(readJob(late.id).status, 'failed')
+  ok('a queued writer past its grace is claimed and settled before its lease goes, so its late runner never starts')
+
   const doctor = await claudeHost.call('delegation_doctor', {})
   assert.equal(doctor.ok, true)
   assert.deepEqual([doctor.host, doctor.target, doctor.provider.version, doctor.roots], ['claude', 'codex', 'codex-cli 0.0.0-fake', [repo]])

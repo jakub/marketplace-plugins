@@ -2,11 +2,12 @@
 // cancel, reconciliation and pruning. A job is a directory under <state>/jobs/<uuid>/, and
 // job.json is only ever replaced by rename, so a reader sees the old record or the new one.
 // While a runner lives it is the only writer of its job's record; the server writes one only to
-// create it or to settle a job whose runner is gone. A `claim` file created with O_EXCL decides
-// who may move a queued job, so a late runner and a cancel never both act on it.
+// create it or to settle a job whose runner is gone. A `claim` file, linked into place with its
+// holder inside, decides who may move a queued job, so a late runner and a cancel or a lease
+// takeover never both act on it.
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -72,8 +73,21 @@ export const settle = (job, status, fields = {}) => writeJob({ ...job, ...fields
 export function log(message) {
   try { appendFileSync(join(stateDir(), 'server.log'), `${new Date().toISOString()} ${message}\n`, { mode: 0o600 }) } catch {}
 }
+// The claim file names its holder: it is linked into place already holding the claimant's pid
+// and start token, so it never exists without them.
 export function claim(id) {
-  try { closeSync(openSync(join(jobDir(id), 'claim'), 'wx', 0o600)); return true } catch { return false }
+  const temp = join(jobDir(id), `.claim.${process.pid}.${randomUUID()}`)
+  try {
+    writeFileSync(temp, JSON.stringify({ pid: process.pid, start: startToken(process.pid) }), { mode: 0o600 })
+    linkSync(temp, join(jobDir(id), 'claim'))
+    return true
+  } catch { return false } finally { rmSync(temp, { force: true }) }
+}
+function claimantAlive(id) {
+  try {
+    const { pid, start } = JSON.parse(readFileSync(join(jobDir(id), 'claim'), 'utf8'))
+    return Boolean(start) && startToken(pid) === start
+  } catch { return false }
 }
 
 // /proc/<pid>/stat field 22 is the start time, which tells a live process from a recycled pid.
@@ -86,10 +100,6 @@ export function startToken(pid) {
   } catch { return null }
 }
 const runnerAlive = (job) => Boolean(job.runnerPid && job.runnerStart) && startToken(job.runnerPid) === job.runnerStart
-function groupAlive(pgid) {
-  if (!pgid) return false
-  try { process.kill(-pgid, 0); return true } catch (error) { return error.code === 'EPERM' }
-}
 export function killGroup(pgid, signal = 'SIGKILL') {
   if (pgid) try { process.kill(-pgid, signal) } catch {}
 }
@@ -273,11 +283,12 @@ export async function admit(input, { host, roots }) {
 // then removed only if still empty, so neither a release nor the takeover of a stale lease can
 // remove a lease that changed hands in between.
 const leaseDir = (job) => join(stateDir(), 'leases', createHash('sha256').update(job.worktree).digest('hex'))
+// The holder is reconciled first: a queued job past its grace is claimed and settled, so no
+// runner can start it once its lease is gone, and a running one whose runner died is settled
+// after its provider group is killed.
 function leaseLive(jobId) {
-  const held = typeof jobId === 'string' && JOB_ID.test(jobId) ? readJob(jobId) : null
-  if (!held || TERMINAL.has(held.status)) return false
-  if (held.status === 'queued') return Date.now() - Date.parse(held.createdAt) < QUEUE_GRACE_MS
-  return runnerAlive(held) || groupAlive(held.providerPgid)
+  const held = typeof jobId === 'string' && JOB_ID.test(jobId) ? reconcile(readJob(jobId)) : null
+  return Boolean(held) && !TERMINAL.has(held.status)
 }
 function dropLease(dir, owner) {
   const aside = join(dirname(dir), `.drop.${randomUUID()}`)
@@ -320,7 +331,8 @@ function spawnRunner(job) {
 }
 
 // A running job whose runner is gone has an unknown outcome: nothing is left that could prove
-// what the provider did. A queued job that no runner claimed within a minute never started.
+// what the provider did. A queued job past a minute is settled once this call holds its claim or
+// the holder is dead, and left alone while a live runner holds it, since that runner is starting.
 export function reconcile(job) {
   if (job?.status === 'running' && !runnerAlive(job)) {
     const again = readJob(job.id)
@@ -330,8 +342,9 @@ export function reconcile(job) {
     return settle(again, 'unknown', { error: { kind: 'RUNNER_LOST', message: 'The job runner exited without recording an outcome.' } })
   }
   if (job?.status === 'queued' && Date.now() - Date.parse(job.createdAt) > QUEUE_GRACE_MS) {
-    claim(job.id)
+    if (!claim(job.id) && claimantAlive(job.id)) return readJob(job.id) ?? job
     const again = readJob(job.id)
+    if (again?.status === 'running') return reconcile(again)
     if (again?.status !== 'queued') return again
     releaseLease(again)
     return settle(again, 'failed', { error: { kind: 'RUNNER_LOST', message: 'The job runner never started.' } })
