@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -96,6 +96,14 @@ const finding = (mode) => mode === 'bad-structure' ? { severity: 'urgent', confi
   : { severity: 'low', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd', systemic: false }
 const answerFor = (schema, mode) => !schema ? 'fake answer' : JSON.stringify(schema.properties.findings ? { findings: [finding(mode)] } : { answer: '42' })
 const modeOf = (text) => (/FLOW_FAKE_MODE=([a-z-]+)/.exec(text) || [])[1] || 'happy'
+// locked-tmp leaves what a command the job ran can leave: a directory in TMPDIR, holding a file,
+// that nobody may enter. The fake then answers as happy does.
+if (modeOf(promptOf()) === 'locked-tmp') {
+  const locked = path.join(process.env.TMPDIR, 'locked')
+  fs.mkdirSync(path.join(locked, 'inner'), { recursive: true })
+  fs.writeFileSync(path.join(locked, 'inner', 'file'), '')
+  fs.chmodSync(locked, 0)
+}
 if (NAME === 'codex') appServer()
 else claudeCli()
 
@@ -1033,6 +1041,30 @@ try {
     assert.ok(lstatSync(tmpDir, { throwIfNoEntry: false }) && existsSync(join(tree, 'keep')), `${what}: settling the job removed what its record named`)
   }
   ok('a dead runner\'s record that names anything but a TMPDIR of its own job settles without removing it')
+
+  // A directory nobody may enter, left in TMPDIR, is one a plain recursive removal cannot empty.
+  // The job still settles, its TMPDIR goes and its lease is freed, whether its runner ends it or
+  // reconcile settles it after the runner died.
+  for (const [client, target] of [[claudeHost, 'codex'], [codexHost, 'claude']]) {
+    const locked = await start(client, { prompt: 'FLOW_FAKE_MODE=locked-tmp', access: 'workspace-write' })
+    assert.equal(locked.job?.status, 'succeeded', `${target}: ${JSON.stringify(locked)}`)
+    assert.equal(existsSync(fakeCall(locked.job.id).env.TMPDIR), false, `${target}: a TMPDIR holding a locked directory outlived the job`)
+  }
+  const wedged = { ...readJob(reused.job.id), id: randomUUID(), access: 'workspace-write', status: 'running', endedAt: null,
+    runnerPid: deadPid, runnerStart: '1', providerPgid: null, providerStart: null }
+  wedged.tmpDir = jobs.tmpPath(wedged.id)
+  mkdirSync(jobs.jobDir(wedged.id), { recursive: true })
+  jobs.writeJob(wedged)
+  jobs.acquireLease(wedged)
+  jobs.makeTmp(wedged.tmpDir)
+  mkdirSync(join(wedged.tmpDir, 'locked', 'inner'), { recursive: true })
+  writeFileSync(join(wedged.tmpDir, 'locked', 'inner', 'file'), '')
+  chmodSync(join(wedged.tmpDir, 'locked'), 0)
+  const unwedged = await claudeHost.call('delegation_result', { jobId: wedged.id })
+  assert.deepEqual([unwedged.job?.status, unwedged.job?.error?.kind], ['unknown', 'RUNNER_LOST'], JSON.stringify(unwedged))
+  assert.equal(existsSync(wedged.tmpDir), false, 'a dead runner\'s TMPDIR holding a locked directory outlived the settled job')
+  assert.equal((await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', access: 'workspace-write' })).job.status, 'succeeded', 'a dead writer whose TMPDIR resisted removal kept its lease')
+  ok('a TMPDIR holding a directory nobody may enter is still removed, and the job settles and frees its lease, from the runner and from reconcile')
 
   // Of many admissions racing to take over one stale lease, exactly one holds it afterwards.
   const RACER = String.raw`

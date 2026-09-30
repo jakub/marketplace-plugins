@@ -8,7 +8,7 @@
 // runner answers beside it, so neither ever writes the other's file.
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -85,14 +85,29 @@ export const makeTmp = (path) => mkdirSync(path, { mode: 0o700 })
 // The path comes from a record, so it is removed only when it is one tmpPath could have given this
 // id: a direct child of the real /tmp, named by the id's prefix and 8 hex characters, and still a
 // directory of this user's rather than a symlink. No record can point the removal anywhere else.
+// The provider can leave a directory in it that nobody may enter, which rmSync cannot empty, so a
+// failed removal opens every directory of this user's in the tree to its owner and tries once
+// more. dropTmp never throws: the job and its lease are finalized after it whatever the provider
+// left, and a directory that still resists is logged and left to the system's /tmp cleanup.
 export function dropTmp(id, path) {
-  if (typeof path !== 'string') return
-  const name = basename(path)
-  const prefix = tmpPrefix(id)
-  if (path !== join(realpathSync('/tmp'), name) || !name.startsWith(prefix) || !/^[0-9a-f]{8}$/.test(name.slice(prefix.length))) return
-  let stat
-  try { stat = lstatSync(path) } catch { return }
-  if (stat.isDirectory() && stat.uid === process.getuid()) rmSync(path, { recursive: true, force: true })
+  try {
+    if (typeof path !== 'string') return
+    const name = basename(path)
+    const prefix = tmpPrefix(id)
+    if (path !== join(realpathSync('/tmp'), name) || !name.startsWith(prefix) || !/^[0-9a-f]{8}$/.test(name.slice(prefix.length))) return
+    const stat = lstatSync(path, { throwIfNoEntry: false })
+    if (!stat?.isDirectory() || stat.uid !== process.getuid()) return
+    try { rmSync(path, { recursive: true, force: true }) } catch {
+      openTree(path)
+      rmSync(path, { recursive: true, force: true })
+    }
+  } catch (error) { log(`could not remove the TMPDIR of job ${id}: ${error?.code ?? error}`) }
+}
+function openTree(dir) {
+  const stat = lstatSync(dir)
+  if (!stat.isDirectory() || stat.uid !== process.getuid()) return
+  chmodSync(dir, 0o700)
+  for (const name of readdirSync(dir)) { try { openTree(join(dir, name)) } catch {} }
 }
 
 export function readJob(id) {
