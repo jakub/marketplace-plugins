@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-// Smoke harness for scripts/flow-cron.mjs's report extraction. The jobs deliver their report
-// and then keep talking (filing a gripe, answering a question), so the session's last message
-// is routinely not the report. Reading only the type:"result" entry filed ten of twelve runs
-// between 2026-08-24 and 2026-09-01 as failures whose text was "Gripe filed." and nothing
-// else. Every case here is stdout as `claude -p` really writes it.
+// Smoke harness for scripts/flow-cron.mjs: its report extraction, and its allowlists against
+// git-guard's cron regex. The jobs deliver their report and then keep talking (filing a gripe,
+// answering a question), so the session's last message is routinely not the report. Reading only
+// the type:"result" entry filed ten of twelve runs between 2026-08-24 and 2026-09-01 as failures
+// whose text was "Gripe filed." and nothing else. Every case here is stdout as `claude -p` really
+// writes it.
 // Run: node plugins/flow/scripts/smoke-flow-cron.mjs
+import { execFileSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { extractReport, jobs } from "./flow-cron.mjs";
 
 let bad = 0;
@@ -66,19 +71,27 @@ check("a bare null on stdout is not a message", extractReport("null").report, ""
 check("a null entry in a message array is skipped", extractReport(JSON.stringify([null, { type: "assistant", message: { content: [{ type: "text", text: REPORT }] } }, 7, "x"])).report, REPORT);
 check("a null line in stream-json is skipped", extractReport("null\n" + assistant(REPORT) + result("ok")).report, REPORT);
 
-// The lint's mutating authority is one allowlist entry per executor verb and never a bare
-// script prefix: a verb added to lint-actions.mjs widens nothing until it is named here.
-console.log("lint allowlist");
-const lint = jobs("/x").lint.allowedTools;
-const executorEntries = lint.filter((t) => t.includes("lint-actions.mjs"));
-check("no bare lint-actions prefix", executorEntries.some((t) => t.endsWith("lint-actions.mjs:*")), false);
-for (const verb of ["remove-worktree", "delete-branch", "clear-orphan", "demote-unready", "triage-unlabelled"]) {
-  check(`verb entry: ${verb}`, executorEntries.includes(`Bash(node /x/scripts/lint-actions.mjs ${verb}:*)`), true);
+// Each job's Bash authority is one entry, and it has to be a prefix of the one line git-guard's
+// cron regex admits: an entry the guard refuses is a job that can run nothing, and a second entry
+// is a widening nobody reviewed. So each entry is checked against the real guard, not a copy.
+console.log("allowlists");
+const G = join(dirname(fileURLToPath(import.meta.url)), "..", "hooks", "scripts", "git-guard.mjs");
+const guardAllows = (job, command) =>
+  execFileSync(process.execPath, [G], {
+    input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }),
+    env: { ...process.env, FLOW_CRON_JOB: job, CLAUDE_PLUGIN_ROOT: "/x", PLUGIN_ROOT: "" },
+  }).toString().trim() === "";
+const want = { lint: "Bash(node /x/scripts/lint-actions.mjs:*)", "doc-sweep": "Bash(node /x/scripts/lint-actions.mjs survey:*)" };
+for (const [job, { allowedTools }] of Object.entries(jobs("/x"))) {
+  const bash = allowedTools.filter((t) => t.startsWith("Bash"));
+  check(`${job}: exactly one Bash entry`, bash.length, 1);
+  check(`${job}: the Bash entry`, bash[0], want[job]);
+  check(`${job}: the other tools`, allowedTools.filter((t) => !t.startsWith("Bash")).join(","), "Read,Glob,Grep,Agent");
+  const prefix = bash[0].slice("Bash(".length, -":*)".length);
+  const line = prefix.endsWith(" survey") ? `${prefix} /home/x/code/r` : `${prefix} delete-branch /home/x/code/r feat/x`;
+  check(`${job}: git-guard admits its entry (${line})`, guardAllows(job, line), true);
+  check(`${job}: git-guard still refuses git`, guardAllows(job, "git -C /home/x/code/r log -1"), false);
 }
-check("exactly the five verbs", executorEntries.length, 5);
-check("no direct gh issue edit", lint.some((t) => t.startsWith("Bash(gh issue edit")), false);
-check("no direct gh issue comment", lint.some((t) => t.startsWith("Bash(gh issue comment")), false);
-check("no gh write verb at all", lint.some((t) => /^Bash\(gh (issue|pr) (edit|comment|create|close|merge|delete)/.test(t)), false);
 
 console.log(bad === 0 ? "\nflow-cron: ALL PASS" : `\nflow-cron: ${bad} FAILURE(S)`);
 process.exit(bad === 0 ? 0 : 1);
