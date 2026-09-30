@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Smoke harness for scripts/flow-cron.mjs: its report extraction, its allowlists against
-// git-guard's cron regex, and the dry run through install-cron.sh. The jobs deliver their report and then keep talking (filing a gripe,
-// answering a question), so the session's last message is routinely not the report. Reading only
-// the type:"result" entry filed ten of twelve runs between 2026-08-24 and 2026-09-01 as failures
-// whose text was "Gripe filed." and nothing else. Every case here is stdout as `claude -p` really
-// writes it.
+// git-guard's cron regex, and the dry run through install-cron.sh.
+//
+// The jobs deliver their report and then keep talking (filing a gripe, answering a question), so
+// the session's last message is routinely not the report. Reading only the type:"result" entry
+// filed ten of twelve runs between 2026-08-24 and 2026-09-01 as failures whose text was "Gripe
+// filed." and nothing else. Every case here is stdout as `claude -p` really writes it.
 // Run: node plugins/flow/scripts/smoke-flow-cron.mjs
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

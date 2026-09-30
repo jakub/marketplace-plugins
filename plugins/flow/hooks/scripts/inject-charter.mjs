@@ -8,7 +8,9 @@
 // preview plus a file path. The session then runs on a fragment while the global CLAUDE.md's
 // <flow-charter> presence check still passes. So an oversize charter is refused, never cut: the
 // hook prints one HTML comment naming the size and no <flow-charter> tag, and the presence check
-// fails where the human can see it. Codex reads the same file, so it gets the same refusal.
+// fails where the human can see it. Codex reads the same file, so it gets the same refusal. Codex
+// measures the additionalContextLimit in hooks/codex.json in tokens, at about four bytes each, so
+// its 8000 for the session and 3000 for a seat hold the whole charter and the seat half with room.
 //
 // On Claude, `Explore` and `fork` get no seat half: Explore only locates files, and fork already
 // copies the session's context, charter included. Codex has neither, so it skips nothing.
