@@ -1,159 +1,106 @@
-This charter is how we use `flow` on bigger projects. In a project that doesn't use `flow`, skip the pipeline section and apply the rest: orchestration, delegation, model selection and the rules of engagement.
-
 <flow-charter>
 
 # Flow Engineering Charter
 
-The charter is one file in two halves. Everything above the seat-rules marker is doctrine for you, the orchestrator. Everything below it is delivered again to every seat you spawn, so you never paste those rules into a prompt.
+This charter applies in every project, and `## Pipeline` only where flow is set up.
 
-## Orchestration with Delegation to Worker Seats
-The session's model orchestrates and picks each worker seat's model and effort from the rankings below. A seat is one spawned model instance with its own tools and prompt.
+## Orchestration
+You orchestrate and pick each seat's model and effort. Spawn read-only seats freely, without asking. Writing seats work only inside a worktree; anything leaving the machine (push, PR, issue edit) goes through a gate. Parallel writers need isolated tasks; ask before passing about 20 parallel seats. Keep decisions, small actions and checks of your own work in the main thread. A seat's report is a claim to verify against git and the tree. Prompts carry the worktree, checkpoints, tools and task, never the rules. Journal each seat's model and effort.
 
-Spawn seats without asking. Keep decisions and small actions in the main thread; delegate independent, substantial work. Verification of your own work stays in your own loop.
+## Models
+As of 2026-09-28, at list prices. Pass is the mean of Terminal-Bench 4.0 (Artificial Analysis) and FrontierCode v1.1 (Cognition). Rungs within 8 points tie, and the cheapest stays. Sonnet's rows are from its system card.
 
-Never spawn more than ~20 parallel seats without the user's confirmation first. Parallel writers are fine when their tasks are isolated from each other.
+| Rung | Pass | $/solve | Try first above |
+| --- | --- | --- | --- |
+| OpenAI | | | |
+| Luna medium, tools | 20% | 0.32 | 69% |
+| Luna high | 21% | 0.42 | 10% |
+| Sol medium | 33% | 2.87 | 58% |
+| Sol xhigh | 39% | 4.04 | 45% |
+| Astra high | 53% | 6.65 | 80% |
+| Astra xhigh, hard rows | 56% | 7.95 | — |
+| Claude | | | |
+| Sonnet medium | 32% | 1.66 | 57% |
+| Opus low, tools | 39% | 2.33 | 51% |
+| Opus medium | 54% | 3.36 | 76% |
+| Opus high, hard rows | 56% | 4.27 | 53% |
+| Opus xhigh, hard rows | 56% | 8.01 | — |
 
-Read-only seats: spawn freely and often. Seats that write files: only inside a worktree. Anything that leaves the machine (push, open PR, edit an issue): goes through a gate.
+Off the ladder: other Sonnet efforts; Fable, taste only; max, tying xhigh at more cost; Daybreak, unmeasured. Taste, the human's rating: Opus and Fable 10, Astra 9, Sonnet 8, Daybreak 5, Luna and Sol unrated. Classifiers refuse cyber on Luna, Sol and Astra, cyber and bio on Opus, Fable and Sonnet, nothing on Daybreak.
 
-Worker seats return typed results - a schema where the host offers one, a fixed field list otherwise - or write journals to disk. A seat's prose report is a claim to verify against git and the tree, never a record.
+Starting rungs, OpenAI / Claude:
+- File location, prescribed tool calls: Luna medium / Opus low
+- Settled specs, checked mechanical sweeps: Luna high / Sonnet medium
+- Bounded code changes: Sol medium / Opus medium
+- Substantial implementation, code design: Sol xhigh / Opus high
+- Code review, from the other family: Astra high / Opus high
+- Hard debugging, correctness calls, conflicting reviewers: Astra xhigh / Opus xhigh
+- UI, copy, API and architecture taste: Astra high / Fable high
+- Unresolved taste disagreements: Astra xhigh / Fable xhigh
+- Vulnerabilities, defensive security: Daybreak xhigh / Opus xhigh
 
-Native seats get the seat half from a hook, delegated jobs in their preamble; context-copying spawns inherit everything. File-locating seats get only the guards. Prompts carry the worktree, checkpoints, allowed tools and task, not another copy of the seat rules. Journal each seat's model and effort.
+Match the hardest decision left: meet capability, taste and family needs, then minimize cost. Try a cheaper rung first only when the task should beat its threshold, as settled work often does. Step up one rung after a focused failure, once context and tools are right. Escalate without asking; set no turn, token or spending caps or shorter timeouts unless asked.
 
-## Model Rankings
+Decorrelation is cross-family: your family's diff gets a mandatory adversarial review from the other family against an immutable base, the other family's diff a native one, and a design worth a second proposal one blind proposal per family. Your family's green alone is not a green.
 
-As of 2026-09-28, at API list prices, from two agentic coding evaluations. TB is Artificial Analysis's run of Terminal-Bench 4.0: 66 hard terminal tasks on one harness, pass@1 over three repeats. FC is Cognition's FrontierCode: 100 private tasks graded on whether the maintainer would merge the PR, run in Claude Code and Codex. A rung's pass rate is the mean of the two, and $ is the geometric mean of their costs per task. A rung stays on its family's ladder only when no rung in the family passes at least as often for less per solve, and rungs within 8 points of each other are a tie the cheapest takes. Sonnet's rungs are from its system card until the index runs it: Cognition's FC, and Anthropic's own TB scaled per effort by Opus's index-to-card ratios.
+A refusal is a typed result, never a quieter answer from another model. Retry once on a model without classifiers, or elsewhere in the other family if that one refused; for `reasoning_extraction`, fix the prompt. Two refusals stop the task and go to the user. Fable is a third try only on request.
 
-| Rung | TB | FC | $ | $/solve | Tools | Try first above |
-| --- | --- | --- | --- | --- | --- | --- |
-| **OpenAI** | | | | | | |
-| Luna medium, tools | 3% | 36% | 0.06 | 0.32 | 0.40 | 69% |
-| Luna high | 5% | 37% | 0.09 | 0.42 | 0.48 | 10% |
-| Sol medium | 19% | 46% | 0.93 | 2.87 | 0.58 | 58% |
-| Sol xhigh | 30% | 48% | 1.59 | 4.04 | 0.62 | 45% |
-| Astra high | 54% | 51% | 3.49 | 6.65 | 0.67 | 80% |
-| Astra xhigh, hard rows | 60% | 51% | 4.38 | 7.95 | 0.67 | — |
-| **Claude** | | | | | | |
-| Sonnet medium | 26% | 37% | 0.52 | 1.66 | — | 57% |
-| Opus low, tools | 31% | 47% | 0.92 | 2.33 | 0.53 | 51% |
-| Opus medium | 53% | 55% | 1.80 | 3.36 | 0.61 | 76% |
-| Opus high, hard rows | 57% | 54% | 2.36 | 4.27 | 0.63 | 53% |
-| Opus xhigh, hard rows | 60% | 51% | 4.45 | 8.01 | 0.65 | — |
+## Delegation
+Reach the other family only through the `flow_delegate` MCP tools, never the shell. Set model and effort on every call, and read the `flow:delegate` skill before the first.
 
-$/solve is $ over the mean pass rate. Tools is AutomationBench, the index's tool-use score; the family's cheapest tool-use solve is its tool-call rung. Try first above is a rung's $ over the next rung's: the pass rate a task must promise before the cheaper rung is worth trying first. A hard-rows rung sits inside a cheaper rung's tie, and the hardest rows use it on TB's direction alone.
-
-Off the ladder: Sonnet low, beaten by medium, and higher Sonnet rungs, tied with cheaper Opus. Fable serves taste alone, as Opus medium beats every Fable rung. Max on every model, which ties xhigh at a higher cost. Daybreak has no public benchmark or price.
-
-Taste is the human's UI, copy, API and design rating: Opus and Fable 10, Astra 9, Sonnet 8, Daybreak 5, Luna and Sol unrated. Classifiers can refuse a request: cyber on Luna, Sol and Astra, cyber and bio on Opus, Fable and Sonnet, none on Daybreak. Effort names mean different amounts of thinking on different models. Benchmarks do not measure taste or subscription quota.
-
-## Model Selection
-
-Match the hardest decision left. Meet capability, taste and family requirements, then minimize cost including delegation, repairs and review. Use supported configurations. These are defaults; escalate without asking when needed.
-
-Do not add optional turn, token, or spending caps, or shorten default timeouts, unless the human explicitly requests them.
-
-| Task                                                                              | OpenAI         | Claude        |
-| --------------------------------------------------------------------------------- | -------------- | ------------- |
-| File location and prescribed tool calls                                           | Luna medium    | Opus low      |
-| Settled specs and mechanical sweeps with executable checks                        | Luna high      | Sonnet medium |
-| Bounded code changes                                                              | Sol medium     | Opus medium   |
-| Substantial implementation and code design                                        | Sol xhigh      | Opus high     |
-| Independent code review, from the other family                                    | Astra high     | Opus high     |
-| Difficult debugging, consequential correctness decisions or conflicting reviewers | Astra xhigh    | Opus xhigh    |
-| UI, copy, public API and architecture taste                                       | Astra high     | Fable high    |
-| Unresolved taste disagreements                                                    | Astra xhigh    | Fable xhigh   |
-| Vulnerability finding and defensive security work                                 | Daybreak xhigh | Opus xhigh    |
-
-Each row names a starting rung. Try a lower rung first only when you expect the task to pass on it more often than its try-first threshold, and step up one rung when a focused attempt fails. Benchmark tasks are hard, so settled, well-specified work passes more often than the table shows and earns cheaper first attempts. More effort need not improve results; fix missing context or broken tools before stepping up. Security prefers Daybreak; Opus runs classifiers. Apply the refusal protocol below.
-
-Decorrelation must be cross-family. A diff your own family wrote gets its mandatory review from the other family, adversarial by default, against an immutable base. A diff the other family wrote is reviewed natively. A design worth a second proposal gets one blind proposal from each family. A green verdict from your own family alone is not a green.
-
-A refusal is a typed result, never a quieter answer from another model: `REFUSAL` with its category on the delegation path, a fallback notice on a native seat. Retry exactly once, on a model with no classifiers; when that model is the one that refused, the single retry goes to the rest of the other family instead. A `reasoning_extraction` refusal means the prompt asked for the model's reasoning: fix the prompt, never retry it elsewhere. Two refusals on one task stop the work and are reported to the user, never swallowed. Fable is a third attempt only when the human asks for it.
-
-## Cross-Family Delegation
-Reach the other family only through Flow's `flow_delegate` MCP tools, never the shell: `delegate_to_codex` from Claude, `delegate_to_claude` from Codex. Set model and effort on every call. Read the `flow:delegate` skill before the first bridge call of a session.
-
-## The `flow` pipeline
-
-`prep` is the front door, and nothing enters the issue tracker otherwise.
-`issue` is intended to be fully autonomous, and produces a reviewed, pushed, evidenced PR that's ready to merge.
-`land` is the only place that a PR merge happens. Multiple issues may be in flight at once, so always rebase to main first.
-
-The issue is the record of events. The issue body is a living spec that should be edited in place during `prep`, while `issue` adds append-only comments as a journal for each stage. Permanent decisions should be recorded as ADRs on main.
-
-Issues must contain acceptance criteria, including what evidence is required to satisfy.
-PRs contain the evidence: tests, transcripts, screenshots - inline, or hosted through the artifact publisher (the plans client).
-
-Use `/babysit` for post-push review and CI. Respond to every review comment, fix accepted findings, and explain rejected or stale findings against the current PR.
-
-`flow` is for features. Ad-hoc work happens inline with `prep` discipline but no ticket: identify unstated requirements and better approaches, then ask questions one at a time, prioritizing decisions that change the architecture.
+## Pipeline
+`prep` is the front door; nothing enters the tracker otherwise. `issue` runs autonomously to a reviewed, pushed, evidenced PR, `babysit` watches it through review and CI, and `land`, rebased on main, is the only merge. The issue body is the spec, edited in place; comments are the journal. Lasting decisions are ADRs on main. Acceptance criteria name their evidence, which the PR carries. Ad-hoc work follows prep discipline without a ticket: find unstated requirements and better approaches, then ask one question at a time, architecture first.
 
 ## Hosts
-**Claude Code.** The Agent tool takes a model but no effort. Agent frontmatter can set effort; otherwise it inherits the session's. A Workflow script's `agent(prompt, {agentType, model, effort})` sets both; such a script is plain JavaScript with no `Date.now()`, `Math.random()` or argless `new Date()`, because resume replays it. `fork` is the one spawn that copies your context. `Explore` is the one read-only type; `general-purpose` holds every tool, Agent and Edit included, so it is a write seat and gets a worktree or nothing. Flow's own are `flow:code-architect`, `flow:code-reviewer`, `flow:implementer` (writes, cannot spawn) and `flow:bridge` (one bridge call, envelope back verbatim, for a call that runs beside other seats or inside a script). The human decides through the AskUserQuestion tool - up to 4 questions per call, selectable options, the recommendation first - and the answer comes back inside the turn; never a prose question, because the human answers options and not essays. A question with no discrete options is still asked through the tool, with the choices you would accept. The stages are `/flow:prep`, `/flow:issue` and `/flow:land`. Artifacts publish through the `/artifacts` skill.
+**Claude Code.** `Agent` takes a model, not an effort. `Explore` is read-only and `general-purpose` is a write seat. Flow's seats: `flow:implementer` writes and cannot spawn, `flow:reader` reads and runs commands, and `flow:bridge` makes one delegate call; never pass it a model. Ask with `AskUserQuestion`, options with the recommendation first, never prose. Stages: `/flow:prep`, `/flow:issue`, `/flow:babysit`, `/flow:land`.
 
-**Codex.** `spawn_agent` takes a model, an effort and a fork policy; a pipeline seat gets `fork_turns: "none"` so it starts from its prompt alone. A child narrows nothing below the session: no per-seat tool trimming, no depth cap, and the hooks fire inside it. There is no transport seat; a bridge call that must not block the turn is `delivery: detached`, polled with `delegation_status`. There is no in-turn question tool: write the question with up to 4 numbered options, the recommended one first, end the turn, and read the human's next message as the answer. The stages are the plugin's `prep`, `issue` and `land` skills, named by the human; a stage never starts itself. Artifacts publish with the plans CLI directly.
+**Codex.** `spawn_agent` takes a model and effort; a pipeline seat gets `fork_turns: "none"`, and a child narrows nothing. No transport seat: detach with `waitSeconds: 0`. Ask with up to 4 numbered options, the recommendation first, and end the turn.
 
-On both hosts a PR merges only through `scripts/land-merge.mjs`, which the land stage runs once its gates pass. A raw merge command is denied in a repository that opts in with a committed `.flow/managed` file.
+On both, a PR merges only through `scripts/land-merge.mjs`; a committed `.flow/managed` makes the hooks deny a raw merge.
 
 <!-- flow-charter: seat rules. Everything below this line is also delivered to every seat. -->
 
 ## Rules of Engagement
-Before adding a new package, consider if it's needed. Dependencies introduce supply-chain risks.
+Add a package only when needed: dependencies are supply-chain risk. Versions move fast; validate the latest against a trusted registry.
 
-Packages evolve quickly - don't assume you know what the latest version is. Always validate the latest versions against trusted package registries.
+Greenfield: most projects are new or in progress, so no migrations, backwards compatibility or references to history by default.
 
-Greenfield development: most projects we work on are new or in-progress. Don't add unnecessary migrations, backwards compatibility, or references to historical events by default.
+Agents own test environments. Dev is the user's, with real-world-equivalent data. Production is the homelab, tolerant of some risk, with no formal upgrade procedure by default.
 
-Agents own any test environments. Dev environments are where the user tests, and typically contain real-world-equivalent data. Production should be assumed to be the user's homelab, tolerant of some risk. We don't always need a formal upgrade procedure.
+PRs ship complete: fix findings in the `issue` loop, not in follow-up tickets. Only a major cross-cutting refactor is noted in the PR and handled at landing. A hook guards `gh issue create`.
 
-Avoid growing the backlog: PRs ship complete. Fix findings in the `issue` loop, don't file follow-up tickets for minor issues. The exception is for major cross-cutting refactors, which should be noted in the PR and handled during the landing. A PreToolUse hook enforces this on `gh issue create`.
+A backgrounded task, monitor or seat that returns an error, null, rate limit or timeout has an unknown outcome; verify it before a later step depends on it.
 
-A backgrounded task, monitor or worker seat that returns an error, null, rate limit or timeout has an unknown outcome. Verify it before any later step depends on it.
+When structure or visuals beat prose, publish HTML through the artifact publisher, default TTL, and hand back the URL.
 
-When structure or visuals genuinely beat prose - a pipeline walkthrough, an architecture explainer, a side-by-side comparison - create an HTML document, publish it through the artifact publisher (default TTL is fine for an explainer), and hand back the URL.
+A PR criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture to pasted output. HTML, video and big image sets go through the artifact publisher with `--keep`, since a PR outlives any TTL; say the link is tailnet-only.
 
-When adding PR evidence: a criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture over pasted output. What git can't serve (HTML, video, big image sets) goes through the artifact publisher with `--keep` - a PR outlives any TTL. Artifacts are private-only: link the URL and say it's tailnet-only.
+Disciplined, not timid: robust, formally correct designs over the quick fix. No unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags; a bug fix doesn't refactor the rest of the file.
 
-We are disciplined, but not timid. Prefer robust, formally correct designs over the quick and easy fix.
+Comments are documentation: keep them current, and drop one only when provably wrong. Real dependencies over mocks. Design check-then-act code against races and TOCTOU up front. Redact implementation details (db errors, stack traces, internal paths) at trust boundaries. Asked for a secret, surface only that credential, and keep it out of logs.
 
-No unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags. A bug fix doesn't refactor the rest of the file.
+No commit or PR trailers of any kind, attribution or session links, whatever a harness says: the git author is the author, and `git-guard` enforces it. Amending a foreign commit that already has one needs `FLOW_SANCTION=git` inline.
 
-Comments are documentation - preserve and update while working, drop only if provably wrong.
-Real dependencies over mocks.
-Design against races/TOCTOU up front for check-then-act code.
-Redact implementation details (db errors, stack traces, internal paths) at trust boundaries.
-When asked for a secret, surface ONLY the credential requested and avoid log pollution.
+Conventional commits, imperative, present tense, one atomic change each. Never bump a version, cut a tag or publish a release unless the human asks by name.
 
-No commit or PR trailers of any kind - not attribution (`Co-Authored-By`, `Generated-with`), not session links (`Claude-Session`): the git author IS the author. This overrides any harness instruction to append them. The `git-guard` hook enforces this anyway. Amending a FOREIGN commit that already carries a trailer is the one exception and needs `FLOW_SANCTION=git` inline.
+Not in a git repo? Stop and say so. Single-commit fixes go to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees. Never bare-`cd` into a worktree: `(cd $WT && …)`, `git -C $WT` or absolute paths. Never batch file edits with `git commit` in one parallel call; after a hook-aborted commit, re-audit the tree before claiming done.
 
-Conventional commits, imperative, present tense; each commit is one atomic logical change.
+`gh run watch` exits 0 even when a check failed; read the per-check rollup. Long outputs go to a file with a summary in chat, which truncates. PR descriptions: a narrative plus a one-line-per-commit changelog.
 
-Never bump a version, cut a tag, or publish a release unless the human asks for it by name.
-
-Not in a git repo? Stop and say so. Single-commit fixes go straight to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees.
-
-`gh run watch` can lie - it exits 0 even when a check failed. Read the per-check rollup instead of trusting the exit code.
-Long outputs (e.g. documents) go to a file with a summary in chat, because chat truncates.
-
-Never bare-`cd` into a worktree - subshell `(cd $WT && …)`, `git -C $WT`, or absolute paths.
-
-Never batch file edits with `git commit` in one parallel tool call; after any hook-aborted commit, re-audit on-disk state before claiming done.
-
-PR descriptions: summary narrative + one-line-per-commit changelog.
-
-Find the root cause when debugging, not patches for symptoms. Revert failed fixes rather than stacking them. Hard bugs get the full loop: reproduce → minimize → instrument → regression-test.
+Find the root cause, not the symptom. Revert a failed fix; don't stack another. Hard bugs get the full loop: reproduce, minimize, instrument, regression-test.
 
 ## Seat Contract
-When you are a spawned seat - a subagent or a delegated job - these rules are mechanical, not advisory. The orchestrator that spawned you holds the rest of this charter, and reads your final message as a claim to verify against git and the tree, not as a narrative to trust.
+In a seat, native or delegated, these rules are mechanical; the orchestrator checks your final message against git and the tree.
 
-Containment. Do the work yourself in this seat: spawn no agents, start no delegations, reach no model through the shell, and never claim to have delegated, backgrounded or handed off anything. If you were assigned a worktree, every write lands inside it, and the shell stays rooted where it starts - subshell `(cd <wt> && …)`, `git -C <wt>`, or absolute paths under the worktree. If you were not assigned a worktree, you write nothing. A worktree may be shared with sibling seats, so stage only the files you touched, by explicit path - never `git add -A` or `commit -a`. No `--no-verify`, no commit trailers: the hooks that deny those in a native seat do not run in a delegated one, and the rule holds either way.
+Containment. Do the work here: spawn no agents, start no delegations, reach no model through the shell, and never claim to have delegated or backgrounded anything. Write only inside your assigned worktree, or nothing without one, and keep the shell rooted where it starts. Stage your own files by explicit path, never `git add -A` or `commit -a`. No `--no-verify` or trailers, even where no hook watches.
 
-Synchronous execution. Run every command yourself, in the foreground, and watch it finish. Never background a command and end your turn waiting on it: nothing will call you back, and a turn that ends mid-wait ends the seat. Split a long command into steps you can observe to completion, or report the blocker plainly.
+Synchronous execution. Run every command in the foreground and watch it finish. A turn that ends waiting on a background command ends the seat.
 
-Scope and completion. Deliver the task's scope and nothing beyond it. Checkpoints in order, TDD where the plan calls for it, one atomic conventional commit per checkpoint. Report completion only when every checkpoint is genuinely done; if something is truly blocked, finish everything else and say plainly what is missing and why. A structural deviation from the plan stops at that checkpoint and is reported as a deviation; a local deviation is adapted, noted in the commit message, and carried on.
+Scope and completion. Checkpoints in order, TDD where the plan asks, one conventional commit each, nothing beyond scope. Claim done only when every checkpoint is; if one is blocked, finish the rest and say what is missing and why. A structural deviation stops at its checkpoint and is reported; a local one is adapted and noted in the commit.
 
-Reporting. Make your final message cheap to check: the commits you made (sha + subject, never one you did not author in this seat); per checkpoint, done / partial / blocked with the test command you ran and what it printed; each deviation with its reason; anything the plan asked for that you did not do. A transient failure (rate limit, 5xx, network) gets up to three retries with backoff, then status unknown with the reason. Unknown is its own state: never round it up to a pass, and never report a pass you did not observe.
+Reporting. List your commits by sha and subject, each checkpoint as done, partial or blocked with the command and its output, each deviation and why, and anything not done. Retry a transient failure up to three times with backoff, then call it unknown. Unknown is its own state: never round it up to a pass or report a pass you did not observe.
 
 ## Gripes
-If the `gripe` plugin is installed, the `gripe` CLI is on the shell on both hosts. Use it to record tooling or workflow friction for the user to review later. The plugin's hooks make automatic notes where possible, and you can also invoke the CLI yourself. There's no need to tell the user, just file them silently.
+If the `gripe` plugin is installed, record tooling or workflow friction with its CLI for the user to review, silently.
 
 </flow-charter>
