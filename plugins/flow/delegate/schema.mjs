@@ -91,6 +91,21 @@ function same(a, b) {
   return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && same(a[key], b[key]))
 }
 
+/** The decimal JSON prints for a finite number, as digits × 10^exponent. */
+function decimal(number) {
+  const [mantissa, exponent = '0'] = String(Math.abs(number)).split('e')
+  const [whole, fraction = ''] = mantissa.split('.')
+  return { digits: BigInt(whole + fraction), exponent: Number(exponent) - fraction.length }
+}
+
+// Decided exactly, on the decimals JSON prints for both numbers, which is the text the caller
+// receives. A floating-point quotient rounds, and it overflows to Infinity for a small divisor.
+function isMultiple(value, divisor) {
+  const [v, d] = [decimal(value), decimal(divisor)]
+  const low = Math.min(v.exponent, d.exponent)
+  return (v.digits * 10n ** BigInt(v.exponent - low)) % (d.digits * 10n ** BigInt(d.exponent - low)) === 0n
+}
+
 function is(type, value) {
   switch (type) {
     case 'null': return value === null
@@ -118,10 +133,7 @@ function check(schema, value, at, root, errors, depth) {
     if (schema.maximum !== undefined && value > schema.maximum) fail(`above the maximum ${schema.maximum}`)
     if (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum) fail(`not above ${schema.exclusiveMinimum}`)
     if (schema.exclusiveMaximum !== undefined && value >= schema.exclusiveMaximum) fail(`not below ${schema.exclusiveMaximum}`)
-    if (schema.multipleOf !== undefined) {
-      const quotient = value / schema.multipleOf
-      if (Math.abs(quotient - Math.round(quotient)) > 1e-9) fail(`not a multiple of ${schema.multipleOf}`)
-    }
+    if (schema.multipleOf !== undefined && !(Number.isFinite(value) && isMultiple(value, schema.multipleOf))) fail(`not a multiple of ${schema.multipleOf}`)
   }
   if (typeof value === 'string') {
     const length = Array.from(value).length

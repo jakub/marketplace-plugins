@@ -15,7 +15,7 @@ import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seatPayload } from '../lib/charter-payload.mjs'
 import * as jobs from '../delegate/jobs.mjs'
-import { checkAnswer, schemaProblem } from '../delegate/schema.mjs'
+import { checkAnswer, schemaProblem, validate } from '../delegate/schema.mjs'
 const { FINDINGS_SCHEMA } = jobs
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -302,7 +302,10 @@ try {
     await refused(claudeHost, { outputSchema }, 'BAD_SCHEMA')
   }
   assert.equal(schemaProblem({ $id: 'https://example.invalid/root', type: 'object', $defs: { a: { type: 'string' } }, properties: { a: { $ref: '#/$defs/a' }, self: { $ref: '#' } } }), null, 'a root $id and pointers from the root are admitted')
-  ok('an answer that breaks its schema fails SCHEMA_OUTPUT on both targets and in review, and a schema the server cannot check is refused')
+  const multiple = ([of, value]) => validate({ type: 'object', properties: { n: { type: 'number', multipleOf: of } } }, { n: value }).length === 0
+  assert.deepEqual([[1, 1e-10], [1, 1.0000000001], [0.1, 0.35], [3e-308, 1e308], [0.7, 1e300]].filter(multiple), [], 'a non-multiple fails, including one whose quotient overflows or rounds to an integer')
+  assert.deepEqual([[1, 0], [1, -4], [0.1, 0.3], [0.01, 1.15], [1e-308, 1e308], [2.5, 1e21]].filter((pair) => !multiple(pair)), [], 'a multiple passes as the decimals JSON prints')
+  ok('an answer that breaks its schema fails SCHEMA_OUTPUT on both targets and in review, a schema the server cannot check is refused, and multipleOf is exact')
 
   const slow = join(tmp, 'slow-pattern.json')
   writeFileSync(slow, JSON.stringify({ type: 'object', properties: { title: { type: 'string', pattern: '^([a-z]+\\s?)*$' } } }))
