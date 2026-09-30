@@ -183,6 +183,9 @@ function run({ action, repoArg, target, rest, env }) {
     if (tip === null) refuse('the branch does not exist')
     if (worktrees().some((e) => e.branch === target)) refuse('the branch is checked out in a worktree')
     const why = `${dead(target, tip)}; ${recoverable(target, tip)}`
+    // update-ref, unlike `git branch -D`, deletes a branch a worktree has checked out, so git's own
+    // check is repeated here, after the reads above and straight before the delete.
+    if (worktrees().some((e) => e.branch === target)) refuse('the branch was checked out in a worktree while it was being judged')
     // Compare-and-delete: git refuses if the branch moved off the tip every check above was about.
     if (gitIn(repo, ['update-ref', '-d', `refs/heads/${target}`, tip]) === null) refuse('the branch moved or could not be deleted')
     gitIn(repo, ['config', '--remove-section', `branch.${target}`])

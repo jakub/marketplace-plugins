@@ -50,7 +50,11 @@ if (group === 'api') {
 }
 if (at('--repo') !== 'github.com/jakub/demo' && !(group === 'repo' && argv[2] === 'github.com/jakub/demo')) fail('unpinned: ' + argv.join(' '))
 if (group === 'repo') out({ defaultBranchRef: { name: 'main' } })
-if (group === 'pr' && verb === 'list') out(st.prs[at('--head')] || [])
+if (group === 'pr' && verb === 'list') {
+  // A worktree that checks the branch out while the executor is still reading GitHub.
+  if (st.checkoutDuringRead) { require('node:child_process').execFileSync('git', st.checkoutDuringRead, { stdio: 'ignore' }); delete st.checkoutDuringRead }
+  out(st.prs[at('--head')] || [])
+}
 if (group === 'issue' && verb === 'view') out(st.issue)
 if (group === 'issue' && verb === 'edit') {
   if (st.applyEdit !== false) {
@@ -165,6 +169,13 @@ console.log('\ndelete-branch needs a death warrant and a recoverable tip')
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(state))
   const r = run(w, ['delete-branch', w.repo, 'feat/done'])
   check('a merged branch is deleted and reads back gone', r.code === 0 && spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/done']).status !== 0, JSON.stringify(r.json))
+  w.git(w.repo, 'branch', 'feat/taken')
+  const taken = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  taken.prs['feat/taken'] = [{ number: 6, state: 'MERGED', headRefOid: w.tip }]
+  taken.checkoutDuringRead = ['-C', w.repo, 'worktree', 'add', '-q', join(w.workspace, 'taken'), 'feat/taken']
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(taken))
+  refused('a branch checked out while GitHub was being read', run(w, ['delete-branch', w.repo, 'feat/taken']), 'checked out')
+  check('and the checked-out branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/taken']).status === 0)
 }
 
 console.log('\nremove-worktree refuses anything dirty or recent')
