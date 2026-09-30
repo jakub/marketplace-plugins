@@ -127,6 +127,7 @@ function main() {
   const prompt = readFileSync(promptFile, "utf8")
     .replaceAll("${FLOW_WORKSPACE}", workspace)
     .replaceAll("${CLAUDE_PLUGIN_ROOT}", root)
+    .replaceAll("${HOME}", homedir())
     .replaceAll("${DATE}", date);
 
   // The prompt goes first: --allowedTools is variadic and would swallow a trailing
