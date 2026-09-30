@@ -6,14 +6,15 @@
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { seatPayload } from '../lib/charter-payload.mjs'
+import { transport as claude } from './claude-control.mjs'
 import { transport as codex } from './codex-app-server.mjs'
 import { claim, DelegateError, jobDir, JOB_ID, log, readJob, releaseLease, settle, signalProvider, startToken, writeJob } from './jobs.mjs'
-import { claudeTransport, findExecutable, providerEnv } from './providers.mjs'
+import { findExecutable, providerEnv } from './providers.mjs'
 
 const STALL_SECONDS = 420
 const KILL_GRACE_MS = 10_000
 const CHARTER = new URL('../charter/charter.md', import.meta.url)
-const TRANSPORTS = { codex, claude: claudeTransport }
+const TRANSPORTS = { codex, claude }
 
 // The seat half of the charter, read from the file for every job, then the delegated-seat block.
 // A continuation gets the same bytes, so no rule ever rides in caller prose.
