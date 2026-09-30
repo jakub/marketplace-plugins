@@ -3,10 +3,16 @@
 // configuration left behind: Codex skips $CODEX_HOME/config.toml, which is where its MCP servers,
 // plugins and hook trust live; Claude loads no setting source and no MCP server, and runs its
 // tools inside the sandbox described by the settings it is handed.
-import { execFile } from 'node:child_process'
+//
+// The runner drives every target through one session shape: open, send, interrupt, close, then
+// finish, which folds the provider's lines into an outcome. A one-shot CLI takes its whole prompt
+// on stdin in the spawn that creates its session, so its open is the spawn and its send is stdin.
+import { execFile, spawn } from 'node:child_process'
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
+import { createInterface } from 'node:readline'
+import { log } from './jobs.mjs'
 import { CHECK_SECONDS, checkAnswer } from './schema.mjs'
 
 // Only absolute PATH entries count. An empty or relative entry resolves against the job's cwd,
@@ -292,4 +298,38 @@ const claude = {
   },
 }
 
-export const PROVIDERS = { codex, claude }
+// A one-shot CLI as a session. Nothing can be read back between its spawn and its prompt, and it
+// has no interrupt of its own, so a stop reaches it through its process group alone. Each stdout
+// line is folded first and then handed to the runner, which journals it and reads the session's
+// state after it.
+function oneShot(provider) {
+  return {
+    name: provider.name,
+    async open({ job, dir, bin, env, seat, onSpawn, onLine }) {
+      const child = spawn(bin, provider.argv(job, dir), { cwd: job.cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
+      onSpawn(child)
+      const fold = provider.fold(job, dir)
+      const session = {
+        stopReason: null,
+        turnEnded: false,
+        get threadId() { return fold.thread() },
+        send(prompt) { child.stdin.end(provider.stdin(seat, prompt)) },
+        interrupt: async () => null,
+        close() {},
+        finish: (exit) => fold.finish(exit),
+      }
+      child.stdin.on('error', () => {})
+      createInterface({ input: child.stdout }).on('line', (line) => {
+        let event
+        try { event = JSON.parse(line) } catch {}
+        if (event !== undefined) {
+          try { if (fold.event(event) === 'interrupt') session.stopReason = 'MODEL_MISMATCH' } catch (error) { log(`fold failed for ${job.id}: ${error?.stack || error}`) }
+        }
+        onLine(line)
+      })
+      return session
+    },
+  }
+}
+
+export const PROVIDERS = { codex: oneShot(codex), claude: oneShot(claude) }

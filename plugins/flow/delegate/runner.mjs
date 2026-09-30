@@ -1,13 +1,12 @@
-// The detached process that runs one job. It claims the job, spawns the provider CLI in a process
-// group of its own, journals each stdout line to events.jsonl, enforces the time budget, the stall
-// ceiling and cancel, and writes the outcome. The lease is released before the outcome is written,
-// and only after the provider's group is dead, so no two writers ever share a worktree.
-import { spawn } from 'node:child_process'
+// The detached process that runs one job. It claims the job, opens a session with the provider in
+// a process group of its own, sends the prompt, journals each stdout line to events.jsonl,
+// enforces the time budget, the stall ceiling and cancel, and writes the outcome. The lease is
+// released before the outcome is written, and only after the provider's group is dead, so no two
+// writers ever share a worktree.
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createInterface } from 'node:readline'
 import { seatPayload } from '../lib/charter-payload.mjs'
-import { claim, jobDir, JOB_ID, log, readJob, releaseLease, settle, signalProvider, startToken, writeJob } from './jobs.mjs'
+import { claim, DelegateError, jobDir, JOB_ID, log, readJob, releaseLease, settle, signalProvider, startToken, writeJob } from './jobs.mjs'
 import { findExecutable, PROVIDERS, providerEnv } from './providers.mjs'
 
 const STALL_SECONDS = 420
@@ -33,73 +32,111 @@ function outcome(job, folded, stopped) {
   return { ...folded, status: 'failed', error: { kind: stopped, message } }
 }
 
-function runProvider(job, dir, bin, provider, stdin) {
-  return new Promise((resolve) => {
-    const child = spawn(bin, provider.argv(job, dir), {
-      cwd: job.cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env: providerEnv(job, dir),
-    })
-    // The group's identity, recorded before anything can signal it: the leader's pid and start.
-    const group = { providerPgid: child.pid, providerStart: child.pid ? startToken(child.pid, { zombie: true }) : null }
-    const fold = provider.fold(job, dir)
-    const events = createWriteStream(join(dir, 'events.jsonl'), { flags: 'a', mode: 0o600 })
-    const stderr = createWriteStream(join(dir, 'stderr.txt'), { flags: 'a', mode: 0o600 })
-    let stopped = null
-    let killTimer = null
-    let stallTimer = null
-    let exit = null
-    let settled = false
-    const stop = (reason) => {
-      if (stopped) return
-      stopped = reason
-      events.write(`${JSON.stringify({ type: 'flow.stop', reason })}\n`)
-      signalProvider(group, 'SIGTERM')
-      killTimer = setTimeout(() => signalProvider(group), KILL_GRACE_MS)
-    }
-    const resetStall = () => {
-      clearTimeout(stallTimer)
-      stallTimer = setTimeout(() => stop('STALL'), STALL_SECONDS * 1000)
-    }
-    const budget = setTimeout(() => stop('TIMEOUT'), job.timeBudgetSeconds * 1000)
-    const poll = setInterval(() => { if (existsSync(join(dir, 'cancel'))) stop('CANCELLED') }, 500)
-    const finish = (spawnError) => {
-      if (settled) return
-      settled = true
-      for (const timer of [budget, stallTimer, killTimer]) clearTimeout(timer)
-      clearInterval(poll)
-      signalProvider(group)
-      events.end()
-      stderr.end()
-      let folded = { status: 'failed', error: { kind: 'PROVIDER_ERROR', message: `${provider.name} could not be started.` } }
-      if (!spawnError) {
-        try { folded = fold.finish(exit ?? {}) } catch (error) {
-          log(`fold failed for ${job.id}: ${error?.stack || error}`)
-          folded = { status: 'failed', error: { kind: 'INTERNAL', message: 'The runner could not read the provider outcome; server.log in the state directory has the detail.' } }
-        }
-      }
-      resolve({ folded, stopped })
-    }
-    child.on('error', (error) => { log(`provider spawn failed for ${job.id}: ${error.message}`); finish(error) })
-    if (!child.pid) return
-    let record = writeJob({ ...job, ...group })
-    resetStall()
-    child.stdin.on('error', () => {})
-    child.stdin.end(stdin)
-    child.stderr.pipe(stderr)
-    createInterface({ input: child.stdout }).on('line', (line) => {
-      resetStall()
-      events.write(`${line}\n`)
-      let event
-      try { event = JSON.parse(line) } catch { return }
-      try { if (fold.event(event) === 'interrupt') stop('MODEL_MISMATCH') } catch (error) { log(`fold failed for ${job.id}: ${error?.stack || error}`) }
-      // The provider thread is recorded the moment it is known, so a running job can be steered.
-      const thread = fold.thread()
-      if (thread && thread !== record.threadId) record = writeJob({ ...record, threadId: thread })
+// A failure the transport threw before its turn ended. A DelegateError is written for the caller;
+// anything else is logged and reads INTERNAL.
+function failed(job, error) {
+  if (error instanceof DelegateError) return { status: 'failed', error: { kind: error.kind, message: error.message, ...(error.details ? { details: error.details } : {}) } }
+  log(`provider session failed for ${job.id}: ${error?.stack || error}`)
+  return { status: 'failed', error: { kind: 'INTERNAL', message: 'The runner could not drive the provider; server.log in the state directory has the detail.' } }
+}
+
+// Opens the session, sends the prompt, and folds until the provider has exited. The transport
+// spawns the provider and hands the child to onSpawn before anything can signal it, so the group's
+// identity is on record from the first moment, and every line it prints reaches onLine.
+async function runProvider(job, dir, bin, transport, seat, prompt) {
+  const events = createWriteStream(join(dir, 'events.jsonl'), { flags: 'a', mode: 0o600 })
+  const stderr = createWriteStream(join(dir, 'stderr.txt'), { flags: 'a', mode: 0o600 })
+  let record = job
+  let group = null
+  let session = null
+  let failure = null
+  let spawnFailed = false
+  let closed = null
+  let stopped = null
+  let killTimer = null
+  let stallTimer = null
+  let exit = null
+  let settled = false
+  const journal = (event) => { if (!settled) events.write(`${JSON.stringify(event)}\n`) }
+  const kill = (signal) => signalProvider(group, signal)
+  // SIGTERM to the group now and SIGKILL after the grace, once however many paths ask for it.
+  const terminate = () => {
+    if (settled || killTimer) return
+    kill('SIGTERM')
+    killTimer = setTimeout(() => kill(), KILL_GRACE_MS)
+  }
+  const stop = async (reason) => {
+    if (stopped || settled) return
+    stopped = reason
+    journal({ type: 'flow.stop', reason })
+    // The provider's own interrupt goes first, so the turn ends where the provider can record it.
+    // The group is signalled after it whatever the interrupt answered.
+    const interrupted = session ? await session.interrupt() : null
+    if (interrupted) journal({ type: 'flow.interrupt', ...interrupted })
+    terminate()
+  }
+  const resetStall = () => {
+    clearTimeout(stallTimer)
+    if (!settled) stallTimer = setTimeout(() => stop('STALL'), STALL_SECONDS * 1000)
+  }
+  // The session's state after each line: the provider thread is recorded the moment it is known,
+  // so a running job can be steered; a stop the fold asked for starts now; an ended turn closes
+  // the session so the provider can exit.
+  const sync = () => {
+    if (!session) return
+    if (session.threadId && session.threadId !== record.threadId) record = writeJob({ ...record, threadId: session.threadId })
+    if (session.stopReason) stop(session.stopReason)
+    if (session.turnEnded) session.close()
+  }
+  const onSpawn = (child) => {
+    closed = new Promise((done) => {
+      child.on('error', (error) => { log(`provider spawn failed for ${job.id}: ${error.message}`); spawnFailed = true; done() })
+      child.on('close', () => done())
     })
     // Once the provider itself has exited, whatever is left in its group is a straggler that may
     // hold stdout open; killing the group lets 'close' arrive.
-    child.on('exit', (code, signal) => { exit = { code, signal }; signalProvider(group) })
-    child.on('close', () => finish(null))
-  })
+    child.on('exit', (code, signal) => { exit = { code, signal }; kill() })
+    child.stderr.pipe(stderr)
+    if (!child.pid) return
+    // The group's identity, recorded before anything can signal it: the leader's pid and start.
+    group = { providerPgid: child.pid, providerStart: startToken(child.pid, { zombie: true }) }
+    record = writeJob({ ...record, ...group })
+  }
+  const onLine = (line) => {
+    resetStall()
+    if (!settled) events.write(`${line}\n`)
+    sync()
+  }
+
+  const budget = setTimeout(() => stop('TIMEOUT'), job.timeBudgetSeconds * 1000)
+  const poll = setInterval(() => { if (existsSync(join(dir, 'cancel'))) stop('CANCELLED') }, 500)
+  resetStall()
+  try {
+    session = await transport.open({ job, dir, bin, env: providerEnv(job, dir), seat, onSpawn, onLine })
+    sync()
+    if (!stopped) await session.send(prompt)
+  } catch (error) {
+    failure = error
+    session?.close()
+    terminate()
+  }
+  await closed
+  settled = true
+  for (const timer of [budget, stallTimer, killTimer]) clearTimeout(timer)
+  clearInterval(poll)
+  kill()
+  events.end()
+  stderr.end()
+  let folded
+  if (spawnFailed) folded = { status: 'failed', error: { kind: 'PROVIDER_ERROR', message: `${transport.name} could not be started.` } }
+  else if (failure) folded = failed(job, failure)
+  else {
+    try { folded = session.finish(exit ?? {}) } catch (error) {
+      log(`fold failed for ${job.id}: ${error?.stack || error}`)
+      folded = { status: 'failed', error: { kind: 'INTERNAL', message: 'The runner could not read the provider outcome; server.log in the state directory has the detail.' } }
+    }
+  }
+  return { folded, stopped }
 }
 
 export async function runJob(id) {
@@ -109,19 +146,19 @@ export async function runJob(id) {
   const dir = jobDir(id)
   let result = null
   try {
-    const provider = PROVIDERS[job.target]
+    const transport = PROVIDERS[job.target]
     const bin = findExecutable(job.target)
     if (existsSync(join(dir, 'cancel'))) {
       result = { status: 'cancelled', error: { kind: 'CANCELLED', message: 'The job was cancelled before it started.' } }
-    } else if (!provider || !bin) {
+    } else if (!transport || !bin) {
       result = { status: 'failed', error: { kind: 'PROVIDER_NOT_INSTALLED', message: `${job.target} is not on the PATH the delegate server sees.` } }
     } else {
-      const seat = delegatedInstructions(job, provider.name)
+      const seat = delegatedInstructions(job, transport.name)
       writeFileSync(join(dir, 'seat.md'), seat, { mode: 0o600 })
       mkdirSync(join(dir, 'tmp'), { recursive: true, mode: 0o700 })
       const prompt = readFileSync(join(dir, 'prompt.txt'), 'utf8')
       job = writeJob({ ...job, status: 'running', startedAt: new Date().toISOString(), runnerPid: process.pid, runnerStart: startToken(process.pid) })
-      const { folded, stopped } = await runProvider(job, dir, bin, provider, provider.stdin(seat, prompt))
+      const { folded, stopped } = await runProvider(job, dir, bin, transport, seat, prompt)
       job = readJob(id) ?? job
       result = outcome(job, folded, stopped)
     }
