@@ -73,22 +73,23 @@ If a plugin is registered on both hosts, update both before you go back to work.
 
 **flow** is my attempt at an agentic development framework: a charter, four stage skills, a set of hooks, four small executors, and a bridge to the other model family. It's by no means perfect, but produces code I can live with.
 
-The charter defines *how* we work together. A `SessionStart` hook prints it into every session on both hosts. It is one file split by a marker line. Everything below the marker is the rules a seat follows, and a `SubagentStart` hook hands exactly those bytes to every seat that gets spawned. A job sent to the other family gets the same bytes at the top of its prompt, so a spawn prompt never carries contract text. The charter stays under one hook's 10,000-character cap, and the hook refuses an oversize charter rather than let the host cut it.
+The charter defines *how* we work together. A `SessionStart` hook prints it into every session on both hosts. It is one file split by a marker line. Everything below the marker is the rules a seat follows, and a `SubagentStart` hook hands exactly those bytes to every seat that gets spawned. A job sent to the other family gets the same bytes as its instructions, in Codex's developer instructions or Claude's appended system prompt, so a spawn prompt never carries contract text. The charter stays under one hook's 10,000-character cap, and the hook refuses an oversize charter rather than let the host cut it.
 
 The orchestrator (whichever model the session was launched with) picks the model and effort for every seat from the charter's rankings table, and decides what to spend where instead of running a hard-coded pipeline. The stages describe the shape of the seat they want and leave the choice where the context is. The agent scoring table idea is stolen from @Theo.
 
 ### The other model family
 
-Claude can delegate to Codex and Codex can delegate to Claude, through one MCP server, `flow_delegate`, with four tools:
+Claude can delegate to Codex and Codex can delegate to Claude, through one MCP server, `flow_delegate`, with five tools:
 
 | Tool | What it does |
 |---|---|
-| `delegate_to_codex` on Claude, `delegate_to_claude` on Codex | Starts a job with an explicit model and effort: a task, or an adversarial review of a pinned `base..head` diff that returns typed findings. It takes an `outputSchema` for a typed answer, `read-only` or `workspace-write` access confined to the named worktree, and `continue: <jobId>` to carry on a job's thread, which steers a running job by stopping its turn first. It waits for the answer, or returns at once with `waitSeconds: 0`. |
+| `delegate_to_codex` on Claude, `delegate_to_claude` on Codex | Starts a job with an explicit model and effort: a task, or an adversarial review of a pinned `base..head` diff that returns typed findings. It takes an `outputSchema` for a typed answer, `read-only` or `workspace-write` access confined to the named worktree, and `continue: <jobId>` to carry on a finished job's thread. It waits for the answer, or returns at once with `waitSeconds: 0`. |
 | `delegation_result` | Reads a job's status, outcome and last event lines, and can wait for the job to end. |
 | `delegation_cancel` | Stops a job and kills its provider's process group. |
+| `delegation_steer` | Adds an instruction to a running job's turn without stopping it, and reports whether the provider took it. |
 | `delegation_doctor` | Reports whether the provider is installed and signed in, the usable workspace roots and the state directory. |
 
-The server runs the other family's own headless CLI, `codex exec` or `claude -p`, and the job loads none of your configured MCP servers, plugins or hooks. It uses Node built-ins only, so there is no build step and no npm dependency. Each job is a directory under `~/.local/state/flow/jobs/` by default, and it outlives the session, so a later session in the same workspace can collect it. The `flow:delegate` skill is the operating manual, and `plugins/flow/docs/DELEGATION.md` is the maintenance record.
+The server speaks the other family's session protocol by hand, `codex app-server` for Codex and the stream-json control channel of `claude -p` for Claude. Each job opens a session, checks the model and effort against the provider's catalog, and reads back what the session can reach before the prompt goes out. A job loads none of your configured MCP servers, plugins or hooks. It uses Node built-ins only, so there is no build step and no npm dependency. Each job is a directory under `~/.local/state/flow/jobs/` by default, and it outlives the session, so a later session in the same workspace can collect it. The `flow:delegate` skill is the operating manual, and `plugins/flow/docs/DELEGATION.md` is the maintenance record.
 
 ### The stages
 
@@ -118,7 +119,7 @@ Two supporting skills sit outside the pipeline:
 | `plugins/flow/scripts/` | The four executors (`issue-claim`, `land-gates`, `land-merge`, `lint-actions`), `tree-snapshot`, the scheduled-job runner and the installers, and the smokes. |
 | `plugins/flow/hooks/` | Charter injection, plus the no-backlog, git, publication and merge, and protected-file guards, with an adapter per host where the hosts differ. |
 | `plugins/flow/skills/flow/` | The `flow` skill's `setup`, `drift`, `labels`, `charter` and `cron` subcommands, the label contract, and the scheduled-job prompts. |
-| `plugins/flow/skills/delegate/` | The operating manual for the four delegate tools. |
+| `plugins/flow/skills/delegate/` | The operating manual for the five delegate tools. |
 
 flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction preferences, and all engineering doctrine arrives through the charter. The doctrine then lives in a git repo, where a change is diffable and reviewable, and one `plugin install` carries the whole practice to a new machine. Leave one pointer in the personal file so a session notices a missing charter instead of improvising one: if no `<flow-charter>` block is in context, the plugin is missing or broken. That matters on desktop and claude.ai bridge sessions, which load plugins from service-pushed snapshots with hooks stripped, so the charter never arrives there.
 

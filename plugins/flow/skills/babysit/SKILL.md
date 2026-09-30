@@ -1,7 +1,7 @@
 ---
 name: babysit
 description: Watch one open pull request through external review and CI until everything is green, then hand it to the land stage. Validate and fix reviewer findings, answer every thread, and keep the branch rebased. Use when the human asks to monitor, watch, or babysit a PR, and whenever an issue run reaches its pushed PR, which always continues here.
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Agent, TaskOutput, TaskStop, SendMessage, Monitor, PushNotification, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_doctor
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Agent, TaskOutput, TaskStop, SendMessage, Monitor, PushNotification, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor
 ---
 
 # babysit: the watch between push and land
