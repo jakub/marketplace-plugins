@@ -10,61 +10,31 @@ Upstream commit:
 
     5b15a47f2d7150f545fbcacbfe381787fc0230dc
 
-Only these three are vendored: `grill-with-docs` is a thin wrapper that runs
-`/grilling` using the `/domain-modeling` skill, so the three form the minimal
-closure. Upstream ships 36 skills; the rest are deliberately not carried here.
+Only these three are vendored: `grill-with-docs` runs `grilling` with `domain-modeling`,
+so the three are the minimal closure. The rest of upstream is deliberately not carried.
 
 LOCAL MODIFICATIONS
 -------------------
 
-These files are NOT verbatim. Four patches apply on top of upstream, in order:
+These files are NOT verbatim. Four patches apply on top of upstream, in this order:
 
     patches/0001-lowercase-doc-filenames.patch
+        Lowercases CONTEXT.md, ADR-FORMAT.md and CONTEXT-FORMAT.md in domain-modeling, so
+        a case-sensitive filesystem never holds two competing copies of one doc.
     patches/0002-conditional-round-delivery.patch
+        Delivers a grilling round through AskUserQuestion when the tool exists, and as one
+        numbered question per turn when it does not (Codex), instead of a prose block. It
+        also tells grill-with-docs to read its two siblings when there is no Skill tool,
+        and flips allow_implicit_invocation to true in grill-with-docs/agents/openai.yaml.
     patches/0003-drop-context-map.patch
+        Removes the context-map.md mechanism from domain-modeling, because the `## Contexts`
+        section of a repo's AGENTS.md is the map here.
     patches/0004-enable-model-invocation.patch
+        Drops `disable-model-invocation: true` from grill-with-docs, so the model can invoke
+        it. This is the Claude half of the openai.yaml change in 0002.
 
-0001 lowercases the doc-artifact name this repo standardises on - CONTEXT.md ->
-context.md - and renames the skill's own reference docs to match (ADR-FORMAT.md ->
-adr-format.md, CONTEXT-FORMAT.md -> context-format.md). On a case-sensitive filesystem
-the uppercase names would be separate, competing files, so this is a correctness fix
-rather than a cosmetic one. It touches `domain-modeling` only. CONTEXT-MAP.md keeps its
-uppercase name here, because 0003 deletes every line that names it and renaming a doomed
-line only makes the two patches fight.
-
-0002 changes how `grilling` delivers a round and how `grill-with-docs` composes, not how
-either one thinks. Upstream asks the whole frontier as a numbered prose block with emoji
-headers, which leaves the user writing an essay to answer it. A round now goes through the
-AskUserQuestion tool when that tool is in the model's list: up to 4 questions per call, 2-4
-selectable options each, the recommendation first. Codex has no AskUserQuestion and no
-Skill tool, so the same text says what to do without them - ask one question per turn with
-up to 4 numbered options and end the turn, which keeps the round-per-turn rhythm and still
-avoids the numbered essay this patch exists to prevent. Upstream's design-tree and frontier
-model is kept intact. The check is inline in the vendored text because a model can read its
-own tool list. The same patch gives `grill-with-docs`'s one-line body a second sentence:
-without a Skill tool, read `../grilling/SKILL.md` and `../domain-modeling/SKILL.md` and
-follow both. Those paths are relative to the file that names them, which is why they climb
-a level. Its second hunk flips `allow_implicit_invocation` in
-`grill-with-docs/agents/openai.yaml` from false to true, which is the Codex half of the
-decision 0004 makes on the Claude side; upstream ships that flag paired with the
-`disable-model-invocation: true` that 0004 removes.
-
-0003 removes the `context-map.md` mechanism from `domain-modeling`: the multi-context
-directory tree in SKILL.md, and the map file plus the structure-inference list in
-context-format.md. We do not use a map file; the `## Contexts` section of a repo's
-AGENTS.md is the map. Note what it deliberately does NOT do. It does not assert that a
-repo is single-context, because flow's prep stage forbids inferring that from a missing
-map file, and it keeps "when multiple contexts exist, infer which one the topic relates
-to", which still applies when the map lives elsewhere. It also rewords SKILL.md's
-"Most repos have a single context" lead-in - the surviving half of a deleted contrast -
-to stay neutral about context count. The blocks it deletes carry `context.md` in the
-spelling 0001 gave them, so it applies after 0001 and nowhere else.
-
-0004 drops `disable-model-invocation: true` from `grill-with-docs`'s frontmatter, so the
-model can invoke the skill itself instead of waiting for the user to type the slash
-command. It touches that one file's frontmatter, and the body line it carries as context
-is the sentence 0002 wrote, so it applies after 0002. SKILL.md keeps its uppercase name -
-the skill loader discovers skills by that exact filename.
+Each patch assumes the ones before it: 0003 deletes lines in the spelling 0001 gave them,
+and 0004's context is the sentence 0002 wrote.
 
 RE-SYNCING
 ----------
@@ -77,7 +47,7 @@ RE-SYNCING
     6. Update the commit SHA above; regenerate any patch that stops applying
 
 The patches are ordinary `git diff` output with `a/plugins/grill/skills/...` paths, so
-apply them from the repo root. To regenerate one: commit the state it applies to, redo the
+apply them from the repo root. To regenerate one, commit the state it applies to, redo the
 change on top of that, and `git diff -M` the two commits. Verify the whole chain by
 applying it to a fresh copy of upstream in a scratch directory and diffing the result
 against skills/. They must be byte-identical.

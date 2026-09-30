@@ -10,110 +10,35 @@ Upstream commit:
 
     f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d
 
-SKILL.md is the whole of each skill upstream: no references/, no scripts, no
-agents/openai.yaml, nothing else to carry. The rest of pstack (agents, automations,
-docs) is a Cursor-oriented plugin and is deliberately not vendored here.
+SKILL.md is the whole of each skill upstream. The rest of pstack is a Cursor-oriented
+plugin and is deliberately not vendored. The two skills share one plugin and one pin
+because technical-writing cites unslop's rule ids, and two pins could drift apart. The
+upstream repo root carries no licence file; `pstack/LICENSE` is MIT, covers both files, and
+is reproduced below.
 
-The two are a pair, which is why they share one plugin and one pin. unslop is the
-slop-pattern catalog with stable rule ids; technical-writing is the four-layer
-standard that cites it and carries the voice guidance that used to live in unslop.
-Splitting them across two plugins would mean two pins against one upstream repo, and
-the first symptom of drift would be technical-writing citing a rule the vendored
-unslop no longer has.
+LOCAL MODIFICATIONS
+-------------------
 
-The upstream repo root carries no licence file. `pstack/LICENSE` is MIT and covers
-both files; it is reproduced below.
-
-LOCAL MODIFICATIONS: unslop
----------------------------
-
-One patch:
-
-    patches/0003-allow-model-invocation-of-unslop.patch
-
-0003 removes the `disable-model-invocation: true` that upstream added at f5bdd68.
-Nothing else changes. The body is byte-for-byte upstream, with no local scoping text.
-
-This plugin used to deliver those rules through SessionStart and SubagentStart hooks,
-on the argument that a skill description is an advertisement the model must act on
-each turn and reliably does not act on for prose-shaped turns. That machinery is gone
-as of 0.6.0, along with the Codex manifest that existed only to point at it. Both
-skills are now ordinary model-invocable skills, and this is a plugin of skills alone
-like grill. The open question is whether invocation covers the turns the hook covered.
-If it does not, the history before 0.6.0 holds a working hook to restore.
-
-Two things the hook did that invocation does not. It scoped the rules, applying the
-full set to deliverables, the jargon and plain-speech rules to technical explanation
-in chat, and letting the active output style win mechanical conflicts in conversation.
-And it reached subagents, which is why flow's implementer, code-reviewer and
-code-architect seats gained the `Skill` tool in the same change. There is no scoping
-now: a model that invokes this skill gets every rule and applies them to whatever it
-is writing.
-
-One file is added rather than patched:
-
-    skills/unslop/agents/openai.yaml
-
-Codex decides whether a model may reach a skill on its own from
-`policy.allow_implicit_invocation`, so with the hooks gone that file is the only thing
-making these rules reachable there. A re-sync copies SKILL.md only and leaves it alone.
-
-The rule numbers have gaps. Upstream treats them as stable ids that other skills cite
-and leaves a hole rather than renumbering when a rule is retired; rules 1, 2, 4, 6 and
-21 were general-prose rules retired upstream. Do not renumber to close a gap.
-
-LOCAL MODIFICATIONS: technical-writing
---------------------------------------
-
-skills/technical-writing/SKILL.md is NOT verbatim. Two patches apply on top of
-upstream, in order:
+Both SKILL.md files are NOT verbatim. Three patches apply on top of upstream, in this order:
 
     patches/0001-narrow-the-invocation-gate.patch
+        Drops `disable-model-invocation: true` from technical-writing and narrows its
+        description, so the model reaches for it on prose a reader comes back to and not
+        on a bare commit subject or chat.
     patches/0002-repo-specifics.patch
+        Fixes two technical-writing lines that describe pstack's repo: code indentation
+        now follows the file, and a change to unslop goes to patches/ in this directory.
+    patches/0003-allow-model-invocation-of-unslop.patch
+        Drops `disable-model-invocation: true` from unslop, so the model can invoke it.
+        The body stays byte-for-byte upstream.
 
-0001 removes `disable-model-invocation: true` and narrows the description that
-replaces it. Upstream gates the skill behind a typed `/technical-writing`, which
-means it covers nothing on the turns where it would help most. We want the model to
-reach for it, so the gate has to come off and the trigger has to earn its keep
-instead. Upstream's trigger list ends in "PR descriptions, or commit messages", and a
-conventional commit subject does not need eleven kilobytes of Diátaxis. The
-replacement fires on prose a reader comes back to and refuses two triggers: a bare
-commit subject, and chat. Chat matters because the Global English layer bans idioms,
-Latin, and metaphor, which is most of what the active output style exists to produce.
-That style governs conversation, and this skill governs documents.
+Two files are local additions, not patches:
 
-Those are rules about when to invoke the skill, not about which words it then covers,
-and the description now says so. An earlier wording said "not for commit subjects"
-flatly, which contradicted the body's "PR descriptions and commit messages are writing
-too. Every layer except Diátaxis applies to them", since a commit message contains its
-subject. CodeRabbit caught it on the PR that vendored this file. The body stays
-upstream-verbatim and the frontmatter carries the distinction.
-
-0002 fixes two lines that describe pstack's repo rather than this one. "Indent code
-snippets with tabs" is a Cursor convention and this repo is spaces, so the line now
-says to match the file. The jargon paragraph's "Don't edit that skill" gains the
-destination a change actually goes to, which is patches/ in this directory.
-
-Upstream's "Apply the **unslop** skill to every doc this skill touches" is left alone
-and is accurate here: 0003 takes the invocation gate off that skill, so the call it
-asks for will reach it.
-
-One file is added rather than patched:
-
+    skills/unslop/agents/openai.yaml
     skills/technical-writing/agents/openai.yaml
 
-Upstream ships no openai.yaml for any pstack skill. Codex decides whether a model may
-reach a skill on its own from `policy.allow_implicit_invocation`, so the Codex half of
-0001's decision lives in this file. A re-sync copies SKILL.md only and leaves this file
-alone. skills/unslop/ carries its own copy for the same reason, described with patch
-0003 above.
-
-Two upstream lines are deliberately NOT patched. "Do not paste swarm logs, SHA lists,
-or metric tables" sits near the charter's "one-line-per-commit changelog" for a PR
-body, and the two do not actually conflict: a list of commit subjects is not a list of
-SHAs. "Use your product's copy guidelines" for UI strings is left pointing nowhere on
-purpose, because the skill that would answer it here comes from a marketplace this
-repo does not control.
+Upstream ships no openai.yaml. Each sets `policy.allow_implicit_invocation`, the Codex half
+of 0001 and 0003. A re-sync copies SKILL.md only and leaves them alone.
 
 RE-SYNCING
 ----------
@@ -127,11 +52,11 @@ RE-SYNCING
     6. Update the commit SHA above; regenerate any patch that stops applying
 
 The patches are ordinary `git diff` output with `a/plugins/unslop/skills/...` paths,
-so apply them from the repo root. To regenerate one: commit the state it applies to,
+so apply them from the repo root. To regenerate one, commit the state it applies to,
 redo the change on top of that, and `git diff` the two commits. Verify the chain by
 applying it to a fresh upstream copy in a scratch directory and diffing the result
 against skills/. The two SKILL.md files must be byte-identical; the agents/ directories
-are local additions and will only exist on this side.
+exist only on this side.
 
 ---------------------------------------------------------------------------
 
