@@ -152,6 +152,8 @@ for (const [name, command] of [
   ['the executor from an installed cache', `node /home/x/.claude/plugins/cache/jakub/flow/0.42.0/scripts/land-merge.mjs 12 ${SHA}`],
   ['the executor by relative path', `node plugins/flow/scripts/land-merge.mjs 12 ${SHA}`],
   ['the executor under a path naming gh, api and merge', `node /srv/gh/api/merge/scripts/land-merge.mjs 12 ${SHA}`],
+  ['the executor accepting a flake on a context with a colon', `node ${EXECUTOR} 12 ${SHA} --accept-flake 'ci/circleci: build:flaky_test'`],
+  ['the executor accepting two flakes, both spellings', `node ${EXECUTOR} 12 ${SHA} --accept-flake e2e:test_login --accept-flake=unit:test_merge`],
   ['a commit message about merging', 'git commit -m "chore: gh pr merge once CI is green"'],
   ['a comment quoting the command', 'gh pr comment 12 -b "run gh pr merge once green"'],
   ['a heredoc body naming it', "gripe add <<'G'\nthe guard denied gh pr merge 12\nG"],

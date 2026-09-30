@@ -141,15 +141,18 @@ export function publishReason(command) {
 // ---------------------------------------------------------------------- the merge tripwire
 //
 // A repository opts in by committing `.flow/managed`. There, every merge command these regexes
-// recognize is denied, and the denial names scripts/land-merge.mjs, which merges after deriving
-// the repository from origin and the pull request's facts from GitHub. The human asking to land
-// is the authorization; the deny only keeps the merge on the path that verifies what it merges.
-// Elsewhere nothing here gates a merge, and scheduled jobs merge nothing, executor included.
+// recognize is denied, and the denial names scripts/land-merge.mjs, which derives the repository
+// from origin, runs every land gate itself against GitHub, and merges only when none stops it. The
+// human asking to land is the authorization; the deny only keeps the merge on the path that
+// verifies what it merges. Elsewhere nothing here gates a merge, and scheduled jobs merge nothing,
+// executor included.
 //
 // The one hard requirement is that the tripwire never matches the executor's own invocation.
-// Each regex needs a `gh` command word in the bare segment, and the executor's argv is a pull
-// request number and a SHA, so it has none. The REST path and the GraphQL mutation are nearly
-// always quoted, so those two read the segment's open text once its bare text is a `gh api` call.
+// Each regex needs a `gh` command word in the bare segment. The executor's argv is a pull request
+// number, a SHA and any `--accept-flake <check>:<test>` values, so it has none: a check name with
+// a space in it is quoted, and the bare reading blanks quoted text. The REST path and the GraphQL
+// mutation are nearly always quoted, so those two read the segment's open text once its bare text
+// is a `gh api` call.
 const GH = String.raw`(?:^|\s)(?:\S*/)?gh\s+(?:\S+\s+)*?`
 const PR_MERGE = new RegExp(`${GH}pr\\s+merge(?:\\s|$)`)
 const GH_API = new RegExp(`${GH}api(?:\\s|$)`)
@@ -210,8 +213,11 @@ export function mergeDenialFor({ command, cwd, env = {} }) {
 
   return `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
     'merge guardrail with a committed .flow/managed file. Merges here run through the executor: ' +
-    `\`node "${EXECUTOR}" <pr-number> <expected-head-sha>\`, with the full 40-character head SHA the land ` +
-    'gates ran against. It derives the repository from origin, refuses if GitHub\'s head, state, draft flag or ' +
-    'base is not what it should be, merges with --match-head-commit, and confirms by re-reading the pull ' +
-    'request. Run it when the human has asked to land this pull request and the gates have passed.'
+    `\`node "${EXECUTOR}" <pr-number> <expected-head-sha> [--accept-flake <check>:<test>]...\`, with the full ` +
+    '40-character head SHA you read from `gh pr view`. It derives the repository from origin and runs the land ' +
+    'gates itself. It refuses a pull request that is not open, is a draft, has moved off that head, is not based on ' +
+    'the default branch or is behind it, or has auto-merge or a merge queue armed. It also refuses one with a ' +
+    'pending, failed or unknown check that the base branch\'s known flakes do not excuse, or with an unresolved ' +
+    'review thread. It merges with --match-head-commit and confirms by re-reading the pull request. Run it when ' +
+    'the human has asked to land this pull request, and act on each stop it reports.'
 }
