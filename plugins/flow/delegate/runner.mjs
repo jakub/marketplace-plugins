@@ -6,12 +6,14 @@
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { seatPayload } from '../lib/charter-payload.mjs'
+import { transport as codex } from './codex-app-server.mjs'
 import { claim, DelegateError, jobDir, JOB_ID, log, readJob, releaseLease, settle, signalProvider, startToken, writeJob } from './jobs.mjs'
-import { findExecutable, PROVIDERS, providerEnv } from './providers.mjs'
+import { claudeTransport, findExecutable, providerEnv } from './providers.mjs'
 
 const STALL_SECONDS = 420
 const KILL_GRACE_MS = 10_000
 const CHARTER = new URL('../charter/charter.md', import.meta.url)
+const TRANSPORTS = { codex, claude: claudeTransport }
 
 // The seat half of the charter, read from the file for every job, then the delegated-seat block.
 // A continuation gets the same bytes, so no rule ever rides in caller prose.
@@ -146,7 +148,7 @@ export async function runJob(id) {
   const dir = jobDir(id)
   let result = null
   try {
-    const transport = PROVIDERS[job.target]
+    const transport = TRANSPORTS[job.target]
     const bin = findExecutable(job.target)
     if (existsSync(join(dir, 'cancel'))) {
       result = { status: 'cancelled', error: { kind: 'CANCELLED', message: 'The job was cancelled before it started.' } }

@@ -1,8 +1,7 @@
-// What differs per target: where the CLI is, what argv and stdin it gets, what environment it
-// runs in, and how its JSONL folds into an outcome. Each CLI runs headless with the host's own
-// configuration left behind: Codex skips $CODEX_HOME/config.toml, which is where its MCP servers,
-// plugins and hook trust live; Claude loads no setting source and no MCP server, and runs its
-// tools inside the sandbox described by the settings it is handed.
+// What the targets share: where a provider CLI is, what environment it runs in, its version and
+// sign-in, and how a finished answer becomes an outcome. The Claude target is here as well: a
+// one-shot `claude -p` that loads no setting source and no MCP server and runs its tools inside
+// the sandbox described by the settings it is handed. The Codex target is codex-app-server.mjs.
 //
 // The runner drives every target through one session shape: open, send, interrupt, close, then
 // finish, which folds the provider's lines into an outcome. A one-shot CLI takes its whole prompt
@@ -128,8 +127,8 @@ export function claudeSettings(job, dir) {
   }
 }
 
-const clip = (text) => String(text ?? '').replace(/[\p{Cc}\p{Cf}]+/gu, ' ').trim().slice(0, 500)
-function classify(message) {
+export const clip = (text) => String(text ?? '').replace(/[\p{Cc}\p{Cf}]+/gu, ' ').trim().slice(0, 500)
+export function classify(message) {
   if (/\b401\b|\b403\b|unauthori[sz]ed|not (logged|signed) in|log ?in again|authenticat|credential|expired token/i.test(message)) return 'PROVIDER_AUTH'
   if (/refus|flagged|safety|usage polic|content polic|cyber/i.test(message)) return 'REFUSAL'
   if (/timed? ?out|timeout|deadline exceeded/i.test(message)) return 'TIMEOUT'
@@ -140,7 +139,7 @@ function classify(message) {
 // A completed turn is a success only with an answer, and, when a schema was asked for, with a
 // structure that conforms to it. Neither provider's own enforcement is taken on trust: Codex
 // narrows a schema outside its subset without saying so.
-function answered(job, dir, base, output, structured) {
+export function answered(job, dir, base, output, structured) {
   if (!output && structured === undefined) return { ...base, status: 'failed', error: { kind: 'EMPTY_OUTPUT', message: 'The provider completed without a final answer.' } }
   if (!job.hasSchema) return { ...base, status: 'succeeded', output }
   if (structured === undefined || structured === null || typeof structured !== 'object') {
@@ -154,64 +153,6 @@ function answered(job, dir, base, output, structured) {
     return { ...base, output, status: 'failed', error: { kind: 'SCHEMA_OUTPUT', message: 'The provider\'s answer does not match the requested schema.', details: { errors } } }
   }
   return { ...base, status: 'succeeded', output, structured }
-}
-
-const codex = {
-  name: 'Codex',
-  argv(job, dir) {
-    const common = ['--json', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '-m', job.model,
-      '-c', `model_reasoning_effort="${job.effort}"`, '-c', 'approval_policy="never"', '-c', 'model_reasoning_summary="detailed"',
-      ...(job.hasSchema ? ['--output-schema', join(dir, 'schema.json')] : []), '-o', join(dir, 'last.txt')]
-    // `exec resume` takes neither -s nor -C, so the sandbox goes in as config and the cwd is the
-    // spawn's own.
-    return job.resumeThreadId
-      ? ['exec', 'resume', ...common, '-c', `sandbox_mode="${job.access}"`, job.resumeThreadId, '-']
-      : ['exec', ...common, '-C', job.cwd, '-s', job.access, '--color', 'never', '-']
-  },
-  stdin: (seat, prompt) => `${seat}\n\n${prompt}`,
-  fold(job, dir) {
-    let threadId = job.resumeThreadId
-    let message = ''
-    let failures = 0
-    let completed = false
-    let failure = null
-    let lastError = null
-    return {
-      thread: () => threadId,
-      event(event) {
-        const item = event.item
-        if (event.type === 'thread.started') threadId = event.thread_id ?? threadId
-        else if (event.type === 'item.completed' && item?.type === 'agent_message') message = item.text ?? message
-        else if (event.type === 'item.completed' && item?.type === 'command_execution'
-          && (item.status === 'failed' || (item.exit_code ?? 0) !== 0)) failures++
-        else if (event.type === 'turn.completed') completed = true
-        else if (event.type === 'turn.failed') failure = providerMessage(event.error?.message)
-        else if (event.type === 'error') lastError = providerMessage(event.message)
-      },
-      finish({ code, signal }) {
-        const base = { threadId, servedModel: null, output: null, structured: null, commandFailures: failures, error: null }
-        const problem = failure ?? (completed ? null : lastError)
-        if (problem) return { ...base, status: 'failed', error: { kind: classify(problem), message: `Codex: ${problem}` } }
-        if (!completed) {
-          return { ...base, status: 'failed', error: { kind: 'PROVIDER_ERROR', message: `Codex exited (${signal ?? code}) without ending its turn; stderr.txt beside the events file has its diagnostics.` } }
-        }
-        let output = message
-        try { output = readFileSync(join(dir, 'last.txt'), 'utf8') } catch {}
-        output = output.trim()
-        let structured
-        if (job.hasSchema) try { structured = JSON.parse(output) } catch {}
-        return answered(job, dir, base, output, structured)
-      },
-    }
-  },
-}
-
-// Codex wraps an API error as a JSON string inside the event's message.
-function providerMessage(text) {
-  try {
-    const parsed = JSON.parse(text)
-    return clip(parsed?.error?.message ?? parsed?.message ?? text)
-  } catch { return clip(text) }
 }
 
 const modelKey = (model) => String(model).replace(/\[1m\]$/i, '').toLowerCase()
@@ -332,4 +273,4 @@ function oneShot(provider) {
   }
 }
 
-export const PROVIDERS = { codex: oneShot(codex), claude: oneShot(claude) }
+export const claudeTransport = oneShot(claude)

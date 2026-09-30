@@ -1,0 +1,322 @@
+// The Codex target over `codex app-server --stdio`, spoken by hand: line-delimited JSON-RPC with
+// requests by id, their responses, notifications, and server requests that must be answered. The
+// App Server opens a thread first and takes the prompt later, so the thread is configured before
+// any prompt exists. The App Server has no --ignore-user-config and loads the human's config.toml,
+// so everything that grants a capability is named off in the thread config: the plugin, app,
+// hook, memory, multi-agent, browser, computer-use and image features, memories, every app, and
+// every MCP server config/read names.
+//
+// The flow_delegation permission profile is the containment. Codex's built-in :read-only and
+// :workspace profiles read every credential on the machine. This one grants read on :minimal, the
+// worktree, its Git metadata and the running Codex executable, write on the job's tmp only (and on
+// the worktree for a write job, with .git, .agents and .codex kept read-only), and no network.
+// Codex runs each shell command by re-executing its own binary inside bubblewrap, so without the
+// executable grant every command fails with execvp ENOENT while the turn still succeeds
+// (openai/codex#29049).
+//
+// No approval is ever granted. Each approval request gets its method's decline, and any request
+// that names an approval fails the job APPROVAL_REQUIRED once its turn ends, with the answer kept.
+import { spawn } from 'node:child_process'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { join, sep } from 'node:path'
+import { createInterface } from 'node:readline'
+import { DelegateError, git, log } from './jobs.mjs'
+import { answered, classify, clip } from './providers.mjs'
+
+export const PROFILE = 'flow_delegation'
+const VERSION = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version
+const STEP_MS = 30_000
+const INTERRUPT_MS = 10_000
+const STEER_MS = 15_000
+const MAX_PAGES = 10
+const FEATURES_OFF = ['plugins', 'apps', 'hooks', 'memories', 'multi_agent', 'multi_agent_v2', 'browser_use', 'computer_use', 'image_generation']
+const REJECTION = 'Flow grants a delegated job no approvals.'
+// Each approval method's decline, in the shape that method's response takes.
+const DECLINE = {
+  'item/commandExecution/requestApproval': { decision: 'decline' },
+  'item/fileChange/requestApproval': { decision: 'decline' },
+  'item/permissions/requestApproval': { permissions: {}, scope: 'turn' },
+  applyPatchApproval: { decision: { denied: { rejection: REJECTION } } },
+  execCommandApproval: { decision: { denied: { rejection: REJECTION } } },
+}
+const textInput = (text) => [{ type: 'text', text, text_elements: [] }]
+const keys = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : [])
+
+// Codex has wrapped an API error as a JSON string inside a message, so one that parses is unwrapped.
+function errorText(text) {
+  try {
+    const parsed = JSON.parse(text)
+    return clip(parsed?.error?.message ?? parsed?.message ?? text)
+  } catch { return clip(text) }
+}
+
+// One JSON-RPC peer over the child's stdio. Each stdout line is dispatched, then handed to onLine
+// unchanged. A request fails when the provider refuses it, stays silent past its timeout, or exits
+// first.
+function connect(child, { onLine, onNotification, onRequest }) {
+  const pending = new Map()
+  let next = 0
+  let gone = null
+  let ended = false
+  const lost = (method) => new DelegateError('PROVIDER_ERROR', `The Codex App Server ${gone} before it answered ${method}; stderr.txt beside the events file has its diagnostics.`)
+  const write = (message) => { if (!gone && !ended) child.stdin.write(`${JSON.stringify(message)}\n`) }
+  const end = (why) => {
+    gone ??= why
+    for (const [id, entry] of pending) {
+      pending.delete(id)
+      entry.lose()
+    }
+  }
+  child.stdin.on('error', () => {})
+  child.on('error', () => end('could not be started'))
+  child.on('close', () => end('exited'))
+  const dispatch = (message) => {
+    if (typeof message.method === 'string') {
+      if (!Object.hasOwn(message, 'id')) return onNotification(message.method, message.params ?? {})
+      const answer = onRequest(message.method, message.params ?? {})
+      return write('result' in answer ? { id: message.id, result: answer.result } : { id: message.id, error: answer.error })
+    }
+    const entry = pending.get(message.id)
+    if (!entry) return undefined
+    pending.delete(message.id)
+    return message.error ? entry.refuse(message.error) : entry.resolve(message.result ?? {})
+  }
+  createInterface({ input: child.stdout }).on('line', (line) => {
+    let message
+    try { message = JSON.parse(line) } catch {}
+    if (message && typeof message === 'object') {
+      try { dispatch(message) } catch (error) { log(`codex app-server dispatch failed: ${error?.stack || error}`) }
+    }
+    onLine(line)
+  })
+  return {
+    request(method, params, ms = STEP_MS) {
+      return new Promise((resolve, reject) => {
+        if (gone || ended) {
+          reject(gone ? lost(method) : new DelegateError('PROVIDER_ERROR', `The Codex session was closed before ${method}.`))
+          return
+        }
+        const id = ++next
+        const timer = setTimeout(() => {
+          pending.delete(id)
+          reject(new DelegateError('PROVIDER_ERROR', `The Codex App Server did not answer ${method} within ${ms / 1000}s.`))
+        }, ms)
+        pending.set(id, {
+          resolve: (result) => { clearTimeout(timer); resolve(result) },
+          refuse: (error) => {
+            clearTimeout(timer)
+            const text = errorText(error?.message)
+            reject(new DelegateError(classify(text), `Codex refused ${method}: ${text}`))
+          },
+          lose: () => { clearTimeout(timer); reject(lost(method)) },
+        })
+        write({ id, method, params })
+      })
+    },
+    notify(method) { write({ method }) },
+    close() {
+      if (ended) return
+      ended = true
+      child.stdin.end()
+    },
+  }
+}
+
+// A paged list: at most ten pages, and a cursor seen twice is a failure, not a loop.
+async function pages(rpc, method, params, kind) {
+  const data = []
+  const seen = new Set()
+  let cursor = null
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const response = await rpc.request(method, { ...params, cursor })
+    if (!Array.isArray(response?.data)) throw new DelegateError(kind, `Codex answered ${method} without a list.`)
+    data.push(...response.data)
+    cursor = response.nextCursor ?? null
+    if (!cursor) return data
+    if (seen.has(cursor)) throw new DelegateError(kind, `Codex repeated a ${method} cursor.`)
+    seen.add(cursor)
+  }
+  throw new DelegateError(kind, `Codex answered ${method} in more than ${MAX_PAGES} pages.`)
+}
+
+// Every MCP server name in the effective config and in each layer Codex loaded. A thread config
+// that disables a name no loaded layer defines fails with "invalid transport" (0.159.0), so a
+// layer Codex reports as disabled, such as an untrusted project's, contributes no names; if the
+// thread loads it anyway, the read-back before the prompt finds its servers.
+async function configuredServers(rpc, cwd) {
+  const response = await rpc.request('config/read', { cwd, includeLayers: true })
+  const names = new Set(keys(response?.config?.mcp_servers))
+  for (const layer of Array.isArray(response?.layers) ? response.layers : []) {
+    if (layer?.disabledReason == null) for (const name of keys(layer?.config?.mcp_servers)) names.add(name)
+  }
+  return [...names].sort()
+}
+
+function packageRoot(path) {
+  const segments = path.split(sep)
+  const at = segments.lastIndexOf('node_modules')
+  if (at < 0 || at + 1 >= segments.length) return null
+  return segments.slice(0, at + (segments[at + 1].startsWith('@') ? 3 : 2)).join(sep)
+}
+
+// The Codex executable, as the sandbox's re-exec needs it: what the App Server is running, read
+// from /proc once initialize has answered (a launcher that execs in place, such as a mise shim,
+// has done so by then), the PATH entry that started it and that entry's real path, and the npm
+// package root when a path runs through node_modules, since an npm install re-execs the vendor
+// binary nested inside its package.
+function runtimePaths(pid, bin) {
+  let exe
+  try { exe = realpathSync(`/proc/${pid}/exe`) } catch {
+    throw new DelegateError('PROVIDER_ERROR', 'The running Codex executable could not be read from /proc.')
+  }
+  const paths = new Set([exe, bin])
+  try { paths.add(realpathSync(bin)) } catch {}
+  for (const path of [...paths]) {
+    const root = packageRoot(path)
+    if (root) paths.add(root)
+  }
+  return [...paths]
+}
+
+async function permissionProfile(job, dir, runtime) {
+  const write = job.access === 'workspace-write'
+  const filesystem = { ':minimal': 'read', [job.worktree]: write ? 'write' : 'read' }
+  if (write) {
+    for (const name of ['.git', '.agents', '.codex']) {
+      const path = join(job.worktree, name)
+      if (!existsSync(path)) continue
+      filesystem[path] = 'read'
+      try { filesystem[realpathSync(path)] = 'read' } catch {}
+    }
+  }
+  for (const flag of ['--absolute-git-dir', '--git-common-dir']) {
+    const path = await git(job.cwd, ['rev-parse', '--path-format=absolute', flag])
+    if (path) try { filesystem[realpathSync(path)] = 'read' } catch {}
+  }
+  for (const path of runtime) filesystem[path] ??= 'read'
+  filesystem[realpathSync(join(dir, 'tmp'))] = 'write'
+  return { description: 'Flow delegated job', filesystem, network: { enabled: false } }
+}
+
+function threadParams(job, seat, servers, profile) {
+  return {
+    model: job.model, cwd: job.cwd, runtimeWorkspaceRoots: [job.worktree],
+    approvalPolicy: 'never', approvalsReviewer: 'user', serviceTier: 'default',
+    allowProviderModelFallback: false,
+    permissions: PROFILE,
+    developerInstructions: seat,
+    config: {
+      ...Object.fromEntries(FEATURES_OFF.map((name) => [`features.${name}`, false])),
+      memories: { use_memories: false, generate_memories: false },
+      apps: { _default: { enabled: false } },
+      mcp_servers: Object.fromEntries(servers.map((name) => [name, { enabled: false }])),
+      default_permissions: PROFILE,
+      permissions: { [PROFILE]: profile },
+    },
+  }
+}
+
+export const transport = {
+  name: 'Codex',
+  async open({ job, dir, bin, env, seat, onSpawn, onLine }) {
+    const child = spawn(bin, ['app-server', '--stdio'], { cwd: job.cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env })
+    onSpawn(child)
+    let turnId = null
+    let turn = null
+    let answer = ''
+    let failures = 0
+    let lastError = null
+    let approvalMethod = null
+    const session = {
+      threadId: null, servedModel: null, catalog: null, stopReason: null, turnOpen: false, turnEnded: false,
+      async send(prompt) {
+        const outputSchema = job.hasSchema ? JSON.parse(readFileSync(join(dir, 'schema.json'), 'utf8')) : null
+        const started = await rpc.request('turn/start', {
+          threadId: session.threadId, input: textInput(prompt), cwd: job.cwd, approvalPolicy: 'never',
+          model: job.model, effort: job.effort, summary: 'detailed', serviceTier: 'default', ...(outputSchema ? { outputSchema } : {}),
+        })
+        if (!started?.turn?.id) throw new DelegateError('PROVIDER_ERROR', 'Codex accepted the prompt without naming its turn.')
+        turnId ??= started.turn.id
+        if (!session.turnEnded) session.turnOpen = true
+      },
+      async steer(text) {
+        if (!session.turnOpen) return { delivered: false, error: 'the turn has ended' }
+        try {
+          await rpc.request('turn/steer', { threadId: session.threadId, expectedTurnId: turnId, input: textInput(text) }, STEER_MS)
+          return { delivered: true }
+        } catch (error) { return { delivered: false, error: clip(error.message) } }
+      },
+      async interrupt() {
+        if (!session.turnOpen) return null
+        try {
+          await rpc.request('turn/interrupt', { threadId: session.threadId, turnId }, INTERRUPT_MS)
+          return { method: 'turn/interrupt', delivered: true }
+        } catch (error) { return { method: 'turn/interrupt', delivered: false, error: clip(error.message) } }
+      },
+      close() { rpc.close() },
+      finish({ code, signal }) {
+        const base = { threadId: session.threadId, servedModel: session.servedModel, output: null, structured: null, commandFailures: failures, error: null }
+        if (turn?.status === 'failed' || (!turn && lastError)) {
+          const problem = (turn?.error?.message && errorText(turn.error.message)) || lastError || 'the turn failed'
+          return { ...base, status: 'failed', error: { kind: classify(problem), message: `Codex: ${problem}` } }
+        }
+        if (!turn) {
+          return { ...base, status: 'failed', error: { kind: 'PROVIDER_ERROR', message: `Codex exited (${signal ?? code}) without ending its turn; stderr.txt beside the events file has its diagnostics.` } }
+        }
+        if (turn.status !== 'completed') return { ...base, status: 'failed', error: { kind: 'PROVIDER_ERROR', message: `Codex ended its turn ${clip(turn.status)}.` } }
+        const items = Array.isArray(turn.items) ? turn.items : []
+        const output = String(items.findLast((item) => item?.type === 'agentMessage' && item.text)?.text || answer).trim()
+        if (approvalMethod) {
+          return { ...base, output: output || null, status: 'failed', error: { kind: 'APPROVAL_REQUIRED', message: 'Codex asked for an approval this job does not grant, and it was declined.', details: { method: approvalMethod } } }
+        }
+        let structured
+        if (job.hasSchema) try { structured = JSON.parse(output) } catch {}
+        return answered(job, dir, base, output, structured)
+      },
+    }
+    const onNotification = (method, params) => {
+      if (method === 'turn/started') {
+        if (params.turn?.id && !session.turnEnded) {
+          turnId ??= params.turn.id
+          session.turnOpen = true
+        }
+      } else if (method === 'item/completed') {
+        const item = params.item ?? {}
+        if (item.type === 'agentMessage' && typeof item.text === 'string') answer = item.text
+        else if (item.type === 'commandExecution' && (item.status === 'failed' || (item.exitCode ?? 0) !== 0)) failures++
+      } else if (method === 'turn/completed') {
+        if (turnId && params.turn?.id && params.turn.id !== turnId) return
+        turn = params.turn ?? {}
+        session.turnOpen = false
+        session.turnEnded = true
+      } else if (method === 'error' && params.willRetry !== true) {
+        lastError = errorText(params.error?.message)
+      }
+    }
+    const onRequest = (method) => {
+      if (/approval/i.test(method)) approvalMethod ??= method
+      return Object.hasOwn(DECLINE, method) ? { result: DECLINE[method] } : { error: { code: -32601, message: `flow-delegate does not answer ${method}.` } }
+    }
+    const rpc = connect(child, { onLine, onNotification, onRequest })
+    try {
+      await rpc.request('initialize', { clientInfo: { name: 'flow-delegate', title: 'Flow delegate', version: VERSION }, capabilities: { experimentalApi: true } })
+      rpc.notify('initialized')
+      const runtime = runtimePaths(child.pid, bin)
+      session.catalog = (await pages(rpc, 'model/list', { limit: 100, includeHidden: true }, 'PROVIDER_ERROR')).map((model) => ({
+        id: model?.id, efforts: (Array.isArray(model?.supportedReasoningEfforts) ? model.supportedReasoningEfforts : []).map((option) => option?.reasoningEffort),
+      }))
+      const servers = await configuredServers(rpc, job.cwd)
+      const params = threadParams(job, seat, servers, await permissionProfile(job, dir, runtime))
+      const opened = job.resumeThreadId
+        ? await rpc.request('thread/resume', { threadId: job.resumeThreadId, ...params })
+        : await rpc.request('thread/start', { ...params, ephemeral: false, serviceName: 'flow-delegate' })
+      if (!opened?.thread?.id) throw new DelegateError('PROVIDER_ERROR', 'Codex opened no thread.')
+      session.threadId = opened.thread.id
+      session.servedModel = opened.model ?? null
+    } catch (error) {
+      rpc.close()
+      throw error
+    }
+    return session
+  },
+}
