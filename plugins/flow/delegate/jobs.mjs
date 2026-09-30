@@ -8,7 +8,7 @@
 // runner answers beside it, so neither ever writes the other's file.
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, chmodSync, closeSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -85,10 +85,11 @@ export const makeTmp = (path) => mkdirSync(path, { mode: 0o700 })
 // The path comes from a record, so it is removed only when it is one tmpPath could have given this
 // id: a direct child of the real /tmp, named by the id's prefix and 8 hex characters, and still a
 // directory of this user's rather than a symlink. No record can point the removal anywhere else.
-// The provider can leave a directory in it that nobody may enter, which rmSync cannot empty, so a
-// failed removal opens every directory of this user's in the tree to its owner and tries once
-// more. dropTmp never throws: the job and its lease are finalized after it whatever the provider
-// left, and a directory that still resists is logged and left to the system's /tmp cleanup.
+// /tmp is not the job's to write, but everything inside the directory is, and a process the job
+// left outside its provider's group can still write there while the removal runs. So removeTree
+// never checks a path inside and then uses it: see its own comment. dropTmp never throws: the job
+// and its lease are finalized after it whatever the provider left, and a directory that still
+// resists is logged and left to the system's /tmp cleanup.
 export function dropTmp(id, path) {
   try {
     if (typeof path !== 'string') return
@@ -97,17 +98,33 @@ export function dropTmp(id, path) {
     if (path !== join(realpathSync('/tmp'), name) || !name.startsWith(prefix) || !/^[0-9a-f]{8}$/.test(name.slice(prefix.length))) return
     const stat = lstatSync(path, { throwIfNoEntry: false })
     if (!stat?.isDirectory() || stat.uid !== process.getuid()) return
-    try { rmSync(path, { recursive: true, force: true }) } catch {
-      openTree(path)
-      rmSync(path, { recursive: true, force: true })
-    }
+    removeTree(path)
   } catch (error) { log(`could not remove the TMPDIR of job ${id}: ${error?.code ?? error}`) }
 }
-function openTree(dir) {
-  const stat = lstatSync(dir)
-  if (!stat.isDirectory() || stat.uid !== process.getuid()) return
-  chmodSync(dir, 0o700)
-  for (const name of readdirSync(dir)) { try { openTree(join(dir, name)) } catch {} }
+// Node names no O_PATH. This is its value in the kernel's generic fcntl.h, which x86-64 and arm64
+// both use.
+const O_PATH = 0o10000000
+// Removes the directory at path and everything in it, acting on each directory only through a
+// handle to it. The handle is opened with O_NOFOLLOW and O_DIRECTORY, so a symlink never yields
+// one, and with O_PATH, which needs no permission on the directory itself, so a directory nobody
+// may enter still yields one. fstat on the handle checks the owner, and /proc/self/fd/<handle>
+// opens the directory to its owner, lists it and names each entry from it, so an entry replaced
+// after it was listed or opened sends nothing onto another path. unlink and rmdir never follow a
+// final symlink. An entry that fails is skipped, so its parent's rmdir fails and dropTmp logs it.
+// Node's rmSync is not used, because on Node 22 it checks each directory by path in JavaScript
+// and then reads it by the same path.
+function removeTree(path) {
+  const fd = openSync(path, O_PATH | constants.O_NOFOLLOW | constants.O_DIRECTORY)
+  try {
+    if (fstatSync(fd).uid !== process.getuid()) return
+    const dir = `/proc/self/fd/${fd}`
+    chmodSync(dir, 0o700)
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = join(dir, entry.name)
+      try { if (entry.isDirectory()) removeTree(child); else unlinkSync(child) } catch {}
+    }
+  } finally { closeSync(fd) }
+  rmdirSync(path)
 }
 
 export function readJob(id) {

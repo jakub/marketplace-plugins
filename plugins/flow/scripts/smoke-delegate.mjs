@@ -16,7 +16,8 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -1065,6 +1066,51 @@ try {
   assert.equal(existsSync(wedged.tmpDir), false, 'a dead runner\'s TMPDIR holding a locked directory outlived the settled job')
   assert.equal((await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', access: 'workspace-write' })).job.status, 'succeeded', 'a dead writer whose TMPDIR resisted removal kept its lease')
   ok('a TMPDIR holding a directory nobody may enter is still removed, and the job settles and frees its lease, from the runner and from reconcile')
+
+  // A process the job left outside its provider's group can still write TMPDIR while dropTmp
+  // empties it. Here a directory in TMPDIR, holding one nobody may enter, is renamed aside and
+  // replaced by a symlink to a tree outside TMPDIR right after the first node:fs call that names
+  // it, whichever call that is, so a removal that checks a path and then uses it cannot pass. The
+  // tree the symlink names keeps its modes and its file, and the directory the removal checked is
+  // the one it emptied.
+  const target = join(tmp, 'substituted')
+  mkdirSync(join(target, 'sealed'), { recursive: true })
+  writeFileSync(join(target, 'sealed', 'keep'), '')
+  chmodSync(join(target, 'sealed'), 0o500)
+  chmodSync(target, 0o750)
+  const raced = randomUUID()
+  const racedTmp = jobs.tmpPath(raced)
+  strays.push(racedTmp)
+  jobs.makeTmp(racedTmp)
+  mkdirSync(join(racedTmp, 'swapped', 'locked'), { recursive: true })
+  chmodSync(join(racedTmp, 'swapped', 'locked'), 0)
+  const originals = {}
+  let swappedAfter = null
+  for (const name of Object.keys(fs).filter((key) => key.endsWith('Sync') && typeof fs[key] === 'function')) {
+    const original = originals[name] = fs[name]
+    fs[name] = function (path, ...rest) {
+      const result = original.call(this, path, ...rest)
+      if (!swappedAfter && typeof path === 'string' && basename(path) === 'swapped') {
+        swappedAfter = name
+        originals.renameSync(join(racedTmp, 'swapped'), join(racedTmp, 'swapped.real'))
+        originals.symlinkSync(target, join(racedTmp, 'swapped'))
+      }
+      return result
+    }
+  }
+  syncBuiltinESMExports()
+  try { jobs.dropTmp(raced, racedTmp) } finally { Object.assign(fs, originals); syncBuiltinESMExports() }
+  const modes = [target, join(target, 'sealed')].map((path) => lstatSync(path).mode & 0o777)
+  const kept = existsSync(join(target, 'sealed', 'keep'))
+  const lockedLeft = existsSync(join(racedTmp, 'swapped.real', 'locked'))
+  // Put back what the smoke's cleanup needs before any assertion can end the run.
+  chmodSync(join(target, 'sealed'), 0o700)
+  if (lockedLeft) chmodSync(join(racedTmp, 'swapped.real', 'locked'), 0o700)
+  assert.ok(swappedAfter, 'dropTmp never named the directory the case replaces')
+  assert.deepEqual(modes, [0o750, 0o500], `dropTmp changed the modes of a tree a symlink swapped in after ${swappedAfter} named, to ${modes.map((mode) => mode.toString(8))}`)
+  assert.ok(kept, 'dropTmp removed a file from a tree a symlink swapped in')
+  assert.equal(lockedLeft, false, 'dropTmp left the directory it checked, and acted on what replaced it')
+  ok('a directory in TMPDIR swapped for a symlink after dropTmp first names it leaves the tree the symlink names untouched')
 
   // Of many admissions racing to take over one stale lease, exactly one holds it afterwards.
   const RACER = String.raw`
