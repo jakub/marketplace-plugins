@@ -8,7 +8,7 @@
 // runner answers beside it, so neither ever writes the other's file.
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -82,9 +82,17 @@ export const jobDir = (id) => join(stateDir(), 'jobs', id)
 const tmpPrefix = (id) => `flow-${String(id).slice(0, 8)}-`
 export const tmpPath = (id) => join(realpathSync('/tmp'), `${tmpPrefix(id)}${randomBytes(4).toString('hex')}`)
 export const makeTmp = (path) => mkdirSync(path, { mode: 0o700 })
-// Only a directory named for this job is removed, whatever a record says.
+// The path comes from a record, so it is removed only when it is one tmpPath could have given this
+// id: a direct child of the real /tmp, named by the id's prefix and 8 hex characters, and still a
+// directory of this user's rather than a symlink. No record can point the removal anywhere else.
 export function dropTmp(id, path) {
-  if (typeof path === 'string' && isAbsolute(path) && basename(path).startsWith(tmpPrefix(id))) rmSync(path, { recursive: true, force: true })
+  if (typeof path !== 'string') return
+  const name = basename(path)
+  const prefix = tmpPrefix(id)
+  if (path !== join(realpathSync('/tmp'), name) || !name.startsWith(prefix) || !/^[0-9a-f]{8}$/.test(name.slice(prefix.length))) return
+  let stat
+  try { stat = lstatSync(path) } catch { return }
+  if (stat.isDirectory() && stat.uid === process.getuid()) rmSync(path, { recursive: true, force: true })
 }
 
 export function readJob(id) {

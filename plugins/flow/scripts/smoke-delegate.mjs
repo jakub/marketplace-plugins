@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -35,6 +35,8 @@ const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-smoke-delegate-')))
 const [home, fakeBin, state, repo, other, calls] = ['home', 'bin', 'state', 'repo', 'other', 'calls'].map((name) => join(tmp, name))
 // Where every job's private TMPDIR lives, whatever HOME or the state directory is.
 const TMP_ROOT = realpathSync('/tmp')
+// What a case puts in /tmp itself, outside the smoke's own directory, removed at the end.
+const strays = []
 const pathWith = (...dirs) => [...dirs, dirname(process.execPath), '/usr/bin', '/bin'].join(':')
 const ENV = { PATH: pathWith(fakeBin), HOME: home, LANG: 'C.UTF-8', FLOW_DELEGATION_STATE_DIR: state, SMOKE_LEAK: 'host-only' }
 // The cases that drive jobs.mjs in this process use the same state directory as the server.
@@ -1007,6 +1009,31 @@ try {
   process.kill(-bystander.pid, 'SIGKILL')
   ok('a recorded provider group whose id now names another process is never signalled')
 
+  // A record names its job's TMPDIR, and reconcile removes that path only when it is one tmpPath
+  // could have given the job: a direct child of /tmp, the job's prefix and 8 hex characters, and a
+  // directory rather than a symlink. A record rewritten to name anything else still settles, and
+  // what it named survives: a tree outside /tmp, one in /tmp under another name, and a symlink in
+  // /tmp under the right name, pointing out.
+  const outside = join(tmp, 'outside')
+  for (const [what, aim, link] of [
+    ['a tree outside /tmp', (prefix) => join(outside, 'backups', `${prefix}0123abcd`), false],
+    ['a tree in /tmp under another name', (prefix) => join(TMP_ROOT, `${prefix}archive`), false],
+    ['a symlink in /tmp under the right name', (prefix) => join(TMP_ROOT, `${prefix}0123abcd`), true]]) {
+    const id = randomUUID()
+    const tmpDir = aim(`flow-${id.slice(0, 8)}-`)
+    const tree = link ? join(outside, `linked-${id}`) : tmpDir
+    if (dirname(tmpDir) === TMP_ROOT) strays.push(tmpDir)
+    mkdirSync(tree, { recursive: true })
+    writeFileSync(join(tree, 'keep'), '')
+    if (link) symlinkSync(tree, tmpDir)
+    mkdirSync(jobs.jobDir(id), { recursive: true })
+    jobs.writeJob({ ...readJob(reused.job.id), id, status: 'running', endedAt: null, runnerPid: deadPid, runnerStart: '1', providerPgid: null, providerStart: null, tmpDir })
+    const aimedAt = await claudeHost.call('delegation_result', { jobId: id })
+    assert.deepEqual([aimedAt.job.status, aimedAt.job.error?.kind], ['unknown', 'RUNNER_LOST'], `${what}: ${JSON.stringify(aimedAt.job)}`)
+    assert.ok(lstatSync(tmpDir, { throwIfNoEntry: false }) && existsSync(join(tree, 'keep')), `${what}: settling the job removed what its record named`)
+  }
+  ok('a dead runner\'s record that names anything but a TMPDIR of its own job settles without removing it')
+
   // Of many admissions racing to take over one stale lease, exactly one holds it afterwards.
   const RACER = String.raw`
     import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -1248,6 +1275,7 @@ try {
   assert.deepEqual(readFileSync(installed), readFileSync(join(PLUGIN, 'bin', 'flow-delegate')))
   ok('the installer copies the dispatcher when it is missing or differs, and leaves an identical copy alone')
 } finally {
+  for (const path of strays) rmSync(path, { recursive: true, force: true })
   rmSync(tmp, { recursive: true, force: true })
 }
 
