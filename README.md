@@ -99,7 +99,7 @@ The server speaks the other family's session protocol by hand, `codex app-server
 
 `babysit` (`/flow:babysit`) watches the pushed PR through external review and CI. It fixes each finding or rejects it with a reason, answers every thread, and keeps the branch rebased until everything is green. An issue run always hands off to it.
 
-`land` (`/flow:land`) is the human gate and the only merge path. A read-only executor re-reads the live PR state (the CI rollup, every review thread, stacking, auto-merge arming), then a second executor squash-merges pinned to the head those gates ran against, cleans up, and surveys what is up next. In a repo with a committed `.flow/managed` marker, a hook denies a raw merge command and names that executor.
+`land` (`/flow:land`) is the human gate and the only merge path. One executor reads the live PR state (every check, the base branch's known flakes, every review thread, stacking, how far the head is behind the default branch, auto-merge arming) and squash-merges pinned to the head the stage read only when nothing stops it. When something does, it lists every stop at once, and the stage acts on each and runs it again. Then the stage closes the linked issues, cleans up, and surveys what is up next. In a repo with a committed `.flow/managed` marker, a hook denies a raw merge command and names that executor.
 
 All four run on Codex too. Each stage is one skill: a host-neutral body, then a `## Host mechanics` section holding only what differs between the hosts. On Codex, open the canonical checkout and name the stage, for example "run issue #42".
 
@@ -116,7 +116,7 @@ Two supporting skills sit outside the pipeline:
 | `plugins/flow/skills/{prep,issue,babysit,land}/` | One `SKILL.md` per stage, and the invocation on both hosts. |
 | `plugins/flow/agents/` | `implementer` (writes, cannot spawn), `reader` (reads and runs commands, no edit tools), and `bridge` (makes one delegate call on a fixed cheap model). The orchestrator picks the model for the first two at spawn. |
 | `plugins/flow/delegate/`, `plugins/flow/bin/flow-delegate` | The delegate MCP server, and the dispatcher Codex starts it through. |
-| `plugins/flow/scripts/` | The four executors (`issue-claim`, `land-gates`, `land-merge`, `lint-actions`), `tree-snapshot`, the scheduled-job runner and the installers, and the smokes. |
+| `plugins/flow/scripts/` | The three executors (`issue-claim`, `land-merge`, `lint-actions`), `tree-snapshot`, the scheduled-job runner and the installers, and the smokes. |
 | `plugins/flow/hooks/` | Charter injection, plus the no-backlog, git, publication and merge, and protected-file guards, with an adapter per host where the hosts differ. |
 | `plugins/flow/skills/flow/` | The `flow` skill's `setup`, `drift`, `labels`, `charter` and `cron` subcommands, the label contract, and the scheduled-job prompts. |
 | `plugins/flow/skills/delegate/` | The operating manual for the five delegate tools. |

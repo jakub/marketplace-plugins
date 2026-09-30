@@ -38,7 +38,7 @@ Run these steps in order. Each one is idempotent: skip what already exists and c
 6. **Domain layer**, a judgment call to propose, not to apply everywhere. For each crate or module with real domain depth, create `crates/<x>/AGENTS.md` from `templates/crate-agents.md` with its `CLAUDE.md` symlink, and a `context.md` slice if the vocabulary is crate-local. Each slice gets a line in the root `## Contexts`.
 7. **Decision records.** Create `docs/adr/` with a `0000-template.md`.
 8. **Labels.** Run the `labels` subcommand.
-9. **Known flakes.** Create an empty `.github/known-flakes.txt`. The land stage reads it: one entry per line, either a bare check name or `check-name:test_name`, naming what the repository merges through on purpose.
+9. **Known flakes.** Create an empty `.github/known-flakes.txt`. The merge executor reads it from the base branch, never from the PR: one entry per line, either a bare check name or `check-name:test_name`, naming what the repository merges through on purpose.
 10. **Report** what you created, what already conformed, and what needs the human's decision, as a checklist.
 
 ## The documentation stack
