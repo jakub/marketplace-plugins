@@ -91,17 +91,26 @@ function claimantAlive(id) {
 }
 
 // /proc/<pid>/stat field 22 is the start time, which tells a live process from a recycled pid.
-// A zombie has already exited, so it counts as dead.
-export function startToken(pid) {
+// A zombie has already exited, so it counts as dead unless the question is only which process
+// holds the pid.
+export function startToken(pid, { zombie = false } = {}) {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
-    return fields[0] === 'Z' ? null : fields[19] ?? null
+    return fields[0] === 'Z' && !zombie ? null : fields[19] ?? null
   } catch { return null }
 }
 const runnerAlive = (job) => Boolean(job.runnerPid && job.runnerStart) && startToken(job.runnerPid) === job.runnerStart
-export function killGroup(pgid, signal = 'SIGKILL') {
-  if (pgid) try { process.kill(-pgid, signal) } catch {}
+// A recorded group id is signalled only while it is still the provider's: its leader is the
+// process recorded at spawn, or the leader is gone and members remain, which the kernel keeps
+// unambiguous by never handing out an id a live group still carries. A leader id that now names
+// another process means the group ended and the id was reused, so nothing is sent.
+export function signalProvider(job, signal = 'SIGKILL') {
+  const pgid = job?.providerPgid
+  if (!pgid || !job.providerStart) return
+  const leader = startToken(pgid, { zombie: true })
+  if (leader !== null && leader !== job.providerStart) return
+  try { process.kill(-pgid, signal) } catch {}
 }
 
 export const inside = (root, path) => {
@@ -337,7 +346,7 @@ export function reconcile(job) {
   if (job?.status === 'running' && !runnerAlive(job)) {
     const again = readJob(job.id)
     if (again?.status !== 'running') return again
-    killGroup(again.providerPgid)
+    signalProvider(again)
     releaseLease(again)
     return settle(again, 'unknown', { error: { kind: 'RUNNER_LOST', message: 'The job runner exited without recording an outcome.' } })
   }

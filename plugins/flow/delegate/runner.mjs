@@ -7,7 +7,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync }
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { seatPayload } from '../lib/charter-payload.mjs'
-import { claim, jobDir, JOB_ID, killGroup, log, readJob, releaseLease, settle, startToken, writeJob } from './jobs.mjs'
+import { claim, jobDir, JOB_ID, log, readJob, releaseLease, settle, signalProvider, startToken, writeJob } from './jobs.mjs'
 import { findExecutable, PROVIDERS, providerEnv } from './providers.mjs'
 
 const STALL_SECONDS = 420
@@ -38,6 +38,8 @@ function runProvider(job, dir, bin, provider, stdin) {
     const child = spawn(bin, provider.argv(job, dir), {
       cwd: job.cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env: providerEnv(job, dir),
     })
+    // The group's identity, recorded before anything can signal it: the leader's pid and start.
+    const group = { providerPgid: child.pid, providerStart: child.pid ? startToken(child.pid, { zombie: true }) : null }
     const fold = provider.fold(job, dir)
     const events = createWriteStream(join(dir, 'events.jsonl'), { flags: 'a', mode: 0o600 })
     const stderr = createWriteStream(join(dir, 'stderr.txt'), { flags: 'a', mode: 0o600 })
@@ -50,8 +52,8 @@ function runProvider(job, dir, bin, provider, stdin) {
       if (stopped) return
       stopped = reason
       events.write(`${JSON.stringify({ type: 'flow.stop', reason })}\n`)
-      killGroup(child.pid, 'SIGTERM')
-      killTimer = setTimeout(() => killGroup(child.pid), KILL_GRACE_MS)
+      signalProvider(group, 'SIGTERM')
+      killTimer = setTimeout(() => signalProvider(group), KILL_GRACE_MS)
     }
     const resetStall = () => {
       clearTimeout(stallTimer)
@@ -64,7 +66,7 @@ function runProvider(job, dir, bin, provider, stdin) {
       settled = true
       for (const timer of [budget, stallTimer, killTimer]) clearTimeout(timer)
       clearInterval(poll)
-      killGroup(child.pid)
+      signalProvider(group)
       events.end()
       stderr.end()
       let folded = { status: 'failed', error: { kind: 'PROVIDER_ERROR', message: `${provider.name} could not be started.` } }
@@ -78,7 +80,7 @@ function runProvider(job, dir, bin, provider, stdin) {
     }
     child.on('error', (error) => { log(`provider spawn failed for ${job.id}: ${error.message}`); finish(error) })
     if (!child.pid) return
-    writeJob({ ...job, providerPgid: child.pid })
+    writeJob({ ...job, ...group })
     resetStall()
     child.stdin.on('error', () => {})
     child.stdin.end(stdin)
@@ -92,7 +94,7 @@ function runProvider(job, dir, bin, provider, stdin) {
     })
     // Once the provider itself has exited, whatever is left in its group is a straggler that may
     // hold stdout open; killing the group lets 'close' arrive.
-    child.on('exit', (code, signal) => { exit = { code, signal }; killGroup(child.pid) })
+    child.on('exit', (code, signal) => { exit = { code, signal }; signalProvider(group) })
     child.on('close', () => finish(null))
   })
 }
@@ -127,7 +129,7 @@ export async function runJob(id) {
     log(`runner failed for ${id}: ${error?.stack || error}`)
     result = { status: 'failed', error: { kind: 'INTERNAL', message: 'The job runner failed; server.log in the state directory has the detail.' } }
   } finally {
-    killGroup(job.providerPgid)
+    signalProvider(job)
     releaseLease(job)
     const { status = 'failed', ...fields } = result ?? {}
     settle(job, status, fields)

@@ -24,6 +24,8 @@ const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-smoke-delegate-')))
 const [home, fakeBin, state, repo, other] = ['home', 'bin', 'state', 'repo', 'other'].map((name) => join(tmp, name))
 const pathWith = (...dirs) => [...dirs, dirname(process.execPath), '/usr/bin', '/bin'].join(':')
 const ENV = { PATH: pathWith(fakeBin), HOME: home, LANG: 'C.UTF-8', FLOW_DELEGATION_STATE_DIR: state, SMOKE_LEAK: 'host-only' }
+// The cases that drive jobs.mjs in this process use the same state directory as the server.
+process.env.FLOW_DELEGATION_STATE_DIR = state
 const gitEnv = { ...ENV, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'smoke',
   GIT_AUTHOR_EMAIL: 'smoke@example.invalid', GIT_COMMITTER_NAME: 'smoke', GIT_COMMITTER_EMAIL: 'smoke@example.invalid' }
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { env: gitEnv, encoding: 'utf8' }).trim()
@@ -353,8 +355,20 @@ try {
   assert.equal((await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', access: 'workspace-write' })).job.status, 'succeeded', 'a dead writer kept its lease')
   ok('a dead runner reads unknown with RUNNER_LOST, cannot be continued, and its lease is reclaimed')
 
+  // A job settled long after its runner died records a group id that now names someone else's
+  // group: a process with that pid and a different start. Nothing may be signalled.
+  const bystander = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
+  const deadPid = spawnSync('true').pid
+  const reused = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy' })
+  jobs.writeJob({ ...readJob(reused.job.id), status: 'running', endedAt: null, runnerPid: deadPid, runnerStart: '1', providerPgid: bystander.pid, providerStart: '1' })
+  const recycled = await claudeHost.call('delegation_result', { jobId: reused.job.id })
+  assert.equal(recycled.job.status, 'unknown')
+  await sleep(300)
+  assert.ok(alive(bystander.pid), 'a reused group id was signalled')
+  process.kill(-bystander.pid, 'SIGKILL')
+  ok('a recorded provider group whose id now names another process is never signalled')
+
   // Of many admissions racing to take over one stale lease, exactly one holds it afterwards.
-  process.env.FLOW_DELEGATION_STATE_DIR = state
   const RACER = String.raw`
     import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
     import { randomUUID } from 'node:crypto'
