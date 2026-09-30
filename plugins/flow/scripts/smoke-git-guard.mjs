@@ -56,6 +56,10 @@ expect(true, 'git restore .', 'restore bare dot')
 expect(true, 'git clean -fd', 'clean force')
 expect(true, 'git clean --force -d', 'clean --force')
 expect(true, 'git clean -xdf', 'clean force in a flag cluster')
+// Text a shell runs is a command.
+expect(true, "bash -lc 'git push --force origin main'", 'force-push in a bash -lc string')
+expect(true, 'sh -c "git commit --no-verify -m hi"', '--no-verify in a sh -c string')
+expect(true, "bash <<'S'\ngit clean -fd\nS", 'clean force in a heredoc on a shell\'s stdin')
 console.log('cron mode (FLOW_CRON_JOB): the executor line and nothing else')
 // Every cron case pins the root: CLAUDE_PLUGIN_ROOT first, then PLUGIN_ROOT, then the guard's own
 // location, blanked here so the ambient environment cannot decide a case.
@@ -158,6 +162,8 @@ expect(false, "echo 'git commit --no-verify is banned here'", '--no-verify insid
 expect(false, 'git commit -m "docs: explain why --no-verify is banned"', '--no-verify named in a commit subject')
 expect(false, `gripe add <<'G'\ngit-guard fires on --no-verify in prose\nG`, '--no-verify in a heredoc body')
 expect(false, 'FLOW_SANCTION=git git commit --amend --no-edit', 'sanctioned amend')
+expect(false, `bash -c "git commit -m 'docs: why --no-verify is banned'"`, '--no-verify in prose inside a shell string')
+expect(false, "bash -c 'git status' && git commit -m \"about git push --force\"", 'a shell string beside prose in another segment')
 // The safe spellings of the rules above must stay usable, including the dry run the deny
 // message tells you to run.
 expect(false, 'git push --force-with-lease origin feat/x', 'force-with-lease')
@@ -182,6 +188,7 @@ console.log('no-backlog-guard: issues enter the tracker only through the two san
 const backlog = expectIn(NB, 'no-backlog: ')
 backlog(true, 'gh issue create --title x --body y', 'an unsanctioned issue')
 backlog(true, 'cd /home/x/code/r && gh issue create -t x -b y', 'an issue after a cd')
+backlog(true, "bash -lc 'gh issue create --title x'", 'an issue from a bash -lc string')
 backlog(false, 'FLOW_SANCTION=prep gh issue create --title x', 'the prep lane')
 backlog(false, 'FLOW_SANCTION=land gh issue create --title x', 'the land lane after the human acks')
 backlog(false, 'gh issue list --label ready-for-agent', 'reading issues')

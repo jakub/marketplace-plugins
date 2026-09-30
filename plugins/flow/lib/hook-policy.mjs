@@ -54,9 +54,14 @@ export function protectedFileReason(file) {
 //
 // Prose about an operation is not the operation. A heredoc body, a single-quoted string and a
 // double-quoted string are text handed to some other command (a commit message, a PR comment,
-// a gripe), so each one is masked before a rule reads the command. The consequence is chosen:
-// an operation inside a string a shell will run (`bash -lc '...'`, eval, a heredoc fed to a
-// shell) reads as text too, and passes.
+// a gripe), so each one is masked before a rule reads the command.
+//
+// The exception is text a shell will run. In a segment that hands a string to `sh -c` (or bash,
+// zsh, ksh, dash), to `eval`, or a heredoc to a shell's stdin, every literal is read again as a
+// command of its own, with its own prose masked the same way, so `bash -lc 'gh pr merge 12'`
+// merges and `bash -c "git commit -m 'about npm publish'"` still publishes nothing. A literal
+// that is only an argument beside such a string is read as a command too; that over-match costs
+// one rephrase. A shell fed through a pipe is not followed.
 //
 // A heredoc's body is the lines after its opener, so the rest of the opener line stays live:
 // `cat <<'G' && git push --force` still pushes. A backslash-newline is one command, and only an
@@ -68,6 +73,11 @@ const LITERAL = /(?<!\\)'[^']*'|(?<!\\)"(?:\\[\s\S]|[^"\\])*"/g
 const FD_REDIRECT = /\d*>&\d*|&>>?/g
 const SEPARATOR = /&&|\|\||[;&|\n]/
 const PLACEHOLDER = /\0(\d+)\0/g
+// Read on a segment whose literals are still placeholders: a shell given -c (alone or in a flag
+// cluster, after any options), a shell whose next word is a literal (a heredoc on its stdin), or
+// eval.
+const RUNS_TEXT = /(?:^|\s)(?:\S*\/)?(?:sh|bash|zsh|ksh|dash)(?:\s+--?[A-Za-z][\w-]*)*?(?:\s+-[A-Za-z]*c[A-Za-z]*(?:\s|$)|\s*\0)|(?:^|\s)eval(?:\s|$)/
+const NESTING = 4
 
 // Every literal becomes a numbered placeholder, so the bare and the open reading of a command
 // split into the same segments by construction.
@@ -83,17 +93,25 @@ function mask(command) {
   return { text, literals }
 }
 
-/** The command with every heredoc body and quoted string blanked. */
-export const stripLiterals = (command) => mask(command).text.replace(PLACEHOLDER, ' ')
-
-// Each shell segment twice: `bare` with literals blanked, `open` with their text restored.
-function segments(command) {
+// Each shell segment twice: `bare` with literals blanked, `open` with their text restored. A
+// segment that runs its literals as commands is followed by their segments, read the same way.
+function segments(command, depth = 0) {
   const { text, literals } = mask(command)
-  return text.split(SEPARATOR).map((segment) => ({
-    bare: segment.replace(PLACEHOLDER, ' '),
-    open: segment.replace(PLACEHOLDER, (_m, i) => ` ${literals[i]} `),
-  }))
+  return text.split(SEPARATOR).flatMap((segment) => {
+    const own = {
+      bare: segment.replace(PLACEHOLDER, ' '),
+      open: segment.replace(PLACEHOLDER, (_m, i) => ` ${literals[i]} `),
+    }
+    if (depth >= NESTING || !RUNS_TEXT.test(segment)) return [own]
+    return [own, ...[...segment.matchAll(PLACEHOLDER)].flatMap(([, i]) => segments(literals[i], depth + 1))]
+  })
 }
+
+/**
+ * The command with every heredoc body and quoted string blanked, one segment per `;`-joined
+ * part, and the text a shell in it would run read the same way and appended as further parts.
+ */
+export const stripLiterals = (command) => segments(command).map(({ bare }) => bare).join(' ; ')
 
 // -------------------------------------------------------------------- registry publication
 //

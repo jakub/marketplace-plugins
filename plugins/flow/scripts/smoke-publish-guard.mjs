@@ -99,6 +99,18 @@ answers('pass', 'docker push registry.internal.example/app:dev', 'a private regi
 answers('pass', 'gh release create v1.2.3', 'a release deletes cleanly')
 answers('pass', 'echo "remember to run cargo publish after the tag"', 'publishing named in a quoted string')
 answers('pass', "gripe add <<'G'\nthe guard asked about cargo publish\nG", 'publishing named in a heredoc body')
+answers('pass', `bash -c "git commit -m 'notes on npm publish'"`, 'publishing named in prose inside a shell string')
+answers('pass', "cat <<'G' > release.sh\ncargo publish\nG", 'a heredoc written to a file, not to a shell')
+answers('pass', "bash -lc 'cargo publish --dry-run'", 'a dry run inside a shell string')
+
+console.log('\ntext a shell runs is a command, on both hosts')
+for (const [name, command] of [
+  ['a publish in a bash -lc string', "bash -lc 'cd pkg && npm publish'"],
+  ['a publish in a sh -c string after options', 'sh -e -c "cargo publish"'],
+  ['a publish handed to eval', 'eval "twine upload dist/*"'],
+  ['a publish in a heredoc on a shell\'s stdin', "bash <<'S'\ncd pkg\ncargo publish\nS"],
+  ['a publish two shells deep', `bash -c "sh -c 'gem push pkg/x.gem'"`],
+]) answers('publish', command, name)
 
 console.log('\nan uninspectable call: Codex fails closed, Claude fails open')
 for (const [name, raw] of [['an unparseable body', '{'], ['a call with no command', '{}']]) {
@@ -122,6 +134,10 @@ for (const [name, command] of [
   ['the GraphQL mutation on a heredoc', "gh api graphql -F query=@- <<'Q'\nmutation { mergePullRequest(input: {}) { clientMutationId } }\nQ"],
   ['a merge after the executor', `node ${EXECUTOR} 12 ${SHA} && gh pr merge 12`],
   ['a merge on a heredoc opener line', "cat <<'G' && gh pr merge 12\nbody\nG"],
+  ['a merge in a bash -lc string', "bash -lc 'gh pr merge 12'"],
+  ['a merge in a sh -c string after a cd', `cd /tmp && sh -c "gh pr merge 12 --squash"`],
+  ['the REST endpoint in a shell string', `bash -c 'gh api -X PUT "repos/jakub/x/pulls/12/merge"'`],
+  ['a merge in a heredoc on a shell\'s stdin', "bash -s <<'S'\ngh pr merge 12\nS"],
 ]) answers('deny', command, name)
 answers('deny', `cargo publish && ${MERGE}`, 'a publish beside a merge is denied, never asked')
 answers('deny', MERGE, 'a subdirectory is still the repo', { cwd: join(managed, 'src') })
@@ -139,7 +155,8 @@ for (const [name, command] of [
   ['a commit message about merging', 'git commit -m "chore: gh pr merge once CI is green"'],
   ['a comment quoting the command', 'gh pr comment 12 -b "run gh pr merge once green"'],
   ['a heredoc body naming it', "gripe add <<'G'\nthe guard denied gh pr merge 12\nG"],
-  ['a command a shell will run from a string (the accepted cost of reading prose as prose)', "bash -lc 'gh pr merge 12'"],
+  ['the executor in a shell string', `bash -lc 'node ${EXECUTOR} 12 ${SHA}'`],
+  ['prose inside a shell string', `bash -c "git commit -m 'gh pr merge once green'"`],
   ['reading the pull request', 'gh pr view 12 --json state,mergeCommit'],
   ['a local merge', 'git merge --ff-only origin/main'],
 ]) answers('pass', command, name)
