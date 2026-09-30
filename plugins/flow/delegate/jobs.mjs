@@ -6,7 +6,7 @@
 // who may move a queued job, so a late runner and a cancel never both act on it.
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -266,44 +266,44 @@ export async function admit(input, { host, roots }) {
   return job
 }
 
-// One writer per worktree. link(2) fails when the name exists, so two admissions cannot both
-// create the lease. A lease whose job ended, or whose runner and provider group are both gone,
-// is renamed aside under a unique name and checked before the new one is linked.
-const leasePath = (job) => join(stateDir(), 'leases', createHash('sha256').update(job.worktree).digest('hex'))
-const readLease = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null } }
+// One writer per worktree. The lease is the directory leases/<sha256 of the worktree>, holding one
+// file named for the job that owns it. A new lease is built under a private name and renamed into
+// place whole, and rename(2) onto a directory that is not empty fails, so two admissions cannot
+// both take it. Only a file under its owner's own name is ever moved out, and the directory is
+// then removed only if still empty, so neither a release nor the takeover of a stale lease can
+// remove a lease that changed hands in between.
+const leaseDir = (job) => join(stateDir(), 'leases', createHash('sha256').update(job.worktree).digest('hex'))
 function leaseLive(jobId) {
   const held = typeof jobId === 'string' && JOB_ID.test(jobId) ? readJob(jobId) : null
   if (!held || TERMINAL.has(held.status)) return false
   if (held.status === 'queued') return Date.now() - Date.parse(held.createdAt) < QUEUE_GRACE_MS
   return runnerAlive(held) || groupAlive(held.providerPgid)
 }
-function acquireLease(job) {
-  const path = leasePath(job)
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-  const mine = `${path}.${job.id}`
-  writeFileSync(mine, JSON.stringify({ jobId: job.id }), { mode: 0o600 })
+function dropLease(dir, owner) {
+  const aside = join(dirname(dir), `.drop.${randomUUID()}`)
+  try { renameSync(join(dir, owner), aside) } catch { return }
+  rmSync(aside, { force: true })
+  try { rmdirSync(dir) } catch {}
+}
+export function acquireLease(job) {
+  const dir = leaseDir(job)
+  const mine = join(dirname(dir), `.new.${job.id}`)
+  mkdirSync(mine, { recursive: true, mode: 0o700 })
+  writeFileSync(join(mine, job.id), '', { mode: 0o600 })
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try { linkSync(mine, path); return } catch (error) { if (error.code !== 'EEXIST') throw error }
-      const held = readLease(path)
-      if (leaseLive(held?.jobId)) fail('WORKSPACE_BUSY', `Write job ${held.jobId} holds this worktree.`, { jobId: held.jobId })
-      const aside = `${path}.stale.${job.id}`
-      try { renameSync(path, aside) } catch (error) { if (error.code === 'ENOENT') continue; throw error }
-      const moved = readLease(aside)
-      if (moved?.jobId !== held?.jobId) {
-        try { linkSync(aside, path) } catch {}
-        rmSync(aside, { force: true })
-        fail('WORKSPACE_BUSY', 'Another write job took this worktree.')
-      }
-      rmSync(aside, { force: true })
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { renameSync(mine, dir); return } catch (error) { if (!['ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error }
+      let owner
+      try { owner = readdirSync(dir).find((name) => JOB_ID.test(name)) } catch { continue }
+      if (!owner) continue
+      if (leaseLive(owner)) fail('WORKSPACE_BUSY', `Write job ${owner} holds this worktree.`, { jobId: owner })
+      dropLease(dir, owner)
     }
     fail('WORKSPACE_BUSY', 'The worktree lease is contended.')
-  } finally { rmSync(mine, { force: true }) }
+  } finally { rmSync(mine, { recursive: true, force: true }) }
 }
 export function releaseLease(job) {
-  if (job.access !== 'workspace-write') return
-  const path = leasePath(job)
-  if (readLease(path)?.jobId === job.id) rmSync(path, { force: true })
+  if (job.access === 'workspace-write') dropLease(leaseDir(job), job.id)
 }
 
 function spawnRunner(job) {

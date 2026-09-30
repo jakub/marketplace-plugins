@@ -7,13 +7,15 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { seatPayload } from '../lib/charter-payload.mjs'
-import { FINDINGS_SCHEMA } from '../delegate/jobs.mjs'
+import * as jobs from '../delegate/jobs.mjs'
+const { FINDINGS_SCHEMA } = jobs
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MAIN = join(PLUGIN, 'delegate', 'main.mjs')
@@ -350,6 +352,44 @@ try {
   await refused(claudeHost, { continue: orphan.job.id }, 'JOB_STATE')
   assert.equal((await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', access: 'workspace-write' })).job.status, 'succeeded', 'a dead writer kept its lease')
   ok('a dead runner reads unknown with RUNNER_LOST, cannot be continued, and its lease is reclaimed')
+
+  // Of many admissions racing to take over one stale lease, exactly one holds it afterwards.
+  process.env.FLOW_DELEGATION_STATE_DIR = state
+  const RACER = String.raw`
+    import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+    import { randomUUID } from 'node:crypto'
+    const { acquireLease, jobDir, writeJob } = await import(process.env.JOBS_URL)
+    const [worktree, go, ready] = process.argv.slice(1)
+    const job = { id: randomUUID(), access: 'workspace-write', worktree, status: 'queued', createdAt: new Date().toISOString() }
+    mkdirSync(jobDir(job.id), { recursive: true })
+    writeJob(job)
+    writeFileSync(ready + job.id, '')
+    while (!existsSync(go)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1)
+    try { acquireLease(job); console.log('won ' + job.id) } catch (error) { console.log('lost ' + (error.kind ?? error.message)) }`
+  for (let round = 0; round < 8; round++) {
+    const worktree = join(tmp, `race-${round}`)
+    const stale = { id: randomUUID(), access: 'workspace-write', worktree, status: 'failed', createdAt: new Date().toISOString() }
+    mkdirSync(jobs.jobDir(stale.id), { recursive: true })
+    jobs.writeJob(stale)
+    jobs.acquireLease(stale)
+    const [go, ready] = [join(tmp, `race-${round}-go`), join(tmp, `race-${round}-ready-`)]
+    const racers = Array.from({ length: 12 }, () => new Promise((resolve) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', RACER, worktree, go, ready],
+        { env: { ...ENV, JOBS_URL: pathToFileURL(join(PLUGIN, 'delegate', 'jobs.mjs')).href }, stdio: ['ignore', 'pipe', 'inherit'] })
+      let text = ''
+      child.stdout.on('data', (chunk) => { text += chunk })
+      child.on('close', () => resolve(text.trim()))
+    }))
+    await until(() => readdirSync(tmp).filter((name) => name.startsWith(`race-${round}-ready-`)).length === 12, 30_000)
+    writeFileSync(go, '')
+    const results = await Promise.all(racers)
+    const won = results.filter((line) => line.startsWith('won ')).map((line) => line.slice(4))
+    assert.equal(won.length, 1, `round ${round}: ${results.join(' | ')}`)
+    const leaseDir = join(state, 'leases', createHash('sha256').update(worktree).digest('hex'))
+    assert.deepEqual(readdirSync(leaseDir), won, `round ${round}: the lease directory names its one holder`)
+    assert.ok(results.every((line) => line.startsWith('won ') || line === 'lost WORKSPACE_BUSY'), results.join(' | '))
+  }
+  ok('twelve admissions racing over one stale lease leave exactly one holder, eight rounds running')
 
   const doctor = await claudeHost.call('delegation_doctor', {})
   assert.equal(doctor.ok, true)
