@@ -71,7 +71,7 @@ function tools(target) {
     {
       name: 'delegation_steer',
       title: 'Steer a delegation',
-      description: `Add an instruction to a running ${title} job's open turn without stopping it. The job keeps its id and its thread. The result carries steer.status: delivered once ${title} took it, failed when it refused it or the turn had ended, unknown when the job never answered.`,
+      description: `Add an instruction to a running ${title} job's open turn without stopping it. The job keeps its id and its thread. The result carries steer.status: delivered once ${title} took it, failed when it refused it or the turn had ended, unknown when the job never answered or ${title} had neither taken nor refused it yet.`,
       inputSchema: object({
         jobId,
         prompt: { type: 'string', description: 'The instruction to add, at most 64 KiB.' },

@@ -22,10 +22,12 @@
 // message with priority 'next', which the CLI folds into the running turn at its next opportunity
 // or runs as the next turn. The CLI replays every user message it takes (--replay-user-messages),
 // and the replay of a steer's uuid is its acknowledgement. The turn ends, and the runner closes
-// stdin, at the first result frame that arrives after the CLI has replayed every steer still
-// awaited; the CLI then works through anything queued and exits, and the outcome is the last
-// result frame before it does. A steer the CLI has not replayed within 10 seconds is reported
-// failed and no longer holds stdin open, so a message the CLI dropped cannot keep the job alive.
+// stdin, at the first result frame that arrives after the CLI has replayed every steer written to
+// it; the CLI then works through anything queued and exits, and the outcome is the last result
+// frame before it does. A steer the CLI has not replayed within 10 seconds is answered unknown,
+// not failed: a written message belongs to the CLI, which may still take it, so it keeps holding
+// stdin open, and its final answer follows at the replay or when the CLI exits. A message the CLI
+// dropped outright leaves the job to the stall ceiling.
 //
 // The doctor's check opens the same channel with a read-only job's containment, sends initialize
 // and mcp_status, and closes stdin with no user message, so a Claude Code release that changes
@@ -268,25 +270,18 @@ export const transport = {
     const asked = []
     const denials = []
     const bash = new Set()
-    // Every steer uuid written, and the ones still awaiting their replay. resultAfterReplays is
-    // true once a result frame has arrived since the last replay of a steer.
-    const steers = new Set()
-    const awaiting = new Map()
+    // Each steer written and not yet replayed, by uuid, with the function that answers it. These
+    // hold stdin open, however long their callers have waited. resultAfterReplays is true once a
+    // result frame has arrived since the last replay of a steer.
+    const unreplayed = new Map()
     let resultAfterReplays = false
     const userMessage = (text, fields = {}) => ({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, parent_tool_use_id: null,
       session_id: job.resumeThreadId ?? job.sessionId, uuid: randomUUID(), client_composed: true, ...fields })
     // The close rule. From here the session takes no steer, and the runner closes stdin.
     const endWhenReplayed = () => {
-      if (session.turnEnded || !resultAfterReplays || awaiting.size) return
+      if (session.turnEnded || !resultAfterReplays || unreplayed.size) return
       session.turnOpen = false
       session.turnEnded = true
-    }
-    const answerSteer = (uuid, answer) => {
-      const done = awaiting.get(uuid)
-      if (!done) return
-      awaiting.delete(uuid)
-      done(answer)
-      endWhenReplayed()
     }
     const session = {
       servedModel: null, models: null, catalog: null, isolation: null, stopReason: null, promptSent: false, turnOpen: false, turnEnded: false,
@@ -297,8 +292,9 @@ export const transport = {
         if (!session.turnEnded) session.turnOpen = true
         peer.write(userMessage(prompt))
       },
-      // Delivered when the CLI replays the steer's uuid, failed when it has not within 10 seconds or
-      // exits first.
+      // Delivered when the CLI replays the steer's uuid, and failed when it exits first. With
+      // neither after 10 seconds the answer is unknown (delivered: null), and settled resolves with
+      // the final answer once one of them happens.
       steer(text) {
         return new Promise((resolve) => {
           if (!session.turnOpen || !peer.writable()) {
@@ -306,9 +302,10 @@ export const transport = {
             return
           }
           const frame = userMessage(text, { priority: 'next' })
-          const timer = setTimeout(() => answerSteer(frame.uuid, { delivered: false, error: `Claude did not replay the steer within ${STEER_MS / 1000}s` }), STEER_MS)
-          awaiting.set(frame.uuid, (answer) => { clearTimeout(timer); resolve(answer) })
-          steers.add(frame.uuid)
+          let settle
+          const settled = new Promise((done) => { settle = done })
+          const timer = setTimeout(() => resolve({ delivered: null, error: `Claude has not replayed the steer within ${STEER_MS / 1000}s, and may still take it`, settled }), STEER_MS)
+          unreplayed.set(frame.uuid, (answer) => { clearTimeout(timer); settle(answer); resolve(answer) })
           peer.write(frame)
         })
       },
@@ -387,9 +384,11 @@ export const transport = {
         endWhenReplayed()
       } else if (frame.type === 'user') {
         // A replayed steer is taken, so the turn now owes a result frame that follows it.
-        if (frame.isReplay === true && steers.has(frame.uuid)) {
+        const answer = frame.isReplay === true ? unreplayed.get(frame.uuid) : undefined
+        if (answer) {
+          unreplayed.delete(frame.uuid)
           resultAfterReplays = false
-          answerSteer(frame.uuid, { delivered: true })
+          answer({ delivered: true })
         }
         for (const block of Array.isArray(frame.message?.content) ? frame.message.content : []) {
           if (block?.type === 'tool_result' && block.is_error && bash.has(block.tool_use_id)) failures++
@@ -411,7 +410,10 @@ export const transport = {
     }
     const peer = connect(child, { onLine, onFrame, onRequest })
     child.on('close', () => {
-      for (const uuid of [...awaiting.keys()]) answerSteer(uuid, { delivered: false, error: 'Claude exited before it replayed the steer' })
+      for (const [uuid, answer] of unreplayed) {
+        unreplayed.delete(uuid)
+        answer({ delivered: false, error: 'Claude exited before it replayed the steer' })
+      }
     })
     try {
       session.models = catalogOf(await peer.request('initialize'))

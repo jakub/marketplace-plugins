@@ -106,10 +106,18 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
   // Steers the server wrote under steer/, taken oldest first and delivered one at a time, so the
   // provider sees them in the order they were asked for. Each gets an answer by temp file and
   // rename, a flow.steer line in events.jsonl and an entry in the job's steers. A steer that finds
-  // no open turn is answered as not delivered and never reaches the provider.
+  // no open turn is answered as not delivered and never reaches the provider. A session answers
+  // delivered: null when the provider has neither taken nor refused the steer yet: that answer is
+  // unknown, and once the session settles it, a second flow.steer line records the final answer
+  // and the steer's entry is rewritten.
   const steerDir = join(dir, 'steer')
   const taken = new Set()
+  const unsettled = []
   let steering = Promise.resolve()
+  const answerOf = (answer) => {
+    const delivered = answer?.delivered === true ? true : answer?.delivered === null ? null : false
+    return { delivered, status: delivered ? 'delivered' : delivered === null ? 'unknown' : 'failed', error: delivered ? null : answer?.error ?? 'the provider did not take the steer' }
+  }
   const deliver = async (id, request) => {
     let answer
     if (typeof request?.prompt !== 'string') answer = { delivered: false, error: 'the steer request could not be read' }
@@ -121,13 +129,19 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
         answer = { delivered: false, error: 'the runner could not deliver the steer' }
       }
     }
-    const delivered = answer?.delivered === true
-    const error = delivered ? null : answer?.error ?? 'the provider did not take the steer'
+    const { delivered, status, error } = answerOf(answer)
     journal({ type: 'flow.steer', id, delivered, error })
-    record = writeJob({ ...record, steers: [...(record.steers ?? []), { id, at: request?.at ?? null, status: delivered ? 'delivered' : 'failed', error }] })
+    record = writeJob({ ...record, steers: [...(record.steers ?? []), { id, at: request?.at ?? null, status, error }] })
     const temp = join(steerDir, `.ack.${process.pid}.${randomUUID()}`)
     writeFileSync(temp, JSON.stringify({ id, delivered, error }), { mode: 0o600 })
     renameSync(temp, join(steerDir, `${id}.ack.json`))
+    if (status === 'unknown' && answer.settled) {
+      unsettled.push(answer.settled.then((reply) => {
+        const final = answerOf(reply)
+        journal({ type: 'flow.steer', id, delivered: final.delivered, error: final.error })
+        record = writeJob({ ...record, steers: record.steers.map((entry) => (entry.id === id ? { ...entry, status: final.status, error: final.error } : entry)) })
+      }).catch((error) => log(`steer ${id} failed for ${job.id}: ${error?.stack || error}`)))
+    }
     sync()
   }
   const takeSteers = () => {
@@ -192,9 +206,11 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
   for (const timer of [budget, stallTimer]) clearTimeout(timer)
   clearInterval(poll)
   // Every steer written before the provider exited is answered before the outcome, so a steer the
-  // server is still waiting on reads failed rather than unknown.
+  // server is still waiting on reads failed rather than unknown, and a steer answered unknown has
+  // its final answer, which the session gave when the provider exited.
   takeSteers()
   await steering
+  await Promise.all(unsettled)
   settled = true
   clearTimeout(killTimer)
   kill()

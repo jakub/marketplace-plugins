@@ -406,7 +406,8 @@ export async function cancel(job) {
 // as steer/<uuid>.json, by temp file and rename, and the runner answers with <uuid>.ack.json once
 // the provider has taken it or refused it. The wait ends at that answer, when the job ends (the
 // runner answers every steer it took before it writes the outcome), or after 30 seconds. A steer
-// with no answer is unknown, never delivered.
+// with no answer, or one the runner answered with delivered: null because the provider had neither
+// taken nor refused it yet, is unknown, never delivered.
 const steerDir = (id) => join(jobDir(id), 'steer')
 function readAck(jobId, id) {
   try { return JSON.parse(readFileSync(join(steerDir(jobId), `${id}.ack.json`), 'utf8')) } catch { return null }
@@ -437,7 +438,7 @@ export async function requestSteer(input, { host, roots, signal }) {
     if (Date.now() - checked > 2000) { current = reconcile(current); checked = Date.now() }
   }
   ack ??= readAck(job.id, id)
-  const status = !ack ? 'unknown' : ack.delivered === true ? 'delivered' : 'failed'
+  const status = !ack || ack.delivered === null ? 'unknown' : ack.delivered === true ? 'delivered' : 'failed'
   return { job: readJob(job.id) ?? current, steer: { id, status, ...(ack?.error ? { error: ack.error } : {}) } }
 }
 

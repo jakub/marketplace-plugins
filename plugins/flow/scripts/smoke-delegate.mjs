@@ -294,12 +294,13 @@ function claudeCli() {
       permission_denials: mode === 'approval' || (mode === 'steer-denied' && !steered.length) ? [{ tool_name: 'Read' }] : [] })
     // A steer that was not folded in runs as the next turn. steer-drain replayed it on receipt and
     // starts it at once, before the end of stdin can arrive; steer-next replays it only when it
-    // dequeues it, 300 ms later, and a CLI whose stdin closed in between has already exited.
+    // dequeues it, 300 ms later, and a CLI whose stdin closed in between has already exited;
+    // steer-late dequeues it 11 seconds later, past the runner's acknowledgement window.
     const next = queue.shift()
     if (!next) return
     steered.push(textOf(next))
     if (mode === 'steer-drain') return begin(next, true)
-    setTimeout(() => { replay(next); begin(next, true) }, 300)
+    setTimeout(() => { replay(next); begin(next, true) }, mode === 'steer-late' ? 11_000 : 300)
   }
   function user(frame) {
     if (mode === 'exit-nonzero') { process.stderr.write('SECRET-STDERR-TOKEN\n'); process.exit(3) }
@@ -411,6 +412,11 @@ try {
   for (let level = 1; level <= 32; level++) costly.$defs[`d${level}`] = { anyOf: [{ $ref: `#/$defs/d${level - 1}` }, { $ref: `#/$defs/d${level - 1}` }] }
   assert.equal(schemaProblem(costly), null)
   const unchecked = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy', outputSchema: costly, waitSeconds: 0 })
+  // So does a Claude steer that the CLI replays only after the runner's 10-second acknowledgement
+  // window, when it runs the steer as the next turn.
+  const slowReplay = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=steer-late count the files', waitSeconds: 0 })
+  assert.ok(await until(() => readJob(slowReplay.job.id).turnOpen), 'steer-late: the turn never opened')
+  const slowReplaySteer = codexHost.call('delegation_steer', { jobId: slowReplay.job.id, prompt: 'also give the total' })
 
   const names = async (client) => (await client.request('tools/list', {})).result.tools
   const claudeTools = await names(claudeHost)
@@ -1095,6 +1101,17 @@ try {
   assert.deepEqual([bounded.job.status, bounded.job.error?.kind, bounded.job.structured], ['failed', 'SCHEMA_OUTPUT', null])
   assert.match(bounded.job.error.message, /could not be checked against the requested schema within 10 seconds/)
   ok('an answer whose check branches exponentially fails SCHEMA_OUTPUT once the check is killed, and the job settles')
+  // The steer the CLI replayed late was unknown when the call returned, not failed. It held stdin
+  // open past the first result frame, ran as the next turn, and its entry became delivered.
+  const slowSteer = await slowReplaySteer
+  assert.deepEqual([slowSteer.ok, slowSteer.steer.status], [false, 'unknown'], JSON.stringify(slowSteer))
+  assert.match(slowSteer.steer.error, /has not replayed the steer within 10s/)
+  const slowDone = await codexHost.call('delegation_result', { jobId: slowReplay.job.id, waitSeconds: 60 })
+  assert.deepEqual([slowDone.job.status, slowDone.job.output], ['succeeded', 'fake answer; steered: also give the total'], JSON.stringify(slowDone.job))
+  assert.deepEqual(slowDone.job.steers.map(({ id, status, error }) => ({ id, status, error })), [{ id: slowSteer.steer.id, status: 'delivered', error: null }])
+  assert.deepEqual(journal(slowReplay.job.id).filter((event) => event.type === 'flow.steer').map(({ delivered }) => delivered), [null, true])
+  assert.equal(journal(slowReplay.job.id).filter((event) => event.type === 'result').length, 2)
+  ok('a Claude steer with no replay after 10 seconds reads unknown rather than failed, keeps stdin open until a result follows its late replay, and its entry in steers becomes delivered')
   claudeHost.close()
   codexHost.close()
 

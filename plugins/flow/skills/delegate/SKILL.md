@@ -47,7 +47,7 @@ The call waits up to 30 seconds for the job to answer, then returns the job and 
 
 - `delivered` means the provider took the steer. Codex accepted `turn/steer` for the open turn, or Claude replayed the message.
 - `failed` means the provider refused the steer, or the turn ended before the steer reached it. `steer.error` says which.
-- `unknown` means the job never answered. An `unknown` steer is never a delivered one.
+- `unknown` means the job never answered, or the provider had neither taken nor refused the steer yet. A Claude steer with no replay after 10 seconds is `unknown`, because the CLI may still take it. The job's `steers` entry changes to `delivered` at the replay, or to `failed` if the CLI exits first. An `unknown` steer is never a delivered one.
 
 A job that is queued, has not sent its prompt yet, or has ended is refused with `JOB_STATE`, and nothing reaches it. A job refused before its prompt went out can be steered a moment later, once its turn is open.
 
