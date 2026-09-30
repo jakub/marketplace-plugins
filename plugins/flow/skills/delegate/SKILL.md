@@ -13,11 +13,11 @@ One MCP server, `flow_delegate`, reaches the other family in both directions. A 
 - `delegation_result` reads one job: its status, its outcome and its last event lines. With `waitSeconds` it blocks until the job ends or the wait runs out.
 - `delegation_cancel` stops a queued or running job and kills its provider's whole process group.
 - `delegation_steer` adds an instruction to a running job's turn without stopping the job.
-- `delegation_doctor` reports whether the provider is installed and signed in, the usable workspace roots and the state directory.
+- `delegation_doctor` reports whether the provider is installed and signed in, the usable workspace roots and the state directory. It also runs the provider's handshake with no turn, which proves the protocol the server speaks.
 
 ## Start a job
 
-Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`, `fable`) or a full id such as `claude-opus-5-5`, never a charter display name. Codex takes its own ids, such as `gpt-6-sol` or `gpt-6-luna`. `effort` is `low`, `medium`, `high`, `xhigh` or `max`.
+Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`, `fable`) or a full id such as `claude-opus-5-5`, never a charter display name. Codex takes its own ids, such as `gpt-6-sol` or `gpt-6-luna`. `effort` is `low`, `medium`, `high`, `xhigh` or `max`. The doctor's `transport.catalog` lists the models and efforts the provider takes. The server accepts only the five efforts above, even when the catalog lists another.
 
 The server checks both against the provider's own model catalog before the prompt goes out. If the catalog lists the model but not the effort, the job fails `BAD_MODEL` and costs no turn. On Claude Code 2.1.284, for example, `haiku` takes no effort level, so it fails at every effort. An id the catalog does not list still runs, and the envelope says `catalog: "absent"`.
 
@@ -75,11 +75,21 @@ A succeeded review with `findings: []` is not yet a pass. A reviewer that never 
 
 ## Before the first call
 
-Run `delegation_doctor` as the preflight. It answers without a workspace, which is what you need when the answer is that you have none. Codex starts MCP servers before any hook runs, so on a new machine the flow skill's `setup` runs `node <plugin-root>/scripts/install-delegate.mjs install` once before the first Codex session. After that, the Codex SessionStart hook keeps `~/.local/bin/flow-delegate` current.
+Run `delegation_doctor` as the preflight. It answers without a workspace, which is what you need when the answer is that you have none. It starts the provider for a handshake that runs no turn, so it costs a second or two and no tokens. `ok` is true only when the provider is installed and signed in, its handshake passed, and a usable root exists.
+
+The handshake's result is `transport`:
+
+- `ok` and `error` say whether it passed. A failure is typed like a job's. The two common kinds are `ISOLATION` and `PROVIDER_ERROR`. `ISOLATION` means the session could reach an MCP server, or the Codex thread ran under another permission profile. `PROVIDER_ERROR` means the CLI refused a step, answered in a shape the server does not know, stayed silent for 30 seconds, or exited.
+- `protocol` lists the steps that passed, in order: `initialize`, `model/list`, `config/read`, `thread/start` and `mcpServerStatus/list` on Codex, and `initialize` and `mcp_status` on Claude. After a failure, the step that failed is the first one missing.
+- `catalog` is the provider's model catalog: `{id, efforts}` on Codex, and `{id, resolvedModel, efforts}` on Claude, where `resolvedModel` is the model an alias runs.
+- `profile` is the permission profile the Codex thread read back, `flow_delegation`. It is null on Claude.
+- `mcpServersDisabled` counts the MCP servers the session read back as disabled. On Codex these are the servers your Codex config defines. On Claude it is 0, because the CLI loads none.
+
+Codex starts MCP servers before any hook runs, so on a new machine the flow skill's `setup` runs `node <plugin-root>/scripts/install-delegate.mjs install` once before the first Codex session. After that, the Codex SessionStart hook keeps `~/.local/bin/flow-delegate` current.
 
 The server depends on these provider interfaces, checked against Codex CLI 0.159.0 and Claude Code 2.1.284 on 2026-09-30.
 
 - Codex: `app-server --stdio` with `experimentalApi`, and the methods `initialize`, `model/list`, `config/read`, `thread/start`, `thread/resume`, `mcpServerStatus/list`, `turn/start`, `turn/steer` and `turn/interrupt`. The thread fields `permissions`, `runtimeWorkspaceRoots`, `allowProviderModelFallback` and `activePermissionProfile` appear only in the experimental schema.
 - Claude: `-p --input-format stream-json --output-format stream-json --verbose --replay-user-messages`, `--model`, `--effort`, `--permission-mode dontAsk`, `--permission-prompts none`, `--setting-sources`, `--strict-mcp-config`, `--settings`, `--tools`, `--allowedTools`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd`, and the control requests `initialize`, `mcp_status` and `interrupt`. A steer is a user message with `priority: "next"`, acknowledged when the CLI replays its `uuid`. That field and the replay come from the Agent SDK's type definitions, and no live turn has shown them yet.
 
-When the doctor reports a newer version and jobs start failing with `PROVIDER_ERROR`, check these first: the Codex methods against `codex app-server generate-ts --experimental --out <dir>`, and the Claude flags against `claude --help`.
+The doctor proves the handshake part of this list on every call. The rest runs only inside a turn. If the doctor passes on a newer CLI and jobs still fail with `PROVIDER_ERROR`, check `turn/start`, `turn/steer`, `turn/interrupt` and `thread/resume` against `codex app-server generate-ts --experimental --out <dir>`. For Claude, check `--model`, `--effort`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd` against `claude --help`.

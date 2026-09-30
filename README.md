@@ -87,7 +87,7 @@ Claude can delegate to Codex and Codex can delegate to Claude, through one MCP s
 | `delegation_result` | Reads a job's status, outcome and last event lines, and can wait for the job to end. |
 | `delegation_cancel` | Stops a job and kills its provider's process group. |
 | `delegation_steer` | Adds an instruction to a running job's turn without stopping it, and reports whether the provider took it. |
-| `delegation_doctor` | Reports whether the provider is installed and signed in, the usable workspace roots and the state directory. |
+| `delegation_doctor` | Reports whether the provider is installed and signed in, the usable workspace roots and the state directory, and runs the provider's handshake with no turn to prove the protocol. |
 
 The server speaks the other family's session protocol by hand, `codex app-server` for Codex and the stream-json control channel of `claude -p` for Claude. Each job opens a session, checks the model and effort against the provider's catalog, and reads back what the session can reach before the prompt goes out. A job loads none of your configured MCP servers, plugins or hooks. It uses Node built-ins only, so there is no build step and no npm dependency. Each job is a directory under `~/.local/state/flow/jobs/` by default, and it outlives the session, so a later session in the same workspace can collect it. The `flow:delegate` skill is the operating manual, and `plugins/flow/docs/DELEGATION.md` is the maintenance record.
 
