@@ -59,7 +59,7 @@ The timers find flow through `~/.claude/plugins/installed_plugins.json`, which i
 
 ### Delegation
 
-`delegate/` is five files on Node built-ins that drive `codex exec` and `claude -p` directly. `docs/DELEGATION.md` is the maintenance record, and its `## Contracts that bind an edit` section is the list to read before an edit. `skills/delegate/SKILL.md` is what a session reads before its first call, and it lists the provider flags the server depends on with the CLI versions they were read from. Re-check them on every CLI bump, since both CLIs ship weekly. `.mcp.json` sets no `cwd`, because the directory Codex starts the dispatcher in is the server's only root there.
+`delegate/` is six files on Node built-ins that drive `codex exec` and `claude -p` directly. `docs/DELEGATION.md` is the maintenance record, and its `## Contracts that bind an edit` section is the list to read before an edit. `skills/delegate/SKILL.md` is what a session reads before its first call, and it lists the provider flags the server depends on with the CLI versions they were read from. Re-check them on every CLI bump, since both CLIs ship weekly. `.mcp.json` sets no `cwd`, because the directory Codex starts the dispatcher in is the server's only root there.
 
 ## gripe
 

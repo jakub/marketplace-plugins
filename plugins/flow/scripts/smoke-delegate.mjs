@@ -62,8 +62,9 @@ const hang = () => { record.childPid = spawn('sleep', ['300'], { stdio: 'ignore'
 if (mode === 'exit-nonzero') { process.stderr.write('SECRET-STDERR-TOKEN\n'); process.exit(3) }
 if (mode === 'bad-json') console.log('this line is not json')
 const schema = flag('--output-schema') ? JSON.parse(fs.readFileSync(flag('--output-schema'), 'utf8')) : flag('--json-schema') ? JSON.parse(flag('--json-schema')) : null
-const answer = !schema ? 'fake answer' : JSON.stringify(schema.properties.findings
-  ? { findings: [{ severity: 'low', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd', systemic: false }] } : { answer: '42' })
+const finding = mode === 'bad-structure' ? { severity: 'urgent', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd' }
+  : { severity: 'low', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd', systemic: false }
+const answer = !schema ? 'fake answer' : JSON.stringify(schema.properties.findings ? { findings: [finding] } : { answer: '42' })
 setTimeout(NAME === 'codex' ? codex : claude, mode === 'slow' ? 1500 : 0)
 function codex() {
   out({ type: 'thread.started', thread_id: argv[1] === 'resume' ? argv[argv.length - 2] : '11111111-1111-4111-8111-111111111111' })
@@ -275,6 +276,21 @@ try {
     assert.deepEqual(typed.job.structured, { answer: '42' })
   }
   ok('a task outputSchema comes back parsed as structured on both targets')
+
+  const strict = { type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'integer' } } }
+  for (const client of [claudeHost, codexHost]) {
+    const mistyped = await start(client, { prompt: 'FLOW_FAKE_MODE=happy', outputSchema: strict })
+    assert.deepEqual([mistyped.job.status, mistyped.job.error?.kind, mistyped.job.structured], ['failed', 'SCHEMA_OUTPUT', null])
+    assert.deepEqual(mistyped.job.error.details.errors, ['$.answer: expected integer'])
+    assert.equal(mistyped.job.output, '{"answer":"42"}', 'the raw answer is kept')
+  }
+  const badReview = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=bad-structure', mode: 'adversarial-review', base: 'main~1' })
+  assert.deepEqual([badReview.job.status, badReview.job.error?.kind], ['failed', 'SCHEMA_OUTPUT'])
+  assert.deepEqual(badReview.job.error.details.errors, ['$.findings[0]: missing the required property "systemic"', '$.findings[0].severity: not one of the allowed values'])
+  for (const outputSchema of [{ type: 'object', patternProperties: {} }, { type: 'object', properties: { a: { type: 'text' } } }, { type: 'object', properties: { a: { $ref: '#/$defs/missing' } } }]) {
+    await refused(claudeHost, { outputSchema }, 'BAD_SCHEMA')
+  }
+  ok('an answer that breaks its schema fails SCHEMA_OUTPUT on both targets and in review, and a schema the server cannot check is refused')
 
   const expect = async (client, prompt, status, kind) => {
     const result = await start(client, { prompt })

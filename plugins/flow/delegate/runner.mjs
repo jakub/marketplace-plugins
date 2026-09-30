@@ -121,9 +121,6 @@ export async function runJob(id) {
       const { folded, stopped } = await runProvider(job, dir, bin, provider, provider.stdin(seat, prompt))
       job = readJob(id) ?? job
       result = outcome(job, folded, stopped)
-      if (result.status === 'succeeded' && job.mode === 'adversarial-review' && !Array.isArray(result.structured?.findings)) {
-        result = { ...result, status: 'failed', error: { kind: 'SCHEMA_OUTPUT', message: 'The review answered without a findings array.' } }
-      }
     }
   } catch (error) {
     log(`runner failed for ${id}: ${error?.stack || error}`)

@@ -26,7 +26,7 @@ Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`,
 
 `mode` is `task` (the default) or `adversarial-review`. A review needs `base` and takes `head` (default `HEAD`). The server resolves both to commit SHAs before the job exists, so the diff under review cannot move. It writes the reviewer instruction itself, keeps your `prompt` as extra focus, forces read-only access and answers in the fixed findings schema.
 
-`outputSchema` gets a typed answer from a task, parsed into `structured`. The root must be `type: "object"`, and the schema can be at most 64 KiB. Write closed objects with every property required: Codex quietly narrows a schema outside that subset, and nothing checks the answer against your schema beyond parsing it.
+`outputSchema` gets a typed answer from a task, parsed into `structured`. The root must be `type: "object"`, and the schema can be at most 64 KiB. Write closed objects with every property required, because Codex quietly narrows a schema outside that subset. The server checks the answer against your schema before the job can succeed, so it admits only the keywords it can check: `type`, `properties`, `required`, `additionalProperties`, `items`, `enum`, `const`, the numeric, length, item and property-count bounds, `pattern`, `uniqueItems`, `anyOf`, `oneOf`, `allOf`, `not`, and `$ref` into the schema's own `$defs`, plus annotations such as `description` and `format`. Any other keyword is refused as `BAD_SCHEMA`.
 
 `continue` takes the id of a finished job and starts a new task on the same provider thread, in the same `cwd` and with the same access. A job whose outcome is `unknown` cannot be continued.
 
@@ -45,6 +45,7 @@ Every tool answers `{ok, job?, error?}`, and the JSON text opens with a one-line
 `job.error.kind` is one of `BAD_REQUEST`, `BAD_SCHEMA`, `NO_ROOTS`, `OUTSIDE_ROOTS`, `WORKSPACE_BUSY`, `NESTED_DELEGATION`, `JOB_NOT_FOUND`, `JOB_STATE`, `GIT_REF`, `PROVIDER_NOT_INSTALLED`, `PROVIDER_AUTH`, `PROVIDER_ERROR`, `APPROVAL_REQUIRED`, `REFUSAL`, `MODEL_MISMATCH`, `SCHEMA_OUTPUT`, `EMPTY_OUTPUT`, `TIMEOUT`, `STALL`, `CANCELLED`, `RUNNER_LOST` or `INTERNAL`. A `REFUSAL` carries the provider's category in `details` when it names one.
 
 - `output` is the final answer, and `structured` is the parsed answer when a schema applied.
+- `SCHEMA_OUTPUT` means the answer did not parse or did not conform. `details.errors` lists up to ten `path: problem` lines, `structured` is null and `output` keeps the raw answer. A review is checked against the findings schema the same way.
 - `servedModel` is the model Claude reported serving the session. A Claude answer from any other model fails `MODEL_MISMATCH` and stops at once. Codex reports no served model.
 - `commandFailures` counts shell commands that failed. A succeeded job with a nonzero count answered without working shell evidence.
 - `APPROVAL_REQUIRED` means the provider asked for more than the job grants. Its `output` is kept. Start a new job with the access the task needs.

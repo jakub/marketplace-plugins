@@ -12,6 +12,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { schemaProblem } from './schema.mjs'
 
 const execFileAsync = promisify(execFile)
 const MAIN = fileURLToPath(new URL('./main.mjs', import.meta.url))
@@ -31,7 +32,7 @@ export class DelegateError extends Error {
 export const fail = (kind, message, details) => { throw new DelegateError(kind, message, details) }
 
 // Written in the subset Codex enforces for structured output: closed objects, every property
-// required. Nothing validates a reply against it beyond the findings array being present.
+// required. Like every schema a job carries, a reply is checked against it before success.
 export const FINDINGS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -188,6 +189,8 @@ function validateStart(input, target) {
       fail('BAD_SCHEMA', 'outputSchema must be a JSON Schema object whose type is "object".')
     }
     if (Buffer.byteLength(JSON.stringify(schema)) > 65_536) fail('BAD_SCHEMA', 'outputSchema exceeds 64 KiB.')
+    const problem = schemaProblem(schema)
+    if (problem) fail('BAD_SCHEMA', `outputSchema: ${problem}.`)
   }
   if (input.continue !== undefined) {
     if (typeof input.continue !== 'string' || !JOB_ID.test(input.continue)) fail('BAD_REQUEST', 'continue must be a job id.')

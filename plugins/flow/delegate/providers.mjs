@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process'
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
+import { validate } from './schema.mjs'
 
 // Only absolute PATH entries count. An empty or relative entry resolves against the job's cwd,
 // and a worktree must never be able to supply the provider executable.
@@ -130,13 +131,18 @@ function classify(message) {
   return 'PROVIDER_ERROR'
 }
 
-// A completed turn is a success only with an answer, and with a parsed structure when a schema
-// was asked for.
-function answered(job, base, output, structured) {
+// A completed turn is a success only with an answer, and, when a schema was asked for, with a
+// structure that conforms to it. Neither provider's own enforcement is taken on trust: Codex
+// narrows a schema outside its subset without saying so.
+function answered(job, dir, base, output, structured) {
   if (!output && structured === undefined) return { ...base, status: 'failed', error: { kind: 'EMPTY_OUTPUT', message: 'The provider completed without a final answer.' } }
   if (!job.hasSchema) return { ...base, status: 'succeeded', output }
   if (structured === undefined || structured === null || typeof structured !== 'object') {
     return { ...base, output, status: 'failed', error: { kind: 'SCHEMA_OUTPUT', message: 'The provider did not return JSON in the requested schema.' } }
+  }
+  const errors = validate(JSON.parse(readFileSync(join(dir, 'schema.json'), 'utf8')), structured)
+  if (errors.length) {
+    return { ...base, output, status: 'failed', error: { kind: 'SCHEMA_OUTPUT', message: 'The provider\'s answer does not match the requested schema.', details: { errors } } }
   }
   return { ...base, status: 'succeeded', output, structured }
 }
@@ -184,7 +190,7 @@ const codex = {
         output = output.trim()
         let structured
         if (job.hasSchema) try { structured = JSON.parse(output) } catch {}
-        return answered(job, base, output, structured)
+        return answered(job, dir, base, output, structured)
       },
     }
   },
@@ -224,7 +230,7 @@ const claude = {
       ...(job.maxBudgetUsd ? ['--max-budget-usd', String(job.maxBudgetUsd)] : [])]
   },
   stdin: (seat, prompt) => prompt,
-  fold(job) {
+  fold(job, dir) {
     let session = null
     let served = null
     let mismatch = null
@@ -275,7 +281,7 @@ const claude = {
         if (result.permission_denials?.length) {
           return { ...base, output: text || null, status: 'failed', error: { kind: 'APPROVAL_REQUIRED', message: 'Claude needed a permission this job does not grant.', details: { denied: result.permission_denials.map((denial) => denial.tool_name) } } }
         }
-        return answered(job, base, text, result.structured_output)
+        return answered(job, dir, base, text, result.structured_output)
       },
     }
   },

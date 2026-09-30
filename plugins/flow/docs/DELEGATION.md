@@ -6,7 +6,7 @@ The provider behavior below was checked on 2026-09-29 against Codex CLI 0.159.0 
 
 ## What each file owns
 
-The server is five files that need Node 22 or later and Node built-ins only. There is no build step, no bundle and no npm dependency, so an edit takes effect on the next server start.
+The server is six files that need Node 22 or later and Node built-ins only. There is no build step, no bundle and no npm dependency, so an edit takes effect on the next server start.
 
 | File | Owns |
 | --- | --- |
@@ -15,6 +15,7 @@ The server is five files that need Node 22 or later and Node built-ins only. The
 | `jobs.mjs` | Admission, the job directory, the write lease, the runner spawn, waiting, cancel, reconciliation and the 14-day prune. |
 | `providers.mjs` | Per target: the PATH lookup, argv, stdin, environment, the Claude sandbox settings and the fold from JSONL to an outcome. |
 | `runner.mjs` | The detached process that runs one job, and `delegatedInstructions`, which builds the seat block. |
+| `schema.mjs` | The JSON Schema subset a structured answer is checked against: `schemaProblem` at admission, `validate` before success. |
 
 `bin/flow-delegate` is the Codex launcher. Codex passes a plugin MCP server's command to the launcher without expanding variables, so a command on PATH is the only way to start the server in the thread's project directory. The launcher reads `--flow-version`, imports `$CODEX_HOME/plugins/cache/jakub/flow/<version>/delegate/main.mjs` into its own process, and exits 1 naming that path when the file is missing. `scripts/install-delegate.mjs install` copies the launcher to `~/.local/bin/flow-delegate` when that copy is missing or differs. Codex starts MCP servers before SessionStart hooks run, so the flow skill's `setup` runs the installer once, and the Codex SessionStart hook keeps the copy current after that.
 
@@ -25,6 +26,7 @@ The server is five files that need Node 22 or later and Node built-ins only. The
 - A delegated prompt starts with `seatPayload(charter.md)`, byte for byte, read from `charter/charter.md` when the job runs. The `<delegated-seat>` block follows it. On Codex both go to stdin ahead of the caller's prompt. On Claude both go in `seat.md` through `--append-system-prompt-file`, and stdin carries the caller's prompt alone. No rule rides in caller prose. `smoke-delegate.mjs` checks the bytes.
 - Provider stderr and stack traces go to `stderr.txt` and `server.log`, never into a tool result. An error message the provider put in its own JSONL may appear, clipped to 500 characters.
 - An outcome needs native proof. Success needs a terminal event (`turn.completed` from Codex, a `result` frame from Claude) and an answer. A running job whose runner is gone reads `unknown` with `RUNNER_LOST`.
+- A job with a schema succeeds only when its answer conforms to it, checked by `schema.mjs` and not taken on trust from either provider, since Codex narrows a schema outside its subset without saying so. A schema is admitted only when every keyword in it is one `schema.mjs` checks or an annotation, so no admitted schema is checked in part. A new keyword goes into both of its functions at once.
 
 ## Roots
 
@@ -66,5 +68,4 @@ The argv lives in `providers.mjs`. These choices are the ones an edit is most li
 - `--ignore-user-config` skips only `$CODEX_HOME/config.toml`. A repository's own `.codex/config.toml` still loads inside a delegated Codex job.
 - Codex's `-s` modes confine writes, not reads, so a Codex job can read files that a Claude job cannot.
 - Flow's PreToolUse hooks do not load inside a delegated job. A write job is confined to its worktree and nothing narrower, so it can edit a lockfile or an `.env` file there.
-- Nothing checks a structured answer against its schema beyond parsing it, and a review answer beyond its `findings` array.
 - Codex reports no served model, so the model-swap check covers Claude only.

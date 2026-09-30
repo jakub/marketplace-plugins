@@ -26,7 +26,7 @@ function tools(target) {
     access: { type: 'string', enum: ['read-only', 'workspace-write'], description: 'Default read-only; workspace-write confines writes to the worktree and holds its one write lease.' },
     base: { type: 'string', description: 'Review mode: the base revision, pinned to a SHA before the job starts.' },
     head: { type: 'string', default: 'HEAD', description: 'Review mode: the head revision, pinned to a SHA.' },
-    outputSchema: { type: 'object', description: 'Task mode: a JSON Schema (type object, at most 64 KiB) the answer must follow. Write closed objects with every property required.' },
+    outputSchema: { type: 'object', description: 'Task mode: a JSON Schema (type object, at most 64 KiB) the answer must follow; the answer is checked against it before the job succeeds. Write closed objects with every property required.' },
     continue: { type: 'string', description: 'The id of a finished job whose provider thread this new task resumes, in the same cwd and access.' },
     timeBudgetSeconds: { type: 'integer', minimum: 30, maximum: 7200, default: 900 },
     waitSeconds: { type: 'integer', minimum: 0, maximum: 7200, description: 'How long to wait for the outcome; default the whole budget. 0 detaches: collect it with delegation_result.' },
