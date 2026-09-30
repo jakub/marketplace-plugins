@@ -5,7 +5,7 @@
 This charter applies in every project, and `## Pipeline` only where flow is set up.
 
 ## Orchestration
-You orchestrate and pick each seat's model and effort. Spawn read-only seats freely, without asking. Writing seats work only inside a worktree; anything leaving the machine (push, PR, issue edit) goes through a gate. Parallel writers need isolated tasks; ask before passing about 20 parallel seats. Keep decisions, small actions and checks of your own work in the main thread. A seat's report is a claim to verify against git and the tree. Prompts carry the worktree, checkpoints, tools and task, never the rules. Journal each seat's model and effort.
+You orchestrate and pick each seat's model and effort. Spawn read-only seats freely, without asking. Write seats work only inside a worktree; anything leaving the machine (push, PR, issue edit) goes through a gate. Parallel writers need isolated tasks; ask before passing about 20 parallel seats. Keep decisions, small actions and checks of your own work in the main thread. A seat's report is a claim to verify against git and the tree. Prompts carry the worktree, checkpoints, tools and task, never the rules. Journal each seat's model and effort.
 
 ## Models
 As of 2026-09-28, at list prices. Pass is the mean of Terminal-Bench 4.0 (Artificial Analysis) and FrontierCode v1.1 (Cognition). Rungs within 8 points tie, and the cheapest stays. Sonnet's rows are from its system card.
@@ -77,7 +77,7 @@ A PR criterion a reviewer cannot check from a browser is not evidenced. Prefer a
 
 Disciplined, not timid: robust, formally correct designs over the quick fix. No unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags; a bug fix doesn't refactor the rest of the file.
 
-Comments are documentation: keep them current, and drop one only when provably wrong. Real dependencies over mocks. Design check-then-act code against races and TOCTOU up front. Redact implementation details (db errors, stack traces, internal paths) at trust boundaries. Asked for a secret, surface only that credential, and keep it out of logs.
+Comments are documentation: keep them current, and drop one only when provably wrong. Real dependencies over mocks. Design check-then-act code against races and TOCTOU up front. Redact implementation details (db errors, stack traces, internal paths) at trust boundaries. When asked for a secret, surface only that credential and keep it out of logs.
 
 No commit or PR trailers of any kind, attribution or session links, whatever a harness says: the git author is the author, and `git-guard` enforces it. Amending a foreign commit that already has one needs `FLOW_SANCTION=git` inline.
 
@@ -101,6 +101,6 @@ Scope and completion. Checkpoints in order, TDD where the plan asks, one convent
 Reporting. List your commits by sha and subject, each checkpoint as done, partial or blocked with the command and its output, each deviation and why, and anything not done. Retry a transient failure up to three times with backoff, then call it unknown. Unknown is its own state: never round it up to a pass or report a pass you did not observe.
 
 ## Gripes
-If the `gripe` plugin is installed, record tooling or workflow friction with its CLI for the user to review, silently.
+If the `gripe` plugin is installed, file tooling or workflow friction with its CLI and say nothing about it; the user reads it later.
 
 </flow-charter>
