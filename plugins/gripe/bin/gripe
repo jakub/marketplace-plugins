@@ -5,6 +5,9 @@
 // errors as one stderr line, no network, no prompts. The rest is the human side and is
 // never advertised to agents.
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 const ELICITATIONS = new Set(['spontaneous', 'error_nudge', 'checkpoint'])
@@ -124,25 +127,19 @@ async function cmdSearch(argv) {
   })
 }
 
-// Which install is running, from this file's own path. Two harnesses install gripe into
-// two caches and the PATH shim picks one at exec time, so without these fields a working
-// doctor says only that some gripe answered. Dynamic, and never fatal: identity is a
-// nicety and `add` losing its entry point is not.
-async function installIdentity() {
-  try {
-    const { installFacts } = await import('../lib/install.mjs')
-    return installFacts(import.meta.url)
-  } catch {
-    return { plugin_root: null, plugin_version: null }
-  }
-}
-
 async function cmdDoctor() {
-  const identity = await installIdentity()
+  // Which install is running, from this file's own path. Two harnesses install gripe into
+  // two caches and the PATH shim picks one at exec time, so without these fields a working
+  // doctor says only that some gripe answered.
+  const plugin_root = dirname(dirname(fileURLToPath(import.meta.url)))
+  let plugin_version = null
+  try {
+    plugin_version = JSON.parse(readFileSync(join(plugin_root, '.claude-plugin', 'plugin.json'), 'utf8')).version ?? null
+  } catch {}
   await withDb((store, db) => {
     // Identity first, then the health report, which never sees it: version skew between
     // two installs is for the human to read, not for this code to rule on.
-    const report = { ...identity, ...store.doctor(db) }
+    const report = { plugin_root, plugin_version, ...store.doctor(db) }
     console.log(JSON.stringify(report, null, 2))
     if (!report.healthy) process.exitCode = 1
   })

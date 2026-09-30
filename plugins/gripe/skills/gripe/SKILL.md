@@ -26,8 +26,8 @@ that is its failures are silent, which is why the analysis below starts with `do
 Rows arrive through two lanes, and the `elicitation` column records which:
 
 - **observed**: written by hooks with no agent involved, from events that measurably
-  happened. A fourth identical permission denial in one session; a turn that failed
-  outright. Only hooks can write this value; the CLI refuses `--via observed`.
+  happened: a turn that failed outright. Only hooks can write this value; the CLI
+  refuses `--via observed`.
 - **spontaneous / error_nudge / checkpoint**: written by an agent through `gripe add`.
   `spontaneous` means it decided to file on its own. `error_nudge` means the
   PostToolUseFailure hook noticed the same failure shape twice and asked. `checkpoint`

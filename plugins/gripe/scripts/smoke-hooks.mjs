@@ -203,9 +203,6 @@ try {
   // dropped and nothing is written at all.
   const beforeTraversal = filesUnder(stateHome)
   const hostileId = '../../x'
-  assert.equal(run('permission-denied.mjs', {
-    session_id: hostileId, tool_name: 'Bash', tool_input: { command: 'ls' }, reason: 'nope',
-  }), null)
   assert.equal(run('post-tool-use-failure.mjs', {
     session_id: hostileId, tool_name: 'Bash', tool_input: { command: 'ls' }, error: 'boom',
   }), null)

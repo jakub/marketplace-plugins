@@ -19,7 +19,6 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { main, resolveGripeBin } from '../bin/shim.mjs'
-import { installFacts } from '../lib/install.mjs'
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SHIM = join(PLUGIN, 'bin', 'shim.mjs')
@@ -270,7 +269,11 @@ console.log('importing and self-report')
     imported.status === 0 && imported.stdout === '' && imported.stderr === '',
     `status ${imported.status} stderr ${JSON.stringify(imported.stderr.slice(0, 80))}`)
 
-  const facts = installFacts(pathToFileURL(join(PLUGIN, 'lib', 'install.mjs')).href)
+  const doctor = spawnSync(process.execPath, [join(PLUGIN, 'bin', 'gripe'), 'doctor'], {
+    encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home, XDG_STATE_HOME: join(home, 'state') },
+  })
+  let facts = {}
+  try { facts = JSON.parse(doctor.stdout) } catch {}
   const manifest = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'))
   check('doctor can name the install that ran',
     facts.plugin_root === PLUGIN && facts.plugin_version === manifest.version,
