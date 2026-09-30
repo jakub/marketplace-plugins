@@ -249,17 +249,12 @@ export async function admit(input, { host, roots }) {
   let parent = null
   if (input.continue) {
     parent = visibleJob(input.continue, { host, roots })
+    // Only a finished job is continued. A running one is steered with delegation_steer, or
+    // cancelled and then continued, and a continuation never stops it.
+    if (!TERMINAL.has(parent.status)) fail('JOB_STATE', 'The job is still running: steer it with delegation_steer, or cancel it and continue it once it ends.')
+    if (parent.status === 'unknown' || !parent.threadId) fail('JOB_STATE', 'Only a finished job with a provider thread and a known outcome can be continued.')
     if (parent.cwd !== cwd) fail('BAD_REQUEST', `A continuation runs in the cwd of the job it continues: ${parent.cwd}.`)
     if (request.access && request.access !== parent.access) fail('BAD_REQUEST', `A continuation keeps the access of the job it continues: ${parent.access}.`)
-    // Continuing a job that is still running steers it: its turn is stopped where it stands and
-    // the same provider thread resumes with the new prompt. A job that has not opened its thread
-    // yet is left running, since stopping it would leave nothing to resume.
-    if (!TERMINAL.has(parent.status)) {
-      if (!parent.threadId) fail('JOB_STATE', 'The job has not opened its provider thread yet, so there is nothing to steer; try again in a moment.')
-      parent = await cancel(parent)
-      if (!TERMINAL.has(parent.status)) fail('JOB_STATE', 'The job is still stopping; continue it once delegation_result shows it ended.')
-    }
-    if (parent.status === 'unknown' || !parent.threadId) fail('JOB_STATE', 'Only a job with a provider thread and a known outcome can be continued.')
     access = parent.access
   }
   let prompt = input.prompt

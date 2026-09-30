@@ -671,30 +671,18 @@ try {
   await refused(claudeHost, { continue: codexRead.job.id, access: 'workspace-write' }, 'BAD_REQUEST')
   ok('continue resumes the same Codex thread and Claude session, and refuses a changed access')
 
-  // Steering: continuing a running job stops its turn and resumes its thread with the new prompt.
+  // continue takes a finished job only. A running one is refused, with a pointer to
+  // delegation_steer, and left running.
   for (const client of [claudeHost, codexHost]) {
-    const running = await start(client, { prompt: 'FLOW_FAKE_MODE=hang first direction', waitSeconds: 0, access: 'workspace-write' })
-    const runningCall = await until(() => fakeCall(running.job.id)?.childPid && fakeCall(running.job.id))
-    const thread = await until(() => readJob(running.job.id).threadId)
-    assert.ok(thread, 'the running job recorded its provider thread')
-    const steered = await start(client, { prompt: 'FLOW_FAKE_MODE=happy new direction', continue: running.job.id })
-    assert.equal(steered.job.status, 'succeeded', JSON.stringify(steered.job.error))
-    assert.deepEqual([steered.job.parentJobId, steered.job.threadId, steered.job.access], [running.job.id, thread, 'workspace-write'])
-    assert.deepEqual([readJob(running.job.id).status, readJob(running.job.id).error.kind], ['cancelled', 'CANCELLED'])
-    assert.ok(await until(() => !alive(runningCall.pid) && !alive(runningCall.childPid)), 'the steered turn left part of its provider group running')
-    if (client === claudeHost) {
-      assert.equal(asked(steered.job.id, 'thread/resume')[0].threadId, thread)
-      assert.match(turnText(steered.job.id), /new direction/)
-    } else {
-      const argv = fakeCall(steered.job.id).argv
-      assert.equal(argv[argv.indexOf('--resume') + 1], thread)
-      assert.match(userTexts(steered.job.id)[0], /new direction/)
-    }
+    const running = await start(client, { prompt: 'FLOW_FAKE_MODE=hang', waitSeconds: 0 })
+    assert.ok(await until(() => readJob(running.job.id).threadId), 'the running job recorded its provider thread')
+    const continued = await start(client, { prompt: 'FLOW_FAKE_MODE=happy new direction', continue: running.job.id })
+    assert.deepEqual([continued.ok, continued.error?.kind], [false, 'JOB_STATE'], JSON.stringify(continued))
+    assert.match(continued.error.message, /delegation_steer/)
+    assert.equal(readJob(running.job.id).status, 'running', 'a refused continuation stopped the job')
+    assert.equal((await client.call('delegation_cancel', { jobId: running.job.id })).job.status, 'cancelled')
   }
-  const early = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=slow', waitSeconds: 0 })
-  await refused(claudeHost, { continue: early.job.id }, 'JOB_STATE')
-  assert.equal((await claudeHost.call('delegation_result', { jobId: early.job.id, waitSeconds: 30 })).job.status, 'succeeded', 'a refused steer stopped the job')
-  ok('continuing a running job on either target stops its turn, frees its lease and resumes its thread, and one with no thread yet is refused and left running')
+  ok('continuing a running job on either target is refused with JOB_STATE and leaves the job running')
 
   // Cancel stops the whole provider group.
   const hanging = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=hang', waitSeconds: 0, access: 'workspace-write' })
