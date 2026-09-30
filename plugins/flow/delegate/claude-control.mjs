@@ -27,7 +27,9 @@
 // frame before it does. A steer the CLI has not replayed within 10 seconds is answered unknown,
 // not failed: a written message belongs to the CLI, which may still take it, so it keeps holding
 // stdin open, and its final answer follows at the replay or when the CLI exits. A message the CLI
-// dropped outright leaves the job to the stall ceiling.
+// dropped outright leaves the job to the stall ceiling. A CLI that exits before the close rule
+// holds, stopped or on its own, has no successful outcome: its last result frame came before a
+// steer it never answered.
 //
 // The doctor's check opens the same channel with a read-only job's containment, sends initialize
 // and mcp_status, and closes stdin with no user message, so a Claude Code release that changes
@@ -333,6 +335,12 @@ export const transport = {
         const denied = [...asked, ...denials]
         if (denied.length) {
           return { ...base, output: text || null, status: 'failed', error: { kind: 'APPROVAL_REQUIRED', message: 'Claude needed a permission this job does not grant.', details: { denied: names(denied, (name) => name) } } }
+        }
+        // A result the close rule never accepted came before a steer the CLI still owed an answer,
+        // so it is not the job's answer. The CLI exited on its own or was stopped, and a stop's
+        // outcome stands over this one.
+        if (!session.turnEnded) {
+          return { ...base, output: text || null, status: 'failed', error: { kind: 'PROVIDER_ERROR', message: 'Claude exited before a result frame answered every steer written to it, so its last result is not the job\'s answer.' } }
         }
         return answered(job, dir, base, text, result.structured_output)
       },

@@ -295,9 +295,10 @@ function claudeCli() {
     // A steer that was not folded in runs as the next turn. steer-drain replayed it on receipt and
     // starts it at once, before the end of stdin can arrive; steer-next replays it only when it
     // dequeues it, 300 ms later, and a CLI whose stdin closed in between has already exited;
-    // steer-late dequeues it 11 seconds later, past the runner's acknowledgement window.
+    // steer-late dequeues it 11 seconds later, past the runner's acknowledgement window, and
+    // steer-dropped never does, idling until it is stopped.
     const next = queue.shift()
-    if (!next) return
+    if (!next || mode === 'steer-dropped') return
     steered.push(textOf(next))
     if (mode === 'steer-drain') return begin(next, true)
     setTimeout(() => { replay(next); begin(next, true) }, mode === 'steer-late' ? 11_000 : 300)
@@ -417,6 +418,10 @@ try {
   const slowReplay = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=steer-late count the files', waitSeconds: 0 })
   assert.ok(await until(() => readJob(slowReplay.job.id).turnOpen), 'steer-late: the turn never opened')
   const slowReplaySteer = codexHost.call('delegation_steer', { jobId: slowReplay.job.id, prompt: 'also give the total' })
+  // And one the CLI never replays at all, so the job ends only when it is stopped.
+  const dropped = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=steer-dropped count the files', waitSeconds: 0 })
+  assert.ok(await until(() => readJob(dropped.job.id).turnOpen), 'steer-dropped: the turn never opened')
+  const droppedSteer = codexHost.call('delegation_steer', { jobId: dropped.job.id, prompt: 'also give the total' })
 
   const names = async (client) => (await client.request('tools/list', {})).result.tools
   const claudeTools = await names(claudeHost)
@@ -1112,6 +1117,19 @@ try {
   assert.deepEqual(journal(slowReplay.job.id).filter((event) => event.type === 'flow.steer').map(({ delivered }) => delivered), [null, true])
   assert.equal(journal(slowReplay.job.id).filter((event) => event.type === 'result').length, 2)
   ok('a Claude steer with no replay after 10 seconds reads unknown rather than failed, keeps stdin open until a result follows its late replay, and its entry in steers becomes delivered')
+  // The steer the CLI never replayed was unknown too. The first turn's success came before it, so
+  // that result is not the job's answer: a cancel that stops the idle CLI, which acknowledges the
+  // interrupt with no further result, is the outcome, and the steer's entry becomes failed.
+  const droppedAck = await droppedSteer
+  assert.deepEqual([droppedAck.ok, droppedAck.steer.status], [false, 'unknown'], JSON.stringify(droppedAck))
+  assert.equal(journal(dropped.job.id).filter((event) => event.type === 'result').length, 1)
+  const droppedDone = await codexHost.call('delegation_cancel', { jobId: dropped.job.id })
+  assert.deepEqual([droppedDone.job.status, droppedDone.job.error?.kind, droppedDone.job.output], ['cancelled', 'CANCELLED', 'fake answer'], JSON.stringify(droppedDone.job))
+  assert.deepEqual(droppedDone.job.steers.map(({ id, status, error }) => ({ id, status, error })),
+    [{ id: droppedAck.steer.id, status: 'failed', error: 'Claude exited before it replayed the steer' }])
+  assert.deepEqual(journal(dropped.job.id).filter((event) => event.type === 'flow.steer').map(({ delivered }) => delivered), [null, false])
+  assert.equal(journal(dropped.job.id).filter((event) => event.type === 'result').length, 1, 'the interrupt of the idle CLI produced a result')
+  ok('a result frame that precedes a steer the CLI never replayed is not a success, so a stop before the steer is answered stands')
   claudeHost.close()
   codexHost.close()
 
