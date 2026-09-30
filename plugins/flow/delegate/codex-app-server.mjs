@@ -21,6 +21,10 @@
 //
 // No approval is ever granted. Each approval request gets its method's decline, and any request
 // that names an approval fails the job APPROVAL_REQUIRED once its turn ends, with the answer kept.
+//
+// A steer goes into the open turn as turn/steer with expectedTurnId set to that turn's id, so Codex
+// refuses it rather than let it land anywhere else. The turn keeps running, and stdin closes only
+// at turn/completed.
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join, sep } from 'node:path'

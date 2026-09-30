@@ -62,6 +62,15 @@ function tools(target) {
       annotations: { destructiveHint: true },
     },
     {
+      name: 'delegation_steer',
+      title: 'Steer a delegation',
+      description: `Add an instruction to a running ${title} job's open turn without stopping it. The job keeps its id and its thread. The result carries steer.status: delivered once ${title} took it, failed when it refused it or the turn had ended, unknown when the job never answered.`,
+      inputSchema: object({
+        jobId,
+        prompt: { type: 'string', description: 'The instruction to add, at most 64 KiB.' },
+      }, ['jobId', 'prompt']),
+    },
+    {
       name: 'delegation_doctor',
       title: 'Delegation doctor',
       description: `Report whether ${title} is installed and signed in, the usable workspace roots and the state directory.`,
@@ -73,8 +82,9 @@ function tools(target) {
 
 function toolResult(value) {
   const job = value.job
-  const summary = job ? `${job.status} | ${job.target} ${job.model} ${job.effort} | ${job.requestPreview}`
-    : value.error ? `${value.error.kind}: ${value.error.message}` : value.summary
+  const line = job && `${job.status} | ${job.target} ${job.model} ${job.effort} | ${job.requestPreview}`
+  const summary = value.steer ? `steer ${value.steer.status} | ${line}`
+    : job ? line : value.error ? `${value.error.kind}: ${value.error.message}` : value.summary
   const body = { summary, ...value }
   // The summary opens the text, so a client that shows one line shows something readable.
   const text = JSON.stringify(body, null, 2).replace(/^\{\n {2}"summary":/, '{"summary":')
@@ -166,6 +176,11 @@ export async function serve({ host, version }) {
     if (name === 'delegation_cancel') {
       jobs.checkKeys(args, ['jobId'])
       return jobResult(await jobs.cancel(jobs.visibleJob(args.jobId, { host, roots: await roots() })))
+    }
+    // A steer is ok only once the provider took it, and the job comes back as it stands.
+    if (name === 'delegation_steer') {
+      const { job, steer } = await jobs.requestSteer(args, { host, roots: await roots(), signal })
+      return toolResult({ ok: steer.status === 'delivered', job: jobs.envelope(job), steer })
     }
     if (name === 'delegation_doctor') {
       jobs.checkKeys(args, [])

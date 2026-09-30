@@ -1,10 +1,11 @@
 // The job store: admission, the job directory, the write lease, the runner spawn, waiting,
-// cancel, reconciliation and pruning. A job is a directory under <state>/jobs/<uuid>/, and
-// job.json is only ever replaced by rename, so a reader sees the old record or the new one.
+// cancel, steering, reconciliation and pruning. A job is a directory under <state>/jobs/<uuid>/,
+// and job.json is only ever replaced by rename, so a reader sees the old record or the new one.
 // While a runner lives it is the only writer of its job's record; the server writes one only to
 // create it or to settle a job whose runner is gone. A `claim` file, linked into place with its
 // holder inside, decides who may move a queued job, so a late runner and a cancel or a lease
-// takeover never both act on it.
+// takeover never both act on it. A steer is a file the server writes under steer/ and the runner
+// answers beside it, so neither ever writes the other's file.
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, closeSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -24,6 +25,8 @@ const START_KEYS = ['prompt', 'model', 'effort', 'cwd', 'mode', 'access', 'base'
   'timeBudgetSeconds', 'waitSeconds', 'maxTurns', 'maxBudgetUsd']
 const QUEUE_GRACE_MS = 60_000
 const PRUNE_MS = 14 * 86_400_000
+const STEER_BYTES = 65_536
+const STEER_WAIT_MS = 30_000
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export class DelegateError extends Error {
@@ -70,7 +73,7 @@ export function writeJob(job) {
   renameSync(temp, join(jobDir(job.id), 'job.json'))
   return job
 }
-export const settle = (job, status, fields = {}) => writeJob({ ...job, ...fields, status, endedAt: new Date().toISOString() })
+export const settle = (job, status, fields = {}) => writeJob({ ...job, ...fields, status, turnOpen: false, endedAt: new Date().toISOString() })
 export function log(message) {
   try { appendFileSync(join(stateDir(), 'server.log'), `${new Date().toISOString()} ${message}\n`, { mode: 0o600 }) } catch {}
 }
@@ -278,7 +281,8 @@ export async function admit(input, { host, roots }) {
     sessionId: target === 'claude' && !parent ? randomUUID() : null, threadId: null,
     requestPreview: preview(input.prompt.trim() ? input.prompt : `Review ${baseSha}..${headSha}`),
     baseSha, headSha, hasSchema: schema !== null,
-    servedModel: null, catalog: null, isolation: null, promptSent: false, output: null, structured: null, commandFailures: 0, error: null,
+    servedModel: null, catalog: null, isolation: null, promptSent: false, turnOpen: false, steers: [],
+    output: null, structured: null, commandFailures: 0, error: null,
   }
   mkdirSync(jobDir(job.id), { recursive: true, mode: 0o700 })
   writeFileSync(join(jobDir(job.id), 'prompt.txt'), prompt, { mode: 0o600 })
@@ -402,6 +406,46 @@ export async function cancel(job) {
   return wait(job.id, 15)
 }
 
+// A steer adds text to a running job's open turn without stopping it. Only a running job whose
+// turn is open takes one: any other call is refused, and nothing is written. The request goes in
+// as steer/<uuid>.json, by temp file and rename, and the runner answers with <uuid>.ack.json once
+// the provider has taken it or refused it. The wait ends at that answer, when the job ends (the
+// runner answers every steer it took before it writes the outcome), or after 30 seconds. A steer
+// with no answer is unknown, never delivered.
+const steerDir = (id) => join(jobDir(id), 'steer')
+function readAck(jobId, id) {
+  try { return JSON.parse(readFileSync(join(steerDir(jobId), `${id}.ack.json`), 'utf8')) } catch { return null }
+}
+export async function requestSteer(input, { host, roots, signal }) {
+  checkKeys(input, ['jobId', 'prompt'])
+  const { prompt } = input
+  if (typeof prompt !== 'string' || !prompt.trim()) fail('BAD_REQUEST', 'A steer needs a non-empty prompt.')
+  if (Buffer.byteLength(prompt) > STEER_BYTES) fail('BAD_REQUEST', 'A steer prompt exceeds 64 KiB.')
+  const job = visibleJob(input.jobId, { host, roots })
+  if (job.status === 'queued') fail('JOB_STATE', 'The job has not started yet, so it has no turn to steer; try again in a moment.')
+  if (job.status !== 'running') fail('JOB_STATE', `The job already ended ${job.status}; continue it to add a new task on its thread.`)
+  if (!job.turnOpen) fail('JOB_STATE', 'The job has no open turn: its prompt has not gone out yet, or its turn has ended.')
+  const id = randomUUID()
+  const dir = steerDir(job.id)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const temp = join(dir, `.steer.${process.pid}.${randomUUID()}`)
+  writeFileSync(temp, JSON.stringify({ id, prompt, at: new Date().toISOString() }), { mode: 0o600 })
+  renameSync(temp, join(dir, `${id}.json`))
+  const deadline = Date.now() + STEER_WAIT_MS
+  let current = job
+  let checked = Date.now()
+  let ack = readAck(job.id, id)
+  while (!ack && !TERMINAL.has(current.status) && Date.now() < deadline && !signal?.aborted) {
+    await sleep(250)
+    ack = readAck(job.id, id)
+    current = readJob(job.id) ?? current
+    if (Date.now() - checked > 2000) { current = reconcile(current); checked = Date.now() }
+  }
+  ack ??= readAck(job.id, id)
+  const status = !ack ? 'unknown' : ack.delivered === true ? 'delivered' : 'failed'
+  return { job: readJob(job.id) ?? current, steer: { id, status, ...(ack?.error ? { error: ack.error } : {}) } }
+}
+
 export function prune() {
   const root = join(stateDir(), 'jobs')
   let names = []
@@ -438,12 +482,12 @@ function tail(path, count) {
 // catalog says whether the provider's own model catalog listed the requested model ('listed') or
 // admitted an id it does not know ('absent'). isolation is what the provider's live session read
 // back, and promptSent says whether the prompt ever left the runner: a job refused before it has
-// no provider turn to explain.
+// no provider turn to explain. steers lists every steer the runner answered, in order.
 export function envelope(job, events = 0) {
   const { id, host, target, mode, access, cwd, model, effort, status, createdAt, endedAt, threadId, parentJobId,
-    requestPreview, baseSha, headSha, servedModel, catalog, isolation, promptSent, output, structured, commandFailures, error } = job
+    requestPreview, baseSha, headSha, servedModel, catalog, isolation, promptSent, steers, output, structured, commandFailures, error } = job
   const eventsPath = join(jobDir(id), 'events.jsonl')
   return { id, host, target, mode, access, cwd, model, effort, status, createdAt, endedAt, threadId, parentJobId,
-    requestPreview, baseSha, headSha, servedModel, catalog, isolation, promptSent, output, structured, commandFailures, error, eventsPath,
+    requestPreview, baseSha, headSha, servedModel, catalog, isolation, promptSent, steers, output, structured, commandFailures, error, eventsPath,
     events: events ? tail(eventsPath, events) : [] }
 }

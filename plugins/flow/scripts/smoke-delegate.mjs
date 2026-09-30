@@ -360,11 +360,11 @@ try {
 
   const names = async (client) => (await client.request('tools/list', {})).result.tools
   const claudeTools = await names(claudeHost)
-  assert.deepEqual(claudeTools.map((tool) => tool.name), ['delegate_to_codex', 'delegation_result', 'delegation_cancel', 'delegation_doctor'])
-  assert.deepEqual((await names(codexHost)).map((tool) => tool.name), ['delegate_to_claude', 'delegation_result', 'delegation_cancel', 'delegation_doctor'])
+  assert.deepEqual(claudeTools.map((tool) => tool.name), ['delegate_to_codex', 'delegation_result', 'delegation_cancel', 'delegation_steer', 'delegation_doctor'])
+  assert.deepEqual((await names(codexHost)).map((tool) => tool.name), ['delegate_to_claude', 'delegation_result', 'delegation_cancel', 'delegation_steer', 'delegation_doctor'])
   assert.ok(claudeTools.every((tool) => tool.inputSchema?.type === 'object' && !('outputSchema' in tool)))
   assert.ok(!('maxTurns' in claudeTools[0].inputSchema.properties), 'the Codex target takes no Claude limits')
-  ok('four tools per host, each reaching the other family only, with input schemas and no output schema')
+  ok('five tools per host, each reaching the other family only, with input schemas and no output schema')
 
   // Roots: host-supplied only, realpath and Git top level both inside one.
   const refused = async (client, args, kind) => {

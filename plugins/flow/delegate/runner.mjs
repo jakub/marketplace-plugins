@@ -1,9 +1,10 @@
 // The detached process that runs one job. It claims the job, opens a session with the provider in
-// a process group of its own, sends the prompt, journals each stdout line to events.jsonl,
-// enforces the time budget, the stall ceiling and cancel, and writes the outcome. The lease is
-// released before the outcome is written, and only after the provider's group is dead, so no two
-// writers ever share a worktree.
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+// a process group of its own, sends the prompt, delivers steers into the open turn, journals each
+// stdout line to events.jsonl, enforces the time budget, the stall ceiling and cancel, and writes
+// the outcome. The lease is released before the outcome is written, and only after the provider's
+// group is dead, so no two writers ever share a worktree.
+import { randomUUID } from 'node:crypto'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { seatPayload } from '../lib/charter-payload.mjs'
 import { transport as claude } from './claude-control.mjs'
@@ -15,6 +16,7 @@ const STALL_SECONDS = 420
 const KILL_GRACE_MS = 10_000
 const CHARTER = new URL('../charter/charter.md', import.meta.url)
 const TRANSPORTS = { codex, claude }
+const STEER_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/
 
 // The seat half of the charter, read from the file for every job, then the delegated-seat block.
 // A continuation gets the same bytes, so no rule ever rides in caller prose.
@@ -44,9 +46,10 @@ function failed(job, error) {
   return { status: 'failed', error: { kind: 'INTERNAL', message: 'The runner could not drive the provider; server.log in the state directory has the detail.' } }
 }
 
-// Opens the session, sends the prompt, and folds until the provider has exited. The transport
-// spawns the provider and hands the child to onSpawn before anything can signal it, so the group's
-// identity is on record from the first moment, and every line it prints reaches onLine.
+// Opens the session, sends the prompt, delivers steers, and folds until the provider has exited,
+// then answers any steer still waiting. The transport spawns the provider and hands the child to
+// onSpawn before anything can signal it, so the group's identity is on record from the first
+// moment, and every line it prints reaches onLine.
 async function runProvider(job, dir, bin, transport, seat, prompt) {
   const events = createWriteStream(join(dir, 'events.jsonl'), { flags: 'a', mode: 0o600 })
   const stderr = createWriteStream(join(dir, 'stderr.txt'), { flags: 'a', mode: 0o600 })
@@ -83,18 +86,66 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
     clearTimeout(stallTimer)
     if (!settled) stallTimer = setTimeout(() => stop('STALL'), STALL_SECONDS * 1000)
   }
-  // The session's state after each line: the provider thread is recorded the moment it is known,
-  // so a running job can be steered; so are whether the provider's catalog listed the model, what
-  // the session read back and whether the prompt has gone out; a stop the fold asked for starts
-  // now; an ended turn closes the session so the provider can exit.
+  // The session's state after each line and each steer: the provider thread is recorded the moment
+  // it is known, and so are whether the provider's catalog listed the model, what the session read
+  // back, whether the prompt has gone out and whether a turn is open to steer; a stop the fold
+  // asked for starts now; an ended turn closes the session so the provider can exit. turnOpen is on
+  // record as false before the session closes, so the server refuses a steer from then on. On
+  // Claude the session ends its turn only at a result frame that follows the replay of every steer
+  // it wrote (claude-control.mjs).
   const sync = () => {
     if (!session) return
     if (session.threadId && session.threadId !== record.threadId) record = writeJob({ ...record, threadId: session.threadId })
     if (session.catalog && !record.catalog) record = writeJob({ ...record, catalog: session.catalog })
     if (session.isolation && !record.isolation) record = writeJob({ ...record, isolation: session.isolation })
     if (session.promptSent && !record.promptSent) record = writeJob({ ...record, promptSent: true })
+    if (Boolean(session.turnOpen) !== Boolean(record.turnOpen)) record = writeJob({ ...record, turnOpen: Boolean(session.turnOpen) })
     if (session.stopReason) stop(session.stopReason)
     if (session.turnEnded) session.close()
+  }
+  // Steers the server wrote under steer/, taken oldest first and delivered one at a time, so the
+  // provider sees them in the order they were asked for. Each gets an answer by temp file and
+  // rename, a flow.steer line in events.jsonl and an entry in the job's steers. A steer that finds
+  // no open turn is answered as not delivered and never reaches the provider.
+  const steerDir = join(dir, 'steer')
+  const taken = new Set()
+  let steering = Promise.resolve()
+  const deliver = async (id, request) => {
+    let answer
+    if (typeof request?.prompt !== 'string') answer = { delivered: false, error: 'the steer request could not be read' }
+    else if (stopped) answer = { delivered: false, error: 'the job is stopping' }
+    else if (!session?.turnOpen) answer = { delivered: false, error: 'the turn has ended' }
+    else {
+      try { answer = await session.steer(request.prompt) } catch (error) {
+        log(`steer ${id} failed for ${job.id}: ${error?.stack || error}`)
+        answer = { delivered: false, error: 'the runner could not deliver the steer' }
+      }
+    }
+    const delivered = answer?.delivered === true
+    const error = delivered ? null : answer?.error ?? 'the provider did not take the steer'
+    journal({ type: 'flow.steer', id, delivered, error })
+    record = writeJob({ ...record, steers: [...(record.steers ?? []), { id, at: request?.at ?? null, status: delivered ? 'delivered' : 'failed', error }] })
+    const temp = join(steerDir, `.ack.${process.pid}.${randomUUID()}`)
+    writeFileSync(temp, JSON.stringify({ id, delivered, error }), { mode: 0o600 })
+    renameSync(temp, join(steerDir, `${id}.ack.json`))
+    sync()
+  }
+  const takeSteers = () => {
+    let names
+    try { names = readdirSync(steerDir) } catch { return }
+    const found = []
+    for (const name of names) {
+      const id = STEER_FILE.exec(name)?.[1]
+      if (!id || taken.has(id) || names.includes(`${id}.ack.json`)) continue
+      taken.add(id)
+      let request = null
+      try { request = JSON.parse(readFileSync(join(steerDir, name), 'utf8')) } catch {}
+      found.push({ id, request })
+    }
+    found.sort((a, b) => String(a.request?.at).localeCompare(String(b.request?.at)))
+    for (const { id, request } of found) {
+      steering = steering.then(() => deliver(id, request)).catch((error) => log(`steer ${id} failed for ${job.id}: ${error?.stack || error}`))
+    }
   }
   const onSpawn = (child) => {
     closed = new Promise((done) => {
@@ -117,7 +168,10 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
   }
 
   const budget = setTimeout(() => stop('TIMEOUT'), job.timeBudgetSeconds * 1000)
-  const poll = setInterval(() => { if (existsSync(join(dir, 'cancel'))) stop('CANCELLED') }, 500)
+  const poll = setInterval(() => {
+    if (existsSync(join(dir, 'cancel'))) stop('CANCELLED')
+    takeSteers()
+  }, 500)
   resetStall()
   try {
     session = await transport.open({ job, dir, bin, env: providerEnv(job, dir), seat, onSpawn, onLine })
@@ -127,6 +181,7 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
       const sending = session.send(prompt)
       sync()
       await sending
+      sync()
     }
   } catch (error) {
     failure = error
@@ -134,9 +189,14 @@ async function runProvider(job, dir, bin, transport, seat, prompt) {
     terminate()
   }
   await closed
-  settled = true
-  for (const timer of [budget, stallTimer, killTimer]) clearTimeout(timer)
+  for (const timer of [budget, stallTimer]) clearTimeout(timer)
   clearInterval(poll)
+  // Every steer written before the provider exited is answered before the outcome, so a steer the
+  // server is still waiting on reads failed rather than unknown.
+  takeSteers()
+  await steering
+  settled = true
+  clearTimeout(killTimer)
   kill()
   events.end()
   stderr.end()

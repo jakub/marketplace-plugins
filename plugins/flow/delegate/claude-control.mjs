@@ -16,8 +16,16 @@
 // one stops the turn too, and the job fails MODEL_MISMATCH.
 //
 // The containment is what the CLI is handed: no setting source, no MCP config, and the sandbox and
-// permission rules in claudeSettings. Stdin stays open while the turn runs; the runner closes it
-// once the turn has ended, and the CLI then exits.
+// permission rules in claudeSettings.
+//
+// Stdin stays open while the turn runs, so a steer can reach it: another client_composed user
+// message with priority 'next', which the CLI folds into the running turn at its next opportunity
+// or runs as the next turn. The CLI replays every user message it takes (--replay-user-messages),
+// and the replay of a steer's uuid is its acknowledgement. The turn ends, and the runner closes
+// stdin, at the first result frame that arrives after the CLI has replayed every steer still
+// awaited; the CLI then works through anything queued and exits, and the outcome is the last
+// result frame before it does. A steer the CLI has not replayed within 10 seconds is reported
+// failed and no longer holds stdin open, so a message the CLI dropped cannot keep the job alive.
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, realpathSync } from 'node:fs'
@@ -29,6 +37,7 @@ import { answered, candidates, classify, clip, listing } from './providers.mjs'
 
 const STEP_MS = 30_000
 const INTERRUPT_MS = 10_000
+const STEER_MS = 10_000
 const NAMED = 20
 const REJECTION = 'Flow grants a delegated job no approvals.'
 const names = (list, name) => list.slice(0, NAMED).map((entry) => clip(name(entry) ?? 'unnamed'))
@@ -247,6 +256,26 @@ export const transport = {
     let failures = 0
     const asked = []
     const bash = new Set()
+    // Every steer uuid written, and the ones still awaiting their replay. resultAfterReplays is
+    // true once a result frame has arrived since the last replay of a steer.
+    const steers = new Set()
+    const awaiting = new Map()
+    let resultAfterReplays = false
+    const userMessage = (text, fields = {}) => ({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, parent_tool_use_id: null,
+      session_id: job.resumeThreadId ?? job.sessionId, uuid: randomUUID(), client_composed: true, ...fields })
+    // The close rule. From here the session takes no steer, and the runner closes stdin.
+    const endWhenReplayed = () => {
+      if (session.turnEnded || !resultAfterReplays || awaiting.size) return
+      session.turnOpen = false
+      session.turnEnded = true
+    }
+    const answerSteer = (uuid, answer) => {
+      const done = awaiting.get(uuid)
+      if (!done) return
+      awaiting.delete(uuid)
+      done(answer)
+      endWhenReplayed()
+    }
     const session = {
       servedModel: null, models: null, catalog: null, isolation: null, stopReason: null, promptSent: false, turnOpen: false, turnEnded: false,
       get threadId() { return result?.session_id ?? sessionId },
@@ -254,8 +283,22 @@ export const transport = {
         if (!peer.writable()) throw new DelegateError('PROVIDER_ERROR', 'Claude exited before it took the prompt; stderr.txt beside the events file has its diagnostics.')
         session.promptSent = true
         if (!session.turnEnded) session.turnOpen = true
-        peer.write({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] }, parent_tool_use_id: null,
-          session_id: job.resumeThreadId ?? job.sessionId, uuid: randomUUID(), client_composed: true })
+        peer.write(userMessage(prompt))
+      },
+      // Delivered when the CLI replays the steer's uuid, failed when it has not within 10 seconds or
+      // exits first.
+      steer(text) {
+        return new Promise((resolve) => {
+          if (!session.turnOpen || !peer.writable()) {
+            resolve({ delivered: false, error: 'the turn has ended' })
+            return
+          }
+          const frame = userMessage(text, { priority: 'next' })
+          const timer = setTimeout(() => answerSteer(frame.uuid, { delivered: false, error: `Claude did not replay the steer within ${STEER_MS / 1000}s` }), STEER_MS)
+          awaiting.set(frame.uuid, (answer) => { clearTimeout(timer); resolve(answer) })
+          steers.add(frame.uuid)
+          peer.write(frame)
+        })
       },
       async interrupt() {
         if (!session.turnOpen) return null
@@ -324,10 +367,16 @@ export const transport = {
       } else if (frame.type === 'system' && /^model_refusal/.test(frame.subtype ?? '')) {
         refusal ??= { category: frame.api_refusal_category ?? null }
       } else if (frame.type === 'result') {
+        // The last result frame before the CLI exits is the outcome.
         result = frame
-        session.turnOpen = false
-        session.turnEnded = true
+        resultAfterReplays = true
+        endWhenReplayed()
       } else if (frame.type === 'user') {
+        // A replayed steer is taken, so the turn now owes a result frame that follows it.
+        if (frame.isReplay === true && steers.has(frame.uuid)) {
+          resultAfterReplays = false
+          answerSteer(frame.uuid, { delivered: true })
+        }
         for (const block of Array.isArray(frame.message?.content) ? frame.message.content : []) {
           if (block?.type === 'tool_result' && block.is_error && bash.has(block.tool_use_id)) failures++
         }
@@ -347,6 +396,9 @@ export const transport = {
       return `flow-delegate does not answer ${clip(request.subtype ?? 'unnamed')}.`
     }
     const peer = connect(child, { onLine, onFrame, onRequest })
+    child.on('close', () => {
+      for (const uuid of [...awaiting.keys()]) answerSteer(uuid, { delivered: false, error: 'Claude exited before it replayed the steer' })
+    })
     try {
       session.models = catalogOf(await peer.request('initialize'))
       const entry = lookup(session.models, job.model)
