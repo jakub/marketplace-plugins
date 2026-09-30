@@ -1,101 +1,42 @@
-# Drift audit procedure (the flow skill's `drift` subcommand)
+# Drift audit (the flow skill's `drift` subcommand)
 
-Re-run the framework's invariants against reality. Report findings ranked by severity;
-fix only when asked (or when running as the ambient cron with standing instructions).
-Delegate each numbered section to a scoped read-only seat; reconcile and judge the
-combined report on the orchestrator.
-
-Scope: the current repo when run inside one; the whole workspace when run from the
-workspace root (the directory holding the project checkouts, e.g. `~/code`).
+Check the framework's invariants against the real state. Report findings ranked by severity, and fix nothing unless asked. Give each section to a scoped read-only seat, then reconcile and judge the combined report on the main thread. The scope is the current repository, or every repository under the workspace root (such as `~/code`) when you run it from there. The weekly doc sweep runs sections 1 and 2.
 
 ## 1. Doc stack conformance
 
-- Repo root: `AGENTS.md` exists, `CLAUDE.md` is a symlink to it (not a divergent copy -
-  a real file that shadows the symlink is the worst drift: two sources, both trusted).
-- `AGENTS.md` lean (≤ ~40 lines), discloses context.md / docs/adr/ that actually exist.
-- `AGENTS.md` `## Contexts` is the context map and must stay honest both ways: every
-  `crates/<x>/context.md` on disk has a line, every line points at a file that exists.
-  Absent in a single-context repo is correct, not drift.
-- No `context-map.md` (fold into `## Contexts` + delete). No `CLAUDE.local.md` (its content
-  belongs in a committed file; flag for migration).
-- Glossary files are lowercase `context.md`; an uppercase `CONTEXT.md` is drift (usually a
-  vendored skill writing its own default) - fold it down and delete.
-- Domain layer: for each crate/module with a `context.md` slice or `AGENTS.md`, the file's
-  claims spot-check against the code (an agent reads the doc, greps the crate, flags
-  statements that no longer hold). For crates WITHOUT domain files, flag only those with
-  evident domain depth (own vocabulary, ADR references) as candidates.
-- Workspace registry (`CLAUDE.md` at the workspace root): every listed project exists;
-  every dir that is a real active project is listed (one line each). Staleness cuts both ways.
+- The repository root has `AGENTS.md`, and `CLAUDE.md` is a symlink to it. A real `CLAUDE.md` beside it is the worst drift: two sources, both trusted.
+- `AGENTS.md` is lean (about 40 lines) and points at the `context.md` files and `docs/adr/` that actually exist.
+- `## Contexts` in `AGENTS.md` is the context map, and it is honest both ways: every `crates/<x>/context.md` on disk has a line, and every line points at a file that exists. A single-context repository without the section is correct.
+- There is no `context-map.md` (fold it into `## Contexts` and delete it) and no `CLAUDE.local.md` (move its content into a committed file).
+- Glossary files are lowercase `context.md`. An uppercase `CONTEXT.md`, usually a vendored skill's default, is drift: fold it down and delete it.
+- Domain docs: spot-check the claims in each crate's `context.md` or `AGENTS.md` against the code. Flag a crate without domain files only when it shows domain depth, such as its own vocabulary or ADR references.
+- The workspace registry, `CLAUDE.md` at the workspace root, lists every project that exists and every active project, one line each.
 
 ## 2. Glossary drift
 
-- Terms defined in context.md (root + slices): sampled greps confirm they still name real
-  code concepts; flag orphans (defined, never used) and ghosts (pervasive in code,
-  undefined in the glossary).
-- ADR index: files in `docs/adr/` are sequentially numbered, referenced ADRs exist, and no
-  ADR contradicts a newer one without a superseded-by note.
+- Sample-grep the terms in each `context.md`. Flag orphans (defined, never used) and ghosts (used everywhere, never defined).
+- `docs/adr/` is numbered in sequence, every referenced ADR exists, and no ADR contradicts a newer one without a superseded-by note.
 
-## 3. Label + tracker hygiene
+## 3. Labels and the tracker
 
-Run the `labels` subcommand (see `label-contract.md`): taxonomy present, every
-`ready-for-agent` validates the contract, no orphaned `in-progress` claims.
+Run the `labels` subcommand (`label-contract.md`): the label set, every `ready-for-agent` issue against the contract, and no orphaned `in-progress` claim.
 
-## 4. Repo state hygiene
+## 4. Repository state
 
-The human is the owner of the marketplace repo's `origin` (the repo whose
-`.claude-plugin/marketplace.json` names marketplace `jakub`). A repo whose `origin` owner is
-someone else is third-party: it gets one report line saying so, and neither the label
-taxonomy check in section 3 nor any branch or worktree proposal here runs against it. Flow's
-taxonomy is not a contract anyone else's repo agreed to, and proposing a mutation on a fork
-you do not own is out of scope no matter how safe the executor is. Read the URL with `git -C <repo> remote get-url origin`.
+The marketplace repository is the one whose `.claude-plugin/marketplace.json` names marketplace `jakub`, and its origin owner is the human. A repository with another origin owner is third-party: give it one report line, and run neither section 3 nor this section against it.
 
-- `bash ${CLAUDE_PLUGIN_ROOT}/scripts/worktree-audit.sh <repo>`: include the TSV; `safe` rows
-  are candidates the nightly lint routes through `scripts/lint-actions.mjs` (which re-checks
-  everything and refuses on any doubt), `review` rows need a human, `verify-recent-session` rows are a human's call until the session ages out, and `hold-*` rows are fine. Squash merges mean the MERGED column is usually `no`
-  for landed branches; PR state is the signal.
-- **Local** branches are the only class any flow job can act on: permission 2 routes them
-  through `lint-actions.mjs`, which runs `git branch -D` and nothing else. That executor
-  asks two separate questions and needs yes to both. Is the branch dead - a merged or
-  closed PR, or a tip already in `origin/main`? And do the commits survive the delete - a
-  same-tip `origin/<branch>`, a merged/closed PR head at this tip, or ancestry of
-  `origin/main`? A pushed spike with no PR passes the second and fails the first, which is
-  correct: perfectly recoverable, perfectly alive. `main`, `master`, and `flow-evidence`
-  are refused outright. `git branch --merged main` misses squash-merged branches, so it is
-  not the death test.
-- **Remote** (`origin/*`) branches are report-only and stay that way: deleting one needs a
-  push, which no cron job has and never will. Classify them against a fixed history depth of
-  `gh pr list --state all --limit 200`, so two nights are comparable. A remote branch whose
-  PR is merged or closed is stale; one whose PR falls below that floor is `unclassified`,
-  never stale. Report stale remotes as a count plus at most ten names, and report the
-  unclassified count next to the floor that produced it. A bare `branches ✓` is only honest
-  when both classes were checked - say which one you mean.
-- `.github/known-flakes.txt` exists; every entry names a check that actually exists in
-  recent CI runs (a flake entry for a renamed check is dead lore).
-- Isolated test DBs (where the repo uses them): no orphans beyond live worktrees.
+Run `node <plugin-root>/scripts/lint-actions.mjs survey <repo>`. It reports worktrees, local branches with their PRs, open issues and known flakes.
 
-## 5. Charter version skew
+- A clean worktree unchanged for four days whose PR is merged or closed, and a local branch whose PR is merged or closed, are candidates for `lint-actions.mjs remove-worktree` and `delete-branch`. Both verbs re-check every condition and refuse on any doubt, and `main`, `master` and `flow-evidence` are never deleted. `git branch --merged main` misses squash merges, so PR state is the test.
+- Remote branches are report-only. A remote branch whose PR is merged or closed is stale. Report a count and at most ten names, and say how far back the PR list you read reaches.
+- Every `.github/known-flakes.txt` entry names a check that ran in recent CI. An entry with `runsSeen` 0 is dead lore.
+- Isolated test databases, where the repository uses them, have no orphans beyond live worktrees.
 
-- Installed plugin version vs this repo's HEAD (`claude plugin list` vs
-  `plugins/flow/.claude-plugin/plugin.json`) - a stale install means sessions run an old
-  charter.
-- Charter delivery: run `node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs session claude 1`
-  and read its first line; a `<!-- flow-charter WARNING: ... -->` comment names any half at or
-  over 9,000 characters (the nightly lint allows this script only at that exact absolute path and
-  refuses pipelines, so read the line rather than piping to `wc`). It measures the installed
-  charter, not the working tree's; the version-skew bullet above says whether those differ.
-  `smoke-charter-conformance.mjs` is the full check, subagent mode included.
-- Facts with `as-of` dates older than a quarter (the model rankings, the Codex App Server
-  protocol): flag for re-verification.
-- `node ${CLAUDE_PLUGIN_ROOT}/scripts/smoke-delegation.mjs` passes. The smoke test uses a local
-  fake App Server. Run a separate live Claude-to-Codex call when authentication or protocol
-  compatibility may have changed.
-- Every `smoke-*.mjs` and `collision-test.mjs` under any `plugins/*/scripts/` passes, plus
-  `scripts/smoke-plugin-manifests.mjs` at the repo root. Take the list from `ls`, never from
-  memory, so a new smoke is picked up and a deleted one is not reported. A smoke that lints a document builds its broken examples as
-  inline strings, so a checked-in fixture tree is itself drift. Running them is dev-checkout
-  work, not the nightly lint's: `smoke-bundle-drift` is the one that needs `npm ci` in
-  `plugins/flow/deps`, and only `smoke-delegation.mjs` is on the cron's allowlist.
-  Where the tree cannot run one, report it as not run rather than folding it into a clean line.
+## 5. Plugin checks (the marketplace repository only)
+
+- The `flow@jakub` version in `~/.claude/plugins/installed_plugins.json` matches `plugins/flow/.claude-plugin/plugin.json`. A stale install means sessions run an old charter.
+- Facts with an as-of date older than a quarter, such as the model rankings and the delegate skill's provider flags, need re-verification.
+- In a dev checkout, `node scripts/smoke-all.mjs` passes.
 
 ## Output format
 
@@ -106,5 +47,5 @@ you do not own is out of scope no matter how safe the executor is. Read the URL 
 ## candidate  (improvements to propose, e.g. crates deserving domain files)
 ## clean      (sections that fully conform - one line each)
 ```
-Each finding: what, where (path/issue#), the specific invariant violated, proposed fix.
-No silent caps - if a section was sampled rather than exhaustive, say so.
+
+Each finding gives what, where (a path or an issue number), the invariant violated, and the proposed fix. Say when a section was sampled rather than exhaustive.
