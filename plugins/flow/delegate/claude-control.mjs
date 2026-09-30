@@ -263,7 +263,10 @@ export const transport = {
     let result = null
     let assistantError = null
     let failures = 0
+    // Tools the CLI asked flow about, and the denials every result frame listed. A steer can run as
+    // a turn of its own with its own result frame, so a later turn's empty list erases nothing.
     const asked = []
+    const denials = []
     const bash = new Set()
     // Every steer uuid written, and the ones still awaiting their replay. resultAfterReplays is
     // true once a result frame has arrived since the last replay of a steer.
@@ -330,7 +333,7 @@ export const transport = {
         // dontAsk turns every would-be prompt into a denial the model works around, and a tool the
         // CLI asked flow about was refused. The job asked for less than the task needed, so its
         // answer is kept and the outcome says so.
-        const denied = [...asked, ...(Array.isArray(result.permission_denials) ? result.permission_denials.map((denial) => denial?.tool_name) : [])]
+        const denied = [...asked, ...denials]
         if (denied.length) {
           return { ...base, output: text || null, status: 'failed', error: { kind: 'APPROVAL_REQUIRED', message: 'Claude needed a permission this job does not grant.', details: { denied: names(denied, (name) => name) } } }
         }
@@ -376,8 +379,10 @@ export const transport = {
       } else if (frame.type === 'system' && /^model_refusal/.test(frame.subtype ?? '')) {
         refusal ??= { category: frame.api_refusal_category ?? null }
       } else if (frame.type === 'result') {
-        // The last result frame before the CLI exits is the outcome.
+        // The last result frame before the CLI exits is the outcome, and the denials of every one
+        // count against the job.
         result = frame
+        for (const denial of Array.isArray(frame.permission_denials) ? frame.permission_denials : []) denials.push(denial?.tool_name)
         resultAfterReplays = true
         endWhenReplayed()
       } else if (frame.type === 'user') {

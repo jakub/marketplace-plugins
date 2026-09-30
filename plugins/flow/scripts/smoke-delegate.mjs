@@ -289,8 +289,9 @@ function claudeCli() {
     const text = steered.length ? answer + '; steered: ' + steered.join(' | ') : answer
     out({ type: 'assistant', message: { model: '<synthetic>', content: [] } })
     out({ type: 'assistant', message: { model: served + '[1m]', content: [{ type: 'text', text }] } })
+    // steer-denied is steer-next whose first turn was denied Read and whose second turn is not.
     result({ subtype: 'success', is_error: false, result: text, ...(schema ? { structured_output: JSON.parse(text) } : {}),
-      permission_denials: mode === 'approval' ? [{ tool_name: 'Read' }] : [] })
+      permission_denials: mode === 'approval' || (mode === 'steer-denied' && !steered.length) ? [{ tool_name: 'Read' }] : [] })
     // A steer that was not folded in runs as the next turn. steer-drain replayed it on receipt and
     // starts it at once, before the end of stdin can arrive; steer-next replays it only when it
     // dequeues it, 300 ms later, and a CLI whose stdin closed in between has already exited.
@@ -830,7 +831,16 @@ try {
     assert.notEqual(users[0].uuid, users[1].uuid)
     assert.equal(journal(id).filter((event) => event.type === 'result').length, results, `${mode}: the steer ran in the wrong turn`)
   }
-  ok('a steer reaches the running turn of the same job on both targets: Codex through turn/steer against the open turn, Claude as a priority next message acknowledged by its replay, folded in or run as the next turn, with stdin closed only after a result that follows the replay and the last result as the answer')
+  // A permission the first turn was denied fails the job even when a steer then runs as a second
+  // turn that is denied nothing, and the answer is the second turn's.
+  const deniedFirst = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=steer-denied count the files', waitSeconds: 0 })
+  assert.ok(await until(() => readJob(deniedFirst.job.id).turnOpen), 'steer-denied: the turn never opened')
+  assert.equal((await codexHost.call('delegation_steer', { jobId: deniedFirst.job.id, prompt: 'also give the total' })).steer.status, 'delivered')
+  const deniedDone = await codexHost.call('delegation_result', { jobId: deniedFirst.job.id, waitSeconds: 30 })
+  assert.deepEqual([deniedDone.job.status, deniedDone.job.error?.kind, deniedDone.job.output, deniedDone.job.error?.details],
+    ['failed', 'APPROVAL_REQUIRED', 'fake answer; steered: also give the total', { denied: ['Read'] }], JSON.stringify(deniedDone.job))
+  assert.equal(journal(deniedFirst.job.id).filter((event) => event.type === 'result').length, 2)
+  ok('a steer reaches the running turn of the same job on both targets: Codex through turn/steer against the open turn, Claude as a priority next message acknowledged by its replay, folded in or run as the next turn, with stdin closed only after a result that follows the replay, the last result as the answer, and a permission denied in any turn failing the job')
 
   // A steer is refused, and nothing is written, for a malformed call, a job not visible here, a
   // queued job, a job whose turn has not opened, and a finished job.
