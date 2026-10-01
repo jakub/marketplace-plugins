@@ -193,6 +193,7 @@ backlog(false, 'FLOW_SANCTION=prep gh issue create --title x', 'the prep lane')
 backlog(false, 'FLOW_SANCTION=land gh issue create --title x', 'the land lane after the human acks')
 backlog(false, 'gh issue list --label ready-for-agent', 'reading issues')
 backlog(false, 'git commit -m "docs: no gh issue create for minor findings"', 'the command named in a commit message')
-backlog(false, "python3 - <<'PY'\ns = s.replace('gh issue create', 'FLOW_SANCTION=prep gh issue create')\nPY", 'the command named in a script heredoc')
+// Unquoted and unsanctioned, so only the heredoc masking keeps this body from reading as a command.
+backlog(false, "python3 - <<'PY'\n# gh issue create runs only from prep\nprint(1)\nPY", 'the command named in a script heredoc')
 console.log(bad === 0 ? '\ngit-guard: ALL PASS' : `\ngit-guard: ${bad} FAILURE(S)`)
 process.exit(bad === 0 ? 0 : 1)
