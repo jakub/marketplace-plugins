@@ -1364,10 +1364,20 @@ try {
   assert.match(install().stderr, /installed/)
   assert.deepEqual(readFileSync(installed), readFileSync(join(PLUGIN, 'bin', 'flow-delegate')))
   assert.match(install().stderr, /up to date/)
-  writeFileSync(installed, 'stale')
+  writeFileSync(installed, '#!/usr/bin/env node\n// flow-delegate-launcher-epoch: 1\nstale\n')
   assert.match(install().stderr, /updated/)
   assert.deepEqual(readFileSync(installed), readFileSync(join(PLUGIN, 'bin', 'flow-delegate')))
-  ok('the installer copies the dispatcher when it is missing or differs, and leaves an identical copy alone')
+  for (const foreign of ['#!/bin/sh\nexec someone-elses-delegate "$@"\n', '#!/usr/bin/env node\n// not flow\n']) {
+    writeFileSync(installed, foreign)
+    const refused = install()
+    assert.equal(refused.status, 1, refused.stderr)
+    assert.match(refused.stderr, /refusing to replace .*not a flow dispatcher/)
+    assert.equal(readFileSync(installed, 'utf8'), foreign)
+  }
+  rmSync(installed)
+  mkdirSync(installed)
+  assert.equal(install().status, 1)
+  ok('the installer copies the dispatcher when it is missing or a flow dispatcher that differs, leaves an identical copy alone, and refuses any other file')
 } finally {
   for (const path of strays) rmSync(path, { recursive: true, force: true })
   rmSync(tmp, { recursive: true, force: true })

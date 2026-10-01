@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// flow-delegate-dispatcher: scripts/install-delegate.mjs replaces only a file opening with this line.
 // Codex hands a plugin MCP server's command and args to the launcher with no variable expansion,
 // so a command on PATH is the only way to start the delegate server in the thread's project
 // directory. scripts/install-delegate.mjs copies this file to ~/.local/bin/flow-delegate. It
