@@ -48,8 +48,9 @@ session. SessionStart writes one row per session into `sessions`, the denominato
 
 ## Storage
 
-- `node:sqlite` exists from Node 22.5, but it throws on import without `--experimental-sqlite`
-  until 23.4. `lib/store.mjs` refuses to load below Node 24.
+- `node:sqlite` was added in Node 22.5.0. It throws on import without `--experimental-sqlite`
+  before 22.13.0 on the 22 line and before 23.4.0 on the 23 line. `lib/store.mjs` refuses to load
+  below Node 24.
 - WAL allows concurrent readers and one writer, and a fan-out of subagents writes at once.
   Measured 2026-08-23 with 20 processes, each holding a write transaction for 60 ms:
 
