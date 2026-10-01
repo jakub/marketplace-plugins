@@ -31,15 +31,24 @@ install)
   for bin in node claude; do
     ( PATH="$launcher_path"; command -v "$bin" >/dev/null 2>&1 ) || { echo "$bin is not on the launcher's runtime PATH ($launcher_path); the timers fire under that PATH, not your shell's, so put $bin (or a link to it) in one of those directories" >&2; exit 1; }
   done
-  install -D -m 0755 "$tpl/flow-cron.launcher" "$launcher"
-  # Nothing is armed until the launcher resolves the plugin for both jobs: an overdue persistent
-  # timer fires the moment it is enabled.
+  # The live launcher is what enabled timers exec, so never write it in place. Write a candidate
+  # beside it, dry-run both jobs through the candidate, and only then rename it over the live
+  # one. A failed dry-run or an interrupt leaves a launcher that already worked untouched, and a
+  # timer firing mid-install runs the old file or the new one, never a half-written one.
+  # Nothing is armed until then: an overdue persistent timer fires the moment it is enabled.
+  mkdir -p "$(dirname "$launcher")"
+  candidate="$launcher.candidate.$$"
+  trap 'rm -f "$candidate"' EXIT
+  install -m 0755 "$tpl/flow-cron.launcher" "$candidate"
   for j in $jobs; do
-    "$launcher" "$j" --dry-run >/dev/null || {
-      echo "launcher dry-run failed for $j; no unit written, no timer enabled. The launcher reads flow@jakub from $HOME/.claude/plugins/installed_plugins.json at Claude user scope, whichever host runs the pipeline. Fix: claude plugin install flow@jakub --scope user, then re-run this." >&2
+    "$candidate" "$j" --dry-run >/dev/null || {
+      echo "launcher dry-run failed for $j; nothing installed, and an existing launcher is untouched. The launcher reads flow@jakub from $HOME/.claude/plugins/installed_plugins.json at Claude user scope, whichever host runs the pipeline. Fix: claude plugin install flow@jakub --scope user, then re-run this." >&2
       exit 1
     }
   done
+  # -T: a directory at the launcher path fails the rename instead of swallowing the candidate.
+  mv -fT "$candidate" "$launcher" || { echo "could not replace $launcher; no timer enabled" >&2; exit 1; }
+  trap - EXIT
   mkdir -p "$units_dir" "$state/reports" "$HOME/.config/flow"
   # systemctl does not carry the installer's env, so the units read it from this file.
   env_file="$HOME/.config/flow/cron.env"
