@@ -73,7 +73,7 @@ const parseRemote = (url) => {
 /**
  * The repository an executor is about to act on: `{ identity: { host, owner, repo, slug, full } }`,
  * or `{ problem, refusal }` where problem is absent, unreadable, query, port, path or host.
- * `purpose` is the verb the refusal names ('gate', 'merge in', ...).
+ * `purpose` is the verb the refusal names ('claim an issue on', 'merge in', 'act on').
  */
 export function identityOfRemote(url, { purpose, allowedHosts = new Set(['github.com']) }) {
   const shape = parseRemote(url)
