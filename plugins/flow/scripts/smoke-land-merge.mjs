@@ -7,7 +7,8 @@
 // executor asks for, so a 101st check really is on a second page. The fake records every call and
 // every merge. Every case reads the one JSON line and the exit; each refusal asserts that nothing
 // merged, and each unproven outcome asserts that it does not read as a refusal. One case runs the
-// real gh runner against a fake gh binary to prove that GH_REPO and GH_HOST never reach gh.
+// real gh runner against a fake gh binary to prove that GH_REPO and GH_HOST never reach gh, and
+// that a gh planted behind a relative PATH entry never runs.
 //
 // Run: node plugins/flow/scripts/smoke-land-merge.mjs
 
@@ -221,6 +222,21 @@ for (const [name, origin, text] of [
   chmodSync(join(bin, 'gh'), 0o755)
   const seen = ghRunner({ PATH: `${bin}:/usr/bin:/bin`, GH_REPO: 'someone/evil', GH_HOST: 'evil.example', KEEP: 'kept' })([]).stdout
   check('the gh runner never hands GH_REPO or GH_HOST to gh', !/^GH_(REPO|HOST)=/m.test(seen) && /^KEEP=kept$/m.test(seen), seen)
+  // A relative PATH entry names a different gh in each directory, so the repository an executor
+  // works in could supply one. Only absolute entries count, and with no gh in one, nothing runs.
+  const planted = join(tmp, 'planted')
+  mkdirSync(join(planted, 'bin'), { recursive: true })
+  writeFileSync(join(planted, 'bin', 'gh'), '#!/bin/sh\necho PLANTED-GH\n')
+  chmodSync(join(planted, 'bin', 'gh'), 0o755)
+  const here = process.cwd()
+  let first, none
+  try {
+    process.chdir(planted)
+    first = ghRunner({ PATH: `bin:${bin}:/usr/bin:/bin` })([], { cwd: planted })
+    none = ghRunner({ PATH: ':bin' })([], { cwd: planted })
+  } finally { process.chdir(here) }
+  check('the gh runner skips a relative PATH entry for the absolute one after it', first.code === 0 && !first.stdout.includes('PLANTED-GH'), JSON.stringify(first))
+  check('with no gh in an absolute PATH entry the gh runner runs nothing', none.code !== 0 && !none.stdout.includes('PLANTED-GH'), JSON.stringify(none))
 }
 
 console.log('\nthe arguments')

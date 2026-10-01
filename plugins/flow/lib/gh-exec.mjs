@@ -1,20 +1,22 @@
 // How every flow executor reaches gh and git, and reads what they printed.
 //
 // gh is resolved from PATH once, to an absolute path, so a PATH change mid-run cannot swap the
-// binary under a claim or a merge that is half done. GH_REPO and GH_HOST come off gh's
+// binary under a claim or a merge that is half done. Only absolute entries count: a relative one
+// names a different gh in every directory, the inspected repository's among them, so with no gh
+// in an absolute entry the runner refuses rather than let the child search PATH again. GH_REPO and GH_HOST come off gh's
 // environment: every call is already pinned to the repository origin parses to, and either
 // variable is an ambient override of exactly that pin.
 
 import { execFileSync } from 'node:child_process'
 import { accessSync, constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { delimiter, isAbsolute, join } from 'node:path'
 
 const resolveGh = (env) => {
   for (const dir of String(env?.PATH || '').split(delimiter)) {
-    if (dir === '') continue
+    if (!isAbsolute(dir)) continue
     try { accessSync(join(dir, 'gh'), constants.X_OK); return join(dir, 'gh') } catch {}
   }
-  return 'gh'
+  return null
 }
 
 /** Run a command and report a non-zero exit, a timeout or a missing binary as a value, never a throw. */
@@ -33,6 +35,7 @@ export const ghRunner = (env = process.env) => {
   const childEnv = { ...env }
   delete childEnv.GH_REPO
   delete childEnv.GH_HOST
+  if (!bin) return () => ({ code: 127, stdout: '', stderr: 'gh: not found in an absolute PATH entry\n' })
   return (args, { cwd, timeoutMs = 60_000 } = {}) => execCapture(bin, args, { cwd, timeoutMs, env: childEnv })
 }
 
