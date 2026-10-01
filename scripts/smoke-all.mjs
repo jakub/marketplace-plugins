@@ -24,7 +24,7 @@ for (const script of scripts) {
   const started = Date.now()
   const run = spawnSync(process.execPath, [script], { cwd: ROOT, encoding: 'utf8', timeout: 600_000, maxBuffer: 64 << 20 })
   const seconds = ((Date.now() - started) / 1000).toFixed(1)
-  if (run.status === 0) {
+  if (!run.error && run.status === 0) {
     console.log(`PASS ${script} (${seconds}s)`)
     continue
   }
