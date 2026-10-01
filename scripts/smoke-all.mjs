@@ -5,7 +5,8 @@
 //
 // Each script runs from the repository root under this node, with its output captured and shown
 // only when it fails, so a green run is one line per script. A script that runs past ten minutes
-// is killed and counts as a failure, because a hung smoke must not read as a slow pass.
+// is killed with SIGKILL, which it cannot trap, and counts as a failure, because a hung smoke must
+// not read as a slow pass.
 
 import { spawnSync } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
@@ -22,7 +23,7 @@ const scripts = [...smokes, 'plugins/gripe/scripts/collision-test.mjs', 'scripts
 
 for (const script of scripts) {
   const started = Date.now()
-  const run = spawnSync(process.execPath, [script], { cwd: ROOT, encoding: 'utf8', timeout: 600_000, maxBuffer: 64 << 20 })
+  const run = spawnSync(process.execPath, [script], { cwd: ROOT, encoding: 'utf8', timeout: 600_000, killSignal: 'SIGKILL', maxBuffer: 64 << 20 })
   const seconds = ((Date.now() - started) / 1000).toFixed(1)
   if (!run.error && run.status === 0) {
     console.log(`PASS ${script} (${seconds}s)`)
