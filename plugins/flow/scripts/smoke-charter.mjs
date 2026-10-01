@@ -62,8 +62,13 @@ try {
       assert.equal(answer.additionalContext, seat, `a ${host} seat did not get seatPayload() verbatim`)
     }
   }
-  assert.ok(seat.startsWith('<flow-charter scope="seat">') && seat.includes('## Seat Contract') && !seat.includes('## Hosts'))
-  ok('a seat on either host gets seatPayload(), the half below the marker, even from an unreadable body')
+  assert.ok(seat.startsWith('<flow-charter scope="seat">') && seat.endsWith('</flow-charter>\n') && !seat.includes('## Hosts'))
+  // Read off the file here rather than through seatPayload(), so a helper that drops a section
+  // cannot pass: everything below the marker, less the whole-file closing tag, arrives verbatim.
+  const below = charter.slice(charter.indexOf(SEAT_MARKER) + SEAT_MARKER.length).trim().replace(/<\/flow-charter>$/, '').trim()
+  assert.ok(below.includes('## Rules of Engagement') && below.includes('## Seat Contract'), 'the seat half lost a heading this smoke expects')
+  assert.ok(seat.includes(`\n${below}\n</flow-charter>\n`), 'the seat payload is not the whole charter below the marker')
+  ok('a seat on either host gets seatPayload(), the whole half below the marker, even from an unreadable body')
 
   for (const agent_type of ['Explore', 'fork']) {
     const input = JSON.stringify({ agent_type })
