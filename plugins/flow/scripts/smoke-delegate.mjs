@@ -1034,6 +1034,50 @@ try {
   process.kill(-bystander.pid, 'SIGKILL')
   ok('a recorded provider group whose id now names another process is never signalled')
 
+  // A write lease outlives its job while the job's provider group may still run. A process this
+  // smoke spawned stays a zombie until the event loop reaps it, so a group killed in synchronous
+  // code still answers kill(-pgid, 0): not yet proven gone. The lease stays, and a new writer is
+  // refused, until the group reads ESRCH.
+  const groupOf = (child) => ({ providerPgid: child.pid, providerStart: jobs.startToken(child.pid, { zombie: true }) })
+  const leaseHolder = (status, group) => {
+    const held = { ...readJob(reused.job.id), id: randomUUID(), access: 'workspace-write', worktree: join(tmp, `held-${randomUUID()}`),
+      status, endedAt: null, runnerPid: deadPid, runnerStart: '1', tmpDir: null, ...group }
+    mkdirSync(jobs.jobDir(held.id), { recursive: true })
+    jobs.writeJob(held)
+    jobs.acquireLease(held)
+    return held
+  }
+  const writer = (worktree) => {
+    const job = { id: randomUUID(), access: 'workspace-write', worktree, status: 'queued', createdAt: new Date().toISOString() }
+    mkdirSync(jobs.jobDir(job.id), { recursive: true })
+    jobs.writeJob(job)
+    return job
+  }
+  const busy = (worktree) => assert.throws(() => jobs.acquireLease(writer(worktree)), (error) => error.kind === 'WORKSPACE_BUSY')
+  const leaseOf = (worktree) => { try { return readdirSync(join(state, 'leases', createHash('sha256').update(worktree).digest('hex'))) } catch { return [] } }
+  const reaped = (child) => new Promise((resolve) => child.once('exit', resolve))
+
+  const survivor = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
+  const ended = leaseHolder('succeeded', groupOf(survivor))
+  busy(ended.worktree)
+  const survivorGone = reaped(survivor)
+  process.kill(-survivor.pid, 'SIGKILL')
+  busy(ended.worktree)
+  await survivorGone
+  jobs.acquireLease(writer(ended.worktree))
+
+  const straggler = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
+  const stragglerGone = reaped(straggler)
+  const orphaned = leaseHolder('running', groupOf(straggler))
+  assert.equal(jobs.reconcile(readJob(orphaned.id)).status, 'unknown')
+  assert.deepEqual(leaseOf(orphaned.worktree), [orphaned.id], 'reconcile released a lease while the killed group was not yet gone')
+  busy(orphaned.worktree)
+  await stragglerGone
+  const next = writer(orphaned.worktree)
+  jobs.acquireLease(next)
+  assert.deepEqual(leaseOf(orphaned.worktree), [next.id])
+  ok('a write lease is released or taken over only once its provider group reads gone, never while a member may still run')
+
   // A record names its job's TMPDIR, and reconcile removes that path only when it is one tmpPath
   // could have given the job: a direct child of /tmp, the job's prefix and 8 hex characters, and a
   // directory rather than a symlink. A record rewritten to name anything else still settles, and

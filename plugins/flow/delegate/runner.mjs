@@ -1,21 +1,22 @@
 // The detached process that runs one job. It claims the job, opens a session with the provider in
 // a process group of its own, sends the prompt, delivers steers into the open turn, journals each
 // stdout line to events.jsonl, enforces the time budget, the stall ceiling and cancel, and writes
-// the outcome. The lease is released before the outcome is written, and only after the provider's
-// group is dead, so no two writers ever share a worktree.
+// the outcome. The lease is released before the outcome is written, and only once the provider's
+// group reads gone, so no two writers ever share a worktree.
 import { randomUUID } from 'node:crypto'
 import { createWriteStream, existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { seatPayload } from '../lib/charter-payload.mjs'
 import { transport as claude } from './claude-control.mjs'
 import { transport as codex } from './codex-app-server.mjs'
-import { claim, DelegateError, dropTmp, jobDir, JOB_ID, log, makeTmp, readJob, releaseLease, settle, signalProvider, startToken, tmpPath, writeJob } from './jobs.mjs'
+import { claim, DelegateError, dropTmp, jobDir, JOB_ID, log, makeTmp, providerGroupAlive, readJob, releaseLease, settle, signalProvider, startToken, tmpPath, writeJob } from './jobs.mjs'
 import { findExecutable, providerEnv } from './providers.mjs'
 
 const STALL_SECONDS = 420
 const KILL_GRACE_MS = 10_000
 const CHARTER = new URL('../charter/charter.md', import.meta.url)
 const TRANSPORTS = { codex, claude }
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const STEER_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/
 
 // The seat half of the charter, read from the file for every job, then the delegated-seat block.
@@ -263,9 +264,16 @@ export async function runJob(id) {
     log(`runner failed for ${id}: ${error?.stack || error}`)
     result = { status: 'failed', error: { kind: 'INTERNAL', message: 'The job runner failed; server.log in the state directory has the detail.' } }
   } finally {
+    // The record, not the local copy, names the provider group whichever path ended the job.
+    job = readJob(id) ?? job
     signalProvider(job)
+    // kill(2) only queues the SIGKILL, so the lease goes only once the group reads gone. A group
+    // that outlives the bound keeps it, and the next writer's takeover checks the group again.
+    const deadline = Date.now() + KILL_GRACE_MS
+    while (providerGroupAlive(job) && Date.now() < deadline) await sleep(50)
     dropTmp(id, tmp)
-    releaseLease(job)
+    if (providerGroupAlive(job)) log(`provider group ${job.providerPgid} of ${id} outlived its SIGKILL by ${KILL_GRACE_MS} ms; the lease stays until a takeover finds it gone`)
+    else releaseLease(job)
     const { status = 'failed', ...fields } = result ?? {}
     settle(job, status, fields)
   }

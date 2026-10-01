@@ -179,6 +179,20 @@ export function signalProvider(job, signal = 'SIGKILL') {
   if (leader !== null && leader !== job.providerStart) return
   try { process.kill(-pgid, signal) } catch {}
 }
+// Whether a recorded group may still hold a process that can write. Only ESRCH from
+// kill(-pgid, 0) proves it gone; any other answer, a zombie member included, counts as alive,
+// because unknown liveness never releases write authority. A leader id that now names another
+// process means the group ended, as for signalProvider. With no start token on record the reuse
+// check cannot run, so any group carrying the id keeps the lease, at worst until that group ends.
+export function providerGroupAlive(job) {
+  const pgid = job?.providerPgid
+  if (!pgid) return false
+  if (job.providerStart) {
+    const leader = startToken(pgid, { zombie: true })
+    if (leader !== null && leader !== job.providerStart) return false
+  }
+  try { process.kill(-pgid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
+}
 
 export const inside = (root, path) => {
   const rel = relative(root, path)
@@ -369,10 +383,11 @@ export async function admit(input, { host, roots }) {
 const leaseDir = (job) => join(stateDir(), 'leases', createHash('sha256').update(job.worktree).digest('hex'))
 // The holder is reconciled first: a queued job past its grace is claimed and settled, so no
 // runner can start it once its lease is gone, and a running one whose runner died is settled
-// after its provider group is killed.
+// after its provider group is killed. An ended job still holds the lease while its provider group
+// has not read gone, so no two writers ever share a worktree.
 function leaseLive(jobId) {
   const held = typeof jobId === 'string' && JOB_ID.test(jobId) ? reconcile(readJob(jobId)) : null
-  return Boolean(held) && !TERMINAL.has(held.status)
+  return Boolean(held) && (!TERMINAL.has(held.status) || providerGroupAlive(held))
 }
 function dropLease(dir, owner) {
   const aside = join(dirname(dir), `.drop.${randomUUID()}`)
@@ -415,7 +430,9 @@ function spawnRunner(job) {
 }
 
 // A running job whose runner is gone has an unknown outcome: nothing is left that could prove
-// what the provider did. Its provider group is killed and its TMPDIR removed. A queued job past a
+// what the provider did. Its provider group is killed and its TMPDIR removed, and its lease is
+// released only if the group already reads gone; otherwise the next takeover checks again,
+// since a SIGKILL is only queued when kill(2) returns. A queued job past a
 // minute is settled once this call holds its claim or the holder is dead, and left alone while a
 // live runner holds it, since that runner is starting. A runner that died while starting may have
 // recorded and made the TMPDIR already, so that one is removed too.
@@ -425,7 +442,7 @@ export function reconcile(job) {
     if (again?.status !== 'running') return again
     signalProvider(again)
     dropTmp(again.id, again.tmpDir)
-    releaseLease(again)
+    if (!providerGroupAlive(again)) releaseLease(again)
     return settle(again, 'unknown', { error: { kind: 'RUNNER_LOST', message: 'The job runner exited without recording an outcome.' } })
   }
   if (job?.status === 'queued' && Date.now() - Date.parse(job.createdAt) > QUEUE_GRACE_MS) {
