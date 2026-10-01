@@ -8,7 +8,7 @@
 // filed." and nothing else. Every case here is stdout as `claude -p` really writes it.
 // Run: node plugins/flow/scripts/smoke-flow-cron.mjs
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,7 +99,9 @@ for (const [job, { allowedTools }] of Object.entries(jobs("/x"))) {
 // `install-cron.sh run <job> --dry-run` is how a prompt change is tried without installing
 // anything. It has to pass the flag through (a dropped --dry-run is a real headless session) and
 // run the plugin CLAUDE_PLUGIN_ROOT names, even with a launcher installed that would resolve
-// another one. A fake claude and a fake launcher each leave a marker if anything calls them.
+// another one. That plugin is a second root linking this one's scripts and skills, so its prompt
+// path differs from the one the script-location fallback would print. A fake claude and a fake
+// launcher each leave a marker if anything calls them.
 console.log("install-cron.sh run");
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tmp = mkdtempSync(join(tmpdir(), "flow-cron-"));
@@ -108,14 +110,17 @@ try {
   mkdirSync(join(tmp, ".local", "libexec"), { recursive: true });
   writeFileSync(join(tmp, "bin", "claude"), `#!/bin/sh\ntouch ${tmp}/claude-ran\n`, { mode: 0o755 });
   writeFileSync(join(tmp, ".local", "libexec", "flow-cron"), `#!/bin/sh\ntouch ${tmp}/launcher-ran\n`, { mode: 0o755 });
+  const named = join(tmp, "plugin");
+  mkdirSync(named);
+  for (const dir of ["scripts", "skills"]) symlinkSync(join(ROOT, dir), join(named, dir));
   const run = spawnSync("bash", [join(ROOT, "scripts", "install-cron.sh"), "run", "lint", "--dry-run"], {
     encoding: "utf8",
-    env: { ...process.env, HOME: tmp, PATH: `${join(tmp, "bin")}:${process.env.PATH}`, CLAUDE_PLUGIN_ROOT: ROOT, FLOW_STATE: tmp, FLOW_WORKSPACE: tmp },
+    env: { ...process.env, HOME: tmp, PATH: `${join(tmp, "bin")}:${process.env.PATH}`, CLAUDE_PLUGIN_ROOT: named, FLOW_STATE: tmp, FLOW_WORKSPACE: tmp },
   });
   const out = run.stdout ?? "";
   check("exits 0", run.status, 0);
   check("prints the composed command", /^claude -p .* --permission-mode dontAsk --allowedTools /m.test(out), true);
-  check("from the named plugin", out.includes(join(ROOT, "skills", "flow", "cron", "lint.md")), true);
+  check("from the named plugin", out.includes(join(named, "skills", "flow", "cron", "lint.md")), true);
   check("starts no session", existsSync(join(tmp, "claude-ran")), false);
   check("does not go through the installed launcher", existsSync(join(tmp, "launcher-ran")), false);
 } finally {
