@@ -486,6 +486,22 @@ try {
   }
   ok('roots: CLAUDE_PROJECT_DIR and roots/list admit; outside, a symlink escape, no roots, a Codex subdirectory or home, and inherited project variables refuse')
 
+  // A Codex server runs in the project, so an empty PATH entry there would find a `git` the
+  // project supplies. git() looks only in absolute entries, and with none it runs nothing.
+  const gitPlanted = join(tmp, 'git-planted')
+  execFileSync('git', ['init', '-q', gitPlanted], { env: gitEnv })
+  writeFileSync(join(gitPlanted, 'git'), `#!/bin/sh\necho ${gitPlanted}\ntouch ${join(tmp, 'git-planted-ran')}\n`, { mode: 0o755 })
+  const [hostPath, hostCwd] = [process.env.PATH, process.cwd()]
+  try {
+    process.chdir(gitPlanted)
+    process.env.PATH = `:${hostPath}:bin`
+    assert.equal(await jobs.git(gitPlanted, ['rev-parse', '--git-dir']), '.git')
+    process.env.PATH = ''
+    assert.equal(await jobs.git(gitPlanted, ['rev-parse', '--git-dir']), null)
+  } finally { process.env.PATH = hostPath; process.chdir(hostCwd) }
+  assert.equal(existsSync(join(tmp, 'git-planted-ran')), false, 'git() ran the git the working directory supplied')
+  ok('git() takes git from absolute PATH entries only, never the working directory')
+
   const nested = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo, FLOW_DELEGATION_DEPTH: '1' } })
   await refused(nested, {}, 'NESTED_DELEGATION')
   nested.close()

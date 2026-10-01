@@ -10,7 +10,7 @@ import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { schemaProblem } from './schema.mjs'
@@ -196,12 +196,16 @@ export function canonicalRoots(paths) {
 }
 
 // No user or system config and no inherited GIT_* variable: neither may change which repository
-// answers or what a revision resolves to.
+// answers or what a revision resolves to. Only absolute PATH entries find the binary, the rule
+// providers.mjs keeps for a provider: an empty or relative entry, or an empty PATH, resolves
+// against this server's working directory, which on a Codex host is the project itself.
 export async function git(cwd, args) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')))
+  const path = (env.PATH || '').split(delimiter).filter((directory) => isAbsolute(directory)).join(delimiter)
+  if (!path) return null
   try {
     const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
-      env: { ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }, timeout: 15_000,
+      env: { ...env, PATH: path, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }, timeout: 15_000,
     })
     return stdout.trim()
   } catch { return null }
