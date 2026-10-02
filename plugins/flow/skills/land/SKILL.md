@@ -42,7 +42,7 @@ Each stop has a fixed answer:
 - `accept-flake-refused`: the flag named nothing the base branch's `.github/known-flakes.txt` declares for exactly one failed check. Fix the flag or drop it.
 - `threads-unresolved`: §3 on each thread in `threads`, then run again.
 - `auto-merge-armed`, `merge-queue`: someone armed a merge that would land the PR out of sight. Tell the human, and never merge over it.
-- `read-failed`, `head-unreadable`, `retargeted`: re-read and run again. A read that keeps failing is a report, not a pass.
+- `read-failed`, `head-unreadable`, `gate-moved`: re-read and run again. A read that keeps failing is a report, not a pass.
 - `merge-rejected`: GitHub refused the merge, for a conflict or branch protection. Show it and stop.
 - `redirected`, `origin`, `usage`, `cron`: fix the call or report it.
 

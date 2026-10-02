@@ -27,9 +27,9 @@
 // --accept-flake names it: the caller's statement that the job log shows that test as the check's
 // only failure, so one flag speaks for exactly one failed job, and two flags cannot share a check.
 //
-// With no stop, it re-reads base and head, then CI, which has to read exactly as it did for the
-// verdict, then the default branch's tip, which has to be the one the compare was made against: a
-// land elsewhere during the reads above moves that tip, and the merge pins only the head. Then it
+// With no stop, it reads the whole gate again, which has to read exactly as it did for the verdict,
+// then the default branch's tip, which has to be the one the compare was made against: a land
+// elsewhere during the reads above moves that tip, and the merge pins only the head. Then it
 // runs `gh pr merge --squash --match-head-commit <head>` so GitHub re-checks the head itself, and
 // proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
 // code. It prints one JSON line: exit 0 `merged`, exit 1 `refused` with every stop found (nothing
@@ -180,244 +180,271 @@ export function landMerge({ argv, env, cwd, runGh }) {
     return repository == null || typeof repository !== 'object' ? null : repository.mergeQueue != null
   }
 
-  // ---- 4: the pull request, which has to be origin's
-  const first = view(PR_FIELDS)
-  if (first.value === null) return refuseNow('read-failed', `gh pr view ${pr} ${first.why}, so the live state of the pull request is unknown`)
-  const pull = first.value
-  if (prUrlMismatch(pull.url, id, pr) !== null) {
-    return refuseNow('redirected', `the pull request GitHub returned (${JSON.stringify(scrubUserinfo(pull.url ?? '') || null)}) is not #${pr} of ${id.full}, so the read was redirected`)
-  }
-
-  // ---- 5 to 7: state, head, base, arming. From here every stop is collected.
-  const state = nonEmpty(pull.state)
-  if (state !== 'OPEN') stop('not-open', `#${pr} is ${state ?? 'in an unreadable state'}, and only an open pull request is merged`)
-  if (pull.isDraft !== false) stop('draft', pull.isDraft === true ? `#${pr} is a draft` : `the draft status of #${pr} could not be read, so it cannot be shown ready`)
-  const headRef = nonEmpty(pull.headRefName)
-  if (!SHA.test(String(pull.headRefOid ?? ''))) stop('head-unreadable', `the head of #${pr} did not read back as a 40-character SHA (found ${JSON.stringify(pull.headRefOid ?? null)})`)
-  else if (pull.headRefOid !== head) {
-    stop('head-moved', `head moved: ${scrubUserinfo(pull.url)} on branch ${JSON.stringify(headRef)} is at ${pull.headRefOid}, not ${head}. ` +
-      'If that is not the pull request you named, stop and ask; otherwise wait for CI on the new head and land that')
-  }
-  const base = nonEmpty(pull.baseRefName)
-  if (base === null) stop('read-failed', `the base branch of #${pr} could not be read`)
-  const repoView = gh(['repo', 'view', id.full, '--json', 'defaultBranchRef'])
-  const defaultBranch = nonEmpty((repoView.code === 0 ? parseObject(repoView.stdout) : null)?.defaultBranchRef?.name)
-  if (defaultBranch === null) stop('read-failed', `the repository default branch could not be read${repoView.code === 0 ? '' : ` (${said(repoView)})`}, so the merge target cannot be checked`)
-  else if (base !== null && base !== defaultBranch) stop('stacked-on-non-default', `#${pr} targets ${JSON.stringify(base)} and the default branch is ${JSON.stringify(defaultBranch)}; land the parent first or retarget`)
-  if (pull.autoMergeRequest != null) stop('auto-merge-armed', `#${pr} already has auto-merge armed; this only performs an immediate squash-merge, so cancel it first or let it run`)
-  if (base !== null) {
-    const queued = queueOn(base)
-    if (queued === null) stop('read-failed', `the merge-queue status of ${base} could not be read, and this will not merge without knowing whether a queue is required`)
-    else if (queued) stop('merge-queue', `${id.slug} uses a merge queue on ${base}; land it through the queue by hand`)
-  }
-
-  // ---- 8: behind the default branch, at a tip kept for the re-read before the merge
-  let baseTip = null
-  if (defaultBranch !== null) {
-    const r = api(`repos/${id.owner}/${id.repo}/compare/${refPath(defaultBranch)}...${head}`)
-    const compared = r.code === 0 ? parseObject(r.stdout) : null
-    const behind = compared?.behind_by
-    const unread = r.code !== 0 ? `failed (${said(r)})` : !Number.isSafeInteger(behind) || behind < 0 ? 'gave no behind_by count'
-      : !SHA.test(String(compared?.base_commit?.sha ?? '')) ? 'gave no base commit SHA' : null
-    if (unread !== null) stop('read-failed', `the compare of ${defaultBranch}...${head.slice(0, 12)} ${unread}, so whether the head is behind ${defaultBranch} is unknown`)
-    else {
-      baseTip = compared.base_commit.sha
-      if (behind > 0) stop('behind-base', `${head.slice(0, 12)} is ${behind} commit(s) behind ${defaultBranch}; rebase onto it, push, wait for CI on the new head and land that`)
-    }
-  }
-
-  // ---- 9: every check on the argument head, both sources to the end, and the suites they sit in
-  // One CI read, made for the verdict and again right before the merge, so both are held to the
-  // same completeness rules. It returns the problems that keep it from being whole, each a stop
-  // code and detail; the entries the verdict judges; and a snapshot, null unless the read is whole:
-  // every field the verdict uses from each check run and commit status, and each check suite's id,
-  // status and conclusion, every list sorted. A renamed run, a rerequested suite, a new status, or
-  // anything else that moves between the two reads changes the snapshot.
-  const commitPath = (kind) => `repos/${id.owner}/${id.repo}/commits/${head}/${kind}?per_page=100`
-  const readCi = () => {
+  // ---- 4 to 12: the gate. Every read a stop depends on happens in readGate, which runs once for
+  // the verdict and once more right before the merge, so a re-read covers every gate fact and not
+  // only the ones some reviewer thought of. It returns the stops in order; the read failures among
+  // them as problems, which leave the read unknown; an early refusal that ends the read; and a
+  // snapshot of every fact a stop reads, null unless the read is whole. Adding a stop means adding
+  // the fact it reads to the snapshot, or a change in that fact goes unseen before the merge.
+  const readGate = () => {
+    const stops = []
     const problems = []
-    const entries = []
-    const problem = (code, detail) => problems.push({ code, detail })
-    // A paged read is whole only when every page reports the same valid total_count: pages that
-    // disagree were read while the list changed, whatever the collected list's length matches.
-    // Returns that count, or null, and how GitHub reported it.
-    const pageTotal = (pages) => {
-      const counts = pages.map((page) => page?.total_count ?? null)
-      const agreed = counts.every((count) => Number.isSafeInteger(count) && count >= 0 && count === counts[0])
-      return { total: agreed ? counts[0] : null, said: new Set(counts).size > 1 ? `s ${counts.join(', ')} across its pages` : ` ${JSON.stringify(counts[0] ?? null)}` }
+    const stop = (code, detail) => stops.push({ code, detail })
+    const unreadable = (code, detail) => { problems.push({ code, detail }); stop(code, detail) }
+    // ---- 4: the pull request, which has to be origin's
+    const first = view(PR_FIELDS)
+    if (first.value === null) return { early: { code: 'read-failed', detail: `gh pr view ${pr} ${first.why}, so the live state of the pull request is unknown` } }
+    const pull = first.value
+    if (prUrlMismatch(pull.url, id, pr) !== null) {
+      return { early: { code: 'redirected', detail: `the pull request GitHub returned (${JSON.stringify(scrubUserinfo(pull.url ?? '') || null)}) is not #${pr} of ${id.full}, so the read was redirected` } }
     }
-    let runs = null
-    const runsRead = readPages(commitPath('check-runs'))
-    const runPages = runsRead.code === 0 ? parseJson(runsRead.stdout) : null
-    if (!Array.isArray(runPages) || !runPages.every((page) => Array.isArray(page?.check_runs))) {
-      problem('read-failed', `the check-run read on ${head.slice(0, 12)} ${runsRead.code === 0 ? 'returned a page with no check_runs array' : `failed (${said(runsRead)})`}`)
-    } else {
-      runs = runPages.flatMap((page) => page.check_runs)
-      for (const run of runs) {
-        entries.push({ kind: 'check-run', name: nonEmpty(run?.name), link: nonEmpty(run?.details_url) ?? nonEmpty(run?.html_url), status: run?.status, conclusion: run?.conclusion })
-      }
-      const reported = pageTotal(runPages)
-      if (reported.total === null || reported.total !== runs.length) {
-        problem('ci-unknown', `the check-run read on ${head.slice(0, 12)} collected ${runs.length} run(s) and GitHub reported total_count${reported.said}, so it cannot be shown to have seen every check`)
-      }
-    }
-    // The check-runs endpoint serves runs from only the 1000 most recent check suites on a ref, and
-    // its total_count counts only those, so past that window a failing run in an older suite is
-    // missing from a read that otherwise agrees with itself. The suites are read whole, from the
-    // commit's check-suites collection, and a count at the window, or none, leaves CI unknown.
-    let suites = null
-    const suitesRead = readPages(commitPath('check-suites'))
-    const suitePages = suitesRead.code === 0 ? parseJson(suitesRead.stdout) : null
-    const windowUnknown = `so whether the check-run read fits the ${MAX_CHECK_SUITES}-suite window it is served from is unknown`
-    if (!Array.isArray(suitePages) || !suitePages.every((page) => Array.isArray(page?.check_suites))) {
-      problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} could not be read (${suitesRead.code === 0 ? 'a page with no check_suites array' : said(suitesRead)}), ${windowUnknown}`)
-    } else {
-      suites = suitePages.flatMap((page) => page.check_suites)
-      const reported = pageTotal(suitePages)
-      const total = reported.total
-      if (total === null) problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} gave no single total_count (GitHub reported total_count${reported.said}), ${windowUnknown}`)
-      else if (total >= MAX_CHECK_SUITES) {
-        problem('ci-unknown', `${head.slice(0, 12)} carries ${total} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the check-runs endpoint serves from, so a failing run in an older suite would not appear in this read`)
-      } else if (total !== suites.length) {
-        problem('ci-unknown', `the check-suite read on ${head.slice(0, 12)} collected ${suites.length} suite(s) and GitHub reported total_count ${total}, so it cannot be shown to have seen every suite`)
-      }
-    }
-    let statuses = null
-    const statusRead = readPages(commitPath('statuses'))
-    const statusPages = statusRead.code === 0 ? parseJson(statusRead.stdout) : null
-    if (!Array.isArray(statusPages) || !statusPages.every(Array.isArray)) {
-      problem('read-failed', `the commit-status read on ${head.slice(0, 12)} ${statusRead.code === 0 ? 'returned a page that is not a list' : `failed (${said(statusRead)})`}`)
-    } else {
-      statuses = statusPages.flat()
-      // Newest first: the first status of a context counts and later ones are superseded runs.
-      const seen = new Set()
-      for (const status of statuses) {
-        const context = nonEmpty(status?.context)
-        if (context !== null && seen.has(context)) continue
-        if (context !== null) seen.add(context)
-        entries.push({ kind: 'status', name: context, link: nonEmpty(status?.target_url), state: status?.state })
-      }
-    }
-    const sorted = (list) => list.map((item) => JSON.stringify(item)).sort()
-    const snapshot = problems.length > 0 ? null : JSON.stringify({
-      runs: sorted(runs.map((run) => [run?.id ?? null, run?.name ?? null, run?.status ?? null, run?.conclusion ?? null])),
-      statuses: sorted(statuses.map((status) => [status?.context ?? null, status?.state ?? null])),
-      suites: sorted(suites.map((suite) => [suite?.id ?? null, suite?.status ?? null, suite?.conclusion ?? null])),
-    })
-    return { problems, entries, snapshot }
-  }
-  const ci = readCi()
-  for (const { code, detail } of ci.problems) stop(code, detail)
-  const checksComplete = ci.problems.length === 0
-  const entries = ci.entries
-  const reportedNames = new Set(entries.map((e) => e.name).filter((n) => n !== null))
 
-  // ---- 10: known flakes, from the base ref alone
-  let flakeText = null
-  if (base !== null) {
-    const r = api(`repos/${id.owner}/${id.repo}/contents/${FLAKES_PATH}?ref=${encodeURIComponent(base)}`)
-    if (r.code === 0) {
-      const body = parseObject(r.stdout)
-      // An over-size file comes back with encoding "none": unreadable, not empty.
-      if (typeof body?.content === 'string' && body.encoding === 'base64') flakeText = Buffer.from(body.content, 'base64').toString('utf8')
-      else stop('read-failed', `${FLAKES_PATH} on ${base} came back with no base64 contents (encoding ${JSON.stringify(body?.encoding ?? null)}), so no failure is excused`)
-    } else if (HTTP_404.test(r.stderr) || HTTP_404.test(r.stdout)) flakeText = ''
-    else stop('read-failed', `the read of ${FLAKES_PATH} on ${base} failed (${said(r)}), so no failure is excused`)
-  }
-  const flakes = parseFlakes(flakeText ?? '', reportedNames)
-  checks = { failed: [], pending: [], unknown: [], flakeCandidates: {}, excused: [] }
-  for (const entry of entries) {
-    const bucket = entry.name === null ? 'unknown' : bucketOf(entry)
-    if (bucket === 'pending' || bucket === 'unknown') checks[bucket].push({ name: entry.name, link: entry.link })
-    else if (bucket === 'failed' && flakes.bare.has(entry.name)) checks.excused.push({ check: entry.name, link: entry.link })
-    else if (bucket === 'failed') checks.failed.push({ name: entry.name, link: entry.link })
-  }
-
-  // --accept-flake: validated in full before anything moves. One acceptance is a statement about
-  // one job log, so a name carried by two failed jobs, or claimed by two flags, is refused. Against
-  // a file nobody could read there is nothing to validate, and the read-failed stop says so.
-  if (acceptFlakes.length > 0 && flakeText !== null) {
-    const declared = new Map()
-    for (const [check, tests] of flakes.tests) for (const test of tests) declared.set(`${check}:${test}`, { check, test })
-    const accepted = []
-    const invalid = []
-    const claimedBy = new Map()
-    for (const value of acceptFlakes) {
-      const split = reportedNames.has(value) ? null : splitEntry(value, reportedNames)
-      const entry = split === null ? undefined : declared.get(`${split.check}:${split.test}`)
-      if (entry === undefined) {
-        invalid.push(split === null
-          ? `--accept-flake ${value} names no test; a bare check name on the allowlist moves on its own`
-          : `--accept-flake ${value} is not an entry of ${FLAKES_PATH} on ${base}, and the flag accepts only what the base declared`)
-        continue
-      }
-      const failing = checks.failed.filter((f) => f.name === entry.check)
-      if (failing.length !== 1) {
-        invalid.push(failing.length === 0
-          ? `--accept-flake ${value} names ${entry.check}, which is not a failed check of #${pr}`
-          : `--accept-flake ${value} names ${entry.check}, which ${failing.length} failed checks report (${failing.map((f) => f.link ?? 'no url').join(', ')}); one job log cannot speak for all of them`)
-        continue
-      }
-      if (claimedBy.has(entry.check)) { invalid.push(`--accept-flake ${claimedBy.get(entry.check)} and --accept-flake ${value} both name ${entry.check}; pass the one the job log shows`); continue }
-      claimedBy.set(entry.check, value)
-      accepted.push({ ...entry, failure: failing[0] })
+    // ---- 5 to 7: state, head, base, arming. From here every stop is collected.
+    const state = nonEmpty(pull.state)
+    if (state !== 'OPEN') stop('not-open', `#${pr} is ${state ?? 'in an unreadable state'}, and only an open pull request is merged`)
+    if (pull.isDraft !== false) stop('draft', pull.isDraft === true ? `#${pr} is a draft` : `the draft status of #${pr} could not be read, so it cannot be shown ready`)
+    const headRef = nonEmpty(pull.headRefName)
+    if (!SHA.test(String(pull.headRefOid ?? ''))) unreadable('head-unreadable', `the head of #${pr} did not read back as a 40-character SHA (found ${JSON.stringify(pull.headRefOid ?? null)})`)
+    else if (pull.headRefOid !== head) {
+      stop('head-moved', `head moved: ${scrubUserinfo(pull.url)} on branch ${JSON.stringify(headRef)} is at ${pull.headRefOid}, not ${head}. ` +
+        'If that is not the pull request you named, stop and ask; otherwise wait for CI on the new head and land that')
     }
-    for (const reason of invalid) stop('accept-flake-refused', reason)
-    if (invalid.length === 0) {
-      for (const { check, test, failure } of accepted) {
-        checks.excused.push({ check, test, link: failure.link })
-        checks.failed = checks.failed.filter((f) => f !== failure)
+    const base = nonEmpty(pull.baseRefName)
+    if (base === null) unreadable('read-failed', `the base branch of #${pr} could not be read`)
+    const repoView = gh(['repo', 'view', id.full, '--json', 'defaultBranchRef'])
+    const defaultBranch = nonEmpty((repoView.code === 0 ? parseObject(repoView.stdout) : null)?.defaultBranchRef?.name)
+    if (defaultBranch === null) unreadable('read-failed', `the repository default branch could not be read${repoView.code === 0 ? '' : ` (${said(repoView)})`}, so the merge target cannot be checked`)
+    else if (base !== null && base !== defaultBranch) stop('stacked-on-non-default', `#${pr} targets ${JSON.stringify(base)} and the default branch is ${JSON.stringify(defaultBranch)}; land the parent first or retarget`)
+    if (pull.autoMergeRequest != null) stop('auto-merge-armed', `#${pr} already has auto-merge armed; this only performs an immediate squash-merge, so cancel it first or let it run`)
+    let queued = null
+    if (base !== null) {
+      queued = queueOn(base)
+      if (queued === null) unreadable('read-failed', `the merge-queue status of ${base} could not be read, and this will not merge without knowing whether a queue is required`)
+      else if (queued) stop('merge-queue', `${id.slug} uses a merge queue on ${base}; land it through the queue by hand`)
+    }
+
+    // ---- 8: behind the default branch, at a tip kept for the re-read before the merge
+    let baseTip = null
+    let behind = null
+    if (defaultBranch !== null) {
+      const r = api(`repos/${id.owner}/${id.repo}/compare/${refPath(defaultBranch)}...${head}`)
+      const compared = r.code === 0 ? parseObject(r.stdout) : null
+      behind = compared?.behind_by ?? null
+      const unread = r.code !== 0 ? `failed (${said(r)})` : !Number.isSafeInteger(behind) || behind < 0 ? 'gave no behind_by count'
+        : !SHA.test(String(compared?.base_commit?.sha ?? '')) ? 'gave no base commit SHA' : null
+      if (unread !== null) unreadable('read-failed', `the compare of ${defaultBranch}...${head.slice(0, 12)} ${unread}, so whether the head is behind ${defaultBranch} is unknown`)
+      else {
+        baseTip = compared.base_commit.sha
+        if (behind > 0) stop('behind-base', `${head.slice(0, 12)} is ${behind} commit(s) behind ${defaultBranch}; rebase onto it, push, wait for CI on the new head and land that`)
       }
     }
-  }
-  for (const { name } of checks.failed) if (flakes.tests.has(name)) checks.flakeCandidates[name] = flakes.tests.get(name)
 
-  // ---- 11: the verdict on the checks
-  const names = (list) => list.map((c) => c.name ?? '(unnamed)').join(', ')
-  if (checksComplete && entries.length === 0) stop('ci-unknown', `#${pr} reported no checks at all on ${head.slice(0, 12)}, which is also how a pull request looks in the seconds after a push`)
-  if (checks.pending.length > 0) stop('ci-pending', `${checks.pending.length} check(s) have not finished: ${names(checks.pending)}`)
-  if (checks.failed.length > 0) stop('ci-failed', `${checks.failed.length} check(s) failed: ${names(checks.failed)}`)
-  if (checks.unknown.length > 0) stop('ci-unknown', `${checks.unknown.length} check(s) could not be read as pass or fail: ${names(checks.unknown)}`)
-
-  // ---- 12: review threads, paged to the end
-  threads = []
-  let cursor = null
-  for (let page = 0; page < MAX_THREAD_PAGES; page += 1) {
-    const r = graphql(THREADS_QUERY, { owner: id.owner, name: id.repo, pr, ...(cursor === null ? {} : { cursor }) })
-    const threadPage = (r.code === 0 ? parseObject(r.stdout) : null)?.data?.repository?.pullRequest?.reviewThreads
-    if (!Array.isArray(threadPage?.nodes)) { stop('read-failed', `the review-thread query failed on page ${page + 1} (${r.code === 0 ? 'no reviewThreads in the answer' : said(r)})`); break }
-    for (const node of threadPage.nodes) {
-      if (node?.isResolved === true) continue
-      const comments = Array.isArray(node?.comments?.nodes) ? node.comments.nodes : []
-      const last = comments.at(-1) ?? {}
-      threads.push({
-        id: node?.id ?? null, path: nonEmpty(last.path) ?? nonEmpty(comments[0]?.path), url: scrubUserinfo(last.url ?? '') || null,
-        author: nonEmpty(last.author?.login), lastBody: truncate(last.body ?? '', 400),
+    // ---- 9: every check on the argument head, both sources to the end, and the suites they sit in
+    // One CI read, made for the verdict and again right before the merge, so both are held to the
+    // same completeness rules. It returns the problems that keep it from being whole, each a stop
+    // code and detail; the entries the verdict judges; and a snapshot, null unless the read is whole:
+    // every field the verdict uses from each check run and commit status, and each check suite's id,
+    // status and conclusion, every list sorted. A renamed run, a rerequested suite, a new status, or
+    // anything else that moves between the two reads changes the snapshot.
+    const commitPath = (kind) => `repos/${id.owner}/${id.repo}/commits/${head}/${kind}?per_page=100`
+    const readCi = () => {
+      const problems = []
+      const entries = []
+      const problem = (code, detail) => problems.push({ code, detail })
+      // A paged read is whole only when every page reports the same valid total_count: pages that
+      // disagree were read while the list changed, whatever the collected list's length matches.
+      // Returns that count, or null, and how GitHub reported it.
+      const pageTotal = (pages) => {
+        const counts = pages.map((page) => page?.total_count ?? null)
+        const agreed = counts.every((count) => Number.isSafeInteger(count) && count >= 0 && count === counts[0])
+        return { total: agreed ? counts[0] : null, said: new Set(counts).size > 1 ? `s ${counts.join(', ')} across its pages` : ` ${JSON.stringify(counts[0] ?? null)}` }
+      }
+      let runs = null
+      const runsRead = readPages(commitPath('check-runs'))
+      const runPages = runsRead.code === 0 ? parseJson(runsRead.stdout) : null
+      if (!Array.isArray(runPages) || !runPages.every((page) => Array.isArray(page?.check_runs))) {
+        problem('read-failed', `the check-run read on ${head.slice(0, 12)} ${runsRead.code === 0 ? 'returned a page with no check_runs array' : `failed (${said(runsRead)})`}`)
+      } else {
+        runs = runPages.flatMap((page) => page.check_runs)
+        for (const run of runs) {
+          entries.push({ kind: 'check-run', name: nonEmpty(run?.name), link: nonEmpty(run?.details_url) ?? nonEmpty(run?.html_url), status: run?.status, conclusion: run?.conclusion })
+        }
+        const reported = pageTotal(runPages)
+        if (reported.total === null || reported.total !== runs.length) {
+          problem('ci-unknown', `the check-run read on ${head.slice(0, 12)} collected ${runs.length} run(s) and GitHub reported total_count${reported.said}, so it cannot be shown to have seen every check`)
+        }
+      }
+      // The check-runs endpoint serves runs from only the 1000 most recent check suites on a ref, and
+      // its total_count counts only those, so past that window a failing run in an older suite is
+      // missing from a read that otherwise agrees with itself. The suites are read whole, from the
+      // commit's check-suites collection, and a count at the window, or none, leaves CI unknown.
+      let suites = null
+      const suitesRead = readPages(commitPath('check-suites'))
+      const suitePages = suitesRead.code === 0 ? parseJson(suitesRead.stdout) : null
+      const windowUnknown = `so whether the check-run read fits the ${MAX_CHECK_SUITES}-suite window it is served from is unknown`
+      if (!Array.isArray(suitePages) || !suitePages.every((page) => Array.isArray(page?.check_suites))) {
+        problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} could not be read (${suitesRead.code === 0 ? 'a page with no check_suites array' : said(suitesRead)}), ${windowUnknown}`)
+      } else {
+        suites = suitePages.flatMap((page) => page.check_suites)
+        const reported = pageTotal(suitePages)
+        const total = reported.total
+        if (total === null) problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} gave no single total_count (GitHub reported total_count${reported.said}), ${windowUnknown}`)
+        else if (total >= MAX_CHECK_SUITES) {
+          problem('ci-unknown', `${head.slice(0, 12)} carries ${total} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the check-runs endpoint serves from, so a failing run in an older suite would not appear in this read`)
+        } else if (total !== suites.length) {
+          problem('ci-unknown', `the check-suite read on ${head.slice(0, 12)} collected ${suites.length} suite(s) and GitHub reported total_count ${total}, so it cannot be shown to have seen every suite`)
+        }
+      }
+      let statuses = null
+      const statusRead = readPages(commitPath('statuses'))
+      const statusPages = statusRead.code === 0 ? parseJson(statusRead.stdout) : null
+      if (!Array.isArray(statusPages) || !statusPages.every(Array.isArray)) {
+        problem('read-failed', `the commit-status read on ${head.slice(0, 12)} ${statusRead.code === 0 ? 'returned a page that is not a list' : `failed (${said(statusRead)})`}`)
+      } else {
+        statuses = statusPages.flat()
+        // Newest first: the first status of a context counts and later ones are superseded runs.
+        const seen = new Set()
+        for (const status of statuses) {
+          const context = nonEmpty(status?.context)
+          if (context !== null && seen.has(context)) continue
+          if (context !== null) seen.add(context)
+          entries.push({ kind: 'status', name: context, link: nonEmpty(status?.target_url), state: status?.state })
+        }
+      }
+      const sorted = (list) => list.map((item) => JSON.stringify(item)).sort()
+      const snapshot = problems.length > 0 ? null : JSON.stringify({
+        runs: sorted(runs.map((run) => [run?.id ?? null, run?.name ?? null, run?.status ?? null, run?.conclusion ?? null])),
+        statuses: sorted(statuses.map((status) => [status?.context ?? null, status?.state ?? null])),
+        suites: sorted(suites.map((suite) => [suite?.id ?? null, suite?.status ?? null, suite?.conclusion ?? null])),
       })
+      return { problems, entries, snapshot }
     }
-    if (threadPage.pageInfo?.hasNextPage !== true) break
-    cursor = nonEmpty(threadPage.pageInfo?.endCursor)
-    if (cursor === null) { stop('read-failed', 'the review-thread query reported another page and no cursor, and a truncated read looks exactly like a clean one'); break }
-    if (page === MAX_THREAD_PAGES - 1) stop('read-failed', `the review-thread query was still paging after ${MAX_THREAD_PAGES} pages, and a truncated read looks exactly like a clean one`)
-  }
-  if (threads.length > 0) stop('threads-unresolved', `${threads.length} review thread(s) are unresolved: ${threads.map((t) => t.path ?? t.id).join(', ')}`)
+    const ci = readCi()
+    for (const { code, detail } of ci.problems) unreadable(code, detail)
+    const checksComplete = ci.problems.length === 0
+    const entries = ci.entries
+    const reportedNames = new Set(entries.map((e) => e.name).filter((n) => n !== null))
 
-  // ---- 13 and 14: any stop refuses; else the reads right before the merge, to shrink the
-  // retarget, CI and land-elsewhere windows it cannot close. The tip goes last, nearest the merge.
+    // ---- 10: known flakes, from the base ref alone
+    let flakeText = null
+    if (base !== null) {
+      const r = api(`repos/${id.owner}/${id.repo}/contents/${FLAKES_PATH}?ref=${encodeURIComponent(base)}`)
+      if (r.code === 0) {
+        const body = parseObject(r.stdout)
+        // An over-size file comes back with encoding "none": unreadable, not empty.
+        if (typeof body?.content === 'string' && body.encoding === 'base64') flakeText = Buffer.from(body.content, 'base64').toString('utf8')
+        else unreadable('read-failed', `${FLAKES_PATH} on ${base} came back with no base64 contents (encoding ${JSON.stringify(body?.encoding ?? null)}), so no failure is excused`)
+      } else if (HTTP_404.test(r.stderr) || HTTP_404.test(r.stdout)) flakeText = ''
+      else unreadable('read-failed', `the read of ${FLAKES_PATH} on ${base} failed (${said(r)}), so no failure is excused`)
+    }
+    const flakes = parseFlakes(flakeText ?? '', reportedNames)
+    const checks = { failed: [], pending: [], unknown: [], flakeCandidates: {}, excused: [] }
+    for (const entry of entries) {
+      const bucket = entry.name === null ? 'unknown' : bucketOf(entry)
+      if (bucket === 'pending' || bucket === 'unknown') checks[bucket].push({ name: entry.name, link: entry.link })
+      else if (bucket === 'failed' && flakes.bare.has(entry.name)) checks.excused.push({ check: entry.name, link: entry.link })
+      else if (bucket === 'failed') checks.failed.push({ name: entry.name, link: entry.link })
+    }
+
+    // --accept-flake: validated in full before anything moves. One acceptance is a statement about
+    // one job log, so a name carried by two failed jobs, or claimed by two flags, is refused. Against
+    // a file nobody could read there is nothing to validate, and the read-failed stop says so.
+    if (acceptFlakes.length > 0 && flakeText !== null) {
+      const declared = new Map()
+      for (const [check, tests] of flakes.tests) for (const test of tests) declared.set(`${check}:${test}`, { check, test })
+      const accepted = []
+      const invalid = []
+      const claimedBy = new Map()
+      for (const value of acceptFlakes) {
+        const split = reportedNames.has(value) ? null : splitEntry(value, reportedNames)
+        const entry = split === null ? undefined : declared.get(`${split.check}:${split.test}`)
+        if (entry === undefined) {
+          invalid.push(split === null
+            ? `--accept-flake ${value} names no test; a bare check name on the allowlist moves on its own`
+            : `--accept-flake ${value} is not an entry of ${FLAKES_PATH} on ${base}, and the flag accepts only what the base declared`)
+          continue
+        }
+        const failing = checks.failed.filter((f) => f.name === entry.check)
+        if (failing.length !== 1) {
+          invalid.push(failing.length === 0
+            ? `--accept-flake ${value} names ${entry.check}, which is not a failed check of #${pr}`
+            : `--accept-flake ${value} names ${entry.check}, which ${failing.length} failed checks report (${failing.map((f) => f.link ?? 'no url').join(', ')}); one job log cannot speak for all of them`)
+          continue
+        }
+        if (claimedBy.has(entry.check)) { invalid.push(`--accept-flake ${claimedBy.get(entry.check)} and --accept-flake ${value} both name ${entry.check}; pass the one the job log shows`); continue }
+        claimedBy.set(entry.check, value)
+        accepted.push({ ...entry, failure: failing[0] })
+      }
+      for (const reason of invalid) stop('accept-flake-refused', reason)
+      if (invalid.length === 0) {
+        for (const { check, test, failure } of accepted) {
+          checks.excused.push({ check, test, link: failure.link })
+          checks.failed = checks.failed.filter((f) => f !== failure)
+        }
+      }
+    }
+    for (const { name } of checks.failed) if (flakes.tests.has(name)) checks.flakeCandidates[name] = flakes.tests.get(name)
+
+    // ---- 11: the verdict on the checks
+    const names = (list) => list.map((c) => c.name ?? '(unnamed)').join(', ')
+    if (checksComplete && entries.length === 0) stop('ci-unknown', `#${pr} reported no checks at all on ${head.slice(0, 12)}, which is also how a pull request looks in the seconds after a push`)
+    if (checks.pending.length > 0) stop('ci-pending', `${checks.pending.length} check(s) have not finished: ${names(checks.pending)}`)
+    if (checks.failed.length > 0) stop('ci-failed', `${checks.failed.length} check(s) failed: ${names(checks.failed)}`)
+    if (checks.unknown.length > 0) stop('ci-unknown', `${checks.unknown.length} check(s) could not be read as pass or fail: ${names(checks.unknown)}`)
+
+    // ---- 12: review threads, paged to the end
+    const threads = []
+    const threadFacts = []
+    let cursor = null
+    for (let page = 0; page < MAX_THREAD_PAGES; page += 1) {
+      const r = graphql(THREADS_QUERY, { owner: id.owner, name: id.repo, pr, ...(cursor === null ? {} : { cursor }) })
+      const threadPage = (r.code === 0 ? parseObject(r.stdout) : null)?.data?.repository?.pullRequest?.reviewThreads
+      if (!Array.isArray(threadPage?.nodes)) { unreadable('read-failed', `the review-thread query failed on page ${page + 1} (${r.code === 0 ? 'no reviewThreads in the answer' : said(r)})`); break }
+      for (const node of threadPage.nodes) {
+        threadFacts.push([node?.id ?? null, node?.isResolved === true])
+        if (node?.isResolved === true) continue
+        const comments = Array.isArray(node?.comments?.nodes) ? node.comments.nodes : []
+        const last = comments.at(-1) ?? {}
+        threads.push({
+          id: node?.id ?? null, path: nonEmpty(last.path) ?? nonEmpty(comments[0]?.path), url: scrubUserinfo(last.url ?? '') || null,
+          author: nonEmpty(last.author?.login), lastBody: truncate(last.body ?? '', 400),
+        })
+      }
+      if (threadPage.pageInfo?.hasNextPage !== true) break
+      cursor = nonEmpty(threadPage.pageInfo?.endCursor)
+      if (cursor === null) { unreadable('read-failed', 'the review-thread query reported another page and no cursor, and a truncated read looks exactly like a clean one'); break }
+      if (page === MAX_THREAD_PAGES - 1) unreadable('read-failed', `the review-thread query was still paging after ${MAX_THREAD_PAGES} pages, and a truncated read looks exactly like a clean one`)
+    }
+    if (threads.length > 0) stop('threads-unresolved', `${threads.length} review thread(s) are unresolved: ${threads.map((t) => t.path ?? t.id).join(', ')}`)
+
+    const snapshot = problems.length > 0 ? null : {
+      url: pull.url ?? null, state, draft: pull.isDraft ?? null, head: pull.headRefOid ?? null, base, 'default branch': defaultBranch,
+      'auto-merge': pull.autoMergeRequest != null, 'merge queue': queued, compare: [behind, baseTip], ci: ci.snapshot, flakes: flakeText,
+      threads: threadFacts.map((fact) => JSON.stringify(fact)).sort(),
+    }
+    return { early: null, stops, problems, snapshot, checks, threads, base, defaultBranch, baseTip }
+  }
+  const verdict = readGate()
+  if (verdict.early) return refuseNow(verdict.early.code, verdict.early.detail)
+  checks = verdict.checks
+  threads = verdict.threads
+  for (const { code, detail } of verdict.stops) stop(code, detail)
+  const { base, defaultBranch, baseTip } = verdict
+
+  // ---- 13 and 14: any stop refuses; else the whole gate is read again right before the merge, and
+  // a re-read that is not whole, or a snapshot that moved, refuses. That shrinks every window the
+  // merge cannot close. The default branch's tip goes last, nearest the merge.
   if (stops.length > 0) return refused()
-  const recheck = view('baseRefName,headRefOid')
-  if (recheck.value === null) return refuseNow('read-failed', `the pull request could not be re-read immediately before the merge: gh pr view ${recheck.why}`)
-  if (recheck.value.baseRefName !== base) stop('retargeted', `#${pr} was retargeted to ${JSON.stringify(recheck.value.baseRefName ?? null)} mid-run; it was read as targeting ${JSON.stringify(base)}`)
-  if (recheck.value.headRefOid !== head) {
-    stop('head-moved', `the head of #${pr} moved mid-run (read ${head.slice(0, 12)}, now ${String(recheck.value.headRefOid ?? '').slice(0, 12) || 'unreadable'}); wait for CI on the new head and land that`)
+  const again = readGate()
+  if (again.early) return refuseNow(again.early.code, `the gate could not be re-read immediately before the merge: ${again.early.detail}`)
+  if (again.problems.length > 0) {
+    for (const { code, detail } of again.problems) stop(code, `the gate could not be re-read whole immediately before the merge: ${detail}`)
+    return refused()
   }
-  const ciNow = readCi()
-  if (ciNow.problems.length > 0) {
-    return refuseNow('ci-unknown', `CI on ${head.slice(0, 12)} could not be re-read whole immediately before the merge: ${ciNow.problems.map((p) => p.detail).join('; ')}`)
-  }
-  if (ciNow.snapshot !== ci.snapshot) {
-    stop('ci-moved', `CI on ${head.slice(0, 12)} changed between the verdict and the merge (a check reran or finished, a status arrived, or a suite was added); run the land again so it judges what CI says now`)
-  }
+  const moved = Object.keys(verdict.snapshot).filter((part) => JSON.stringify(verdict.snapshot[part]) !== JSON.stringify(again.snapshot[part]))
+  if (moved.length > 0) stop('gate-moved', `${moved.join(', ')} changed between the verdict and the merge; run the land again so it judges the pull request as it is now`)
+  // Unreachable while the snapshot holds every fact a stop reads; if one is missing, its stop still refuses.
+  else for (const { code, detail } of again.stops) stop(code, detail)
   const tipRead = api(`repos/${id.owner}/${id.repo}/git/ref/heads/${refPath(defaultBranch)}`)
   const tipNow = tipRead.code === 0 ? parseObject(tipRead.stdout)?.object?.sha : undefined
   if (!SHA.test(String(tipNow ?? ''))) {

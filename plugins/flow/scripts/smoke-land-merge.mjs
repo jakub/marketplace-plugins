@@ -69,22 +69,31 @@ const makeRunGh = (st) => (args) => {
   const ok = (value) => ({ code: 0, stdout: JSON.stringify(value), stderr: '' })
   const fail = (stderr, stdout = '') => ({ code: 1, stdout, stderr })
   const serverError = () => fail('gh: Server Error (HTTP 500)\n', '{"message":"Server Error"}')
+  // The gate is read twice, for the verdict and again right before the merge. A second read of the
+  // pull request, its threads or the base's known-flakes sees st.later's version (st.recheck for the
+  // pull request), and failLater names a source whose second read fails.
+  const reads = (st.reads ??= {})
+  const again = (source) => (reads[source] = (reads[source] ?? 0) + 1) > 1
   if (args[0] === 'pr' && args[1] === 'view') {
     const fields = args[args.indexOf('--json') + 1]
-    if (fields === 'baseRefName,headRefOid') return st.fail === 'recheck' ? serverError() : ok({ baseRefName: st.pr.baseRefName, headRefOid: st.pr.headRefOid, ...st.recheck })
     if (fields.startsWith('state,')) {
       if (st.confirmFails) return fail('fake gh: view failed\n')
       return ok({ ...st.pr, state: st.merged ? 'MERGED' : st.pr.state, autoMergeRequest: null, ...st.after })
     }
+    if (again('pr')) return st.fail === 'recheck' || st.failLater === 'pr' ? serverError() : ok({ ...st.pr, ...st.recheck, ...st.later?.pr })
     return st.fail === 'view' ? serverError() : ok(st.pr)
   }
   if (args[0] === 'repo' && args[1] === 'view') return st.fail === 'repo' ? serverError() : ok({ defaultBranchRef: { name: st.defaultBranch } })
   if (args[0] === 'api' && args[1] === 'graphql') {
     if ((field(args, 'query') ?? '').includes('reviewThreads')) {
       if (st.fail === 'threads') return fail("gh: Field 'reviewThreads' doesn't exist\n")
+      if (field(args, 'cursor') === null) st.threadRead = again('threads') ? 'later' : 'first'
+      if (st.threadRead === 'later' && st.failLater === 'threads') return fail('fake gh: graphql failed\n')
+      const late = (key) => (st.threadRead === 'later' && st.later?.[key] !== undefined ? st.later[key] : st[key])
+      const pages = late('threadPages')
       const index = field(args, 'cursor') === null ? 0 : Number(field(args, 'cursor').slice(1))
-      const more = index < st.threadPages.length - 1
-      return ok({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: more, endCursor: more && !st.threadsNoCursor ? `c${index + 1}` : null }, nodes: st.threadPages[index] } } } } })
+      const more = index < pages.length - 1
+      return ok({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: more, endCursor: more && !late('threadsNoCursor') ? `c${index + 1}` : null }, nodes: pages[index] } } } } })
     }
     const afterMerge = st.merges.length > 0
     if (afterMerge ? st.queueAfterFails : st.queueFails) return fail('fake gh: graphql failed\n')
@@ -100,7 +109,8 @@ const makeRunGh = (st) => (args) => {
     const path = String(args.at(-1))
     if (path.includes('/contents/')) {
       if (st.flakesHttp) return fail(`gh: Server Error (HTTP ${st.flakesHttp})\n`, '{"message":"Server Error"}')
-      const text = decodeURIComponent(path.split('ref=')[1] ?? '') === st.pr.baseRefName ? st.baseFlakes : st.headFlakes
+      const baseFlakes = again('flakes') && st.later?.baseFlakes !== undefined ? st.later.baseFlakes : st.baseFlakes
+      const text = decodeURIComponent(path.split('ref=')[1] ?? '') === st.pr.baseRefName ? baseFlakes : st.headFlakes
       if (text === null) return fail('gh: Not Found (HTTP 404)\n', '{"message":"Not Found"}')
       return ok({ encoding: st.flakesEncoding, content: st.flakesEncoding === 'base64' ? Buffer.from(text).toString('base64') : '' })
     }
@@ -118,7 +128,6 @@ const makeRunGh = (st) => (args) => {
     // A CI read is made twice, once for the verdict and once right before the merge. `later`
     // holds what the second read of each source sees instead, and `failLater` a source whose
     // second read fails: CI that moved, or could not be re-read, between the two.
-    const reads = (st.reads ??= {})
     const source = path.includes('/check-suites?') ? 'check-suites' : ['check-runs', 'statuses'].find((e) => path.includes(`/${e}?`))
     if (source !== undefined) reads[source] = (reads[source] ?? 0) + 1
     const second = source !== undefined && reads[source] > 1
@@ -181,8 +190,8 @@ for (const [name, code, text, over, opts = {}] of [
   ['a merge queue on the base', 'merge-queue', 'uses a merge queue', { queue: { id: 'MQ' } }],
   ['an unreadable merge queue', 'read-failed', 'merge-queue status', { queueFails: true }],
   ['a read GitHub redirected elsewhere', 'redirected', 'was redirected', { pr: { url: 'https://github.com/someone/evil/pull/12' } }],
-  ['a retarget before the merge', 'retargeted', 'was retargeted', { recheck: { baseRefName: 'release' } }],
-  ['a head moved before the merge', 'head-moved', 'moved mid-run', { recheck: { headRefOid: 'd'.repeat(40) } }],
+  ['a retarget before the merge', 'gate-moved', 'base changed', { recheck: { baseRefName: 'release' } }],
+  ['a head moved before the merge', 'gate-moved', 'head changed', { recheck: { headRefOid: 'd'.repeat(40) } }],
   ['a directory with no origin', 'origin', 'no readable origin remote', {}, { cwd: NO_ORIGIN }],
   ['an unattended job, before even the origin read', 'cron', 'nobody is watching', {}, { cwd: NO_ORIGIN, env: { FLOW_CRON_JOB: 'lint' } }],
 ]) {
@@ -399,7 +408,7 @@ console.log('\nknown flakes come from the base, never the branch')
   const base = run(ARGS, { st: freshState({ checkRuns: failing, baseFlakes: '# flaky\ne2e\n' }) })
   check('a base-listed bare check merges through', merged(base), shown(base))
   check('and is in excused with its link', JSON.stringify(base.json?.excused) === JSON.stringify([{ check: 'e2e', link: failing[1].details_url }]), JSON.stringify(base.json?.excused))
-  check('the file is read on the base ref', contentsCalls(base.st).length === 1 && String(contentsCalls(base.st)[0].at(-1)).endsWith('/contents/.github/known-flakes.txt?ref=main'), JSON.stringify(contentsCalls(base.st)))
+  check('the file is read on the base ref, for the verdict and again before the merge', contentsCalls(base.st).length === 2 && contentsCalls(base.st).every((a) => String(a.at(-1)).endsWith('/contents/.github/known-flakes.txt?ref=main')), JSON.stringify(contentsCalls(base.st)))
   const branch = run(ARGS, { st: freshState({ checkRuns: failing, headFlakes: 'e2e\n' }) })
   check('the same line on the branch alone excuses nothing', refusedWith(branch, 'ci-failed', 'e2e') && branch.json?.checks?.excused.length === 0, shown(branch))
   check('and no contents call ever names the head', contentsCalls(branch.st).length > 0 && !branch.st.calls.some((a) => a[0] === 'api' && String(a.at(-1)).includes('/contents/') && String(a.at(-1)).includes(HEAD)), JSON.stringify(contentsCalls(branch.st)))
@@ -447,7 +456,7 @@ console.log('\nreview threads, the base, and every stop at once')
   const both = run(ARGS, { st: freshState({ checkRuns: [checkRun('e2e', 'failure')], threadPages: [[thread('T1', false)]] }) })
   check('a red check and an open thread refuse with both codes in one run', refusedWith(both, 'ci-failed') && refusedWith(both, 'threads-unresolved') &&
     both.json?.checks?.failed[0]?.name === 'e2e' && both.json?.threads?.[0]?.id === 'T1', shown(both))
-  check('and a gate stop refuses before the re-read', !both.st.calls.some((a) => a[0] === 'pr' && a[a.indexOf('--json') + 1] === 'baseRefName,headRefOid'), JSON.stringify(both.st.calls.filter((a) => a[0] === 'pr')))
+  check('and a gate stop refuses before the re-read', both.st.calls.filter((a) => a[0] === 'pr' && a[1] === 'view').length === 1, JSON.stringify(both.st.calls.filter((a) => a[0] === 'pr')))
   const current = run()
   const mergeAt = current.st.calls.findIndex((a) => a[0] === 'pr' && a[1] === 'merge')
   check('the default branch tip is the last read before the merge', mergeAt > 0 &&
@@ -464,12 +473,22 @@ console.log('\nreview threads, the base, and every stop at once')
     const st = freshState()
     if (later.checkRuns === null) later.checkRuns = [{ ...st.checkRuns[0], conclusion: 'failure' }, st.checkRuns[1]]
     const moved = run(ARGS, { st: { ...st, later } })
-    check(`${name} between the verdict and the merge refuses ci-moved, and nothing merges`, refusedWith(moved, 'ci-moved'), shown(moved))
+    check(`${name} between the verdict and the merge refuses gate-moved naming ci, and nothing merges`, refusedWith(moved, 'gate-moved', 'ci changed'), shown(moved))
   }
   for (const source of ['check-runs', 'statuses', 'check-suites']) {
     const lost = run(ARGS, { st: freshState({ failLater: source }) })
-    check(`a ${source} re-read that fails before the merge refuses ci-unknown, and nothing merges`, refusedWith(lost, 'ci-unknown', 'immediately before the merge'), shown(lost))
+    const code = source === 'check-suites' ? 'ci-unknown' : 'read-failed'
+    check(`a ${source} re-read that fails before the merge refuses ${code}, and nothing merges`, refusedWith(lost, code, 'immediately before the merge'), shown(lost))
   }
+  // Every gate fact is read again, not only CI: a thread opened, or a known flake withdrawn from
+  // the base, between the verdict and the merge refuses gate-moved naming what moved, and a thread
+  // re-read that cannot be shown whole refuses as unknown.
+  const opened = run(ARGS, { st: freshState({ later: { threadPages: [[thread('T1'), thread('T2', false)]] } }) })
+  check('a review thread opened between the verdict and the merge refuses gate-moved naming threads, and nothing merges', refusedWith(opened, 'gate-moved', 'threads'), shown(opened))
+  const cutThreads = run(ARGS, { st: freshState({ later: { threadPages: [[thread('T1')], [thread('T2')]], threadsNoCursor: true } }) })
+  check('a thread re-read that cannot be shown whole refuses, and nothing merges', refusedWith(cutThreads, 'read-failed', 'immediately before the merge'), shown(cutThreads))
+  const withdrawn = run(ARGS, { st: freshState({ checkRuns: [checkRun('unit', 'success'), checkRun('e2e', 'failure')], baseFlakes: 'e2e\n', later: { baseFlakes: '' } }) })
+  check('an excused flake withdrawn from the base between the verdict and the merge refuses gate-moved naming flakes, and nothing merges', refusedWith(withdrawn, 'gate-moved', 'flakes'), shown(withdrawn))
   // The re-read is held to the first read's completeness rule: the same runs under a total_count
   // that says there are more is an incomplete read, not an unchanged one.
   const short = run(ARGS, { st: freshState({ later: { totalCount: 3 } }) })
@@ -477,7 +496,7 @@ console.log('\nreview threads, the base, and every stop at once')
   // A failing run excused as a known flake, renamed between the reads: same id, status and conclusion.
   const flaky = [checkRun('unit', 'success'), checkRun('e2e', 'failure')]
   const renamed = run(ARGS, { st: freshState({ checkRuns: flaky, baseFlakes: 'e2e\n', later: { checkRuns: [flaky[0], { ...flaky[1], name: 'e2e-renamed' }] } }) })
-  check('an excused run renamed between the verdict and the merge refuses ci-moved, and nothing merges', refusedWith(renamed, 'ci-moved'), shown(renamed))
+  check('an excused run renamed between the verdict and the merge refuses gate-moved naming ci, and nothing merges', refusedWith(renamed, 'gate-moved', 'ci changed'), shown(renamed))
   const landedMeanwhile = run(ARGS, { st: freshState({ tipAtMerge: 'a'.repeat(40) }) })
   check('a land elsewhere after the compare refuses behind-base, and nothing merges', refusedWith(landedMeanwhile, 'behind-base', 'moved from') &&
     ['f'.repeat(12), 'a'.repeat(12), HEAD.slice(0, 12)].every((s) => detailOf(landedMeanwhile, 'behind-base').includes(s)), shown(landedMeanwhile))
