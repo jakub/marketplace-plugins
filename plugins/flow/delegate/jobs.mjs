@@ -508,13 +508,15 @@ export async function wait(id, seconds, { signal, onTick } = {}) {
   return job
 }
 
-// How long a job's stop can take once it starts, which a default wait past the budget and a cancel
-// both wait out, so either returns the ended job and not one still running with its lease held.
-// The longest stop is the sum of: the provider interrupt's answer, 10 s (INTERRUPT_MS in
-// codex-app-server.mjs and claude-control.mjs); SIGTERM to SIGKILL, 10 s, then the wait for the
-// group to read gone, 10 s (both KILL_GRACE_MS in runner.mjs); the schema check, 10 s
-// (CHECK_SECONDS in schema.mjs); and the provider's close, 5 s (CLOSE_MS in providers.mjs). That is
-// 45 s, and 60 leaves a margin.
+// How long a job's stop and settlement can take once the stop starts, which a default wait past the
+// budget and a cancel both wait out, so either returns the settled job rather than one still
+// running. It bounds the runner's work, not the provider's exit: a provider group that still reads
+// alive after the SIGKILL wait leaves its exit unconfirmed, and the runner settles the job and
+// keeps the write lease until a takeover finds the group gone. The longest stop is the sum of: the
+// provider interrupt's answer, 10 s (INTERRUPT_MS in codex-app-server.mjs and claude-control.mjs);
+// SIGTERM to SIGKILL, 10 s, then the wait for the group to read gone, 10 s (both KILL_GRACE_MS in
+// runner.mjs); the schema check, 10 s (CHECK_SECONDS in schema.mjs); and the provider's close, 5 s
+// (CLOSE_MS in providers.mjs). That is 45 s, and 60 leaves a margin.
 export const STOP_SECONDS = 60
 export const requestCancel = (id) => { try { writeFileSync(join(jobDir(id), 'cancel'), '') } catch {} }
 export async function cancel(job) {
