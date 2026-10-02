@@ -508,6 +508,14 @@ export async function wait(id, seconds, { signal, onTick } = {}) {
   return job
 }
 
+// How long a job's stop can take once it starts, which a default wait past the budget and a cancel
+// both wait out, so either returns the ended job and not one still running with its lease held.
+// The longest stop is the sum of: the provider interrupt's answer, 10 s (INTERRUPT_MS in
+// codex-app-server.mjs and claude-control.mjs); SIGTERM to SIGKILL, 10 s, then the wait for the
+// group to read gone, 10 s (both KILL_GRACE_MS in runner.mjs); the schema check, 10 s
+// (CHECK_SECONDS in schema.mjs); and the provider's close, 5 s (CLOSE_MS in providers.mjs). That is
+// 45 s, and 60 leaves a margin.
+export const STOP_SECONDS = 60
 export const requestCancel = (id) => { try { writeFileSync(join(jobDir(id), 'cancel'), '') } catch {} }
 export async function cancel(job) {
   if (TERMINAL.has(job.status)) fail('JOB_STATE', `The job already ended ${job.status}.`)
@@ -516,7 +524,7 @@ export async function cancel(job) {
     releaseLease(job)
     return settle(job, 'cancelled', { error: { kind: 'CANCELLED', message: 'The job was cancelled before it started.' } })
   }
-  return wait(job.id, 15)
+  return wait(job.id, STOP_SECONDS)
 }
 
 // A steer adds text to a running job's open turn without stopping it. Only a running job whose

@@ -457,6 +457,14 @@ try {
   // interrupt and ignores SIGTERM: the default wait has to cover its whole stop, not only the budget.
   const stubbornHost = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo } })
   const stubborn = start(stubbornHost, { prompt: 'FLOW_FAKE_MODE=hang-stubborn', timeBudgetSeconds: 30 })
+  // And a cancel of the same kind of provider, once its turn is open: the cancel's wait has to cover
+  // the whole stop too, or it hands back a job still running, with its lease still held.
+  const cancelHost = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo } })
+  const stubbornCancel = (async () => {
+    const begun = await start(cancelHost, { prompt: 'FLOW_FAKE_MODE=hang-stubborn', waitSeconds: 0 })
+    assert.ok(await until(() => readJob(begun.job.id).turnOpen), 'the stubborn turn never opened')
+    return cancelHost.call('delegation_cancel', { jobId: begun.job.id })
+  })()
   // So does a conforming answer to an admitted schema whose check branches two ways on each of 32
   // levels of references, which only the check's kill timer ends.
   const costly = { type: 'object', required: ['answer'], $defs: { d0: { type: 'number' } }, properties: { answer: { anyOf: [{ $ref: '#/$defs/d32' }, { type: 'string' }] } } }
@@ -1444,6 +1452,10 @@ try {
   stubbornHost.close()
   assert.deepEqual([waitedOut.ok, waitedOut.job.status, waitedOut.job.error?.kind], [false, 'failed', 'TIMEOUT'], JSON.stringify(waitedOut.job))
   ok('the default wait outlasts a stop that runs every timeout, so it returns the finished job')
+  const cancelledOut = await stubbornCancel
+  cancelHost.close()
+  assert.deepEqual([cancelledOut.ok, cancelledOut.job.status, cancelledOut.job.error?.kind], [false, 'cancelled', 'CANCELLED'], JSON.stringify(cancelledOut.job))
+  ok('a cancel waits out a stop that runs every timeout, so it returns the cancelled job')
 
   const bounded = await claudeHost.call('delegation_result', { jobId: unchecked.job.id, waitSeconds: 60 })
   assert.deepEqual([bounded.job.status, bounded.job.error?.kind, bounded.job.structured], ['failed', 'SCHEMA_OUTPUT', null])
