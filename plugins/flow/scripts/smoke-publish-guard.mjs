@@ -52,10 +52,10 @@ const dropped = repo('dropped', { marker: true, dropMarker: true }) // committed
 const untracked = repo('untracked', { untracked: true })           // never committed: not managed
 const unborn = repo('unborn', { commit: false })                   // the probe cannot read HEAD: fails closed
 
-const run = (script, command, { cwd = managed, cron, raw, spawnCwd } = {}) => {
+const run = (script, command, { cwd = managed, cron, raw, spawnCwd, path } = {}) => {
   const out = execFileSync(process.execPath, [join(ROOT, 'hooks', 'scripts', script)], {
     input: raw ?? JSON.stringify(cwd === null ? { tool_name: 'Bash', tool_input: { command } } : { tool_name: 'Bash', tool_input: { command }, cwd }),
-    encoding: 'utf8', env: cron ? { ...env, FLOW_CRON_JOB: cron } : env, cwd: spawnCwd,
+    encoding: 'utf8', env: { ...env, ...(cron ? { FLOW_CRON_JOB: cron } : {}), ...(path ? { PATH: path } : {}) }, cwd: spawnCwd,
   }).trim()
   return out ? JSON.parse(out).hookSpecificOutput : null
 }
@@ -145,6 +145,12 @@ answers('deny', MERGE, 'a committed marker deleted from the worktree still count
 answers('deny', MERGE, 'a repo whose HEAD cannot be read fails closed', { cwd: unborn })
 answers('deny', MERGE, 'a directory git cannot read fails closed', { cwd: join(tmp, 'nowhere') })
 answers('deny', MERGE, 'with no cwd in the call, the hook reads its own directory', { cwd: null, spawnCwd: managed })
+// A repository must not answer the managed question with its own executable named git. This
+// one prints nothing, which would read as unmanaged, from a relative PATH entry ahead of the
+// real git; the guard takes git from an absolute entry only, so the merge stays denied.
+writeFileSync(join(managed, 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+answers('deny', MERGE, 'a git planted in the repo behind a relative PATH entry does not answer', { spawnCwd: managed, path: `.:${env.PATH}` })
+rmSync(join(managed, 'git'))
 
 console.log('\nthe tripwire never matches the executor, and prose is not a merge')
 for (const [name, command] of [

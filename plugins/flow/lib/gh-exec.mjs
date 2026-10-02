@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process'
 import { accessSync, constants } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 
-const resolveBin = (name, env) => {
+export const resolveBin = (name, env) => {
   for (const dir of String(env?.PATH || '').split(delimiter)) {
     if (!isAbsolute(dir)) continue
     try { accessSync(join(dir, name), constants.X_OK); return join(dir, name) } catch {}
