@@ -249,7 +249,11 @@ for (const [name, origin, text] of [
   const ran = join(tmp, 'planted-ssh-ran')
   mkdirSync(join(inspected, 'bin'))
   writeFileSync(join(inspected, 'bin', 'ssh'), `#!/bin/sh\n: > ${ran}\nexit 1\n`, { mode: 0o755 })
-  const r = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...process.env, PATH: `bin:${process.env.PATH}` } })
+  // An ssh that fails at once in an absolute entry, so the case never waits on a real ssh's lookup.
+  const quickSsh = join(tmp, 'quick-ssh')
+  mkdirSync(quickSsh)
+  writeFileSync(join(quickSsh, 'ssh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  const r = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...process.env, PATH: `bin:${quickSsh}:${process.env.PATH}` } })
   check('git run through execCapture never reaches an ssh the repository plants behind a relative PATH entry', !existsSync(ran), JSON.stringify(r))
 }
 {
