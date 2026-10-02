@@ -261,8 +261,9 @@ function run({ action, repoArg, target, rest, env }) {
         if (after.state === 'OPEN' && same(lifecycleOf(after), wanted)) refuse(`the edit ${edit.code === 0 ? 'was accepted' : 'failed'} and the labels read back unchanged; nothing moved`)
         refuse(`after the edit the issue reads ${after.state} with [${lifecycleOf(after).join(', ')}] instead of OPEN with ${to} alone; left for a human, nothing undone`)
       }
-      // The labels moved, but this run's edit failed, so another actor moved them, not this run.
-      if (edit.code !== 0) refuse(`the edit failed, and the labels read back as ${to} alone: another actor moved them, not this run`)
+      // The labels moved but this run's edit failed. A read-back cannot say whose edit moved them, so
+      // the outcome is unknown and is never reported as this run's action.
+      if (edit.code !== 0) refuse(`the edit failed, yet the labels read back as ${to} alone; whose edit moved them is unknown`)
     }
     // A move a claim could race runs under the claim's own tag. An issue run takes the tag before
     // its re-read and label edit, and this verb takes it before its own, so neither edit can land

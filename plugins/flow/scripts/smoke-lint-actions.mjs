@@ -69,7 +69,7 @@ if (group === 'issue' && verb === 'edit') {
     st.issue.labels = st.issue.labels.filter((l) => rm < 0 || l.name !== argv[rm + 1]).concat({ name: at('--add-label') })
     if (st.alsoAdd) st.issue.labels.push({ name: st.alsoAdd })
   }
-  // An edit that exits non-zero while the labels still move: another actor made the same change.
+  // An edit that exits non-zero while the labels still move: whose edit moved them is unknown.
   if (st.editFails) { save(); process.stderr.write('fake gh: edit failed\\n'); process.exit(1) }
   out('')
 }
@@ -168,7 +168,7 @@ console.log('relabel moves a label only through a fixed transition')
   refused('a live run (an open pull request from a fork)', relabel(pr, 'in-progress', 'ready-for-agent', JSON.parse(readFileSync(pr.env.FAKE_GH_STATE, 'utf8')).issue.updatedAt), '#42')
   const raceWon = makeWorld({ editFails: true })
   const movedElsewhere = relabel(raceWon, 'in-progress', 'ready-for-agent', JSON.parse(readFileSync(raceWon.env.FAKE_GH_STATE, 'utf8')).issue.updatedAt)
-  refused('a failed edit whose labels read back moved anyway', movedElsewhere, 'another actor')
+  refused('a failed edit whose labels read back moved anyway', movedElsewhere, 'whose edit moved them is unknown')
   const inert = makeWorld({ applyEdit: false })
   refused('an edit that moved nothing', relabel(inert, 'in-progress', 'ready-for-agent', JSON.parse(readFileSync(inert.env.FAKE_GH_STATE, 'utf8')).issue.updatedAt), 'nothing moved')
   const raced = makeWorld({ alsoAdd: 'wontfix' })
