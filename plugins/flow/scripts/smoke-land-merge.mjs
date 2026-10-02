@@ -114,13 +114,21 @@ const makeRunGh = (st) => (args) => {
       return ok({ ref: `refs/heads/${st.defaultBranch}`, object: { type: 'commit', sha: st.tipAtMerge ?? st.baseTip } })
     }
     // The commit's check-suite count, read on its own because check-runs serves only the newest 1000 suites.
-    if (path.includes('/check-suites?')) return st.fail === 'check-suites' ? serverError() : ok({ total_count: st.suiteCount, check_suites: [] })
-    const endpoint = ['check-runs', 'statuses'].find((e) => path.includes(`/${e}?`))
-    if (endpoint !== undefined && args.includes('--paginate') && args.includes('--slurp')) {
-      if (st.fail === endpoint) return serverError()
-      if (st.malformed === endpoint) return ok([{ message: 'not a page' }])
-      if (endpoint === 'check-runs') return ok(pagesOf(st.checkRuns).map((page) => ({ total_count: st.totalCount ?? st.checkRuns.length, check_runs: page })))
-      return ok(pagesOf(st.statuses))
+    // A CI read is made twice, once for the verdict and once right before the merge. `later`
+    // holds what the second read of each source sees instead, and `failLater` a source whose
+    // second read fails: CI that moved, or could not be re-read, between the two.
+    const reads = (st.reads ??= {})
+    const source = path.includes('/check-suites?') ? 'check-suites' : ['check-runs', 'statuses'].find((e) => path.includes(`/${e}?`))
+    if (source !== undefined) reads[source] = (reads[source] ?? 0) + 1
+    const second = source !== undefined && reads[source] > 1
+    if (second && st.failLater === source) return serverError()
+    const seen = (key) => (second && st.later?.[key] !== undefined ? st.later[key] : st[key])
+    if (source === 'check-suites') return st.fail === 'check-suites' ? serverError() : ok({ total_count: seen('suiteCount'), check_suites: [] })
+    if (source !== undefined && args.includes('--paginate') && args.includes('--slurp')) {
+      if (st.fail === source) return serverError()
+      if (st.malformed === source) return ok([{ message: 'not a page' }])
+      if (source === 'check-runs') return ok(pagesOf(seen('checkRuns')).map((page) => ({ total_count: st.totalCount ?? seen('checkRuns').length, check_runs: page })))
+      return ok(pagesOf(seen('statuses')))
     }
   }
   return { code: 3, stdout: '', stderr: `fake gh: unexpected ${args.join(' ')}\n` }
@@ -428,6 +436,22 @@ console.log('\nreview threads, the base, and every stop at once')
   const mergeAt = current.st.calls.findIndex((a) => a[0] === 'pr' && a[1] === 'merge')
   check('the default branch tip is the last read before the merge', mergeAt > 0 &&
     JSON.stringify(current.st.calls[mergeAt - 1]) === JSON.stringify(['api', '--hostname', 'github.com', `repos/${SLUG}/git/ref/heads/main`]), JSON.stringify(current.st.calls.slice(-3)))
+  // CI is read again right before the merge, and anything that moved since the verdict refuses.
+  for (const [name, later] of [
+    ['a rerun of a check', { checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')] }],
+    ['a check that turned red', { checkRuns: null }],
+    ['a new commit status', { statuses: [status('coderabbit', 'failure')] }],
+    ['a new check suite', { suiteCount: 3 }],
+  ]) {
+    const st = freshState()
+    if (later.checkRuns === null) later.checkRuns = [{ ...st.checkRuns[0], conclusion: 'failure' }, st.checkRuns[1]]
+    const moved = run(ARGS, { st: { ...st, later } })
+    check(`${name} between the verdict and the merge refuses ci-moved, and nothing merges`, refusedWith(moved, 'ci-moved'), shown(moved))
+  }
+  for (const source of ['check-runs', 'statuses', 'check-suites']) {
+    const lost = run(ARGS, { st: freshState({ failLater: source }) })
+    check(`a ${source} re-read that fails before the merge refuses ci-unknown, and nothing merges`, refusedWith(lost, 'ci-unknown', 'immediately before the merge'), shown(lost))
+  }
   const landedMeanwhile = run(ARGS, { st: freshState({ tipAtMerge: 'a'.repeat(40) }) })
   check('a land elsewhere after the compare refuses behind-base, and nothing merges', refusedWith(landedMeanwhile, 'behind-base', 'moved from') &&
     ['f'.repeat(12), 'a'.repeat(12), HEAD.slice(0, 12)].every((s) => detailOf(landedMeanwhile, 'behind-base').includes(s)), shown(landedMeanwhile))
