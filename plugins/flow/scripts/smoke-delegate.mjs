@@ -487,10 +487,12 @@ try {
   ok('roots: CLAUDE_PROJECT_DIR and roots/list admit; outside, a symlink escape, no roots, a Codex subdirectory or home, and inherited project variables refuse')
 
   // A Codex server runs in the project, so an empty PATH entry there would find a `git` the
-  // project supplies. git() looks only in absolute entries, and with none it runs nothing.
+  // project supplies. git() looks only in absolute entries, and with none it runs nothing. The
+  // planted git writes its marker with shell builtins alone, so it still leaves one under an
+  // empty PATH.
   const gitPlanted = join(tmp, 'git-planted')
   execFileSync('git', ['init', '-q', gitPlanted], { env: gitEnv })
-  writeFileSync(join(gitPlanted, 'git'), `#!/bin/sh\necho ${gitPlanted}\ntouch ${join(tmp, 'git-planted-ran')}\n`, { mode: 0o755 })
+  writeFileSync(join(gitPlanted, 'git'), `#!/bin/sh\necho ${gitPlanted}\n: > ${join(tmp, 'git-planted-ran')}\n`, { mode: 0o755 })
   const [hostPath, hostCwd] = [process.env.PATH, process.cwd()]
   try {
     process.chdir(gitPlanted)
