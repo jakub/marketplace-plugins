@@ -766,7 +766,7 @@ try {
   // pointer; the checker resolves every $ref as a pointer from the root, so it admits neither.
   const scoped = { type: 'object', $defs: { value: { type: 'string' }, child: { $id: 'https://example.invalid/child', type: 'object', $defs: { value: { type: 'integer' } }, properties: { value: { $ref: '#/$defs/value' } } } }, properties: { child: { $ref: '#/$defs/child' } } }
   for (const outputSchema of [{ type: 'object', patternProperties: {} }, { type: 'object', properties: { a: { type: 'text' } } }, { type: 'object', properties: { a: { $ref: '#/$defs/missing' } } },
-    scoped, { type: 'object', properties: { a: { $ref: '#name' } } }]) {
+    scoped, { type: 'object', properties: { a: { $ref: '#name' } } }, { type: 'object', properties: { a: { $ref: '#/%' } } }]) {
     await refused(claudeHost, { outputSchema }, 'BAD_SCHEMA')
   }
   assert.equal(schemaProblem({ $id: 'https://example.invalid/root', type: 'object', $defs: { a: { type: 'string' } }, properties: { a: { $ref: '#/$defs/a' }, self: { $ref: '#' } } }), null, 'a root $id and pointers from the root are admitted')

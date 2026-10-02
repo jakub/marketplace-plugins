@@ -34,7 +34,9 @@ function resolve(root, ref) {
   if (typeof ref !== 'string' || (ref !== '#' && !ref.startsWith('#/'))) return undefined
   let node = root
   for (const raw of ref.slice(1).split('/').slice(1)) {
-    const key = decodeURIComponent(raw).replace(/~1/g, '/').replace(/~0/g, '~')
+    // A malformed percent-escape names nothing, so the reference does not resolve.
+    let key
+    try { key = decodeURIComponent(raw).replace(/~1/g, '/').replace(/~0/g, '~') } catch { return undefined }
     if (!isObject(node) || !Object.hasOwn(node, key)) return undefined
     node = node[key]
   }
