@@ -93,7 +93,7 @@ The Codex thread config lives in `codex-app-server.mjs`, and the Claude argv and
 - `--permission-mode dontAsk --permission-prompts none` turns every would-be prompt into a denial. Each `result` frame lists its turn's denials. A steer can run as a turn of its own, so the job fails `APPROVAL_REQUIRED` when any `result` frame listed one, with its answer kept.
 - The Claude environment carries `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` and `CLAUDE_CODE_NO_MODEL_FALLBACK=1`. Neither is public API, so the fold also checks the model on the `system/init` frame and on every assistant frame, ignoring `<synthetic>` and a `[1m]` suffix. `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` keeps a job out of the human's project memory.
 - A provider sees `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LANGUAGE`, `TERM`, `TZ`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `XDG_*` and `LC_*`, plus `TMPDIR` set to the job's private directory, `FLOW_DELEGATION_DEPTH=1` and `FLOW_DELEGATION_JOB`. A server that finds `FLOW_DELEGATION_DEPTH` in its own environment refuses to start a job, so delegation is one hop deep.
-- Only absolute PATH entries count when the server looks for a provider, so a worktree can never supply the executable.
+- Only absolute PATH entries count when the server looks for a provider, so a worktree can never supply the executable. The flow executors' children get the same rule through `absolutePathEnv` in `lib/gh-exec.mjs`, which applies it to `PATH` and `GIT_EXEC_PATH` only, and pass through a `GIT_SSH` or `GIT_SSH_COMMAND` the operator set, since that is the operator's choice.
 
 ## Limits accepted on purpose
 

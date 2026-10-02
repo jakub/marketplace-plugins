@@ -15,20 +15,15 @@ import { accessSync, constants } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 
 /**
- * The environment every child an executor starts sees. PATH keeps only absolute entries. git also
- * takes a helper directory and an ssh program from the environment and resolves a relative one
- * inside the repository it was pointed at, so GIT_EXEC_PATH stays only when absolute, and GIT_SSH
- * and GIT_SSH_COMMAND only when the program they name (GIT_SSH_COMMAND's first word) is absolute
- * or a bare name, which then resolves through this PATH.
+ * The environment every child an executor starts sees. PATH keeps only absolute entries, and
+ * GIT_EXEC_PATH stays only when absolute, because git resolves a relative helper directory inside
+ * the repository it was pointed at. A GIT_SSH or GIT_SSH_COMMAND the operator set is the
+ * operator's choice and is passed through: the relative-directory rule covers PATH and
+ * GIT_EXEC_PATH only.
  */
 export const absolutePathEnv = (env) => {
   const out = { ...env, PATH: String(env?.PATH || '').split(delimiter).filter((dir) => isAbsolute(dir)).join(delimiter) }
   if (out.GIT_EXEC_PATH !== undefined && !isAbsolute(out.GIT_EXEC_PATH)) delete out.GIT_EXEC_PATH
-  for (const name of ['GIT_SSH', 'GIT_SSH_COMMAND']) {
-    if (out[name] === undefined) continue
-    const program = name === 'GIT_SSH' ? out[name] : String(out[name]).trim().split(/\s+/)[0]
-    if (!isAbsolute(program) && !/^[^/]+$/.test(program)) delete out[name]
-  }
   return out
 }
 
