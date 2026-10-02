@@ -166,6 +166,11 @@ console.log('SessionStart publishes the shim by epoch')
   start()
   check('an equal epoch at 0644 is made 0755 and left byte for byte', readFileSync(bin, 'utf8') === kept && (statSync(bin).mode & 0o777) === 0o755,
     `mode ${(statSync(bin).mode & 0o777).toString(8)}`)
+  // An execute bit for others alone does not let the owner run it.
+  chmodSync(bin, 0o645)
+  start()
+  check('an equal epoch at 0645 is made 0755 and left byte for byte', readFileSync(bin, 'utf8') === kept && (statSync(bin).mode & 0o777) === 0o755,
+    `mode ${(statSync(bin).mode & 0o777).toString(8)}`)
   writeFileSync(bin, 'not a shim\n')
   start({ GRIPE_HOME: PLUGIN })
   check('GRIPE_HOME in the environment publishes nothing', readFileSync(bin, 'utf8') === 'not a shim\n')
