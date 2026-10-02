@@ -20,7 +20,7 @@ A hook script runs without a reinstall: `echo '<json>' | node plugins/flow/hooks
 
 Two files leave the plugin cache for `~/.local/bin`, and each has its own update rule:
 
-- `plugins/flow/bin/flow-delegate` is copied by `scripts/install-delegate.mjs` whenever the installed copy differs. Codex starts MCP servers before SessionStart hooks run, so the flow skill's `setup` runs the installer once per machine, and the Codex SessionStart hook keeps the copy current after that.
+- `plugins/flow/bin/flow-delegate` is copied by `scripts/install-delegate.mjs` whenever the installed copy differs, but only over a file that opens with a `// flow-delegate-` marker line; anything else there is refused with exit 1. Codex starts MCP servers before SessionStart hooks run, so the flow skill's `setup` runs the installer once per machine, and the Codex SessionStart hook keeps the copy current after that.
 - `plugins/gripe/bin/shim.mjs` is copied only when the installed copy is missing or its `// gripe-shim-epoch: <n>` line is lower. A byte change without an epoch bump never reaches an installed shim. Bump the epoch when shim behavior changes, never per release.
 
 Adding a plugin: `plugins/<name>/` with a `.claude-plugin/plugin.json`, plus an entry in the manifest's `plugins` array with `"source": "./plugins/<name>"`. Plugins don't reach into each other's files. Flow's prep stage uses `grill-with-docs` when it is installed and grills inline otherwise, and that one-way, soft dependency is the model.
