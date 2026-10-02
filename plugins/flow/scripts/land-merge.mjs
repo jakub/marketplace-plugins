@@ -238,6 +238,14 @@ export function landMerge({ argv, env, cwd, runGh }) {
     const problems = []
     const entries = []
     const problem = (code, detail) => problems.push({ code, detail })
+    // A paged read is whole only when every page reports the same valid total_count: pages that
+    // disagree were read while the list changed, whatever the collected list's length matches.
+    // Returns that count, or null, and how GitHub reported it.
+    const pageTotal = (pages) => {
+      const counts = pages.map((page) => page?.total_count ?? null)
+      const agreed = counts.every((count) => Number.isSafeInteger(count) && count >= 0 && count === counts[0])
+      return { total: agreed ? counts[0] : null, said: new Set(counts).size > 1 ? `s ${counts.join(', ')} across its pages` : ` ${JSON.stringify(counts[0] ?? null)}` }
+    }
     let runs = null
     const runsRead = readPages(commitPath('check-runs'))
     const runPages = runsRead.code === 0 ? parseJson(runsRead.stdout) : null
@@ -248,9 +256,9 @@ export function landMerge({ argv, env, cwd, runGh }) {
       for (const run of runs) {
         entries.push({ kind: 'check-run', name: nonEmpty(run?.name), link: nonEmpty(run?.details_url) ?? nonEmpty(run?.html_url), status: run?.status, conclusion: run?.conclusion })
       }
-      const reported = runPages[0]?.total_count
-      if (!Number.isSafeInteger(reported) || reported !== runs.length) {
-        problem('ci-unknown', `the check-run read on ${head.slice(0, 12)} collected ${runs.length} run(s) and GitHub reported total_count ${JSON.stringify(reported ?? null)}, so it cannot be shown to have seen every check`)
+      const reported = pageTotal(runPages)
+      if (reported.total === null || reported.total !== runs.length) {
+        problem('ci-unknown', `the check-run read on ${head.slice(0, 12)} collected ${runs.length} run(s) and GitHub reported total_count${reported.said}, so it cannot be shown to have seen every check`)
       }
     }
     // The check-runs endpoint serves runs from only the 1000 most recent check suites on a ref, and
@@ -265,8 +273,9 @@ export function landMerge({ argv, env, cwd, runGh }) {
       problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} could not be read (${suitesRead.code === 0 ? 'a page with no check_suites array' : said(suitesRead)}), ${windowUnknown}`)
     } else {
       suites = suitePages.flatMap((page) => page.check_suites)
-      const total = suitePages[0]?.total_count
-      if (!Number.isSafeInteger(total) || total < 0) problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} gave no total_count, ${windowUnknown}`)
+      const reported = pageTotal(suitePages)
+      const total = reported.total
+      if (total === null) problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} gave no single total_count (GitHub reported total_count${reported.said}), ${windowUnknown}`)
       else if (total >= MAX_CHECK_SUITES) {
         problem('ci-unknown', `${head.slice(0, 12)} carries ${total} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the check-runs endpoint serves from, so a failing run in an older suite would not appear in this read`)
       } else if (total !== suites.length) {

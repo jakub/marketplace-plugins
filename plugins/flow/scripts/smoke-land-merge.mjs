@@ -128,8 +128,10 @@ const makeRunGh = (st) => (args) => {
       if (st.fail === source) return serverError()
       if (st.malformed === source) return ok([{ message: 'not a page' }])
       // A suiteCount stands in for a total_count past the suites listed, such as the 1000-suite window.
-      if (source === 'check-suites') return ok(pagesOf(seen('suites')).map((page) => ({ total_count: seen('suiteCount') ?? seen('suites').length, check_suites: page })))
-      if (source === 'check-runs') return ok(pagesOf(seen('checkRuns')).map((page) => ({ total_count: seen('totalCount') ?? seen('checkRuns').length, check_runs: page })))
+      // pageTotals gives one page of a source its own total_count, as when a run or suite is added mid-read.
+      const totalOn = (i, fallback) => st.pageTotals?.[source]?.[i] ?? fallback
+      if (source === 'check-suites') return ok(pagesOf(seen('suites')).map((page, i) => ({ total_count: totalOn(i, seen('suiteCount') ?? seen('suites').length), check_suites: page })))
+      if (source === 'check-runs') return ok(pagesOf(seen('checkRuns')).map((page, i) => ({ total_count: totalOn(i, seen('totalCount') ?? seen('checkRuns').length), check_runs: page })))
       return ok(pagesOf(seen('statuses')))
     }
     // One unpaged page of suites, as a count-only read asks for.
@@ -347,6 +349,14 @@ console.log('\nwhat counts as a check')
   // agrees, so the suite count is read on its own and a read at the window, or none, is unknown.
   const windowed = run(ARGS, { st: freshState({ suiteCount: 1000 }) })
   check('a head carrying 1000 check suites refuses ci-unknown, naming the window', refusedWith(windowed, 'ci-unknown', '1000-suite window'), shown(windowed))
+  // Every page's total_count has to agree: 101 on page 1 and 102 on page 2 is a read that moved
+  // under it, though the list it collected matches page 1.
+  const manySuites = Array.from({ length: 101 }, (unused, i) => ({ id: 600 + i, status: 'completed', conclusion: 'success' }))
+  const driftSuites = run(ARGS, { st: freshState({ suites: manySuites, pageTotals: { 'check-suites': [101, 102] } }) })
+  check('check-suite pages that disagree on total_count refuse ci-unknown', refusedWith(driftSuites, 'ci-unknown', '101, 102'), shown(driftSuites))
+  const manyRuns = Array.from({ length: 101 }, (unused, i) => checkRun(`r${i}`, 'success'))
+  const driftRuns = run(ARGS, { st: freshState({ checkRuns: manyRuns, pageTotals: { 'check-runs': [101, 102] } }) })
+  check('check-run pages that disagree on total_count refuse ci-unknown', refusedWith(driftRuns, 'ci-unknown', '101, 102'), shown(driftRuns))
   const partSuites = run(ARGS, { st: freshState({ suiteCount: 5 }) })
   check('a check-suite read short of its total_count refuses ci-unknown', refusedWith(partSuites, 'ci-unknown', 'every suite'), shown(partSuites))
   const unsuited = run(ARGS, { st: freshState({ fail: 'check-suites' }) })
