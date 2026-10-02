@@ -197,6 +197,15 @@ console.log('\ndelete-branch needs a death warrant and a recoverable tip')
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(state))
   const r = run(w, ['delete-branch', w.repo, 'feat/done'])
   check('a merged branch is deleted and reads back gone', r.code === 0 && spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/done']).status !== 0, JSON.stringify(r.json))
+  // A branch name reused after its old pull request closed: the closed PR's head is the old tip,
+  // the branch has moved on and origin holds the new tip. The old PR is no death warrant for it.
+  w.git(w.repo, 'branch', 'feat/reused', w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'new work'))
+  w.git(w.repo, 'push', '-q', 'origin', 'feat/reused')
+  const reused = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  reused.prs['feat/reused'] = [{ number: 9, state: 'CLOSED', headRefOid: w.tip }]
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(reused))
+  refused('a reused branch whose closed pull request had another head', run(w, ['delete-branch', w.repo, 'feat/reused']), 'not shown dead')
+  check('and the reused branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/reused']).status === 0)
   w.git(w.repo, 'branch', 'feat/taken')
   const taken = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
   taken.prs['feat/taken'] = [{ number: 6, state: 'MERGED', headRefOid: w.tip }]

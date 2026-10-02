@@ -142,9 +142,11 @@ function run({ action, repoArg, target, rest, env }) {
     if (inMain(tip)) return `the tip is in origin/${defaultBranch()}`
     return refuse('the tip is not reproducible from origin (no matching remote branch, pull request head or main ancestry)')
   }
-  // Dead: recoverable is not a reason to delete; a pushed spike with no pull request is alive.
+  // Dead: recoverable is not a reason to delete; a pushed spike with no pull request is alive. A
+  // closed pull request is a warrant only for the tip it closed at, since a branch name can be
+  // reused for new work after its old pull request closed.
   const dead = (branch, tip) => {
-    const closed = prsFor(branch).find((p) => p.state === 'MERGED' || p.state === 'CLOSED')
+    const closed = prsFor(branch).find((p) => (p.state === 'MERGED' || p.state === 'CLOSED') && p.headRefOid === tip)
     if (closed) return `pull request #${closed.number} is ${closed.state}`
     if (inMain(tip)) return `the tip is already in origin/${defaultBranch()}`
     return refuse(`no merged or closed pull request and the tip is not in origin/${defaultBranch()}: recoverable, but not shown dead, so a human decides`)
