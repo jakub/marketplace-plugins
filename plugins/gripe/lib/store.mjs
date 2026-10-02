@@ -65,7 +65,15 @@ CREATE TABLE IF NOT EXISTS meta (
 export function openStore() {
   mkdirSync(stateDir(), { recursive: true })
   const db = new DatabaseSync(dbPath(), { timeout: 5000 })
-  db.exec('PRAGMA journal_mode = WAL')
+  // Switching a fresh database into WAL needs a lock that SQLite's busy handler does not wait for,
+  // so openers racing on a new file can fail at once. WAL persists once any of them sets it, so a
+  // short retry ends the race: measured without it, one of twenty concurrent writers vanished.
+  for (let attempt = 1; ; attempt++) {
+    try { db.exec('PRAGMA journal_mode = WAL'); break } catch (error) {
+      if (!isBusy(error) || attempt >= 100) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    }
+  }
   migrate(db)
   return db
 }
