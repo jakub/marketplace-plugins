@@ -156,9 +156,12 @@ rmSync(join(managed, 'git'))
 // and then answers as the real one does.
 const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
 const seen = join(tmp, 'guard-git-saw-relative')
+const shimRan = join(tmp, 'guard-git-ran')
 mkdirSync(join(tmp, 'abs-bin'))
-writeFileSync(join(tmp, 'abs-bin', 'git'), `#!/bin/sh\ncase ":$PATH:" in *:bin:*) : > ${seen};; esac\nexec ${realGit} "$@"\n`, { mode: 0o755 })
+writeFileSync(join(tmp, 'abs-bin', 'git'), `#!/bin/sh\n: > ${shimRan}\ncase ":$PATH:" in *:bin:*) : > ${seen};; esac\nexec ${realGit} "$@"\n`, { mode: 0o755 })
 answers('deny', MERGE, 'the guard\'s git is handed a PATH of absolute entries only', { spawnCwd: managed, path: `${join(tmp, 'abs-bin')}:bin:${env.PATH}` })
+// The deny alone would also follow from a guard that never ran this git and read the repo as managed.
+check('the guard ran the git first on its PATH', existsSync(shimRan))
 check('the guard\'s git saw no relative PATH entry', !existsSync(seen))
 
 console.log('\nthe tripwire never matches the executor, and prose is not a merge')
