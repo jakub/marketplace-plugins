@@ -55,6 +55,7 @@ export function schemaProblem(schema, root = schema, at = '#', depth = 0) {
   if (schema.type !== undefined) {
     const types = [].concat(schema.type)
     if (!types.length || types.some((type) => !TYPES.has(type))) return `${at}/type names no JSON type`
+    if (new Set(types).size !== types.length) return `${at}/type repeats a name`
   }
   if (schema.required !== undefined && !(Array.isArray(schema.required) && schema.required.every((key) => typeof key === 'string') && new Set(schema.required).size === schema.required.length)) return `${at}/required is not a list of distinct names`
   if (schema.enum !== undefined && !(Array.isArray(schema.enum) && schema.enum.length)) return `${at}/enum is not a non-empty list`
