@@ -1,8 +1,8 @@
 [Unit]
 Description=flow nightly lint: label contract, worktrees, branches, known flakes
 # No network-online dependency: that target is a no-op in the user manager. The
-# jobs fail closed instead - a failed fetch means nothing buckets safe and the
-# report says so.
+# jobs fail closed instead - every lint-actions.mjs verb fetches first and refuses
+# on a failed fetch, and the report says so.
 [Service]
 Type=oneshot
 EnvironmentFile=-%h/.config/flow/cron.env

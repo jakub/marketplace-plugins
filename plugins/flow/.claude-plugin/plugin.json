@@ -9,7 +9,7 @@
     "flow_delegate": {
       "command": "node",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/dist/delegation.mjs",
+        "${CLAUDE_PLUGIN_ROOT}/delegate/main.mjs",
         "mcp",
         "--host",
         "claude"

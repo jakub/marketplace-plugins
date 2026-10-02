@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 // gripe: SessionStart. One advertisement line to the main agent and nothing else, per
 // decision 7. On the way past: write the session mark that gives distinct-session
-// counting its denominator, keep the PATH shim pointed, and sweep stale state files.
+// counting its denominator, publish the PATH shim, and sweep stale state files.
 //
 // Contract: read hook JSON on stdin, print the advertisement to stdout, always exit 0.
 
-import { readdirSync, statSync, unlinkSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { readHookEvent } from '../../lib/context.mjs'
 import { heredocDelim, stateDir } from '../../lib/gate.mjs'
-import { pointShim } from '../../lib/shim.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SWEEP_AGE_MS = 3 * 24 * 60 * 60 * 1000
+const EPOCH_RE = /^\/\/ gripe-shim-epoch: (\d+)$/m
 
 async function markSession(sessionId) {
   try {
@@ -30,17 +30,46 @@ async function markSession(sessionId) {
   }
 }
 
+// The epoch a shim declares. A file with no marker reads as -1, so a corrupt copy or one
+// from before the marker existed counts as older and gets replaced.
+const epochOf = (text) => Number(text.match(EPOCH_RE)?.[1] ?? -1)
+
+/**
+ * Copy bin/shim.mjs to ~/.local/bin/gripe when the file there is missing or declares a
+ * lower epoch. Both harnesses run this hook from their own install, often at different
+ * versions, so a plain overwrite would let the older one revert the newer shim every
+ * session. The epoch counts shim behavior changes, never releases, so an equal epoch is
+ * left alone. Any failure, including losing a race with the other harness's session, is
+ * retried by the next SessionStart.
+ */
 function publishShim() {
   // Presence, not truthiness, and the same rule the shim's own resolver uses: any
-  // GRIPE_HOME in the environment means a working tree is under test, and re-pointing
+  // GRIPE_HOME in the environment means a working tree is under test, and publishing
   // would clobber the developer's shim and send traffic back to the installed copy.
   if (Object.hasOwn(process.env, 'GRIPE_HOME')) return
-  // The verdict is deliberately ignored. Every outcome, including losing a race with the
-  // other harness's session, is fixed by the next SessionStart trying again.
-  pointShim({
-    sourcePath: join(HERE, '..', '..', 'bin', 'shim.mjs'),
-    shimPath: join(homedir(), '.local', 'bin', 'gripe'),
-  })
+  const dest = join(homedir(), '.local', 'bin', 'gripe')
+  const temp = `${dest}.${process.pid}.tmp`
+  try {
+    const source = readFileSync(join(HERE, '..', '..', 'bin', 'shim.mjs'), 'utf8')
+    // Only a regular file, through any symlink, is read: a FIFO there would block the read,
+    // and this hook, until its timeout. Anything else is not a shim and is left alone.
+    const found = statSync(dest, { throwIfNoEntry: false })
+    if (found && !found.isFile()) return
+    let current = null
+    try { current = readFileSync(dest, 'utf8') } catch {}
+    if (current !== null && epochOf(current) >= epochOf(source)) {
+      // Left as it is, except that a shim its owner cannot execute gets its executable bits back.
+      if ((found.mode & 0o100) === 0) chmodSync(dest, 0o755)
+      return
+    }
+    mkdirSync(dirname(dest), { recursive: true })
+    writeFileSync(temp, source)
+    chmodSync(temp, 0o755) // the create mode is subject to umask
+    // One rename, so a concurrent `gripe` sees the old shim or the new one, never half.
+    renameSync(temp, dest)
+  } catch {
+    try { unlinkSync(temp) } catch {}
+  }
 }
 
 function sweep() {

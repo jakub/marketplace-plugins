@@ -1,364 +1,110 @@
 # Cross-family delegation
 
-This is the design and maintenance record for `src/delegation`. If you are calling the tools
-rather than editing them, read `skills/delegate/SKILL.md` instead: it is the operating manual,
-and nothing here repeats it.
+This is the maintenance record for `plugins/flow/delegate/`. To call the tools, read `skills/delegate/SKILL.md` instead. Nothing here repeats it.
 
-As of 2026-09-01, against Codex CLI 0.152.0 and Claude Code 2.1.257 as installed. Both
-deterministic smokes pass on those versions; the live-turn validations keep their own dates below,
-because nothing re-ran them today.
+The Codex transport was checked on 2026-09-30 against Codex CLI 0.159.0 with a handshake that starts no model turn: `initialize`, `model/list`, `config/read`, `thread/start` with a `flow_delegation` profile and the thread config below, the thread's read-back, and `turn/steer` and `turn/interrupt` with no turn open. The turn notifications it folds come from the protocol schema that `codex app-server generate-ts --experimental --out <dir>` prints, and `thread/resume` is unchecked, because it refuses a thread that has never run a turn.
 
-Both routes need Linux with cgroup v2, a working systemd user manager, and Node 22 or newer. Every
-provider process runs in a transient systemd scope, which is what makes a write lease safe to
-release. Containment fails closed with `UNSUPPORTED_HOST`.
+The Claude transport's handshake was checked on 2026-09-30 against Claude Code 2.1.284, also with no user message: `initialize` answers with the model catalog, `mcp_status` answers with an empty server list, and a CLI whose stdin closes before any user message exits 0 and prints nothing. The sandbox, the permission rules and the turn frames the Claude fold reads were checked on 2026-09-29 with real read-only jobs through the one-shot `claude -p --output-format stream-json`, which prints the same frames. The replayed user message, the `priority` field a steer carries and the `interrupt` control request come from the Agent SDK's type definitions and have not been seen in a live turn. A job against Claude Code 2.1.285 on 2026-09-30 showed the `system/init` frame live. It lists `tools`, `mcp_servers` and `plugins`, and `plugins` holds the two plugins the CLI compiles in, `cc-plugin-agents-md` and `cc-plugin-telemetry`, each with `path: "builtin"` and `source: "<name>@builtin"`. No flag turns them off.
 
-## Route and workspace policy
+No model turn has run through either transport yet. `node plugins/flow/scripts/smoke-delegate.mjs` proves the contract against fake providers in about 30 seconds, most of it one job running out its 30-second budget.
 
-Each plugin manifest starts the server with a trusted `--host` argument. Tool input cannot replace
-it, and MCP mode refuses to start when it is missing or names an unknown family.
+`delegation_doctor` is the protocol drift check. It runs each transport's handshake against the installed CLI, up to the read-back, and sends no prompt. Codex gets `initialize`, `model/list`, `config/read`, an ephemeral `thread/start` with a read-only job's profile and thread config, and `mcpServerStatus/list`. Claude gets `initialize` and `mcp_status`, and then its stdin closes with no user message. A CLI release that changes one of those steps fails the doctor with a typed kind, so every stage stops at its preflight instead of failing a job halfway. On 2026-09-30 the doctor passed against Codex CLI 0.159.0 and Claude Code 2.1.284, each in under 1.5 seconds. The Codex handshake listed 11 models, read back its `flow_delegation` profile and disabled 2 MCP servers. The Claude handshake listed 12 models and reported no MCP server. What runs only inside a turn is out of the doctor's reach: the turn notifications, `turn/steer`, `turn/interrupt`, the Claude user message and its replay, and the `system/init` frame.
 
-The Codex MCP definition invokes the stable `flow-delegate` PATH command with an exact plugin
-version pin and no `cwd` override. One registration per canonical Codex home pins the installed
-`CODEX_HOME/plugins/cache/<marketplace>/flow` package directory and its cache layout. The
-registration lives at `~/.local/share/flow-delegate/registrations/<sha256(CODEX_HOME)>.json`.
-For a versioned cache, the dispatcher selects only `<anchor>/<exact MCP version>`. A local cache
-selects `<anchor>/local` only when that slot's manifest matches the requested version. It never
-scans for a newer version or falls back to a Claude cache. It preserves the host-selected process
-directory. The native app supplies the thread's project directory there; Flow accepts it only when its canonical path
-is exactly Git's top-level directory. An enclosing repository is not sufficient. Home,
-nonrepository and repository-subdirectory launches produce `NO_ROOTS`.
+## What each file owns
 
-Codex CLI 0.153.4 still advertises no MCP roots capability in the observed launch. Inherited
-`PWD`, `CODEX_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` are ignored on this host. Git discovery strips
-inherited `GIT_*` variables and disables global and system Git configuration, so environment
-injection cannot select another worktree. The Codex MCP environment retains `XDG_RUNTIME_DIR`
-and `DBUS_SESSION_BUS_ADDRESS` for access to the systemd user bus. Claude continues to use MCP
-roots and `CLAUDE_PROJECT_DIR`, and ignores `CODEX_PROJECT_DIR` and `PWD`.
+The server is eight files that need Node 22 or later and Node built-ins only. There is no build step, no bundle and no npm dependency, so an edit takes effect on the next server start.
 
-Install the dispatcher once per machine through flow setup before the first Codex Flow session.
-Setup runs `node <plugin-root>/scripts/install-delegate.mjs install` from the installed Codex
-package and checks the result. The SessionStart hook maintains the package registration
-idempotently. A new versioned cache under the same anchor works without another installer or
-hook run, because its MCP definition selects that exact version. Codex starts
-MCP before SessionStart, so first installation needs a new session or an explicit app MCP reload
-after setup. A hook alone does not make that first launch work. Setup also remains necessary
-when hooks are disabled or untrusted. The installer's `uninstall` action removes that home's
-registration and preserves other homes. Changing the registered package anchor or cache layout
-requires an explicit uninstall before installing the replacement.
+| File | Owns |
+| --- | --- |
+| `main.mjs` | The entry. `mcp --host claude\|codex` serves MCP on stdio. `run --job <id>` runs one job. |
+| `server.mjs` | MCP over stdio, by hand: `initialize`, `ping`, `tools/list`, `tools/call`, `notifications/cancelled`, and one outbound request, `roots/list`. `delegation_doctor`, which runs the target transport's `check` beside the version and sign-in probe. |
+| `jobs.mjs` | Admission, the job directory, the provider's private `TMPDIR`, the write lease, the runner spawn, waiting, cancel, the steer request, reconciliation and the 14-day prune. |
+| `codex-app-server.mjs` | The Codex target: a JSON-RPC client of `codex app-server --stdio`, the catalog check, the thread config and the per-thread `flow_delegation` profile, the read-back before the prompt, the declined approvals, the fold from notifications to an outcome, and `check`, the doctor's handshake. |
+| `claude-control.mjs` | The Claude target: a client of the `claude -p` stream-json control channel, its argv and sandbox settings, the catalog check and the MCP read-back before the prompt, the `system/init` check after it, the fold from frames to an outcome, and `check`, the doctor's handshake. |
+| `providers.mjs` | What both targets share: the PATH lookup, the provider environment, version and sign-in, the catalog rule, the outcome check, and `handshake`, which runs a transport's `check`, reports it and closes the provider. |
+| `runner.mjs` | The detached process that drives one job through its target's session and delivers its steers, and `delegatedInstructions`, which builds the seat block. |
+| `schema.mjs` | The JSON Schema subset a structured answer is checked against: `schemaProblem` at admission, and `checkAnswer`, which runs `validate` in a child process before success. |
 
-Uninstall may run from the replacement Codex package when the former cache has already been
-removed. It removes only the valid registration for the current canonical Codex home. It does
-not follow the old anchor or remove another home's registration.
-Unknown entries in the registration directory retain the shared launcher. This includes
-temporary files left by an interrupted installation; uninstall does not guess whether those
-files can be deleted. A crashed install also leaves its lock for the owner to inspect.
-
-The configured HOME and existing CODEX_HOME resolve to canonical directories before path
-validation. Aliases for those bases are supported. Child paths below them, including `.local`,
-the launcher, registrations, and cache slots, must have real directory chains rather than
-symlinks. Cache inputs and installation paths must be owned by the current user and have no
-group or world write permission. Use a restrictive Codex host umask such as `022` for plugin
-installation and upgrades. An existing path with broader permissions is refused with its
-canonical path and a remediation command. Inspect that path and its intended sharing before
-changing permissions. The installer does not chmod user files. Fixing only the current cache
-does not fix a host umask that creates writable inputs again on the next upgrade.
-
-The route is checked three times: at job creation, again in the worker before it starts a
-provider, and in every read and control method, resource reads included, which verify that the
-requesting host owns the stored route and that the job sits inside the client's roots. Both hosts
-share one database, so a UUID from the other route is not authority. The worker also adds
-`FLOW_DELEGATION_DEPTH=1` and its parent job ID to the provider environment, so a child MCP server
-refuses new work.
-
-A requested working directory and the Git top-level directory granted to its provider must both
-resolve inside an authorized canonical root. Flow rejects missing paths, symlink escapes,
-unrelated checkouts and registered sibling worktrees outside that root. A forged `.git` pointer
-does not grant an outside directory. An internal worktree under `<repoRoot>/.flow-worktrees/`
-remains inside the repository root. At least one usable root must exist before any job starts,
-continues or is read back; `delegation_doctor` can report a missing-root failure.
-
-The issue stage plans `<repoRoot>/.flow-worktrees/<repoName>-issue-N-<slug>` from the canonical
-primary checkout with a real `.git` directory. Its plan is read-only. Before the prospective
-worktree exists, preflight calls the doctor with `cwd=repoRoot` and checks that the host's
-repository write grant covers the nested path. Codex requires that repository to be the sole
-usable root. Claude requires it among the usable roots and may retain other explicitly authorized MCP roots.
-A failed preflight stops before any issue mutation. The claim executor creates the worktree
-container and adds `/.flow-worktrees/` to `.git/info/exclude` only after it holds the claim tag
-and rechecks readiness. Those idempotent local setup changes can survive a later failed claim.
-
-The native app can grant repository writes while keeping `.git` read-only. The orchestrator uses
-the host's normal approval mechanism for Git metadata writes. In an issue run, the orchestrator
-passes only the exact nested worktree to a delegated Claude writer. That writer cannot commit;
-the orchestrator verifies and commits its edits. The generic delegation API authorizes the
-client's project root and does not enforce issue-stage path selection on unrelated tasks.
-The human invokes the issue skill directly, for example "run issue #42". No per-issue launcher,
-parent-directory grant or session restart is part of an ordinary run.
-
-The 0.153.4 launch observation does not reverify the full capability table, which remains pinned
-to 0.152.0. It also does not establish a full native-app issue run through a reviewed PR.
+`bin/flow-delegate` is the Codex launcher. Codex passes a plugin MCP server's command to the launcher without expanding variables, so a command on PATH is the only way to start the server in the thread's project directory. The launcher reads `--flow-version`, imports `$CODEX_HOME/plugins/cache/jakub/flow/<version>/delegate/main.mjs` into its own process, and exits 1 naming that path when the file is missing. `scripts/install-delegate.mjs install` copies the launcher to `~/.local/bin/flow-delegate` when that copy is missing or differs, and refuses to replace a file there that does not open with a `// flow-delegate-` marker line. A swap between that check and the rename that replaces an owned copy stays possible, and both sides of it are the same user's processes. Codex starts MCP servers before SessionStart hooks run, so the flow skill's `setup` runs the installer once, and the Codex SessionStart hook keeps the copy current after that.
 
 ## Contracts that bind an edit
 
-`resultEnvelope()` in `contracts.mjs` builds the envelope and `envelope-schema.mjs` is its shape.
-The two are one field list or the smoke fails. Every tool declares that shape as its
-`outputSchema`, so a success, an attached job that ended badly (`{ ok: false, job }`) and a
-rejected request (`{ ok: false, error }`) must all validate against it: a client that checks every
-structured result, as MCP Client 1.30.0 does, must find an error result valid too. `error.kind` is
-enumerated from `ERROR_KINDS`, which the Codex smoke greps the source for and fails on a missing
-kind.
+- The tools declare an `inputSchema` and no `outputSchema`, so no client validates `structuredContent`. Every result is `{ok, job?, error?}`, and the doctor adds its own fields. The same object goes out twice: as `structuredContent`, and as JSON text whose first line is `summary`.
+- `error.kind` is the closed set listed in the delegate skill. Add a new kind to that list in the same commit as the code.
+- A delegated seat's instructions are `seatPayload(charter.md)`, byte for byte, read from `charter/charter.md` when the job runs, then the `<delegated-seat>` block. Both are written to `seat.md`. On Codex they go in the thread's `developerInstructions`, and `turn/start` carries the caller's prompt alone. On Claude they go in through `--append-system-prompt-file`, and the one user message carries the caller's prompt alone. No rule rides in caller prose. `smoke-delegate.mjs` checks the bytes.
+- No Codex prompt goes out before the read-back. `turn/start` is sent only after the thread reports `activePermissionProfile.id` equal to the profile name it was given, no parent profile, a sandbox with no network and no writable root the profile did not grant, a `model` equal to the requested one, and an MCP inventory in which every server reads `disabled` with no tools. A failed read-back fails the job `ISOLATION` or `MODEL_MISMATCH`, and the envelope says `promptSent: false`.
+- No Claude prompt goes out before the read-back either. The user message is written only after `initialize` has answered and `mcp_status` has reported no server, and it sets `client_composed: true`. A `system/init` frame that names a tool outside the requested set, any MCP server or any plugin but the CLI's built-ins, or that lacks one of those lists, interrupts the turn, and the job fails `ISOLATION`. A built-in passes only when its `path` is exactly `builtin` and its `source` is exactly `<name>@builtin`. Any other entry fails, a built-in name on another path or source included, and `details.plugins` names it.
+- When a provider's catalog lists the requested model, the requested effort must be one the catalog lists for it. Otherwise the job fails `BAD_MODEL` before the prompt, and on Codex before the thread. An id the catalog does not list is admitted, and the envelope says `catalog: "absent"`. `listing` in `providers.mjs` is the one rule both targets call.
+- The model that answers is the model requested. On Codex the thread's `model` must equal the request, and a `model/rerouted` notification that moves the turn to any other model makes that model the served one. On Claude the init frame and every assistant frame must name the catalog's `resolvedModel`, or the init frame's own model when the catalog does not list the id. A mismatch interrupts the turn and fails `MODEL_MISMATCH`.
+- A steer goes into the open turn and never stops the job: `turn/steer` against the open turn's id on Codex, and a `client_composed` user message with `priority: "next"` on Claude. The Claude runner closes stdin only at a `result` frame that follows the replay of every steer it wrote, and the job's outcome is the last `result` frame before the CLI exits. `continue` accepts only a finished job.
+- The doctor sends no prompt. Each transport's `check` runs the steps its `open` runs before the prompt, through the same functions. It skips the model and effort checks, because the doctor names no model. It never sends `turn/start` or a user message. The doctor's `ok` requires the check. A new step before the prompt joins `check` in the same commit, or the doctor stops proving what a job needs.
+- A provider's `TMPDIR` is `/tmp/flow-<first 8 characters of the job id>-<8 random hex characters>`, 27 bytes, and never a path under the state directory or `HOME`. Claude Code's sandbox creates its bridge sockets in `TMPDIR`, and a socket path longer than 107 bytes fails every sandboxed command while the job still succeeds. Both write grants take the path from the provider's environment. `smoke-delegate.mjs` checks the length under a long `HOME`. Its removal acts on a directory only through a handle opened without following a symlink, and `smoke-delegate.mjs` swaps a directory for a symlink in the middle of a removal.
+- Provider stderr and stack traces go to `stderr.txt` and `server.log`, never into a tool result. An error message the provider put in its own output may appear, clipped to 500 characters.
+- An outcome needs native proof. Success needs a terminal event (`turn/completed` with status `completed` from Codex, a `result` frame from Claude that follows the replay of every steer the runner wrote) and an answer. A running job whose runner is gone reads `unknown` with `RUNNER_LOST`.
+- A job with a schema succeeds only when its answer conforms to it, checked by `schema.mjs` and not taken on trust from either provider, since Codex narrows a schema outside its subset without saying so. A schema is admitted only when every keyword in it is one `schema.mjs` checks or an annotation, so no admitted schema is checked in part. A new keyword goes into both of its functions at once. The check runs in a child process that is killed after 10 seconds, and an answer it did not finish checking fails `SCHEMA_OUTPUT`. Admission bounds the schema but not the check: shared references can multiply the work at every level, and a pattern can backtrack without end. The runner holds the job and its lease until the outcome is written, so the check must not run in the runner itself.
 
-`capabilities.json` at the plugin root is the host capability table, read at runtime and
-deliberately not injected into the bundle, so re-verifying a row needs no rebuild and no version
-bump. It is hand-maintained and biased false: an unprobed id is `supported: false` with assurance
-`unverified`, `mechanism` means a named feature was observed doing the thing, and `contract` means
-the behaviour rests on an agreement with no receipt to check. Every id names both hosts, and a
-false entry never changes doctor's `ok`. `capabilityDrift` reads the installed version from the
-initialize handshake on Claude and from `codex --version` on Codex, whose MCP client reports its
-own component version rather than the CLI's.
+## Roots
 
-## Job record
+A root comes from the host, never from the call or the environment. On Claude the roots are the client's `roots/list` answer and `CLAUDE_PROJECT_DIR`, asked for again on every call. On Codex the one root is `process.cwd()` when it equals `git rev-parse --show-toplevel` and is not `$HOME`. Otherwise there is no root and every start fails `NO_ROOTS`.
 
-Flow stores data under `${XDG_STATE_HOME}/flow/delegation`, or `~/.local/state/flow/delegation`
-when unset; tests replace it with `FLOW_DELEGATION_STATE_DIR`. `jobs.sqlite3` uses WAL mode with
-`synchronous=NORMAL`, foreign keys, a busy timeout (5 s in the MCP server, 30 s in a worker, which
-answers nobody and must not lose a journal write to a lock) and a schema version. Every MCP server
-and worker on the machine shares the one file.
+A job's `cwd` and its Git top level must both resolve, through `realpath`, inside a root. Inherited `PWD`, `CODEX_PROJECT_DIR`, `GIT_DIR` and `GIT_WORK_TREE` are ignored: the server runs Git with every `GIT_*` variable removed and with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`. A job is visible only to a server for the same host whose roots contain the job's `cwd`. The state directory is shared by every session, so a job id from another workspace reads `JOB_NOT_FOUND`.
 
-A database written by an older Flow is dropped and recreated rather than migrated: it holds at
-most 14 days of history, and a migration ladder for rows nobody reads is more risk than the rows
-are worth. One written by a NEWER Flow is refused, because its jobs may still be running. The
-reset is also refused while the old database holds a live job, since a detached worker outlives
-the MCP process that started it and a workspace-write row holds a worktree lease. Flow counts rows
-whose `status` is active, `awaiting_approval` or `quarantined`, throws `STORE_UPGRADE_BLOCKED`
-naming the count, and leaves the file alone.
+## Job state
 
-The `jobs` table records the request, route, canonical working directory, immutable review SHAs,
-model settings and limits, native session and turn IDs, heartbeat, provider process identities,
-result, error, usage and parent job. `events` is an append-only ordered journal, and it omits
-hidden reasoning and raw command output, keeping phase changes, tool names, bounded answer
-previews, changed paths and usage. `controls` carries cancel and steer requests, cleared after
-handling and again when a job ends. `leases` gives one write job exclusive ownership of one
-canonical worktree. Terminal jobs are pruned after 14 days with `ON DELETE CASCADE` on the other
-three tables.
+The state directory is `${FLOW_DELEGATION_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/flow}`. It holds `jobs/<uuid>/`, `leases/` and `server.log`. A job directory holds `job.json`, `prompt.txt`, `schema.json` when a schema applies, `seat.md`, `events.jsonl`, `stderr.txt`, and `steer/` once a steer arrives.
 
-The database and state directory are owner-only. Prompts live in the job record, never in
-command-line arguments or process listings, and each worker clears the prompt at its acceptance
-boundary. The initial journal event retains a single-line request excerpt of at most 240 Unicode
-code points for tool previews. It comes from the caller's request, before review instructions are
-added, and expires with the job. Jobs created before this change have no excerpt.
+The provider's `TMPDIR` is not in the job directory. Claude Code's sandbox creates its proxy bridge sockets in `TMPDIR` as `claude-http-<16 hex>.sock` and `claude-socks-<16 hex>.sock`, and a Unix socket path holds at most 107 bytes. A `TMPDIR` longer than 72 bytes therefore fails every sandboxed command with `Failed to create bridge sockets after 5 attempts`. A job directory's depth follows `HOME`, and with `HOME=/home/jakub` a `tmp/` inside it was 75 bytes. The runner names the directory `/tmp/flow-<first 8 characters of the job id>-<8 random hex characters>` and records the path as `tmpDir` in `job.json` while the job is still queued. Only then does it create the directory, with mode 0700, failing if the name is taken, and then it marks the job running. So a runner that dies at any point leaves a record that names every directory it made. It removes the directory once the provider's group is dead and before it writes the outcome. When a runner dies, reconciliation removes the directory as it settles the job, whether the job was queued or running. The path comes from the record, so it is removed only when it is a direct child of `/tmp` named the way the runner names one for that job, and a directory this user owns rather than a symlink. Inside the directory the job may write anything, and a process it left outside its provider's group can still write there while the removal runs. So the removal never checks a path inside and then uses it. It opens each directory with `O_PATH | O_NOFOLLOW | O_DIRECTORY`, which a symlink never satisfies and a directory nobody may enter still does. Through that handle it checks that this user owns the directory, opens it to its owner, lists it and empties it, naming each entry from the pinned directory. `unlink` and `rmdir` never follow a final symlink. Node's `rmSync` is not used, because on Node 22 it reads each directory by a path it checked earlier. A removal that fails is logged in `server.log` and never thrown, so the job's outcome and its lease release always follow it. Each doctor handshake gets `/tmp/flow-doctor-<8 random hex characters>` the same way and removes it when the handshake ends. The Claude sandbox's `allowWrite` and the Codex profile's write grant both take the path from the `TMPDIR` in the provider's environment. The directory is in `/tmp` and not `$XDG_RUNTIME_DIR`, because Codex passes an MCP server no `XDG_*` variable, so a server that Codex hosts never sees it. `/tmp` is a literal and not the host's own `TMPDIR`, so an inherited path cannot make it long again.
 
-## State and write safety
+Writers replace `job.json` only by rename, so a reader sees the old record or the new one. While a runner lives, it is the only writer of its job. The server writes a record to create it, to cancel a job no runner has claimed, and to settle a job whose runner is gone. A `claim` file decides who moves a queued job. It is linked into place already holding its holder's pid and start token, so a late runner, a cancel and a lease takeover never both act on one job, and a job whose holder died can still be settled. A `cancel` file asks a running job to stop, and each `steer/<uuid>.json` asks it to deliver a steer. When a server starts, it removes terminal job directories older than 14 days, except one whose write lease is still held, because a takeover judges a lease by its holder's record.
 
-```text
-queued -> starting -> running -> terminal state
-  |          |          |
-  +----------+----------+-- stale worker -> reconciling -> terminal state or deferred recovery
-                        |
-                        +-- provider survives termination -> quarantined -> terminal state
-                        +-- worker dies first -> quarantined -> reconciling
-```
+A write job holds `leases/<sha256 of its worktree's real path>/`, a directory holding one file named for the job. The lease is built under a private name and renamed into place whole, and `rename(2)` onto a directory that is not empty fails, so two admissions cannot both take it. It is keyed on the job's Git top level rather than its `cwd`, so two write jobs in different subdirectories of one worktree still collide. Before a lease is taken over, its holder is reconciled: a job queued past its minute is claimed and settled, so its runner can never start it later, and a running job whose runner is gone has its provider group killed and reads `unknown`. A lease whose holder has ended and whose provider group reads gone is then taken over by moving out the file under that job's own name and removing the directory only if it is then empty. A lease that changed hands in between has a different file name, so no release and no takeover can remove it. A group reads gone when its leader's pid names another process, when `kill(-pgid, 0)` answers `ESRCH`, or when every thread of every member `/proc` shows, read from `/proc/<pid>/task`, is a zombie (`Z`) or dead (`X`), because a zombie holds no file descriptor and runs no code. Anything it cannot prove reads alive and keeps the lease: a running thread, a `/proc` read that fails for any reason but the process having ended, and a scan that finds no member while `kill(-pgid, 0)` still answers, as `hidepid` would make it. Read-only jobs take no lease.
 
-The `job.starting` event records the worker PID and an operating-system process-start token, and
-recovery checks both, so PID reuse cannot make an unrelated process look like the worker.
+## The runner
 
-A workspace-write job takes its lease on the canonical worktree root in the same SQLite
-transaction that claims the job. A normal terminal result releases the lease only after the worker
-proves the provider process tree stopped, and a second write job on that worktree fails with
-`WORKSPACE_BUSY` before a provider starts.
+The server spawns `node main.mjs run --job <id>` detached, with its stdio closed, so a job outlives the server and the session. The runner records its pid and its start time (field 22 of `/proc/<pid>/stat`) in `job.json`. A reader compares both to tell a live runner from a recycled pid.
 
-If a provider or a recorded descendant survives repeated termination, Flow stores `quarantined`
-with the systemd scope, process group, process-start identities, resume status, usage and error.
-It keeps the write lease, refuses continuation and never prunes that row; the same barrier applies
-when an uncatchable worker exit leaves a recorded provider alive. `delegation_status` checks the
-kernel scope first, then the recorded group and identities, and after they stop it applies the
-intended terminal state or resumes reconciliation, releasing the lease only after terminal proof.
+The runner drives the job through a session that the target's transport opens. The transport spawns the provider in its own process group, with a fixed set of environment variables, and hands the child to the runner before anything can signal it. The runner records the group's leader pid and start time. A recorded group is signalled only while its leader is that process, or while the leader is gone and members remain, which the kernel keeps unambiguous by never reusing an id a live group carries. A leader pid that names a process with another start time means the id was reused, and nothing is sent, however long after the job a reader settles it. It appends every stdout line to `events.jsonl` unchanged, and the session folds the lines that parse as JSON. Three things stop a job: its time budget, 420 seconds with no stdout line, and the `cancel` file, which the runner polls every 500 ms. A stop first sends the provider's own interrupt, then `SIGTERM` to the group and `SIGKILL` 10 seconds later. On Codex the interrupt is `turn/interrupt`, and on Claude it is the `interrupt` control request. Each gets 10 seconds to answer. `events.jsonl` records the stop as a `flow.stop` line and the interrupt's answer as a `flow.interrupt` line. The runner records `promptSent` in `job.json` the moment the prompt leaves it, and `catalog` once the session opens. It records `isolation`, what the live session read back, once the session has it: when the Codex thread opens, or at the Claude `system/init` frame. It writes the provider's thread id as soon as the session knows it, and `turnOpen` while a turn can take a steer. When a turn ends, the runner records `turnOpen: false`, then closes the provider's stdin, and the provider exits. On Codex a turn ends at `turn/completed`. On Claude it ends at the first `result` frame that follows the replay of every steer the runner wrote, and the outcome is the last `result` frame before the CLI exits. When the provider exits, the runner kills whatever is left in its group, waits up to 10 seconds for the group to read gone, releases the lease only if it has, and then writes the outcome. A group that outlives the wait keeps the lease until a later takeover finds it gone. A native success stands even when a stop raced it. A refusal, a model swap or a failed isolation read-back that the provider already showed outranks the stop that followed it.
 
-`delegation_cancel` is the way out of a quarantine that cannot end by itself. It re-checks the
-scope, the group and every recorded identity, refuses while anything is alive and names what is
-alive, and otherwise resolves the quarantine as `unknown` and releases the lease.
+The same 500 ms poll reads `steer/`. The server writes a steer there as `<uuid>.json`, by temp file and rename, only for a running job whose `turnOpen` is set, and then waits up to 30 seconds for `<uuid>.ack.json`. The runner delivers steers oldest first, one at a time. On Codex it sends `turn/steer` with `expectedTurnId` set to the open turn, and a response means delivered. On Claude it writes a `client_composed` user message with `priority: "next"`, and the CLI's replay of that message's `uuid` means delivered. A Claude steer with no replay after 10 seconds is answered `unknown`, not failed. The CLI owns a message once it is written and may still take it, so the steer keeps holding stdin open. Its entry in `steers` becomes `delivered` at the replay, or `failed` if the CLI exits first, and a second `flow.steer` line records that. A message the CLI drops outright leaves the job to the stall ceiling, and a stop's kind is then the outcome, because a `result` frame that came before a steer is not a success. The runner writes each answer by temp file and rename, journals a `flow.steer` line, and appends `{id, at, status, error}` to the job's `steers`. A steer that finds no open turn is answered as not delivered and never reaches the provider. After the provider exits, the runner answers every steer on disk before it writes the outcome. A steer therefore reads `unknown` only when its runner died, when it arrived after the runner's last read of `steer/`, or when the Claude CLI had not replayed it within 10 seconds.
 
-The acceptance boundary differs by provider. For Codex, `turn/started` or the `turn/start`
-response supplies the native turn ID; Flow stores it, marks the turn accepted and clears the
-prompt, so a later worker death can be repaired by reading that exact turn through `thread/read`.
-For Claude, a successful SDK initialize response proves the control channel is ready; Flow chooses
-the session ID and user-message UUID, stores both, marks the write boundary, and only then
-releases that exact user message to the input stream. A worker death after that makes a write job
-`unknown`, because the Agent SDK has no API that can prove the lost query's result, and a
-read-only job fails instead. Flow never replays an accepted write prompt automatically, and never
-maps a missing process, empty response or transport error to success.
+## Why each provider runs the way it does
 
-## The approval fork
+The Codex thread config lives in `codex-app-server.mjs`, and the Claude argv and settings in `claude-control.mjs`. These choices are the ones an edit is most likely to undo.
 
-A job started by an attached call from a client advertising `elicitation.form` carries
-`elicitation: true`. When its provider asks to run a command or change a file, the worker renders
-the request whole: the command with its working directory, the item's full path list for a file
-change (read from the item notifications that preceded the request), or the tool with the host's
-own title and its whole input on the Claude route. A request that cannot be shown whole is
-declined unasked and journaled as `approval.undisclosed`, which covers a command or input longer
-than 4,000 characters, a file change with no item on record, and network or stdin kinds with no
-command.
+- Codex runs as `codex app-server --stdio`, not `codex exec`. The App Server opens a thread before it takes a prompt, so flow can configure the thread and read it back first. `codex exec` sends the prompt in the same call that creates the session. The handshake is `initialize` with `experimentalApi: true`, `model/list`, `config/read`, then `thread/start`, or `thread/resume` for a continuation.
+- `model/list` is read with `includeHidden: true`, so a hidden model the account can use counts as listed. The effort check runs before `config/read`, so a refused effort opens no thread.
+- The `flow_delegation` permission profile is the containment. On 0.159.0 the built-in `:read-only` and `:workspace` profiles can read `~/.ssh`, `~/.config/gh/hosts.yml`, `~/.codex/auth.json` and `~/.claude/.credentials.json`. The profile grants read on `:minimal`, the worktree, the real paths of its Git directory and common directory, and the Codex executable. It grants write on the job's `TMPDIR`. A write job also gets write on the worktree, with `.git`, `.agents` and `.codex` kept read-only. Network is off.
+- Each thread gets a profile named `flow_delegation_` and a random suffix. Codex merges the thread config into every loaded layer table by table, so a profile that a user or project layer already defines under the same name keeps that layer's `extends` and grants beside flow's. On 0.159.2 a user-layer `[permissions.flow_delegation]` with `extends = ":read-only"` and a `/outside` write grant survived into a read-only thread. No layer can define a name it cannot know. The read-back checks the parts Codex reports: `extends` must be null, and the legacy `sandbox` it projects must have no network and no writable root outside the profile's write grants. Codex reports no read grant, so the unique name is what keeps a layer's read grants out.
+- The thread names the profile twice: as `permissions`, and as `default_permissions` in its config. In a scratch home, a thread config that defined `[permissions]` without `default_permissions` made `mcpServerStatus/list` fail with a config reload error.
+- Codex runs every shell command by re-executing its own binary inside bubblewrap. Without read on that binary, every command fails with `bwrap: execvp ...: No such file or directory`, and the turn still succeeds (openai/codex#29049). The grant is the real path of `/proc/<pid>/exe`, read once `initialize` answers, so a mise shim that execs in place already names the real binary. The grant also covers the PATH entry that started Codex, that entry's real path, and the npm package root when either path runs through `node_modules`.
+- The App Server has no `--ignore-user-config`, so it loads `$CODEX_HOME/config.toml` and any trusted project layer. The thread config turns off `features.plugins`, `features.apps`, `features.hooks`, `features.memories`, `features.multi_agent`, `features.multi_agent_v2`, `features.browser_use`, `features.computer_use` and `features.image_generation`. It also turns off `memories.use_memories` and `memories.generate_memories`, and disables `apps._default`.
+- Every MCP server that `config/read` names, in the effective config or in a layer Codex loaded, is disabled in the thread config. A layer that `config/read` reports with a `disabledReason`, such as an untrusted project, contributes no names: on 0.159.0, disabling a name that no loaded layer defines fails `thread/start` with "invalid transport". If the thread loads such a layer anyway, the read-back finds its servers.
+- `config/read` takes the job's `cwd`, not the worktree, so it sees the same project layers as a thread started in a subdirectory.
+- The read-back checks the live thread, not the layers flow built it from: `activePermissionProfile` and `sandbox`, the thread's `model`, and `mcpServerStatus/list` for the thread, at most ten pages. `allowProviderModelFallback: false` asks Codex not to substitute a model, and the model check proves it did not.
+- `approvalPolicy: "never"` means no approval request should arrive. One that does gets its method's decline: `decline` for `item/commandExecution/requestApproval` and `item/fileChange/requestApproval`, `{permissions: {}, scope: "turn"}` for `item/permissions/requestApproval`, and `denied` for `applyPatchApproval` and `execCommandApproval`. Any other server request gets JSON-RPC error `-32601`. A request whose method names an approval fails the job `APPROVAL_REQUIRED` once the turn ends, with the answer kept.
+- Claude runs as `claude -p --input-format stream-json --output-format stream-json --verbose --replay-user-messages`, the channel the Agent SDK speaks. The CLI opens its session before it takes a prompt, so flow can read the session back first. A one-shot `claude -p` takes its prompt in the same call that opens the session.
+- The control messages flow sends are the ones behind public Agent SDK methods: `initialize` (`initializationResult`), `mcp_status` (`mcpServerStatus`), `interrupt` (`interrupt`), and user messages (`streamInput`). The CLI has to keep them working for every SDK version in use. Each control request is `{type: "control_request", request_id, request: {subtype}}`, and its answer is a `control_response` frame with the same `request_id`.
+- `client_composed: true` on the user message stops the CLI from expanding an `@path` mention or running a slash command in a prompt that another model wrote.
+- A control request from the CLI gets an error response. The argv names no `--permission-prompt-tool`, so under `dontAsk` the CLI decides every permission itself. A `can_use_tool` request that arrives anyway fails the job `APPROVAL_REQUIRED` once the turn ends, with the answer kept.
+- The Claude catalog lookup matches the requested id against an entry's `value` or its `resolvedModel`, ignoring case and a `[1m]` suffix, and prefers the `value` match. On 2.1.284, `opus` resolves to `claude-opus-5-5`, `haiku` lists no effort levels and so fails `BAD_MODEL` at any effort, and `fable` is not a `value`, so it runs with `catalog: "absent"`.
+- `claude -p --setting-sources "" --strict-mcp-config` loads no settings file or MCP server, and no plugin or skill beyond the ones compiled into the CLI. Settings passed with `--settings` still apply, and they carry the containment. `mcp_status` and the `system/init` frame check the live session for MCP servers and plugins.
+- Claude's sandbox covers Bash only. `Read`, `Grep` and `Glob` use permission rules, so the credential paths and `/proc` appear twice: as `sandbox.filesystem.denyRead` for Bash, and as `Read(//path)` deny rules for the file tools. `Edit` is allowed inside the worktree on a write job and nowhere else.
+- The sandbox masks a provider executable only when its real path names the provider. On this machine `codex` is a mise shim that resolves to `/usr/bin/mise`, and masking it replaced mise with `/dev/null` inside the sandbox, which broke `node` and every tool mise serves.
+- `--permission-mode dontAsk --permission-prompts none` turns every would-be prompt into a denial. Each `result` frame lists its turn's denials. A steer can run as a turn of its own, so the job fails `APPROVAL_REQUIRED` when any `result` frame listed one, with its answer kept.
+- The Claude environment carries `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` and `CLAUDE_CODE_NO_MODEL_FALLBACK=1`. Neither is public API, so the fold also checks the model on the `system/init` frame and on every assistant frame, ignoring `<synthetic>` and a `[1m]` suffix. `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` keeps a job out of the human's project memory.
+- A provider sees `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LANGUAGE`, `TERM`, `TZ`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `XDG_*` and `LC_*`, plus `TMPDIR` set to the job's private directory, `FLOW_DELEGATION_DEPTH=1` and `FLOW_DELEGATION_JOB`. A server that finds `FLOW_DELEGATION_DEPTH` in its own environment refuses to start a job, so delegation is one hop deep.
+- Only absolute PATH entries count when the server looks for a provider, so a worktree can never supply the executable. The flow executors' children get the same rule through `absolutePathEnv` in `lib/gh-exec.mjs`, which applies it to `PATH` and `GIT_EXEC_PATH` only, and pass through a `GIT_SSH` or `GIT_SSH_COMMAND` the operator set, since that is the operator's choice.
 
-A showable request is parked in the store as `approval.requested`, carrying the summary and never
-the raw request. The server process, the only one holding the MCP session, sends
-`elicitation/create` with a two-value form. The attached wait loop does not await the form; it
-keeps reading the job, the caller's abort signal and the terminal state, and the form races that
-same signal. An explicit accept is written back as `approval.decided` and the worker answers the
-provider (`approval.granted`). Anything else is a decline: a declined or dismissed form, a client
-error, or the 240-second window closing, which sits under the 420-second stall ceiling. A decline
-is journaled as `approval.denied` with `asked: true` and ends the job as `awaiting_approval`.
+## Limits accepted on purpose
 
-A cancel on record beats an accept, checked before and after the worker reads the decision and
-inside the store's write lock, so a cancel landing before the human's accept turns that accept
-into a decline. A permissions request is never put to the human, because granting it would widen
-the sandbox doctor proved, and a detached job is never asked.
-
-## Codex App Server contract
-
-Validated with live delegated turns against Codex CLI 0.151.0 on Linux on 2026-08-29; the
-deterministic smoke passes against 0.152.0 as of the header date. Delegation requires Codex CLI
-0.150.1 or newer, and an older or unreadable version fails before Flow creates a job.
-
-The worker starts `codex app-server` over JSON lines with the experimental API enabled. The thread
-config disables plugin loading, app loading and every discovered standalone MCP server, and after
-the thread starts or resumes Flow reads that thread's inventory back and refuses to send the
-prompt unless every remaining server is disabled and exposes zero tools. Reading it back is the
-difference between the two routes: here isolation and the permission profile are configured and
-then PROVEN against the live thread, and a mismatch stops the job before the prompt goes out.
-
-Flow does not use Codex's built-in read-only sandbox, which can read the whole host filesystem.
-Each thread gets a custom `flow_delegation` profile granting read access to Codex's minimal
-runtime paths, the requested access to the canonical worktree, and write access to one owner-only
-temporary directory per job, removed after the provider stops. Network access is disabled. Git
-metadata stays read-only, including linked-worktree metadata outside the checkout, and for write
-jobs `.git`, `.agents` and `.codex` stay read-only when present. Flow sets the profile on
-`thread/start` or `thread/resume`, verifies App Server reports it active, and does not replace it
-at `turn/start`.
-
-The profile also grants read access to the resolved Codex executable and, for an npm install, its
-`@openai/codex` package root. Codex re-execs its own binary inside the bubblewrap namespace for
-every shell command, and without that grant every delegated command breaks with execvp ENOENT
-while the turn still completes (openai/codex#29049; validated against Codex CLI 0.151.0 on
-2026-08-29).
-
-The turn starts with `approvalPolicy: "never"`, the requested model and effort,
-`serviceTier: "default"`, `summary: "detailed"`, the canonical working directory, the active
-profile with network disabled, and the caller's output schema when present. The worker builds the
-final answer from completed `agentMessage` items, and Ajv checks structured output again on the
-way back. Before job creation Flow walks the schema against Codex's structured-output subset by
-hand, since no Ajv strictness rejects a well-formed schema for sitting outside that subset.
-
-App Server notifications reset a 420 second quiet-period timer, and a timeout or stall first sends
-`turn/interrupt`, then terminates the process. The transient scope keeps App Server and its
-descendants together across `setsid`, double-forking and parent exit, and the worker snapshots
-descendants with stable process-start identities, which stay useful after a user-manager restart
-or a scope lookup failure.
-
-## Claude Agent SDK contract
-
-Validated against Claude Code 2.1.250 and `@anthropic-ai/claude-agent-sdk` 0.3.251 on 2026-08-28;
-its deterministic smoke passes against Claude Code 2.1.257 on 2026-09-01. The bundle carries the
-SDK library but no Claude Code executable, and uses the installed `claude` binary and its current
-authentication. Agent SDK and `claude -p` usage draws from Claude plan limits under the current
-policy, and Anthropic's planned June 15, 2026 change is paused; verified 2026-08-27, so recheck
-<https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan>
-before changing authentication.
-
-The worker calls `query()` with the requested model and effort, the native `maxTurns` and
-`maxBudgetUsd` limits, the canonical working directory and exact session ID, streaming input, the
-caller's schema minus the dialect marker Claude Code rejects, `permissionMode: "dontAsk"` with a
-host callback that never grants a new approval, no setting sources, plugins, skills, MCP servers,
-browser, web tools or subagents, and a sandbox that fails closed when unavailable. Every item on
-that list is CONFIGURED and none of it is read back: the Agent SDK has no call that reports the
-tool set, the MCP inventory or the sandbox a running query ended up with, so the isolation rests
-on the SDK doing what its options say. The SDK also has no `TMPDIR` knob, so unlike a Codex job a
-delegated Claude process uses the worker's own temporary directory.
-
-The sandbox blocks network access, local binding, Unix sockets and unsandboxed commands. Read-only
-jobs deny worktree writes; write jobs grant the canonical worktree and no other checkout. It
-denies the Claude and Codex executable paths and every credential store, including provider-named
-ones and `/proc` with its process environments, which still holds when the worktree sits below a
-protected credential directory. The network allowlist is empty, so a provider a delegated command
-manages to start has no authentication and no egress. The process gets an explicit environment
-allowlist instead of the host's whole environment, auto-memory is off, and secret and proxy
-variables are stripped from sandboxed commands. A PreToolUse policy also checks direct edits,
-shell writers, wildcard write targets, inline evaluators and publication commands, but it does not
-try to spot a nested provider launch in command text, because a text check is walked around in a
-dozen ways. The sandbox is the control that holds, and none of it depends on prompt compliance.
-
-SDK initialization has a 30-second timeout, and after prompt release every SDK message resets the
-420-second quiet-period timer. The job budget and the quiet-period limit both call `interrupt()`
-first, then close and terminate the process after a grace period. Flow checks the scope's cgroup
-before recording a terminal write job, and freezes and records descendants as fallback evidence.
-
-The SDK `result` message is the native terminal proof. Flow records its text, usage and typed
-failures such as `RATE_LIMIT`, `CLAUDE_AUTH` or `BAD_MODEL`. A refusal is `REFUSAL` with the
-category in `details`. Claude Code retries a refused turn on a fallback model by default, and
-silently for a subagent-style query, so the delegated environment sets
-`CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` and `CLAUDE_CODE_NO_MODEL_FALLBACK=1` and the worker
-reads `stop_reason` plus the `model_refusal_no_fallback` and `model_refusal_fallback` system
-messages. Neither variable is public API, and 2.1.257 carries a third feature-flagged fallback
-lane that reads neither, so the contract does not rest on them. The guard that does hold is that
-each model-produced assistant frame names its model: the worker compares that against the
-catalog id it asked for, and a mismatch fails the job as `REFUSAL` when a refusal was seen and
-`MODEL_MISMATCH` otherwise, journaling the model that answered as `model.served`. Claude's local
-diagnostic frames use `<synthetic>` and name no served model. Flow keeps their error tags for
-the terminal result classification, so a login failure remains `CLAUDE_AUTH` instead of causing
-a false model mismatch and interrupt. Schema jobs add
-Claude's native `StructuredOutput` tool and plain jobs do not; Ajv checks `structured_output`
-against the original schema before the job can succeed.
-
-Claude's environment allowlist retains `DBUS_SESSION_BUS_ADDRESS` as well as
-`XDG_RUNTIME_DIR`, so `systemd-run --user` can reach the user manager when only the D-Bus
-address is available. Admission and the doctor's containment check apply that same filter and
-use `scopedProviderCommand`, which also constructs the worker's launch. The containment cache matches the
-launch environment by value, and doctor always probes afresh. The version, authentication and
-model checks also apply the provider environment filter. The Claude smoke checks a D-Bus-only
-worker launch and rejects admission and doctor checks when both bus variables are absent.
-
-Doctor runs separate `claude --version` and `claude auth status --json` child processes before the
-SDK model probe. A failed check includes a `probe` record with a classified outcome, a normalized
-error code, exit status, signal, and only `present` or `empty` for stdout and stderr. It never
-returns either stream's text or the executable path. Valid auth JSON that explicitly reports
-`loggedIn: false` is `not-authenticated`; spawn errors, signals, nonzero exits, empty output and
-invalid JSON remain distinct, so an operator is not told to log in when the child process itself
-failed.
-
-## What the caller receives
-
-Both workers receive the seat half of the charter: everything below the seat-rules marker line
-in `charter/charter.md` (`## Rules of Engagement - Everything Else`, `## Seat Contract`,
-`## Gripes`), read at build time and wrapped by `seatPayload` in `lib/charter-payload.mjs` in a
-`<flow-charter scope="seat">` block, the same bytes a native subagent gets from the SubagentStart
-hook. `instructions.mjs` refuses to load if the marker is missing or doubled. The delegated-seat
-rule forbidding subagents and nested provider calls follows it, and nothing else.
-
-The public error carries a named kind, a short message and bounded details, never a stack, raw
-provider payload, account identifier, model identifier from an error payload, or internal path.
-Owner-only `internal.error` events and `service.log` keep the detail the caller does not receive.
-
-## Packaging and smokes
-
-Source lives under `src/delegation`, and `deps/package.json` pins the MCP SDK, Ajv, esbuild and
-the Claude Agent SDK. `npm run build` in `plugins/flow/deps` writes one committed ESM bundle at
-`dist/delegation.mjs` with two entry modes, `mcp` and `worker`: a host starts the server, and the
-service starts one worker per job with a job ID. Every install runs the bundle and never the
-source, so an edit under `src/delegation` is half a change until the rebuild lands in the same
-commit. The build injects the plugin version, the SDK
-version and the charter (through `__FLOW_CHARTER__`), so a version bump or a charter edit
-rebuilds the bundle too.
-
-The Claude manifest holds the direct `flow_delegate` server definition with a 7,500,000 millisecond
-call timeout. The Codex manifest points at plugin-root `.mcp.json`, which calls `flow-delegate`
-with the exact version pin and `--host codex`, no cwd override, and a 7,500 second tool timeout. Both exceed the maximum 7,200 second job
-budget, so the client does not cut off a valid attached call.
-
-`scripts/smoke-delegation.mjs` runs the service against a fake App Server and needs Linux with the
-containment prerequisites. `scripts/smoke-claude-delegation.mjs` runs the Agent SDK path against a
-fake Claude Code process. Both drive the committed bundle over MCP stdio, the same path an install
-runs, and neither needs `npm ci`, an account or network. Between them they cover both routes and
-every denial, the workspace and lease checks, the job state machine, both provider protocols with
-their crash paths, the quarantine barrier and charter delivery.
-`scripts/smoke-bundle-drift.mjs` rebuilds from source and requires a byte-identical committed
-bundle; it is the one script that needs `npm ci` in `plugins/flow/deps`. `.gitattributes` exempts
-the bundle from the blank-at-end-of-line diff check, because bundled dependency string literals
-hold whitespace-only lines.
+- A command a provider runs in its sandbox lives in the sandbox's PID namespace and dies when the sandbox does, even one that leaves the provider's process group. On 2026-10-01 a `setsid sh -c 'exec sleep …' &` started inside a write job on Claude Code 2.1.285, and inside `codex sandbox` on Codex 0.159.2, ran as PID 3 in a process group of its own, and no such process was left on the host once the job or the sandbox ended. What can still outlive the lease is a process that escapes the sandbox itself. If a write job ever needs proof against that, run the provider under a systemd scope and read the scope's cgroup before releasing the lease.
+- A delegated Codex thread loads the human's config. A feature that a later Codex release turns on by default reaches delegated threads until it joins the thread config's list. The read-back covers the profile, the model and MCP servers, and nothing else. Within the profile it covers the parent, the network and the writable roots, because Codex reports no read grant.
+- The App Server fields flow depends on (`permissions`, `runtimeWorkspaceRoots`, `allowProviderModelFallback` and `activePermissionProfile`) appear only in the `--experimental` schema. The doctor proves them live. The doctor never opens a turn, so on a Codex bump compare the turn notifications, `turn/start`, `turn/steer`, `turn/interrupt` and `thread/resume` with the output of `codex app-server generate-ts --experimental --out <dir>`.
+- The Claude tool list first appears in the `system/init` frame, after the prompt has gone out. The check still stops the turn before any tool result exists. If a Claude Code release lists a tool that `--tools` did not name, every Claude job fails `ISOLATION` until that tool joins the requested set in `claude-control.mjs`.
+- The init check admits a Claude plugin by its shape and not by its name, so it trusts the CLI's own `builtin` label. A plugin that a later release compiles in passes with no edit here. A built-in that a release lists in another shape fails every Claude job `ISOLATION` until `builtIn` in `claude-control.mjs` accepts that shape.
+- The Claude control channel has no published specification. The doctor proves `initialize`, `mcp_status` and the containment flags live. The doctor writes no user message, so on a Claude Code bump compare `interrupt`, the user message and its replay with the Agent SDK's `sdk.d.ts`, and the job's own flags with `claude --help`.
+- The doctor opens the Codex thread and the Claude CLI on their default models, so it proves no particular model. Each job checks its own model and effort against the catalog when it starts.
+- The doctor runs in the first usable root. A Codex project layer that only another root defines is not in the doctor's count. A job in that root reads its own layers with `config/read` and disables their servers too.
+- A job refused `BAD_MODEL`, or refused before the catalog was read, has `catalog: null`. The `BAD_MODEL` details name the efforts the catalog lists.
+- A Codex write job cannot commit, because its Git metadata is read-only. The orchestrator commits a delegated writer's work.
+- Flow's PreToolUse hooks do not load inside a delegated job. A write job is confined to its worktree and nothing narrower, so it can edit a lockfile or an `.env` file there.

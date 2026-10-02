@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+// flow-delegate-dispatcher: scripts/install-delegate.mjs replaces only a file opening with this line.
+// Codex hands a plugin MCP server's command and args to the launcher with no variable expansion,
+// so a command on PATH is the only way to start the delegate server in the thread's project
+// directory. scripts/install-delegate.mjs copies this file to ~/.local/bin/flow-delegate. It
+// imports the installed plugin's delegate/main.mjs in-process, so the server keeps this
+// process's cwd, environment and stdio.
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const args = process.argv.slice(2)
+const at = args.indexOf('--flow-version')
+const version = at >= 0 ? args[at + 1] : undefined
+if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? '')) {
+  process.stderr.write('flow-delegate: --flow-version <x.y.z> is required\n')
+  process.exit(2)
+}
+args.splice(at, 2)
+const main = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'plugins', 'cache', 'jakub', 'flow', version, 'delegate', 'main.mjs')
+if (!existsSync(main)) {
+  process.stderr.write(`flow-delegate: ${main} is missing; install flow@jakub ${version} for Codex\n`)
+  process.exit(1)
+}
+process.argv = [process.argv[0], main, ...args]
+await import(pathToFileURL(main).href)

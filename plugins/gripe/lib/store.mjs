@@ -1,7 +1,7 @@
 // gripe: the storage module. The one write path for the CLI and every hook, imported
 // directly so the observed lane never transits a shell.
 //
-// node:sqlite exists from 22.5 but throws on import without a flag until 23.4, so the
+// node:sqlite exists from 22.5 but throws on import without a flag before 22.13 and 23.4. The
 // floor is 24 and enforced here: on an older node this module fails to import, `gripe add`
 // catches that and exits 0 with one stderr line per invariant 1, and every other entry
 // point reports it and exits 1.
@@ -65,7 +65,20 @@ CREATE TABLE IF NOT EXISTS meta (
 export function openStore() {
   mkdirSync(stateDir(), { recursive: true })
   const db = new DatabaseSync(dbPath(), { timeout: 5000 })
-  db.exec('PRAGMA journal_mode = WAL')
+  // Switching a fresh database into WAL needs a lock that SQLite's busy handler does not wait for,
+  // so openers racing on a new file can fail at once. WAL persists once any of them sets it, so a
+  // short retry ends the race: measured without it, one of twenty concurrent writers vanished.
+  // The whole switch shares one budget, the busy timeout itself, so SQLite's own wait inside an
+  // attempt is capped at what is left and a contended open still gives up in about five seconds.
+  const deadline = Date.now() + 5000
+  for (;;) {
+    db.exec(`PRAGMA busy_timeout = ${Math.max(0, deadline - Date.now())}`)
+    try { db.exec('PRAGMA journal_mode = WAL'); break } catch (error) {
+      if (!isBusy(error) || Date.now() >= deadline) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    }
+  }
+  db.exec('PRAGMA busy_timeout = 5000')
   migrate(db)
   return db
 }

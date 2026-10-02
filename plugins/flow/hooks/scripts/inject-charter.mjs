@@ -1,104 +1,74 @@
 #!/usr/bin/env node
-// Deliver the charter, in two modes, on both hosts.
+// Deliver the charter, on both hosts.
 //
-// `session` prints the charter at SessionStart. Claude Code caps a single hook's stdout at
-// 10,000 characters and replaces anything larger with a 2KB preview plus a file path, so there
-// it ships as two hooks, each printing one half; the cut lands on the `## ` heading nearest the
-// middle so the hand-authored charter stays one file. Codex measures the payload in tokens and
-// spills what does not fit, so it takes the whole charter in one write.
+//   inject-charter.mjs session <claude|codex>    SessionStart: print charter/charter.md whole
+//   inject-charter.mjs subagent <claude|codex>   SubagentStart: answer with the seat half
 //
-// `subagent` reads hook JSON on stdin and answers with hookSpecificOutput.additionalContext
-// holding the seat half alone: the rules every seat follows, without the orchestrator doctrine
-// a leaf seat cannot act on. A spawn prompt therefore carries the worktree and the checkpoints
-// and no contract text. On Claude, `Explore` and `fork` are skipped: Explore returns file paths
-// and never writes, and fork already carries the whole session context, charter included. Codex
-// has neither mechanism, so it skips nothing.
+// Claude Code caps one hook's output at 10,000 characters and swaps anything larger for a 2KB
+// preview plus a file path. The session then runs on a fragment while the global CLAUDE.md's
+// <flow-charter> presence check still passes. So an oversize charter is refused, never cut: the
+// hook prints one HTML comment naming the size and no <flow-charter> tag, and the presence check
+// fails where the human can see it. Codex reads the same file, so it gets the same refusal. Codex
+// measures the additionalContextLimit in hooks/codex.json in tokens, at about four bytes each, so
+// its 8000 for the session and 3000 for a seat hold the whole charter and the seat half with room.
 //
-// Usage: inject-charter.mjs <session|subagent> <claude|codex> [1|2]. Always exits 0. A non-zero
-// SessionStart hook costs the session its payload, and there is nothing a seat can do about a
-// hook that failed, so a disagreement between this script and the hook config is reported on
-// stderr and delivers what it can.
+// On Claude, `Explore` and `fork` get no seat half: Explore only locates files, and fork already
+// copies the session's context, charter included. Codex has neither, so it skips nothing.
+//
+// Always exits 0, with diagnostics on stderr: a failed hook costs the session or the seat its
+// payload and fixes nothing. No process.exit(), which can cut stdout before the pipe drains.
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CLAUDE_HOOK_CAP, CLAUDE_PART_BUDGET, seatPayload, sessionHalves } from '../../lib/charter-payload.mjs'
+import { seatPayload } from '../../lib/charter-payload.mjs'
+import { readHookInput } from './wire.mjs'
 
+// A margin under the host's 10,000. smoke-charter.mjs fails at 9,500, so an edit that grows the
+// charter trips the smoke before any session is refused.
+const SESSION_CAP = 9_800
 const CLAUDE_SKIPPED = ['Explore', 'fork']
 
-async function readStdin() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-  // An unparseable body has no agent_type to match against the skip list, and a seat that gets
-  // no rules is worse than a seat that gets them twice, so a broken read delivers.
-  try { return JSON.parse(raw) } catch { return {} }
+const [mode, host] = process.argv.slice(2)
+const complain = (line) => process.stderr.write(`inject-charter: ${line}\n`)
+
+function readCharter() {
+  // Each host exports its own root variable, and a Codex process started from a Claude shell can
+  // inherit a CLAUDE_PLUGIN_ROOT naming another install, so the declared host's variable wins.
+  const names = host === 'codex' ? ['PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT'] : ['CLAUDE_PLUGIN_ROOT', 'PLUGIN_ROOT']
+  const root = names.map((name) => process.env[name]).find(Boolean) ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  try {
+    return readFileSync(join(root, 'charter', 'charter.md'), 'utf8')
+  } catch (error) {
+    complain(`cannot read the charter under ${root}: ${error.message}`)
+    return null
+  }
 }
 
 async function main() {
-  const mode = process.argv[2]
-  const host = process.argv[3] || 'claude'
-  const fallback = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-  if (!['claude', 'codex'].includes(host)) {
-    process.stderr.write(`inject-charter: expected host "claude" or "codex", got ${JSON.stringify(host)}\n`)
-    return
-  }
-  // Each host exports its own root variable, and a Codex process launched from a Claude shell can
-  // inherit CLAUDE_PLUGIN_ROOT pointing at another install, so the declared host decides which
-  // variable is read first.
-  const preferred = host === 'codex'
-    ? [process.env.PLUGIN_ROOT, process.env.CLAUDE_PLUGIN_ROOT]
-    : [process.env.CLAUDE_PLUGIN_ROOT, process.env.PLUGIN_ROOT]
-  const root = preferred.find(Boolean) || fallback
-  let charter
-  try {
-    charter = readFileSync(join(root, 'charter', 'charter.md'), 'utf8')
-  } catch (error) {
-    process.stderr.write(`inject-charter: cannot read the charter under ${root}: ${error.message}\n`)
-    return
-  }
-
+  if (!['claude', 'codex'].includes(host)) return complain(`expected host "claude" or "codex", got ${JSON.stringify(host)}`)
   if (mode === 'session') {
-    if (host === 'codex') {
-      process.stdout.write(charter)
-      return
-    }
-    const halves = sessionHalves(charter)
-    const part = process.argv[4] === '2' ? 1 : 0
-    const over = halves
-      .map((half, at) => (half.length >= CLAUDE_PART_BUDGET ? `part ${at + 1} is ${half.length} chars` : null))
-      .filter(Boolean)
-    if (over.length && part === 0) {
-      process.stdout.write(`<!-- flow-charter WARNING: ${over.join('; ')}; the per-hook cap is ${CLAUDE_HOOK_CAP}, so this session may be running on a truncated charter. Tell the human. -->\n\n`)
-    }
-    process.stdout.write(halves[part])
-    return
+    const charter = readCharter()
+    if (charter === null) return
+    if (charter.length <= SESSION_CAP) return process.stdout.write(charter)
+    return process.stdout.write(`<!-- flow charter refused: charter/charter.md is ${charter.length} characters, over the ${SESSION_CAP} one SessionStart hook carries whole. This session runs without the charter. Tell the human. -->\n`)
   }
-
   if (mode === 'subagent') {
-    const { agent_type: agentType } = await readStdin()
-    if (host === 'claude' && CLAUDE_SKIPPED.includes(agentType)) return
-    // seatPayload throws on a charter with zero or two marker lines. A hook that dies non-zero
-    // is a harness error in the seat's face and still delivers nothing, so the defect goes to
-    // stderr and the hook exits 0 with empty stdout: the seat runs on the guards alone, and the
-    // conformance smoke is what catches the broken charter before it ships.
-    let payload
+    // An unreadable body has no agent_type to skip, and a seat with no rules is worse than one
+    // with the rules twice, so a broken read delivers.
+    const event = await readHookInput()
+    if (host === 'claude' && CLAUDE_SKIPPED.includes(event?.agent_type)) return
+    const charter = readCharter()
+    if (charter === null) return
+    let additionalContext
     try {
-      payload = seatPayload(charter)
+      additionalContext = seatPayload(charter)
     } catch (error) {
-      process.stderr.write(`inject-charter: ${error.message}\n`)
-      return
+      return complain(error.message)
     }
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SubagentStart',
-        additionalContext: payload,
-      },
-    }))
-    return
+    return process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext } }))
   }
-
-  process.stderr.write(`inject-charter: expected mode "session" or "subagent", got ${JSON.stringify(mode)}\n`)
+  complain(`expected mode "session" or "subagent", got ${JSON.stringify(mode)}`)
 }
 
-// No process.exit(): an explicit exit can truncate stdout before the pipe drains.
-main()
+await main()

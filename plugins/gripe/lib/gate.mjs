@@ -98,7 +98,7 @@ const PATCH_TARGET = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/m
 const MAX_COMMAND_SCAN = 4096
 const MAX_UNWRAP_DEPTH = 3
 
-/** What a tool call was aimed at, for repetition detection and observed-row templates. */
+/** What a tool call was aimed at, for repetition detection. */
 export function target(toolName, input) {
   if (!input || typeof input !== 'object') return null
   if (input.file_path) return String(input.file_path).slice(0, MAX_TARGET_LEN)

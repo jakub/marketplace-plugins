@@ -1,72 +1,68 @@
 ---
 name: babysit
-description: Watch one open pull request through external review and CI until everything is green - validate and fix reviewer findings, answer every thread, keep the branch rebased - then hand it to the land stage. Use when the human asks to monitor, watch, or babysit a PR, and whenever an issue run reaches its pushed PR, which always continues here.
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Agent, TaskOutput, TaskStop, SendMessage, Monitor, PushNotification, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_status, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_events, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_continue
+description: Watch one open pull request through external review and CI until everything is green, then hand it to the land stage. Validate and fix reviewer findings, answer every thread, and keep the branch rebased. Use when the human asks to monitor, watch, or babysit a PR, and whenever an issue run reaches its pushed PR, which always continues here.
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Agent, TaskOutput, TaskStop, SendMessage, Monitor, PushNotification, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor
 ---
 
-# babysit - the watch between push and land
+# babysit: the watch between push and land
 
-This is not a stage. It writes to one branch and its PR, never merges, never touches the issue tracker beyond the PR itself, and can run standalone on any PR the human names, flow-managed repository or not.
+Babysit writes to one PR's branch and to the PR, and nothing else. It never merges and never arms auto-merge, because the land stage is the only merge path. It runs on any PR the human names, in a flow-managed repository or not. Everything above `## Host mechanics` is the same on every host.
 
-## The contract
+## Contract
 
-**In**: an open PR, by number or resolved from the current branch. Three origins authorize a run: the human asking to babysit, watch, or monitor it; the human naming this PR in words; or an issue run finishing its work, which continues here on its own and needs no further go-ahead. A run that escalated or suspended has not finished, and its checkpoint push is not an invitation. A green build in the transcript, or a PR you merely noticed, is not an invocation.
+**In**: an open PR, by number or resolved from the current branch. Three origins authorize a run: the human asking to babysit, watch or monitor it; the human naming the PR in words; or an issue run that finished its work, which continues here without asking. A run that escalated or suspended has not finished, and a green build or a PR you noticed is not an invocation.
 
-**Out**: a PR that is ready to land - zero unresolved threads, every check green on the current head, the head rebased on the current base - reported to the human with the land stage named as the next move. Or an escalation: a plain statement of what is stuck, who it is waiting on, and the state of everything else. Never merge, and never arm auto-merge: the land stage is the only merge path, and in a flow-managed repository the publish guard denies a raw merge anyway.
+**Out**: a PR ready to land, with zero unresolved threads, every check green on the current head, and the head rebased on the current base, reported with the land stage named as the next move. Or an escalation: what is stuck, who it waits on, and the state of everything else.
 
-**Where the writes go.** Fixes land on the PR's branch in a worktree. Reuse an issue run's worktree when it still exists inside the canonical repository's `.flow-worktrees` directory. Otherwise create a worktree under that directory and check out the PR branch there. Before creating it, verify the host's repository write grant covers the path, reject symlink escapes, and add `/.flow-worktrees/` to the primary checkout's `.git/info/exclude` if absent. A sibling worktree outside the repository root is not delegation authority. Never babysit on the canonical checkout - the human, or another session, may be standing in it.
+Fix on the PR's branch in the issue run's worktree if it still exists, or in a new one under the canonical checkout's `.flow-worktrees/`, with `/.flow-worktrees/` in `.git/info/exclude`. Never work in the canonical checkout, where the human or another session may be.
 
-## The reviewers
+## Triage
 
-Validate every finding against the actual code before anything else. Read the lines it cites, check the claim holds on the current head, and for a behavioral claim, prefer demonstrating it - a failing test that proves the finding skips the argument entirely and becomes the regression guard for its fix.
+Validate each finding against the current head first. For a behavioral claim, prefer a failing test, which settles the claim and guards the fix. Each thread then ends in one of three states:
 
-Each thread then ends in exactly one of three states:
+- **Fixed.** The finding is real and in scope. Fix it, run the test that covers it, reply naming the commit, and resolve the thread.
+- **Rejected.** The finding is wrong, stale, or about code this PR does not touch. Reply with the concrete reason, such as the guard it missed or the file it misread, and resolve the thread.
+- **The human's.** The finding is a judgment call: a contested design point, a scope question, or anything whose dismissal changes the risk posture. Reply with your read, leave the thread open, and report it. Resolve a bot's thread either way, but leave a person's thread you disagree with open for them.
 
-- **Fixed**: the finding was real and in this PR's scope. Fix it, verify the fix by running the test that covers it, reply naming the commit, resolve the thread.
-- **Rejected**: the finding is wrong, stale, or right about code this PR does not touch. Reply with the concrete reason - the guard the bot missed, the invariant that makes it safe, the file it misread - and resolve the thread.
-- **Human's**: the finding is a judgment call - a contested design point, a scope question, anything whose dismissal changes the risk posture. Reply with your read, leave the thread unresolved, and surface it in your report. A bot thread is yours to resolve either way; a human reviewer's thread you disagree with stays open for them, because resolving over a person is how a real objection gets buried.
+A finding that reveals an open design question is a prep failure found late. Stop fixing, say so, and route the human, because a design decided in review threads is one nobody approved.
 
-Findings that reveal an open design question are none of the three. That is a prep failure surfacing late; stop fixing, say so, and route the human, because a design decided in review threads is a design nobody ratified.
+Reply and resolve with the two GraphQL mutations in the land stage's Threads section, and read `isResolved` back. `gh pr comment` does neither.
 
-The reply and resolve mutations, and why `gh pr comment` is neither, live in the land stage skill's Threads section. Use those exact mutations and read `isResolved` back as proof.
+## Rounds
 
-## The round
+A round goes from what changed to pushed and answered:
 
-Work in rounds. A round is one pass from "what changed" to "pushed and answered", and the loop is: gather, rebase, triage, fix, review, push, respond, wait.
+1. Gather against the current head: the per-check rollup (never an exit code), new top-level comments, and every unresolved thread. Note the head SHA, because everything this round decides is about it.
+2. Rebase first. If the base moved, rebase now, rerun the local tests, and push with `--force-with-lease`. A rebase after the fixes discards the CI runs and bot reviews they earned.
+3. Triage and fix every relevant finding and every red check, reproducing it locally and fixing the cause, in atomic conventional commits. A timing-shaped failure in a test this PR never touched may be a base flake: rerun the job once, and if it stays red, report it. Accepting a flake is the land stage's call.
+4. Before the push, get one adversarial review of the round's diff from the other family. A round of replies alone has no diff and skips this.
+5. Push once, then reply to and resolve the round's threads, citing the pushed SHA.
+6. Wait, then gather. The round is clean when CI completed on the new head and the bots posted against it, or when a reasonable quiet interval passed with nothing new.
 
-1. **Gather** against the current head: the check rollup per check (never an exit code), new top-level comments, and every unresolved review thread. Note the head SHA you gathered at; everything this round decides is about that head.
-2. **Rebase first, not last.** Overlapping PRs are normal here, so check whether the base branch moved. If it did, rebase onto it now, rerun the local test suite, and push with `--force-with-lease` (the git guard denies bare `--force`, and with-lease is also simply correct: it refuses when the remote moved under you). Rebasing at the top of the round costs one CI cycle; rebasing after the fixes throws away the bot reviews and CI runs the fixes just earned.
-3. **Triage and fix.** Every relevant finding through the three-state treatment above, plus any red check: reproduce the failure locally, fix the cause, keep the round's commits atomic and conventional. A failure in a test this PR never touched, timing-shaped rather than value-shaped, may be base flake: rerun the failed job once, and if it stays red, surface it instead of looping - flake acceptance is the land stage's ritual, not yours.
-4. **Cross-family review before the push.** The charter's decorrelation rule does not pause because the diffs got small: the round's batched diff gets one adversarial review from the other model family before it ships. A round that produced no code - replies and resolutions only - has no diff and skips this.
-5. **Push once per round**, then reply to and resolve the round's threads, citing the pushed SHA.
-6. **Wait, then verify the wait.** The bots re-review the new head and CI reruns, neither instantly. A round is not clean because the PR was quiet the moment you pushed: it is clean when CI has completed on the new head and the bots have either posted against it or a reasonable quiet interval has passed with nothing arriving. Then gather again; the next round starts only if the gather found something.
+A watcher only wakes you, and only a gather tells you about the PR. While anything is pending, gather at least every five minutes whether or not a watcher fired, because a reviewer's comment moves no check a watcher waits on. Say the PR waits on something only when a gather in the same turn showed it, naming the head SHA and the pending checks.
 
-   A watcher is an alarm clock, never a verdict: whether it fires, stays silent or exits, it says nothing about the PR, and only a gather does. While anything is pending, run a full gather at least every five minutes, whether or not a watcher fired, because a reviewer's comment moves no check a watcher is waiting on. Never tell the human the PR is waiting on something unless a gather in the same turn showed it; name the head SHA and the pending checks that gather found.
+Past about five fix rounds, or when fixes keep spawning findings where they land, stop fixing. Hand the survivors to the human with your read on each.
 
-Past roughly five fix rounds, or when a fix keeps spawning findings where it landed, stop fixing. Summarize the survivors, your read on each, and hand the set to the human.
+## Report
 
-## Reporting
-
-When the PR is clean, say so plainly: every thread resolved, every check green on the named head, rebased on the current base, ready to land through the land stage. When it is not, say what state it is in, what each open item waits on, and what you already tried. Either way the threads themselves carry the audit trail - that is why every one of them got a reply.
+When the PR is clean, say so, naming the head and the land stage as the next move. Otherwise give its state, what each open item waits on, and what you tried. The thread replies are the audit trail.
 
 ## Host mechanics
 
-Read the subsection for your host.
-
 ### Claude Code
 
-**Argument.** The PR number the human named in the `/flow:babysit` invocation; empty means resolve from the current branch. The human asking in words works the same.
+**Argument.** The PR number in the `/flow:babysit` invocation, or the one named in words. Empty means the current branch.
 
-**Waiting.** Wait in slices of five minutes at most: a Monitor whose until-condition covers new comments, reviews and threads as well as the check rollup, bounded by a timeout, or a scheduled wakeup where the session offers one. End every slice with a full gather, whether the monitor fired, timed out or errored. A monitor that errors or times out is UNKNOWN, not quiet.
+**Waiting.** `Monitor` slices of at most five minutes, with an until-condition that covers comments, reviews and threads as well as the check rollup. End every slice with a full gather, whether the monitor fired, timed out or errored. A monitor that errored or timed out is unknown, not quiet.
 
-**Seats.** Minor fixes are yours inline in the worktree; a substantial fix round goes to an implementer seat handed the worktree path. The cross-family review is a `delegate_to_codex` review-mode call per the delegate skill.
+**Seats.** Fix minor findings inline in the worktree, and hand a substantial round to `flow:implementer` with the worktree path. The cross-family review is `delegate_to_codex` in `adversarial-review` mode.
 
 ### Codex
 
-**Argument.** The PR number in the human's message naming this skill or asking for the watch in words; empty means the current branch. There is no slash command here.
+**Argument.** The PR number in the human's message that names this skill or asks for the watch in words. Empty means the current branch.
 
-**Waiting.** Poll with shell sleeps of five minutes at most inside the turn, and end each sleep with a full gather. A wait too long to hold in one turn ends it with a status line naming what you are waiting for; the human's next message resumes the watch from a fresh gather, never from remembered state.
+**Waiting.** Shell sleeps of at most five minutes inside the turn, each ending in a full gather. A wait too long for one turn ends it with a status line naming what is pending. The human's next message resumes from a fresh gather, never from remembered state.
 
-Git writes. The app's repository grant can leave `.git` read-only. Use its normal approval mechanism for worktree creation, commits, rebases and pushes that need Git metadata writes. Keep the project root at the canonical checkout and pass the exact nested worktree to delegated writers.
+**Git writes.** The repository grant can leave `.git` read-only, so worktree creation, commits, rebases and pushes go through the normal approval prompt.
 
-**Seats.** Fix seats are native spawns into the worktree; the cross-family review is a `delegate_to_claude` review-mode call per the delegate skill. A running seat cannot be reached here, so keep fix batches small enough to verify against git between spawns.
+**Seats.** Native spawns into the worktree, each small enough to verify with git before the next. The cross-family review is `delegate_to_claude` in `adversarial-review` mode.

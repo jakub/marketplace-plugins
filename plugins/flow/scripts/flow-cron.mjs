@@ -4,10 +4,9 @@
 //   flow-cron.mjs <lint|doc-sweep> [--dry-run]
 //
 // Each job is a prompt file under skills/flow/cron/<job>.md plus a tool allowlist
-// declared here. The allowlist is the job's entire write authority: the session runs
-// with --permission-mode dontAsk, so anything outside it is refused rather than
-// waiting on a prompt nobody will answer. SessionStart hooks fire under `claude -p`,
-// so the job sees the charter and both guards like any other session.
+// declared here. The session runs with --permission-mode dontAsk, so anything outside the
+// allowlist is refused rather than waiting on a prompt nobody will answer. SessionStart hooks
+// fire under `claude -p`, so the job sees the charter and the guards like any other session.
 //
 // Output: the session's report goes to $FLOW_STATE/reports/<job>-<timestamp>.md
 // (default ~/.local/state/flow), the last 30 reports are kept, and a desktop
@@ -24,54 +23,20 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Allowlists are the job's entire write authority and stay deliberately narrow: no
-// bare `bash`/`node` (arbitrary execution), no `gh api`/`gh repo` (exfiltration and
-// arbitrary REST writes), gh verbs enumerated per job, scripts allowed by exact
-// installed path. `git` stays broad ONLY because reads need `git -C <repo>` and prefix
-// patterns cannot see the subcommand; the git-guard hook closes that gap: it reads
-// FLOW_CRON_JOB from its env (exported below, unforgeable from inside the session) and
-// denies every git subcommand outside the job's standing permissions, ignoring
-// FLOW_SANCTION. Keep the guard's write set, these lists, and the prompts' standing
-// permissions in step - they are three views of one contract.
+// A job's authority is three views of one contract, and they have to agree: this allowlist,
+// git-guard's cron regex (which reads FLOW_CRON_JOB from the env exported below, unforgeable from
+// inside the session, and admits `node <root>/scripts/lint-actions.mjs <verb> <plain args>` and no
+// other Bash command), and lint-actions.mjs's own refusals. Each job gets exactly one Bash entry, a
+// prefix of that line: the lint may run every verb, the doc sweep only the read-only survey. No
+// git, no gh, no shell. Widening a job is an edit here, and its prompt's standing permissions
+// under skills/flow/cron/ must match it.
 export const jobs = (root) => ({
   lint: {
-    allowedTools: [
-      "Read", "Glob", "Grep", "Agent",
-      "Bash(git:*)", // guarded read-only in cron mode (git-guard.mjs); lint-actions.mjs below is the mutating path
-      // No `gh issue edit` and no `gh issue comment`: every label move the lint may make is an
-      // executor verb below, and each verb writes its own comment. A direct comment grant is a
-      // write to any repository the token reaches, with --body-file able to carry any readable
-      // file, so the unattended job gets none.
-      "Bash(gh issue list:*)", "Bash(gh issue view:*)",
-      "Bash(gh pr list:*)", "Bash(gh pr view:*)",
-      "Bash(gh run list:*)", "Bash(gh run view:*)",
-      "Bash(gh label list:*)",
-      `Bash(bash ${root}/scripts/worktree-audit.sh:*)`,
-      // The ONLY mutating path, one entry per verb: adding a verb to the executor widens nothing
-      // until its entry is added here, so this file stays the audited gate the docs say it is.
-      // git-guard's cron grammar refuses an executor joined to a second segment, which is what
-      // keeps a prefix entry from carrying a smuggled command behind it.
-      `Bash(node ${root}/scripts/lint-actions.mjs remove-worktree:*)`,
-      `Bash(node ${root}/scripts/lint-actions.mjs delete-branch:*)`,
-      `Bash(node ${root}/scripts/lint-actions.mjs clear-orphan:*)`,
-      `Bash(node ${root}/scripts/lint-actions.mjs demote-unready:*)`,
-      `Bash(node ${root}/scripts/lint-actions.mjs triage-unlabelled:*)`,
-
-      // drift-audit §5 on the marketplace repo:
-      `Bash(node ${root}/hooks/scripts/inject-charter.mjs:*)`,
-      `Bash(node ${root}/scripts/smoke-delegation.mjs:*)`,
-      "Bash(claude plugin list:*)",
-    ],
+    allowedTools: ["Read", "Glob", "Grep", "Agent", `Bash(node ${root}/scripts/lint-actions.mjs:*)`],
     summary: "flow nightly lint",
   },
   "doc-sweep": {
-    allowedTools: [
-      "Read", "Glob", "Grep", "Agent",
-      "Bash(git:*)", // guarded read-only in cron mode (git-guard.mjs)
-      "Bash(gh issue list:*)", "Bash(gh issue view:*)",
-      "Bash(gh pr list:*)", "Bash(gh pr view:*)",
-      "Bash(gh label list:*)",
-    ],
+    allowedTools: ["Read", "Glob", "Grep", "Agent", `Bash(node ${root}/scripts/lint-actions.mjs survey:*)`],
     summary: "flow weekly doc sweep",
   },
 });
@@ -162,6 +127,7 @@ function main() {
   const prompt = readFileSync(promptFile, "utf8")
     .replaceAll("${FLOW_WORKSPACE}", workspace)
     .replaceAll("${CLAUDE_PLUGIN_ROOT}", root)
+    .replaceAll("${HOME}", homedir())
     .replaceAll("${DATE}", date);
 
   // The prompt goes first: --allowedTools is variadic and would swallow a trailing
@@ -195,9 +161,8 @@ function main() {
       ...process.env,
       FLOW_CRON_JOB: job,
       // The executor binds every repository path it is handed to a direct child of this root.
+      // It also sets its own non-prompting ssh, and the job can run nothing else that fetches.
       FLOW_WORKSPACE: workspace,
-      // ssh must never prompt in an unattended session; a prompt is a silent hang.
-      GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes -o ConnectTimeout=10",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

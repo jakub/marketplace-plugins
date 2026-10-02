@@ -1,131 +1,197 @@
 #!/usr/bin/env node
-// Smoke harness for hooks/scripts/publish-guard.mjs, the Claude adapter. It has two answers:
-// registry publication is an "ASK", and a merge in a repository that opts into flow's merge
-// guardrail is a "DENY" that names the executor. Everything else produces no output at all.
+// Smoke harness for both publish adapters over lib/hook-policy.mjs: publish-guard.mjs (Claude)
+// and publish-guard-codex.mjs (Codex). Registry publication is the one rule they answer
+// differently: Claude asks, Codex denies, because Codex runs a command whose hook answered
+// `ask`. The merge tripwire is one decision, so every merge case runs through both.
 // Run: node plugins/flow/scripts/smoke-publish-guard.mjs
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const G = join(ROOT, 'hooks', 'scripts', 'publish-guard.mjs')
 const EXECUTOR = join(ROOT, 'scripts', 'land-merge.mjs')
+const SHA = '0123456789abcdef0123456789abcdef01234567'
 
 let bad = 0
-
-// FLOW_CRON_JOB is blanked everywhere it is not the point of the case: a stray one in the
-// operator's own shell must not change what these prove.
-const decide = (command, { cwd, env = {} } = {}) => {
-  const out = execFileSync('node', [G], {
-    input: JSON.stringify(cwd === undefined ? { tool_input: { command } } : { tool_input: { command }, cwd }),
-    encoding: 'utf8',
-    env: { ...process.env, FLOW_CRON_JOB: '', ...env },
-  }).trim()
-  return out ? JSON.parse(out).hookSpecificOutput : null
-}
-
-// ------------------------------------------------------------------ registry publication
-const asks = (command) => decide(command)?.permissionDecision === 'ask'
-const expect = (want, command, name) => {
-  const got = asks(command)
-  if (got !== want) bad++
-  console.log(`  ${got === want ? 'ok' : 'FAIL'}: ${name} → ${got ? 'ASK' : 'pass'} (want ${want ? 'ASK' : 'pass'})`)
-}
-console.log('must ASK')
-expect(true, 'cargo publish', 'cargo publish')
-expect(true, 'cargo publish -p example-core', 'cargo publish a member')
-expect(true, 'npm publish --access public', 'npm publish')
-expect(true, 'pnpm publish', 'pnpm publish')
-expect(true, 'twine upload dist/*', 'twine upload')
-expect(true, 'uv publish', 'uv publish')
-expect(true, 'gem push pkg/x.gem', 'gem push')
-expect(true, 'cargo publish --dry-run && cargo publish', 'a dry run does not exempt a later publish')
-expect(true, 'cargo publish && echo --dry-run', 'a later dry-run token does not exempt publish')
-expect(true, 'cargo publish --dry-run \\\\\ncargo publish', 'an escaped backslash is not a continuation')
-console.log('must PASS')
-expect(false, 'cargo publish --dry-run', 'dry run is the safe rehearsal')
-expect(false, 'npm publish --dry-run', 'npm dry run')
-expect(false, 'cargo publish --dry-run && echo done', 'dry-run segment followed by ordinary work')
-expect(false, 'npm publish \\\n  --dry-run', 'a continuation is one command, not two segments')
-expect(false, 'npm publish 2>&1 --dry-run', 'a fd redirect is not the & separator')
-expect(false, 'cargo build --release', 'ordinary build')
-expect(false, 'cargo test', 'tests')
-expect(false, 'docker push registry.internal.example/app:dev', 'private registry, retag is free')
-expect(false, 'gh release create v1.2.3', 'a release deletes cleanly')
-expect(false, 'git push origin main', 'git push is git-guard territory')
-expect(false, 'echo "remember to run cargo publish after the tag"', 'publishing named in prose')
-
-// ------------------------------------------------------------------------- merge routing
-//
-// Two throwaway repositories, because the answer is a property of the repository: `managed`
-// commits the .flow/managed marker and `plain` does not. The guard reads the committed tree,
-// so the marker has to be in a commit, not merely written to the working tree.
-const tmp = mkdtempSync(join(tmpdir(), 'flow-publish-guard-'))
-const gitEnv = {
-  ...process.env,
-  HOME: tmp,
-  GIT_CONFIG_GLOBAL: join(tmp, 'no-such-gitconfig'),
-  GIT_CONFIG_SYSTEM: join(tmp, 'no-such-gitconfig'),
-  GIT_AUTHOR_NAME: 'flow smoke',
-  GIT_AUTHOR_EMAIL: 'smoke@example.invalid',
-  GIT_COMMITTER_NAME: 'flow smoke',
-  GIT_COMMITTER_EMAIL: 'smoke@example.invalid',
-}
-const build = (dir, marker) => {
-  mkdirSync(dir, { recursive: true })
-  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', env: gitEnv })
-  git('init', '-q', '-b', 'main')
-  if (marker) {
-    mkdirSync(join(dir, '.flow'), { recursive: true })
-    writeFileSync(join(dir, '.flow', 'managed'), 'flow manages merges in this repository\n')
-    git('add', '.flow/managed')
-  }
-  writeFileSync(join(dir, 'file.txt'), 'hello\n')
-  git('add', 'file.txt')
-  git('commit', '-q', '-m', 'first')
-  return dir
-}
-const managed = build(join(tmp, 'managed'), true)
-const plain = build(join(tmp, 'plain'), false)
-
 const check = (name, ok, detail = '') => {
   if (!ok) bad++
   console.log(`  ${ok ? 'ok' : 'FAIL'}: ${name}${ok || !detail ? '' : ` → ${detail}`}`)
 }
-const denies = (name, command, substring, options) => {
-  const out = decide(command, options)
-  const denied = out?.permissionDecision === 'deny'
-  const reason = out?.permissionDecisionReason || ''
-  check(name, denied && reason.includes(substring), denied ? `denied for the wrong reason: ${reason}` : 'allowed')
+
+// Throwaway repositories, because "managed" is a property of the repository: the marker has to
+// be committed at HEAD, not merely present in the working tree. FLOW_CRON_JOB is blanked
+// wherever it is not the point, so a stray one in the operator's shell changes nothing here.
+const tmp = mkdtempSync(join(tmpdir(), 'flow-publish-guard-'))
+const env = {
+  ...process.env, HOME: tmp, FLOW_CRON_JOB: '',
+  GIT_CONFIG_GLOBAL: join(tmp, 'none'), GIT_CONFIG_SYSTEM: join(tmp, 'none'),
+  GIT_AUTHOR_NAME: 'flow smoke', GIT_AUTHOR_EMAIL: 'smoke@example.invalid',
+  GIT_COMMITTER_NAME: 'flow smoke', GIT_COMMITTER_EMAIL: 'smoke@example.invalid',
 }
-const allows = (name, command, options) => {
-  const out = decide(command, options)
-  check(name, out === null, `${out?.permissionDecision}: ${out?.permissionDecisionReason}`)
+const repo = (name, { marker = false, commit = true, dropMarker = false, untracked = false } = {}) => {
+  const dir = join(tmp, name)
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { env, stdio: 'ignore' })
+  mkdirSync(join(dir, 'src'), { recursive: true })
+  git('init', '-q', '-b', 'main')
+  if (marker || untracked) {
+    mkdirSync(join(dir, '.flow'))
+    writeFileSync(join(dir, '.flow', 'managed'), 'flow manages merges here\n')
+  }
+  if (marker) git('add', '.flow/managed')
+  writeFileSync(join(dir, 'file.txt'), 'hello\n')
+  git('add', 'file.txt')
+  if (commit) git('commit', '-q', '-m', 'first')
+  if (dropMarker) rmSync(join(dir, '.flow', 'managed'))
+  return dir
+}
+const managed = repo('managed', { marker: true })
+const plain = repo('plain')
+const dropped = repo('dropped', { marker: true, dropMarker: true }) // committed, then deleted: still managed
+const untracked = repo('untracked', { untracked: true })           // never committed: not managed
+const unborn = repo('unborn', { commit: false })                   // the probe cannot read HEAD: fails closed
+
+const run = (script, command, { cwd = managed, cron, raw, spawnCwd, path } = {}) => {
+  const out = execFileSync(process.execPath, [join(ROOT, 'hooks', 'scripts', script)], {
+    input: raw ?? JSON.stringify(cwd === null ? { tool_name: 'Bash', tool_input: { command } } : { tool_name: 'Bash', tool_input: { command }, cwd }),
+    encoding: 'utf8', env: { ...env, ...(cron ? { FLOW_CRON_JOB: cron } : {}), ...(path ? { PATH: path } : {}) }, cwd: spawnCwd,
+  }).trim()
+  return out ? JSON.parse(out).hookSpecificOutput : null
+}
+const HOSTS = [['claude', 'publish-guard.mjs', 'ask'], ['codex', 'publish-guard-codex.mjs', 'deny']]
+const answers = (want, command, name, options) => {
+  for (const [host, script] of HOSTS) {
+    const out = run(script, command, options)
+    const got = out?.permissionDecision ?? 'pass'
+    const expected = want === 'publish' ? HOSTS.find(([h]) => h === host)[2] : want
+    check(`${name} (${host}) → ${expected}`, got === expected, `${got}: ${out?.permissionDecisionReason ?? ''}`)
+  }
+}
+const deniesWith = (command, substring, name, options) => {
+  for (const [host, script] of HOSTS) {
+    const reason = run(script, command, options)?.permissionDecisionReason ?? ''
+    check(`${name} (${host})`, reason.includes(substring), reason || 'allowed')
+  }
 }
 
-const MERGE = 'gh pr merge 12 --squash --match-head-commit 0123456789abcdef0123456789abcdef01234567'
-const RUN_EXECUTOR = `node ${EXECUTOR} 12 0123456789abcdef0123456789abcdef01234567`
+console.log('registry publication: Claude asks, Codex denies')
+for (const command of ['cargo publish', 'cargo publish -p example-core', 'npm publish --access public', 'pnpm publish',
+  'yarn npm publish', 'twine upload dist/*', 'poetry publish', 'uv publish', 'gem push pkg/x.gem']) {
+  answers('publish', command, command)
+}
+answers('publish', 'cargo publish --dry-run && cargo publish', 'a dry run exempts only its own segment')
+answers('publish', 'cargo publish && echo --dry-run', 'a later dry-run token does not exempt a publish')
+answers('publish', 'cargo publish --dry-run \\\\\ncargo publish', 'an escaped backslash is not a continuation')
+answers('publish', 'npm publish --dry-run=false', 'a dry-run flag set false publishes')
+check('the Claude ask names the registry and why', run('publish-guard.mjs', 'cargo publish').permissionDecisionReason.includes('crates.io has no unpublish'))
+const codexPublish = run('publish-guard-codex.mjs', 'cargo publish', { cwd: plain })?.permissionDecisionReason ?? ''
+check('the Codex deny says it cannot ask', codexPublish.includes('cannot request confirmation'), codexPublish)
+check('and hands publication to the human', codexPublish.includes('Registry publication stays manual'), codexPublish)
 
-console.log('in a repo with .flow/managed, a merge is denied and routed to the executor')
-denies('a plain merge is denied', MERGE, 'land-merge.mjs', { cwd: managed })
-denies('and the denial names the executor', MERGE, EXECUTOR, { cwd: managed })
-denies('and shows the two-argument form', MERGE, '<pr-number> <expected-head-sha>', { cwd: managed })
-denies('and says the repository opted in', MERGE, '.flow/managed', { cwd: managed })
-denies('a merge wrapped in bash -lc is denied', `bash -lc '${MERGE}'`, 'land-merge.mjs', { cwd: managed })
-allows('the executor invocation itself passes', RUN_EXECUTOR, { cwd: managed })
+console.log('\nnot publication, on both hosts')
+answers('pass', 'cargo publish --dry-run', 'a dry run is the safe rehearsal')
+answers('pass', 'cargo publish --dry-run && echo done', 'a dry-run segment followed by ordinary work')
+answers('pass', 'npm publish \\\n  --dry-run', 'a continuation is one command')
+answers('pass', 'npm publish 2>&1 --dry-run', 'a fd redirect is not the & separator')
+answers('pass', 'cargo build --release', 'an ordinary build')
+answers('pass', 'docker push registry.internal.example/app:dev', 'a private registry push')
+answers('pass', 'gh release create v1.2.3', 'a release deletes cleanly')
+answers('pass', 'echo "remember to run cargo publish after the tag"', 'publishing named in a quoted string')
+answers('pass', "gripe add <<'G'\nthe guard asked about cargo publish\nG", 'publishing named in a heredoc body')
+answers('pass', `bash -c "git commit -m 'notes on npm publish'"`, 'publishing named in prose inside a shell string')
+answers('pass', "cat <<'G' > release.sh\ncargo publish\nG", 'a heredoc written to a file, not to a shell')
+answers('pass', "bash -lc 'cargo publish --dry-run'", 'a dry run inside a shell string')
 
-console.log('in a repo with no committed marker, flow gates no merges')
-allows('a plain merge passes', MERGE, { cwd: plain })
-allows('so does one wrapped in bash -lc', `bash -lc '${MERGE}'`, { cwd: plain })
-allows('and so does the executor', RUN_EXECUTOR, { cwd: plain })
+console.log('\ntext a shell runs is a command, on both hosts')
+for (const [name, command] of [
+  ['a publish in a bash -lc string', "bash -lc 'cd pkg && npm publish'"],
+  ['a publish in a sh -c string after options', 'sh -e -c "cargo publish"'],
+  ['a publish handed to eval', 'eval "twine upload dist/*"'],
+  ['a publish in a heredoc on a shell\'s stdin', "bash <<'S'\ncd pkg\ncargo publish\nS"],
+  ['a publish two shells deep', `bash -c "sh -c 'gem push pkg/x.gem'"`],
+]) answers('publish', command, name)
 
-console.log('scheduled jobs merge nothing, executor included')
-denies('a merge is denied', MERGE, 'scheduled jobs do not merge', { cwd: managed, env: { FLOW_CRON_JOB: 'lint' } })
-denies('and so is the executor', RUN_EXECUTOR, 'merge executor', { cwd: managed, env: { FLOW_CRON_JOB: 'lint' } })
-denies('in an unmanaged repo too', MERGE, 'scheduled jobs do not merge', { cwd: plain, env: { FLOW_CRON_JOB: 'lint' } })
+console.log('\nan uninspectable call: Codex fails closed, Claude fails open')
+for (const [name, raw] of [['an unparseable body', '{'], ['a call with no command', '{}']]) {
+  const out = run('publish-guard-codex.mjs', '', { raw })
+  check(`${name} (codex) → deny`, out?.permissionDecision === 'deny' && /without an inspectable command/.test(out.permissionDecisionReason), JSON.stringify(out))
+  check(`${name} (claude) → pass`, run('publish-guard.mjs', '', { raw }) === null)
+}
+
+console.log('\nin a repo with a committed .flow/managed, a merge is denied and routed to the executor')
+const MERGE = `gh pr merge 12 --squash --match-head-commit ${SHA}`
+deniesWith(MERGE, EXECUTOR, 'the denial names the executor by path')
+deniesWith(MERGE, '<pr-number> <expected-head-sha>', 'and shows its two arguments')
+deniesWith(MERGE, '.flow/managed', 'and says the repository opted in')
+for (const [name, command] of [
+  ['a bare merge', 'gh pr merge 12'],
+  ['the -R form', 'gh -R jakub/x pr merge 12 --squash'],
+  ['a path-qualified gh', '/usr/bin/gh pr merge 12'],
+  ['the REST endpoint', 'gh api repos/jakub/x/pulls/12/merge -X PUT -f merge_method=squash'],
+  ['a quoted REST path', 'gh api -X PUT "repos/jakub/x/pulls/12/merge"'],
+  ['the GraphQL mutation', `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`],
+  ['the GraphQL mutation on a heredoc', "gh api graphql -F query=@- <<'Q'\nmutation { mergePullRequest(input: {}) { clientMutationId } }\nQ"],
+  ['a merge after the executor', `node ${EXECUTOR} 12 ${SHA} && gh pr merge 12`],
+  ['a merge on a heredoc opener line', "cat <<'G' && gh pr merge 12\nbody\nG"],
+  ['a merge in a bash -lc string', "bash -lc 'gh pr merge 12'"],
+  ['a merge in a sh -c string after a cd', `cd /tmp && sh -c "gh pr merge 12 --squash"`],
+  ['the REST endpoint in a shell string', `bash -c 'gh api -X PUT "repos/jakub/x/pulls/12/merge"'`],
+  ['a merge in a heredoc on a shell\'s stdin', "bash -s <<'S'\ngh pr merge 12\nS"],
+]) answers('deny', command, name)
+answers('deny', `cargo publish && ${MERGE}`, 'a publish beside a merge is denied, never asked')
+answers('deny', MERGE, 'a subdirectory is still the repo', { cwd: join(managed, 'src') })
+answers('deny', MERGE, 'a committed marker deleted from the worktree still counts', { cwd: dropped })
+answers('deny', MERGE, 'a repo whose HEAD cannot be read fails closed', { cwd: unborn })
+answers('deny', MERGE, 'a directory git cannot read fails closed', { cwd: join(tmp, 'nowhere') })
+answers('deny', MERGE, 'with no cwd in the call, the hook reads its own directory', { cwd: null, spawnCwd: managed })
+// A repository must not answer the managed question with its own executable named git. This
+// one prints nothing, which would read as unmanaged, from a relative PATH entry ahead of the
+// real git; the guard takes git from an absolute entry only, so the merge stays denied.
+writeFileSync(join(managed, 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+answers('deny', MERGE, 'a git planted in the repo behind a relative PATH entry does not answer', { spawnCwd: managed, path: `.:${env.PATH}` })
+rmSync(join(managed, 'git'))
+// git runs its helpers by PATH from inside the repository, so the git the guard runs must get a
+// PATH of absolute entries only. This git, first on PATH, records a relative entry if it sees one
+// and then answers as the real one does.
+const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+const seen = join(tmp, 'guard-git-saw-relative')
+const shimRan = join(tmp, 'guard-git-ran')
+mkdirSync(join(tmp, 'abs-bin'))
+writeFileSync(join(tmp, 'abs-bin', 'git'), `#!/bin/sh\n: > ${shimRan}\ncase ":$PATH:" in *:bin:*) : > ${seen};; esac\nexec ${realGit} "$@"\n`, { mode: 0o755 })
+answers('deny', MERGE, 'the guard\'s git is handed a PATH of absolute entries only', { spawnCwd: managed, path: `${join(tmp, 'abs-bin')}:bin:${env.PATH}` })
+// The deny alone would also follow from a guard that never ran this git and read the repo as managed.
+check('the guard ran the git first on its PATH', existsSync(shimRan))
+check('the guard\'s git saw no relative PATH entry', !existsSync(seen))
+
+console.log('\nthe tripwire never matches the executor, and prose is not a merge')
+for (const [name, command] of [
+  ['the executor', `node ${EXECUTOR} 12 ${SHA}`],
+  ['the executor from an installed cache', `node /home/x/.claude/plugins/cache/jakub/flow/0.42.0/scripts/land-merge.mjs 12 ${SHA}`],
+  ['the executor by relative path', `node plugins/flow/scripts/land-merge.mjs 12 ${SHA}`],
+  ['the executor under a path naming gh, api and merge', `node /srv/gh/api/merge/scripts/land-merge.mjs 12 ${SHA}`],
+  ['the executor accepting a flake on a context with a colon', `node ${EXECUTOR} 12 ${SHA} --accept-flake 'ci/circleci: build:flaky_test'`],
+  ['the executor accepting two flakes, both spellings', `node ${EXECUTOR} 12 ${SHA} --accept-flake e2e:test_login --accept-flake=unit:test_merge`],
+  ['a commit message about merging', 'git commit -m "chore: gh pr merge once CI is green"'],
+  ['a comment quoting the command', 'gh pr comment 12 -b "run gh pr merge once green"'],
+  ['a heredoc body naming it', "gripe add <<'G'\nthe guard denied gh pr merge 12\nG"],
+  ['the executor in a shell string', `bash -lc 'node ${EXECUTOR} 12 ${SHA}'`],
+  ['prose inside a shell string', `bash -c "git commit -m 'gh pr merge once green'"`],
+  ['reading the pull request', 'gh pr view 12 --json state,mergeCommit'],
+  ['a local merge', 'git merge --ff-only origin/main'],
+]) answers('pass', command, name)
+
+console.log('\nin a repo without a committed marker, flow gates no merges')
+answers('pass', MERGE, 'a plain merge', { cwd: plain })
+answers('pass', 'gh api repos/someone/x/pulls/12/merge -X PUT', 'the REST endpoint', { cwd: plain })
+answers('pass', MERGE, 'an untracked marker opts nothing in', { cwd: untracked })
+
+console.log('\nscheduled jobs merge nothing, executor included')
+deniesWith(MERGE, 'scheduled jobs do not merge', 'a merge in a managed repo', { cron: 'lint' })
+deniesWith(MERGE, 'scheduled jobs do not merge', 'a merge in an unmanaged repo', { cwd: plain, cron: 'lint' })
+deniesWith(`node ${EXECUTOR} 12 ${SHA}`, 'merge executor', 'the executor', { cron: 'lint' })
+deniesWith(`env -u FLOW_CRON_JOB node ${EXECUTOR} 12 ${SHA}`, 'merge executor', 'the executor with the variable stripped off the child', { cron: 'lint' })
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(bad === 0 ? '\npublish-guard: ALL PASS' : `\npublish-guard: ${bad} FAILURE(S)`)
-if (bad > 0) process.exitCode = 1
+process.exit(bad === 0 ? 0 : 1)

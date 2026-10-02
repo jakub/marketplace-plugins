@@ -1,376 +1,393 @@
 #!/usr/bin/env node
-// Deterministic executor for the nightly lint's destructive actions. The headless
-// model never runs `git worktree remove` or `git branch -D` itself (git-guard denies
-// them in cron mode); it asks this script, which re-derives every safety condition
-// from fresh git/gh state and refuses unless all of them hold. The model's judgment
-// picks candidates; this code decides.
+// lint-actions.mjs: the nightly lint's read of what there is to change, and its only way to
+// change it.
 //
-//   lint-actions.mjs remove-worktree <repo> <worktree-path> [--check]
-//   lint-actions.mjs delete-branch  <repo> <branch> [--check]
-//   lint-actions.mjs clear-orphan       <repo> <issue-number> [--check]
-//   lint-actions.mjs demote-unready     <repo> <issue-number> --seen <updatedAt> <failed contract point...> [--check]
-//   lint-actions.mjs triage-unlabelled  <repo> <issue-number> --seen <updatedAt> [--check]
+//   survey <repo>
+//   remove-worktree <repo> <path>
+//   delete-branch <repo> <branch>
+//   relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>
 //
-// --seen is the issue's updatedAt as the lint read it. GitHub bumps it on every edit, label and
-// comment, so it is the compare-and-set a label move can be tied to: the executor refuses when
-// the issue moved since the judgment it is acting on was made.
-//
-// --check runs every gate and reports the verdict without acting.
-//
-// Prints one JSON verdict on stdout: {action, target, ok, reason}. Exit 0 only when
-// the action was performed. Fail closed: any fetch/query failure is a refusal.
-//
-// The three label verbs are the lint's whole authority over GitHub: its allowlist grants no
-// `gh issue edit`, so a label moves only through one of these fixed transitions, each of which
-// re-derives its preconditions from fresh state. Every gh call is pinned to the repository
-// origin's URL parses to, through the claim executor's identity reader, because an ambient
-// GH_REPO or a second remote would otherwise let a clean repository authorize a label move in
-// another one. The two transitions a claim could race hold the issue's claim tag on origin,
-// taken through the claim executor's acquire, while the checks repeat and the edit lands and is
-// read back; a run that already holds the tag makes the verb stand down, and a run arriving while
-// the verb holds it stands down itself. The read-back is the last read before the tag goes back.
-import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { dirname } from "node:path";
-import { issueClaim, repoIdentity } from "./issue-claim.mjs";
-import { allowedHostsFrom, hostIsAllowed } from "../lib/remote-identity.mjs";
+// The model picks candidates from the survey; this code re-derives every condition from fresh
+// state and refuses unless all of them hold. Every verb: the repository must resolve, and when
+// FLOW_WORKSPACE is set (always, under FLOW_CRON_JOB) it must be a main checkout directly under it,
+// because the path decides which repository the ambient token acts on. `git fetch --prune --no-tags
+// origin` runs first and a failure refuses. Every gh call is pinned to the repository origin
+// parses to. Every mutation is read back, and nothing is undone: a label present after an edit is
+// no proof this run put it there. A relabel a claim could race holds the issue's claim tag on
+// origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
+// stdout is one JSON line {action, repo, target, ok, reason, ...}; exit 0 when the action happened
+// (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
+// regex, which is why the relabel reason is a single token.
 
-// Unattended: ssh must never prompt (a prompt is a 40-minute hang, then a dead job).
-const ENV = { ...process.env, GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o BatchMode=yes -o ConnectTimeout=10" };
+import { lstatSync, readFileSync, realpathSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const argv = process.argv.slice(2);
-const check = argv.includes("--check");
-const [action, repo, target] = argv.filter((a) => a !== "--check");
-const usage = "usage: lint-actions.mjs <remove-worktree|delete-branch|clear-orphan|demote-unready|triage-unlabelled> <repo> <target> [reason...]";
-if (!repo || !target || !["remove-worktree", "delete-branch", "clear-orphan", "demote-unready", "triage-unlabelled"].includes(action)) {
-  console.error(usage);
-  process.exit(2);
+import { execCapture, ghRunner, parseJson, runExecutor } from '../lib/gh-exec.mjs'
+import { firstLine, makeRedactor } from '../lib/redact.mjs'
+import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
+import { acquire, dropTag } from './issue-claim.mjs'
+
+const HOUR = 3_600_000
+const RECENT_MS = 96 * HOUR
+const ORPHAN_MS = 6 * HOUR
+const PROTECTED = new Set(['main', 'master', 'flow-evidence'])
+const LIFECYCLE = ['needs-triage', 'agent-found', 'ready-for-agent', 'in-progress', 'needs-info', 'needs-human', 'needs-rebase', 'wontfix', 'deferred']
+const CONTRACT = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'flow', 'label-contract.md')
+const FLAKES_PATH = '.github/known-flakes.txt'
+// The only label moves the lint may make. `live` re-runs the claim's scan for a run on the issue
+// and holds the claim tag while it moves the label; `minAge` is the grace a running issue stage
+// needs before its branch reaches origin.
+const TRANSITIONS = {
+  'in-progress>ready-for-agent': { live: true, minAge: ORPHAN_MS },
+  'ready-for-agent>needs-triage': { live: true, minAge: 0 },
+  'none>needs-triage': { live: false, minAge: 0 },
 }
+const USAGE = 'usage: lint-actions.mjs survey <repo> | remove-worktree <repo> <path> | delete-branch <repo> <branch> | ' +
+  'relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>'
 
-const out = (ok, reason) => {
-  console.log(JSON.stringify({ action, repo, target, ok, reason }));
-  process.exit(ok ? 0 : 1);
-};
-// The repository has to be one the job enumerated: a direct child of the workspace root the cron
-// sweeps. Every verb trusts the path it is handed for its git reads and derives a GitHub
-// repository from it, so an unbounded path would turn the ambient token into write authority over
-// any checkout on the disk. A hand run without FLOW_WORKSPACE is unbounded on purpose; a cron
-// run without it refuses.
-{
-  const workspace = process.env.FLOW_WORKSPACE;
-  if (process.env.FLOW_CRON_JOB && !workspace) out(false, "FLOW_CRON_JOB is set and FLOW_WORKSPACE is not; refusing to act on an unbounded repository path");
-  if (workspace) {
-    let real = null, root = null;
-    try { real = realpathSync(repo); root = realpathSync(workspace); } catch { out(false, "the repository path or FLOW_WORKSPACE does not resolve"); }
-    if (dirname(real) !== root) out(false, `${real} is not a direct child of the workspace ${root}; the lint acts only on the repositories it enumerated`);
-    // A direct child that is a linked worktree of a checkout elsewhere shares that checkout's
-    // refs and origin, so acting on it acts on the outside repository. The enumerator skips
-    // linked worktrees for the same reason; the executor has to skip them on its own evidence.
-    let common = null;
-    try { common = realpathSync(execFileSync("git", ["-C", real, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", env: ENV, timeout: 5_000, stdio: ["ignore", "pipe", "pipe"] }).trim()); } catch { out(false, "the repository's common git directory could not be read"); }
-    if (dirname(common) !== real) out(false, `${real} is a linked worktree of ${dirname(common)}, not a repository of its own; the lint acts only on main checkouts`);
+class Verdict { constructor(ok, reason, extra) { Object.assign(this, { ok, reason, extra }) } }
+const finish = (ok, reason, extra = {}) => { throw new Verdict(ok, reason, extra) }
+const refuse = (reason, extra) => finish(false, reason, extra)
+
+export function lintActions({ argv, env }) {
+  const [action, repoArg, target, ...rest] = argv
+  const known = ['survey', 'remove-worktree', 'delete-branch', 'relabel']
+  if (!known.includes(action) || !repoArg || (action !== 'survey' && !target) || (action !== 'relabel' && rest.length > 0) || (action === 'survey' && target)) {
+    return { code: 2, stdout: '', stderr: `${USAGE}\n` }
   }
-}
-
-const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: ENV }).trim();
-const tryGit = (...args) => { try { return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: ENV, stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch { return null; } };
-// The same read with a ceiling. A remote that accepts the connection and then stalls would
-// otherwise hold the executor until something outside kills it, and a kill skips every cleanup.
-const tryGitWithin = (timeoutMs, ...args) => { try { return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: ENV, timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch { return null; } };
-
-// Fail closed on stale refs: every decision below is made against a fresh fetch.
-try { execFileSync("git", ["-C", repo, "fetch", "origin", "--prune", "--quiet"], { encoding: "utf8", timeout: 60_000, env: ENV }); }
-catch { out(false, "fetch origin failed; refusing to act on possibly stale refs"); }
-
-// A merged or closed PR whose head matches this exact tip proves the commits are
-// recorded on the remote (GitHub keeps PR head refs even after branch deletion).
-const prsFor = (branch) => {
+  const emit = (v) => ({ code: v.ok ? 0 : 1, stdout: `${JSON.stringify({ action, repo: repoArg, target: target ?? null, ok: v.ok, reason: v.reason, ...v.extra })}\n`, stderr: '' })
   try {
-    return JSON.parse(execFileSync("gh", ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,headRefOid"], { encoding: "utf8", cwd: repo, timeout: 60_000 }));
-  } catch { out(false, "gh pr list failed; refusing to act without PR state"); }
-};
-
-// Two independent questions, both of which must answer yes before a branch dies.
-//
-// SAFETY (tipJustification): are the commits recoverable after the delete? Yes when the
-// remote can reproduce the tip - same-tip remote branch, merged/closed PR head at this
-// tip, or ancestry of origin/main (pre-squash merges). An OPEN PR refuses outright:
-// content aside, an active run owns that branch.
-//
-// WARRANT (deathWarrant): is the branch actually dead? Safety alone is not a reason to
-// delete: a pushed spike with no PR is perfectly recoverable AND perfectly alive. Only a
-// merged/closed PR or a tip already in origin/main proves the work landed or was
-// abandoned on purpose. A prompt-level gate holds only as long as the model remembers it,
-// so the gate lives here.
-// Branches that are infrastructure, not work: never deletable regardless of state.
-// `flow-evidence` carries PR evidence captures that outlive every PR pointing at them.
-const PROTECTED = new Set(["main", "master", "flow-evidence"]);
-
-const deathWarrant = (branch, tip) => {
-  if (PROTECTED.has(branch)) return { deny: `${branch} is a protected branch` };
-  const pr = prsFor(branch).find((p) => p.state === "MERGED" || p.state === "CLOSED");
-  if (pr) return { why: `PR #${pr.number} is ${pr.state}` };
-  if (tryGit("merge-base", "--is-ancestor", tip, "refs/remotes/origin/main") !== null) {
-    return { why: "tip is already in origin/main" };
+    run({ action, repoArg, target, rest, env })
+    return emit(new Verdict(false, 'the verb ended without a verdict', {}))
+  } catch (error) {
+    if (error instanceof Verdict) return emit(error)
+    return emit(new Verdict(false, `unexpected failure: ${firstLine(error?.message ?? error)}`, {}))
   }
-  return { deny: "no merged or closed PR and the tip is not in origin/main; the branch is recoverable but not demonstrably dead - a human decides" };
-};
-
-const tipJustification = (branch, tip) => {
-  const prs = prsFor(branch);
-  if (prs.some((p) => p.state === "OPEN")) return { deny: `branch has an open PR (#${prs.find((p) => p.state === "OPEN").number})` };
-  const remoteTip = tryGit("rev-parse", `refs/remotes/origin/${branch}`);
-  if (remoteTip === tip) return { why: `origin/${branch} is at this tip` };
-  if (remoteTip && tryGit("rev-list", "--count", `refs/remotes/origin/${branch}..${tip}`) === "0") return { why: `no commits beyond origin/${branch}` };
-  const pr = prs.find((p) => (p.state === "MERGED" || p.state === "CLOSED") && p.headRefOid === tip);
-  if (pr) return { why: `PR #${pr.number} (${pr.state}) head is this tip` };
-  if (tryGit("merge-base", "--is-ancestor", tip, "refs/remotes/origin/main") !== null) return { why: "tip is an ancestor of origin/main" };
-  return { deny: "tip is not reproducible from the remote (no matching remote branch, PR head, or main ancestry)" };
-};
-
-if (action === "remove-worktree") {
-  const list = tryGit("worktree", "list", "--porcelain", "-z");
-  if (list === null) out(false, "not a git repo");
-  const paths = list.split("\0").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
-  if (paths[0] === target) out(false, "refusing to remove the main worktree");
-  if (!paths.includes(target)) out(false, "path is not a registered worktree of this repo");
-
-  const inWt = (...args) => { try { return execFileSync("git", ["-C", target, ...args], { encoding: "utf8", env: ENV, stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch { return null; } };
-  const status = inWt("status", "--porcelain");
-  if (status === null) out(false, "cannot read worktree status");
-  if (status !== "") out(false, "worktree is not clean (tracked or untracked files present)");
-
-  const branch = inWt("symbolic-ref", "--quiet", "--short", "HEAD");
-  const tip = inWt("rev-parse", "HEAD");
-  if (!tip) out(false, "cannot resolve worktree HEAD");
-  const v = branch ? tipJustification(branch, tip) : (tryGit("merge-base", "--is-ancestor", tip, "refs/remotes/origin/main") !== null ? { why: "detached tip is an ancestor of origin/main" } : { deny: "detached tip is not an ancestor of origin/main" });
-  if (v.deny) out(false, v.deny);
-  if (check) out(true, `check only: would remove (${v.why})`);
-
-  try { git("worktree", "remove", target); } catch (e) { out(false, `git worktree remove refused: ${String(e.stderr || e.message).trim().slice(0, 200)}`); }
-  git("worktree", "prune");
-  out(true, `removed (${v.why})`);
 }
 
-if (action === "delete-branch") {
-  const tip = tryGit("rev-parse", `refs/heads/${target}`);
-  if (!tip) out(false, "branch does not exist");
-  const co = tryGit("worktree", "list", "--porcelain", "-z") || "";
-  if (co.split("\0").includes(`branch refs/heads/${target}`)) out(false, "branch is checked out in a worktree");
-  const w = deathWarrant(target, tip);
-  if (w.deny) out(false, w.deny);
-  const v = tipJustification(target, tip);
-  if (v.deny) out(false, v.deny);
-  if (check) out(true, `check only: would delete (${w.why}; ${v.why})`);
-  try { git("branch", "-D", target); } catch (e) { out(false, `git branch -D refused: ${String(e.stderr || e.message).trim().slice(0, 200)}`); }
-  out(true, `deleted (${w.why}; ${v.why})`);
-}
+function run({ action, repoArg, target, rest, env }) {
+  // Unattended: ssh must never prompt, since a prompt is a hang until the job's timeout.
+  const gitEnv = { ...env, GIT_SSH_COMMAND: env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes -o ConnectTimeout=10', GIT_TERMINAL_PROMPT: '0' }
+  const gitIn = (dir, args, timeoutMs = 10_000) => {
+    const r = execCapture('git', ['-C', dir, ...args], { timeoutMs, env: gitEnv })
+    return r.code === 0 ? r.stdout.trim() : null
+  }
+  const real = (path) => { try { return realpathSync(path) } catch { return null } }
 
-// ------------------------------------------------------------------------ the label verbs
-//
-// clear-orphan: an open `in-progress` issue with no other lifecycle label, no live branch,
-// worktree, or open PR, and a last update older than the grace window, goes back to
-// `ready-for-agent`. The window exists because a running issue stage looks exactly like an orphan
-// in the minutes between its label move and its branch reaching origin. demote-unready: an open
-// `ready-for-agent` issue with no other lifecycle label that failed the contract goes to
-// `needs-triage`, with the failed point in the comment. triage-unlabelled: an open issue with no
-// lifecycle label at all gets `needs-triage`. A second lifecycle label on the issue refuses every
-// verb, since moving such an issue would hand a blocked or buried issue to an agent.
-//
-// The first two hold the claim tag: the checks run once for free and once more under the tag,
-// where no flow run can move the issue. The tag serializes flow's runs and nobody else, so the
-// two verbs a prep run or a human could race also carry --seen, the updatedAt the lint read, and
-// refuse an issue that moved since. gh's add and remove are two mutations, and either can land
-// while the other fails, so every edit is read back rather than assumed: the original tuple means
-// nothing moved and the tag goes back; the intended tuple means it landed; anything else is a
-// partial move or someone else's, and a tag-holding verb keeps the tag for a human, reported as
-// retained. On success the tag goes back straight after the read-back, before the comment.
-//
-// Accepted residual: GitHub has no conditional write for labels. --seen and the read-back bound
-// the window to the milliseconds between the last read and the edit, and the claim tag closes it
-// against flow's own runs, but a human or a prep run editing inside that window is not excluded,
-// and a body edit under an unchanged label tuple is invisible to the read-back. The PR's
-// follow-up draft records it; closing it needs a serialization every writer honours.
-const LABEL_VERBS = {
-  "clear-orphan":      { require: "in-progress",     add: "ready-for-agent", remove: "in-progress",     holdTag: true,  grace: true,  liveness: true,  seen: false, past: "cleared" },
-  "demote-unready":    { require: "ready-for-agent", add: "needs-triage",    remove: "ready-for-agent", holdTag: true,  grace: false, liveness: true,  seen: true,  past: "demoted", reasonArg: true },
-  "triage-unlabelled": { require: null,              add: "needs-triage",    remove: null,              holdTag: false, grace: false, liveness: false, seen: true,  past: "triaged" },
-};
-if (action in LABEL_VERBS) {
-  const spec = LABEL_VERBS[action];
-  const GRACE_MS = 6 * 60 * 60 * 1000;
-  const LIFECYCLE = ["needs-triage", "agent-found", "ready-for-agent", "in-progress", "needs-info", "needs-human", "needs-rebase", "wontfix", "deferred"];
-  if (!/^[1-9]\d*$/.test(target)) out(false, "issue number must be a positive integer");
-  const n = target;
-  const TAG_REF = `refs/tags/flow-claim-issue-${n}`;
-  const extra = argv.filter((a) => a !== "--check").slice(3);
-  const seenAt = extra.indexOf("--seen");
-  const seen = seenAt === -1 ? null : (extra[seenAt + 1] ?? null);
-  const reasonWords = seenAt === -1 ? extra : [...extra.slice(0, seenAt), ...extra.slice(seenAt + 2)];
-  const reason = spec.reasonArg ? reasonWords.join(" ").trim() : "";
-  if (spec.seen && (seen === null || !Number.isFinite(Date.parse(seen)))) out(false, `${action} needs --seen <updatedAt>, the timestamp the lint read the issue at`);
-  if (spec.reasonArg && reason === "") out(false, `${action} needs the failed contract point after the issue number`);
-
-  const identity = repoIdentity(repo);
-  if (identity.problem) out(false, `origin is unusable (${identity.problem}${identity.detail ? `: ${identity.detail}` : ""}); refusing to call gh unpinned`);
-  const slug = identity.slug;
-  if (slug.problem) out(false, `the origin remote ${slug.problem}, so no gh call here can be pinned to it`);
-  if (slug.host === "") out(false, "the origin remote names no host, so gh cannot be pinned to it and would resolve a repository of its own");
-  if (!hostIsAllowed(slug.host, allowedHostsFrom(process.env))) out(false, `origin host ${JSON.stringify(slug.host)} is not github.com and not in FLOW_GH_HOSTS, so gh must not be handed a credential for it`);
-  const repoPin = ["--repo", `${slug.host}/${slug.owner}/${slug.repo}`];
-  const ghEnv = { ...ENV };
-  delete ghEnv.GH_REPO;
-  delete ghEnv.GH_HOST;
-  const gh = (...args) => { try { return execFileSync("gh", args, { encoding: "utf8", cwd: repo, env: ghEnv, timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] }); } catch { return null; } };
-  const parse = (raw) => { try { return JSON.parse(raw); } catch { return undefined; } };
-  const branchRe = new RegExp(`^(feat|fix|chore)/issue-${n}-`);
-  const patterns = ["feat", "fix", "chore"].map((k) => `refs/heads/${k}/issue-${n}-*`);
-  const lifecycleOf = (labels) => labels.filter((l) => LIFECYCLE.includes(l));
-  const sameSet = (a, b) => a.length === b.length && a.every((l) => b.includes(l));
-  const wanted = spec.require ? [spec.require] : [];
-  const final = [spec.add];
-
-  // Every read returns a verdict object and never exits, so the caller can give the claim tag
-  // back before it reports.
-  const readIssue = () => {
-    const raw = gh("issue", "view", n, ...repoPin, "--json", "number,state,labels,updatedAt");
-    if (raw === null) return { fail: "gh issue view failed; refusing to act without issue state" };
-    const issue = parse(raw);
-    if (!issue || typeof issue !== "object" || !Array.isArray(issue.labels)) return { fail: "gh issue view returned something that is not an issue" };
-    return { state: issue.state, labels: issue.labels.map((l) => l.name), updatedAt: issue.updatedAt };
-  };
-  const issueGate = () => {
-    const r = readIssue();
-    if (r.fail) return r;
-    if (r.state !== "OPEN") return { fail: `issue is ${r.state}, not OPEN` };
-    const lc = lifecycleOf(r.labels);
-    if (!sameSet(lc, wanted)) {
-      return { fail: wanted.length
-        ? `issue carries lifecycle labels [${lc.join(", ")}] and ${action} needs ${wanted[0]} alone; a blocked, buried, or double-labelled issue is a human's to settle`
-        : `issue carries lifecycle labels [${lc.join(", ")}]; ${action} is for an issue with none` };
+  // ---- the workspace bound, the fetch and the pin, for every verb
+  const repo = real(repoArg)
+  if (repo === null) refuse('the repository path does not resolve')
+  if (env.FLOW_CRON_JOB && !env.FLOW_WORKSPACE) refuse('FLOW_CRON_JOB is set and FLOW_WORKSPACE is not, so the repository path is unbounded')
+  if (env.FLOW_WORKSPACE) {
+    if (dirname(repo) !== real(env.FLOW_WORKSPACE)) refuse(`${repo} is not a direct child of the workspace; the lint acts only on the repositories it enumerated`)
+    const common = gitIn(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+    if (common === null || real(common) !== join(repo, '.git')) refuse(`${repo} is not a main checkout with its own .git; a linked worktree acts on another repository`)
+  }
+  if (action === 'delete-branch' && PROTECTED.has(target)) refuse(`${target} is a protected branch`)
+  const originUrl = gitIn(repo, ['remote', 'get-url', 'origin'])
+  if (originUrl === null) refuse('the repository has no origin remote')
+  const redact = makeRedactor(originUrl, 'origin')
+  const fetched = execCapture('git', ['-C', repo, 'fetch', '--prune', '--no-tags', '--quiet', 'origin'], { timeoutMs: 60_000, env: gitEnv })
+  if (fetched.code !== 0) refuse(`git fetch origin failed, so nothing is decided on possibly stale refs: ${redact(firstLine(fetched.stderr)) || `exit ${fetched.code}`}`)
+  const pinned = identityOfRemote(originUrl, { purpose: 'act on', allowedHosts: allowedHostsFrom(env) })
+  if (pinned.identity === undefined && action !== 'survey') refuse(pinned.refusal)
+  const id = pinned.identity ?? null
+  const runGh = ghRunner(env)
+  const gh = (args, what) => {
+    const r = runGh(args, { cwd: repo })
+    const value = r.code === 0 ? parseJson(r.stdout) : null
+    if (value === null) refuse(`${what} failed, so nothing is decided without it: ${firstLine(r.stderr) || `exit ${r.code}`}`)
+    return value
+  }
+  const slurp = (path, what) => {
+    const value = gh(['api', '--hostname', id.host, '--paginate', '--slurp', path], what)
+    if (!Array.isArray(value)) refuse(`${what} did not read as an array of pages`)
+    return value
+  }
+  const pages = (path, what) => {
+    const value = slurp(path, what)
+    if (!value.every(Array.isArray)) refuse(`${what} did not read as an array of pages`)
+    return value.flat()
+  }
+  const PR_LIMIT = 1000
+  const prCache = new Map()
+  const prsFor = (branch) => {
+    if (!prCache.has(branch)) {
+      // gh pr list fetches 30 by default. An explicit limit, and a full answer read as possibly
+      // truncated, keep a destructive decision from resting on a partial list.
+      const list = gh(['pr', 'list', '--repo', id.full, '--head', branch, '--state', 'all', '--limit', String(PR_LIMIT), '--json', 'number,state,headRefOid'], `gh pr list --head ${branch}`)
+      if (!Array.isArray(list)) refuse(`gh pr list --head ${branch} did not answer a list`)
+      if (list.length >= PR_LIMIT) refuse(`gh pr list --head ${branch} returned ${list.length} pull requests, its limit, so the list may be partial`)
+      prCache.set(branch, list)
     }
-    if (spec.seen && r.updatedAt !== seen) return { fail: `issue moved since the lint read it (updatedAt ${r.updatedAt}, seen ${seen}); the judgment is stale, re-read it next night` };
-    if (!spec.grace) return { ageMs: null };
-    const updated = Date.parse(r.updatedAt);
-    if (!Number.isFinite(updated)) return { fail: "issue updatedAt is unreadable" };
-    const ageMs = Date.now() - updated;
-    if (ageMs < GRACE_MS) return { fail: `issue was updated ${Math.round(ageMs / 60_000)} minutes ago; a claim younger than six hours may be a running stage whose branch is not yet on origin` };
-    return { ageMs };
-  };
-  const liveness = () => {
-    if (!spec.liveness) return {};
-    const local = tryGitWithin(5_000, "for-each-ref", "--format=%(refname:short)", ...patterns);
-    if (local === null) return { fail: "git for-each-ref failed; refusing to act without this clone's branch state" };
-    const localHit = local.split("\n").filter(Boolean).find((r) => branchRe.test(r));
-    if (localHit) return { live: `local branch ${localHit}` };
-    const worktrees = tryGitWithin(5_000, "worktree", "list", "--porcelain", "-z");
-    if (worktrees === null) return { fail: "git worktree list failed; refusing to act without worktree state" };
-    const wt = worktrees.split("\0").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9)).find((p) => p.includes(`-issue-${n}-`));
-    if (wt) return { live: `worktree ${wt}` };
-    // origin is asked directly: a clone whose fetch refspec covers only main never mirrors the
-    // issue branch under refs/remotes/origin/, and a fetch alone would read as "no branch".
-    const remote = tryGitWithin(60_000, "ls-remote", "--heads", "origin", ...patterns);
-    if (remote === null) return { fail: "git ls-remote origin failed or timed out; refusing to act without origin's branch state" };
-    const remoteHit = remote.split("\n").map((l) => l.split("\t")[1]).find((r) => r && branchRe.test(r.replace(/^refs\/heads\//, "")));
-    if (remoteHit) return { live: `branch ${remoteHit} on origin` };
-    // Every open pull request, paged to exhaustion: a fork PR keeps its head in the fork, so
-    // nothing on origin advertises it, and a fixed --limit drops the oldest on a busy repository.
-    const prsRaw = gh("api", "--hostname", slug.host, "--paginate", "--slurp", `repos/${slug.owner}/${slug.repo}/pulls?state=open&per_page=100`);
-    if (prsRaw === null) return { fail: "gh api over the open pull requests failed; refusing to act without PR state" };
-    const pages = parse(prsRaw);
-    if (!Array.isArray(pages) || !pages.every((p) => Array.isArray(p))) return { fail: "gh api --paginate --slurp over the open pull requests printed something that is not an array of pages" };
-    const pr = pages.flat().find((p) => branchRe.test(String(p?.head?.ref ?? "")));
-    if (pr) return { live: `open PR #${pr.number} on ${pr.head.ref}` };
-    return {};
-  };
-  const claimVerb = (...argv) => {
-    const r = issueClaim({ argv, cwd: repo, env: process.env });
-    const j = parse(String(r.stdout || "").trim().split("\n").pop() || "");
-    return j && typeof j === "object" ? j : { result: "unknown", detail: `issue-claim ${argv[0]} printed no JSON (exit ${r.code})` };
-  };
+    return prCache.get(branch)
+  }
+  // Ancestry is judged against the default branch GitHub names, read once, never a fixed main: a
+  // second branch that happens to be called main proves nothing merged.
+  let defaultName = null
+  const defaultBranch = () => {
+    defaultName ??= gh(['repo', 'view', id.full, '--json', 'defaultBranchRef'], 'gh repo view')?.defaultBranchRef?.name ?? null
+    if (typeof defaultName !== 'string' || defaultName === '') refuse('gh repo view named no default branch, so nothing is judged against it')
+    return defaultName
+  }
+  const inMain = (tip) => gitIn(repo, ['merge-base', '--is-ancestor', tip, `refs/remotes/origin/${defaultBranch()}`]) !== null
 
-  const gate = issueGate();
-  if (gate.fail) out(false, gate.fail);
-  const pre = liveness();
-  if (pre.fail) out(false, pre.fail);
-  if (pre.live) out(false, `live: ${pre.live}`);
-  const why = action === "clear-orphan" ? `in-progress for ${Math.round(gate.ageMs / 3_600_000)}h with no branch, worktree, claim tag, or open PR`
-    : action === "demote-unready" ? `ready-for-agent contract not met: ${reason}`
-    : "open with no lifecycle label";
-  if (check) {
-    // --check runs every gate, and for a tag-holding verb the tag is one of them: a held tag would
-    // refuse the real run at acquire, so the check reads it directly rather than take it.
-    if (spec.holdTag) {
-      const tag = tryGitWithin(60_000, "ls-remote", "--tags", "origin", TAG_REF);
-      if (tag === null) out(false, "git ls-remote origin failed or timed out; refusing to report without the claim tag state");
-      if (tag !== "") out(false, `claim tag flow-claim-issue-${n} is held on origin; a held claim is a human's to settle`);
+  // Recoverable: can origin reproduce this tip after the delete? An open pull request refuses outright.
+  const recoverable = (branch, tip) => {
+    const prs = prsFor(branch)
+    const open = prs.find((p) => p.state === 'OPEN')
+    if (open) refuse(`${branch} has an open pull request (#${open.number})`)
+    const remoteTip = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
+    if (remoteTip === tip) return `origin/${branch} is at this tip`
+    if (remoteTip !== null && gitIn(repo, ['rev-list', '--count', `refs/remotes/origin/${branch}..${tip}`]) === '0') return `no commits beyond origin/${branch}`
+    const closed = prs.find((p) => (p.state === 'MERGED' || p.state === 'CLOSED') && p.headRefOid === tip)
+    if (closed) return `pull request #${closed.number} (${closed.state}) has this tip as its head`
+    if (inMain(tip)) return `the tip is in origin/${defaultBranch()}`
+    return refuse('the tip is not reproducible from origin (no matching remote branch, pull request head or main ancestry)')
+  }
+  // Dead: recoverable is not a reason to delete; a pushed spike with no pull request is alive. A
+  // closed pull request is a warrant only for the tip it closed at, since a branch name can be
+  // reused for new work after its old pull request closed.
+  const dead = (branch, tip) => {
+    const closed = prsFor(branch).find((p) => (p.state === 'MERGED' || p.state === 'CLOSED') && p.headRefOid === tip)
+    if (closed) return `pull request #${closed.number} is ${closed.state}`
+    if (inMain(tip)) return `the tip is already in origin/${defaultBranch()}`
+    return refuse(`no merged or closed pull request and the tip is not in origin/${defaultBranch()}: recoverable, but not shown dead, so a human decides`)
+  }
+  const worktrees = () => {
+    const listed = gitIn(repo, ['worktree', 'list', '--porcelain', '-z'])
+    if (listed === null) refuse('git worktree list failed')
+    const entries = []
+    for (const field of listed.split('\0')) {
+      if (field.startsWith('worktree ')) entries.push({ path: field.slice(9), branch: null, head: null })
+      else if (field.startsWith('branch ')) entries.at(-1).branch = field.slice(7).replace(/^refs\/heads\//, '')
+      else if (field.startsWith('HEAD ')) entries.at(-1).head = field.slice(5)
     }
-    out(true, `check only: would ${spec.past === "cleared" ? "clear" : spec.past === "demoted" ? "demote" : "triage"} (${why})`);
+    return entries
+  }
+  /** The newest of the HEAD commit's time and every tracked file's mtime, in ms, or null. */
+  const lastChange = (path) => {
+    const committed = gitIn(path, ['log', '-1', '--format=%ct', 'HEAD'])
+    const files = gitIn(path, ['ls-files', '-z'])
+    if (committed === null || files === null) return null
+    let newest = Number(committed) * 1000
+    for (const file of files.split('\0').filter(Boolean)) { try { newest = Math.max(newest, lstatSync(join(path, file)).mtimeMs) } catch {} }
+    return newest
   }
 
-  let receipt = null;
-  if (spec.holdTag) {
-    const acq = claimVerb("acquire", n);
-    if (acq.result === "held") out(false, `claim tag flow-claim-issue-${n} is held on origin; a held claim is a human's to settle (${acq.detail || "no detail"})`);
-    if (acq.result !== "acquired" || typeof acq.sha !== "string") out(false, `could not take the claim tag to serialize with the issue stage: ${acq.detail || acq.reason || acq.result}`);
-    receipt = acq.sha;
+  if (action === 'remove-worktree') {
+    const path = real(target) ?? target
+    const all = worktrees()
+    if (all[0]?.path === path) refuse('this is the main worktree')
+    const entry = all.find((e) => e.path === path)
+    if (!entry) refuse('the path is not a registered worktree of this repository')
+    const status = gitIn(path, ['status', '--porcelain'])
+    if (status === null) refuse('the worktree status could not be read')
+    if (status !== '') refuse('the worktree has tracked changes or untracked files')
+    const changed = lastChange(path)
+    if (changed === null) refuse('the worktree\'s last change could not be read')
+    if (Date.now() - changed < RECENT_MS) refuse(`the worktree changed ${Math.round((Date.now() - changed) / HOUR)}h ago, inside the four-day window`)
+    const why = entry.branch ? recoverable(entry.branch, entry.head) : inMain(entry.head) ? `the detached tip is in origin/${defaultBranch()}` : refuse(`the detached tip is not in origin/${defaultBranch()}`)
+    const removed = execCapture('git', ['-C', repo, 'worktree', 'remove', path], { timeoutMs: 60_000, env: gitEnv })
+    if (removed.code !== 0) refuse(`git worktree remove refused: ${firstLine(removed.stderr)}`)
+    gitIn(repo, ['worktree', 'prune'])
+    if (worktrees().some((e) => e.path === path) || real(path) !== null) refuse('git reported the removal, but the worktree still reads back')
+    finish(true, `removed (${why})`)
   }
-  const giveBack = () => {
-    if (receipt === null) return true;
-    const back = claimVerb("abandon", n, receipt);
-    // tag-absent is a tag already gone: nothing is held, so nothing is retained. Who removed it
-    // is the receipt-generation residual the header names, not a reason to report a lock.
-    if (back.result === "abandoned" || back.reason === "tag-absent") return true;
-    return back.detail || back.result;
-  };
-  const settle = (ok, why) => {
-    const b = giveBack();
-    if (b !== true) out(false, `${why}; and the claim tag could not be given back (${b}), retained: claim-tag`);
-    out(ok, why);
-  };
-  const keep = (why) => out(false, receipt !== null ? `${why}, so the claim tag is kept for a human to settle, retained: claim-tag` : `${why}; a human checks it`);
 
-  // Under the tag (or, for a verb no claim can race, straight away): anything that throws in
-  // here still reaches abandon; a tag left behind by an exception would be a lock nobody holds
-  // and nobody reports.
-  try {
-    if (spec.holdTag) {
-      const gate2 = issueGate();
-      if (gate2.fail) settle(false, `under the claim tag: ${gate2.fail}`);
-      const live2 = liveness();
-      if (live2.fail) settle(false, `under the claim tag: ${live2.fail}`);
-      if (live2.live) settle(false, `under the claim tag, live: ${live2.live}`);
+  if (action === 'delete-branch') {
+    const tip = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${target}`])
+    if (tip === null) refuse('the branch does not exist')
+    if (target === defaultBranch()) refuse(`${target} is the default branch`)
+    if (worktrees().some((e) => e.branch === target)) refuse('the branch is checked out in a worktree')
+    const why = `${dead(target, tip)}; ${recoverable(target, tip)}`
+    // update-ref, unlike `git branch -D`, deletes a branch a worktree has checked out, so git's own
+    // check is repeated here, after the reads above and straight before the delete.
+    if (worktrees().some((e) => e.branch === target)) refuse('the branch was checked out in a worktree while it was being judged')
+    // Compare-and-delete: git refuses if the branch moved off the tip every check above was about.
+    if (gitIn(repo, ['update-ref', '-d', `refs/heads/${target}`, tip]) === null) refuse('the branch moved or could not be deleted')
+    gitIn(repo, ['config', '--remove-section', `branch.${target}`])
+    if (gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${target}`]) !== null) refuse('the delete was reported, but the branch still reads back')
+    finish(true, `deleted at ${tip.slice(0, 12)} (${why})`)
+  }
+
+  if (action === 'relabel') {
+    const flags = {}
+    for (let i = 0; i < rest.length; i += 2) {
+      if (!['--from', '--to', '--seen', '--reason'].includes(rest[i]) || rest[i] in flags || i + 1 >= rest.length) refuse(`${rest[i]} is not a relabel flag with a value; ${USAGE}`)
+      flags[rest[i]] = rest[i + 1]
     }
-    const editArgs = ["issue", "edit", n, ...repoPin];
-    if (spec.remove) editArgs.push("--remove-label", spec.remove);
-    editArgs.push("--add-label", spec.add);
-    const edited = gh(...editArgs) !== null;
-
-    const back = readIssue();
-    if (back.fail) keep("the issue could not be read back after the edit, so its state is unknown");
-    const lc = lifecycleOf(back.labels);
-    const landed = back.state === "OPEN" && sameSet(lc, final);
-    if (!landed) {
-      // The original tuple, whatever gh's exit said, is proof nothing moved: the tag goes back and
-      // the orphan is still an orphan next night. Keeping the tag here would strand it.
-      if (back.state === "OPEN" && sameSet(lc, wanted)) {
-        settle(false, edited ? "gh issue edit was accepted but the read-back shows the labels unchanged; nothing moved" : "gh issue edit failed and the read-back confirms nothing moved");
+    const [from, to, seen, reason] = ['--from', '--to', '--seen', '--reason'].map((name) => flags[name] ?? null)
+    if (!/^[1-9][0-9]*$/.test(target)) refuse('the issue number must be a positive integer')
+    const rule = TRANSITIONS[`${from}>${to}`]
+    if (!rule) refuse(`--from ${from} --to ${to} is not a transition the lint may make; it may make ${Object.keys(TRANSITIONS).join(', ')}`)
+    if (seen === null || !Number.isFinite(Date.parse(seen))) refuse('--seen takes the updatedAt the lint read the issue at')
+    if (reason === null || reason.replace(/_/g, '') === '') refuse('--reason takes the finding, one token with underscores for spaces')
+    const wanted = from === 'none' ? [] : [from]
+    const lifecycleOf = (issue) => LIFECYCLE.filter((l) => issue.labels.includes(l))
+    const same = (a, b) => a.length === b.length && a.every((l) => b.includes(l))
+    const readIssue = () => {
+      const v = gh(['issue', 'view', target, '--repo', id.full, '--json', 'number,state,labels,updatedAt'], `gh issue view ${target}`)
+      if (!Array.isArray(v?.labels)) refuse('gh issue view did not answer an issue')
+      return { state: v.state, labels: v.labels.map((l) => l.name), updatedAt: v.updatedAt }
+    }
+    const judge = (issue) => {
+      if (issue.state !== 'OPEN') refuse(`the issue is ${issue.state}, not OPEN`)
+      if (!same(lifecycleOf(issue), wanted)) refuse(`the issue carries lifecycle labels [${lifecycleOf(issue).join(', ')}], and this transition needs ${from === 'none' ? 'none' : `${from} alone`}`)
+      if (Date.parse(issue.updatedAt) !== Date.parse(seen)) refuse(`the issue moved since the lint read it (updatedAt ${issue.updatedAt}, seen ${seen}), so the judgment is stale`)
+      const age = Date.now() - Date.parse(issue.updatedAt)
+      if (age < rule.minAge) refuse(`the issue was updated ${Math.round(age / 60_000)} minutes ago; under six hours it may be a running issue stage whose branch is not on origin yet`)
+    }
+    const forIssue = new RegExp(`^(feat|fix|chore)/issue-${target}-`)
+    const patterns = ['feat', 'fix', 'chore'].map((k) => `refs/heads/${k}/issue-${target}-*`)
+    const claimRef = `refs/tags/flow-claim-issue-${target}`
+    /** The claim's own scan for a run on the issue; the tag counts except while this verb holds it. */
+    const liveRun = ({ tagCounts }) => {
+      const local = gitIn(repo, ['for-each-ref', '--format=%(refname:short)', ...patterns])
+      if (local === null) refuse('git for-each-ref failed')
+      const localHit = local.split('\n').find((b) => forIssue.test(b))
+      if (localHit) refuse(`live: local branch ${localHit}`)
+      const wt = worktrees().find((e) => e.path.includes(`-issue-${target}-`) || forIssue.test(e.branch ?? ''))
+      if (wt) refuse(`live: worktree ${wt.path}`)
+      const remote = gitIn(repo, ['ls-remote', 'origin', ...patterns, ...(tagCounts ? [claimRef] : [])], 60_000)
+      if (remote === null) refuse('git ls-remote origin failed')
+      const remoteHit = remote.split('\n').map((l) => l.split('\t')[1] ?? '')
+        .find((ref) => (tagCounts && ref === claimRef) || forIssue.test(ref.replace(/^refs\/heads\//, '')))
+      if (remoteHit) refuse(`live: ${remoteHit} on origin`)
+      const pr = pages(`repos/${id.owner}/${id.repo}/pulls?state=open&per_page=100`, 'gh api over the open pull requests').find((p) => forIssue.test(String(p?.head?.ref ?? '')))
+      if (pr) refuse(`live: open pull request #${pr.number} from ${pr.head.ref}`)
+    }
+    const move = () => {
+      const edit = runGh(['issue', 'edit', target, '--repo', id.full, ...(from === 'none' ? [] : ['--remove-label', from]), '--add-label', to], { cwd: repo })
+      const after = readIssue()
+      if (after.state !== 'OPEN' || !same(lifecycleOf(after), [to])) {
+        if (after.state === 'OPEN' && same(lifecycleOf(after), wanted)) refuse(`the edit ${edit.code === 0 ? 'was accepted' : 'failed'} and the labels read back unchanged; nothing moved`)
+        refuse(`after the edit the issue reads ${after.state} with [${lifecycleOf(after).join(', ')}] instead of OPEN with ${to} alone; left for a human, nothing undone`)
       }
-      // No undo. gh's add is idempotent and returns no receipt, so a label present on the read-back
-      // is not proof this verb put it there; removing it could take a label another writer owns.
-      // A conflicting tuple is reported and left for a human.
-      keep(`after the edit the issue reads ${back.state} with lifecycle labels [${lc.join(", ")}] instead of OPEN with ${spec.add} alone; ${edited ? "something else moved it in the same window" : "the edit failed part way"}`);
+      // The labels moved but this run's edit failed. A read-back cannot say whose edit moved them, so
+      // the outcome is unknown and is never reported as this run's action.
+      if (edit.code !== 0) refuse(`the edit failed, yet the labels read back as ${to} alone; whose edit moved them is unknown`)
     }
-    // Landed. The read-back was the last read; the tag goes back now, before anything else
-    // touches the network, so no later call widens the window between the read and the release.
-    const b = giveBack();
-    if (b !== true) out(false, `${spec.past} (${why}); but the claim tag could not be given back (${b}), retained: claim-tag`);
-    const body = action === "clear-orphan" ? `Cleared an orphaned \`in-progress\` claim back to \`ready-for-agent\`: ${why}.`
-      : action === "demote-unready" ? `Moved \`ready-for-agent\` back to \`needs-triage\`: ${reason}`
-      : "Added \`needs-triage\`: open issue with no lifecycle label.";
-    const commented = gh("issue", "comment", n, ...repoPin, "--body", `${body}\n\n- flow nightly lint`) !== null;
-    out(true, `${spec.past} (${why})${commented ? "" : "; the comment failed, labels moved"}`);
-  } catch (e) {
-    settle(false, `unexpected failure under the claim tag: ${String(e?.message || e).slice(0, 200)}`);
+    // A move a claim could race runs under the claim's own tag. An issue run takes the tag before
+    // its re-read and label edit, and this verb takes it before its own, so neither edit can land
+    // between the other's read and write: a run that meets the lint's tag stands down as held, and
+    // the lint refuses a tag it did not create. Everything is checked once for free and once more
+    // under the tag, and the tag goes back straight after the read-back, before the comment.
+    const underClaimTag = (act) => {
+      const ctx = { cwd: repo, redact, env: gitEnv }
+      const got = acquire(ctx, target)
+      if (got.result === 'held' && got.observed === 'pre-push') refuse(`live: ${claimRef} on origin`)
+      if (got.result !== 'acquired') refuse(`the claim tag could not be taken, so nothing moved: ${got.detail}`, got.observed === 'post-push' ? { retained: ['claim-tag'] } : {})
+      let failure = null
+      try { act() } catch (error) { failure = error }
+      const dropped = dropTag(ctx, target, got.sha)
+      const kept = dropped.gone ? null : `${claimRef} stays on origin (${dropped.reason ?? dropped.result}: ${dropped.detail ?? 'no detail'}) and holds off every claim of this issue until a human deletes it`
+      if (failure instanceof Verdict && kept) {
+        failure.reason += `; ${kept}`
+        failure.extra = { ...failure.extra, retained: ['claim-tag'] }
+      }
+      if (failure) throw failure
+      return kept
+    }
+    judge(readIssue())
+    let kept = null
+    if (rule.live) {
+      liveRun({ tagCounts: true })
+      kept = underClaimTag(() => { judge(readIssue()); liveRun({ tagCounts: false }); move() })
+    } else move()
+    const words = reason.replace(/_/g, ' ').trim()
+    const body = `${from === 'none' ? `Added \`${to}\`` : `Moved \`${from}\` to \`${to}\``}: ${words}.\n\n- flow nightly lint`
+    const commented = runGh(['issue', 'comment', target, '--repo', id.full, '--body', body], { cwd: repo }).code === 0
+    finish(true, `relabelled ${from} to ${to}${commented ? '' : '; the comment failed, the labels moved'}${kept ? `; ${kept}` : ''}`, kept ? { retained: ['claim-tag'] } : {})
   }
+
+  // ---- survey: read-only, and every read that fails refuses the whole survey.
+  const all = worktrees()
+  const branchLines = gitIn(repo, ['for-each-ref', '--format=%(refname:short)%09%(objectname)%09%(upstream:short)%09%(upstream:track)', 'refs/heads'])
+  if (branchLines === null) refuse('git for-each-ref failed')
+  const prsOf = (branch) => (id === null ? null : prsFor(branch))
+  const survey = {
+    identity: id?.full ?? null,
+    ...(id === null ? { skipped: pinned.refusal } : {}),
+    worktrees: all.slice(1).map((e) => {
+      const status = gitIn(e.path, ['status', '--porcelain'])
+      const changed = lastChange(e.path)
+      return { path: e.path, branch: e.branch, head: e.head, clean: status === null ? null : status === '', lastChange: changed === null ? null : new Date(changed).toISOString(), prs: e.branch ? prsOf(e.branch) : null }
+    }),
+    branches: branchLines.split('\n').filter(Boolean).map((line) => {
+      const [name, tip, upstream, track] = line.split('\t')
+      return { name, tip, upstream: upstream || null, track: track || null, checkedOut: all.some((e) => e.branch === name), protected: PROTECTED.has(name), prs: PROTECTED.has(name) ? null : prsOf(name) }
+    }),
+  }
+  if (id !== null) {
+    survey.issues = pages(`repos/${id.owner}/${id.repo}/issues?state=open&per_page=100`, 'gh api over the open issues').filter((i) => !i.pull_request).map((i) => {
+      const labels = (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))
+      const lifecycle = LIFECYCLE.filter((l) => labels.includes(l))
+      // The body only where the lint has to judge it against the ready-for-agent contract.
+      return { number: i.number, title: i.title, labels, lifecycle, updatedAt: i.updated_at, ...(lifecycle.includes('ready-for-agent') ? { body: i.body ?? '' } : {}) }
+    })
+    survey.labels = labelDrift(pages(`repos/${id.owner}/${id.repo}/labels?per_page=100`, 'gh api over the labels'))
+    survey.flakes = flakeEntries({ gh, slurp, gitIn, repo, id, defaultBranch: defaultBranch() })
+  }
+  finish(true, 'surveyed', survey)
+}
+
+/**
+ * The repository's label tuples against the table in label-contract.md, read by its header cells
+ * (label, color, description) so a reshaped table still parses, plus the stock `name` (`color`)
+ * modifiers. A table that parses to nothing is reported, never read as a clean repository.
+ */
+function labelDrift(have) {
+  const text = readFileSync(CONTRACT, 'utf8')
+  const want = []
+  let cols = null
+  for (const line of text.split('\n')) {
+    if (!line.trim().startsWith('|')) { cols = null; continue }
+    const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.replaceAll('`', '').trim())
+    if (cols === null) {
+      const lower = cells.map((c) => c.toLowerCase())
+      cols = { name: lower.indexOf('label'), color: lower.indexOf('color'), description: lower.findIndex((c) => c.startsWith('description')) }
+    } else if (!cells.every((c) => /^:?-+:?$/.test(c)) && Object.values(cols).every((i) => i >= 0)) {
+      want.push({ name: cells[cols.name], color: cells[cols.color], description: cells[cols.description] })
+    }
+  }
+  for (const m of text.matchAll(/`([a-z][a-z-]*)` \(`([0-9a-f]{6})`\)/g)) want.push({ name: m[1], color: m[2], description: null })
+  if (want.length === 0) return { error: `no label tuples parsed out of ${CONTRACT}` }
+  const byName = new Map(have.map((l) => [l.name, l]))
+  const drifted = []
+  for (const w of want) {
+    const h = byName.get(w.name)
+    if (h === undefined) continue
+    const off = {}
+    if (String(h.color).toLowerCase() !== w.color) off.color = { want: w.color, have: h.color }
+    if (w.description !== null && (h.description ?? '') !== w.description) off.description = { want: w.description, have: h.description ?? '' }
+    if (Object.keys(off).length > 0) drifted.push({ name: w.name, ...off })
+  }
+  return { missing: want.filter((w) => !byName.has(w.name)).map((w) => w.name), drifted, extra: have.map((l) => l.name).filter((n) => !want.some((w) => w.name === n)) }
+}
+
+/** Each known-flakes line on the default branch, against the jobs of the last 20 workflow runs. */
+function flakeEntries({ gh, slurp, gitIn, repo, id, defaultBranch }) {
+  const text = gitIn(repo, ['show', `refs/remotes/origin/${defaultBranch}:${FLAKES_PATH}`])
+  if (text === null) return { file: false, entries: [] }
+  const runs = gh(['api', '--hostname', id.host, `repos/${id.owner}/${id.repo}/actions/runs?per_page=20`], 'gh api over the workflow runs')?.workflow_runs ?? []
+  const jobsPerRun = runs.map((r) => slurp(`repos/${id.owner}/${id.repo}/actions/runs/${r.id}/jobs?per_page=100`, `gh api over the jobs of run ${r.id}`).flatMap((p) => p?.jobs ?? []))
+  const names = new Set(jobsPerRun.flat().map((j) => j.name))
+  const entries = text.split('\n').map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#')).map((entry) => {
+    // The whole line if a job has that name, else the longest job name it starts with, else its first colon.
+    let check = names.has(entry) ? entry : null
+    if (check === null) for (const name of names) if (entry.startsWith(`${name}:`) && name.length > (check?.length ?? -1)) check = name
+    check ??= entry.includes(':') ? entry.slice(0, entry.indexOf(':')).trim() : entry
+    return {
+      entry, check,
+      runsSeen: jobsPerRun.filter((jobs) => jobs.some((j) => j.name === check)).length,
+      runsFailed: jobsPerRun.filter((jobs) => jobs.some((j) => j.name === check && j.conclusion === 'failure')).length,
+    }
+  })
+  return { file: true, runs: runs.length, entries }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  runExecutor(lintActions({ argv: process.argv.slice(2), env: process.env }))
 }

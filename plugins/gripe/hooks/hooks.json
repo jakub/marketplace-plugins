@@ -1,5 +1,5 @@
 {
-  "description": "gripe: friction capture - advertisement and session mark, observed rows on denials and failed turns, repeat-gated error nudges, end-of-turn checkpoints.",
+  "description": "gripe: friction capture - advertisement and session mark, observed rows on failed turns, repeat-gated error nudges, end-of-turn checkpoints.",
   "hooks": {
     "SessionStart": [
       {
@@ -30,17 +30,6 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/post-tool-use-failure.mjs\"",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PermissionDenied": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/permission-denied.mjs\"",
-            "timeout": 10
           }
         ]
       }
