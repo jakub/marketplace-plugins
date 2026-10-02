@@ -7,8 +7,10 @@
 //
 // Differing bytes do not make a file ours. The installer replaces a file only when it opens with
 // the shebang and a `// flow-delegate-` line, which every flow dispatcher has carried, and refuses
-// with exit 1 to replace anything else at that path.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+// with exit 1 to replace anything else at that path. Only a regular file is read at all: a
+// symlink, dangling or not, and anything that is not a file is refused before it can read as
+// absent.
+import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
@@ -19,13 +21,16 @@ if (process.argv[2] !== 'install') {
 const source = readFileSync(new URL('../bin/flow-delegate', import.meta.url))
 const bin = join(homedir(), '.local', 'bin')
 const target = join(bin, 'flow-delegate')
-let current = null
-try { current = readFileSync(target) } catch (error) {
-  if (error.code !== 'ENOENT') {
-    process.stderr.write(`flow-delegate: refusing to replace ${target}, which cannot be read (${error.code})\n`)
-    process.exit(1)
-  }
+const refuse = (why) => {
+  process.stderr.write(`flow-delegate: refusing to replace ${target}, which ${why}\n`)
+  process.exit(1)
 }
+let current = null
+try {
+  const found = lstatSync(target, { throwIfNoEntry: false })
+  if (found && !found.isFile()) refuse('is not a regular file; move it aside and rerun')
+  if (found) current = readFileSync(target)
+} catch (error) { refuse(`cannot be read (${error.code})`) }
 const OURS = /^#!\/usr\/bin\/env node\n\/\/ flow-delegate-/
 if (current?.equals(source)) {
   process.stderr.write(`flow-delegate: ${target} is up to date\n`)

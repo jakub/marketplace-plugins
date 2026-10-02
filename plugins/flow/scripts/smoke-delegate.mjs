@@ -1437,7 +1437,16 @@ try {
   rmSync(installed)
   mkdirSync(installed)
   assert.equal(install().status, 1)
-  ok('the installer copies the dispatcher when it is missing or a flow dispatcher that differs, leaves an identical copy alone, and refuses any other file')
+  rmSync(installed, { recursive: true })
+  // A symlink is someone's arrangement even when it dangles, or points at a flow dispatcher.
+  for (const aim of [join(tmp, 'nowhere', 'flow-delegate'), join(PLUGIN, 'bin', 'flow-delegate')]) {
+    symlinkSync(aim, installed)
+    const refused = install()
+    assert.equal(refused.status, 1, refused.stderr)
+    assert.equal(lstatSync(installed).isSymbolicLink() && fs.readlinkSync(installed), aim, `the installer replaced a symlink to ${aim}`)
+    rmSync(installed)
+  }
+  ok('the installer copies the dispatcher when it is missing or a flow dispatcher that differs, leaves an identical copy alone, and refuses any other file, a symlink included')
 } finally {
   for (const path of strays) rmSync(path, { recursive: true, force: true })
   rmSync(tmp, { recursive: true, force: true })
