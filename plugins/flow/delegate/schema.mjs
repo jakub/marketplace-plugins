@@ -56,7 +56,7 @@ export function schemaProblem(schema, root = schema, at = '#', depth = 0) {
     const types = [].concat(schema.type)
     if (!types.length || types.some((type) => !TYPES.has(type))) return `${at}/type names no JSON type`
   }
-  if (schema.required !== undefined && !(Array.isArray(schema.required) && schema.required.every((key) => typeof key === 'string'))) return `${at}/required is not a list of names`
+  if (schema.required !== undefined && !(Array.isArray(schema.required) && schema.required.every((key) => typeof key === 'string') && new Set(schema.required).size === schema.required.length)) return `${at}/required is not a list of distinct names`
   if (schema.enum !== undefined && !(Array.isArray(schema.enum) && schema.enum.length)) return `${at}/enum is not a non-empty list`
   for (const key of NUMBERS) if (schema[key] !== undefined && !Number.isFinite(schema[key])) return `${at}/${key} is not a number`
   if (schema.multipleOf !== undefined && !(Number.isFinite(schema.multipleOf) && schema.multipleOf > 0)) return `${at}/multipleOf is not a positive number`
