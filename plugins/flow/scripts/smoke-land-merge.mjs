@@ -56,7 +56,8 @@ const pagesOf = (list) => { const pages = []; for (let i = 0; i < list.length; i
 // `fail` names one read that answers HTTP 500, and `malformed` one that answers in the wrong shape.
 const freshState = (over = {}) => ({
   defaultBranch: 'main', mergeExit: 0, landsNothing: false, confirmFails: false, queue: null, queueFails: false, recheck: {}, after: {},
-  queueAfter: undefined, queueAfterFails: false, merged: false, fail: null, malformed: null, behindBy: 0, baseTip: 'f'.repeat(40), tipAtMerge: null, suiteCount: 2,
+  queueAfter: undefined, queueAfterFails: false, merged: false, fail: null, malformed: null, behindBy: 0, baseTip: 'f'.repeat(40), tipAtMerge: null, suiteCount: null,
+  suites: [{ id: 501, status: 'completed', conclusion: 'success' }, { id: 502, status: 'completed', conclusion: 'success' }],
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')], totalCount: null, statuses: [],
   threadPages: [[thread('T1')]], threadsNoCursor: false, baseFlakes: null, headFlakes: null, flakesHttp: null, flakesEncoding: 'base64',
   calls: [], merges: [], ...over,
@@ -123,13 +124,16 @@ const makeRunGh = (st) => (args) => {
     const second = source !== undefined && reads[source] > 1
     if (second && st.failLater === source) return serverError()
     const seen = (key) => (second && st.later?.[key] !== undefined ? st.later[key] : st[key])
-    if (source === 'check-suites') return st.fail === 'check-suites' ? serverError() : ok({ total_count: seen('suiteCount'), check_suites: [] })
     if (source !== undefined && args.includes('--paginate') && args.includes('--slurp')) {
       if (st.fail === source) return serverError()
       if (st.malformed === source) return ok([{ message: 'not a page' }])
-      if (source === 'check-runs') return ok(pagesOf(seen('checkRuns')).map((page) => ({ total_count: st.totalCount ?? seen('checkRuns').length, check_runs: page })))
+      // A suiteCount stands in for a total_count past the suites listed, such as the 1000-suite window.
+      if (source === 'check-suites') return ok(pagesOf(seen('suites')).map((page) => ({ total_count: seen('suiteCount') ?? seen('suites').length, check_suites: page })))
+      if (source === 'check-runs') return ok(pagesOf(seen('checkRuns')).map((page) => ({ total_count: seen('totalCount') ?? seen('checkRuns').length, check_runs: page })))
       return ok(pagesOf(seen('statuses')))
     }
+    // One unpaged page of suites, as a count-only read asks for.
+    if (source === 'check-suites') return st.fail === source ? serverError() : ok({ total_count: seen('suiteCount') ?? seen('suites').length, check_suites: seen('suites').slice(0, 1) })
   }
   return { code: 3, stdout: '', stderr: `fake gh: unexpected ${args.join(' ')}\n` }
 }
@@ -343,6 +347,8 @@ console.log('\nwhat counts as a check')
   // agrees, so the suite count is read on its own and a read at the window, or none, is unknown.
   const windowed = run(ARGS, { st: freshState({ suiteCount: 1000 }) })
   check('a head carrying 1000 check suites refuses ci-unknown, naming the window', refusedWith(windowed, 'ci-unknown', '1000-suite window'), shown(windowed))
+  const partSuites = run(ARGS, { st: freshState({ suiteCount: 5 }) })
+  check('a check-suite read short of its total_count refuses ci-unknown', refusedWith(partSuites, 'ci-unknown', 'every suite'), shown(partSuites))
   const unsuited = run(ARGS, { st: freshState({ fail: 'check-suites' }) })
   check('an unreadable check-suite count refuses ci-unknown', refusedWith(unsuited, 'ci-unknown', 'check-suite count'), shown(unsuited))
   const none = run(ARGS, { st: freshState({ checkRuns: [], statuses: [] }) })
@@ -441,7 +447,9 @@ console.log('\nreview threads, the base, and every stop at once')
     ['a rerun of a check', { checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')] }],
     ['a check that turned red', { checkRuns: null }],
     ['a new commit status', { statuses: [status('coderabbit', 'failure')] }],
-    ['a new check suite', { suiteCount: 3 }],
+    ['a new check suite', { suites: [...freshState().suites, { id: 503, status: 'queued', conclusion: null }] }],
+    // A rerequest resets a suite to queued while its runs and the suite count stay as they were.
+    ['a check suite rerequested', { suites: [{ id: 501, status: 'queued', conclusion: null }, freshState().suites[1]] }],
   ]) {
     const st = freshState()
     if (later.checkRuns === null) later.checkRuns = [{ ...st.checkRuns[0], conclusion: 'failure' }, st.checkRuns[1]]
@@ -452,6 +460,14 @@ console.log('\nreview threads, the base, and every stop at once')
     const lost = run(ARGS, { st: freshState({ failLater: source }) })
     check(`a ${source} re-read that fails before the merge refuses ci-unknown, and nothing merges`, refusedWith(lost, 'ci-unknown', 'immediately before the merge'), shown(lost))
   }
+  // The re-read is held to the first read's completeness rule: the same runs under a total_count
+  // that says there are more is an incomplete read, not an unchanged one.
+  const short = run(ARGS, { st: freshState({ later: { totalCount: 3 } }) })
+  check('a re-read that collects fewer runs than its total_count refuses ci-unknown, and nothing merges', refusedWith(short, 'ci-unknown', 'total_count 3'), shown(short))
+  // A failing run excused as a known flake, renamed between the reads: same id, status and conclusion.
+  const flaky = [checkRun('unit', 'success'), checkRun('e2e', 'failure')]
+  const renamed = run(ARGS, { st: freshState({ checkRuns: flaky, baseFlakes: 'e2e\n', later: { checkRuns: [flaky[0], { ...flaky[1], name: 'e2e-renamed' }] } }) })
+  check('an excused run renamed between the verdict and the merge refuses ci-moved, and nothing merges', refusedWith(renamed, 'ci-moved'), shown(renamed))
   const landedMeanwhile = run(ARGS, { st: freshState({ tipAtMerge: 'a'.repeat(40) }) })
   check('a land elsewhere after the compare refuses behind-base, and nothing merges', refusedWith(landedMeanwhile, 'behind-base', 'moved from') &&
     ['f'.repeat(12), 'a'.repeat(12), HEAD.slice(0, 12)].every((s) => detailOf(landedMeanwhile, 'behind-base').includes(s)), shown(landedMeanwhile))

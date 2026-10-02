@@ -226,77 +226,82 @@ export function landMerge({ argv, env, cwd, runGh }) {
     }
   }
 
-  // ---- 9: every check on the argument head, both sources to the end
-  const entries = []
-  let checksComplete = true
+  // ---- 9: every check on the argument head, both sources to the end, and the suites they sit in
+  // One CI read, made for the verdict and again right before the merge, so both are held to the
+  // same completeness rules. It returns the problems that keep it from being whole, each a stop
+  // code and detail; the entries the verdict judges; and a snapshot, null unless the read is whole:
+  // every field the verdict uses from each check run and commit status, and each check suite's id,
+  // status and conclusion, every list sorted. A renamed run, a rerequested suite, a new status, or
+  // anything else that moves between the two reads changes the snapshot.
   const commitPath = (kind) => `repos/${id.owner}/${id.repo}/commits/${head}/${kind}?per_page=100`
-  const runsRead = readPages(commitPath('check-runs'))
-  const runPages = runsRead.code === 0 ? parseJson(runsRead.stdout) : null
-  if (!Array.isArray(runPages) || !runPages.every((page) => Array.isArray(page?.check_runs))) {
-    stop('read-failed', `the check-run read on ${head.slice(0, 12)} ${runsRead.code === 0 ? 'returned a page with no check_runs array' : `failed (${said(runsRead)})`}`)
-    checksComplete = false
-  } else {
-    const runs = runPages.flatMap((page) => page.check_runs)
-    for (const run of runs) {
-      entries.push({ kind: 'check-run', name: nonEmpty(run?.name), link: nonEmpty(run?.details_url) ?? nonEmpty(run?.html_url), status: run?.status, conclusion: run?.conclusion })
+  const readCi = () => {
+    const problems = []
+    const entries = []
+    const problem = (code, detail) => problems.push({ code, detail })
+    let runs = null
+    const runsRead = readPages(commitPath('check-runs'))
+    const runPages = runsRead.code === 0 ? parseJson(runsRead.stdout) : null
+    if (!Array.isArray(runPages) || !runPages.every((page) => Array.isArray(page?.check_runs))) {
+      problem('read-failed', `the check-run read on ${head.slice(0, 12)} ${runsRead.code === 0 ? 'returned a page with no check_runs array' : `failed (${said(runsRead)})`}`)
+    } else {
+      runs = runPages.flatMap((page) => page.check_runs)
+      for (const run of runs) {
+        entries.push({ kind: 'check-run', name: nonEmpty(run?.name), link: nonEmpty(run?.details_url) ?? nonEmpty(run?.html_url), status: run?.status, conclusion: run?.conclusion })
+      }
+      const reported = runPages[0]?.total_count
+      if (!Number.isSafeInteger(reported) || reported !== runs.length) {
+        problem('ci-unknown', `the check-run read on ${head.slice(0, 12)} collected ${runs.length} run(s) and GitHub reported total_count ${JSON.stringify(reported ?? null)}, so it cannot be shown to have seen every check`)
+      }
     }
-    const reported = runPages[0]?.total_count
-    if (!Number.isSafeInteger(reported) || reported !== runs.length) {
-      stop('ci-unknown', `the check-run read on ${head.slice(0, 12)} collected ${runs.length} run(s) and GitHub reported total_count ${JSON.stringify(reported ?? null)}, so it cannot be shown to have seen every check`)
-      checksComplete = false
+    // The check-runs endpoint serves runs from only the 1000 most recent check suites on a ref, and
+    // its total_count counts only those, so past that window a failing run in an older suite is
+    // missing from a read that otherwise agrees with itself. The suites are read whole, from the
+    // commit's check-suites collection, and a count at the window, or none, leaves CI unknown.
+    let suites = null
+    const suitesRead = readPages(commitPath('check-suites'))
+    const suitePages = suitesRead.code === 0 ? parseJson(suitesRead.stdout) : null
+    const windowUnknown = `so whether the check-run read fits the ${MAX_CHECK_SUITES}-suite window it is served from is unknown`
+    if (!Array.isArray(suitePages) || !suitePages.every((page) => Array.isArray(page?.check_suites))) {
+      problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} could not be read (${suitesRead.code === 0 ? 'a page with no check_suites array' : said(suitesRead)}), ${windowUnknown}`)
+    } else {
+      suites = suitePages.flatMap((page) => page.check_suites)
+      const total = suitePages[0]?.total_count
+      if (!Number.isSafeInteger(total) || total < 0) problem('ci-unknown', `the check-suite count on ${head.slice(0, 12)} gave no total_count, ${windowUnknown}`)
+      else if (total >= MAX_CHECK_SUITES) {
+        problem('ci-unknown', `${head.slice(0, 12)} carries ${total} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the check-runs endpoint serves from, so a failing run in an older suite would not appear in this read`)
+      } else if (total !== suites.length) {
+        problem('ci-unknown', `the check-suite read on ${head.slice(0, 12)} collected ${suites.length} suite(s) and GitHub reported total_count ${total}, so it cannot be shown to have seen every suite`)
+      }
     }
-  }
-  // The check-runs endpoint serves runs from only the 1000 most recent check suites on a ref, and
-  // its total_count counts only those, so past that window a failing run in an older suite is
-  // missing from a read that otherwise agrees with itself. The suite count comes from the commit's
-  // check-suites collection, and a count at the window, or none, leaves CI unknown.
-  const suitesRead = api(`repos/${id.owner}/${id.repo}/commits/${head}/check-suites?per_page=1`)
-  const suiteCount = suitesRead.code === 0 ? parseObject(suitesRead.stdout)?.total_count : null
-  if (!Number.isSafeInteger(suiteCount) || suiteCount < 0) {
-    stop('ci-unknown', `the check-suite count on ${head.slice(0, 12)} ${suitesRead.code === 0 ? 'gave no total_count' : `could not be read (${said(suitesRead)})`}, so whether the check-run read fits the ${MAX_CHECK_SUITES}-suite window it is served from is unknown`)
-    checksComplete = false
-  } else if (suiteCount >= MAX_CHECK_SUITES) {
-    stop('ci-unknown', `${head.slice(0, 12)} carries ${suiteCount} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the check-runs endpoint serves from, so a failing run in an older suite would not appear in this read`)
-    checksComplete = false
-  }
-  const statusRead = readPages(commitPath('statuses'))
-  const statusPages = statusRead.code === 0 ? parseJson(statusRead.stdout) : null
-  if (!Array.isArray(statusPages) || !statusPages.every(Array.isArray)) {
-    stop('read-failed', `the commit-status read on ${head.slice(0, 12)} ${statusRead.code === 0 ? 'returned a page that is not a list' : `failed (${said(statusRead)})`}`)
-    checksComplete = false
-  } else {
-    // Newest first: the first status of a context counts and later ones are superseded runs.
-    const seen = new Set()
-    for (const status of statusPages.flat()) {
-      const context = nonEmpty(status?.context)
-      if (context !== null && seen.has(context)) continue
-      if (context !== null) seen.add(context)
-      entries.push({ kind: 'status', name: context, link: nonEmpty(status?.target_url), state: status?.state })
+    let statuses = null
+    const statusRead = readPages(commitPath('statuses'))
+    const statusPages = statusRead.code === 0 ? parseJson(statusRead.stdout) : null
+    if (!Array.isArray(statusPages) || !statusPages.every(Array.isArray)) {
+      problem('read-failed', `the commit-status read on ${head.slice(0, 12)} ${statusRead.code === 0 ? 'returned a page that is not a list' : `failed (${said(statusRead)})`}`)
+    } else {
+      statuses = statusPages.flat()
+      // Newest first: the first status of a context counts and later ones are superseded runs.
+      const seen = new Set()
+      for (const status of statuses) {
+        const context = nonEmpty(status?.context)
+        if (context !== null && seen.has(context)) continue
+        if (context !== null) seen.add(context)
+        entries.push({ kind: 'status', name: context, link: nonEmpty(status?.target_url), state: status?.state })
+      }
     }
+    const sorted = (list) => list.map((item) => JSON.stringify(item)).sort()
+    const snapshot = problems.length > 0 ? null : JSON.stringify({
+      runs: sorted(runs.map((run) => [run?.id ?? null, run?.name ?? null, run?.status ?? null, run?.conclusion ?? null])),
+      statuses: sorted(statuses.map((status) => [status?.context ?? null, status?.state ?? null])),
+      suites: sorted(suites.map((suite) => [suite?.id ?? null, suite?.status ?? null, suite?.conclusion ?? null])),
+    })
+    return { problems, entries, snapshot }
   }
+  const ci = readCi()
+  for (const { code, detail } of ci.problems) stop(code, detail)
+  const checksComplete = ci.problems.length === 0
+  const entries = ci.entries
   const reportedNames = new Set(entries.map((e) => e.name).filter((n) => n !== null))
-  // What CI was judged on, kept for the re-read right before the merge: every check run's id,
-  // status and conclusion, every commit status's context and state, and the check-suite count. A
-  // rerun, a run that finished, a new status or a new suite between the two reads changes it.
-  const ciFingerprint = (runs, statuses, suites) => JSON.stringify({
-    runs: runs.map((run) => JSON.stringify([run?.id ?? null, run?.status ?? null, run?.conclusion ?? null])).sort(),
-    statuses: statuses.map((status) => JSON.stringify([status?.context ?? null, status?.state ?? null])).sort(),
-    suites,
-  })
-  const ciSeen = Array.isArray(runPages) && Array.isArray(statusPages) && Number.isSafeInteger(suiteCount)
-    ? ciFingerprint(runPages.flatMap((page) => page?.check_runs ?? []), statusPages.flat(), suiteCount) : null
-  const rereadCi = () => {
-    const runsAgain = readPages(commitPath('check-runs'))
-    const runsPages = runsAgain.code === 0 ? parseJson(runsAgain.stdout) : null
-    if (!Array.isArray(runsPages) || !runsPages.every((page) => Array.isArray(page?.check_runs))) return { why: `the check-run read ${runsAgain.code === 0 ? 'returned a page with no check_runs array' : `failed (${said(runsAgain)})`}` }
-    const statusAgain = readPages(commitPath('statuses'))
-    const statusesPages = statusAgain.code === 0 ? parseJson(statusAgain.stdout) : null
-    if (!Array.isArray(statusesPages) || !statusesPages.every(Array.isArray)) return { why: `the commit-status read ${statusAgain.code === 0 ? 'returned a page that is not a list' : `failed (${said(statusAgain)})`}` }
-    const suitesAgain = api(`repos/${id.owner}/${id.repo}/commits/${head}/check-suites?per_page=1`)
-    const suites = suitesAgain.code === 0 ? parseObject(suitesAgain.stdout)?.total_count : null
-    if (!Number.isSafeInteger(suites)) return { why: `the check-suite count ${suitesAgain.code === 0 ? 'gave no total_count' : `could not be read (${said(suitesAgain)})`}` }
-    return { print: ciFingerprint(runsPages.flatMap((page) => page.check_runs), statusesPages.flat(), suites) }
-  }
 
   // ---- 10: known flakes, from the base ref alone
   let flakeText = null
@@ -397,9 +402,11 @@ export function landMerge({ argv, env, cwd, runGh }) {
   if (recheck.value.headRefOid !== head) {
     stop('head-moved', `the head of #${pr} moved mid-run (read ${head.slice(0, 12)}, now ${String(recheck.value.headRefOid ?? '').slice(0, 12) || 'unreadable'}); wait for CI on the new head and land that`)
   }
-  const ciNow = rereadCi()
-  if (ciNow.print === undefined) return refuseNow('ci-unknown', `CI on ${head.slice(0, 12)} could not be re-read immediately before the merge: ${ciNow.why}`)
-  if (ciNow.print !== ciSeen) {
+  const ciNow = readCi()
+  if (ciNow.problems.length > 0) {
+    return refuseNow('ci-unknown', `CI on ${head.slice(0, 12)} could not be re-read whole immediately before the merge: ${ciNow.problems.map((p) => p.detail).join('; ')}`)
+  }
+  if (ciNow.snapshot !== ci.snapshot) {
     stop('ci-moved', `CI on ${head.slice(0, 12)} changed between the verdict and the merge (a check reran or finished, a status arrived, or a suite was added); run the land again so it judges what CI says now`)
   }
   const tipRead = api(`repos/${id.owner}/${id.repo}/git/ref/heads/${refPath(defaultBranch)}`)
