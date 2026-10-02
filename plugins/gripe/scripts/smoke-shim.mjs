@@ -8,7 +8,7 @@
 // Usage: node plugins/gripe/scripts/smoke-shim.mjs
 
 import { spawnSync } from 'node:child_process'
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -158,6 +158,14 @@ console.log('SessionStart publishes the shim by epoch')
     const now = readFileSync(bin, 'utf8')
     check(label, replaced ? now === text : now === planted)
   }
+  // An equal epoch that lost its executable bits, as a restore can leave it, gets them back, and
+  // its bytes stay as they were.
+  const kept = `// gripe-shim-epoch: ${epoch}\n`
+  writeFileSync(bin, kept)
+  chmodSync(bin, 0o644)
+  start()
+  check('an equal epoch at 0644 is made 0755 and left byte for byte', readFileSync(bin, 'utf8') === kept && (statSync(bin).mode & 0o777) === 0o755,
+    `mode ${(statSync(bin).mode & 0o777).toString(8)}`)
   writeFileSync(bin, 'not a shim\n')
   start({ GRIPE_HOME: PLUGIN })
   check('GRIPE_HOME in the environment publishes nothing', readFileSync(bin, 'utf8') === 'not a shim\n')

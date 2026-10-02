@@ -57,7 +57,11 @@ function publishShim() {
     if (found && !found.isFile()) return
     let current = null
     try { current = readFileSync(dest, 'utf8') } catch {}
-    if (current !== null && epochOf(current) >= epochOf(source)) return
+    if (current !== null && epochOf(current) >= epochOf(source)) {
+      // Left as it is, except that a shim which lost its executable bits gets them back.
+      if ((found.mode & 0o111) === 0) chmodSync(dest, 0o755)
+      return
+    }
     mkdirSync(dirname(dest), { recursive: true })
     writeFileSync(temp, source)
     chmodSync(temp, 0o755) // the create mode is subject to umask
