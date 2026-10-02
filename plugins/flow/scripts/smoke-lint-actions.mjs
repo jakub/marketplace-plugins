@@ -206,6 +206,15 @@ console.log('\ndelete-branch needs a death warrant and a recoverable tip')
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(reused))
   refused('a reused branch whose closed pull request had another head', run(w, ['delete-branch', w.repo, 'feat/reused']), 'not shown dead')
   check('and the reused branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/reused']).status === 0)
+  // The control: a closed pull request at the branch's own tip is a warrant, even for a tip outside
+  // the default branch, so the refusal above comes from the head match and not from ancestry.
+  w.git(w.repo, 'branch', 'feat/closed-here', w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'closed work'))
+  const closedHere = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  closedHere.prs['feat/closed-here'] = [{ number: 10, state: 'CLOSED', headRefOid: w.git(w.repo, 'rev-parse', 'feat/closed-here') }]
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(closedHere))
+  const closedRun = run(w, ['delete-branch', w.repo, 'feat/closed-here'])
+  check('a branch whose closed pull request has its tip as head is deleted and reads back gone',
+    closedRun.code === 0 && spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/closed-here']).status !== 0, `${JSON.stringify(closedRun.json)} ${closedRun.stderr}`)
   w.git(w.repo, 'branch', 'feat/taken')
   const taken = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
   taken.prs['feat/taken'] = [{ number: 6, state: 'MERGED', headRefOid: w.tip }]
