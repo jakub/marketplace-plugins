@@ -51,6 +51,10 @@ function publishShim() {
   const temp = `${dest}.${process.pid}.tmp`
   try {
     const source = readFileSync(join(HERE, '..', '..', 'bin', 'shim.mjs'), 'utf8')
+    // Only a regular file, through any symlink, is read: a FIFO there would block the read,
+    // and this hook, until its timeout. Anything else is not a shim and is left alone.
+    const found = statSync(dest, { throwIfNoEntry: false })
+    if (found && !found.isFile()) return
     let current = null
     try { current = readFileSync(dest, 'utf8') } catch {}
     if (current !== null && epochOf(current) >= epochOf(source)) return

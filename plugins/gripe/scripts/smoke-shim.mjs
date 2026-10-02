@@ -8,7 +8,7 @@
 // Usage: node plugins/gripe/scripts/smoke-shim.mjs
 
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -139,8 +139,8 @@ console.log('SessionStart publishes the shim by epoch')
   // The real hook on stdin, with HOME pointed at a synthetic home so ~/.local/bin is ours.
   const home = makeHome()
   const bin = join(home, '.local', 'bin', 'gripe')
-  const start = (extra = {}) => spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'scripts', 'session-start.mjs')], {
-    input: '{"session_id":"s1"}', encoding: 'utf8',
+  const start = (extra = {}, timeout = undefined) => spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'scripts', 'session-start.mjs')], {
+    input: '{"session_id":"s1"}', encoding: 'utf8', timeout,
     env: { PATH: process.env.PATH, HOME: home, XDG_STATE_HOME: join(home, 'state'), ...extra },
   })
   const started = start()
@@ -161,6 +161,22 @@ console.log('SessionStart publishes the shim by epoch')
   writeFileSync(bin, 'not a shim\n')
   start({ GRIPE_HOME: PLUGIN })
   check('GRIPE_HOME in the environment publishes nothing', readFileSync(bin, 'utf8') === 'not a shim\n')
+  // A FIFO at the shim path, or a symlink to one, is not a shim. Reading it would wait for a
+  // writer until the hook's timeout, so the hook leaves it alone and exits 0 at once.
+  const fifo = join(home, 'a-fifo')
+  spawnSync('mkfifo', [fifo])
+  for (const [label, plant] of [['a FIFO', () => spawnSync('mkfifo', [bin])], ['a symlink to a FIFO', () => symlinkSync(fifo, bin)]]) {
+    rmSync(bin, { force: true })
+    plant()
+    const begun = Date.now()
+    const ran = start({}, 3_000)
+    const kind = lstatSync(bin)
+    check(`${label} at the shim path is left alone, and the hook exits 0 at once`,
+      ran.status === 0 && Date.now() - begun < 3_000 && (label === 'a FIFO' ? kind.isFIFO() : kind.isSymbolicLink()),
+      `status ${ran.status} signal ${ran.signal} after ${Date.now() - begun} ms`)
+  }
+  rmSync(bin, { force: true })
+  writeFileSync(bin, 'not a shim\n')
 
   // doctor names the install that answered, from its own path and manifest.
   const doctor = spawnSync(process.execPath, [join(PLUGIN, 'bin', 'gripe'), 'doctor'], {
