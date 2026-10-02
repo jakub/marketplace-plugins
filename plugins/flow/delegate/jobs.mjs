@@ -530,6 +530,11 @@ export async function requestSteer(input, { host, roots, signal }) {
   return { job: readJob(job.id) ?? current, steer: { id, status, ...(ack?.error ? { error: ack.error } : {}) } }
 }
 
+// A job's record is how a takeover judges the lease that names it: a missing record reads as an
+// ended holder whose group is gone. So a record whose lease is still held stays, however old,
+// until the lease is released or taken over. The lease file stays the bare name it is built as;
+// putting the group in it would make the runner a second writer of the lease after admission.
+const leaseHeld = (job) => job?.access === 'workspace-write' && Boolean(lstatSync(join(leaseDir(job), job.id), { throwIfNoEntry: false }))
 export function prune() {
   const root = join(stateDir(), 'jobs')
   let names = []
@@ -538,7 +543,7 @@ export function prune() {
     const job = readJob(name)
     let ended = NaN
     try { ended = job ? (TERMINAL.has(job.status) ? Date.parse(job.endedAt) : NaN) : statSync(join(root, name)).mtimeMs } catch {}
-    if (Date.now() - ended > PRUNE_MS) rmSync(join(root, name), { recursive: true, force: true })
+    if (Date.now() - ended > PRUNE_MS && !leaseHeld(job)) rmSync(join(root, name), { recursive: true, force: true })
   }
 }
 

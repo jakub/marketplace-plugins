@@ -1078,6 +1078,22 @@ try {
   assert.deepEqual(leaseOf(orphaned.worktree), [next.id])
   ok('a write lease is released or taken over only once its provider group reads gone, never while a member may still run')
 
+  // The record is what a takeover judges the lease by, so the 14-day prune never removes the
+  // record of a job its lease still names, however long ago the job ended.
+  const prunedGroup = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
+  const prunedGroupGone = reaped(prunedGroup)
+  const oldWriter = leaseHolder('succeeded', groupOf(prunedGroup))
+  jobs.writeJob({ ...readJob(oldWriter.id), endedAt: new Date(Date.now() - 15 * 86_400_000).toISOString() })
+  jobs.prune()
+  assert.ok(existsSync(jobPath(oldWriter.id, 'job.json')), 'the prune removed the record of a job whose lease is still held')
+  busy(oldWriter.worktree)
+  process.kill(-prunedGroup.pid, 'SIGKILL')
+  await prunedGroupGone
+  jobs.acquireLease(writer(oldWriter.worktree))
+  jobs.prune()
+  assert.equal(existsSync(jobs.jobDir(oldWriter.id)), false, 'the prune kept an old record whose lease was taken over')
+  ok('the prune keeps the record of an ended job while its lease is held, and removes it once the lease has moved on')
+
   // A record names its job's TMPDIR, and reconcile removes that path only when it is one tmpPath
   // could have given the job: a direct child of /tmp, the job's prefix and 8 hex characters, and a
   // directory rather than a symlink. A record rewritten to name anything else still settles, and
