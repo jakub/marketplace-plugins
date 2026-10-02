@@ -89,6 +89,20 @@ const promptOf = () => { try { return fs.readFileSync(path.join(STATE, 'jobs', J
 const tmpdirOf = () => { try { const stat = fs.lstatSync(process.env.TMPDIR); return { directory: stat.isDirectory(), mode: stat.mode & 0o7777, uid: stat.uid } } catch { return null } }
 const saveTo = (record) => () => fs.writeFileSync(path.join(CALLS, JOB + '.json'), JSON.stringify(record))
 const out = (event) => process.stdout.write(JSON.stringify(event) + '\n')
+// A hanging turn leaves one child in the group, a straggler the stop must kill. On the stop's
+// SIGTERM the fake kills and reaps that child before it dies by the same signal, so it leaves no
+// orphan for a PID 1 that may never reap one, and whose zombie would keep the group, and the
+// write lease, alive.
+const hangChild = () => {
+  const child = spawn('sleep', ['300'], { stdio: 'ignore' })
+  process.once('SIGTERM', () => {
+    const die = () => process.kill(process.pid, 'SIGTERM')
+    if (child.exitCode !== null || child.signalCode !== null) return die()
+    child.once('exit', die)
+    child.kill('SIGKILL')
+  })
+  return child.pid
+}
 const flag = (name) => { const at = argv.indexOf(name); return at >= 0 ? argv[at + 1] : undefined }
 if (argv[0] === '--version') { console.log(NAME === 'codex' ? 'codex-cli 0.0.0-fake' : '0.0.0-fake (Claude Code)'); process.exit(0) }
 if (argv[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0) }
@@ -132,7 +146,7 @@ function appServer() {
     turnOpen = false
     out({ method: 'turn/completed', params: { threadId, turn: { id: TURN, items: [], status, error } } })
   }
-  const hang = () => { record.childPid = spawn('sleep', ['300'], { stdio: 'ignore' }).pid; save() }
+  const hang = () => { record.childPid = hangChild(); save() }
   const waiting = new Map()
   const ask = (method) => new Promise((resolve) => {
     const id = 'srv-' + (++served)
@@ -277,7 +291,7 @@ function claudeCli() {
     out({ type: 'result', session_id: session, ...fields })
     if (closed) process.exit(0)
   }
-  const hang = () => { record.childPid = spawn('sleep', ['300'], { stdio: 'ignore' }).pid; save(); hangTimer = setInterval(() => {}, 1000) }
+  const hang = () => { record.childPid = hangChild(); save(); hangTimer = setInterval(() => {}, 1000) }
   const ask = (request) => new Promise((resolve) => {
     const request_id = 'cli-' + (++asked)
     waiting.set(request_id, resolve)
