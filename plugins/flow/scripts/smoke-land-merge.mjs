@@ -56,7 +56,7 @@ const pagesOf = (list) => { const pages = []; for (let i = 0; i < list.length; i
 // `fail` names one read that answers HTTP 500, and `malformed` one that answers in the wrong shape.
 const freshState = (over = {}) => ({
   defaultBranch: 'main', mergeExit: 0, landsNothing: false, confirmFails: false, queue: null, queueFails: false, recheck: {}, after: {},
-  queueAfter: undefined, queueAfterFails: false, merged: false, fail: null, malformed: null, behindBy: 0, baseTip: 'f'.repeat(40), tipAtMerge: null,
+  queueAfter: undefined, queueAfterFails: false, merged: false, fail: null, malformed: null, behindBy: 0, baseTip: 'f'.repeat(40), tipAtMerge: null, suiteCount: 2,
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')], totalCount: null, statuses: [],
   threadPages: [[thread('T1')]], threadsNoCursor: false, baseFlakes: null, headFlakes: null, flakesHttp: null, flakesEncoding: 'base64',
   calls: [], merges: [], ...over,
@@ -113,6 +113,8 @@ const makeRunGh = (st) => (args) => {
       if (st.fail === 'tip') return serverError()
       return ok({ ref: `refs/heads/${st.defaultBranch}`, object: { type: 'commit', sha: st.tipAtMerge ?? st.baseTip } })
     }
+    // The commit's check-suite count, read on its own because check-runs serves only the newest 1000 suites.
+    if (path.includes('/check-suites?')) return st.fail === 'check-suites' ? serverError() : ok({ total_count: st.suiteCount, check_suites: [] })
     const endpoint = ['check-runs', 'statuses'].find((e) => path.includes(`/${e}?`))
     if (endpoint !== undefined && args.includes('--paginate') && args.includes('--slurp')) {
       if (st.fail === endpoint) return serverError()
@@ -307,7 +309,7 @@ console.log('\nthe arguments')
   const moved = run(ARGS, { st: freshState({ pr: { headRefOid: 'c'.repeat(40) } }) })
   check('head-moved names the url, the head branch and both SHAs', [PR_URL, BRANCH, HEAD, 'c'.repeat(40)].every((s) => detailOf(moved, 'head-moved').includes(s)), detailOf(moved, 'head-moved'))
   const commitReads = moved.st.calls.filter((a) => a[0] === 'api' && String(a.at(-1)).includes('/commits/'))
-  check('and the checks are read on the argument head, not GitHub\'s', commitReads.length === 2 && commitReads.every((a) => String(a.at(-1)).includes(`/commits/${HEAD}/`)), JSON.stringify(commitReads))
+  check('and the checks and the check-suite count are read on the argument head, not GitHub\'s', commitReads.length === 3 && commitReads.every((a) => String(a.at(-1)).includes(`/commits/${HEAD}/`)), JSON.stringify(commitReads))
 }
 
 console.log('\nwhat counts as a check')
@@ -329,6 +331,12 @@ console.log('\nwhat counts as a check')
   check('a pending commit status refuses ci-pending', refusedWith(pendingStatus, 'ci-pending', 'coderabbit'), shown(pendingStatus))
   const stale = run(ARGS, { st: freshState({ checkRuns: [checkRun('unit', 'stale')] }) })
   check('a conclusion outside the known sets refuses ci-unknown', refusedWith(stale, 'ci-unknown', 'unit'), shown(stale))
+  // Past 1000 check suites the check-runs read can miss a failing run while its total_count still
+  // agrees, so the suite count is read on its own and a read at the window, or none, is unknown.
+  const windowed = run(ARGS, { st: freshState({ suiteCount: 1000 }) })
+  check('a head carrying 1000 check suites refuses ci-unknown, naming the window', refusedWith(windowed, 'ci-unknown', '1000-suite window'), shown(windowed))
+  const unsuited = run(ARGS, { st: freshState({ fail: 'check-suites' }) })
+  check('an unreadable check-suite count refuses ci-unknown', refusedWith(unsuited, 'ci-unknown', 'check-suite count'), shown(unsuited))
   const none = run(ARGS, { st: freshState({ checkRuns: [], statuses: [] }) })
   check('no checks at all refuses ci-unknown', refusedWith(none, 'ci-unknown', 'no checks at all'), shown(none))
   const superseded = run(ARGS, { st: freshState({ statuses: [status('coderabbit', 'success'), status('coderabbit', 'failure'), status('coderabbit', 'pending')] }) })

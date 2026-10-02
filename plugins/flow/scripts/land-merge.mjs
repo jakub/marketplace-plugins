@@ -13,7 +13,8 @@
 // base; `compare/<default>...<head>` shows it 0 commits behind; its checks are all green; and no
 // review thread is unresolved. Every list is read to the end, because a gate that reads the first
 // page fails green: check runs and commit statuses on the argument head over `gh api --paginate
-// --slurp`, with the check runs collected equal to the total_count GitHub reported, and review
+// --slurp`, with the check runs collected equal to the total_count GitHub reported and the head
+// carrying fewer than the 1000 check suites the check-runs endpoint serves from, and review
 // threads over paged GraphQL, 20 pages at most. A check run is pending until it is completed; a
 // commit status counts only as the newest of its context; a nameless entry, a conclusion outside
 // the known sets and no checks at all are each unknown, which is how a pull request looks in the
@@ -43,6 +44,8 @@ import { firstLine, makeRedactor, scrubUserinfo } from '../lib/redact.mjs'
 import { allowedHostsFrom, identityOfRemote, prUrlMismatch } from '../lib/remote-identity.mjs'
 
 const SHA = /^[0-9a-f]{40}$/
+// The check-runs endpoint serves from at most this many of a ref's most recent check suites.
+const MAX_CHECK_SUITES = 1000
 const MAX_THREAD_PAGES = 20
 const FLAKES_PATH = '.github/known-flakes.txt'
 const HTTP_404 = /\(HTTP 404\)|\bNot Found\b/
@@ -241,6 +244,19 @@ export function landMerge({ argv, env, cwd, runGh }) {
       stop('ci-unknown', `the check-run read on ${head.slice(0, 12)} collected ${runs.length} run(s) and GitHub reported total_count ${JSON.stringify(reported ?? null)}, so it cannot be shown to have seen every check`)
       checksComplete = false
     }
+  }
+  // The check-runs endpoint serves runs from only the 1000 most recent check suites on a ref, and
+  // its total_count counts only those, so past that window a failing run in an older suite is
+  // missing from a read that otherwise agrees with itself. The suite count comes from the commit's
+  // check-suites collection, and a count at the window, or none, leaves CI unknown.
+  const suitesRead = api(`repos/${id.owner}/${id.repo}/commits/${head}/check-suites?per_page=1`)
+  const suiteCount = suitesRead.code === 0 ? parseObject(suitesRead.stdout)?.total_count : null
+  if (!Number.isSafeInteger(suiteCount) || suiteCount < 0) {
+    stop('ci-unknown', `the check-suite count on ${head.slice(0, 12)} ${suitesRead.code === 0 ? 'gave no total_count' : `could not be read (${said(suitesRead)})`}, so whether the check-run read fits the ${MAX_CHECK_SUITES}-suite window it is served from is unknown`)
+    checksComplete = false
+  } else if (suiteCount >= MAX_CHECK_SUITES) {
+    stop('ci-unknown', `${head.slice(0, 12)} carries ${suiteCount} check suites, at or past the ${MAX_CHECK_SUITES}-suite window the check-runs endpoint serves from, so a failing run in an older suite would not appear in this read`)
+    checksComplete = false
   }
   const statusRead = readPages(commitPath('statuses'))
   const statusPages = statusRead.code === 0 ? parseJson(statusRead.stdout) : null
