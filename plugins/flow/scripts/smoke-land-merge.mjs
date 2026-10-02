@@ -261,6 +261,19 @@ for (const [name, origin, text] of [
   delete sshEnv.GIT_SSH_COMMAND
   const r = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: sshEnv })
   check('git run through execCapture never reaches an ssh the repository plants behind a relative PATH entry', !existsSync(ran) && existsSync(quickRan), JSON.stringify(r))
+  // git also takes a helper directory and an ssh program from the environment, and resolves a
+  // relative one inside the repository. Each is dropped unless absolute, or a bare name that the
+  // absolute PATH resolves; the nightly lint's own GIT_SSH_COMMAND is a bare name and still runs.
+  const absEnv = { ...sshEnv, PATH: `${quickSsh}:${process.env.PATH}` }
+  for (const [name, value] of [['GIT_EXEC_PATH', 'bin'], ['GIT_SSH', 'bin/ssh'], ['GIT_SSH_COMMAND', 'bin/ssh -o BatchMode=yes']]) {
+    rmSync(ran, { force: true })
+    const viaVar = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...absEnv, [name]: value } })
+    check(`a relative ${name} never runs the repository's ssh`, !existsSync(ran), JSON.stringify(viaVar))
+  }
+  rmSync(ran, { force: true })
+  rmSync(quickRan, { force: true })
+  const lint = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...absEnv, GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' } })
+  check('the nightly lint\'s GIT_SSH_COMMAND still reaches ssh through the absolute PATH', existsSync(quickRan) && !existsSync(ran), JSON.stringify(lint))
 }
 {
   // The same rule for git, through the executor: the repository it is run in plants bin/git,
