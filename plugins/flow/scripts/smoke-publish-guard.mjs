@@ -5,7 +5,7 @@
 // `ask`. The merge tripwire is one decision, so every merge case runs through both.
 // Run: node plugins/flow/scripts/smoke-publish-guard.mjs
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -151,6 +151,15 @@ answers('deny', MERGE, 'with no cwd in the call, the hook reads its own director
 writeFileSync(join(managed, 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
 answers('deny', MERGE, 'a git planted in the repo behind a relative PATH entry does not answer', { spawnCwd: managed, path: `.:${env.PATH}` })
 rmSync(join(managed, 'git'))
+// git runs its helpers by PATH from inside the repository, so the git the guard runs must get a
+// PATH of absolute entries only. This git, first on PATH, records a relative entry if it sees one
+// and then answers as the real one does.
+const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+const seen = join(tmp, 'guard-git-saw-relative')
+mkdirSync(join(tmp, 'abs-bin'))
+writeFileSync(join(tmp, 'abs-bin', 'git'), `#!/bin/sh\ncase ":$PATH:" in *:bin:*) : > ${seen};; esac\nexec ${realGit} "$@"\n`, { mode: 0o755 })
+answers('deny', MERGE, 'the guard\'s git is handed a PATH of absolute entries only', { spawnCwd: managed, path: `${join(tmp, 'abs-bin')}:bin:${env.PATH}` })
+check('the guard\'s git saw no relative PATH entry', !existsSync(seen))
 
 console.log('\nthe tripwire never matches the executor, and prose is not a merge')
 for (const [name, command] of [

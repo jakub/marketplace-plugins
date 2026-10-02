@@ -10,7 +10,7 @@
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { resolveBin } from './gh-exec.mjs'
+import { absolutePathEnv, resolveBin } from './gh-exec.mjs'
 
 const SECRET = /(^|\/)\.env(\.[A-Za-z0-9_-]+)*$/
 const SECRET_EXEMPT = /\.(example|sample|template|dist|defaults?)$/
@@ -180,13 +180,14 @@ const EXECUTOR = join(dirname(dirname(fileURLToPath(import.meta.url))), 'scripts
 // deny costs the human a look, a false allow a merge that skipped the executor. Only a
 // merge-shaped command pays for this read. git comes from an absolute PATH entry only, so a
 // repository cannot answer for itself with its own executable named git; none found reads as
-// managed.
+// managed. git gets that PATH too, since it runs its helpers by PATH from inside the repository.
 function isManagedRepo(cwd) {
-  const git = resolveBin('git', process.env)
+  const env = absolutePathEnv(process.env)
+  const git = resolveBin('git', env)
   if (!git) return true
   try {
     return execFileSync(git, ['-C', cwd, 'ls-tree', '--full-tree', '--name-only', 'HEAD', '--', '.flow/managed'], {
-      encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8', timeout: 2000, env, stdio: ['ignore', 'pipe', 'ignore'],
     }).trim() !== ''
   } catch {
     return true

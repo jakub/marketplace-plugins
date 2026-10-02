@@ -15,9 +15,9 @@
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
-import { ghRunner } from '../lib/gh-exec.mjs'
+import { execCapture, ghRunner } from '../lib/gh-exec.mjs'
 import { landMerge } from './land-merge.mjs'
 
 let bad = 0
@@ -237,6 +237,20 @@ for (const [name, origin, text] of [
   } finally { process.chdir(here) }
   check('the gh runner skips a relative PATH entry for the absolute one after it', first.code === 0 && !first.stdout.includes('PLANTED-GH'), JSON.stringify(first))
   check('with no gh in an absolute PATH entry the gh runner runs nothing', none.code !== 0 && !none.stdout.includes('PLANTED-GH'), JSON.stringify(none))
+  const childPath = (first.stdout.match(/^PATH=(.*)$/m) ?? [])[1]
+  check('gh is handed a PATH of absolute entries only', childPath !== undefined && childPath.split(':').every((dir) => isAbsolute(dir)), String(childPath))
+}
+{
+  // git runs its own helpers by PATH from inside the repository it was pointed at: ssh for an
+  // ssh remote. The PATH a child gets keeps absolute entries only, so a repository's bin/ssh never
+  // runs with the executor's credentials. ls-remote on an ssh:// remote calls ssh without needing
+  // the host to resolve.
+  const inspected = repoWith('planted-ssh', 'ssh://example.invalid/x')
+  const ran = join(tmp, 'planted-ssh-ran')
+  mkdirSync(join(inspected, 'bin'))
+  writeFileSync(join(inspected, 'bin', 'ssh'), `#!/bin/sh\n: > ${ran}\nexit 1\n`, { mode: 0o755 })
+  const r = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...process.env, PATH: `bin:${process.env.PATH}` } })
+  check('git run through execCapture never reaches an ssh the repository plants behind a relative PATH entry', !existsSync(ran), JSON.stringify(r))
 }
 {
   // The same rule for git, through the executor: the repository it is run in plants bin/git,

@@ -4,7 +4,9 @@
 // binary under a claim or a merge that is half done. Only absolute entries count, for gh and for
 // every bare name execCapture runs, git included: a relative one names a different binary in
 // every directory, the inspected repository's among them, so with no match in an absolute entry
-// the call refuses rather than let the child search PATH again. GH_REPO and GH_HOST come off gh's
+// the call refuses rather than let the child search PATH again. The child gets that PATH too,
+// because git runs its own helpers (ssh, for one) by PATH from inside the repository it was
+// pointed at. GH_REPO and GH_HOST come off gh's
 // environment: every call is already pinned to the repository origin parses to, and either
 // variable is an ambient override of exactly that pin.
 
@@ -12,9 +14,12 @@ import { execFileSync } from 'node:child_process'
 import { accessSync, constants } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 
+/** An environment whose PATH keeps only absolute entries: what every child an executor starts sees. */
+export const absolutePathEnv = (env) => ({ ...env, PATH: String(env?.PATH || '').split(delimiter).filter((dir) => isAbsolute(dir)).join(delimiter) })
+
 export const resolveBin = (name, env) => {
-  for (const dir of String(env?.PATH || '').split(delimiter)) {
-    if (!isAbsolute(dir)) continue
+  for (const dir of absolutePathEnv(env).PATH.split(delimiter)) {
+    if (!dir) continue
     try { accessSync(join(dir, name), constants.X_OK); return join(dir, name) } catch {}
   }
   return null
@@ -23,10 +28,11 @@ const notFound = (name) => ({ code: 127, stdout: '', stderr: `${name}: not found
 
 /** Run a command and report a non-zero exit, a timeout or a missing binary as a value, never a throw. */
 export const execCapture = (bin, args, { cwd, timeoutMs, env } = {}) => {
-  const path = bin.includes('/') ? bin : resolveBin(bin, env ?? process.env)
+  const childEnv = absolutePathEnv(env ?? process.env)
+  const path = bin.includes('/') ? bin : resolveBin(bin, childEnv)
   if (!path) return notFound(bin)
   try {
-    const stdout = execFileSync(path, args, { encoding: 'utf8', timeout: timeoutMs, cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    const stdout = execFileSync(path, args, { encoding: 'utf8', timeout: timeoutMs, cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
     return { code: 0, stdout: String(stdout), stderr: '' }
   } catch (error) {
     return { code: error?.status ?? 1, stdout: String(error?.stdout || ''), stderr: String(error?.stderr || error?.message || error) }
@@ -36,7 +42,7 @@ export const execCapture = (bin, args, { cwd, timeoutMs, env } = {}) => {
 /** The gh runner an executor's main block hands in: `(args, { cwd, timeoutMs }) => { code, stdout, stderr }`. */
 export const ghRunner = (env = process.env) => {
   const bin = resolveBin('gh', env)
-  const childEnv = { ...env }
+  const childEnv = absolutePathEnv(env)
   delete childEnv.GH_REPO
   delete childEnv.GH_HOST
   if (!bin) return () => notFound('gh')
