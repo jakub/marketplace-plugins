@@ -59,7 +59,7 @@ if (group === 'repo') out({ defaultBranchRef: { name: st.defaultBranch } })
 if (group === 'pr' && verb === 'list') {
   // A worktree that checks the branch out while the executor is still reading GitHub.
   if (st.checkoutDuringRead) { require('node:child_process').execFileSync('git', st.checkoutDuringRead, { stdio: 'ignore' }); delete st.checkoutDuringRead }
-  out(st.prs[at('--head')] || [])
+  out((st.prs[at('--head')] || []).slice(0, Number(at('--limit') ?? 30)))
 }
 if (group === 'issue' && verb === 'view') out(st.issue)
 if (group === 'issue' && verb === 'edit') {
@@ -202,6 +202,13 @@ console.log('\ndelete-branch needs a death warrant and a recoverable tip')
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(state))
   const r = run(w, ['delete-branch', w.repo, 'feat/done'])
   check('a merged branch is deleted and reads back gone', r.code === 0 && spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/done']).status !== 0, JSON.stringify(r.json))
+  // A branch with a full page of pull requests may have more: gh pr list stops at its limit.
+  w.git(w.repo, 'branch', 'feat/busy')
+  const busy = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  busy.prs['feat/busy'] = Array.from({ length: 1000 }, (_, i) => ({ number: 100 + i, state: 'MERGED', headRefOid: w.tip }))
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(busy))
+  refused('a branch whose pull request list fills the limit', run(w, ['delete-branch', w.repo, 'feat/busy']), 'may be partial')
+  check('and the busy branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/busy']).status === 0)
   // A branch name reused after its old pull request closed: the closed PR's head is the old tip,
   // the branch has moved on and origin holds the new tip. The old PR is no death warrant for it.
   w.git(w.repo, 'branch', 'feat/reused', w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'new work'))

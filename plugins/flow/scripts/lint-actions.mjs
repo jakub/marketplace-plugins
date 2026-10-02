@@ -110,11 +110,15 @@ function run({ action, repoArg, target, rest, env }) {
     if (!value.every(Array.isArray)) refuse(`${what} did not read as an array of pages`)
     return value.flat()
   }
+  const PR_LIMIT = 1000
   const prCache = new Map()
   const prsFor = (branch) => {
     if (!prCache.has(branch)) {
-      const list = gh(['pr', 'list', '--repo', id.full, '--head', branch, '--state', 'all', '--json', 'number,state,headRefOid'], `gh pr list --head ${branch}`)
+      // gh pr list fetches 30 by default. An explicit limit, and a full answer read as possibly
+      // truncated, keep a destructive decision from resting on a partial list.
+      const list = gh(['pr', 'list', '--repo', id.full, '--head', branch, '--state', 'all', '--limit', String(PR_LIMIT), '--json', 'number,state,headRefOid'], `gh pr list --head ${branch}`)
       if (!Array.isArray(list)) refuse(`gh pr list --head ${branch} did not answer a list`)
+      if (list.length >= PR_LIMIT) refuse(`gh pr list --head ${branch} returned ${list.length} pull requests, its limit, so the list may be partial`)
       prCache.set(branch, list)
     }
     return prCache.get(branch)
