@@ -8,12 +8,12 @@
 // every merge. Every case reads the one JSON line and the exit; each refusal asserts that nothing
 // merged, and each unproven outcome asserts that it does not read as a refusal. One case runs the
 // real gh runner against a fake gh binary to prove that GH_REPO and GH_HOST never reach gh, and
-// that a gh planted behind a relative PATH entry never runs.
+// two prove that a gh or git planted behind a relative PATH entry never runs.
 //
 // Run: node plugins/flow/scripts/smoke-land-merge.mjs
 
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -237,6 +237,26 @@ for (const [name, origin, text] of [
   } finally { process.chdir(here) }
   check('the gh runner skips a relative PATH entry for the absolute one after it', first.code === 0 && !first.stdout.includes('PLANTED-GH'), JSON.stringify(first))
   check('with no gh in an absolute PATH entry the gh runner runs nothing', none.code !== 0 && !none.stdout.includes('PLANTED-GH'), JSON.stringify(none))
+}
+{
+  // The same rule for git, through the executor: the repository it is run in plants bin/git,
+  // which would name another origin, and a relative PATH entry points at it.
+  const inspected = repoWith('planted-git', `git@github.com:${SLUG}.git`)
+  const ran = join(tmp, 'planted-git-ran')
+  mkdirSync(join(inspected, 'bin'))
+  writeFileSync(join(inspected, 'bin', 'git'), `#!/bin/sh\ntouch ${ran}\necho git@github.com:someone/evil.git\n`)
+  chmodSync(join(inspected, 'bin', 'git'), 0o755)
+  const [here, hostPath] = [process.cwd(), process.env.PATH]
+  let first, none
+  try {
+    process.chdir(inspected)
+    process.env.PATH = `bin:${hostPath}`
+    first = run(ARGS, { cwd: inspected })
+    process.env.PATH = 'bin'
+    none = run(ARGS, { cwd: inspected })
+  } finally { process.chdir(here); process.env.PATH = hostPath }
+  check('the executor reads origin with the git an absolute PATH entry names, never one the repository plants', merged(first) && !existsSync(ran), shown(first))
+  check('with no git in an absolute PATH entry the executor refuses at the origin read', refusedWith(none, 'origin') && !existsSync(ran), shown(none))
 }
 
 console.log('\nthe arguments')
