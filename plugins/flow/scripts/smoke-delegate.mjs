@@ -1448,7 +1448,26 @@ try {
     assert.equal(lstatSync(installed).isSymbolicLink() && fs.readlinkSync(installed), aim, `the installer replaced a symlink to ${aim}`)
     rmSync(installed)
   }
-  ok('the installer copies the dispatcher when it is missing or a flow dispatcher that differs, leaves an identical copy alone, and refuses any other file, a symlink included')
+  // A file that appears between the installer's check and its publish is not replaced: a preload
+  // creates one the moment lstat reports the path absent.
+  const racer = join(tmp, 'install-race.mjs')
+  writeFileSync(racer, `import fs, { writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const real = fs.lstatSync
+fs.lstatSync = (path, options) => {
+  const found = real(path, options)
+  if (path === process.env.RACE_TARGET && !found) writeFileSync(path, 'foreign\\n')
+  return found
+}
+syncBuiltinESMExports()
+`)
+  const installRace = spawnSync(process.execPath, ['--import', pathToFileURL(racer).href, join(PLUGIN, 'scripts', 'install-delegate.mjs'), 'install'],
+    { env: { ...ENV, HOME: home, RACE_TARGET: installed }, encoding: 'utf8' })
+  assert.equal(installRace.status, 1, installRace.stderr)
+  assert.equal(readFileSync(installed, 'utf8'), 'foreign\n', 'the installer replaced a file that appeared after its check')
+  assert.deepEqual(readdirSync(dirname(installed)), ['flow-delegate'], 'the installer left its temporary file behind')
+  rmSync(installed)
+  ok('the installer copies the dispatcher when it is missing or a flow dispatcher that differs, leaves an identical copy alone, and refuses any other file, a symlink included, or one that appears after its check')
 } finally {
   for (const path of strays) rmSync(path, { recursive: true, force: true })
   rmSync(tmp, { recursive: true, force: true })

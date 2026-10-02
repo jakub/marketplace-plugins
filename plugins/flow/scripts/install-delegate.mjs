@@ -10,7 +10,7 @@
 // with exit 1 to replace anything else at that path. Only a regular file is read at all: a
 // symlink, dangling or not, and anything that is not a file is refused before it can read as
 // absent.
-import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { linkSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
@@ -41,7 +41,15 @@ if (current?.equals(source)) {
   mkdirSync(bin, { recursive: true })
   const temp = `${target}.${process.pid}.tmp`
   writeFileSync(temp, source, { mode: 0o755 })
-  renameSync(temp, target)
+  if (current) renameSync(temp, target)
+  else {
+    // Nothing was there at the check, so publish without replacing: link(2) fails on anything
+    // that appeared since.
+    let taken = null
+    try { linkSync(temp, target) } catch (error) { taken = error }
+    unlinkSync(temp)
+    if (taken) refuse(taken.code === 'EEXIST' ? 'appeared during the install; nothing was replaced' : `cannot be written (${taken.code})`)
+  }
   process.stderr.write(`flow-delegate: ${current ? 'updated' : 'installed'} ${target}\n`)
 }
 if (!(process.env.PATH || '').split(delimiter).some((entry) => entry.replace(/\/+$/, '') === bin)) {
