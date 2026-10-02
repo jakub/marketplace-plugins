@@ -91,8 +91,7 @@ const saveTo = (record) => () => fs.writeFileSync(path.join(CALLS, JOB + '.json'
 const out = (event) => process.stdout.write(JSON.stringify(event) + '\n')
 // A hanging turn leaves one child in the group, a straggler the stop must kill. On the stop's
 // SIGTERM the fake kills and reaps that child before it dies by the same signal, so it leaves no
-// orphan for a PID 1 that may never reap one, and whose zombie would keep the group, and the
-// write lease, alive.
+// orphan for a PID 1 that may never reap one.
 const hangChild = () => {
   const child = spawn('sleep', ['300'], { stdio: 'ignore' })
   process.once('SIGTERM', () => {
@@ -1050,10 +1049,10 @@ try {
   process.kill(-bystander.pid, 'SIGKILL')
   ok('a recorded provider group whose id now names another process is never signalled')
 
-  // A write lease outlives its job while the job's provider group may still run. A process this
-  // smoke spawned stays a zombie until the event loop reaps it, so a group killed in synchronous
-  // code still answers kill(-pgid, 0): not yet proven gone. The lease stays, and a new writer is
-  // refused, until the group reads ESRCH.
+  // A write lease outlives its job while the job's provider group holds a member that can still
+  // write, which a zombie cannot. A process this smoke spawned stays a zombie until the event loop
+  // reaps it, so a group killed in synchronous code holds only a zombie: kill(-pgid, 0) still
+  // answers for it, and the group reads gone all the same.
   const groupOf = (child) => ({ providerPgid: child.pid, providerStart: jobs.startToken(child.pid, { zombie: true }) })
   const leaseHolder = (status, group) => {
     const held = { ...readJob(reused.job.id), id: randomUUID(), access: 'workspace-write', worktree: join(tmp, `held-${randomUUID()}`),
@@ -1073,26 +1072,42 @@ try {
   const leaseOf = (worktree) => { try { return readdirSync(join(state, 'leases', createHash('sha256').update(worktree).digest('hex'))) } catch { return [] } }
   const reaped = (child) => new Promise((resolve) => child.once('exit', resolve))
 
+  // Waits without yielding to the event loop, so the smoke never reaps the process meanwhile.
+  const becameZombie = (pid) => {
+    for (const end = Date.now() + 5_000; Date.now() < end; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)) {
+      try { const stat = readFileSync(`/proc/${pid}/stat`, 'utf8'); if (stat.slice(stat.lastIndexOf(')') + 2)[0] === 'Z') return true } catch { return false }
+    }
+    return false
+  }
+
   const survivor = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
   const ended = leaseHolder('succeeded', groupOf(survivor))
   busy(ended.worktree)
   const survivorGone = reaped(survivor)
   process.kill(-survivor.pid, 'SIGKILL')
-  busy(ended.worktree)
+  assert.ok(becameZombie(survivor.pid), 'the killed member never showed as an unreaped zombie')
+  let killAnswers = true
+  try { process.kill(-survivor.pid, 0) } catch { killAnswers = false }
+  assert.ok(killAnswers, 'kill(-pgid, 0) no longer answers for a group of zombies, so this case shows nothing')
+  assert.equal(jobs.providerGroupAlive(readJob(ended.id)), false, 'a group holding only a zombie read as alive')
+  const zombieTaker = writer(ended.worktree)
+  jobs.acquireLease(zombieTaker)
+  assert.deepEqual(leaseOf(ended.worktree), [zombieTaker.id])
   await survivorGone
-  jobs.acquireLease(writer(ended.worktree))
 
+  // reconcile's SIGKILL is only queued when it returns, so the lease goes then or at the next
+  // takeover, once nothing but a zombie is left.
   const straggler = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
   const stragglerGone = reaped(straggler)
   const orphaned = leaseHolder('running', groupOf(straggler))
   assert.equal(jobs.reconcile(readJob(orphaned.id)).status, 'unknown')
-  assert.deepEqual(leaseOf(orphaned.worktree), [orphaned.id], 'reconcile released a lease while the killed group was not yet gone')
-  busy(orphaned.worktree)
-  await stragglerGone
   const next = writer(orphaned.worktree)
-  jobs.acquireLease(next)
-  assert.deepEqual(leaseOf(orphaned.worktree), [next.id])
-  ok('a write lease is released or taken over only once its provider group reads gone, never while a member may still run')
+  const took = await until(() => {
+    try { jobs.acquireLease(next); return true } catch (error) { if (error.kind !== 'WORKSPACE_BUSY') throw error; return false }
+  }, 5_000)
+  assert.ok(took && leaseOf(orphaned.worktree).join() === next.id, 'the lease of a reconciled writer was never taken over')
+  await stragglerGone
+  ok('a write lease is released or taken over only once its provider group holds no member but zombies, never while one may still run')
 
   // The record is what a takeover judges the lease by, so the 14-day prune never removes the
   // record of a job its lease still names, however long ago the job ended.

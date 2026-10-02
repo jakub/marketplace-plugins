@@ -179,11 +179,14 @@ export function signalProvider(job, signal = 'SIGKILL') {
   if (leader !== null && leader !== job.providerStart) return
   try { process.kill(-pgid, signal) } catch {}
 }
-// Whether a recorded group may still hold a process that can write. Only ESRCH from
-// kill(-pgid, 0) proves it gone; any other answer, a zombie member included, counts as alive,
-// because unknown liveness never releases write authority. A leader id that now names another
-// process means the group ended, as for signalProvider. With no start token on record the reuse
-// check cannot run, so any group carrying the id keeps the lease, at worst until that group ends.
+// Whether a recorded group may still hold a process that can write. A leader id that now names
+// another process means the group ended, as for signalProvider. With no start token on record the
+// reuse check cannot run, so any group carrying the id keeps the lease, at worst until that group
+// ends. Otherwise the group is alive while /proc lists a member, a process whose pgrp is the id,
+// in any state but zombie (Z) or dead (X): a zombie holds no file descriptor and runs no code, so
+// it writes nothing, though kill(-pgid, 0) still answers for it. Every caller asks only after the
+// group's SIGKILL, so no member can fork past the scan. A /proc that cannot be listed falls back
+// to kill(-pgid, 0), where only ESRCH proves the group gone, so unknown never releases the lease.
 export function providerGroupAlive(job) {
   const pgid = job?.providerPgid
   if (!pgid) return false
@@ -191,7 +194,19 @@ export function providerGroupAlive(job) {
     const leader = startToken(pgid, { zombie: true })
     if (leader !== null && leader !== job.providerStart) return false
   }
-  try { process.kill(-pgid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
+  let pids
+  try { pids = readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name)) } catch {
+    try { process.kill(-pgid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
+  }
+  for (const pid of pids) {
+    let stat
+    try { stat = readFileSync(`/proc/${pid}/stat`, 'utf8') } catch { continue }
+    // comm, in parentheses, may itself hold spaces and parentheses, so the fields start after the
+    // last ')': state, ppid, pgrp.
+    const [state, , pgrp] = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    if (Number(pgrp) === pgid && state !== 'Z' && state !== 'X') return true
+  }
+  return false
 }
 
 export const inside = (root, path) => {
