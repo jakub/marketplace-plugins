@@ -179,34 +179,49 @@ export function signalProvider(job, signal = 'SIGKILL') {
   if (leader !== null && leader !== job.providerStart) return
   try { process.kill(-pgid, signal) } catch {}
 }
-// Whether a recorded group may still hold a process that can write. A leader id that now names
-// another process means the group ended, as for signalProvider. With no start token on record the
-// reuse check cannot run, so any group carrying the id keeps the lease, at worst until that group
-// ends. Otherwise the group is alive while /proc lists a member, a process whose pgrp is the id,
-// in any state but zombie (Z) or dead (X): a zombie holds no file descriptor and runs no code, so
-// it writes nothing, though kill(-pgid, 0) still answers for it. Every caller asks only after the
-// group's SIGKILL, so no member can fork past the scan. A /proc that cannot be listed falls back
-// to kill(-pgid, 0), where only ESRCH proves the group gone, so unknown never releases the lease.
-export function providerGroupAlive(job) {
+// Whether a recorded group may still hold a process that can write. Unknown never releases the
+// lease, so every answer this cannot prove reads as alive. A leader id that now names another
+// process means the group ended, as for signalProvider; with no start token on record that check
+// cannot run, and any group carrying the id keeps the lease, at worst until that group ends. Then:
+// kill(-pgid, 0) failing with ESRCH proves the group gone, and any other failure reads alive.
+// Otherwise /proc is scanned for the members, the processes whose pgrp is the id, and each
+// member's every thread is read from /proc/<pid>/task, because the stat of a thread-group leader
+// can read Z while another of its threads runs. The group is gone only when every thread of every
+// member reads Z (zombie) or X (dead): a zombie holds no file descriptor and runs no code. A
+// member with any other thread, a /proc read that fails for any reason but the process having
+// ended, or a scan that finds no member while kill(-pgid, 0) still answers, as hidepid or an
+// unreadable entry would make it, reads alive. Every caller asks only after the group's SIGKILL,
+// so no member can fork past the scan. proc is the /proc reader; only the smoke passes another.
+const PROC = { list: (path) => readdirSync(path), read: (path) => readFileSync(path, 'utf8') }
+export function providerGroupAlive(job, proc = PROC) {
   const pgid = job?.providerPgid
   if (!pgid) return false
   if (job.providerStart) {
     const leader = startToken(pgid, { zombie: true })
     if (leader !== null && leader !== job.providerStart) return false
   }
+  try { process.kill(-pgid, 0) } catch (error) { return error.code !== 'ESRCH' }
+  const ended = (error) => error?.code === 'ENOENT' || error?.code === 'ESRCH'
+  // comm, in parentheses, may itself hold spaces and parentheses, so the fields start after the
+  // last ')': state, ppid, pgrp.
+  const fields = (stat) => stat.slice(stat.lastIndexOf(')') + 2).split(' ')
   let pids
-  try { pids = readdirSync('/proc').filter((name) => /^[0-9]+$/.test(name)) } catch {
-    try { process.kill(-pgid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
-  }
+  try { pids = proc.list('/proc').filter((name) => /^[0-9]+$/.test(name)) } catch { return true }
+  let members = 0
   for (const pid of pids) {
     let stat
-    try { stat = readFileSync(`/proc/${pid}/stat`, 'utf8') } catch { continue }
-    // comm, in parentheses, may itself hold spaces and parentheses, so the fields start after the
-    // last ')': state, ppid, pgrp.
-    const [state, , pgrp] = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
-    if (Number(pgrp) === pgid && state !== 'Z' && state !== 'X') return true
+    try { stat = proc.read(`/proc/${pid}/stat`) } catch (error) { if (ended(error)) continue; return true }
+    if (Number(fields(stat)[2]) !== pgid) continue
+    members += 1
+    let tasks
+    try { tasks = proc.list(`/proc/${pid}/task`) } catch (error) { if (ended(error)) continue; return true }
+    for (const tid of tasks) {
+      let task
+      try { task = proc.read(`/proc/${pid}/task/${tid}/stat`) } catch (error) { if (error?.code === 'ENOENT') continue; return true }
+      if (!['Z', 'X'].includes(fields(task)[0])) return true
+    }
   }
-  return false
+  return members === 0
 }
 
 export const inside = (root, path) => {

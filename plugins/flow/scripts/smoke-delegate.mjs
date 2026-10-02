@@ -1090,6 +1090,26 @@ try {
   try { process.kill(-survivor.pid, 0) } catch { killAnswers = false }
   assert.ok(killAnswers, 'kill(-pgid, 0) no longer answers for a group of zombies, so this case shows nothing')
   assert.equal(jobs.providerGroupAlive(readJob(ended.id)), false, 'a group holding only a zombie read as alive')
+  // The same zombie-only group, seen through a /proc reader that shows what this smoke cannot build
+  // portably. Each view leaves a member that may still write, or no proof there is none.
+  const realProc = { list: (path) => readdirSync(path), read: (path) => readFileSync(path, 'utf8') }
+  const groupId = survivor.pid
+  const thread = String(groupId + 1_000_000)
+  const views = {
+    // A leader whose stat reads Z while another of its threads runs: main called pthread_exit.
+    'a zombie leader with a running thread': {
+      list: (path) => (path === `/proc/${groupId}/task` ? [...realProc.list(path), thread] : realProc.list(path)),
+      read: (path) => (path === `/proc/${groupId}/task/${thread}/stat` ? `${thread} (worker) R 1 ${groupId} ${groupId} 0` : realProc.read(path)),
+    },
+    // kill(-pgid, 0) answers, and the scan finds no member: hidepid hides it.
+    'a scan that finds no member while kill answers': { list: (path) => (path === '/proc' ? [] : realProc.list(path)), read: realProc.read },
+    // An entry the scan cannot read.
+    'a member whose stat cannot be read': {
+      list: realProc.list,
+      read: (path) => { if (path === `/proc/${groupId}/stat`) throw Object.assign(new Error('denied'), { code: 'EACCES' }); return realProc.read(path) },
+    },
+  }
+  for (const [view, proc] of Object.entries(views)) assert.equal(jobs.providerGroupAlive(readJob(ended.id), proc), true, `${view} read as gone`)
   const zombieTaker = writer(ended.worktree)
   jobs.acquireLease(zombieTaker)
   assert.deepEqual(leaseOf(ended.worktree), [zombieTaker.id])
@@ -1107,7 +1127,7 @@ try {
   }, 5_000)
   assert.ok(took && leaseOf(orphaned.worktree).join() === next.id, 'the lease of a reconciled writer was never taken over')
   await stragglerGone
-  ok('a write lease is released or taken over only once its provider group holds no member but zombies, never while one may still run')
+  ok('a write lease is released or taken over only once every thread of its provider group is a zombie, never while one may run or the view is incomplete')
 
   // The record is what a takeover judges the lease by, so the 14-day prune never removes the
   // record of a job its lease still names, however long ago the job ended.
