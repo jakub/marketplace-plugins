@@ -266,8 +266,9 @@ for (const [name, origin, text] of [
   // operator's and pass through; the nightly lint's own GIT_SSH_COMMAND still reaches ssh.
   const absEnv = { ...sshEnv, PATH: `${quickSsh}:${process.env.PATH}` }
   rmSync(ran, { force: true })
+  rmSync(quickRan, { force: true })
   const viaExecPath = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...absEnv, GIT_EXEC_PATH: 'bin' } })
-  check('a relative GIT_EXEC_PATH never runs the repository\'s ssh', !existsSync(ran), JSON.stringify(viaExecPath))
+  check('a relative GIT_EXEC_PATH never runs the repository\'s ssh, and git still reaches the absolute one', !existsSync(ran) && existsSync(quickRan), JSON.stringify(viaExecPath))
   rmSync(ran, { force: true })
   rmSync(quickRan, { force: true })
   const lint = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...absEnv, GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' } })
