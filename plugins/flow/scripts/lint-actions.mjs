@@ -119,7 +119,15 @@ function run({ action, repoArg, target, rest, env }) {
     }
     return prCache.get(branch)
   }
-  const inMain = (tip) => gitIn(repo, ['merge-base', '--is-ancestor', tip, 'refs/remotes/origin/main']) !== null
+  // Ancestry is judged against the default branch GitHub names, read once, never a fixed main: a
+  // second branch that happens to be called main proves nothing merged.
+  let defaultName = null
+  const defaultBranch = () => {
+    defaultName ??= gh(['repo', 'view', id.full, '--json', 'defaultBranchRef'], 'gh repo view')?.defaultBranchRef?.name ?? null
+    if (typeof defaultName !== 'string' || defaultName === '') refuse('gh repo view named no default branch, so nothing is judged against it')
+    return defaultName
+  }
+  const inMain = (tip) => gitIn(repo, ['merge-base', '--is-ancestor', tip, `refs/remotes/origin/${defaultBranch()}`]) !== null
 
   // Recoverable: can origin reproduce this tip after the delete? An open pull request refuses outright.
   const recoverable = (branch, tip) => {
@@ -131,15 +139,15 @@ function run({ action, repoArg, target, rest, env }) {
     if (remoteTip !== null && gitIn(repo, ['rev-list', '--count', `refs/remotes/origin/${branch}..${tip}`]) === '0') return `no commits beyond origin/${branch}`
     const closed = prs.find((p) => (p.state === 'MERGED' || p.state === 'CLOSED') && p.headRefOid === tip)
     if (closed) return `pull request #${closed.number} (${closed.state}) has this tip as its head`
-    if (inMain(tip)) return 'the tip is in origin/main'
+    if (inMain(tip)) return `the tip is in origin/${defaultBranch()}`
     return refuse('the tip is not reproducible from origin (no matching remote branch, pull request head or main ancestry)')
   }
   // Dead: recoverable is not a reason to delete; a pushed spike with no pull request is alive.
   const dead = (branch, tip) => {
     const closed = prsFor(branch).find((p) => p.state === 'MERGED' || p.state === 'CLOSED')
     if (closed) return `pull request #${closed.number} is ${closed.state}`
-    if (inMain(tip)) return 'the tip is already in origin/main'
-    return refuse('no merged or closed pull request and the tip is not in origin/main: recoverable, but not shown dead, so a human decides')
+    if (inMain(tip)) return `the tip is already in origin/${defaultBranch()}`
+    return refuse(`no merged or closed pull request and the tip is not in origin/${defaultBranch()}: recoverable, but not shown dead, so a human decides`)
   }
   const worktrees = () => {
     const listed = gitIn(repo, ['worktree', 'list', '--porcelain', '-z'])
@@ -174,7 +182,7 @@ function run({ action, repoArg, target, rest, env }) {
     const changed = lastChange(path)
     if (changed === null) refuse('the worktree\'s last change could not be read')
     if (Date.now() - changed < RECENT_MS) refuse(`the worktree changed ${Math.round((Date.now() - changed) / HOUR)}h ago, inside the four-day window`)
-    const why = entry.branch ? recoverable(entry.branch, entry.head) : inMain(entry.head) ? 'the detached tip is in origin/main' : refuse('the detached tip is not in origin/main')
+    const why = entry.branch ? recoverable(entry.branch, entry.head) : inMain(entry.head) ? `the detached tip is in origin/${defaultBranch()}` : refuse(`the detached tip is not in origin/${defaultBranch()}`)
     const removed = execCapture('git', ['-C', repo, 'worktree', 'remove', path], { timeoutMs: 60_000, env: gitEnv })
     if (removed.code !== 0) refuse(`git worktree remove refused: ${firstLine(removed.stderr)}`)
     gitIn(repo, ['worktree', 'prune'])
@@ -185,6 +193,7 @@ function run({ action, repoArg, target, rest, env }) {
   if (action === 'delete-branch') {
     const tip = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${target}`])
     if (tip === null) refuse('the branch does not exist')
+    if (target === defaultBranch()) refuse(`${target} is the default branch`)
     if (worktrees().some((e) => e.branch === target)) refuse('the branch is checked out in a worktree')
     const why = `${dead(target, tip)}; ${recoverable(target, tip)}`
     // update-ref, unlike `git branch -D`, deletes a branch a worktree has checked out, so git's own
@@ -310,7 +319,7 @@ function run({ action, repoArg, target, rest, env }) {
       return { number: i.number, title: i.title, labels, lifecycle, updatedAt: i.updated_at, ...(lifecycle.includes('ready-for-agent') ? { body: i.body ?? '' } : {}) }
     })
     survey.labels = labelDrift(pages(`repos/${id.owner}/${id.repo}/labels?per_page=100`, 'gh api over the labels'))
-    survey.flakes = flakeEntries({ gh, slurp, gitIn, repo, id })
+    survey.flakes = flakeEntries({ gh, slurp, gitIn, repo, id, defaultBranch: defaultBranch() })
   }
   finish(true, 'surveyed', survey)
 }
@@ -350,8 +359,7 @@ function labelDrift(have) {
 }
 
 /** Each known-flakes line on the default branch, against the jobs of the last 20 workflow runs. */
-function flakeEntries({ gh, slurp, gitIn, repo, id }) {
-  const defaultBranch = gh(['repo', 'view', id.full, '--json', 'defaultBranchRef'], 'gh repo view')?.defaultBranchRef?.name
+function flakeEntries({ gh, slurp, gitIn, repo, id, defaultBranch }) {
   const text = gitIn(repo, ['show', `refs/remotes/origin/${defaultBranch}:${FLAKES_PATH}`])
   if (text === null) return { file: false, entries: [] }
   const runs = gh(['api', '--hostname', id.host, `repos/${id.owner}/${id.repo}/actions/runs?per_page=20`], 'gh api over the workflow runs')?.workflow_runs ?? []

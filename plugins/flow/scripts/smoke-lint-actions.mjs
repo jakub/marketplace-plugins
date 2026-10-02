@@ -55,7 +55,7 @@ if (group === 'api') {
   fail('unexpected api ' + path)
 }
 if (at('--repo') !== 'github.com/jakub/demo' && !(group === 'repo' && argv[2] === 'github.com/jakub/demo')) fail('unpinned: ' + argv.join(' '))
-if (group === 'repo') out({ defaultBranchRef: { name: 'main' } })
+if (group === 'repo') out({ defaultBranchRef: { name: st.defaultBranch } })
 if (group === 'pr' && verb === 'list') {
   // A worktree that checks the branch out while the executor is still reading GitHub.
   if (st.checkoutDuringRead) { require('node:child_process').execFileSync('git', st.checkoutDuringRead, { stdio: 'ignore' }); delete st.checkoutDuringRead }
@@ -82,7 +82,7 @@ for (const key of ['GH_REPO', 'GH_HOST', 'FLOW_CRON_JOB', 'FLOW_WORKSPACE', 'FLO
 let worlds = 0
 
 /** A workspace holding one clone of a host-qualified origin served from disk, and a fake gh. */
-const makeWorld = (state = {}) => {
+const makeWorld = (state = {}, { branch = 'main' } = {}) => {
   const workspace = join(tmp, `ws-${worlds += 1}`)
   const base = join(workspace, '.base')
   const origin = join(base, 'jakub', 'demo.git')
@@ -96,16 +96,16 @@ const makeWorld = (state = {}) => {
   const env = { ...baseEnv, GIT_SSH_COMMAND: ssh, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: join(workspace, '.gh.json'), FLOW_WORKSPACE: workspace }
   const oldEnv = { ...env, GIT_AUTHOR_DATE: OLD.toISOString(), GIT_COMMITTER_DATE: OLD.toISOString() }
   const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', env: oldEnv, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin], { env })
-  execFileSync('git', ['init', '-q', '-b', 'main', repo], { env })
+  execFileSync('git', ['init', '-q', '--bare', '-b', branch, origin], { env })
+  execFileSync('git', ['init', '-q', '-b', branch, repo], { env })
   mkdirSync(join(repo, '.github'))
   writeFileSync(join(repo, '.github', 'known-flakes.txt'), '# flaky\ne2e\nunit:test_x\ngone-check\n')
   git(repo, 'add', '.')
   git(repo, 'commit', '-q', '-m', 'first')
   git(repo, 'remote', 'add', 'origin', 'git@github.com:jakub/demo.git')
-  git(repo, 'push', '-q', '-u', 'origin', 'main')
+  git(repo, 'push', '-q', '-u', 'origin', branch)
   writeFileSync(env.FAKE_GH_STATE, JSON.stringify({
-    calls: [], comments: [], prs: {}, openPrs: [], issues: [], labels: [], runs: [], origin,
+    calls: [], comments: [], prs: {}, openPrs: [], issues: [], labels: [], runs: [], origin, defaultBranch: branch,
     issue: { number: 7, state: 'OPEN', labels: [{ name: 'in-progress' }], updatedAt: new Date(Date.now() - 7 * HOUR).toISOString() }, ...state,
   }))
   return { workspace, origin, repo, env, git, tip: git(repo, 'rev-parse', 'HEAD') }
@@ -231,6 +231,27 @@ console.log('\nremove-worktree refuses anything dirty or recent')
   const r = run(w, ['remove-worktree', w.repo, stale])
   check('an old clean worktree whose tip origin holds is removed and reads back gone', r.code === 0 && !w.git(w.repo, 'worktree', 'list').includes(stale), `${JSON.stringify(r.json)} ${r.stderr}`)
   refused('the main worktree', run(w, ['remove-worktree', w.repo, w.repo]), 'main worktree')
+}
+
+console.log('\nancestry is judged against the default branch, whatever it is named')
+{
+  // The default branch is trunk, and origin also carries a main a commit ahead of it: a tip only
+  // that main holds has not been merged anywhere that counts.
+  const w = makeWorld({}, { branch: 'trunk' })
+  const spike = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'only on main')
+  w.git(w.repo, 'push', '-q', 'origin', `${spike}:refs/heads/main`)
+  w.git(w.repo, 'branch', 'feat/on-main-only', spike)
+  refused('a branch whose tip only a non-default main holds', run(w, ['delete-branch', w.repo, 'feat/on-main-only']), 'not shown dead')
+  w.git(w.repo, 'branch', 'feat/in-trunk', w.tip)
+  const merged = run(w, ['delete-branch', w.repo, 'feat/in-trunk'])
+  check('a branch whose tip is in origin/trunk is dead and deleted', merged.code === 0 && merged.json?.reason?.includes('origin/trunk'), `${JSON.stringify(merged.json)} ${merged.stderr}`)
+  w.git(w.repo, 'checkout', '-q', '--detach')
+  refused('the default branch itself, checked out nowhere', run(w, ['delete-branch', w.repo, 'trunk']), 'default branch')
+  const detached = join(w.workspace, 'detached')
+  w.git(w.repo, 'worktree', 'add', '-q', '--detach', detached, w.tip)
+  for (const f of w.git(detached, 'ls-files').split('\n')) utimesSync(join(detached, f), OLD, OLD)
+  const gone = run(w, ['remove-worktree', w.repo, detached])
+  check('an old clean detached worktree at a trunk commit is removed', gone.code === 0 && gone.json?.reason?.includes('origin/trunk'), `${JSON.stringify(gone.json)} ${gone.stderr}`)
 }
 
 console.log('\nevery verb is bound to the workspace and fetches first')
