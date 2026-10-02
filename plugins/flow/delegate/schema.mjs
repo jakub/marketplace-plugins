@@ -63,6 +63,7 @@ export function schemaProblem(schema, root = schema, at = '#', depth = 0) {
   for (const key of COUNTS) if (schema[key] !== undefined && !(Number.isInteger(schema[key]) && schema[key] >= 0)) return `${at}/${key} is not a count`
   if (schema.uniqueItems !== undefined && typeof schema.uniqueItems !== 'boolean') return `${at}/uniqueItems is not a boolean`
   if (schema.pattern !== undefined) {
+    if (typeof schema.pattern !== 'string') return `${at}/pattern is not a string`
     try { new RegExp(schema.pattern, 'u') } catch { return `${at}/pattern is not a valid regular expression` }
   }
   if (schema.$ref !== undefined && resolve(root, schema.$ref) === undefined) return `${at}/$ref does not resolve inside the schema`
