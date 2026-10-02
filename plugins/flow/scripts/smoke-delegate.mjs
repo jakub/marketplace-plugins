@@ -1095,6 +1095,7 @@ try {
   const realProc = { list: (path) => readdirSync(path), read: (path) => readFileSync(path, 'utf8') }
   const groupId = survivor.pid
   const thread = String(groupId + 1_000_000)
+  const unreadable = String(groupId + 2_000_000)
   const views = {
     // A leader whose stat reads Z while another of its threads runs: main called pthread_exit.
     'a zombie leader with a running thread': {
@@ -1107,6 +1108,12 @@ try {
     'a member whose stat cannot be read': {
       list: realProc.list,
       read: (path) => { if (path === `/proc/${groupId}/stat`) throw Object.assign(new Error('denied'), { code: 'EACCES' }); return realProc.read(path) },
+    },
+    // The readable zombie beside an entry the scan cannot read, so the scan still finds a member
+    // and only the unreadable entry can keep the group alive.
+    'a zombie member beside an unreadable one': {
+      list: (path) => (path === '/proc' ? [...realProc.list(path), unreadable] : realProc.list(path)),
+      read: (path) => { if (path === `/proc/${unreadable}/stat`) throw Object.assign(new Error('denied'), { code: 'EACCES' }); return realProc.read(path) },
     },
   }
   for (const [view, proc] of Object.entries(views)) assert.equal(jobs.providerGroupAlive(readJob(ended.id), proc), true, `${view} read as gone`)
