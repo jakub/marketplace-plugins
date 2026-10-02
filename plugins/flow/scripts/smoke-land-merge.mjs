@@ -249,12 +249,18 @@ for (const [name, origin, text] of [
   const ran = join(tmp, 'planted-ssh-ran')
   mkdirSync(join(inspected, 'bin'))
   writeFileSync(join(inspected, 'bin', 'ssh'), `#!/bin/sh\n: > ${ran}\nexit 1\n`, { mode: 0o755 })
-  // An ssh that fails at once in an absolute entry, so the case never waits on a real ssh's lookup.
+  // An ssh that fails at once in an absolute entry, so the case never waits on a real ssh's lookup,
+  // and leaves a marker so the case proves git reached ssh at all. An inherited GIT_SSH or
+  // GIT_SSH_COMMAND would bypass the PATH lookup and pass the case without testing it.
   const quickSsh = join(tmp, 'quick-ssh')
+  const quickRan = join(tmp, 'quick-ssh-ran')
   mkdirSync(quickSsh)
-  writeFileSync(join(quickSsh, 'ssh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
-  const r = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...process.env, PATH: `bin:${quickSsh}:${process.env.PATH}` } })
-  check('git run through execCapture never reaches an ssh the repository plants behind a relative PATH entry', !existsSync(ran), JSON.stringify(r))
+  writeFileSync(join(quickSsh, 'ssh'), `#!/bin/sh\n: > ${quickRan}\nexit 1\n`, { mode: 0o755 })
+  const sshEnv = { ...process.env, PATH: `bin:${quickSsh}:${process.env.PATH}` }
+  delete sshEnv.GIT_SSH
+  delete sshEnv.GIT_SSH_COMMAND
+  const r = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: sshEnv })
+  check('git run through execCapture never reaches an ssh the repository plants behind a relative PATH entry', !existsSync(ran) && existsSync(quickRan), JSON.stringify(r))
 }
 {
   // The same rule for git, through the executor: the repository it is run in plants bin/git,
