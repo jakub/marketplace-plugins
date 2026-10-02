@@ -13,7 +13,13 @@ import { findExecutable, probe, providerEnv } from './providers.mjs'
 
 const PROTOCOLS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']
 const RESULT_KEYS = ['jobId', 'waitSeconds', 'events']
-const WAIT_GRACE_SECONDS = 15
+// How long past its budget a default wait holds on for the job's stop to finish, so the call
+// returns the ended job and not one still running. The longest stop is the sum of: the provider
+// interrupt's answer, 10 s (INTERRUPT_MS in codex-app-server.mjs and claude-control.mjs); SIGTERM
+// to SIGKILL, 10 s, then the wait for the group to read gone, 10 s (both KILL_GRACE_MS in
+// runner.mjs); the schema check, 10 s (CHECK_SECONDS in schema.mjs); and the provider's close, 5 s
+// (CLOSE_MS in providers.mjs). That is 45 s, and 60 leaves a margin.
+const WAIT_GRACE_SECONDS = 60
 const TRANSPORTS = { codex, claude }
 
 function tools(target) {

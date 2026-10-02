@@ -155,6 +155,8 @@ function appServer() {
   async function runTurn(params) {
     out({ method: 'turn/started', params: { threadId, turn: { id: TURN, items: [], status: 'inProgress', error: null } } })
     if (mode === 'hang' || mode === 'steer-refused') return hang()
+    // A silent turn that ignores SIGTERM too, so its stop runs every timeout to SIGKILL.
+    if (mode === 'hang-stubborn') { process.on('SIGTERM', () => {}); return hang() }
     // The backend moves the turn to another model, and the turn answers and completes on it.
     if (mode === 'reroute') out({ method: 'model/rerouted', params: { threadId, turnId: TURN, fromModel: params.model, toModel: 'gpt-fake-other', reason: 'highRiskCyberActivity' } })
     // A steered turn waits for its steer, then answers with it folded in.
@@ -227,6 +229,8 @@ function appServer() {
       return onSteer?.()
     }
     if (method === 'turn/interrupt') {
+      // hang-stubborn never answers, so the stop waits out the interrupt's whole timeout.
+      if (mode === 'hang-stubborn') return undefined
       if (!turnOpen) return refuse(id, 'no active turn to interrupt')
       reply(id, {})
       return complete('interrupted')
@@ -449,6 +453,10 @@ try {
 
   // The timeout case runs its 30-second budget while everything else proceeds.
   const timed = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=hang', timeBudgetSeconds: 30, waitSeconds: 0 })
+  // So does one that waits by default, on its own connection, for a provider that answers no
+  // interrupt and ignores SIGTERM: the default wait has to cover its whole stop, not only the budget.
+  const stubbornHost = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo } })
+  const stubborn = start(stubbornHost, { prompt: 'FLOW_FAKE_MODE=hang-stubborn', timeBudgetSeconds: 30 })
   // So does a conforming answer to an admitted schema whose check branches two ways on each of 32
   // levels of references, which only the check's kill timer ends.
   const costly = { type: 'object', required: ['answer'], $defs: { d0: { type: 'number' } }, properties: { answer: { anyOf: [{ $ref: '#/$defs/d32' }, { type: 'string' }] } } }
@@ -1432,6 +1440,10 @@ try {
   assert.equal(expired.job.error.kind, 'TIMEOUT')
   assert.deepEqual(asked(timed.job.id, 'turn/interrupt'), [{ threadId: THREAD, turnId: TURN }], 'the budget interrupts the Codex turn before the group is killed')
   ok('a job past its time budget is interrupted, stopped and fails TIMEOUT')
+  const waitedOut = await stubborn
+  stubbornHost.close()
+  assert.deepEqual([waitedOut.ok, waitedOut.job.status, waitedOut.job.error?.kind], [false, 'failed', 'TIMEOUT'], JSON.stringify(waitedOut.job))
+  ok('the default wait outlasts a stop that runs every timeout, so it returns the finished job')
 
   const bounded = await claudeHost.call('delegation_result', { jobId: unchecked.job.id, waitSeconds: 60 })
   assert.deepEqual([bounded.job.status, bounded.job.error?.kind, bounded.job.structured], ['failed', 'SCHEMA_OUTPUT', null])
