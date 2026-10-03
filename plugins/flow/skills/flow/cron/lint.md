@@ -36,7 +36,7 @@ Per repository, from its survey:
 - Labels. Report `labels.missing`, `labels.drifted` and `labels.extra`, and never create or edit a label. `labels.error` is a warning. An issue with two lifecycle labels is a report line for a human.
 - Issues. Judge each `ready-for-agent` body against the six contract points, find each orphaned `in-progress` issue and each issue with an empty `lifecycle`, and act under permission 3. Subagents may judge bodies; reconcile on the main thread.
 - Worktrees and local branches. Act under permissions 1 and 2, and list the rest with the reason each one stays.
-- Remote branches. Act under permission 4. Report the count of the rest and at most ten names, each with its open pull request or "not shown dead".
+- Remote branches. Act under permission 4. A survey `parentError` is a warning: origin's parent could not be read, so no remote branch is shown dead. Report the count of the rest and at most ten names, each with its open pull request or "not shown dead".
 - Known flakes. An entry with `runsSeen` 0 across `flakes.runs` runs is dead. Report it.
 
 For the marketplace repo, also Read `${HOME}/.claude/plugins/installed_plugins.json`. A `flow@jakub` user-scope `version` older than the repo's `plugins/flow/.claude-plugin/plugin.json` is a warning, because sessions run the old charter until a reinstall.

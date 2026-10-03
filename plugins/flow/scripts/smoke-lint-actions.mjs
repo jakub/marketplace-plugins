@@ -44,7 +44,8 @@ if (group === 'api') {
   if (at('--hostname') !== 'github.com') fail('api off the pin: ' + argv.join(' '))
   // origin as a fork: the parent's open pull requests, by head=<owner>:<branch>, the only parent
   // read there is. One can open on its Nth read, as if between the executor's reads.
-  const parent = st.parent ? 'repos/' + st.parent.owner.login + '/' + st.parent.name + '/pulls?state=open&head=' : null
+  const parent = st.parent?.owner?.login ? 'repos/' + st.parent.owner.login + '/' + st.parent.name + '/pulls?state=open&head=' : null
+  if (parent && path.startsWith(parent.slice(0, -'&head='.length)) && st.parentPullsFail) fail("the parent's pull requests could not be read")
   if (parent && path.startsWith(parent)) {
     const head = decodeURIComponent(path.slice(parent.length).split('&')[0])
     st.upstreamReads = { ...st.upstreamReads, [head]: (st.upstreamReads?.[head] ?? 0) + 1 }
@@ -739,6 +740,21 @@ console.log('\nthe survey reads pull requests once, however many branches there 
   const row = (name) => r.json?.remoteBranches?.find((b) => b.name === name)
   check('a merged pull request from a deleted fork is no warrant in the survey', r.code === 0 && row('feat/gone-fork')?.dead === null, `${r.stderr} ${JSON.stringify(r.json?.remoteBranches)}`)
   check('the parent\'s bulk read finds an open pull request under GitHub\'s owner name', row('feat/moved-up')?.openPr === 61 && row('feat/moved-up').openPrRepo === 'upstream/demo' && row('feat/moved-up').dead === null, JSON.stringify(row('feat/moved-up')))
+}
+
+console.log('\na parent that cannot be read leaves rows unknown, and the survey whole')
+for (const [what, extra] of [['a failed parent read', { parentPullsFail: true }], ['a malformed parent', { parent: { name: 'demo', owner: {} } }]]) {
+  const w = makeWorld({ parent: { name: 'demo', owner: { login: 'upstream' } }, upstreamPrs: {}, issues: [{ number: 7, title: 'still here', labels: [], updated_at: '2026-09-01T00:00:00Z' }], ...extra })
+  const c = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'merged')
+  w.git(w.repo, 'push', '-q', 'origin', `${c}:refs/heads/feat/unknown-up`)
+  const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  st.prs['feat/unknown-up'] = [{ number: 70, state: 'MERGED', headRefOid: c, isCrossRepository: false }]
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
+  const r = run(w, ['survey', w.repo])
+  const row = r.json?.remoteBranches?.find((b) => b.name === 'feat/unknown-up')
+  check(`${what}: the survey exits 0 with its issues`, r.code === 0 && r.json?.issues?.[0]?.number === 7 && typeof r.json?.parentError === 'string', `${r.stderr} ${JSON.stringify(r.json)}`)
+  check(`${what}: the row is not dead, and says why`, row?.dead === null && typeof row?.upstreamError === 'string' && row.upstreamError === r.json.parentError, JSON.stringify(row))
+  refused(`${what}: delete-remote-branch still refuses`, run(w, ['delete-remote-branch', w.repo, 'feat/unknown-up']), what === 'a malformed parent' ? 'parent without an owner' : 'could not be read')
 }
 
 rmSync(tmp, { recursive: true, force: true })

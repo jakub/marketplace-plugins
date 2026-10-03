@@ -172,7 +172,7 @@ function run({ action, repoArg, target, rest, env }) {
   const upstreamOpenOf = (branch, { fresh = false } = {}) => {
     const parent = parentOf()
     if (parent === null) return null
-    if (!fresh && bulk !== null) return bulk.parentOpen.get(`${canonicalName().split('/')[0].toLowerCase()}:${branch}`) ?? null
+    if (!fresh && bulk !== null) return bulk.parentOpen.get(`${bulk.owner}:${branch}`) ?? null
     if (fresh || !upstreamCache.has(branch)) {
       const head = encodeURIComponent(`${canonicalName().split('/')[0]}:${branch}`)
       const open = pages(`repos/${parent}/pulls?state=open&head=${head}&per_page=100`, `gh api over ${parent}'s open pull requests from ${branch}`)[0] ?? null
@@ -546,7 +546,8 @@ function run({ action, repoArg, target, rest, env }) {
     finish(true, `relabelled ${from} to ${to}${commented ? '' : '; the comment failed, the labels moved'}${kept ? `; ${kept}` : ''}`, kept ? { retained: ['claim-tag'] } : {})
   }
 
-  // ---- survey: read-only, and every read that fails refuses the whole survey.
+  // ---- survey: read-only, and every read that fails refuses the whole survey, except the fork
+  // parent's, which leaves each remote branch's parent half unknown (parentError, upstreamError).
   // One paginated read of every pull request, and one of the parent's open ones, stand in for the
   // per-branch reads, so the survey's cost does not grow with the branch count. The REST shape is
   // mapped to gh pr list's: MERGED when merged_at is set, and isCrossRepository when the head lives
@@ -564,18 +565,29 @@ function run({ action, repoArg, target, rest, env }) {
       byHead.set(p.head.ref, [...(byHead.get(p.head.ref) ?? []), { number: p.number, state, headRefOid: p.head.sha ?? null, isCrossRepository }])
       if (state === 'OPEN') openByBase.set(p.base.ref, [...(openByBase.get(p.base.ref) ?? []), { number: p.number }])
     }
+    // A parent that cannot be read, or reads malformed, leaves every row's parent half unknown
+    // rather than failing the survey, so issues, labels and flakes still come back. A verb that
+    // deletes refuses on the same failure.
     const parentOpen = new Map()
-    const parent = parentOf()
-    if (parent !== null) {
-      for (const p of pages(`repos/${parent}/pulls?state=open&per_page=100`, `gh api over ${parent}'s open pull requests`)) {
-        const label = p?.head?.label
-        if (!Number.isInteger(p?.number) || typeof label !== 'string' || !label.includes(':')) refuse(`gh api over ${parent}'s open pull requests answered one without a number and a head label`)
-        const at = label.indexOf(':')
-        const key = `${label.slice(0, at).toLowerCase()}:${label.slice(at + 1)}`
-        if (!parentOpen.has(key)) parentOpen.set(key, { number: p.number, repo: parent })
+    let owner = null
+    let parentError = null
+    try {
+      const parent = parentOf()
+      if (parent !== null) {
+        owner = canonicalName().split('/')[0].toLowerCase()
+        for (const p of pages(`repos/${parent}/pulls?state=open&per_page=100`, `gh api over ${parent}'s open pull requests`)) {
+          const label = p?.head?.label
+          if (!Number.isInteger(p?.number) || typeof label !== 'string' || !label.includes(':')) refuse(`gh api over ${parent}'s open pull requests answered one without a number and a head label`)
+          const at = label.indexOf(':')
+          const key = `${label.slice(0, at).toLowerCase()}:${label.slice(at + 1)}`
+          if (!parentOpen.has(key)) parentOpen.set(key, { number: p.number, repo: parent })
+        }
       }
+    } catch (error) {
+      if (!(error instanceof Verdict)) throw error
+      parentError = error.reason
     }
-    bulk = { byHead, openByBase, parentOpen }
+    bulk = { byHead, openByBase, parentOpen, owner, parentError }
   }
   const all = worktrees()
   const branchLines = gitIn(repo, ['for-each-ref', '--format=%(refname:short)%09%(objectname)%09%(upstream:short)%09%(upstream:track)', 'refs/heads'])
@@ -598,6 +610,7 @@ function run({ action, repoArg, target, rest, env }) {
     // Origin's branches as origin lists them, not as tracking refs: a narrowed fetch refspec can
     // leave a tracking ref for a branch origin no longer has. Minus the default and the protected
     // ones, each judged as delete-remote-branch would judge it.
+    if (bulk.parentError !== null) survey.parentError = bulk.parentError
     const remoteLines = gitIn(repo, ['ls-remote', '--heads', 'origin'], 60_000)
     if (remoteLines === null) refuse('git ls-remote over origin\'s branches failed')
     survey.remoteBranches = remoteLines.split('\n').filter(Boolean).map((line) => {
@@ -605,10 +618,11 @@ function run({ action, repoArg, target, rest, env }) {
       return { name: refname.slice('refs/heads/'.length), tip }
     }).filter(({ name }) => name !== defaultBranch() && !PROTECTED.has(name)).map(({ name, tip }) => {
       const open = openPrOf(name)
-      const upstream = open ? null : upstreamOpenOf(name)
+      const upstreamError = open ? null : bulk.parentError
+      const upstream = open || upstreamError ? null : upstreamOpenOf(name)
       const held = heldHere(name)
       const based = basedOn(name).length
-      return { name, tip, openPr: open?.number ?? upstream?.number ?? null, openPrRepo: open ? `${id.owner}/${id.repo}` : upstream?.repo ?? null, basedPrs: based, heldHere: held, trackedBy: trackersOf(name), dead: open || upstream || based > 0 || held ? null : prWarrant(name, tip) }
+      return { name, tip, openPr: open?.number ?? upstream?.number ?? null, openPrRepo: open ? `${id.owner}/${id.repo}` : upstream?.repo ?? null, basedPrs: based, heldHere: held, trackedBy: trackersOf(name), ...(upstreamError ? { upstreamError } : {}), dead: open || upstream || upstreamError || based > 0 || held ? null : prWarrant(name, tip) }
     })
     survey.issues = pages(`repos/${id.owner}/${id.repo}/issues?state=open&per_page=100`, 'gh api over the open issues').filter((i) => !i.pull_request).map((i) => {
       const labels = (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))
