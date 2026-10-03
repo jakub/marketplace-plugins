@@ -20,13 +20,14 @@
 // origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
 // delete-remote-branch needs origin to fetch from and push to one URL, and deletes only at the tip
 // it judged dead, through a lease origin checks at delete time, so a branch pushed to after the
-// judgment is never deleted, nor one that open pull requests use as their base. Its one warrant is
-// a merged or closed pull request from this repository whose head is that tip, never ancestry. It
-// refuses a branch this checkout holds, through a worktree on it or a local branch of its name; a
-// local branch that only tracks it is no hold, and its answer names those as trackedBy. Its known
-// limit: GitHub has no lock, so a pull request opened between its last open-PR read and origin
-// applying the delete loses its head branch. The land stage retires a pull request's head branch
-// through it with --expect, which refuses unless origin's tip is exactly the head it merged.
+// judgment is never deleted. Its one warrant is a merged or closed pull request from this
+// repository whose head is that tip, never ancestry. It refuses a branch that open pull requests
+// head, here or in the repository origin was forked from, or use as their base, and a branch this
+// checkout holds through a worktree on it or a local branch of its name. A local branch that only
+// tracks it is no hold, and every answer names those as trackedBy. Its known limit: GitHub has no
+// lock, so a pull request opened between the last open-PR read and origin applying the delete
+// loses its head branch. The land stage retires a pull request's head branch through it with
+// --expect, which refuses unless origin's tip is exactly the head it merged.
 // stdout is one JSON line {action, repo, target, ok, reason, ...}; exit 0 when the action happened
 // (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
 // regex, which is why the relabel reason is a single token.
@@ -150,15 +151,42 @@ function run({ action, repoArg, target, rest, env }) {
     }
     return baseCache.get(branch)
   }
+  // When origin is a fork, a pull request into the repository it was forked from can head from
+  // this branch, and GitHub closes it when the branch is deleted. gh pr list --head reads origin
+  // alone, so the parent is read by its own query, head=<origin owner>:<branch>. The parent is
+  // looked up once per run, through the same cached gh repo view as the default branch.
+  const parentOf = () => {
+    const parent = repoView()?.parent ?? null
+    if (parent === null) return null
+    if (typeof parent?.owner?.login !== 'string' || parent.owner.login === '' || typeof parent?.name !== 'string' || parent.name === '') refuse('gh repo view named a parent without an owner and a name')
+    return `${parent.owner.login}/${parent.name}`
+  }
+  const upstreamCache = new Map()
+  const upstreamOpenOf = (branch, { fresh = false } = {}) => {
+    const parent = parentOf()
+    if (parent === null) return null
+    if (fresh || !upstreamCache.has(branch)) {
+      const head = encodeURIComponent(`${id.owner}:${branch}`)
+      const open = pages(`repos/${parent}/pulls?state=open&head=${head}&per_page=100`, `gh api over ${parent}'s open pull requests from ${branch}`)[0] ?? null
+      upstreamCache.set(branch, open === null ? null : { number: open.number, repo: parent })
+    }
+    return upstreamCache.get(branch)
+  }
+  const refuseUpstreamOpen = (branch, opts) => {
+    const open = upstreamOpenOf(branch, opts)
+    if (open) refuse(`${branch} heads an open pull request in ${open.repo} (#${open.number}), which deleting it would close`)
+  }
   const refuseBased = (branch, opts) => {
     const based = basedOn(branch, opts)
     if (based.length > 0) refuse(`${based.length} open pull request(s) use ${branch} as their base (#${based.map((p) => p.number).join(', #')}), and deleting it would close them`)
   }
   // Ancestry is judged against the default branch GitHub names, read once, never a fixed main: a
   // second branch that happens to be called main proves nothing merged.
+  let repoInfo = null
+  const repoView = () => (repoInfo ??= gh(['repo', 'view', id.full, '--json', 'defaultBranchRef,parent'], 'gh repo view'))
   let defaultName = null
   const defaultBranch = () => {
-    defaultName ??= gh(['repo', 'view', id.full, '--json', 'defaultBranchRef'], 'gh repo view')?.defaultBranchRef?.name ?? null
+    defaultName ??= repoView()?.defaultBranchRef?.name ?? null
     if (typeof defaultName !== 'string' || defaultName === '') refuse('gh repo view named no default branch, so nothing is judged against it')
     return defaultName
   }
@@ -373,6 +401,7 @@ function run({ action, repoArg, target, rest, env }) {
       const expect = rest[1] ?? null
       if (expect !== null && tip !== expect) refuse(`origin's ${target} is at ${tip.slice(0, 12)}, not the expected ${expect.slice(0, 12)}, so nothing was deleted`)
       refuseOpen(target)
+      refuseUpstreamOpen(target)
       refuseBased(target)
       const why = prWarrant(target, tip) ??
         refuse('no merged or closed pull request from this repository has this tip as its head, and ancestry is no warrant on origin: not shown dead, so a human decides')
@@ -383,6 +412,7 @@ function run({ action, repoArg, target, rest, env }) {
       // names the tip, so the branch can be pushed back.
       const late = prsFor(target, { fresh: true }).find((p) => p.state === 'OPEN')
       if (late) refuse(`${target} gained an open pull request (#${late.number}) while it was being judged`)
+      refuseUpstreamOpen(target, { fresh: true })
       refuseBased(target, { fresh: true })
       const heldLate = heldHere(target)
       if (heldLate) refuse(`${heldLate}, since it was judged`)
@@ -525,9 +555,10 @@ function run({ action, repoArg, target, rest, env }) {
       return { name: refname.slice('refs/heads/'.length), tip }
     }).filter(({ name }) => name !== defaultBranch() && !PROTECTED.has(name)).map(({ name, tip }) => {
       const open = openPrOf(name)
+      const upstream = open ? null : upstreamOpenOf(name)
       const held = heldHere(name)
       const based = basedOn(name).length
-      return { name, tip, openPr: open?.number ?? null, basedPrs: based, heldHere: held, trackedBy: trackersOf(name), dead: open || based > 0 || held ? null : prWarrant(name, tip) }
+      return { name, tip, openPr: open?.number ?? upstream?.number ?? null, openPrRepo: open ? `${id.owner}/${id.repo}` : upstream?.repo ?? null, basedPrs: based, heldHere: held, trackedBy: trackersOf(name), dead: open || upstream || based > 0 || held ? null : prWarrant(name, tip) }
     })
     survey.issues = pages(`repos/${id.owner}/${id.repo}/issues?state=open&per_page=100`, 'gh api over the open issues').filter((i) => !i.pull_request).map((i) => {
       const labels = (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))

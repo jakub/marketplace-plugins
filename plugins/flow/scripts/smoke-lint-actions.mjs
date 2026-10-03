@@ -41,7 +41,17 @@ const originGit = (...a) => require('node:child_process').execFileSync('git', ['
 const claimTag = () => { try { return originGit('rev-parse', '--verify', '--quiet', 'refs/tags/flow-claim-issue-7') } catch { return null } }
 if (group === 'api') {
   const path = argv[argv.length - 1]
-  if (at('--hostname') !== 'github.com' || !path.startsWith('repos/jakub/demo/')) fail('api off the pin: ' + argv.join(' '))
+  if (at('--hostname') !== 'github.com') fail('api off the pin: ' + argv.join(' '))
+  // origin as a fork: the parent's open pull requests, by head=<owner>:<branch>, the only parent
+  // read there is. One can open on its Nth read, as if between the executor's reads.
+  const parent = st.parent ? 'repos/' + st.parent.owner.login + '/' + st.parent.name + '/pulls?state=open&head=' : null
+  if (parent && path.startsWith(parent)) {
+    const head = decodeURIComponent(path.slice(parent.length).split('&')[0])
+    st.upstreamReads = { ...st.upstreamReads, [head]: (st.upstreamReads?.[head] ?? 0) + 1 }
+    if (st.upstreamOnRead?.head === head && st.upstreamOnRead.read === st.upstreamReads[head]) (st.upstreamPrs[head] ||= []).push(st.upstreamOnRead.pr)
+    out([(st.upstreamPrs || {})[head] || []])
+  }
+  if (!path.startsWith('repos/jakub/demo/')) fail('api off the pin: ' + argv.join(' '))
   if (path.startsWith('repos/jakub/demo/pulls?state=open')) {
     // An issue run that takes the claim tag while the lint is still scanning.
     if (st.claimDuringScan) { originGit('update-ref', 'refs/tags/flow-claim-issue-7', originGit('rev-parse', 'refs/heads/main')); delete st.claimDuringScan }
@@ -55,7 +65,7 @@ if (group === 'api') {
   fail('unexpected api ' + path)
 }
 if (at('--repo') !== 'github.com/jakub/demo' && !(group === 'repo' && argv[2] === 'github.com/jakub/demo')) fail('unpinned: ' + argv.join(' '))
-if (group === 'repo') out({ defaultBranchRef: { name: st.defaultBranch } })
+if (group === 'repo') out({ defaultBranchRef: { name: st.defaultBranch }, parent: st.parent ?? null })
 if (group === 'pr' && verb === 'list') {
   // A git command that lands while the executor is still reading GitHub: a worktree that checks
   // the branch out, or a push that moves the branch on origin.
@@ -434,6 +444,38 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
   const done = run(w, ['delete-remote-branch', w.repo, 'feat/tracked'])
   check('a merged branch three local branches track is deleted, and the success names them', done.code === 0 && JSON.stringify(done.json?.trackedBy) === want, `${JSON.stringify(done.json)} ${done.stderr}`)
+}
+
+console.log('\nwhen origin is a fork, the parent\'s open pull requests from the branch block its delete')
+{
+  const w = makeWorld({ parent: { name: 'demo', owner: { login: 'upstream' } }, upstreamPrs: {} })
+  const onOrigin = (b) => spawnSync('git', ['--git-dir', w.origin, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`], { encoding: 'utf8' }).stdout.trim() || null
+  const push = (branch, prNumber, extra = {}) => {
+    const c = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', branch)
+    w.git(w.repo, 'push', '-q', 'origin', `${c}:refs/heads/${branch}`)
+    const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+    st.prs[branch] = [{ number: prNumber, state: 'MERGED', headRefOid: c, isCrossRepository: false }]
+    Object.assign(st, typeof extra === 'function' ? extra(st) : extra)
+    writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
+    return c
+  }
+  const upstream = push('feat/upstreamed', 40, (st) => ({ upstreamPrs: { ...st.upstreamPrs, 'jakub:feat/upstreamed': [{ number: 41 }] } }))
+  const r = run(w, ['delete-remote-branch', w.repo, 'feat/upstreamed'])
+  refused('a branch heading an open pull request in origin\'s parent', r, 'upstream/demo (#41)')
+  check('and the branch is still on origin', onOrigin('feat/upstreamed') === upstream)
+  check('the parent was read by head=<origin owner>:<branch>, on the pinned host', r.st.calls.some((c) => c[0] === 'api' && c.includes('github.com') &&
+    c.at(-1) === 'repos/upstream/demo/pulls?state=open&head=jakub%3Afeat%2Fupstreamed&per_page=100'), JSON.stringify(r.st.calls.filter((c) => c[0] === 'api')))
+  const late = push('feat/upstream-late', 42, { upstreamOnRead: { head: 'jakub:feat/upstream-late', read: 2, pr: { number: 43 } } })
+  const lateRun = run(w, ['delete-remote-branch', w.repo, 'feat/upstream-late'])
+  refused('a pull request opened in the parent between the judgment and the push', lateRun, '#43')
+  check('and the late branch is still on origin, after two parent reads', onOrigin('feat/upstream-late') === late && lateRun.st.upstreamReads['jakub:feat/upstream-late'] === 2, JSON.stringify(lateRun.st.upstreamReads))
+  push('feat/fork-clean', 44, { calls: [] })
+  const ok = run(w, ['delete-remote-branch', w.repo, 'feat/fork-clean'])
+  check('a merged branch with nothing open in the parent is deleted', ok.code === 0 && onOrigin('feat/fork-clean') === null, `${JSON.stringify(ok.json)} ${ok.stderr}`)
+  check('and gh repo view ran once for the default branch and the parent', ok.st.calls.filter((c) => c[0] === 'repo').length === 1, JSON.stringify(ok.st.calls.filter((c) => c[0] === 'repo')))
+  const survey = run(w, ['survey', w.repo])
+  const row = survey.json?.remoteBranches?.find((b) => b.name === 'feat/upstreamed')
+  check('the survey shows the parent\'s pull request as openPr, with its repository, and not dead', row?.openPr === 41 && row.openPrRepo === 'upstream/demo' && row.dead === null, JSON.stringify(survey.json?.remoteBranches))
 }
 
 console.log('\na clone whose fetch refspec skips main judges against origin\'s real main')
