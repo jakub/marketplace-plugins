@@ -10,10 +10,11 @@ import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { schemaProblem } from './schema.mjs'
+import { inside, RETENTION_MS, stateDir } from '../lib/state-dir.mjs'
+import { FINDINGS_SCHEMA, outputSchemaProblem } from './schema.mjs'
 
 const execFileAsync = promisify(execFile)
 const MAIN = fileURLToPath(new URL('./main.mjs', import.meta.url))
@@ -24,7 +25,6 @@ const MODEL = /^[a-z0-9][a-z0-9.-]*$/
 const START_KEYS = ['prompt', 'model', 'effort', 'cwd', 'mode', 'access', 'base', 'head', 'outputSchema', 'continue',
   'timeBudgetSeconds', 'waitSeconds', 'maxTurns', 'maxBudgetUsd']
 const QUEUE_GRACE_MS = 60_000
-const PRUNE_MS = 14 * 86_400_000
 const STEER_BYTES = 65_536
 const STEER_WAIT_MS = 30_000
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -34,35 +34,6 @@ export class DelegateError extends Error {
 }
 export const fail = (kind, message, details) => { throw new DelegateError(kind, message, details) }
 
-// Written in the subset Codex enforces for structured output: closed objects, every property
-// required. Like every schema a job carries, a reply is checked against it before success.
-export const FINDINGS_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['findings'],
-  properties: {
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['severity', 'confidence', 'title', 'file', 'line', 'detail', 'systemic'],
-        properties: {
-          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
-          confidence: { type: 'integer', minimum: 0, maximum: 100 },
-          title: { type: 'string' },
-          file: { type: 'string' },
-          line: { type: 'integer', minimum: 0 },
-          detail: { type: 'string' },
-          systemic: { type: 'boolean' },
-        },
-      },
-    },
-  },
-}
-
-export const stateDir = () => process.env.FLOW_DELEGATION_STATE_DIR
-  || join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'flow')
 export const jobDir = (id) => join(stateDir(), 'jobs', id)
 
 // A provider's private TMPDIR, outside the job directory. Claude Code's sandbox creates its proxy
@@ -224,10 +195,6 @@ export function providerGroupAlive(job, proc = PROC) {
   return members === 0
 }
 
-export const inside = (root, path) => {
-  const rel = relative(root, path)
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
-}
 export function canonicalRoots(paths) {
   const roots = []
   for (const path of paths) {
@@ -299,12 +266,8 @@ function validateStart(input, target) {
   if (input.outputSchema !== undefined) {
     const schema = input.outputSchema
     if (review) fail('BAD_SCHEMA', 'adversarial-review answers in the fixed findings schema.')
-    if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.type !== 'object') {
-      fail('BAD_SCHEMA', 'outputSchema must be a JSON Schema object whose type is "object".')
-    }
-    if (Buffer.byteLength(JSON.stringify(schema)) > 65_536) fail('BAD_SCHEMA', 'outputSchema exceeds 64 KiB.')
-    const problem = schemaProblem(schema)
-    if (problem) fail('BAD_SCHEMA', `outputSchema: ${problem}.`)
+    const problem = outputSchemaProblem(schema)
+    if (problem) fail('BAD_SCHEMA', problem)
   }
   if (input.continue !== undefined) {
     if (typeof input.continue !== 'string' || !JOB_ID.test(input.continue)) fail('BAD_REQUEST', 'continue must be a job id.')
@@ -410,23 +373,23 @@ export async function admit(input, { host, roots }) {
 // both take it. Only a file under its owner's own name is ever moved out, and the directory is
 // then removed only if still empty, so neither a release nor the takeover of a stale lease can
 // remove a lease that changed hands in between.
-const leaseDir = (job) => join(stateDir(), 'leases', createHash('sha256').update(job.worktree).digest('hex'))
+export const leaseDirOf = (worktree) => join(stateDir(), 'leases', createHash('sha256').update(worktree).digest('hex'))
 // The holder is reconciled first: a queued job past its grace is claimed and settled, so no
 // runner can start it once its lease is gone, and a running one whose runner died is settled
 // after its provider group is killed. An ended job still holds the lease while its provider group
 // has not read gone, so no two writers ever share a worktree.
-function leaseLive(jobId) {
+export function leaseLive(jobId) {
   const held = typeof jobId === 'string' && JOB_ID.test(jobId) ? reconcile(readJob(jobId)) : null
   return Boolean(held) && (!TERMINAL.has(held.status) || providerGroupAlive(held))
 }
-function dropLease(dir, owner) {
+export function dropLease(dir, owner) {
   const aside = join(dirname(dir), `.drop.${randomUUID()}`)
   try { renameSync(join(dir, owner), aside) } catch { return }
   rmSync(aside, { force: true })
   try { rmdirSync(dir) } catch {}
 }
 export function acquireLease(job) {
-  const dir = leaseDir(job)
+  const dir = leaseDirOf(job.worktree)
   const mine = join(dirname(dir), `.new.${job.id}`)
   mkdirSync(mine, { recursive: true, mode: 0o700 })
   writeFileSync(join(mine, job.id), '', { mode: 0o600 })
@@ -443,7 +406,7 @@ export function acquireLease(job) {
   } finally { rmSync(mine, { recursive: true, force: true }) }
 }
 export function releaseLease(job) {
-  if (job.access === 'workspace-write') dropLease(leaseDir(job), job.id)
+  if (job.access === 'workspace-write') dropLease(leaseDirOf(job.worktree), job.id)
 }
 
 function spawnRunner(job) {
@@ -574,7 +537,7 @@ export async function requestSteer(input, { host, roots, signal }) {
 // ended holder whose group is gone. So a record whose lease is still held stays, however old,
 // until the lease is released or taken over. The lease file stays the bare name it is built as;
 // putting the group in it would make the runner a second writer of the lease after admission.
-const leaseHeld = (job) => job?.access === 'workspace-write' && Boolean(lstatSync(join(leaseDir(job), job.id), { throwIfNoEntry: false }))
+const leaseHeld = (job) => job?.access === 'workspace-write' && Boolean(lstatSync(join(leaseDirOf(job.worktree), job.id), { throwIfNoEntry: false }))
 export function prune() {
   const root = join(stateDir(), 'jobs')
   let names = []
@@ -583,7 +546,7 @@ export function prune() {
     const job = readJob(name)
     let ended = NaN
     try { ended = job ? (TERMINAL.has(job.status) ? Date.parse(job.endedAt) : NaN) : statSync(join(root, name)).mtimeMs } catch {}
-    if (Date.now() - ended > PRUNE_MS && !leaseHeld(job)) rmSync(join(root, name), { recursive: true, force: true })
+    if (Date.now() - ended > RETENTION_MS && !leaseHeld(job)) rmSync(join(root, name), { recursive: true, force: true })
   }
 }
 

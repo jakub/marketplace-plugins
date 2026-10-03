@@ -26,8 +26,7 @@ import { seatPayload } from '../lib/charter-payload.mjs'
 import { transport as claudeTransport } from '../delegate/claude-control.mjs'
 import { transport as codexTransport } from '../delegate/codex-app-server.mjs'
 import * as jobs from '../delegate/jobs.mjs'
-import { checkAnswer, schemaProblem, validate } from '../delegate/schema.mjs'
-const { FINDINGS_SCHEMA } = jobs
+import { checkAnswer, FINDINGS_SCHEMA, schemaProblem, validate } from '../delegate/schema.mjs'
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MAIN = join(PLUGIN, 'delegate', 'main.mjs')

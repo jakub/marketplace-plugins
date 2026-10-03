@@ -87,6 +87,47 @@ export function schemaProblem(schema, root = schema, at = '#', depth = 0) {
   return null
 }
 
+/**
+ * Why a caller's outputSchema cannot be admitted, as the full message an admission refusal
+ * carries, or null. The root must be an object schema within 64 KiB, and every keyword in it one
+ * the delegate checks.
+ */
+export function outputSchemaProblem(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.type !== 'object') {
+    return 'outputSchema must be a JSON Schema object whose type is "object".'
+  }
+  if (Buffer.byteLength(JSON.stringify(schema)) > 65_536) return 'outputSchema exceeds 64 KiB.'
+  const problem = schemaProblem(schema)
+  return problem ? `outputSchema: ${problem}.` : null
+}
+
+// Written in the subset Codex enforces for structured output: closed objects, every property
+// required. Like every schema a job carries, a reply is checked against it before success.
+export const FINDINGS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['findings'],
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['severity', 'confidence', 'title', 'file', 'line', 'detail', 'systemic'],
+        properties: {
+          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
+          confidence: { type: 'integer', minimum: 0, maximum: 100 },
+          title: { type: 'string' },
+          file: { type: 'string' },
+          line: { type: 'integer', minimum: 0 },
+          detail: { type: 'string' },
+          systemic: { type: 'boolean' },
+        },
+      },
+    },
+  },
+}
+
 function same(a, b) {
   if (a === b) return true
   if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => same(item, b[i]))
