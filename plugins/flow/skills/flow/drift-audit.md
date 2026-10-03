@@ -25,10 +25,10 @@ Run the `labels` subcommand (`label-contract.md`): the label set, every `ready-f
 
 The marketplace repository is the one whose `.claude-plugin/marketplace.json` names marketplace `jakub`, and its origin owner is the human. A repository with another origin owner is third-party: give it one report line, and run neither section 3 nor this section against it.
 
-Run `node <plugin-root>/scripts/lint-actions.mjs survey <repo>`. It reports worktrees, local branches with their PRs, open issues and known flakes.
+Run `node <plugin-root>/scripts/lint-actions.mjs survey <repo>`. It reports worktrees, local branches with their PRs, origin's branches, open issues and known flakes.
 
 - A clean worktree unchanged for four days whose PR is merged or closed, and a local branch whose PR is merged or closed, are candidates for `lint-actions.mjs remove-worktree` and `delete-branch`. Both verbs re-check every condition and refuse on any doubt, and `main`, `master` and `flow-evidence` are never deleted. `git branch --merged main` misses squash merges, so PR state is the test.
-- Remote branches are report-only. A remote branch whose PR is merged or closed is stale. Report a count and at most ten names, and say how far back the PR list you read reaches.
+- A branch on origin that the survey's `remoteBranches` shows with no open PR and a `dead` reason is a candidate for `lint-actions.mjs delete-remote-branch`. Its tip is the head of a merged or closed PR, or is already in the default branch. The verb re-checks both and deletes only at the tip it judged. Report the rest as a count and at most ten names.
 - Every `.github/known-flakes.txt` entry names a check that ran in recent CI. An entry with `runsSeen` 0 is dead lore.
 - Isolated test databases, where the repository uses them, have no orphans beyond live worktrees.
 

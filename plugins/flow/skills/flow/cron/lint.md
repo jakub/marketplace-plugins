@@ -16,12 +16,18 @@ This is the full list, and everything else is report-only. The executor re-reads
    - `ready-for-agent` to `needs-triage`, for an issue whose body fails one of the six contract points in `${CLAUDE_PLUGIN_ROOT}/skills/flow/label-contract.md`. The reason names the point.
    - `in-progress` to `ready-for-agent`, for an issue with no worktree or local branch named `<feat|fix|chore>/issue-<N>-...`. The executor also checks origin and open pull requests, and refuses an issue updated in the last six hours.
    - `none` to `needs-triage`, for an open issue with no lifecycle label.
+4. `delete-remote-branch <repo> <branch>` for a branch on origin that the survey's `remoteBranches` shows with `openPr` null and a `dead` reason. The executor deletes it only at the tip it judged, and refuses one that moved.
 
-Never create issues or pull requests, push, edit files, or touch a remote branch.
+Never create issues or pull requests, push, or edit files. Touch a remote branch only through permission 4.
 
 ## Procedure
 
 Run `survey <dir>` on every directory directly under `${FLOW_WORKSPACE}` (list them with Glob). A refusal saying the directory is not a main checkout, or has no origin remote, is a skip. Name each skipped directory with its reason, so the audited count reconciles with the directory count. Any other refusal, such as a failed fetch or gh read, is a warning.
+
+Check the workspace root itself, and report only:
+
+- Loose files. Glob `*` and `.*` at `${FLOW_WORKSPACE}`, and report each file at the top level as a warning. A run's notes belong in its worktree's `.flow-scratch/`, not here.
+- Stray worktrees. For each directory the survey refused as not a main checkout, Read its `.git`. A `.git` file whose `gitdir:` line points into another repository's `.git/worktrees/` makes the directory a linked worktree of that repository. Report it as a warning that names the directory and the repository.
 
 The marketplace repo is the one whose `.claude-plugin/marketplace.json` names marketplace `jakub`, and its owner is the human. A repository whose survey `identity` has another owner is third-party. Give it one report line and act on nothing in it. A survey carrying `skipped` read git only, so report its issue, label and flake sections as skipped with that reason.
 
@@ -30,6 +36,7 @@ Per repository, from its survey:
 - Labels. Report `labels.missing`, `labels.drifted` and `labels.extra`, and never create or edit a label. `labels.error` is a warning. An issue with two lifecycle labels is a report line for a human.
 - Issues. Judge each `ready-for-agent` body against the six contract points, find each orphaned `in-progress` issue and each issue with an empty `lifecycle`, and act under permission 3. Subagents may judge bodies; reconcile on the main thread.
 - Worktrees and local branches. Act under permissions 1 and 2, and list the rest with the reason each one stays.
+- Remote branches. Act under permission 4. Report the count of the rest and at most ten names, each with its open pull request or "not shown dead".
 - Known flakes. An entry with `runsSeen` 0 across `flakes.runs` runs is dead. Report it.
 
 For the marketplace repo, also Read `${HOME}/.claude/plugins/installed_plugins.json`. A `flow@jakub` user-scope `version` older than the repo's `plugins/flow/.claude-plugin/plugin.json` is a warning, because sessions run the old charter until a reinstall.
@@ -46,7 +53,7 @@ For the marketplace repo, also Read `${HOME}/.claude/plugins/installed_plugins.j
 ## critical
 ## warning
 ## clean
-- <repo>: labels ✓ issues ✓ worktrees ✓ local branches ✓ flakes ✓
+- <repo>: labels ✓ issues ✓ worktrees ✓ local branches ✓ remote branches ✓ flakes ✓
 ```
 
 Each finding gives the repo, what, where (path or issue number), the invariant violated and the proposed fix. If you sampled a section, say so. A repository you could not assess is a warning, not a clean line.
