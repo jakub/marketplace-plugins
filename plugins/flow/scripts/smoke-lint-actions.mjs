@@ -389,19 +389,36 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
 
 console.log('\na clone whose fetch refspec skips main judges against origin\'s real main')
 {
-  // origin/main here still holds a commit origin's main has since been rewound off. The clone's
-  // remote.origin.fetch maps feature branches only, so its own fetch succeeds and leaves the stale
-  // origin/main in place. A verb that judged against that ref would call the commit merged.
-  const w = makeWorld()
-  const gone = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'rewound off main')
-  w.git(w.repo, 'push', '-q', 'origin', `${gone}:refs/heads/main`)
-  w.git(w.repo, 'fetch', '-q', 'origin')
-  w.git(w.repo, 'branch', 'feat/rewound-local', gone)
-  w.git(w.origin, 'update-ref', 'refs/heads/main', w.tip)
-  w.git(w.repo, 'config', 'remote.origin.fetch', '+refs/heads/feat/*:refs/remotes/origin/feat/*')
-  check('the setup: the clone\'s origin/main is stale and holds the commit', w.git(w.repo, 'rev-parse', 'refs/remotes/origin/main') === gone)
-  refused('delete-branch on a tip only the stale origin/main holds', run(w, ['delete-branch', w.repo, 'feat/rewound-local']), 'not shown dead')
-  check('and the local branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/rewound-local']).status === 0)
+  // Each world's origin/main still holds a commit origin's main has since been rewound off, and
+  // its remote.origin.fetch maps feature branches only, so the executor's own fetch succeeds and
+  // leaves the stale origin/main in place. A local verb that judged against that ref would call
+  // the commit merged. One world per verb, and the staleness asserted straight before each call,
+  // so no earlier call can have refreshed the ref a case depends on.
+  const staleWorld = () => {
+    const w = makeWorld()
+    const gone = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'rewound off main')
+    w.git(w.repo, 'push', '-q', 'origin', `${gone}:refs/heads/main`)
+    w.git(w.repo, 'fetch', '-q', 'origin')
+    w.git(w.origin, 'update-ref', 'refs/heads/main', w.tip)
+    w.git(w.repo, 'config', 'remote.origin.fetch', '+refs/heads/feat/*:refs/remotes/origin/feat/*')
+    return { w, gone, stale: () => w.git(w.repo, 'rev-parse', 'refs/remotes/origin/main') === gone }
+  }
+  {
+    const { w, gone, stale } = staleWorld()
+    w.git(w.repo, 'branch', 'feat/rewound-local', gone)
+    check('delete-branch setup: origin/main is stale and holds the tip', stale())
+    refused('delete-branch on a tip only the stale origin/main holds', run(w, ['delete-branch', w.repo, 'feat/rewound-local']), 'not shown dead')
+    check('and the local branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/rewound-local']).status === 0)
+  }
+  {
+    const { w, gone, stale } = staleWorld()
+    const path = join(w.workspace, 'rewound')
+    w.git(w.repo, 'worktree', 'add', '-q', path, '-b', 'feat/rewound-wt', gone)
+    for (const f of w.git(path, 'ls-files').split('\n')) utimesSync(join(path, f), OLD, OLD)
+    check('remove-worktree setup: origin/main is stale and holds the tip', stale())
+    refused('remove-worktree on a tip only the stale origin/main holds', run(w, ['remove-worktree', w.repo, path]), 'not reproducible')
+    check('and the worktree is still registered', w.git(w.repo, 'worktree', 'list').includes(path))
+  }
 }
 
 console.log('\na narrowed fetch refspec leaves no tracking ref behind a delete, and none in the survey')
