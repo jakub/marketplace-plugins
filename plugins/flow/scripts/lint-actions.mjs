@@ -308,15 +308,21 @@ function run({ action, repoArg, target, rest, env }) {
     if (status !== '') refuse('the worktree has tracked changes or untracked files')
     // .flow-scratch/ is ignored, so status reads clean over it and lastChange never sees it. A run's
     // scratch is retired by land, with the run, never by the lint.
-    let scratch
-    try { scratch = readdirSync(join(path, '.flow-scratch')).length } catch (error) { scratch = error?.code === 'ENOENT' ? 0 : null }
-    if (scratch === null) refuse('the worktree\'s .flow-scratch/ could not be read')
-    if (scratch > 0) refuse('the worktree holds run scratch; land retires it')
+    const refuseScratch = (when = '') => {
+      let scratch
+      try { scratch = readdirSync(join(path, '.flow-scratch')).length } catch (error) { scratch = error?.code === 'ENOENT' ? 0 : null }
+      if (scratch === null) refuse('the worktree\'s .flow-scratch/ could not be read')
+      if (scratch > 0) refuse(`the worktree holds run scratch${when}; land retires it`)
+    }
+    refuseScratch()
     const changed = lastChange(path)
     if (changed === null) refuse('the worktree\'s last change could not be read')
     if (Date.now() - changed < RECENT_MS) refuse(`the worktree changed ${Math.round((Date.now() - changed) / HOUR)}h ago, inside the four-day window`)
     const tips = fromOrigin(entry.branch ? [entry.branch] : [])
     const why = entry.branch ? recoverable(entry.branch, entry.head, tips.get(entry.branch)) : inMain(entry.head) ? `the detached tip is in origin/${defaultBranch()}` : refuse(`the detached tip is not in origin/${defaultBranch()}`)
+    // Again after every network read, straight before the remove. Nothing locks a scratch writer,
+    // so one that writes between this read and git's own removal is the window left.
+    refuseScratch(', written while it was being judged')
     const removed = execCapture('git', ['-C', repo, 'worktree', 'remove', path], { timeoutMs: 60_000, env: gitEnv })
     if (removed.code !== 0) refuse(`git worktree remove refused: ${firstLine(removed.stderr)}`)
     gitIn(repo, ['worktree', 'prune'])

@@ -60,6 +60,8 @@ if (group === 'pr' && verb === 'list') {
   // A git command that lands while the executor is still reading GitHub: a worktree that checks
   // the branch out, or a push that moves the branch on origin.
   if (st.checkoutDuringRead) { require('node:child_process').execFileSync('git', st.checkoutDuringRead, { stdio: 'ignore' }); delete st.checkoutDuringRead }
+  // A run writing a scratch file while the executor is still reading GitHub.
+  if (st.writeDuringRead) { fs.mkdirSync(require('node:path').dirname(st.writeDuringRead.path), { recursive: true }); fs.writeFileSync(st.writeDuringRead.path, st.writeDuringRead.content); delete st.writeDuringRead }
   // Each pull request carries only the fields asked for, the way gh answers, so a field the
   // executor forgets to request reads as missing here too.
   const fields = String(at('--json')).split(',')
@@ -517,6 +519,17 @@ console.log('\nremove-worktree refuses anything dirty or recent')
   check('the setup: scratch reads clean to git', w.git(scratch, 'status', '--porcelain') === '')
   refused('an old clean worktree holding run scratch', run(w, ['remove-worktree', w.repo, scratch]), 'holds run scratch; land retires it')
   check('and the scratch is still there', readFileSync(join(scratch, '.flow-scratch', 'notes.md'), 'utf8') === 'a run note\n')
+  // Scratch written while the executor reads GitHub, after its first look and before the remove.
+  const lateScratch = add('late-scratch')
+  age(lateScratch)
+  const lateNote = join(lateScratch, '.flow-scratch', 'late.md')
+  const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  st.writeDuringRead = { path: lateNote, content: 'written mid-judgment\n' }
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
+  const lateRun = run(w, ['remove-worktree', w.repo, lateScratch])
+  refused('a worktree that gained run scratch while it was being judged', lateRun, 'written while it was being judged')
+  const lateText = (() => { try { return readFileSync(lateNote, 'utf8') } catch { return null } })()
+  check('and the late scratch survives', lateRun.st.writeDuringRead === undefined && lateText === 'written mid-judgment\n', String(lateText))
   const stale = add('stale')
   age(stale)
   mkdirSync(join(stale, '.flow-scratch'))
