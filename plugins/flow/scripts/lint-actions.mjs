@@ -20,11 +20,13 @@
 // origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
 // delete-remote-branch needs origin to fetch from and push to one URL, and deletes only at the tip
 // it judged dead, through a lease origin checks at delete time, so a branch pushed to after the
-// judgment is never deleted, nor one that open pull requests use as their base. Its one warrant is a merged or closed pull request from this
-// repository whose head is that tip, never ancestry, and it refuses a branch this checkout still
-// holds in a worktree or a local branch. Its known limit: GitHub has no lock, so a pull request opened in the
-// moment between its last open-PR read and origin applying the delete loses its head branch. The
-// land stage retires a pull request's head branch through it too.
+// judgment is never deleted, nor one that open pull requests use as their base. Its one warrant is
+// a merged or closed pull request from this repository whose head is that tip, never ancestry. It
+// refuses a branch this checkout holds, through a worktree on it or a local branch of its name; a
+// local branch that only tracks it is no hold, and its answer names those as trackedBy. Its known
+// limit: GitHub has no lock, so a pull request opened between its last open-PR read and origin
+// applying the delete loses its head branch. The land stage retires a pull request's head branch
+// through it too.
 // stdout is one JSON line {action, repo, target, ok, reason, ...}; exit 0 when the action happened
 // (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
 // regex, which is why the relabel reason is a single token.
@@ -235,15 +237,53 @@ function run({ action, repoArg, target, rest, env }) {
     }
     return entries
   }
-  /** Why this checkout still holds a branch of origin's: a worktree on it, or a local branch of that name or tracking it. */
+  /**
+   * Why this checkout holds a branch of origin's: a worktree on it, or a local branch of that name.
+   * Tracking is no hold. With a same-repository pull request at the tip as the warrant, deleting
+   * the branch on origin loses no commit, and a stacked child that tracks its landed parent would
+   * otherwise hold the parent forever. Trackers are named instead, by trackersOf.
+   */
   const heldHere = (branch) => {
     const wt = worktrees().find((e) => e.branch === branch)
     if (wt) return `the worktree ${wt.path} is on ${branch}`
-    const lines = gitIn(repo, ['for-each-ref', '--format=%(refname)%09%(upstream)', 'refs/heads'])
-    if (lines === null) refuse('git for-each-ref over the local branches failed')
-    const local = lines.split('\n').filter(Boolean).map((l) => l.split('\t'))
-      .find(([ref, upstream]) => ref === `refs/heads/${branch}` || upstream === `refs/remotes/origin/${branch}`)
-    return local ? `the local branch ${local[0].replace(/^refs\/heads\//, '')} is on ${branch}` : null
+    const local = execCapture('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { timeoutMs: 10_000, env: gitEnv })
+    if (local.code === 0) return `the local branch ${branch} exists here`
+    if (local.code !== 1) refuse(`git rev-parse refs/heads/${branch} failed`)
+    return null
+  }
+  // Every local branch whose branch.<x>.merge names refs/heads/<b> and whose branch.<x>.remote
+  // resolves to origin's URL, read from the config itself: %(upstream) renders empty under a
+  // narrowed refspec, follows one merge value of several, and knows nothing of a second remote
+  // with origin's URL. A branch with no remote set is taken as origin's, as git pull takes it.
+  let trackerIndex = null
+  const trackersOf = (branch) => {
+    if (trackerIndex === null) {
+      const r = execCapture('git', ['-C', repo, 'config', '--get-regexp', '^branch\\..*\\.(merge|remote)$'], { timeoutMs: 10_000, env: gitEnv })
+      if (r.code !== 0 && r.code !== 1) refuse('git config over the branch settings failed')
+      const settings = new Map()
+      for (const line of (r.code === 0 ? r.stdout : '').split('\n').filter(Boolean)) {
+        const space = line.indexOf(' ')
+        const key = line.slice(0, space < 0 ? line.length : space).match(/^branch\.(.+)\.(merge|remote)$/)
+        if (!key) continue
+        if (!settings.has(key[1])) settings.set(key[1], { merge: [], remote: [] })
+        settings.get(key[1])[key[2]].push(space < 0 ? '' : line.slice(space + 1))
+      }
+      const urls = new Map()
+      const isOrigin = (remote) => {
+        if (remote === 'origin') return true
+        if (!urls.has(remote)) {
+          const named = execCapture('git', ['-C', repo, 'remote', 'get-url', remote], { timeoutMs: 10_000, env: gitEnv })
+          urls.set(remote, named.code === 0 ? named.stdout.trim() : remote)
+        }
+        return urls.get(remote) === originUrl
+      }
+      trackerIndex = new Map()
+      for (const [name, { merge, remote }] of settings) {
+        if (!(remote.length === 0 || remote.some(isOrigin))) continue
+        for (const ref of new Set(merge)) trackerIndex.set(ref, [...(trackerIndex.get(ref) ?? []), name].sort())
+      }
+    }
+    return trackerIndex.get(`refs/heads/${branch}`) ?? []
   }
   /** The newest of the HEAD commit's time and every tracked file's mtime, in ms, or null. */
   const lastChange = (path) => {
@@ -308,44 +348,50 @@ function run({ action, repoArg, target, rest, env }) {
     // a branch could be deleted in one repository and judged and read back in another.
     const one = originOfOneUrl(repo, gitEnv)
     if (one.url === undefined) refuse(one.problem === 'no-origin' ? 'the repository has no origin remote' : 'origin fetches from and pushes to URLs that are not one URL, so the delete could land where no read here looks')
-    // The tip is the one fromOrigin fetched, not the ls-remote answer before it: the fetch brought
-    // the tip's objects here, so the ancestry check can judge it at all, beside the default branch
-    // fetched in the same command. Freshness is not what keeps the delete safe: the lease below
-    // is, since origin refuses it if the branch moved off this tip after the fetch.
-    // A branch this checkout still holds is in use here, whatever GitHub says: a just-claimed run
-    // branch has no pull request yet, and land deletes the local branch before the remote one.
-    const held = heldHere(target)
-    if (held) refuse(held)
-    const tip = fromOrigin([target]).get(target)
-    if (tip === null) refuse(`${target} does not exist on origin`)
-    refuseOpen(target)
-    refuseBased(target)
-    const why = prWarrant(target, tip) ??
-      refuse('no merged or closed pull request from this repository has this tip as its head, and ancestry is no warrant on origin: not shown dead, so a human decides')
-    // GitHub has no lock to hold across the delete, and the lease below checks only the tip, so the
-    // open pull request reads, head and base, are repeated, uncached, straight before the push. The window left is
-    // from this read to origin applying the delete: a pull request opened or reopened inside it
-    // loses its head branch, and GitHub closes it. The reason below names the tip, so the branch
-    // can be pushed back.
-    const late = prsFor(target, { fresh: true }).find((p) => p.state === 'OPEN')
-    if (late) refuse(`${target} gained an open pull request (#${late.number}) while it was being judged`)
-    refuseBased(target, { fresh: true })
-    const heldLate = heldHere(target)
-    if (heldLate) refuse(`${heldLate}, since it was judged`)
-    // Compare-and-delete: origin applies the delete only while the branch is still at the tip
-    // every check above was about, and rejects it as stale otherwise.
-    const pushed = execCapture('git', ['-C', repo, 'push', `--force-with-lease=${ref}:${tip}`, 'origin', `:${ref}`], { timeoutMs: 60_000, env: gitEnv })
-    const after = readRef({ cwd: repo, redact, env: gitEnv }, ref)
-    if (after.state === 'unknown') refuse(`the delete ${pushed.code === 0 ? 'was reported' : 'failed'} and origin could not be read back: ${after.detail}`)
-    if (pushed.code !== 0) {
-      if (after.state === 'absent') refuse('the push failed, yet the branch reads back gone; whose delete removed it is unknown')
-      refuse(`origin refused the delete, so nothing was deleted (the branch may have moved off ${tip.slice(0, 12)} since it was judged): ${redact(firstLine(pushed.stderr)) || `exit ${pushed.code}`}`)
+    // Every answer from here on, success or refusal, names the local branches that track this one.
+    const trackedBy = trackersOf(target)
+    try {
+      // A branch this checkout still holds is in use here, whatever GitHub says: a just-claimed run
+      // branch has no pull request yet, and land deletes the local branch before the remote one.
+      const held = heldHere(target)
+      if (held) refuse(held)
+      // The tip is the one fromOrigin fetched, not the ls-remote answer before it: the fetch brought
+      // the tip's objects here beside the default branch. Freshness is not what keeps the delete
+      // safe: the lease below is, since origin refuses it if the branch moved off this tip after.
+      const tip = fromOrigin([target]).get(target)
+      if (tip === null) refuse(`${target} does not exist on origin`)
+      refuseOpen(target)
+      refuseBased(target)
+      const why = prWarrant(target, tip) ??
+        refuse('no merged or closed pull request from this repository has this tip as its head, and ancestry is no warrant on origin: not shown dead, so a human decides')
+      // GitHub has no lock to hold across the delete, and the lease below checks only the tip, so
+      // the open pull request reads, head and base, are repeated, uncached, straight before the
+      // push. The window left is from this read to origin applying the delete: a pull request
+      // opened or reopened inside it loses its head branch, and GitHub closes it. The reason below
+      // names the tip, so the branch can be pushed back.
+      const late = prsFor(target, { fresh: true }).find((p) => p.state === 'OPEN')
+      if (late) refuse(`${target} gained an open pull request (#${late.number}) while it was being judged`)
+      refuseBased(target, { fresh: true })
+      const heldLate = heldHere(target)
+      if (heldLate) refuse(`${heldLate}, since it was judged`)
+      // Compare-and-delete: origin applies the delete only while the branch is still at the tip
+      // every check above was about, and rejects it as stale otherwise.
+      const pushed = execCapture('git', ['-C', repo, 'push', `--force-with-lease=${ref}:${tip}`, 'origin', `:${ref}`], { timeoutMs: 60_000, env: gitEnv })
+      const after = readRef({ cwd: repo, redact, env: gitEnv }, ref)
+      if (after.state === 'unknown') refuse(`the delete ${pushed.code === 0 ? 'was reported' : 'failed'} and origin could not be read back: ${after.detail}`)
+      if (pushed.code !== 0) {
+        if (after.state === 'absent') refuse('the push failed, yet the branch reads back gone; whose delete removed it is unknown')
+        refuse(`origin refused the delete, so nothing was deleted (the branch may have moved off ${tip.slice(0, 12)} since it was judged): ${redact(firstLine(pushed.stderr)) || `exit ${pushed.code}`}`)
+      }
+      if (after.state === 'present') refuse(`the delete was reported but still reads back, at ${after.sha.slice(0, 12)}`)
+      // fromOrigin made this tracking ref, and a narrowed refspec's prune would never drop it. The
+      // compare-and-delete leaves one that moved since.
+      gitIn(repo, ['update-ref', '-d', `refs/remotes/origin/${target}`, tip])
+      finish(true, `deleted on origin at ${tip.slice(0, 12)} (${why})`)
+    } catch (error) {
+      if (error instanceof Verdict) error.extra = { ...error.extra, trackedBy }
+      throw error
     }
-    if (after.state === 'present') refuse(`the delete was reported but still reads back, at ${after.sha.slice(0, 12)}`)
-    // fromOrigin made this tracking ref, and a narrowed refspec's prune would never drop it. The
-    // compare-and-delete leaves one that moved since.
-    gitIn(repo, ['update-ref', '-d', `refs/remotes/origin/${target}`, tip])
-    finish(true, `deleted on origin at ${tip.slice(0, 12)} (${why})`)
   }
 
   if (action === 'relabel') {
@@ -469,7 +515,7 @@ function run({ action, repoArg, target, rest, env }) {
       const open = openPrOf(name)
       const held = heldHere(name)
       const based = basedOn(name).length
-      return { name, tip, openPr: open?.number ?? null, basedPrs: based, heldHere: held, dead: open || based > 0 || held ? null : prWarrant(name, tip) }
+      return { name, tip, openPr: open?.number ?? null, basedPrs: based, heldHere: held, trackedBy: trackersOf(name), dead: open || based > 0 || held ? null : prWarrant(name, tip) }
     })
     survey.issues = pages(`repos/${id.owner}/${id.repo}/issues?state=open&per_page=100`, 'gh api over the open issues').filter((i) => !i.pull_request).map((i) => {
       const labels = (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))

@@ -286,6 +286,15 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   setState((st) => { st.prs['feat/kept-here'] = [{ number: 19, state: 'MERGED', headRefOid: kept, isCrossRepository: false }] })
   refused('a merged branch that a local branch here still holds', del('feat/kept-here'), 'the local branch feat/kept-here')
   check('and the held branch is still on origin', onOrigin('feat/kept-here') === kept)
+  // Tracking is no hold: a stacked child made from its parent's tracking ref tracks the parent,
+  // and once the parent lands the child must not hold it forever. It is named instead.
+  const stackParent = pushWork('feat/stack-parent', 'landed parent')
+  w.git(w.repo, 'fetch', '-q', 'origin')
+  w.git(w.repo, 'branch', 'feat/stack-child', 'origin/feat/stack-parent')
+  setState((st) => { st.prs['feat/stack-parent'] = [{ number: 25, state: 'MERGED', headRefOid: stackParent, isCrossRepository: false }] })
+  const stacked = del('feat/stack-parent')
+  check('a landed parent a stacked child tracks is deleted, and the child is named in trackedBy',
+    stacked.code === 0 && onOrigin('feat/stack-parent') === null && JSON.stringify(stacked.json?.trackedBy) === '["feat/stack-child"]', `${JSON.stringify(stacked.json)} ${stacked.stderr}`)
   // A worktree that takes the branch while GitHub is being read: the hold is checked again before the push.
   const taken = pushWork('feat/taken-late', 'merged, then checked out here')
   setState((st) => {
@@ -385,6 +394,33 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
 {
   const w = makeWorld({}, { branch: 'trunk' })
   refused('the default branch GitHub names, protected or not', run(w, ['delete-remote-branch', w.repo, 'trunk']), 'default branch')
+}
+{
+  // Trackers read from the config, under a refspec that fetches the default branch alone, where
+  // %(upstream) renders empty: one under another name, one through a second remote with origin's
+  // URL, and one with two merge values. A branch tracking another repository's branch is not one.
+  const w = makeWorld()
+  w.git(w.repo, 'config', 'remote.origin.fetch', '+refs/heads/main:refs/remotes/origin/main')
+  const tip = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'tracked work')
+  w.git(w.repo, 'push', '-q', 'origin', `${tip}:refs/heads/feat/tracked`)
+  w.git(w.repo, 'remote', 'add', 'mirror', 'git@github.com:jakub/demo.git')
+  w.git(w.repo, 'remote', 'add', 'upstream', 'git@github.com:someone/else.git')
+  for (const [name, remote, merges] of [['renamed', 'origin', ['refs/heads/feat/tracked']], ['via-mirror', 'mirror', ['refs/heads/feat/tracked']],
+    ['multi', 'origin', ['refs/heads/other', 'refs/heads/feat/tracked']], ['elsewhere', 'upstream', ['refs/heads/feat/tracked']]]) {
+    w.git(w.repo, 'branch', name, tip)
+    w.git(w.repo, 'config', `branch.${name}.remote`, remote)
+    for (const merge of merges) w.git(w.repo, 'config', '--add', `branch.${name}.merge`, merge)
+  }
+  check('the setup: %(upstream) renders empty for the renamed tracker', w.git(w.repo, 'for-each-ref', '--format=%(upstream)', 'refs/heads/renamed') === '')
+  const want = '["multi","renamed","via-mirror"]'
+  const unwarranted = run(w, ['delete-remote-branch', w.repo, 'feat/tracked'])
+  refused('a tracked branch with no warrant', unwarranted, 'not shown dead')
+  check('and the refusal names its trackers from the config', JSON.stringify(unwarranted.json?.trackedBy) === want, JSON.stringify(unwarranted.json))
+  const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  st.prs['feat/tracked'] = [{ number: 26, state: 'MERGED', headRefOid: tip, isCrossRepository: false }]
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
+  const done = run(w, ['delete-remote-branch', w.repo, 'feat/tracked'])
+  check('a merged branch three local branches track is deleted, and the success names them', done.code === 0 && JSON.stringify(done.json?.trackedBy) === want, `${JSON.stringify(done.json)} ${done.stderr}`)
 }
 
 console.log('\na clone whose fetch refspec skips main judges against origin\'s real main')
@@ -533,6 +569,8 @@ console.log('\nsurvey reads what the lint judges')
   }
   const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
   w.git(w.repo, 'branch', 'feat/held', mergedTip)
+  w.git(w.repo, 'config', 'branch.feat/wt.remote', 'origin')
+  w.git(w.repo, 'config', 'branch.feat/wt.merge', 'refs/heads/feat/merged')
   st.basePrs['feat/spike'] = [{ number: 7 }, { number: 8 }]
   st.basePrs['feat/stacked'] = [{ number: 9 }]
   Object.assign(st.prs, { 'feat/stacked': [{ number: 10, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/held': [{ number: 6, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip, isCrossRepository: false }] })
@@ -557,7 +595,8 @@ console.log('\nsurvey reads what the lint judges')
     remote['feat/in-main']?.dead === null && remote['feat/open']?.openPr === 5 && remote['feat/open'].dead === null &&
     remote['feat/spike']?.openPr === null && remote['feat/spike'].dead === null && remote['feat/spike'].basedPrs === 2 && remote['feat/merged'].basedPrs === 0 &&
     remote['feat/stacked']?.basedPrs === 1 && remote['feat/stacked'].dead === null &&
-    remote['feat/held']?.heldHere?.includes('local branch') && remote['feat/held'].dead === null && remote['feat/merged'].heldHere === null, JSON.stringify(s?.remoteBranches))
+    remote['feat/held']?.heldHere?.includes('local branch') && remote['feat/held'].dead === null && remote['feat/merged'].heldHere === null &&
+    JSON.stringify(remote['feat/merged'].trackedBy) === '["feat/wt"]' && remote['feat/merged'].dead?.includes('#4'), JSON.stringify(s?.remoteBranches))
   check('nothing was edited', edits(r).length === 0 && !r.st.unpinned, JSON.stringify(r.st.calls))
   check('nothing on origin moved: every ref at the same object', originRefs() === refsBefore && refsBefore.includes(`${mergedTip}\trefs/heads/feat/merged`), `${refsBefore}\n---\n${originRefs()}`)
 }
