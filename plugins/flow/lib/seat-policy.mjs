@@ -16,15 +16,17 @@
 //                      missing or corrupt, or a call that cannot be read is denied outright.
 //   toolProblem        the child's PreToolUse containment, by the record's access: no spawned
 //                      agent, no MCP tool off a two-name allowlist, edits only inside a writer's
-//                      worktree, and no push, GitHub mutation or model CLI through the shell.
+//                      worktree, and through the shell no push, no gh but its reads, no git off
+//                      the read and writer allowlists, and no model CLI.
 //
 // Every field a decision reads is checked for shape first, and a field that is missing or of the
 // wrong type denies: a seat call is never admitted on a value this module had to guess at.
 //
 // Containment is the Seat Contract made mechanical for the calls a seat makes through its tools.
-// Like the guards in lib/hook-policy.mjs, the shell rules read shell text with regexes and a word
-// split, not a shell parser: a command word assembled at run time (`g''it`, `$G push`) is not seen,
-// and a word that only names a command (`which codex`) is denied. The edit rule resolves a target
+// The shell rules read quoting, substitutions, heredocs and redirections with a small lexer and
+// the rest with hook-policy's word split, not a full shell parser: a command word assembled at run
+// time (`g''it`, `$G push`) is not seen, nor is input typed into a running process (Codex's
+// write_stdin), nor a command behind a wrapper the rules do not list. The edit rule resolves a target
 // at hook time, so a symlink swapped in between the check and the write is not seen either. What
 // the rules catch is the ordinary reach outside the seat, which is what the contract forbids.
 
@@ -135,36 +137,6 @@ export const MCP_ALLOWLIST = Object.freeze(['mcp__claude_ai_Context7__query-docs
 const MCP = new Set(MCP_ALLOWLIST)
 const SPAWNS = new Set(['Agent', 'Task', 'Workflow'])
 const EDITS = new Set(['Edit', 'Write', 'NotebookEdit', 'apply_patch'])
-const MODEL_CLIS = new Set(['claude', 'codex', 'flow-delegate'])
-
-// The git subcommands that write to a repository, its refs or its remotes. `branch` and `config`
-// write only in some forms and are read by their own functions below. push is here too, though
-// every seat denies it before this set is read.
-const GIT_WRITES = new Set([
-  'commit', 'add', 'rm', 'mv', 'reset', 'checkout', 'switch', 'restore', 'merge', 'rebase', 'cherry-pick',
-  'revert', 'stash', 'tag', 'apply', 'am', 'clean', 'worktree', 'update-ref', 'push', 'fetch', 'pull', 'gc', 'prune',
-])
-// Environment assignments that point git at another repository, index or configuration: the
-// environment spellings of --git-dir, --work-tree and -c, refused beside a writer's git write.
-const GIT_ENV = /^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG\w*)=/
-
-// The gh verbs that change GitHub, by command group.
-const GH_MUTATIONS = {
-  pr: new Set(['create', 'merge', 'close', 'reopen', 'edit', 'comment', 'review', 'ready', 'lock', 'unlock', 'update-branch', 'revert']),
-  issue: new Set(['create', 'close', 'reopen', 'edit', 'comment', 'delete', 'transfer', 'pin', 'unpin', 'lock', 'unlock', 'develop']),
-  release: new Set(['create', 'delete', 'edit', 'upload', 'delete-asset']),
-  repo: new Set(['create', 'delete', 'edit', 'fork', 'rename', 'archive', 'unarchive', 'sync']),
-}
-
-// A command word as the shell would run it: the leading `$(`, `(`, backquote, `{`, `!`, `<`, `>`
-// or backslash of a substitution, subshell, group or escape stripped, and any trailing `)`,
-// backquote or `}`. So `echo $(git push)` reads `git` then `push`.
-const bareWord = (word) => word.replace(/^[\\$(<>`{!]+/, '').replace(/[)`}]+$/, '')
-const commandName = (word) => {
-  const name = bareWord(word)
-  return name.slice(name.lastIndexOf('/') + 1)
-}
-const unreadable = (word) => word.includes(OPAQUE) || word.startsWith('$')
 
 /**
  * Why a bound, healthy seat may not make this call, or null when containment allows it.
@@ -269,23 +241,407 @@ function resolveTarget(target, cwd) {
 }
 
 // ----- the shell
+//
+// Each rule reads a command in command position: the first word of a segment once its VAR=value
+// assignments, redirections and shell keywords are passed, and the command a listed wrapper runs
+// (env, exec, nohup, nice, timeout, xargs, eval, the package runners npx, bunx, pnpx and
+// `npm exec`, and a shell given -c). So `env X=1 npx codex` runs codex, and `which codex`,
+// `ls dir/codex` and `echo codex` run which, ls and echo. A wrapper off that list (sudo, command,
+// find -exec, make) hides the command it runs from these rules.
+//
+// Before the words are read, lexShell reads the raw command the way the shell quotes it, and every
+// command substitution outside single quotes, `$(...)`, a backquoted command, `<(...)` and `>(...)`,
+// is checked as a command of its own, double-quoted or nested ones included. segments() masks a
+// double-quoted string whole, so `echo "$(git push)"` would otherwise read as an echo. A
+// substitution, quote or heredoc delimiter that does not close cannot be read, and a seat denies it.
+// A command that runs a shell or eval has every literal in it checked as a command too, so a
+// substitution inside a single-quoted `bash -c` string is read; like hook-policy's own reading, a
+// literal beside such a string is read as a command as well, at the cost of one rephrase.
+//
+// Redirections are dropped from a segment's words before any argument is read, so the target of
+// `>log`, `2> err` or a heredoc is never taken for a path, a branch name or a subcommand.
+//
+// git and gh are read through allowlists. A git read subcommand runs bare in every seat, a writer
+// seat also runs add, rm, mv, commit, restore, stash and apply as `git -C <worktree>`, and every
+// other subcommand, a user alias included, is denied. gh runs its read verbs, a GET `gh api`,
+// `gh auth status` and `gh --version`, and nothing else.
 
-function shellProblem(record, command) {
-  const reads = segments(command)
+const MODEL_CLIS = new Set(['claude', 'codex', 'flow-delegate'])
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'ksh', 'dash'])
+const RUNNERS = new Set(['npx', 'bunx', 'pnpx'])
+// Reserved words that a command follows: grammar, not the command.
+const KEYWORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+// The wrappers that run the command after their options, each with the options that take a value.
+const WRAPPERS = {
+  env: new Set(['-u', '--unset', '-C', '--chdir']),
+  exec: new Set(['-a']),
+  nohup: new Set(),
+  nice: new Set(['-n', '--adjustment']),
+  timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
+  xargs: new Set(['-a', '--arg-file', '-d', '--delimiter', '-E', '-I', '-L', '--max-lines', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars', '--process-slot-var']),
+}
+// Options whose value is itself a command line: env's split string, a package runner's call.
+const ENV_COMMAND = new Set(['-S', '--split-string'])
+const RUNNER_COMMAND = new Set(['-c', '--call'])
+const RUNNER_VALUES = new Set(['-p', '--package'])
+const SHELL_DEPTH = 8
+
+// Environment assignments that point git at another repository, index or configuration: the
+// environment spellings of --git-dir, --work-tree and -c, refused beside a writer's git write.
+const GIT_ENV = /^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG\w*)=/
+
+// A word as the shell would run it: the leading `$(`, `(`, backquote, `{`, `!`, `<`, `>` or
+// backslash of a substitution, subshell, group or escape stripped, and any trailing `)`, backquote
+// or `}`.
+const bareWord = (word) => word.replace(/^[\\$(<>`{!]+/, '').replace(/[)`}]+$/, '')
+const commandName = (word) => {
+  const name = bareWord(word)
+  return name.slice(name.lastIndexOf('/') + 1)
+}
+const unreadable = (word) => word.includes(OPAQUE) || word.startsWith('$')
+// The command a package runner runs from a package spec: `@openai/codex@1.2` runs codex.
+const packageCommand = (word) => {
+  const name = commandName(word)
+  return name.startsWith('@') ? name : name.split('@')[0]
+}
+
+function shellProblem(record, command, depth = 0) {
+  if (depth > SHELL_DEPTH) {
+    return `flow seat (shell): this command nests shells and substitutions more than ${SHELL_DEPTH} deep, so this guard cannot read it and the command is denied.`
+  }
+  let lexed
+  try { lexed = lexShell(command) } catch (error) {
+    if (error !== UNCLOSED) throw error
+    return 'flow seat (shell): a quote, command substitution, backquote or heredoc in this command does not close where this guard can read it, so the command is denied. Write it plainly.'
+  }
+  for (const body of lexed.bodies) {
+    const problem = shellProblem(record, body, depth + 1)
+    if (problem) return problem
+  }
+  const reads = segments(lexed.text)
   const gitEnv = reads.some(({ words }) => words.some((word) => GIT_ENV.test(bareWord(word))))
+  let runsText = false
   for (const { words } of reads) {
-    for (let at = 0; at < words.length; at++) {
-      const name = commandName(words[at])
-      if (MODEL_CLIS.has(name)) {
-        return `flow seat (no model through the shell): \`${name}\` reaches a model, and a seat reaches none through the shell. Do the work in this session.`
-      }
-      const args = words.slice(at + 1)
-      const problem = name === 'git' ? gitProblem(record, args, gitEnv) : name === 'gh' ? ghProblem(args) : null
+    const argv = argvOf(words)
+    if (argv === null) return 'flow seat (shell): a redirection in this command names no target, so this guard cannot read it and the command is denied.'
+    const found = commandOf(argv)
+    if (!found) continue
+    if (found.opaque) {
+      return `flow seat (shell): \`${found.opaque}\` runs a quoted command line this guard cannot read, so the command is denied. Run the command plainly.`
+    }
+    runsText ||= found.runsText
+    const { name, args } = found
+    if (MODEL_CLIS.has(name)) {
+      return `flow seat (no model through the shell): \`${name}\` reaches a model, and a seat reaches none through the shell. Do the work in this session.`
+    }
+    const problem = name === 'git' ? gitProblem(record, args, gitEnv) : name === 'gh' ? ghProblem(args) : null
+    if (problem) return problem
+  }
+  if (runsText) {
+    for (const literal of lexed.literals) {
+      const problem = shellProblem(record, literal, depth + 1)
       if (problem) return problem
     }
   }
   return null
 }
+
+// ----- reading the raw command
+
+const UNCLOSED = Symbol('unclosed')
+// Marks the heredoc placeholder segments() leaves for the body: the word before it is the heredoc.
+const HEREDOC_MARK = '\u0001'
+
+/**
+ * The raw command read the way the shell quotes it: the body of every command substitution that is
+ * not inside single quotes, every literal (single-quoted, double-quoted, heredoc body), and the
+ * command rewritten for segments(), with `&>` and `>&file` spelled as plain `>` and a mark after
+ * each heredoc opener, so neither redirection target reads as an argument. Throws UNCLOSED when a
+ * quote, substitution or backquote does not close.
+ */
+function lexShell(text) {
+  const out = { bodies: [], literals: [], edits: [] }
+  lex(text, 0, false, out)
+  let rewritten = text
+  for (const [start, end, value] of out.edits.reverse()) rewritten = rewritten.slice(0, start) + value + rewritten.slice(end)
+  return { bodies: out.bodies, literals: out.literals, text: rewritten }
+}
+
+// Read from at. Inside a substitution body (nested), return the index of its closing parenthesis;
+// at the top, read to the end. out is null inside a body, which is read again as its own command.
+function lex(text, at, nested, out) {
+  let depth = 0
+  let wordStart = true
+  let heredocs = []
+  while (at < text.length) {
+    const c = text[at]
+    const next = text[at + 1]
+    if (c === '\\') { at += 2; wordStart = false; continue }
+    if (c === '\n' && heredocs.length > 0) {
+      at = readHeredocs(text, at + 1, heredocs, out)
+      heredocs = []
+      wordStart = true
+      continue
+    }
+    if (c === '#' && wordStart) {
+      const end = text.indexOf('\n', at)
+      at = end < 0 ? text.length : end
+      continue
+    }
+    if (c === "'") {
+      const end = text.indexOf("'", at + 1)
+      if (end < 0) throw UNCLOSED
+      out?.literals.push(text.slice(at + 1, end))
+      at = end + 1
+      wordStart = false
+      continue
+    }
+    if (c === '"') { at = lexDouble(text, at + 1, out); wordStart = false; continue }
+    if (c === '`') { at = lexBackquote(text, at + 1, out); wordStart = false; continue }
+    if ((c === '$' || c === '<' || c === '>') && next === '(') { at = lexSubstitution(text, at + 2, out); wordStart = false; continue }
+    if (c === '<' && next === '<') {
+      if (text[at + 2] === '<') { at += 3; continue }
+      at = heredocOpener(text, at + 2, heredocs, out)
+      continue
+    }
+    if (c === '&' && next === '>') {
+      out?.edits.push([at, at + 1, ' '])
+      at += 2
+      continue
+    }
+    if (c === '>' && next === '&') {
+      if (text[at + 2] === '-') {
+        let start = at
+        while (start > 0 && /\d/.test(text[start - 1])) start--
+        if (start > 0 && !/[\s;&|(]/.test(text[start - 1])) start = at
+        out?.edits.push([start, at + 3, ' '])
+        at += 3
+      } else {
+        if (!/\d/.test(text[at + 2] ?? '')) out?.edits.push([at, at + 2, '>'])
+        at += 2
+      }
+      continue
+    }
+    if (nested) {
+      if (c === '(') depth++
+      else if (c === ')') {
+        if (depth === 0) return at
+        depth--
+      }
+    }
+    wordStart = /[\s;&|()]/.test(c)
+    at++
+  }
+  if (nested) throw UNCLOSED
+  return at
+}
+
+function lexDouble(text, at, out) {
+  const start = at
+  while (at < text.length) {
+    const c = text[at]
+    if (c === '\\') at += 2
+    else if (c === '"') {
+      out?.literals.push(text.slice(start, at))
+      return at + 1
+    } else if (c === '`') at = lexBackquote(text, at + 1, out)
+    else if (c === '$' && text[at + 1] === '(') at = lexSubstitution(text, at + 2, out)
+    else at++
+  }
+  throw UNCLOSED
+}
+
+function lexSubstitution(text, at, out) {
+  const end = lex(text, at, true, null)
+  out?.bodies.push(text.slice(at, end))
+  return end + 1
+}
+
+function lexBackquote(text, at, out) {
+  let body = ''
+  while (at < text.length) {
+    const c = text[at]
+    if (c === '\\' && /[`\\$]/.test(text[at + 1] ?? '')) {
+      body += text[at + 1]
+      at += 2
+    } else if (c === '`') {
+      out?.bodies.push(body)
+      return at + 1
+    } else {
+      body += c
+      at++
+    }
+  }
+  throw UNCLOSED
+}
+
+// A heredoc opener after `<<`: its delimiter word, quoted or not, joins the list whose bodies start
+// at the next newline, and the mark goes in after it.
+function heredocOpener(text, at, heredocs, out) {
+  let dash = false
+  if (text[at] === '-') { dash = true; at++ }
+  while (text[at] === ' ' || text[at] === '\t') at++
+  const start = at
+  while (at < text.length && !/[\s;&|<>()]/.test(text[at])) at++
+  const word = text.slice(start, at)
+  if (word === '') throw UNCLOSED
+  const quoted = /['"\\]/.test(word)
+  heredocs.push({ delimiter: word.replace(/['"\\]/g, ''), quoted, dash })
+  out?.edits.push([at, at, ` ${HEREDOC_MARK}`])
+  return at
+}
+
+// The bodies of the pending heredocs, one after another, each ending at a line that is its
+// delimiter (bash also ends one at the delimiter followed by the `)` of a substitution). A body
+// with an unquoted delimiter expands substitutions, so they are read from it; a quoted one is text.
+function readHeredocs(text, at, heredocs, out) {
+  for (const { delimiter, quoted, dash } of heredocs) {
+    const start = at
+    let end = text.length
+    let resume = text.length
+    while (at < text.length) {
+      const newline = text.indexOf('\n', at)
+      const lineEnd = newline < 0 ? text.length : newline
+      const line = text.slice(at, lineEnd)
+      const stripped = dash ? line.replace(/^\t+/, '') : line
+      if (stripped.startsWith(delimiter) && /^[ \t)]*$/.test(stripped.slice(delimiter.length))) {
+        end = at
+        resume = at + (line.length - stripped.length) + delimiter.length
+        break
+      }
+      at = newline < 0 ? text.length : newline + 1
+    }
+    const body = text.slice(start, end)
+    if (out) {
+      out.literals.push(body)
+      if (!quoted) lexHeredocBody(body, out)
+    }
+    at = resume
+  }
+  return at
+}
+
+function lexHeredocBody(body, out) {
+  let at = 0
+  while (at < body.length) {
+    const c = body[at]
+    if (c === '\\') at += 2
+    else if (c === '`') at = lexBackquote(body, at + 1, out)
+    else if (c === '$' && body[at + 1] === '(') at = lexSubstitution(body, at + 2, out)
+    else at++
+  }
+}
+
+// A segment's words with every redirection and its target removed, or null when a redirection
+// names no target. An operator may stand alone (`> log`), carry its target (`>log`, `2>err`), or
+// follow a word it is joined to (`a.txt>log`); a run of digits before it is the descriptor. A word
+// that holds a quoted string holds no operator: the quotes were masked out of it.
+const REDIRECTION = /<<<|<<-?|<>|<&|>>|>\||>&|>(?!\()|<(?!\()/
+function argvOf(words) {
+  const argv = []
+  for (let at = 0; at < words.length; at++) {
+    const word = words[at]
+    if (word === HEREDOC_MARK) {
+      if (argv.at(-1) === OPAQUE) argv.pop()
+      continue
+    }
+    const match = REDIRECTION.exec(word)
+    if (!match) { argv.push(word); continue }
+    const before = word.slice(0, match.index)
+    if (before !== '' && !/^\d+$/.test(before)) argv.push(before)
+    if (match.index + match[0].length === word.length) {
+      if (at + 1 >= words.length) return null
+      at++
+    }
+  }
+  return argv
+}
+
+// The command in command position of words, past assignments, keywords and listed wrappers:
+// {name, args, runsText}, args being the raw words after it and runsText whether a shell or eval
+// on the way runs text; {opaque: wrapper} when a wrapper's command line is a quoted string; or
+// null when the segment runs no command.
+function commandOf(words) {
+  let at = 0
+  let runsText = false
+  for (;;) {
+    const word = words[at]
+    if (word === undefined) return null
+    const bare = bareWord(word)
+    if (bare === '' || KEYWORDS.has(bare) || ASSIGNMENT.test(bare)) { at++; continue }
+    const name = commandName(word)
+    if (Object.hasOwn(WRAPPERS, name)) {
+      const next = afterOptions(words, at + 1, WRAPPERS[name], name === 'env' ? ENV_COMMAND : null)
+      if (next.opaque) return { opaque: name }
+      if (next.command !== undefined) at = next.command
+      else at = name === 'timeout' ? next.at + 1 : next.at
+      continue
+    }
+    if (name === 'eval') { runsText = true; at++; continue }
+    const runner = RUNNERS.has(name) ? name : name === 'npm' && ['exec', 'x'].includes(bareWord(words[at + 1] ?? '')) ? 'npm exec' : null
+    if (runner) {
+      const next = afterOptions(words, at + (runner === 'npm exec' ? 2 : 1), RUNNER_VALUES, RUNNER_COMMAND)
+      if (next.opaque) return { opaque: runner }
+      if (next.command !== undefined) { at = next.command; continue }
+      if (words[next.at] === undefined) return null
+      words = [packageCommand(words[next.at]), ...words.slice(next.at + 1)]
+      at = 0
+      continue
+    }
+    if (SHELLS.has(name)) {
+      runsText = true
+      const next = shellCommand(words, at + 1)
+      if (next === null) return { name, args: words.slice(at + 1), runsText }
+      at = next
+      continue
+    }
+    return { name, args: words.slice(at + 1), runsText }
+  }
+}
+
+// Past a wrapper's options from at: {at} of the first word that is not an option, {command} of a
+// command-line option's plain value, or {opaque: true} when that value is a quoted string.
+function afterOptions(words, at, takesValue, commandLine) {
+  while (at < words.length) {
+    const word = bareWord(words[at])
+    if (word === '--') return { at: at + 1 }
+    if (!word.startsWith('-') || word === '-') return { at }
+    if (commandLine?.has(word.split('=')[0])) {
+      if (word.includes('=')) return { opaque: true }
+      const value = words[at + 1]
+      if (value === undefined) return { at: at + 1 }
+      return unreadable(value) ? { opaque: true } : { command: at + 1 }
+    }
+    at += takesValue.has(word) ? 2 : 1
+  }
+  return { at }
+}
+
+// Where the command a shell's -c runs starts, or null when the shell runs no plain -c string: a
+// script, stdin, or a quoted string, which segments() and the literal reading take instead.
+function shellCommand(words, at) {
+  let runs = false
+  while (at < words.length) {
+    const word = bareWord(words[at])
+    if (word === '--') { at++; break }
+    if (!/^[-+]/.test(word)) break
+    if (['-o', '+o', '-O', '+O'].includes(word)) { at += 2; continue }
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word)) runs = true
+    at++
+  }
+  return runs && words[at] !== undefined && !unreadable(words[at]) ? at : null
+}
+
+// ----- git
+
+const GIT_READS = new Set([
+  'status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'cat-file', 'blame', 'grep', 'describe',
+  'merge-base', 'rev-list', 'shortlog', 'show-ref', 'for-each-ref', 'name-rev',
+])
+// What a writer seat runs beyond the reads, and only as `git -C <worktree>`.
+const GIT_WRITES = new Set(['add', 'rm', 'mv', 'commit', 'restore', 'stash', 'apply'])
+const READ_LIST = 'status, log, diff, show, rev-parse, ls-files, ls-tree, cat-file, blame, grep, describe, merge-base, rev-list, shortlog, show-ref, for-each-ref, name-rev, a branch, tag or remote listing, config --get or --list, worktree list, stash list and reflog'
 
 function gitProblem(record, args, gitEnv) {
   const dirs = []
@@ -305,10 +661,12 @@ function gitProblem(record, args, gitEnv) {
   const sub = bareWord(args[at])
   const rest = args.slice(at + 1).map(bareWord)
   if (sub === 'push') return 'flow seat (no git push): a seat never pushes; the parent publishes what the seat committed.'
-  const writes = GIT_WRITES.has(sub) || (sub === 'branch' && branchWrites(rest)) || (sub === 'config' && configWrites(rest))
-  if (!writes) return null
+  if (gitReads(sub, rest)) return null
   if (record.access !== 'workspace-write') {
-    return `flow seat (no git writes): \`git ${sub}\` writes to the repository, and this ${record.access} seat writes nothing. Reads such as git status, log, diff and show are allowed.`
+    return `flow seat (git read allowlist): \`git ${sub}\` is an unknown or writing git subcommand, and this ${record.access} seat writes nothing. The reads allowed are git ${READ_LIST}.`
+  }
+  if (!GIT_WRITES.has(sub)) {
+    return `flow seat (git write allowlist): \`git ${sub}\` is neither a git read nor one of a writer seat's writes, add, rm, mv, commit, restore, stash and apply, so it is denied. Branches, configuration, remotes, worktrees and clones are the parent's.`
   }
   const worktree = realWorktree(record)
   const form = sub === 'commit' ? `git -C ${worktree} commit -m <message> -- <paths>` : `git -C ${worktree} ${sub} ...`
@@ -316,54 +674,81 @@ function gitProblem(record, args, gitEnv) {
     return 'flow seat (git -C the worktree): this seat\'s worktree path could not be resolved to a plain shell word, so no git write is allowed.'
   }
   if (dirs.length !== 1 || dirs[0] !== worktree || override) {
-    return `flow seat (git -C the worktree): a git write in this seat runs only as \`${form}\`, with the worktree path written out and no --git-dir, --work-tree, second -C, -c or GIT_DIR-style variable.`
+    return `flow seat (git -C the worktree): a git write in this seat runs only as \`${form}\`, with the worktree path written out and no --git-dir, --work-tree, second -C, -c or GIT_DIR-style variable. Reads (git ${READ_LIST}) run bare.`
+  }
+  if (sub === 'add' && addsAll(rest)) {
+    return `flow seat (add by path): a seat stages only the paths it names, as \`git -C ${worktree} add -- <paths>\`; -A, --all and --no-ignore-removal are denied.`
   }
   if (sub === 'commit' && !commitNamesPaths(rest)) {
-    return `flow seat (commit by path): a seat commits only the paths it names, as \`${form}\`; -a, --all, --pathspec-from-file and a commit of the whole index are denied.`
+    return `flow seat (commit by path): a seat commits only the paths it names, as \`${form}\`; -a, --all, -i, --include, --pathspec-from-file and a commit of the whole index are denied.`
   }
   return null
 }
 
-const BRANCH_WRITE_LONG = new Set(['--delete', '--move'])
-function branchWrites(rest) {
-  return rest.some((word) => BRANCH_WRITE_LONG.has(word) || /^-[A-Za-z]*[dDmM][A-Za-z]*$/.test(word))
+// Whether `git <sub> <rest>` only reads. A subcommand off the list is a write, whatever it does.
+function gitReads(sub, rest) {
+  if (GIT_READS.has(sub)) return true
+  switch (sub) {
+    case 'branch': return branchReads(rest)
+    case 'tag': return rest.every((word) => word === '-l' || word === '--list' || !word.startsWith('-')) &&
+      (rest.length === 0 || rest.includes('-l') || rest.includes('--list'))
+    case 'remote': return rest.length === 0 || (rest.length === 1 && ['-v', '--verbose'].includes(rest[0]))
+    case 'config': return rest.some((word) => CONFIG_READS.has(word)) && rest.every((word) => CONFIG_READS.has(word) || !word.startsWith('-'))
+    case 'worktree':
+    case 'stash': return rest[0] === 'list'
+    case 'reflog': return rest.length === 0 || rest[0] === 'show' || rest[0].startsWith('-')
+    default: return false
+  }
 }
 
-const CONFIG_WRITE_FLAGS = new Set(['--unset', '--unset-all', '--add', '--replace-all', '--rename-section', '--remove-section', '-e', '--edit'])
-const CONFIG_WRITE_VERBS = new Set(['set', 'unset', 'rename-section', 'remove-section', 'edit'])
-const CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value', '--url'])
-// `config` writes when it sets, unsets or edits: a write flag or verb, or a key and a value.
-function configWrites(rest) {
-  const positional = []
-  let reads = false
+const CONFIG_READS = new Set(['--get', '--get-all', '--list', '-l'])
+const BRANCH_LIST = new Set(['--list', '-l', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--show-current'])
+const BRANCH_COMMIT = new Set(['--contains', '--merged', '--no-merged'])
+// A branch listing: listing flags alone, a commit after --contains, --merged or --no-merged, and
+// patterns only beside --list or -l. A bare name creates a branch.
+function branchReads(rest) {
+  const listing = rest.includes('--list') || rest.includes('-l')
   for (let at = 0; at < rest.length; at++) {
     const word = rest[at]
-    if (CONFIG_WRITE_FLAGS.has(word)) return true
-    if (CONFIG_VALUE_FLAGS.has(word)) at++
-    else if (word.startsWith('--get') || word === '--list' || word === '-l') reads = true
-    else if (!word.startsWith('-')) positional.push(word)
+    if (BRANCH_LIST.has(word) || /^--(?:contains|merged|no-merged)=/.test(word)) continue
+    if (BRANCH_COMMIT.has(word)) {
+      if (rest[at + 1] !== undefined && !rest[at + 1].startsWith('-')) at++
+      continue
+    }
+    if (word.startsWith('-') || !listing) return false
   }
-  if (CONFIG_WRITE_VERBS.has(positional[0])) return true
-  if (reads || positional[0] === 'get' || positional[0] === 'list') return false
-  return positional.length >= 2
+  return true
+}
+
+// git takes any unambiguous prefix of a long option, so `--incl` is --include. A prefix of three
+// characters or more stands for the option here, ambiguous ones included, which git refuses anyway.
+const abbreviates = (word, option) => word.length >= 3 && option.startsWith(word.split('=')[0])
+
+// True when `git add` stages everything rather than the paths it names.
+function addsAll(rest) {
+  const end = rest.indexOf('--')
+  return (end < 0 ? rest : rest.slice(0, end)).some((word) =>
+    (word.startsWith('--') && (abbreviates(word, '--all') || abbreviates(word, '--no-ignore-removal'))) || /^-[A-Za-z]*A[A-Za-z]*$/.test(word))
 }
 
 const COMMIT_VALUE_SHORT = new Set(['m', 'F', 'C', 'c', 't'])
 const COMMIT_VALUE_LONG = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--author', '--date', '--fixup', '--squash', '--template', '--cleanup', '--trailer'])
-// True when the commit names at least one path on its command line and stages nothing beyond them.
+const COMMIT_WHOLE_INDEX = ['--all', '--include', '--pathspec-from-file']
+// True when the commit names at least one path on its command line and commits nothing beyond them:
+// no -a or --all, and no -i or --include, which commits the index as staged beside the paths.
 function commitNamesPaths(rest) {
   let paths = 0
   for (let at = 0; at < rest.length; at++) {
     const word = rest[at]
     if (word === '--') { paths += rest.length - at - 1; break }
-    if (word === '--all' || word.startsWith('--pathspec-from-file')) return false
     if (word.startsWith('--')) {
-      if (COMMIT_VALUE_LONG.has(word)) at++
+      if (COMMIT_WHOLE_INDEX.some((option) => abbreviates(word, option))) return false
+      if (!word.includes('=') && [...COMMIT_VALUE_LONG].some((option) => abbreviates(word, option))) at++
       continue
     }
     if (word.startsWith('-') && word.length > 1) {
       for (let i = 1; i < word.length; i++) {
-        if (word[i] === 'a') return false
+        if (word[i] === 'a' || word[i] === 'i') return false
         if (COMMIT_VALUE_SHORT.has(word[i])) {
           if (i === word.length - 1) at++
           break
@@ -376,29 +761,37 @@ function commitNamesPaths(rest) {
   return paths > 0
 }
 
+// ----- gh
+
+const GH_GROUPS = new Set(['pr', 'issue', 'release', 'repo', 'run', 'workflow', 'label', 'gist'])
+const GH_READS = new Set(['view', 'list', 'status', 'diff', 'checks', 'search'])
+// `gh search` reads by what it searches for, so its verbs are the kinds of thing searched.
+const GH_SEARCHES = new Set(['code', 'commits', 'issues', 'prs', 'repos'])
+const GH_DENIED = (what) => `flow seat (gh reads only): \`gh ${what}\` is not one of the gh reads a seat runs, and a seat changes nothing on GitHub. The reads are gh pr, issue, release, repo, run, workflow, label or gist with view, list, status, diff, checks or search; gh search; gh api as a GET; gh auth status; gh --version. Put anything else in your report for the parent.`
+
 function ghProblem(args) {
+  if (args.length === 1 && bareWord(args[0]) === '--version') return null
   const verbAfter = (from) => {
     let at = from
     while (at < args.length && args[at].startsWith('-')) at += args[at] === '-R' || args[at] === '--repo' ? 2 : 1
     return at
   }
   const groupAt = verbAfter(0)
-  if (groupAt >= args.length) return null
-  if (unreadable(args[groupAt])) return 'flow seat (no gh mutations): the gh command is quoted or expanded at run time, so this guard cannot read it and the command is denied. Write it plainly.'
+  if (groupAt >= args.length) return GH_DENIED(args.map(bareWord).join(' ').slice(0, 80))
+  if (unreadable(args[groupAt])) return GH_DENIED('<unreadable>')
   const group = bareWord(args[groupAt])
   if (group === 'api') return ghApiProblem(args.slice(groupAt + 1))
-  if (!GH_MUTATIONS[group]) return null
   const verbAt = verbAfter(groupAt + 1)
-  if (verbAt >= args.length) return null
+  if (verbAt >= args.length) return GH_DENIED(group)
+  if (unreadable(args[verbAt])) return GH_DENIED(`${group} <unreadable>`)
   const verb = bareWord(args[verbAt])
-  if (unreadable(args[verbAt]) || GH_MUTATIONS[group].has(verb)) {
-    return `flow seat (no gh mutations): \`gh ${group} ${unreadable(args[verbAt]) ? '<unreadable>' : verb}\` changes GitHub, and a seat changes nothing there. Put it in your report for the parent.`
-  }
-  return null
+  const reads = (group === 'auth' && verb === 'status') || (group === 'search' && GH_SEARCHES.has(verb)) ||
+    (GH_GROUPS.has(group) && GH_READS.has(verb))
+  return reads ? null : GH_DENIED(`${group} ${verb}`)
 }
 
 function ghApiProblem(args) {
-  const denied = 'flow seat (no gh mutations): this `gh api` call can change GitHub (a method other than GET, or -f, -F, --field, --raw-field or --input), and a seat changes nothing there. Read with a plain `gh api <endpoint>` GET.'
+  const denied = 'flow seat (gh reads only): this `gh api` call can change GitHub (a method other than GET, or -f, -F, --field, --raw-field or --input), and a seat changes nothing there. Read with a plain `gh api <endpoint>` GET.'
   for (let at = 0; at < args.length; at++) {
     const word = args[at]
     let method = null

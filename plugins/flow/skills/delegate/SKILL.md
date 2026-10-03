@@ -134,7 +134,7 @@ Call `delegate_task` with these fields:
 
 Your own PreToolUse hook admits a tagged call only when its `runtimeMode`, provider and model equal the record and the record has not been admitted before.
 
-The child's hooks then hold the seat. UserPromptSubmit binds the child's session to the record and tells it that the Seat Contract governs it. PreToolUse holds it to its access: no spawns, no MCP tool outside a short read-only allowlist, no `git push`, no `gh` mutation and no model CLI, edits only inside a writer's worktree, and a writer's git writes only as `git -C <worktree>`. Stop checks the final message and blocks the child, at most 3 times, with the problems it found.
+The child's hooks then hold the seat. UserPromptSubmit binds the child's session to the record and tells it that the Seat Contract governs it. PreToolUse holds it to its access: no spawns, no MCP tool outside a short read-only allowlist, no model CLI, `gh` reads only, git reads only, and edits only inside a writer's worktree. A writer also runs `git add`, `rm`, `mv`, `commit`, `restore`, `stash` and `apply`, each only as `git -C <worktree>`, and every seat is denied `git push`. Stop checks the final message and blocks the child, at most 3 times, with the problems it found.
 
 ### The result envelope
 
