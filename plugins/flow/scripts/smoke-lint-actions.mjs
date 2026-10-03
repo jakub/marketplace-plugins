@@ -51,7 +51,23 @@ if (group === 'api') {
     if (st.upstreamOnRead?.head === head && st.upstreamOnRead.read === st.upstreamReads[head]) (st.upstreamPrs[head] ||= []).push(st.upstreamOnRead.pr)
     out([(st.upstreamPrs || {})[head] || []])
   }
+  if (parent && path === parent.slice(0, -'&head='.length) + '&per_page=100') {
+    // The parent's open pull requests in bulk, for the survey, labelled <owner>:<branch>.
+    out([Object.entries(st.upstreamPrs || {}).flatMap(([label, list]) => list.map((p) => ({ number: p.number, head: { label, ref: label.split(':')[1] } })))])
+  }
   if (!path.startsWith('repos/jakub/demo/')) fail('api off the pin: ' + argv.join(' '))
+  if (path.startsWith('repos/jakub/demo/pulls?state=all')) {
+    // Every pull request in the REST shape, split over two pages: st.prs by head, then st.basePrs
+    // as open children of their base.
+    if (st.pullsFail) fail('the pull requests could not be read')
+    const all = [
+      ...Object.entries(st.prs).flatMap(([head, list]) => list.map((p) => ({ number: p.number, state: p.state === 'OPEN' ? 'open' : 'closed', merged_at: p.state === 'MERGED' ? '2026-09-01T00:00:00Z' : null,
+        head: { ref: head, sha: p.headRefOid, repo: p.isCrossRepository === null ? null : { full_name: p.isCrossRepository ? 'someone/fork' : 'jakub/demo' } }, base: { ref: st.defaultBranch, repo: { full_name: 'jakub/demo' } } }))),
+      ...Object.entries(st.basePrs || {}).flatMap(([base, list]) => list.map((p) => ({ number: p.number, state: 'open', merged_at: null,
+        head: { ref: 'child-of-' + base, sha: 'c'.repeat(40), repo: { full_name: 'jakub/demo' } }, base: { ref: base, repo: { full_name: 'jakub/demo' } } }))),
+    ]
+    out([all.slice(0, Math.ceil(all.length / 2)), all.slice(Math.ceil(all.length / 2))])
+  }
   if (path.startsWith('repos/jakub/demo/pulls?state=open')) {
     // An issue run that takes the claim tag while the lint is still scanning.
     if (st.claimDuringScan) { originGit('update-ref', 'refs/tags/flow-claim-issue-7', originGit('rev-parse', 'refs/heads/main')); delete st.claimDuringScan }
@@ -683,6 +699,46 @@ console.log('\nsurvey reads what the lint judges')
     JSON.stringify(remote['feat/merged'].trackedBy) === '["feat/wt"]' && remote['feat/merged'].dead?.includes('#4'), JSON.stringify(s?.remoteBranches))
   check('nothing was edited', edits(r).length === 0 && !r.st.unpinned, JSON.stringify(r.st.calls))
   check('nothing on origin moved: every ref at the same object', originRefs() === refsBefore && refsBefore.includes(`${mergedTip}\trefs/heads/feat/merged`), `${refsBefore}\n---\n${originRefs()}`)
+}
+
+console.log('\nthe survey reads pull requests once, however many branches there are')
+{
+  // The same world shape with 1 and with 20 branches on origin, each with a merged pull request,
+  // and origin a fork: the survey's gh calls must not grow with the branch count.
+  const surveyed = (count) => {
+    const w = makeWorld({ parent: { name: 'demo', owner: { login: 'upstream' } }, upstreamPrs: {} })
+    const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+    for (let i = 0; i < count; i += 1) {
+      const c = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', `work ${i}`)
+      w.git(w.repo, 'push', '-q', 'origin', `${c}:refs/heads/feat/many-${i}`)
+      st.prs[`feat/many-${i}`] = [{ number: 100 + i, state: 'MERGED', headRefOid: c, isCrossRepository: false }]
+    }
+    writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
+    return run(w, ['survey', w.repo])
+  }
+  const one = surveyed(1)
+  const twenty = surveyed(20)
+  check('the survey of 20 branches reads them all, each dead by its merged pull request', twenty.code === 0 && twenty.json?.remoteBranches?.length === 20 &&
+    twenty.json.remoteBranches.every((b) => b.dead?.includes('MERGED')), `${twenty.stderr} ${JSON.stringify(twenty.json?.remoteBranches?.slice(0, 2))}`)
+  check('and makes as many gh calls as the survey of one', one.st.calls.length === twenty.st.calls.length, `${one.st.calls.length} vs ${twenty.st.calls.length}`)
+  check('none of them a per-branch pr list or parent head query', !twenty.st.calls.some((c) => (c[0] === 'pr' && c[1] === 'list') || String(c.at(-1)).includes('&head=')), JSON.stringify(twenty.st.calls))
+}
+{
+  // The bulk read maps REST to gh pr list's shape: a merged pull request whose head repository
+  // GitHub no longer names, a deleted fork, is no warrant; and the parent's bulk read is keyed by
+  // the owner GitHub names now, not the one origin's URL still carries.
+  const w = makeWorld({ parent: { name: 'demo', owner: { login: 'upstream' } }, nameWithOwner: 'newowner/demo', upstreamPrs: { 'newowner:feat/moved-up': [{ number: 61 }] } })
+  const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  for (const [branch, number, cross] of [['feat/gone-fork', 60, null], ['feat/moved-up', 62, false]]) {
+    const c = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', branch)
+    w.git(w.repo, 'push', '-q', 'origin', `${c}:refs/heads/${branch}`)
+    st.prs[branch] = [{ number, state: 'MERGED', headRefOid: c, isCrossRepository: cross }]
+  }
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
+  const r = run(w, ['survey', w.repo])
+  const row = (name) => r.json?.remoteBranches?.find((b) => b.name === name)
+  check('a merged pull request from a deleted fork is no warrant in the survey', r.code === 0 && row('feat/gone-fork')?.dead === null, `${r.stderr} ${JSON.stringify(r.json?.remoteBranches)}`)
+  check('the parent\'s bulk read finds an open pull request under GitHub\'s owner name', row('feat/moved-up')?.openPr === 61 && row('feat/moved-up').openPrRepo === 'upstream/demo' && row('feat/moved-up').dead === null, JSON.stringify(row('feat/moved-up')))
 }
 
 rmSync(tmp, { recursive: true, force: true })

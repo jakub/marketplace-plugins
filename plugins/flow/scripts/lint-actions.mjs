@@ -16,8 +16,8 @@
 // can narrow, so a verb that deletes then fetches every origin branch it judges against by name,
 // with forced refspecs, and judges only those. Every gh call is pinned to the repository origin
 // parses to, and every verb but the survey refuses when GitHub names that repository otherwise, as
-// it does after a transfer or a rename. Every mutation is read back, and nothing is undone: a label present after an edit is
-// no proof this run put it there. A relabel a claim could race holds the issue's claim tag on
+// it does after a transfer or a rename. Every mutation is read back, and nothing is undone: a
+// label present after an edit is no proof this run put it there. A relabel a claim could race holds the issue's claim tag on
 // origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
 // delete-remote-branch needs origin to fetch from and push to one URL, and deletes only at the tip
 // it judged dead, through a lease origin checks at delete time, so a branch pushed to after the
@@ -127,9 +127,13 @@ function run({ action, repoArg, target, rest, env }) {
     return value.flat()
   }
   const PR_LIMIT = 1000
+  // The survey's index of every pull request, read once (surveyIndex). Only the survey sets it,
+  // so a verb always reads per branch, and re-reads before it acts.
+  let bulk = null
   const prCache = new Map()
   // fresh skips the cache, for the re-read straight before a delete.
   const prsFor = (branch, { fresh = false } = {}) => {
+    if (!fresh && bulk !== null) return bulk.byHead.get(branch) ?? []
     if (fresh || !prCache.has(branch)) {
       // gh pr list fetches 30 by default. An explicit limit, and a full answer read as possibly
       // truncated, keep a destructive decision from resting on a partial list.
@@ -144,6 +148,7 @@ function run({ action, repoArg, target, rest, env }) {
   // when the branch is deleted. fresh skips the cache, like prsFor's.
   const baseCache = new Map()
   const basedOn = (branch, { fresh = false } = {}) => {
+    if (!fresh && bulk !== null) return bulk.openByBase.get(branch) ?? []
     if (fresh || !baseCache.has(branch)) {
       const list = gh(['pr', 'list', '--repo', id.full, '--base', branch, '--state', 'open', '--limit', String(PR_LIMIT), '--json', 'number'], `gh pr list --base ${branch}`)
       if (!Array.isArray(list)) refuse(`gh pr list --base ${branch} did not answer a list`)
@@ -167,6 +172,7 @@ function run({ action, repoArg, target, rest, env }) {
   const upstreamOpenOf = (branch, { fresh = false } = {}) => {
     const parent = parentOf()
     if (parent === null) return null
+    if (!fresh && bulk !== null) return bulk.parentOpen.get(`${canonicalName().split('/')[0].toLowerCase()}:${branch}`) ?? null
     if (fresh || !upstreamCache.has(branch)) {
       const head = encodeURIComponent(`${canonicalName().split('/')[0]}:${branch}`)
       const open = pages(`repos/${parent}/pulls?state=open&head=${head}&per_page=100`, `gh api over ${parent}'s open pull requests from ${branch}`)[0] ?? null
@@ -541,6 +547,36 @@ function run({ action, repoArg, target, rest, env }) {
   }
 
   // ---- survey: read-only, and every read that fails refuses the whole survey.
+  // One paginated read of every pull request, and one of the parent's open ones, stand in for the
+  // per-branch reads, so the survey's cost does not grow with the branch count. The REST shape is
+  // mapped to gh pr list's: MERGED when merged_at is set, and isCrossRepository when the head lives
+  // in another repository than the base, or in one GitHub no longer names, as a deleted fork does.
+  if (id !== null) {
+    const byHead = new Map()
+    const openByBase = new Map()
+    for (const p of pages(`repos/${id.owner}/${id.repo}/pulls?state=all&per_page=100`, 'gh api over the pull requests')) {
+      if (!Number.isInteger(p?.number) || typeof p?.head?.ref !== 'string' || typeof p?.base?.ref !== 'string' || !['open', 'closed'].includes(p?.state)) {
+        refuse('gh api over the pull requests answered one without a number, a head, a base and a state')
+      }
+      const [headRepo, baseRepo] = [p.head.repo?.full_name, p.base.repo?.full_name]
+      const isCrossRepository = !(typeof headRepo === 'string' && typeof baseRepo === 'string' && headRepo.toLowerCase() === baseRepo.toLowerCase())
+      const state = p.merged_at ? 'MERGED' : p.state === 'open' ? 'OPEN' : 'CLOSED'
+      byHead.set(p.head.ref, [...(byHead.get(p.head.ref) ?? []), { number: p.number, state, headRefOid: p.head.sha ?? null, isCrossRepository }])
+      if (state === 'OPEN') openByBase.set(p.base.ref, [...(openByBase.get(p.base.ref) ?? []), { number: p.number }])
+    }
+    const parentOpen = new Map()
+    const parent = parentOf()
+    if (parent !== null) {
+      for (const p of pages(`repos/${parent}/pulls?state=open&per_page=100`, `gh api over ${parent}'s open pull requests`)) {
+        const label = p?.head?.label
+        if (!Number.isInteger(p?.number) || typeof label !== 'string' || !label.includes(':')) refuse(`gh api over ${parent}'s open pull requests answered one without a number and a head label`)
+        const at = label.indexOf(':')
+        const key = `${label.slice(0, at).toLowerCase()}:${label.slice(at + 1)}`
+        if (!parentOpen.has(key)) parentOpen.set(key, { number: p.number, repo: parent })
+      }
+    }
+    bulk = { byHead, openByBase, parentOpen }
+  }
   const all = worktrees()
   const branchLines = gitIn(repo, ['for-each-ref', '--format=%(refname:short)%09%(objectname)%09%(upstream:short)%09%(upstream:track)', 'refs/heads'])
   if (branchLines === null) refuse('git for-each-ref failed')
