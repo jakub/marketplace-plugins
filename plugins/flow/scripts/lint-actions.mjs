@@ -20,7 +20,9 @@
 // origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
 // delete-remote-branch needs origin to fetch from and push to one URL, and deletes only at the tip
 // it judged dead, through a lease origin checks at delete time, so a branch pushed to after the
-// judgment is never deleted. The land stage retires a pull request's head branch through it too.
+// judgment is never deleted. Its known limit: GitHub has no lock, so a pull request opened in the
+// moment between its last open-PR read and origin applying the delete loses its head branch. The
+// land stage retires a pull request's head branch through it too.
 // stdout is one JSON line {action, repo, target, ok, reason, ...}; exit 0 when the action happened
 // (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
 // regex, which is why the relabel reason is a single token.
@@ -118,8 +120,9 @@ function run({ action, repoArg, target, rest, env }) {
   }
   const PR_LIMIT = 1000
   const prCache = new Map()
-  const prsFor = (branch) => {
-    if (!prCache.has(branch)) {
+  // fresh skips the cache, for the re-read straight before a delete.
+  const prsFor = (branch, { fresh = false } = {}) => {
+    if (fresh || !prCache.has(branch)) {
       // gh pr list fetches 30 by default. An explicit limit, and a full answer read as possibly
       // truncated, keep a destructive decision from resting on a partial list.
       const list = gh(['pr', 'list', '--repo', id.full, '--head', branch, '--state', 'all', '--limit', String(PR_LIMIT), '--json', 'number,state,headRefOid,isCrossRepository'], `gh pr list --head ${branch}`)
@@ -276,6 +279,13 @@ function run({ action, repoArg, target, rest, env }) {
     if (tip === null) refuse(`${target} does not exist on origin`)
     refuseOpen(target)
     const why = dead(target, tip)
+    // GitHub has no lock to hold across the delete, and the lease below checks only the tip, so the
+    // open pull request read is repeated, uncached, straight before the push. The window left is
+    // from this read to origin applying the delete: a pull request opened or reopened inside it
+    // loses its head branch, and GitHub closes it. The reason below names the tip, so the branch
+    // can be pushed back.
+    const late = prsFor(target, { fresh: true }).find((p) => p.state === 'OPEN')
+    if (late) refuse(`${target} gained an open pull request (#${late.number}) while it was being judged`)
     // Compare-and-delete: origin applies the delete only while the branch is still at the tip
     // every check above was about, and rejects it as stale otherwise.
     const pushed = execCapture('git', ['-C', repo, 'push', `--force-with-lease=${ref}:${tip}`, 'origin', `:${ref}`], { timeoutMs: 60_000, env: gitEnv })

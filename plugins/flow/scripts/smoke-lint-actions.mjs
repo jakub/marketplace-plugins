@@ -63,6 +63,9 @@ if (group === 'pr' && verb === 'list') {
   // Each pull request carries only the fields asked for, the way gh answers, so a field the
   // executor forgets to request reads as missing here too.
   const fields = String(at('--json')).split(',')
+  // A pull request opened on a branch at its Nth read, as if between the executor's reads.
+  st.prReads = { ...st.prReads, [at('--head')]: (st.prReads?.[at('--head')] ?? 0) + 1 }
+  if (st.openOnRead?.head === at('--head') && st.openOnRead.read === st.prReads[at('--head')]) (st.prs[at('--head')] ||= []).push(st.openOnRead.pr)
   out((st.prs[at('--head')] || []).slice(0, Number(at('--limit') ?? 30)).map((p) => Object.fromEntries(fields.filter((f) => f in p).map((f) => [f, p[f]]))))
 }
 if (group === 'issue' && verb === 'view') out(st.issue)
@@ -312,6 +315,17 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   const r = del('feat/raced')
   refused('a branch pushed to between the judgment and the delete', r, 'origin refused the delete')
   check('and origin keeps the new work the lease protected', onOrigin('feat/raced') === newer, String(onOrigin('feat/raced')))
+
+  // A pull request opened after the judgment's read and before the push: the lease cannot see it,
+  // the uncached re-read straight before the push does.
+  const late = pushWork('feat/late', 'merged, then proposed again')
+  setState((st) => {
+    st.prs['feat/late'] = [{ number: 17, state: 'MERGED', headRefOid: late, isCrossRepository: false }]
+    st.openOnRead = { head: 'feat/late', read: 2, pr: { number: 18, state: 'OPEN', headRefOid: late, isCrossRepository: false } }
+  })
+  const lateRun = del('feat/late')
+  refused('a pull request opened between the judgment and the push', lateRun, '#18')
+  check('and the branch is still on origin, after two reads of its pull requests', onOrigin('feat/late') === late && lateRun.st.prReads['feat/late'] === 2, JSON.stringify(lateRun.st.prReads))
 
   // Reads go to origin's fetch URL and pushes to its push URL: a delete there would never read back.
   const split = makeWorld()
