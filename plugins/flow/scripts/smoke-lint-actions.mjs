@@ -263,10 +263,30 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
     m.code === 0 && m.json?.reason?.includes('#5') && onOrigin('feat/merged') === null, `${JSON.stringify(m.json)} ${m.stderr}`)
   check('and no gh call off the pin', !m.st.unpinned, JSON.stringify(m.st.calls))
 
+  // Ancestry is no warrant on origin: a release branch behind main, or a run branch claimed a
+  // moment ago at main's tip, has its tip in main and is alive.
   w.git(w.repo, 'push', '-q', 'origin', `${w.tip}:refs/heads/feat/in-main`)
-  const a = del('feat/in-main')
-  check('a branch whose tip is in origin/main is deleted on origin with no pull request at all',
-    a.code === 0 && a.json?.reason?.includes('origin/main') && onOrigin('feat/in-main') === null, `${JSON.stringify(a.json)} ${a.stderr}`)
+  refused('a branch whose tip is in origin/main, with no pull request', del('feat/in-main'), 'ancestry is no warrant')
+  check('and it is still on origin', onOrigin('feat/in-main') === w.tip)
+  const claimed = join(w.workspace, 'claimed')
+  w.git(w.repo, 'worktree', 'add', '-q', claimed, '-b', 'feat/issue-7-just-claimed', w.tip)
+  w.git(claimed, 'push', '-q', 'origin', 'feat/issue-7-just-claimed')
+  refused('a just-claimed branch at main\'s tip with a worktree here', del('feat/issue-7-just-claimed'), 'the worktree')
+  check('and the claimed branch is still on origin', onOrigin('feat/issue-7-just-claimed') === w.tip)
+  // The hold, apart from the warrant: a merged pull request at the tip, and a local branch here.
+  const kept = pushWork('feat/kept-here', 'merged, still checked out locally')
+  w.git(w.repo, 'branch', 'feat/kept-here', kept)
+  setState((st) => { st.prs['feat/kept-here'] = [{ number: 19, state: 'MERGED', headRefOid: kept, isCrossRepository: false }] })
+  refused('a merged branch that a local branch here still holds', del('feat/kept-here'), 'the local branch feat/kept-here')
+  check('and the held branch is still on origin', onOrigin('feat/kept-here') === kept)
+  // A worktree that takes the branch while GitHub is being read: the hold is checked again before the push.
+  const taken = pushWork('feat/taken-late', 'merged, then checked out here')
+  setState((st) => {
+    st.prs['feat/taken-late'] = [{ number: 20, state: 'MERGED', headRefOid: taken, isCrossRepository: false }]
+    st.checkoutDuringRead = ['-C', w.repo, 'worktree', 'add', '-q', join(w.workspace, 'taken-late'), '-b', 'feat/taken-late', taken]
+  })
+  refused('a branch a worktree here took while it was being judged', del('feat/taken-late'), 'since it was judged')
+  check('and the taken branch is still on origin', onOrigin('feat/taken-late') === taken)
 
   const open = pushWork('feat/open', 'open work')
   setState((st) => { st.prs['feat/open'] = [{ number: 11, state: 'MERGED', headRefOid: open, isCrossRepository: false }, { number: 12, state: 'OPEN', headRefOid: open, isCrossRepository: false }] })
@@ -290,9 +310,9 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   // A fork's pull request from a branch of the same name, closed at this exact tip: gh pr list
   // --head lists it, and it is no warrant for the branch here, on origin or local.
   const forked = pushWork('feat/forked', 'live work a fork also proposed')
-  w.git(w.repo, 'branch', 'feat/forked', forked)
   setState((st) => { st.prs['feat/forked'] = [{ number: 14, state: 'CLOSED', headRefOid: forked, isCrossRepository: true }] })
   refused('a closed fork pull request at the exact tip, for delete-remote-branch', del('feat/forked'), 'not shown dead')
+  w.git(w.repo, 'branch', 'feat/forked', forked)
   refused('a closed fork pull request at the exact tip, for delete-branch', run(w, ['delete-branch', w.repo, 'feat/forked']), 'not shown dead')
   check('and the branch is still on origin and here', onOrigin('feat/forked') === forked &&
     spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/forked']).status === 0)
@@ -354,13 +374,10 @@ console.log('\na clone whose fetch refspec skips main judges against origin\'s r
   const gone = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'rewound off main')
   w.git(w.repo, 'push', '-q', 'origin', `${gone}:refs/heads/main`)
   w.git(w.repo, 'fetch', '-q', 'origin')
-  w.git(w.repo, 'push', '-q', 'origin', `${gone}:refs/heads/feat/rewound`)
   w.git(w.repo, 'branch', 'feat/rewound-local', gone)
   w.git(w.origin, 'update-ref', 'refs/heads/main', w.tip)
   w.git(w.repo, 'config', 'remote.origin.fetch', '+refs/heads/feat/*:refs/remotes/origin/feat/*')
   check('the setup: the clone\'s origin/main is stale and holds the commit', w.git(w.repo, 'rev-parse', 'refs/remotes/origin/main') === gone)
-  refused('delete-remote-branch on a tip only the stale origin/main holds', run(w, ['delete-remote-branch', w.repo, 'feat/rewound']), 'not shown dead')
-  check('and the branch is still on origin', spawnSync('git', ['--git-dir', w.origin, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/rewound'], { encoding: 'utf8' }).stdout.trim() === gone)
   refused('delete-branch on a tip only the stale origin/main holds', run(w, ['delete-branch', w.repo, 'feat/rewound-local']), 'not shown dead')
   check('and the local branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/rewound-local']).status === 0)
 }
@@ -442,11 +459,12 @@ console.log('\nsurvey reads what the lint judges')
   w.git(w.repo, 'worktree', 'add', '-q', join(w.workspace, 'wt'), '-b', 'feat/wt')
   const work = (msg) => w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', msg)
   const [mergedTip, openTip, spikeTip] = [work('merged'), work('open'), work('spike')]
-  for (const [ref, sha] of [['feat/merged', mergedTip], ['feat/open', openTip], ['feat/spike', spikeTip], ['feat/in-main', w.tip], ['flow-evidence', w.tip]]) {
+  for (const [ref, sha] of [['feat/merged', mergedTip], ['feat/open', openTip], ['feat/spike', spikeTip], ['feat/in-main', w.tip], ['feat/held', mergedTip], ['flow-evidence', w.tip]]) {
     w.git(w.repo, 'push', '-q', 'origin', `${sha}:refs/heads/${ref}`)
   }
   const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
-  Object.assign(st.prs, { 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip, isCrossRepository: false }] })
+  w.git(w.repo, 'branch', 'feat/held', mergedTip)
+  Object.assign(st.prs, { 'feat/held': [{ number: 6, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip, isCrossRepository: false }] })
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
   const originRefs = () => execFileSync('git', ['ls-remote', w.origin], { encoding: 'utf8' })
   const refsBefore = originRefs()
@@ -463,10 +481,11 @@ console.log('\nsurvey reads what the lint judges')
   const flake = (entry) => s?.flakes?.entries?.find((e) => e.entry === entry)
   check('known flakes against the last runs', flake('e2e')?.runsSeen === 2 && flake('e2e')?.runsFailed === 1 && flake('unit:test_x')?.check === 'unit' && flake('gone-check')?.runsSeen === 0, JSON.stringify(s?.flakes))
   const remote = Object.fromEntries((s?.remoteBranches ?? []).map((b) => [b.name, b]))
-  check('origin\'s branches without the default or the protected ones', Object.keys(remote).sort().join() === 'feat/in-main,feat/merged,feat/open,feat/spike', JSON.stringify(s?.remoteBranches))
+  check('origin\'s branches without the default or the protected ones', Object.keys(remote).sort().join() === 'feat/held,feat/in-main,feat/merged,feat/open,feat/spike', JSON.stringify(s?.remoteBranches))
   check('each with its tip, its open pull request and why it is dead, or null', remote['feat/merged']?.tip === mergedTip && remote['feat/merged'].openPr === null && remote['feat/merged'].dead?.includes('#4') &&
-    remote['feat/in-main']?.dead?.includes('origin/main') && remote['feat/open']?.openPr === 5 && remote['feat/open'].dead === null &&
-    remote['feat/spike']?.openPr === null && remote['feat/spike'].dead === null, JSON.stringify(s?.remoteBranches))
+    remote['feat/in-main']?.dead === null && remote['feat/open']?.openPr === 5 && remote['feat/open'].dead === null &&
+    remote['feat/spike']?.openPr === null && remote['feat/spike'].dead === null &&
+    remote['feat/held']?.heldHere?.includes('local branch') && remote['feat/held'].dead === null && remote['feat/merged'].heldHere === null, JSON.stringify(s?.remoteBranches))
   check('nothing was edited', edits(r).length === 0 && !r.st.unpinned, JSON.stringify(r.st.calls))
   check('nothing on origin moved: every ref at the same object', originRefs() === refsBefore && refsBefore.includes(`${mergedTip}\trefs/heads/feat/merged`), `${refsBefore}\n---\n${originRefs()}`)
 }
