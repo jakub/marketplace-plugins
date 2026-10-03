@@ -32,7 +32,9 @@ const st = JSON.parse(fs.readFileSync(file, 'utf8'))
 const argv = process.argv.slice(2)
 st.calls.push(argv)
 const save = () => fs.writeFileSync(file, JSON.stringify(st))
-const out = (v) => { process.stdout.write(typeof v === 'string' ? v : JSON.stringify(v)); save(); process.exit(0) }
+// A synchronous write, retried on a full pipe: process.exit after an async write cuts a large answer short.
+const writeAll = (text) => { const b = Buffer.from(text); let at = 0; while (at < b.length) { try { at += fs.writeSync(1, b, at) } catch (e) { if (e.code !== 'EAGAIN') throw e } } }
+const out = (v) => { writeAll(typeof v === 'string' ? v : JSON.stringify(v)); save(); process.exit(0) }
 const fail = (m) => { process.stderr.write('fake gh: ' + m + '\\n'); st.unpinned = (st.unpinned || 0) + 1; save(); process.exit(1) }
 if (process.env.GH_REPO || process.env.GH_HOST) fail('GH_REPO or GH_HOST reached gh')
 const at = (flag) => argv[argv.indexOf(flag) + 1]
@@ -85,10 +87,13 @@ if (group === 'pr' && verb === 'list') {
       if (st.parentPullsFail) fail("the parent's pull requests could not be read")
       out(project(Object.entries(st.upstreamPrs || {}).flatMap(([label, list]) => list.map((p) => ({ number: p.number, headRefName: label.split(':')[1], headRepositoryOwner: { login: label.split(':')[0] } })))))
     }
-    out(project([
+    // Leading whitespace is valid JSON, so a padded answer tests the output limit and nothing else,
+    // and a read cut short at any limit below its size loses the list itself, never just padding.
+    const pad = st.padBulkBytes ? ' '.repeat(st.padBulkBytes) : ''
+    out(pad + JSON.stringify(project([
       ...Object.entries(st.prs).flatMap(([head, list]) => list.map((p) => ({ ...p, headRefName: head, baseRefName: st.defaultBranch }))),
       ...Object.entries(st.basePrs || {}).flatMap(([base, list]) => list.map((p) => ({ number: p.number, state: 'OPEN', headRefName: 'child-of-' + base, headRefOid: 'c'.repeat(40), isCrossRepository: false, baseRefName: base }))),
-    ]))
+    ])))
   }
   if (argv.includes('--base')) {
     // Open pull requests on a base, and one that opens on its Nth read.
@@ -746,6 +751,13 @@ console.log('\nthe survey reads pull requests once, however many branches there 
   const p = makeWorld({ bulkFull: 'parent', parent: { name: 'demo', owner: { login: 'upstream' } }, upstreamPrs: {} })
   const r = run(p, ['survey', p.repo])
   check('a parent list that reaches its limit is a parentError, and the survey stands', r.code === 0 && r.json?.parentError?.includes('may be partial'), `${r.stderr} ${JSON.stringify(r.json?.parentError)}`)
+}
+
+{
+  // A bulk answer past Node's default 1 MiB output buffer still reads.
+  const w = makeWorld({ padBulkBytes: 2 * 1024 * 1024 })
+  const r = run(w, ['survey', w.repo])
+  check('a survey whose pull request list prints 2 MiB succeeds', r.code === 0 && r.json?.ok === true, `${r.code} ${JSON.stringify(r.json)?.slice(0, 300)} ${r.stderr}`)
 }
 
 console.log('\na parent that cannot be read leaves rows unknown, and the survey whole')
