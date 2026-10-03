@@ -165,8 +165,10 @@ function run({ action, repoArg, target, rest, env }) {
   // What a verb that deletes judges against: origin's branches fetched by name, with forced
   // explicit refspecs, into their tracking refs. The preamble's fetch honours remote.origin.fetch,
   // which a clone can narrow or negate, so its success proves nothing about a given tracking ref.
-  // Answers each branch's tip, or null for a branch origin does not have, whose tracking ref may be
-  // stale and is never read. The default branch has to be there, and its tip pins inMain.
+  // Answers each branch's tip, or null for a branch origin does not have; that branch's tracking
+  // ref may be stale, and no judgment reads it. The default branch has to be there, and its tip
+  // pins inMain. A tracking ref this creates outside a narrowed refspec stays behind, except the
+  // one delete-remote-branch drops after its delete.
   const originCtx = { cwd: repo, redact, env: gitEnv }
   const fromOrigin = (branches) => {
     const tips = new Map()
@@ -340,6 +342,9 @@ function run({ action, repoArg, target, rest, env }) {
       refuse(`origin refused the delete, so nothing was deleted (the branch may have moved off ${tip.slice(0, 12)} since it was judged): ${redact(firstLine(pushed.stderr)) || `exit ${pushed.code}`}`)
     }
     if (after.state === 'present') refuse(`the delete was reported but still reads back, at ${after.sha.slice(0, 12)}`)
+    // fromOrigin made this tracking ref, and a narrowed refspec's prune would never drop it. The
+    // compare-and-delete leaves one that moved since.
+    gitIn(repo, ['update-ref', '-d', `refs/remotes/origin/${target}`, tip])
     finish(true, `deleted on origin at ${tip.slice(0, 12)} (${why})`)
   }
 
@@ -452,14 +457,15 @@ function run({ action, repoArg, target, rest, env }) {
     }),
   }
   if (id !== null) {
-    // Origin's branches as the fetch left them, minus the default and the protected ones, each
-    // judged as delete-remote-branch would judge it: dead only with no open pull request heading it.
-    const remoteLines = gitIn(repo, ['for-each-ref', '--format=%(refname)%09%(objectname)', 'refs/remotes/origin'])
-    if (remoteLines === null) refuse('git for-each-ref over origin\'s branches failed')
+    // Origin's branches as origin lists them, not as tracking refs: a narrowed fetch refspec can
+    // leave a tracking ref for a branch origin no longer has. Minus the default and the protected
+    // ones, each judged as delete-remote-branch would judge it.
+    const remoteLines = gitIn(repo, ['ls-remote', '--heads', 'origin'], 60_000)
+    if (remoteLines === null) refuse('git ls-remote over origin\'s branches failed')
     survey.remoteBranches = remoteLines.split('\n').filter(Boolean).map((line) => {
-      const [refname, tip] = line.split('\t')
-      return { name: refname.slice('refs/remotes/origin/'.length), tip }
-    }).filter(({ name }) => name !== 'HEAD' && name !== defaultBranch() && !PROTECTED.has(name)).map(({ name, tip }) => {
+      const [tip, refname] = line.split('\t')
+      return { name: refname.slice('refs/heads/'.length), tip }
+    }).filter(({ name }) => name !== defaultBranch() && !PROTECTED.has(name)).map(({ name, tip }) => {
       const open = openPrOf(name)
       const held = heldHere(name)
       const based = basedOn(name).length

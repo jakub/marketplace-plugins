@@ -404,6 +404,26 @@ console.log('\na clone whose fetch refspec skips main judges against origin\'s r
   check('and the local branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/rewound-local']).status === 0)
 }
 
+console.log('\na narrowed fetch refspec leaves no tracking ref behind a delete, and none in the survey')
+{
+  // The clone fetches main alone, so its own fetch --prune never touches a feature tracking ref.
+  const w = makeWorld()
+  w.git(w.repo, 'config', 'remote.origin.fetch', '+refs/heads/main:refs/remotes/origin/main')
+  const tracked = (b) => spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', `refs/remotes/origin/${b}`]).status === 0
+  const merged = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'merged')
+  w.git(w.repo, 'push', '-q', 'origin', `${merged}:refs/heads/feat/narrow`)
+  w.git(w.repo, 'update-ref', 'refs/remotes/origin/feat/ghost', merged)
+  const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  Object.assign(st.prs, { 'feat/narrow': [{ number: 30, state: 'MERGED', headRefOid: merged, isCrossRepository: false }], 'feat/ghost': [{ number: 31, state: 'MERGED', headRefOid: merged, isCrossRepository: false }] })
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
+  const names = (r) => (r.json?.remoteBranches ?? []).map((b) => b.name).sort().join()
+  const before = run(w, ['survey', w.repo])
+  check('the survey lists origin\'s branches, not a stale tracking ref for one origin lacks', before.code === 0 && names(before) === 'feat/narrow', `${JSON.stringify(before.json?.remoteBranches)} ${before.stderr}`)
+  const d = run(w, ['delete-remote-branch', w.repo, 'feat/narrow'])
+  check('a delete under a narrowed refspec drops the tracking ref it fetched', d.code === 0 && !tracked('feat/narrow'), `${JSON.stringify(d.json)} ${d.stderr}`)
+  check('and the survey after it lists nothing', names(run(w, ['survey', w.repo])) === '')
+}
+
 console.log('\nremove-worktree refuses anything dirty or recent')
 {
   const w = makeWorld()
