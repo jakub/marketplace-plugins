@@ -109,7 +109,7 @@ const CRON_ARG = '[A-Za-z0-9_./:@+-]'
 const cronAllows = (cmd, root) => {
   if (!new RegExp(`^${CRON_ARG}+$`).test(root)) return false
   const literal = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`^node ${literal}/scripts/lint-actions\\.mjs (survey|remove-worktree|delete-branch|relabel)( ${CRON_ARG}+)*$`).test(cmd)
+  return new RegExp(`^node ${literal}/scripts/lint-actions\\.mjs (survey|remove-worktree|delete-branch|delete-remote-branch|relabel)( ${CRON_ARG}+)*$`).test(cmd)
 }
 
 // An unparseable body is the harness's problem, not a policy breach: never block on our own
@@ -129,7 +129,7 @@ if (cronJob) {
   if (!cronAllows(cmd, root)) {
     deny(
       `flow cron guard (${cronJob}): an unattended job runs one command shape and nothing else: ` +
-        `node ${root}/scripts/lint-actions.mjs <survey|remove-worktree|delete-branch|relabel> <args>, ` +
+        `node ${root}/scripts/lint-actions.mjs <survey|remove-worktree|delete-branch|delete-remote-branch|relabel> <args>, ` +
         'typed plainly, every argument in [A-Za-z0-9_./:@+-]. No git, gh, shell, quotes, variables, ' +
         'pipes, redirects or separators. A refusal is a report line; do not work around it.',
     )

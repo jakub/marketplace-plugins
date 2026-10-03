@@ -57,7 +57,8 @@ if (group === 'api') {
 if (at('--repo') !== 'github.com/jakub/demo' && !(group === 'repo' && argv[2] === 'github.com/jakub/demo')) fail('unpinned: ' + argv.join(' '))
 if (group === 'repo') out({ defaultBranchRef: { name: st.defaultBranch } })
 if (group === 'pr' && verb === 'list') {
-  // A worktree that checks the branch out while the executor is still reading GitHub.
+  // A git command that lands while the executor is still reading GitHub: a worktree that checks
+  // the branch out, or a push that moves the branch on origin.
   if (st.checkoutDuringRead) { require('node:child_process').execFileSync('git', st.checkoutDuringRead, { stdio: 'ignore' }); delete st.checkoutDuringRead }
   out((st.prs[at('--head')] || []).slice(0, Number(at('--limit') ?? 30)))
 }
@@ -236,6 +237,84 @@ console.log('\ndelete-branch needs a death warrant and a recoverable tip')
   check('and the checked-out branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/taken']).status === 0)
 }
 
+console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and only at that tip')
+{
+  const w = makeWorld()
+  const onOrigin = (b, bare = w.origin) => spawnSync('git', ['--git-dir', bare, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`], { encoding: 'utf8' }).stdout.trim() || null
+  const setState = (change) => { const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8')); change(st); writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st)) }
+  /** A new commit off main, pushed to origin as <branch> and to nothing else. */
+  const pushWork = (branch, msg) => {
+    const c = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', msg)
+    w.git(w.repo, 'push', '-q', 'origin', `${c}:refs/heads/${branch}`)
+    return c
+  }
+  const del = (b, x = w) => run(x, ['delete-remote-branch', x.repo, b])
+
+  const merged = pushWork('feat/merged', 'merged work')
+  setState((st) => { st.prs['feat/merged'] = [{ number: 5, state: 'MERGED', headRefOid: merged }] })
+  const m = del('feat/merged')
+  check('a branch whose merged pull request has its tip as head is deleted on origin and reads back gone',
+    m.code === 0 && m.json?.reason?.includes('#5') && onOrigin('feat/merged') === null, `${JSON.stringify(m.json)} ${m.stderr}`)
+  check('and no gh call off the pin', !m.st.unpinned, JSON.stringify(m.st.calls))
+
+  w.git(w.repo, 'push', '-q', 'origin', `${w.tip}:refs/heads/feat/in-main`)
+  const a = del('feat/in-main')
+  check('a branch whose tip is in origin/main is deleted on origin with no pull request at all',
+    a.code === 0 && a.json?.reason?.includes('origin/main') && onOrigin('feat/in-main') === null, `${JSON.stringify(a.json)} ${a.stderr}`)
+
+  const open = pushWork('feat/open', 'open work')
+  setState((st) => { st.prs['feat/open'] = [{ number: 11, state: 'MERGED', headRefOid: open }, { number: 12, state: 'OPEN', headRefOid: open }] })
+  refused('a branch an open pull request heads, even beside a merged one at the same tip', del('feat/open'), '#12')
+  check('and the open branch is still on origin', onOrigin('feat/open') === open)
+
+  w.git(w.repo, 'push', '-q', 'origin', `${w.tip}:refs/heads/flow-evidence`)
+  for (const name of ['main', 'flow-evidence']) refused(`the protected ${name}`, del(name), 'protected')
+  check('and both protected branches are still on origin', onOrigin('main') === w.tip && onOrigin('flow-evidence') === w.tip)
+
+  const spike = pushWork('feat/spike', 'a spike')
+  refused('a pushed branch with no pull request and a tip outside main', del('feat/spike'), 'not shown dead')
+  check('and the spike is still on origin', onOrigin('feat/spike') === spike)
+
+  // Reused name: the closed pull request's head is an older tip, so it is no warrant for this one.
+  const reused = pushWork('feat/reused', 'new work on an old name')
+  setState((st) => { st.prs['feat/reused'] = [{ number: 9, state: 'CLOSED', headRefOid: merged }] })
+  refused('a branch whose closed pull request closed at another tip', del('feat/reused'), 'not shown dead')
+  check('and the reused branch is still on origin', onOrigin('feat/reused') === reused)
+
+  refused('a branch origin does not have', del('feat/never-pushed'), 'does not exist on origin')
+  refused('a name that is not a branch name', del('feat/a..b'), 'not a valid branch name')
+  refused('origin\'s HEAD, which names main', del('HEAD'), 'not a valid branch name')
+
+  // The race, for real: the branch is judged dead at its merged tip, and while the executor is still
+  // reading GitHub someone pushes new work to it. Origin must reject the delete as stale.
+  const raced = pushWork('feat/raced', 'merged, then reused')
+  const newer = w.git(w.origin, 'commit-tree', `${w.tip}^{tree}`, '-p', raced, '-m', 'pushed after the judgment')
+  setState((st) => {
+    st.prs['feat/raced'] = [{ number: 13, state: 'MERGED', headRefOid: raced }]
+    st.checkoutDuringRead = ['--git-dir', w.origin, 'update-ref', 'refs/heads/feat/raced', newer, raced]
+  })
+  const r = del('feat/raced')
+  refused('a branch pushed to between the judgment and the delete', r, 'origin refused the delete')
+  check('and origin keeps the new work the lease protected', onOrigin('feat/raced') === newer, String(onOrigin('feat/raced')))
+
+  // Reads go to origin's fetch URL and pushes to its push URL: a delete there would never read back.
+  const split = makeWorld()
+  const gone = split.git(split.repo, 'commit-tree', `${split.tip}^{tree}`, '-p', split.tip, '-m', 'merged')
+  split.git(split.repo, 'push', '-q', 'origin', `${gone}:refs/heads/feat/merged`)
+  const other = join(dirname(split.origin), 'other.git')
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', other])
+  split.git(split.repo, 'config', 'remote.origin.pushurl', 'git@github.com:jakub/other.git')
+  const st = JSON.parse(readFileSync(split.env.FAKE_GH_STATE, 'utf8'))
+  st.prs['feat/merged'] = [{ number: 5, state: 'MERGED', headRefOid: gone }]
+  writeFileSync(split.env.FAKE_GH_STATE, JSON.stringify(st))
+  refused('an origin that pushes to another repository than it fetches from', del('feat/merged', split), 'not one URL')
+  check('and the branch is still on origin', onOrigin('feat/merged', split.origin) === gone)
+}
+{
+  const w = makeWorld({}, { branch: 'trunk' })
+  refused('the default branch GitHub names, protected or not', run(w, ['delete-remote-branch', w.repo, 'trunk']), 'default branch')
+}
+
 console.log('\nremove-worktree refuses anything dirty or recent')
 {
   const w = makeWorld()
@@ -287,7 +366,7 @@ console.log('\nancestry is judged against the default branch, whatever it is nam
 console.log('\nevery verb is bound to the workspace and fetches first')
 {
   const w = makeWorld()
-  const verbs = [['survey', w.repo], ['remove-worktree', w.repo, join(w.workspace, 'x')], ['delete-branch', w.repo, 'feat/x'],
+  const verbs = [['survey', w.repo], ['remove-worktree', w.repo, join(w.workspace, 'x')], ['delete-branch', w.repo, 'feat/x'], ['delete-remote-branch', w.repo, 'feat/x'],
     ['relabel', w.repo, '7', '--from', 'none', '--to', 'needs-triage', '--seen', new Date().toISOString(), '--reason', 'x']]
   for (const args of verbs) {
     refused(`${args[0]} under cron outside the workspace`, run(w, args, { FLOW_CRON_JOB: 'lint', FLOW_WORKSPACE: tmp }), 'direct child')
@@ -311,6 +390,14 @@ console.log('\nsurvey reads what the lint judges')
     prs: { 'feat/wt': [{ number: 3, state: 'OPEN', headRefOid: 'x' }] },
   })
   w.git(w.repo, 'worktree', 'add', '-q', join(w.workspace, 'wt'), '-b', 'feat/wt')
+  const work = (msg) => w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', msg)
+  const [mergedTip, openTip, spikeTip] = [work('merged'), work('open'), work('spike')]
+  for (const [ref, sha] of [['feat/merged', mergedTip], ['feat/open', openTip], ['feat/spike', spikeTip], ['feat/in-main', w.tip], ['flow-evidence', w.tip]]) {
+    w.git(w.repo, 'push', '-q', 'origin', `${sha}:refs/heads/${ref}`)
+  }
+  const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
+  Object.assign(st.prs, { 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip }] })
+  writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
   const r = run(w, ['survey', w.repo])
   const s = r.json
   check('exit 0, pinned to origin\'s identity', r.code === 0 && s?.ok === true && s?.identity === 'github.com/jakub/demo', `${r.stderr} ${JSON.stringify(s)}`)
@@ -323,7 +410,13 @@ console.log('\nsurvey reads what the lint judges')
     s.labels.missing.includes('in-progress') && s.labels.extra.join() === 'wip', JSON.stringify(s?.labels))
   const flake = (entry) => s?.flakes?.entries?.find((e) => e.entry === entry)
   check('known flakes against the last runs', flake('e2e')?.runsSeen === 2 && flake('e2e')?.runsFailed === 1 && flake('unit:test_x')?.check === 'unit' && flake('gone-check')?.runsSeen === 0, JSON.stringify(s?.flakes))
+  const remote = Object.fromEntries((s?.remoteBranches ?? []).map((b) => [b.name, b]))
+  check('origin\'s branches without the default or the protected ones', Object.keys(remote).sort().join() === 'feat/in-main,feat/merged,feat/open,feat/spike', JSON.stringify(s?.remoteBranches))
+  check('each with its tip, its open pull request and why it is dead, or null', remote['feat/merged']?.tip === mergedTip && remote['feat/merged'].openPr === null && remote['feat/merged'].dead?.includes('#4') &&
+    remote['feat/in-main']?.dead?.includes('origin/main') && remote['feat/open']?.openPr === 5 && remote['feat/open'].dead === null &&
+    remote['feat/spike']?.openPr === null && remote['feat/spike'].dead === null, JSON.stringify(s?.remoteBranches))
   check('nothing was edited', edits(r).length === 0 && !r.st.unpinned, JSON.stringify(r.st.calls))
+  check('nothing on origin moved', ['feat/merged', 'feat/in-main', 'feat/open', 'feat/spike'].every((b) => spawnSync('git', ['--git-dir', w.origin, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`]).status === 0))
 }
 
 rmSync(tmp, { recursive: true, force: true })

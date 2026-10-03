@@ -5,6 +5,7 @@
 //   survey <repo>
 //   remove-worktree <repo> <path>
 //   delete-branch <repo> <branch>
+//   delete-remote-branch <repo> <branch>
 //   relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>
 //
 // The model picks candidates from the survey; this code re-derives every condition from fresh
@@ -15,6 +16,9 @@
 // parses to. Every mutation is read back, and nothing is undone: a label present after an edit is
 // no proof this run put it there. A relabel a claim could race holds the issue's claim tag on
 // origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
+// delete-remote-branch needs origin to fetch from and push to one URL, and deletes only at the tip
+// it judged dead, through a lease origin checks at delete time, so a branch pushed to after the
+// judgment is never deleted. The land stage retires a pull request's head branch through it too.
 // stdout is one JSON line {action, repo, target, ok, reason, ...}; exit 0 when the action happened
 // (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
 // regex, which is why the relabel reason is a single token.
@@ -26,7 +30,7 @@ import { fileURLToPath } from 'node:url'
 import { execCapture, ghRunner, parseJson, runExecutor } from '../lib/gh-exec.mjs'
 import { firstLine, makeRedactor } from '../lib/redact.mjs'
 import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
-import { acquire, dropTag } from './issue-claim.mjs'
+import { acquire, dropTag, originUrl as originOfOneUrl, readRef } from './issue-claim.mjs'
 
 const HOUR = 3_600_000
 const RECENT_MS = 96 * HOUR
@@ -44,7 +48,7 @@ const TRANSITIONS = {
   'none>needs-triage': { live: false, minAge: 0 },
 }
 const USAGE = 'usage: lint-actions.mjs survey <repo> | remove-worktree <repo> <path> | delete-branch <repo> <branch> | ' +
-  'relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>'
+  'delete-remote-branch <repo> <branch> | relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>'
 
 class Verdict { constructor(ok, reason, extra) { Object.assign(this, { ok, reason, extra }) } }
 const finish = (ok, reason, extra = {}) => { throw new Verdict(ok, reason, extra) }
@@ -52,7 +56,7 @@ const refuse = (reason, extra) => finish(false, reason, extra)
 
 export function lintActions({ argv, env }) {
   const [action, repoArg, target, ...rest] = argv
-  const known = ['survey', 'remove-worktree', 'delete-branch', 'relabel']
+  const known = ['survey', 'remove-worktree', 'delete-branch', 'delete-remote-branch', 'relabel']
   if (!known.includes(action) || !repoArg || (action !== 'survey' && !target) || (action !== 'relabel' && rest.length > 0) || (action === 'survey' && target)) {
     return { code: 2, stdout: '', stderr: `${USAGE}\n` }
   }
@@ -84,7 +88,7 @@ function run({ action, repoArg, target, rest, env }) {
     const common = gitIn(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
     if (common === null || real(common) !== join(repo, '.git')) refuse(`${repo} is not a main checkout with its own .git; a linked worktree acts on another repository`)
   }
-  if (action === 'delete-branch' && PROTECTED.has(target)) refuse(`${target} is a protected branch`)
+  if ((action === 'delete-branch' || action === 'delete-remote-branch') && PROTECTED.has(target)) refuse(`${target} is a protected branch`)
   const originUrl = gitIn(repo, ['remote', 'get-url', 'origin'])
   if (originUrl === null) refuse('the repository has no origin remote')
   const redact = makeRedactor(originUrl, 'origin')
@@ -133,11 +137,15 @@ function run({ action, repoArg, target, rest, env }) {
   }
   const inMain = (tip) => gitIn(repo, ['merge-base', '--is-ancestor', tip, `refs/remotes/origin/${defaultBranch()}`]) !== null
 
+  const openPrOf = (branch) => prsFor(branch).find((p) => p.state === 'OPEN') ?? null
+  const refuseOpen = (branch) => {
+    const open = openPrOf(branch)
+    if (open) refuse(`${branch} has an open pull request (#${open.number})`)
+  }
   // Recoverable: can origin reproduce this tip after the delete? An open pull request refuses outright.
   const recoverable = (branch, tip) => {
+    refuseOpen(branch)
     const prs = prsFor(branch)
-    const open = prs.find((p) => p.state === 'OPEN')
-    if (open) refuse(`${branch} has an open pull request (#${open.number})`)
     const remoteTip = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
     if (remoteTip === tip) return `origin/${branch} is at this tip`
     if (remoteTip !== null && gitIn(repo, ['rev-list', '--count', `refs/remotes/origin/${branch}..${tip}`]) === '0') return `no commits beyond origin/${branch}`
@@ -149,12 +157,15 @@ function run({ action, repoArg, target, rest, env }) {
   // Dead: recoverable is not a reason to delete; a pushed spike with no pull request is alive. A
   // closed pull request is a warrant only for the tip it closed at, since a branch name can be
   // reused for new work after its old pull request closed.
-  const dead = (branch, tip) => {
+  // deathOf answers null where dead refuses, so the survey can show the same judgment unacted.
+  const deathOf = (branch, tip) => {
     const closed = prsFor(branch).find((p) => (p.state === 'MERGED' || p.state === 'CLOSED') && p.headRefOid === tip)
     if (closed) return `pull request #${closed.number} is ${closed.state}`
     if (inMain(tip)) return `the tip is already in origin/${defaultBranch()}`
-    return refuse(`no merged or closed pull request and the tip is not in origin/${defaultBranch()}: recoverable, but not shown dead, so a human decides`)
+    return null
   }
+  const dead = (branch, tip) => deathOf(branch, tip) ??
+    refuse(`no merged or closed pull request and the tip is not in origin/${defaultBranch()}: recoverable, but not shown dead, so a human decides`)
   const worktrees = () => {
     const listed = gitIn(repo, ['worktree', 'list', '--porcelain', '-z'])
     if (listed === null) refuse('git worktree list failed')
@@ -210,6 +221,36 @@ function run({ action, repoArg, target, rest, env }) {
     gitIn(repo, ['config', '--remove-section', `branch.${target}`])
     if (gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${target}`]) !== null) refuse('the delete was reported, but the branch still reads back')
     finish(true, `deleted at ${tip.slice(0, 12)} (${why})`)
+  }
+
+  if (action === 'delete-remote-branch') {
+    const ref = `refs/heads/${target}`
+    // HEAD is origin's symbolic ref here, never a branch, and git refuses to name a branch HEAD.
+    if (target === 'HEAD' || gitIn(repo, ['check-ref-format', ref]) === null) refuse(`${target} is not a valid branch name`)
+    if (target === defaultBranch()) refuse(`${target} is the default branch`)
+    // The delete goes to origin's push URL and the read-back reads its fetch URL, so with two URLs
+    // a branch could be deleted in one repository and judged and read back in another.
+    const one = originOfOneUrl(repo, gitEnv)
+    if (one.url === undefined) refuse(one.problem === 'no-origin' ? 'the repository has no origin remote' : 'origin fetches from and pushes to URLs that are not one URL, so the delete could land where no read here looks')
+    // The tip is origin's ref as the fetch above left it, not a separate ls-remote. That one fetch
+    // brought the tip's objects here, so the ancestry check can judge it at all, and it read the
+    // tip and origin's default branch at one moment. Freshness is not what keeps the delete safe:
+    // the lease below is, since origin refuses it if the branch moved off this tip after the fetch.
+    const tip = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${target}`])
+    if (tip === null) refuse(`${target} does not exist on origin`)
+    refuseOpen(target)
+    const why = dead(target, tip)
+    // Compare-and-delete: origin applies the delete only while the branch is still at the tip
+    // every check above was about, and rejects it as stale otherwise.
+    const pushed = execCapture('git', ['-C', repo, 'push', `--force-with-lease=${ref}:${tip}`, 'origin', `:${ref}`], { timeoutMs: 60_000, env: gitEnv })
+    const after = readRef({ cwd: repo, redact, env: gitEnv }, ref)
+    if (after.state === 'unknown') refuse(`the delete ${pushed.code === 0 ? 'was reported' : 'failed'} and origin could not be read back: ${after.detail}`)
+    if (pushed.code !== 0) {
+      if (after.state === 'absent') refuse('the push failed, yet the branch reads back gone; whose delete removed it is unknown')
+      refuse(`origin refused the delete, so nothing was deleted (the branch may have moved off ${tip.slice(0, 12)} since it was judged): ${redact(firstLine(pushed.stderr)) || `exit ${pushed.code}`}`)
+    }
+    if (after.state === 'present') refuse(`the delete was reported but still reads back, at ${after.sha.slice(0, 12)}`)
+    finish(true, `deleted on origin at ${tip.slice(0, 12)} (${why})`)
   }
 
   if (action === 'relabel') {
@@ -321,6 +362,17 @@ function run({ action, repoArg, target, rest, env }) {
     }),
   }
   if (id !== null) {
+    // Origin's branches as the fetch left them, minus the default and the protected ones, each
+    // judged as delete-remote-branch would judge it: dead only with no open pull request heading it.
+    const remoteLines = gitIn(repo, ['for-each-ref', '--format=%(refname)%09%(objectname)', 'refs/remotes/origin'])
+    if (remoteLines === null) refuse('git for-each-ref over origin\'s branches failed')
+    survey.remoteBranches = remoteLines.split('\n').filter(Boolean).map((line) => {
+      const [refname, tip] = line.split('\t')
+      return { name: refname.slice('refs/remotes/origin/'.length), tip }
+    }).filter(({ name }) => name !== 'HEAD' && name !== defaultBranch() && !PROTECTED.has(name)).map(({ name, tip }) => {
+      const open = openPrOf(name)
+      return { name, tip, openPr: open?.number ?? null, dead: open ? null : deathOf(name, tip) }
+    })
     survey.issues = pages(`repos/${id.owner}/${id.repo}/issues?state=open&per_page=100`, 'gh api over the open issues').filter((i) => !i.pull_request).map((i) => {
       const labels = (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))
       const lifecycle = LIFECYCLE.filter((l) => labels.includes(l))

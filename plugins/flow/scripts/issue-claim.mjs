@@ -71,7 +71,7 @@ const shaOfRef = (stdout, ref) => {
 }
 
 /** present, absent or unknown. `ls-remote --exit-code` answers 0 or 2; anything else is no answer. */
-const readRef = (ctx, ref) => {
+export const readRef = (ctx, ref) => {
   const r = git(ctx.cwd, ['ls-remote', '--exit-code', 'origin', ref], REMOTE_MS, ctx.env)
   if (r.code === 2) return { state: 'absent' }
   const sha = r.code === 0 ? shaOfRef(r.stdout, ref) : null
@@ -84,7 +84,7 @@ const readRef = (ctx, ref) => {
  * to its push URL (`get-url` applies pushurl, insteadOf and pushInsteadOf), so with two URLs a tag
  * could be pushed to one repository and read back from another.
  */
-const originUrl = (cwd, env) => {
+export const originUrl = (cwd, env) => {
   const urls = (push) => {
     const r = git(cwd, ['remote', 'get-url', ...(push ? ['--push'] : []), '--all', 'origin'], LOCAL_MS, env)
     return r.code === 0 ? r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : []
