@@ -336,6 +336,17 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   setState((st) => { st.prs['feat/fork-open'] = [{ number: 15, state: 'MERGED', headRefOid: forkOpen, isCrossRepository: false }, { number: 16, state: 'OPEN', headRefOid: 'f'.repeat(40), isCrossRepository: true }] })
   refused('an open fork pull request of the same name still blocks', del('feat/fork-open'), '#16')
 
+  // --expect binds the delete to one known tip, the way land passes the head it merged.
+  const expected = pushWork('feat/expected', 'merged at a known head')
+  setState((st) => { st.prs['feat/expected'] = [{ number: 27, state: 'MERGED', headRefOid: expected, isCrossRepository: false }] })
+  refused('--expect with another tip than origin\'s', run(w, ['delete-remote-branch', w.repo, 'feat/expected', '--expect', w.tip]), 'not the expected')
+  check('and the branch is still on origin', onOrigin('feat/expected') === expected)
+  const exact = run(w, ['delete-remote-branch', w.repo, 'feat/expected', '--expect', expected])
+  check('--expect with origin\'s exact tip deletes it', exact.code === 0 && onOrigin('feat/expected') === null, `${JSON.stringify(exact.json)} ${exact.stderr}`)
+  for (const bad of [['--expect'], ['--expect', 'abc123'], ['--expect', expected.toUpperCase()], ['--lease', expected], ['--expect', expected, 'x']]) {
+    check(`a usage error for ${bad.join(' ')}`, run(w, ['delete-remote-branch', w.repo, 'feat/x', ...bad]).code === 2)
+  }
+
   refused('a branch origin does not have', del('feat/never-pushed'), 'does not exist on origin')
   refused('a name that is not a branch name', del('feat/a..b'), 'not a valid branch name')
   refused('origin\'s HEAD, which names main', del('HEAD'), 'not a valid branch name')

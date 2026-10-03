@@ -5,7 +5,7 @@
 //   survey <repo>
 //   remove-worktree <repo> <path>
 //   delete-branch <repo> <branch>
-//   delete-remote-branch <repo> <branch>
+//   delete-remote-branch <repo> <branch> [--expect <sha>]
 //   relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>
 //
 // The model picks candidates from the survey; this code re-derives every condition from fresh
@@ -26,7 +26,7 @@
 // local branch that only tracks it is no hold, and its answer names those as trackedBy. Its known
 // limit: GitHub has no lock, so a pull request opened between its last open-PR read and origin
 // applying the delete loses its head branch. The land stage retires a pull request's head branch
-// through it too.
+// through it with --expect, which refuses unless origin's tip is exactly the head it merged.
 // stdout is one JSON line {action, repo, target, ok, reason, ...}; exit 0 when the action happened
 // (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
 // regex, which is why the relabel reason is a single token.
@@ -56,7 +56,7 @@ const TRANSITIONS = {
   'none>needs-triage': { live: false, minAge: 0 },
 }
 const USAGE = 'usage: lint-actions.mjs survey <repo> | remove-worktree <repo> <path> | delete-branch <repo> <branch> | ' +
-  'delete-remote-branch <repo> <branch> | relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>'
+  'delete-remote-branch <repo> <branch> [--expect <sha>] | relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>'
 
 class Verdict { constructor(ok, reason, extra) { Object.assign(this, { ok, reason, extra }) } }
 const finish = (ok, reason, extra = {}) => { throw new Verdict(ok, reason, extra) }
@@ -65,7 +65,9 @@ const refuse = (reason, extra) => finish(false, reason, extra)
 export function lintActions({ argv, env }) {
   const [action, repoArg, target, ...rest] = argv
   const known = ['survey', 'remove-worktree', 'delete-branch', 'delete-remote-branch', 'relabel']
-  if (!known.includes(action) || !repoArg || (action !== 'survey' && !target) || (action !== 'relabel' && rest.length > 0) || (action === 'survey' && target)) {
+  // delete-remote-branch takes one optional flag, --expect with a full object name.
+  const expectOk = rest.length === 0 || (rest.length === 2 && rest[0] === '--expect' && /^([0-9a-f]{40}|[0-9a-f]{64})$/.test(rest[1]))
+  if (!known.includes(action) || !repoArg || (action !== 'survey' && !target) || (action === 'delete-remote-branch' ? !expectOk : action !== 'relabel' && rest.length > 0) || (action === 'survey' && target)) {
     return { code: 2, stdout: '', stderr: `${USAGE}\n` }
   }
   const emit = (v) => ({ code: v.ok ? 0 : 1, stdout: `${JSON.stringify({ action, repo: repoArg, target: target ?? null, ok: v.ok, reason: v.reason, ...v.extra })}\n`, stderr: '' })
@@ -360,6 +362,10 @@ function run({ action, repoArg, target, rest, env }) {
       // safe: the lease below is, since origin refuses it if the branch moved off this tip after.
       const tip = fromOrigin([target]).get(target)
       if (tip === null) refuse(`${target} does not exist on origin`)
+      // --expect binds the delete to one tip the caller already knows, such as the head land
+      // merged: any other tip on origin is someone's later work, left for a human.
+      const expect = rest[1] ?? null
+      if (expect !== null && tip !== expect) refuse(`origin's ${target} is at ${tip.slice(0, 12)}, not the expected ${expect.slice(0, 12)}, so nothing was deleted`)
       refuseOpen(target)
       refuseBased(target)
       const why = prWarrant(target, tip) ??
