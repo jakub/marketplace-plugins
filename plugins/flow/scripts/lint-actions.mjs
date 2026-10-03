@@ -15,7 +15,8 @@
 // origin` runs first and a failure refuses. That fetch follows remote.origin.fetch, which a clone
 // can narrow, so a verb that deletes then fetches every origin branch it judges against by name,
 // with forced refspecs, and judges only those. Every gh call is pinned to the repository origin
-// parses to. Every mutation is read back, and nothing is undone: a label present after an edit is
+// parses to, and every verb but the survey refuses when GitHub names that repository otherwise, as
+// it does after a transfer or a rename. Every mutation is read back, and nothing is undone: a label present after an edit is
 // no proof this run put it there. A relabel a claim could race holds the issue's claim tag on
 // origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
 // delete-remote-branch needs origin to fetch from and push to one URL, and deletes only at the tip
@@ -153,7 +154,8 @@ function run({ action, repoArg, target, rest, env }) {
   }
   // When origin is a fork, a pull request into the repository it was forked from can head from
   // this branch, and GitHub closes it when the branch is deleted. gh pr list --head reads origin
-  // alone, so the parent is read by its own query, head=<origin owner>:<branch>. The parent is
+  // alone, so the parent is read by its own query, head=<owner>:<branch>, with the owner GitHub
+  // names now (canonicalName), not the one origin's URL may still carry. The parent is
   // looked up once per run, through the same cached gh repo view as the default branch.
   const parentOf = () => {
     const parent = repoView()?.parent ?? null
@@ -166,7 +168,7 @@ function run({ action, repoArg, target, rest, env }) {
     const parent = parentOf()
     if (parent === null) return null
     if (fresh || !upstreamCache.has(branch)) {
-      const head = encodeURIComponent(`${id.owner}:${branch}`)
+      const head = encodeURIComponent(`${canonicalName().split('/')[0]}:${branch}`)
       const open = pages(`repos/${parent}/pulls?state=open&head=${head}&per_page=100`, `gh api over ${parent}'s open pull requests from ${branch}`)[0] ?? null
       upstreamCache.set(branch, open === null ? null : { number: open.number, repo: parent })
     }
@@ -183,12 +185,24 @@ function run({ action, repoArg, target, rest, env }) {
   // Ancestry is judged against the default branch GitHub names, read once, never a fixed main: a
   // second branch that happens to be called main proves nothing merged.
   let repoInfo = null
-  const repoView = () => (repoInfo ??= gh(['repo', 'view', id.full, '--json', 'defaultBranchRef,parent'], 'gh repo view'))
+  const repoView = () => (repoInfo ??= gh(['repo', 'view', id.full, '--json', 'defaultBranchRef,nameWithOwner,parent'], 'gh repo view'))
   let defaultName = null
   const defaultBranch = () => {
     defaultName ??= repoView()?.defaultBranchRef?.name ?? null
     if (typeof defaultName !== 'string' || defaultName === '') refuse('gh repo view named no default branch, so nothing is judged against it')
     return defaultName
+  }
+  // origin's URL can keep a repository's old owner or name after a transfer or a rename, and
+  // GitHub redirects it, so every gh call still lands. A query that names the owner itself, such
+  // as the parent's head=<owner>:<branch>, would ask about the old one. So the name GitHub gives is
+  // the one used there, and a verb that changes anything refuses until origin's URL says it too.
+  const canonicalName = () => {
+    const name = repoView()?.nameWithOwner
+    if (typeof name !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(name)) refuse('gh repo view named no nameWithOwner, so the repository origin reaches is unconfirmed')
+    return name
+  }
+  if (id !== null && action !== 'survey' && canonicalName().toLowerCase() !== `${id.owner}/${id.repo}`.toLowerCase()) {
+    refuse(`origin's URL names ${id.owner}/${id.repo}, and GitHub names that repository ${canonicalName()}; update origin's URL to the new name and run again`)
   }
   // Only the local verbs judge ancestry, and only against the exact default-branch tip fromOrigin
   // fetched, never a tracking ref some other fetch left.
