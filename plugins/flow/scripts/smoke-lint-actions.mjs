@@ -448,6 +448,8 @@ console.log('\nsurvey reads what the lint judges')
   const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
   Object.assign(st.prs, { 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip, isCrossRepository: false }] })
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
+  const originRefs = () => execFileSync('git', ['ls-remote', w.origin], { encoding: 'utf8' })
+  const refsBefore = originRefs()
   const r = run(w, ['survey', w.repo])
   const s = r.json
   check('exit 0, pinned to origin\'s identity', r.code === 0 && s?.ok === true && s?.identity === 'github.com/jakub/demo', `${r.stderr} ${JSON.stringify(s)}`)
@@ -466,7 +468,7 @@ console.log('\nsurvey reads what the lint judges')
     remote['feat/in-main']?.dead?.includes('origin/main') && remote['feat/open']?.openPr === 5 && remote['feat/open'].dead === null &&
     remote['feat/spike']?.openPr === null && remote['feat/spike'].dead === null, JSON.stringify(s?.remoteBranches))
   check('nothing was edited', edits(r).length === 0 && !r.st.unpinned, JSON.stringify(r.st.calls))
-  check('nothing on origin moved', ['feat/merged', 'feat/in-main', 'feat/open', 'feat/spike'].every((b) => spawnSync('git', ['--git-dir', w.origin, 'rev-parse', '--verify', '--quiet', `refs/heads/${b}`]).status === 0))
+  check('nothing on origin moved: every ref at the same object', originRefs() === refsBefore && refsBefore.includes(`${mergedTip}\trefs/heads/feat/merged`), `${refsBefore}\n---\n${originRefs()}`)
 }
 
 rmSync(tmp, { recursive: true, force: true })
