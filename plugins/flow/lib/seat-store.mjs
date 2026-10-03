@@ -11,7 +11,7 @@
 //   seats/<id>/<stamp>.json        admitted, bound, receipt, void, closed; each written once
 //   seats/<id>/state.json          the Stop hook's turn state, replaced whole
 //   seats/<id>/result-<n>.json     turn n's result, with result-<n>.sha256 written after it
-//   seats/by-session/<sha256(host NUL sessionId)>   {id} or {id, void}
+//   seats/by-session/<host>-<sessionId>   {id} or {id, void}
 //
 // Stamps are write-once because each one is a claim that a step happened exactly once: one
 // admission per record, one binding session, one first seat call, one close. A stamp that could be
@@ -24,8 +24,12 @@
 // index is created the same way. Every other file is replaced whole by temp file and rename.
 //
 // Session ids come from the hook's stdin and are checked against SESSION before use, and seat ids
-// against ID, so neither reaches a path unchecked. The index file name is a hash of both anyway.
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+// against ID, so neither reaches a path unchecked. SESSION admits no separator and the host prefix
+// keeps `.` and `..` from being a whole name, so the validated id is the index file name as it is.
+//
+// node:crypto is loaded on first use rather than imported: the seat guard imports this module on
+// every tool call in every session, and the non-seat path needs indexPath alone. Importing crypto
+// there added about 3.5 ms to each call (measured 2026-10-03, Node 26).
 import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { RETENTION_MS, stateDir } from './state-dir.mjs'
@@ -33,13 +37,15 @@ import { RETENTION_MS, stateDir } from './state-dir.mjs'
 const ID = /^[0-9a-f]{32}$/
 const SESSION = /^[A-Za-z0-9._-]{1,128}$/
 const HOSTS = new Set(['claude', 'codex'])
+const INDEX_NAME = /^(?:claude|codex)-[A-Za-z0-9._-]{1,128}$/
 const STAMPS = new Set(['admitted', 'bound', 'receipt', 'void', 'closed'])
 // The tag is all of line 1 and carries the id alone. A well-formed tag anywhere else in the prompt,
 // line 1 included when it holds more than the tag, voids the seat rather than reading as no tag.
 const TAG_LINE = /^<flow-seat id=([0-9a-f]{32})>$/
 const TAG_ANYWHERE = /<flow-seat id=[0-9a-f]{32}>/
 
-const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
+const crypto = () => process.getBuiltinModule('node:crypto')
+const sha256 = (bytes) => crypto().createHash('sha256').update(bytes).digest('hex')
 const seatsRoot = () => join(stateDir(), 'seats')
 const indexRoot = () => join(seatsRoot(), 'by-session')
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
@@ -49,7 +55,7 @@ const validTurn = (n) => Number.isSafeInteger(n) && n > 0
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
 }
-const tempBeside = (path) => join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}`)
+const tempBeside = (path) => join(dirname(path), `.${basename(path)}.${process.pid}.${crypto().randomUUID()}`)
 function replaceFile(path, bytes) {
   const temp = tempBeside(path)
   try {
@@ -71,7 +77,7 @@ function createFile(path, bytes) {
 }
 
 /** A fresh seat id: 128 random bits as 32 lowercase hex characters. */
-export const newId = () => randomBytes(16).toString('hex')
+export const newId = () => crypto().randomBytes(16).toString('hex')
 
 /** The seat tag for id, which the parent puts on line 1 of the task. */
 export function seatTag(id) {
@@ -101,7 +107,7 @@ export const seatDir = (id) => (validId(id) ? join(seatsRoot(), id) : null)
 /** The index file for one host session, or null when the host or the session id fails validation. */
 export const indexPath = (host, sessionId) =>
   HOSTS.has(host) && typeof sessionId === 'string' && SESSION.test(sessionId)
-    ? join(indexRoot(), sha256(`${host}\0${sessionId}`))
+    ? join(indexRoot(), `${host}-${sessionId}`)
     : null
 
 /**
@@ -277,7 +283,7 @@ export function pruneSeats(now = Date.now()) {
     const gone = new Set(removed)
     let entries = []
     try { entries = readdirSync(indexRoot()) } catch {}
-    for (const entry of entries.filter((file) => /^[0-9a-f]{64}$/.test(file))) {
+    for (const entry of entries.filter((file) => INDEX_NAME.test(file))) {
       if (gone.has(readJson(join(indexRoot(), entry))?.id)) rmSync(join(indexRoot(), entry), { force: true })
     }
   }

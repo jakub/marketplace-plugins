@@ -94,14 +94,20 @@ function mask(command) {
   return { text, literals }
 }
 
-// Each shell segment twice: `bare` with literals blanked, `open` with their text restored. A
-// segment that runs its literals as commands is followed by their segments, read the same way.
+// Each shell segment three ways: `bare` with literals blanked, `open` with their text restored,
+// and `words`, the segment split on whitespace with each literal replaced by OPAQUE in place, so a
+// quoted argument stays one word (or part of one, as in `--message="..."`) and keeps the position
+// a parser of argv needs. OPAQUE is a NUL, which mask() strips from the command, so a word that
+// holds one held a quoted string and equals no plain word. A segment that runs its literals as
+// commands is followed by their segments, read the same way.
+export const OPAQUE = '\0'
 export function segments(command, depth = 0) {
   const { text, literals } = mask(command)
   return text.split(SEPARATOR).flatMap((segment) => {
     const own = {
       bare: segment.replace(PLACEHOLDER, ' '),
       open: segment.replace(PLACEHOLDER, (_m, i) => ` ${literals[i]} `),
+      words: segment.replace(PLACEHOLDER, OPAQUE).split(/\s+/).filter(Boolean),
     }
     if (depth >= NESTING || !RUNS_TEXT.test(segment)) return [own]
     return [own, ...[...segment.matchAll(PLACEHOLDER)].flatMap(([, i]) => segments(literals[i], depth + 1))]

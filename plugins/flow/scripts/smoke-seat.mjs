@@ -5,14 +5,16 @@
 // The state directory is a temp directory named by FLOW_DELEGATION_STATE_DIR, and the races run as
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
-// Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, fastpath-*); --case-prefix <p>
+// Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
+// fastpath-*); the containment families run against a real temp git repository as the worktree.
+// --case-prefix <p>
 // runs only the cases whose name starts with p, and no match is a failure rather than a vacuous
 // pass. fastpath-latency prints the measured p50 cost of the catch-all hook and asserts no bound.
 // Run: node plugins/flow/scripts/smoke-seat.mjs [--case-prefix <p>]
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -91,6 +93,11 @@ function denied(run, pattern, what) {
   assert.equal(out.permissionDecision, 'deny', what)
   if (pattern) assert.match(out.permissionDecisionReason, pattern, what)
 }
+function blocked(run, pattern, what) {
+  assert.deepEqual(run.answer, { decision: 'block', reason: run.answer?.reason }, `${what}: expected a prompt block, got ${run.stdout}`)
+  assert.equal(typeof run.answer.reason, 'string', what)
+  if (pattern) assert.match(run.answer.reason, pattern, what)
+}
 function context(run, what) {
   assert.deepEqual(Object.keys(run.answer ?? {}), ['hookSpecificOutput'], `${what}: expected context, got ${run.stdout}`)
   const out = run.answer.hookSpecificOutput
@@ -131,6 +138,32 @@ function admittedSeat(provider, fields = {}) {
   assert.equal(store.stamp(id, 'admitted', { toolUseId: 'toolu_parent' }), true)
   return { id, digest, record: { ...record, id }, tag: store.seatTag(id) }
 }
+// The containment cases share one real git repository as the seat's worktree; tmp is a realpath,
+// so the worktree path is one too, as seat open records it.
+const worktree = join(tmp, 'wt')
+mkdirSync(worktree, { recursive: true })
+assert.equal(spawnSync('git', ['init', '-q', worktree]).status, 0, 'git init')
+const ACCESSES = ['read-only', 'workspace-write', 'review']
+// A seat bound on host with the given access, its worktree the shared repository.
+function boundSeat(host, access) {
+  const { id, tag } = admittedSeat(host, { access, worktree, repoRoot: worktree })
+  const session = randomUUID()
+  context(guard('prompt', host, promptCall(host, session, tag)), `${host} ${access} bind`)
+  return { id, session }
+}
+// One tool call in a bound seat. A cwd field given as undefined drops cwd from the call.
+const seatCall = (host, session, name, input, fields = {}) => {
+  const body = preCall(host, session, name, input, fields)
+  if ('cwd' in fields && fields.cwd === undefined) delete body.cwd
+  return guard('pre', host, body)
+}
+// One target as each edit tool names it: Claude's Edit, Write and NotebookEdit, and Codex's patch.
+const editCalls = (target) => [
+  ['Edit', { file_path: target, old_string: 'a', new_string: 'b' }],
+  ['Write', { file_path: target, content: 'x' }],
+  ['NotebookEdit', { notebook_path: target, new_source: 'x' }],
+  ['apply_patch', { command: `*** Begin Patch\n*** Add File: ${target}\n+x\n*** End Patch` }],
+]
 const indexEntries = () => (existsSync(join(seats, 'by-session')) ? readdirSync(join(seats, 'by-session')).sort() : [])
 const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b)
@@ -143,7 +176,8 @@ const cases = {
     assert.equal(JSON.stringify(wire.promptContext('a')), '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"a"}}')
     assert.deepEqual(wire.stopBlock('$.status: missing'), { decision: 'block', reason: '$.status: missing' })
     assert.equal(JSON.stringify(wire.stopBlock('r')), '{"decision":"block","reason":"r"}')
-    ok('promptContext and stopBlock print exactly the UserPromptSubmit context and Stop block shapes, with no extra keys')
+    assert.equal(JSON.stringify(wire.promptBlock('r')), '{"decision":"block","reason":"r"}')
+    ok('promptContext, promptBlock and stopBlock print exactly the UserPromptSubmit context, UserPromptSubmit block and Stop block shapes, with no extra keys')
   },
 
   'store-tag': () => {
@@ -280,11 +314,12 @@ const cases = {
     for (const host of ['', 'other', 'claude\0', undefined]) assert.equal(store.indexPath(host, 's1'), null)
     assert.ok(store.indexPath('claude', 'a'.repeat(128)))
     assert.deepEqual(entries(), before, 'a refused session reached the filesystem')
-    ok('a session id outside [A-Za-z0-9._-]{1,128} or an unknown host is refused before it reaches a filename')
+    for (const dots of ['.', '..', '...']) assert.equal(store.indexPath('codex', dots), join(seats, 'by-session', `codex-${dots}`))
+    ok('a session id outside [A-Za-z0-9._-]{1,128} or an unknown host is refused before it reaches a filename, and a dotted id stays one name below by-session')
 
     const session = '5d6d6ca0-12f6-4c6c-ab13-40be7c324794'
     const path = store.indexPath('codex', session)
-    assert.equal(path, join(seats, 'by-session', sha256(`codex\0${session}`)))
+    assert.equal(path, join(seats, 'by-session', `codex-${session}`))
     assert.notEqual(store.indexPath('claude', session), path, 'the host is part of the key')
     assert.equal(store.readIndex('codex', session), null)
     assert.equal(store.indexSession('codex', session, { id: '../x' }), false)
@@ -292,7 +327,7 @@ const cases = {
     assert.equal(store.indexSession('codex', session, { id: store.newId() }), false)
     assert.deepEqual(store.readIndex('codex', session), { id })
     assert.equal(store.readIndex('claude', session), null)
-    ok('the session index lives at sha256(host NUL session), is created once, and reads back {id}')
+    ok('the session index lives at <host>-<session>, is created once, and reads back {id}')
   },
 
   'store-void': () => {
@@ -589,11 +624,11 @@ const cases = {
       assert.deepEqual(store.readIndex(host, second), { id, void: 'already-bound' })
       assert.deepEqual(store.readIndex(host, first), { id })
       assert.equal(store.readStamp(id, 'bound').sessionId, first)
-      assert.equal(store.readStamp(id, 'void').reason, 'already-bound')
+      assert.equal(store.readStamp(id, 'void'), null, 'the replay voided the record the first session holds')
       denied(guard('pre', host, preCall(host, second, 'Bash', { command: 'pwd' })), /void seat/, 'the replayed session')
       silent(guard('pre', host, preCall(host, first, 'Bash', { command: 'pwd' })), 'the bound session')
     }
-    ok('a seat tag replayed in a second session voids that session and leaves the first binding in place, on both hosts')
+    ok('a seat tag replayed in a second session voids that session alone: the first binding stays in place and the record carries no void stamp, on both hosts')
   },
 
   'bind-invalid-session': () => {
@@ -603,15 +638,13 @@ const cases = {
         const before = indexEntries()
         const input = promptCall(host, session, tag)
         if (session === undefined) delete input.session_id
-        const text = context(guard('prompt', host, input), `${host} session ${JSON.stringify(session)}`)
-        assert.match(text, /void seat/)
-        assert.match(text, /session-id-invalid/)
+        blocked(guard('prompt', host, input), /could not be recorded for this session \(session-id-invalid\)/, `${host} session ${JSON.stringify(session)}`)
         assert.deepEqual(indexEntries(), before, 'an invalid session id reached the index')
         assert.equal(store.readStamp(id, 'void').reason, 'session-id-invalid')
         assert.equal(store.readStamp(id, 'bound'), null)
       }
     }
-    ok('a session id that fails validation voids the seat without crashing and writes no index entry, on both hosts')
+    ok('a session id that fails validation refuses the prompt, since no index can hold the session, voids the record and writes no index entry, on both hosts')
   },
 
   'bind-permission-mode': () => {
@@ -675,6 +708,224 @@ const cases = {
     ok('in a bound seat, an unreadable tool call and a missing or corrupt record are denied on both hosts, before any receipt')
   },
 
+  'bind-unindexed': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, tag } = admittedSeat(host)
+      const byId = join(seats, 'by-session')
+      mkdirSync(byId, { recursive: true })
+      chmodSync(byId, 0o500)
+      let run
+      try { run = guard('prompt', host, promptCall(host, randomUUID(), tag)) } finally { chmodSync(byId, 0o700) }
+      blocked(run, /could not be recorded for this session \(bind-failed\)/, `${host} unwritable index`)
+      assert.equal(store.readStamp(id, 'bound'), null)
+      assert.equal(store.readStamp(id, 'void').reason, 'bind-failed')
+
+      const voided = randomUUID()
+      context(guard('prompt', host, promptCall(host, voided, tag)), `${host} the record, retried`)
+      assert.deepEqual(store.readIndex(host, voided), { id, void: 'record-void' })
+      denied(guard('pre', host, preCall(host, voided, 'Read', { file_path: '/r/a' })), /void seat \(record-void\)/, `${host} a session holding a void index`)
+    }
+    ok('a tagged prompt whose session index cannot be written is refused rather than run with no seat, on both hosts; a session that holds a void index has every call denied')
+  },
+
+  'bind-record-void': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, tag } = admittedSeat(host)
+      const first = randomUUID()
+      assert.match(context(guard('prompt', host, promptCall(host, first, tag, { permission_mode: 'bypassPermissions' })), 'bad mode'), /permission-mode-not-allowed/)
+      assert.equal(store.readStamp(id, 'void').reason, 'permission-mode-not-allowed')
+      const fresh = randomUUID()
+      const text = context(guard('prompt', host, promptCall(host, fresh, tag)), `${host} replay with an allowed mode`)
+      assert.match(text, /void seat/)
+      assert.match(text, /record-void/)
+      assert.deepEqual(store.readIndex(host, fresh), { id, void: 'record-void' })
+      assert.equal(store.readStamp(id, 'bound'), null, 'a voided record was bound')
+      assert.equal(store.readStamp(id, 'void').reason, 'permission-mode-not-allowed', 'the replay rewrote the void stamp')
+    }
+    ok('a record voided by a failed first bind stays void: its tag replayed in a fresh session with an allowed mode binds nothing, on both hosts')
+  },
+
+  'spawn-names': () => {
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { session } = boundSeat(host, access)
+        for (const name of ['Agent', 'Task', 'Workflow', 'collaborationspawn_agent', 'spawn_agent', 'collaborationsend_input']) {
+          denied(seatCall(host, session, name, { prompt: 'do it' }), /\(no spawns\)/, `${host} ${access} ${name}`)
+        }
+        for (const name of ['Read', 'Grep', 'ToolSearch', 'TaskOutput']) silent(seatCall(host, session, name, { file_path: '/r/a' }), `${host} ${access} ${name}`)
+      }
+    }
+    ok('Agent, Task, Workflow, any *spawn_agent and any collaboration* tool are denied in every seat on both hosts, and Read, Grep, ToolSearch and TaskOutput are not')
+  },
+
+  'mcp-allowlist': () => {
+    const refused = [
+      'mcp__t3-code__delegate_task', 'mcp__t3_code__delegate_task', 'mcp__t3_code__orchestrator_capabilities',
+      'mcp__plugin_flow_flow_delegate__delegate_to_codex', 'mcp__plugin_flow_flow_delegate__delegate_to_claude',
+      'mcp__flow_delegate__delegate_to_claude', 'mcp__flow_delegate__delegate_to_codex', 'mcp__new__thing',
+      'mcp__claude_ai_Context7__query-docs-extra',
+    ]
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { session } = boundSeat(host, access)
+        for (const name of refused) denied(seatCall(host, session, name, {}), /\(MCP allowlist\)/, `${host} ${access} ${name}`)
+        for (const name of ['mcp__claude_ai_Context7__query-docs', 'mcp__claude_ai_Context7__resolve-library-id']) {
+          silent(seatCall(host, session, name, { libraryName: 'node' }), `${host} ${access} ${name}`)
+        }
+      }
+    }
+    ok('every MCP tool is denied in every seat on both hosts, T3\'s delegate_task under both spellings and flow_delegate under both included, except Context7\'s query-docs and resolve-library-id')
+
+    const record = seatRecord('claude')
+    const { id } = store.writeRecord(record, SCHEMA)
+    const { session } = boundSeat('claude', 'workspace-write')
+    denied(seatCall('claude', session, SPELLING.claude, delegateInput(record, id)), /\(MCP allowlist\)/, 'a seat delegating')
+    assert.equal(store.readStamp(id, 'admitted'), null, 'a seat\'s delegate_task admitted a record')
+    ok('a seat\'s own delegate_task for an admissible record is denied and admits nothing')
+  },
+
+  'edit-not-writer': () => {
+    for (const host of ['claude', 'codex']) {
+      for (const access of ['read-only', 'review']) {
+        const { session } = boundSeat(host, access)
+        for (const [name, input] of editCalls(join(worktree, 'a.txt'))) {
+          denied(seatCall(host, session, name, input, { cwd: worktree }), new RegExp(`\\(no edits\\): this ${access} seat`), `${host} ${access} ${name}`)
+        }
+      }
+    }
+    ok('a read-only or review seat is denied Edit, Write, NotebookEdit and apply_patch inside its own worktree, on both hosts')
+  },
+
+  'edit-writer': () => {
+    const outside = mkdtempSync(join(tmp, 'outside-'))
+    const sibling = `${worktree}-x`
+    mkdirSync(sibling, { recursive: true })
+    mkdirSync(join(worktree, 'src'), { recursive: true })
+    symlinkSync(outside, join(worktree, 'escape'))
+    symlinkSync(join(outside, 'not-yet'), join(worktree, 'dangling'))
+    symlinkSync(join(worktree, 'src'), join(worktree, 'inner'))
+    for (const host of ['claude', 'codex']) {
+      const { session } = boundSeat(host, 'workspace-write')
+      const allowed = [
+        join(worktree, 'a.txt'), join(worktree, 'src', 'new', 'deep.txt'), join(worktree, 'inner', 'b.txt'),
+        `${worktree}/src/../c.txt`, join(worktree, 'src', '.gitignore'),
+      ]
+      for (const target of allowed) {
+        for (const [name, input] of editCalls(target)) silent(seatCall(host, session, name, input, { cwd: worktree }), `${host} ${name} ${target}`)
+      }
+      const outsideTargets = [
+        join(sibling, 'a.txt'), join(worktree, 'escape', 'x.txt'), `${worktree}/escape/../x.txt`, join(worktree, 'dangling'),
+        `${worktree}/missing/../../x.txt`, `${worktree}/missing/../escape/x.txt`, join(outside, 'a.txt'), '/etc/passwd',
+      ]
+      for (const target of outsideTargets) {
+        for (const [name, input] of editCalls(target)) {
+          denied(seatCall(host, session, name, input, { cwd: worktree }), /\(edits inside the worktree\)/, `${host} ${name} ${target}`)
+        }
+      }
+      for (const target of [join(worktree, '.git', 'config'), join(worktree, '.git'), join(worktree, 'src', '.git', 'x'), `${worktree}/inner/../.git/HEAD`]) {
+        for (const [name, input] of editCalls(target)) denied(seatCall(host, session, name, input, { cwd: worktree }), /\(no \.git edits\)/, `${host} ${name} ${target}`)
+      }
+    }
+    ok('a writer seat edits inside its worktree, through an inner symlink or a not-yet-made directory, and is denied a sibling with the worktree as its prefix, a symlink or dangling symlink out, a `..` past a missing directory, and any .git segment')
+  },
+
+  'edit-patch': () => {
+    const { session } = boundSeat('codex', 'workspace-write')
+    const patch = (...lines) => ({ command: ['*** Begin Patch', ...lines, '*** End Patch'].join('\n') })
+    silent(seatCall('codex', session, 'apply_patch', patch('*** Add File: rel/a.txt', '+x'), { cwd: worktree }), 'a relative target inside')
+    silent(seatCall('codex', session, 'apply_patch', patch('*** Update File: b.txt', '@@', '-a', '+b', '*** Move to: c.txt'), { cwd: join(worktree, 'src') }), 'a move inside')
+    denied(seatCall('codex', session, 'apply_patch', patch('*** Add File: rel/a.txt', '+x'), { cwd: tmp }), /\(edits inside the worktree\)/, 'a relative target from a cwd outside')
+    denied(seatCall('codex', session, 'apply_patch', patch('*** Add File: a.txt', '+x', '*** Add File: ../outside.txt', '+y'), { cwd: worktree }), /\(edits inside the worktree\)/, 'a second target outside')
+    denied(seatCall('codex', session, 'apply_patch', patch('*** Update File: a.txt', '*** Move to: ../moved.txt'), { cwd: worktree }), /\(edits inside the worktree\)/, 'a move outside')
+    denied(seatCall('codex', session, 'apply_patch', patch('*** Add File: rel/a.txt', '+x'), { cwd: undefined }), /\(edits inside the worktree\)/, 'a relative target with no cwd')
+    for (const [what, input] of [
+      ['an unlisted directive', patch('*** Rename File: a.txt', '*** Add File: b.txt', '+x')],
+      ['no End Patch', { command: '*** Begin Patch\n*** Add File: a.txt\n+x' }],
+      ['no target', patch()],
+      ['no command', {}],
+      ['a command that is not a string', { command: ['*** Begin Patch'] }],
+      ['a benign file_path beside an unreadable patch', { file_path: join(worktree, 'a.txt'), command: '*** Begin Patch\n*** Add File: ../x' }],
+      ['an empty file_path', { file_path: '' }],
+    ]) denied(seatCall('codex', session, 'apply_patch', input, { cwd: worktree }), /\(edit targets\)/, what)
+    denied(seatCall('codex', session, 'Write', { file_path: join(worktree, 'a.txt'), command: patch('*** Add File: ../x.txt', '+x').command }, { cwd: worktree }), /\(edits inside the worktree\)/, 'a patch riding beside a benign file_path')
+    ok('a Codex writer\'s apply_patch resolves relative targets against the hook\'s cwd, allows targets and moves inside, and is denied any target outside or an envelope whose targets cannot all be read')
+  },
+
+  'bash-every-seat': () => {
+    const refused = [
+      ['git push', /\(no git push\)/], ['git push origin HEAD', /\(no git push\)/], [`git -C ${worktree} push`, /\(no git push\)/],
+      ['cd /r && git push --force-with-lease', /\(no git push\)/], ['bash -c "git push"', /\(no git push\)/], ['echo $(git push)', /\(no git push\)/],
+      ['/usr/bin/git -c x=y push', /\(no git push\)/], ['git "push"', /\(git\)/],
+      ['gh pr create --title t --body b', /\(no gh mutations\)/], [['gh -R o/r pr', 'merge 3'].join(' '), /\(no gh mutations\)/], ['gh issue comment 4 --body x', /\(no gh mutations\)/],
+      ['gh release create v1', /\(no gh mutations\)/], ['gh repo delete o/r --yes', /\(no gh mutations\)/],
+      ['gh api -X POST repos/o/r/issues', /\(no gh mutations\)/], ['gh api --method=PATCH repos/o/r', /\(no gh mutations\)/], ['gh api -XDELETE repos/o/r', /\(no gh mutations\)/],
+      ['gh api repos/o/r/issues -f title=x', /\(no gh mutations\)/], ['gh api graphql -F n=1', /\(no gh mutations\)/], ['gh api repos/o/r --input body.json', /\(no gh mutations\)/],
+      ['gh api repos/o/r --raw-field=a=b', /\(no gh mutations\)/], ['gh api -X "POST" repos/o/r', /\(no gh mutations\)/],
+      ['codex exec "fix it"', /\(no model through the shell\)/], ['claude -p "hi"', /\(no model through the shell\)/], ['flow-delegate --help', /\(no model through the shell\)/],
+      ['/home/u/.local/bin/flow-delegate run', /\(no model through the shell\)/], ['npx codex', /\(no model through the shell\)/], ['sh -c \'claude -p x\'', /\(no model through the shell\)/],
+    ]
+    const allowed = [
+      'echo "git push"', 'echo \'codex exec\'', 'printf "%s" "gh pr create"', 'cat <<\'E\'\ngit push\ngh pr create\nE', 'git status', 'git log --oneline -5', 'git diff HEAD~1',
+      'gh pr view 3', 'gh pr list --search "create"', 'gh api repos/o/r/pulls', 'gh api -X GET repos/o/r', 'gh api --method get repos/o/r', 'ls -la', 'node --version',
+    ]
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { session } = boundSeat(host, access)
+        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+        denied(seatCall(host, session, 'Bash', { command: 7 }), /\(shell\)/, `${host} ${access} an unreadable command`)
+      }
+    }
+    ok('every seat on both hosts is denied git push, gh mutations including gh api with a non-GET method or a field, and the claude, codex and flow-delegate commands; prose naming them in quotes or a heredoc, and plain reads, are allowed')
+  },
+
+  'bash-not-writer': () => {
+    const refused = [
+      'git commit -m x -- a.txt', `git -C ${worktree} commit -m x -- a.txt`, 'git add a.txt', 'git checkout main', 'git switch -c x', 'git restore a.txt',
+      'git reset --hard', 'git branch -D x', 'git branch --move a b', 'git branch -df x', 'git stash', 'git tag v1', 'git fetch', 'git pull',
+      'git config user.name x', 'git config set user.name x', 'git config --unset user.name', 'git worktree add ../x', 'git update-ref refs/heads/x HEAD', 'git clean -n',
+    ]
+    const allowed = ['git status', 'git log', 'git diff', 'git show HEAD', 'git branch', 'git branch -a', 'git config --get user.name', 'git config user.name', 'git config --list', 'git -C /r rev-parse HEAD']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ['read-only', 'review']) {
+        const { session } = boundSeat(host, access)
+        for (const command of refused) denied(seatCall(host, session, 'Bash', { command }), new RegExp(`\\(no git writes\\): .* this ${access} seat writes nothing`), `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+      }
+    }
+    ok('a read-only or review seat is denied every listed git write, -C or not, and allowed git status, log, diff, show, a branch listing and a config read')
+  },
+
+  'bash-writer': () => {
+    const escaped = worktree.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const form = (sub) => new RegExp(`\\(git -C the worktree\\): a git write in this seat runs only as \`git -C ${escaped} ${sub}`)
+    const commitForm = form('commit -m <message> -- <paths>`')
+    const refused = [
+      ['git commit -m x', commitForm],
+      ['git commit -m x -- a.txt', commitForm],
+      [`cd ${worktree} && git add a.txt`, form('add \\.\\.\\.`')],
+      [`git -C ${worktree}/ add a.txt`, form('add')], [`git -C ${worktree}-x add a.txt`, form('add')], [`git -C "${worktree}" add a.txt`, form('add')],
+      [`git -C ${worktree} --git-dir=/x commit -m x -- a.txt`, commitForm], [`git -C ${worktree} --work-tree /x add a.txt`, form('add')],
+      [`git -C ${worktree} -C ${worktree} add a.txt`, form('add')], [`git -C ${worktree} -c user.name=x commit -m x -- a.txt`, commitForm],
+      [`GIT_DIR=/x/.git git -C ${worktree} commit -m x -- a.txt`, commitForm], [`export GIT_WORK_TREE=/x; git -C ${worktree} add a.txt`, form('add')],
+      [`git -C ${worktree} commit -m x`, /\(commit by path\)/], [`git -C ${worktree} commit -am x -- a.txt`, /\(commit by path\)/],
+      [`git -C ${worktree} commit --all -m x`, /\(commit by path\)/], [`git -C ${worktree} commit -m "a b" --`, /\(commit by path\)/],
+      [`git -C ${worktree} commit --pathspec-from-file=list -m x`, /\(commit by path\)/],
+      [`git -C ${worktree} push`, /\(no git push\)/],
+    ]
+    const allowed = [
+      `git -C ${worktree} commit -m x -- a.txt`, `git -C ${worktree} commit -m "feat: x y" a.txt b.txt`, `git -C ${worktree} commit -F msg.txt -- "a b.txt"`,
+      `git -C ${worktree} commit -m x --amend -- a.txt`, `git -C ${worktree} add a.txt`, `git -C ${worktree} branch -D old`, `git -C ${worktree} config user.name x`,
+      'git status', 'git log --oneline', `git -C ${worktree} diff`, 'git branch',
+    ]
+    for (const host of ['claude', 'codex']) {
+      const { session } = boundSeat(host, 'workspace-write')
+      for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${command}`)
+      for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${command}`)
+    }
+    ok('a writer seat runs git writes only as git -C <worktree realpath> with no --git-dir, --work-tree, second -C, -c or GIT_DIR-style variable, and commits only named paths; a bare write is denied with the allowed form named')
+  },
+
   'fastpath-silent': () => {
     const fresh = join(tmp, 'fastpath-state')
     const env = { FLOW_DELEGATION_STATE_DIR: fresh }
@@ -707,11 +958,12 @@ registerHooks({ resolve(specifier, context, next) { const found = next(specifier
       }
       assert.ok(!loaded('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })).includes('seat-policy.mjs'), 'a non-seat tool call loaded the policy')
       assert.ok(!loaded('prompt', host, promptCall(host, session, 'plain prompt')).includes('seat-policy.mjs'), 'a plain prompt loaded the policy')
+      assert.ok(!loaded('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' })).includes('node:crypto'), 'a non-seat tool call loaded node:crypto')
       const plain = { task: 'Summarise the README.', role: 'general', runtimeMode: 'auto', target: { providerInstanceId: 'codex', model: MODELS.codex } }
       assert.ok(loaded('pre', host, preCall(host, session, SPELLING[host], plain)).includes('seat-policy.mjs'), 'the delegate_task gate never loaded the policy, so the trace proves nothing')
     }
     assert.equal(existsSync(fresh), false, 'a non-seat session wrote seat state')
-    ok('a non-seat session on either host, with or without a tag-like string, an unreadable body, or an untagged delegate_task, gets no answer, writes no state, and never loads seat-policy.mjs outside the gate')
+    ok('a non-seat session on either host, with or without a tag-like string, an unreadable body, or an untagged delegate_task, gets no answer, writes no state, never loads node:crypto, and never loads seat-policy.mjs outside the gate')
   },
 
   'fastpath-latency': () => {

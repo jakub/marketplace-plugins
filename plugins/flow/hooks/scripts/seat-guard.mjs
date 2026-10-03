@@ -21,10 +21,16 @@
 //
 // Order in pre: the seat checks run before the delegate_task gate, so a seat's own delegate_task
 // call is held as a seat call first and can never admit a record on the way.
+//
+// A tagged prompt ends one of three ways: bound, with the seat context; void, with the void
+// context; or refused outright. The session index is what makes every later tool call a seat
+// call, so a prompt whose session cannot end with a durable index entry, bound or void, is
+// refused: injecting the void context alone would leave the session's tool calls reading as a
+// non-seat's and running uncontained.
 
 import { existsSync } from 'node:fs'
 import * as store from '../../lib/seat-store.mjs'
-import { preToolDeny, promptContext, readHookInput } from './wire.mjs'
+import { applyPatchPaths, preToolDeny, promptBlock, promptContext, readHookInput } from './wire.mjs'
 
 const DELEGATE_TASK = /^mcp__t3[-_]code__delegate_task$/
 const [mode, host] = process.argv.slice(2)
@@ -42,10 +48,15 @@ async function prompt(input) {
   const id = tag.id ?? null
 
   const voidSeat = (reason) => {
-    // Each write is best effort: the context still reaches the child when the state dir refuses.
-    try { if (id) store.stamp(id, 'void', { reason }) } catch (error) { complain(`void stamp: ${error.message}`) }
-    try { store.voidSession(host, sessionId, id, reason) } catch (error) { complain(`void index: ${error.message}`) }
-    answer(promptContext(policy.voidSeatContext(reason)))
+    // The record's void stamp is its first claimant's alone: a tag replayed in another session
+    // voids that session and never touches a record someone else already bound. The stamp is
+    // best effort; the session index is what holds the session.
+    try {
+      if (id && store.readStamp(id, 'bound') === null) store.stamp(id, 'void', { reason })
+    } catch (error) { complain(`void stamp: ${error.message}`) }
+    let indexed = false
+    try { indexed = store.voidSession(host, sessionId, id, reason) } catch (error) { complain(`void index: ${error.message}`) }
+    answer(indexed ? promptContext(policy.voidSeatContext(reason)) : promptBlock(policy.unindexedSeatReason(reason)))
   }
   if (tag.void) return voidSeat(tag.void)
 
@@ -58,6 +69,7 @@ async function prompt(input) {
       seat,
       admitted: store.readStamp(id, 'admitted'),
       bound: store.readStamp(id, 'bound'),
+      voided: store.readStamp(id, 'void'),
     })
     if (problem) return voidSeat(problem)
     if (!store.indexSession(host, sessionId, { id })) return voidSeat('session-already-indexed')
@@ -89,6 +101,11 @@ async function pre(input) {
         // The receipt proves a seat call reached this hook. It is written before any decision on
         // the call, so a seat whose first call is denied still shows the hook ran.
         store.stamp(entry.id, 'receipt', { tool: toolName })
+        const reason = policy.toolProblem(
+          { record: seat.record, toolName, toolInput: input.tool_input, cwd: input.cwd },
+          { patchPaths: applyPatchPaths },
+        )
+        if (reason) return answer(preToolDeny(reason))
       }
     } catch (error) {
       complain(`seat: ${error.message}`)

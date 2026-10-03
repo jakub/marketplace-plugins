@@ -42,6 +42,13 @@ export const promptContext = (text) => ({
 })
 
 /**
+ * The UserPromptSubmit answer that refuses the prompt, so no turn runs on it. Both harnesses read
+ * this top-level block decision on UserPromptSubmit; it has not yet been measured from a live T3
+ * child, so a harness that ignored it would run the prompt with no seat context.
+ */
+export const promptBlock = (reason) => ({ decision: 'block', reason })
+
+/**
  * The Stop answer that refuses the stop and hands the reason back to the model as its next
  * instruction. Both harnesses hold the turn open on it until the model stops again.
  */
