@@ -54,6 +54,43 @@ try {
     ok(`hooks/${file} registers one session and one subagent charter hook`)
   }
 
+  // Codex keys a hook's trust by its position and hashes its command string, so a group inserted
+  // ahead of these, or an edited command, silently untrusts a hook a human already trusted. This
+  // table is literal, copied from hooks/codex.json before the seat guard was added, and is never
+  // regenerated from the file: a new group goes after these, never between them.
+  const CODEX_TRUSTED = {
+    'PreToolUse:0:0': 'node "${PLUGIN_ROOT}/hooks/scripts/no-backlog-guard.mjs"',
+    'PreToolUse:0:1': 'node "${PLUGIN_ROOT}/hooks/scripts/git-guard.mjs"',
+    'PreToolUse:0:2': 'node "${PLUGIN_ROOT}/hooks/scripts/publish-guard-codex.mjs"',
+    'PreToolUse:1:0': 'node "${PLUGIN_ROOT}/hooks/scripts/protect-files-codex.mjs"',
+    'SessionStart:0:0': 'node "${PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs" session codex',
+    'SessionStart:1:0': 'node "${PLUGIN_ROOT}/scripts/install-delegate.mjs" install',
+    'SubagentStart:0:0': 'node "${PLUGIN_ROOT}/hooks/scripts/inject-charter.mjs" subagent codex',
+  }
+  const codexHooks = JSON.parse(readFileSync(join(ROOT, 'hooks', 'codex.json'), 'utf8')).hooks
+  for (const [key, command] of Object.entries(CODEX_TRUSTED)) {
+    const [event, group, handler] = key.split(':')
+    assert.equal(codexHooks[event]?.[Number(group)]?.hooks?.[Number(handler)]?.command, command, `hooks/codex.json moved or changed ${key}`)
+  }
+  assert.equal(codexHooks.PreToolUse[0].matcher, 'Bash')
+  assert.equal(codexHooks.PreToolUse[1].matcher, 'apply_patch|Edit|Write')
+  assert.equal(codexHooks.PreToolUse[0].hooks.length, 3)
+  ok(`hooks/codex.json keeps all ${Object.keys(CODEX_TRUSTED).length} trusted hooks at their positions with their command strings`)
+
+  for (const [file, variable, host, matcher] of [['hooks.json', 'CLAUDE_PLUGIN_ROOT', 'claude', '*'], ['codex.json', 'PLUGIN_ROOT', 'codex', '.*']]) {
+    const { hooks } = JSON.parse(readFileSync(join(ROOT, 'hooks', file), 'utf8'))
+    const command = (mode) => `node "\${${variable}}/hooks/scripts/seat-guard.mjs" ${mode} ${host}`
+    const seatGroups = (event) => (hooks[event] ?? []).filter((group) => group.hooks.some((hook) => hook.command.includes('seat-guard.mjs')))
+    const pre = hooks.PreToolUse.at(-1)
+    assert.deepEqual(seatGroups('PreToolUse'), [pre], `hooks/${file}: the seat guard is not the last PreToolUse group alone`)
+    assert.deepEqual(pre, { matcher, hooks: [{ type: 'command', command: command('pre'), timeout: 10 }] })
+    assert.deepEqual(hooks.UserPromptSubmit, [{ hooks: [{ type: 'command', command: command('prompt'), timeout: 10 }] }])
+    for (const event of Object.keys(hooks).filter((name) => !['PreToolUse', 'UserPromptSubmit'].includes(name))) {
+      assert.deepEqual(seatGroups(event), [], `hooks/${file} registers the seat guard on ${event}`)
+    }
+    ok(`hooks/${file} registers the seat guard as the last PreToolUse group, matcher ${JSON.stringify(matcher)}, and on UserPromptSubmit`)
+  }
+
   const seat = seatPayload(charter)
   for (const host of ['claude', 'codex']) {
     for (const input of [JSON.stringify({ agent_type: 'general-purpose' }), '{']) {

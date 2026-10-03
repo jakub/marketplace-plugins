@@ -1,15 +1,19 @@
 #!/usr/bin/env node
-// Smoke for T3 seats: the seat store in lib/seat-store.mjs and the answer shapes the seat guard
-// prints through hooks/scripts/wire.mjs. The state directory is a temp directory named by
-// FLOW_DELEGATION_STATE_DIR, and the races run as separate node processes released together, so
-// the write-once claims are tested against real concurrent link(2) calls, not a single event loop.
-// Cases are grouped by prefix (store-*, wire-*); --case-prefix <p> runs only the cases whose name
-// starts with p, and no match is a failure rather than a vacuous pass.
+// Smoke for T3 seats: the seat store in lib/seat-store.mjs, the answer shapes the seat guard
+// prints through hooks/scripts/wire.mjs, and the seat guard itself, run as a real hook process with
+// a fixture call on stdin shaped like the calls Claude Code 2.1.288 and Codex 0.160.0 sent live.
+// The state directory is a temp directory named by FLOW_DELEGATION_STATE_DIR, and the races run as
+// separate node processes released together, so the write-once claims are tested against real
+// concurrent link(2) calls, not a single event loop.
+// Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, fastpath-*); --case-prefix <p>
+// runs only the cases whose name starts with p, and no match is a failure rather than a vacuous
+// pass. fastpath-latency prints the measured p50 cost of the catch-all hook and asserts no bound.
 // Run: node plugins/flow/scripts/smoke-seat.mjs [--case-prefix <p>]
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { spawn, spawnSync } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { performance } from 'node:perf_hooks'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -66,6 +70,71 @@ async function race(kind, id, session, count) {
   }
   writeFileSync(go, '')
   return Promise.all(runs)
+}
+
+// The seat guard as the host runs it: one process per call, the call as JSON on stdin. It must
+// exit 0 on every path; an answer is one JSON document on stdout, and an allow prints nothing.
+const GUARD = join(PLUGIN, 'hooks', 'scripts', 'seat-guard.mjs')
+function guard(mode, host, input, { env = {}, nodeArgs = [] } = {}) {
+  const run = spawnSync(process.execPath, [...nodeArgs, GUARD, mode, host], {
+    input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...process.env, ...env },
+  })
+  assert.equal(run.status, 0, `seat-guard ${mode} ${host} exited ${run.status}: ${run.stderr}`)
+  return { stdout: run.stdout, stderr: run.stderr, answer: run.stdout ? JSON.parse(run.stdout) : null }
+}
+const silent = (run, what) => assert.equal(run.stdout, '', `${what}: expected no answer, got ${run.stdout}`)
+function denied(run, pattern, what) {
+  assert.deepEqual(Object.keys(run.answer ?? {}), ['hookSpecificOutput'], `${what}: expected a deny, got ${run.stdout}`)
+  const out = run.answer.hookSpecificOutput
+  assert.deepEqual(Object.keys(out), ['hookEventName', 'permissionDecision', 'permissionDecisionReason'], what)
+  assert.equal(out.hookEventName, 'PreToolUse', what)
+  assert.equal(out.permissionDecision, 'deny', what)
+  if (pattern) assert.match(out.permissionDecisionReason, pattern, what)
+}
+function context(run, what) {
+  assert.deepEqual(Object.keys(run.answer ?? {}), ['hookSpecificOutput'], `${what}: expected context, got ${run.stdout}`)
+  const out = run.answer.hookSpecificOutput
+  assert.deepEqual(Object.keys(out), ['hookEventName', 'additionalContext'], what)
+  assert.equal(out.hookEventName, 'UserPromptSubmit', what)
+  return out.additionalContext
+}
+
+// Fixture calls, shaped like the ones the cp0 pin hook logged from live T3 children: Claude sends
+// prompt_id and, on PreToolUse, effort; Codex sends turn_id and model. tool_input is an object.
+const MODELS = { claude: 'claude-opus-5-5', codex: 'gpt-6-luna' }
+const PERMISSION = { claude: 'auto', codex: 'default' }
+const SPELLING = { claude: 'mcp__t3-code__delegate_task', codex: 'mcp__t3_code__delegate_task' }
+const INSTANCE = { claude: 'claudeAgent', codex: 'codex' }
+function call(host, session, fields) {
+  const base = host === 'claude'
+    ? { session_id: session, transcript_path: `/home/u/.claude/projects/-home-u-repo/${session}.jsonl`, cwd: '/home/u/repo', prompt_id: randomUUID(), permission_mode: PERMISSION.claude }
+    : { session_id: session, turn_id: randomUUID(), transcript_path: `/home/u/.codex/sessions/2026/10/03/rollout-${session}.jsonl`, cwd: '/home/u/repo', model: MODELS.codex, permission_mode: PERMISSION.codex }
+  return { ...base, ...fields }
+}
+const promptCall = (host, session, prompt, fields = {}) => call(host, session, { hook_event_name: 'UserPromptSubmit', prompt, ...fields })
+const preCall = (host, session, toolName, toolInput, fields = {}) => call(host, session, {
+  ...(host === 'claude' ? { effort: { level: 'medium' } } : {}),
+  hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput,
+  tool_use_id: host === 'claude' ? `toolu_${randomUUID().replaceAll('-', '')}` : `exec-${randomUUID()}`, ...fields,
+})
+// A delegate_task call for a record, as the delegate skill tells a parent to make it.
+const delegateInput = (record, id, fields = {}) => ({
+  task: `${store.seatTag(id)}\nWorktree: ${record.worktree}\nRead the diff and answer in the flow envelope.`,
+  role: 'general', runtimeMode: record.runtimeMode,
+  target: { providerInstanceId: INSTANCE[record.provider], model: record.model }, mode: 'async', ...fields,
+})
+const seatRecord = (provider, fields = {}) => RECORD({ provider, model: MODELS[provider], ...fields })
+// A record the parent has opened and its gate has admitted, ready for the child to bind.
+function admittedSeat(provider, fields = {}) {
+  const record = seatRecord(provider, fields)
+  const { id, digest } = store.writeRecord(record, SCHEMA)
+  assert.equal(store.stamp(id, 'admitted', { toolUseId: 'toolu_parent' }), true)
+  return { id, digest, record: { ...record, id }, tag: store.seatTag(id) }
+}
+const indexEntries = () => (existsSync(join(seats, 'by-session')) ? readdirSync(join(seats, 'by-session')).sort() : [])
+const median = (values) => {
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
 }
 
 const cases = {
@@ -326,6 +395,346 @@ const cases = {
     assert.equal(mode(store.indexPath('claude', 'modes')), 0o600)
     assert.equal(mode(store.indexPath('codex', 'modes')), 0o600)
     ok('every seat directory is 0700 and every record, stamp, state, result and index file is 0600')
+  },
+  'admit-tagged': () => {
+    const before = indexEntries()
+    for (const host of ['claude', 'codex']) {
+      for (const spelling of Object.values(SPELLING)) {
+        for (const provider of ['claude', 'codex']) {
+          const record = seatRecord(provider)
+          const { id } = store.writeRecord(record, SCHEMA)
+          const parent = randomUUID()
+          const first = preCall(host, parent, spelling, delegateInput(record, id))
+          silent(guard('pre', host, first), `${host} ${spelling} ${provider}`)
+          assert.equal(store.readStamp(id, 'admitted').toolUseId, first.tool_use_id)
+          denied(guard('pre', host, preCall(host, parent, spelling, delegateInput(record, id))), /already admitted/, 'a second admission')
+          assert.equal(store.readStamp(id, 'admitted').toolUseId, first.tool_use_id, 'the refused admission changed the stamp')
+        }
+      }
+    }
+    assert.deepEqual(indexEntries(), before, 'admission indexed the parent session as a seat')
+    ok('a tagged delegate_task matching its record is admitted once, under both T3 spellings, on both hosts, for both providers; a second admission is denied')
+  },
+
+  'admit-runtime-mode': () => {
+    const record = seatRecord('claude')
+    const { id } = store.writeRecord(record, SCHEMA)
+    for (const host of ['claude', 'codex']) {
+      for (const runtimeMode of [undefined, null, 'inherit']) {
+        const tagged = delegateInput(record, id, { runtimeMode })
+        const untagged = { ...tagged, task: 'Summarise the README.' }
+        if (runtimeMode === undefined) { delete tagged.runtimeMode; delete untagged.runtimeMode }
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], tagged)), /names runtimeMode/, `tagged ${runtimeMode}`)
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], untagged)), /names runtimeMode/, `untagged ${runtimeMode}`)
+      }
+    }
+    assert.equal(store.readStamp(id, 'admitted'), null, 'a refused call admitted the record')
+    ok('a delegate_task call whose runtimeMode is missing, null or inherit is denied on both hosts, tagged or not, and admits nothing')
+
+    const before = readdirSync(seats).sort()
+    for (const host of ['claude', 'codex']) {
+      for (const runtimeMode of ['auto', 'full-access']) {
+        const plain = { task: 'Summarise the README.', role: 'general', runtimeMode, target: { providerInstanceId: 'codex', model: MODELS.codex } }
+        silent(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], plain)), `untagged ${runtimeMode}`)
+      }
+    }
+    assert.deepEqual(readdirSync(seats).sort(), before, 'an untagged call wrote seat state')
+    ok('an untagged delegate_task call naming its runtimeMode is allowed and writes nothing')
+  },
+
+  'admit-mismatch': () => {
+    const record = seatRecord('claude')
+    const { id } = store.writeRecord(record, SCHEMA)
+    const host = 'claude'
+    const variants = [
+      [{ target: { providerInstanceId: 'codex', model: record.model } }, /provider must be "claude"/],
+      [{ target: { providerInstanceId: 'claudeAgent', model: 'claude-sonnet-5-5' } }, /model must be "claude-opus-5-5"/],
+      [{ runtimeMode: 'full-access' }, /runtimeMode must be "auto"/],
+      [{ runtimeMode: 'full-access', target: { providerInstanceId: 'codex', model: MODELS.codex } }, /runtimeMode must be "auto"; provider must be "claude"; model must be/],
+      [{ role: 'reviewer' }, /role "general"/],
+      [{ role: undefined }, /role "general"/],
+      [{ target: { providerInstanceId: 'openai', model: record.model } }, /neither claudeAgent nor codex/],
+    ]
+    for (const [fields, pattern] of variants) {
+      denied(guard('pre', host, preCall(host, randomUUID(), SPELLING.claude, delegateInput(record, id, fields))), pattern, JSON.stringify(fields))
+      assert.equal(store.readStamp(id, 'admitted'), null, `${JSON.stringify(fields)} admitted the record`)
+    }
+    silent(guard('pre', host, preCall(host, randomUUID(), SPELLING.claude, delegateInput(record, id))), 'the matching call after the refusals')
+    assert.ok(store.readStamp(id, 'admitted'))
+    ok('a tagged call whose provider, model, runtimeMode or role differs from the record is denied and admits nothing; the matching call is still admitted after')
+  },
+
+  'admit-tag-line': () => {
+    const record = seatRecord('codex')
+    const { id } = store.writeRecord(record, SCHEMA)
+    const tag = store.seatTag(id)
+    for (const task of [`Do the work.\n${tag}`, `please ${tag}\nDo the work.`, `${tag} \nDo the work.`, `${tag}\nbody\n${tag}`]) {
+      for (const host of ['claude', 'codex']) {
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], delegateInput(record, id, { task }))), /not as the whole of line 1/, JSON.stringify(task))
+      }
+    }
+    assert.equal(store.readStamp(id, 'admitted'), null)
+    ok('a seat tag anywhere but alone on line 1 is denied on both hosts and admits nothing')
+  },
+
+  'admit-unreadable': () => {
+    const record = seatRecord('claude')
+    const { id } = store.writeRecord(record, SCHEMA)
+    const good = delegateInput(record, id)
+    const variants = [
+      ['tool_input a JSON string', JSON.stringify(good), /could not be read/],
+      ['tool_input null', null, /could not be read/],
+      ['tool_input an array', [good], /could not be read/],
+      ['tool_input missing', undefined, /could not be read/],
+      ['runtimeMode a number', { ...good, runtimeMode: 1 }, /runtimeMode is not a string/],
+      ['task missing', { ...good, task: undefined }, /task is not a string/],
+      ['task an array', { ...good, task: [good.task] }, /task is not a string/],
+      ['target missing', { ...good, target: undefined }, /target.providerInstanceId or target.model could not be read/],
+      ['target a string', { ...good, target: 'claudeAgent' }, /could not be read/],
+      ['providerInstanceId a number', { ...good, target: { providerInstanceId: 1, model: record.model } }, /could not be read/],
+      ['model missing', { ...good, target: { providerInstanceId: 'claudeAgent' } }, /could not be read/],
+      ['no record for the tag', { ...good, task: `${store.seatTag(store.newId())}\nwork` }, /no readable seat record/],
+    ]
+    for (const host of ['claude', 'codex']) {
+      for (const [what, toolInput, pattern] of variants) {
+        const input = preCall(host, randomUUID(), SPELLING[host], toolInput)
+        if (toolInput === undefined) delete input.tool_input
+        denied(guard('pre', host, input), pattern, `${host}: ${what}`)
+      }
+    }
+    assert.equal(store.readStamp(id, 'admitted'), null)
+    ok('a delegate_task call with an unreadable tool_input, runtimeMode, task or target, or a tag naming no record, is denied on both hosts')
+  },
+
+  'admit-race': async () => {
+    const record = seatRecord('claude')
+    const { id } = store.writeRecord(record, SCHEMA)
+    const runs = Array.from({ length: 6 }, () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [GUARD, 'pre', 'claude'], { stdio: ['pipe', 'pipe', 'inherit'] })
+      let out = ''
+      child.stdout.on('data', (chunk) => { out += chunk })
+      child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(`seat-guard exit ${code}`))))
+      child.stdin.end(JSON.stringify(preCall('claude', randomUUID(), SPELLING.claude, delegateInput(record, id))))
+    }))
+    const outs = await Promise.all(runs)
+    assert.equal(outs.filter((out) => out === '').length, 1, JSON.stringify(outs))
+    for (const out of outs.filter(Boolean)) assert.match(JSON.parse(out).hookSpecificOutput.permissionDecisionReason, /admitted/)
+    ok('six concurrent admissions of one record: exactly one is allowed and the rest are denied')
+  },
+
+  'bind-happy': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, digest, tag } = admittedSeat(host)
+      const session = randomUUID()
+      const prompt = promptCall(host, session, `${tag}\nWorktree: /r\nRead the diff.`)
+      const text = context(guard('prompt', host, prompt), `${host} bind`)
+      assert.ok(text.startsWith('The orchestrator half of the flow charter does not apply in this session'), text)
+      assert.match(text, new RegExp(`Seat ${id}:`))
+      assert.match(text, /"status": "done" \| "partial" \| "blocked"/)
+      assert.match(text, /"checksRun": \[\]/)
+      assert.ok(!text.includes('<flow-charter'), 'the bind re-sent the charter')
+      assert.deepEqual(store.readIndex(host, session), { id })
+      const bound = store.readStamp(id, 'bound')
+      assert.deepEqual({ ...bound, at: undefined }, {
+        at: undefined, sessionId: session, host, permissionMode: PERMISSION[host], cwd: '/home/u/repo', recordDigest: digest,
+        ...(host === 'codex' ? { model: MODELS.codex } : {}),
+      })
+      assert.equal(store.readStamp(id, 'void'), null)
+
+      assert.equal(store.readStamp(id, 'receipt'), null)
+      silent(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), `${host} first seat call`)
+      const receipt = store.readStamp(id, 'receipt')
+      assert.equal(receipt.tool, 'Bash')
+      silent(guard('pre', host, preCall(host, session, 'Read', { file_path: '/r/README.md' })), `${host} second seat call`)
+      assert.deepEqual(store.readStamp(id, 'receipt'), receipt, 'a later call rewrote the receipt')
+    }
+    ok(`a tagged first prompt binds on Claude (permission_mode ${PERMISSION.claude}) and Codex (${PERMISSION.codex}): index and bound stamp written, the override and envelope injected, and the first seat call stamps the receipt once`)
+
+    const writer = admittedSeat('claude', { access: 'workspace-write', worktree: '/r/.flow-worktrees/w' })
+    const writerText = context(guard('prompt', 'claude', promptCall('claude', randomUUID(), writer.tag)), 'writer bind')
+    assert.ok(writerText.includes('git -C /r/.flow-worktrees/w commit -- <paths>'), writerText)
+    assert.match(writerText, /"commits": \[\{"sha": "", "subject": ""\}\]/)
+    const review = admittedSeat('codex', { access: 'review', worktree: '/r/.flow-worktrees/review-x', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) })
+    const reviewText = context(guard('prompt', 'codex', promptCall('codex', randomUUID(), review.tag)), 'review bind')
+    assert.ok(reviewText.includes(`base ${'a'.repeat(40)}, head ${'b'.repeat(40)}`), reviewText)
+    assert.ok(!reviewText.includes('commits'), 'a review was told to report commits')
+    ok('a writer seat is told its worktree, the git -C commit form and the commits field; a review seat its base and head')
+  },
+
+  'bind-not-admitted': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id } = store.writeRecord(seatRecord(host), SCHEMA)
+      const session = randomUUID()
+      const text = context(guard('prompt', host, promptCall(host, session, `${store.seatTag(id)}\nwork`)), `${host} unadmitted`)
+      assert.match(text, /void seat/)
+      assert.match(text, /not-admitted/)
+      assert.deepEqual(store.readIndex(host, session), { id, void: 'not-admitted' })
+      assert.equal(store.readStamp(id, 'void').reason, 'not-admitted')
+      assert.equal(store.readStamp(id, 'bound'), null)
+      denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), /void seat \(not-admitted\)/, `${host} void seat call`)
+      denied(guard('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' })), /void seat/, `${host} void seat read`)
+      assert.equal(store.readStamp(id, 'receipt'), null, 'a void seat stamped a receipt')
+    }
+    ok('a tag whose record was never admitted voids the session on both hosts: void index and stamp, no bound stamp, and every tool call denied')
+  },
+
+  'bind-replay': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, tag } = admittedSeat(host)
+      const first = randomUUID()
+      const second = randomUUID()
+      context(guard('prompt', host, promptCall(host, first, tag)), 'first bind')
+      const text = context(guard('prompt', host, promptCall(host, second, tag)), 'replay')
+      assert.match(text, /void seat/)
+      assert.deepEqual(store.readIndex(host, second), { id, void: 'already-bound' })
+      assert.deepEqual(store.readIndex(host, first), { id })
+      assert.equal(store.readStamp(id, 'bound').sessionId, first)
+      assert.equal(store.readStamp(id, 'void').reason, 'already-bound')
+      denied(guard('pre', host, preCall(host, second, 'Bash', { command: 'pwd' })), /void seat/, 'the replayed session')
+      silent(guard('pre', host, preCall(host, first, 'Bash', { command: 'pwd' })), 'the bound session')
+    }
+    ok('a seat tag replayed in a second session voids that session and leaves the first binding in place, on both hosts')
+  },
+
+  'bind-invalid-session': () => {
+    for (const host of ['claude', 'codex']) {
+      for (const session of ['../../etc/passwd', 'a b', '', 'x'.repeat(129), undefined, 42]) {
+        const { id, tag } = admittedSeat(host)
+        const before = indexEntries()
+        const input = promptCall(host, session, tag)
+        if (session === undefined) delete input.session_id
+        const text = context(guard('prompt', host, input), `${host} session ${JSON.stringify(session)}`)
+        assert.match(text, /void seat/)
+        assert.match(text, /session-id-invalid/)
+        assert.deepEqual(indexEntries(), before, 'an invalid session id reached the index')
+        assert.equal(store.readStamp(id, 'void').reason, 'session-id-invalid')
+        assert.equal(store.readStamp(id, 'bound'), null)
+      }
+    }
+    ok('a session id that fails validation voids the seat without crashing and writes no index entry, on both hosts')
+  },
+
+  'bind-permission-mode': () => {
+    const refused = { claude: ['bypassPermissions', 'default', 'plan', 'acceptEdits', 'AUTO', undefined, 1], codex: ['bypassPermissions', 'auto', 'dangerFullAccess', undefined] }
+    for (const [host, modes] of Object.entries(refused)) {
+      for (const permissionMode of modes) {
+        const { id, tag } = admittedSeat(host)
+        const session = randomUUID()
+        const input = promptCall(host, session, tag, { permission_mode: permissionMode })
+        if (permissionMode === undefined) delete input.permission_mode
+        assert.match(context(guard('prompt', host, input), `${host} ${permissionMode}`), /permission-mode-not-allowed/)
+        assert.deepEqual(store.readIndex(host, session), { id, void: 'permission-mode-not-allowed' })
+        assert.equal(store.readStamp(id, 'bound'), null)
+      }
+    }
+    ok('a permission_mode outside the host\'s set (Claude auto, Codex default) voids the seat: bypassPermissions, another mode, a wrong case, or none')
+  },
+
+  'bind-tag-line': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, tag } = admittedSeat(host)
+      const session = randomUUID()
+      const text = context(guard('prompt', host, promptCall(host, session, `Please do this.\n${tag}`)), `${host} tag below line 1`)
+      assert.match(text, /tag-not-on-line-1/)
+      assert.deepEqual(store.readIndex(host, session), { id: null, void: 'tag-not-on-line-1' })
+      assert.equal(store.readStamp(id, 'bound'), null)
+      denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), /void seat/, 'the voided session')
+    }
+    ok('a seat tag below line 1 voids the session with no record named, and every tool call is denied')
+  },
+
+  'bind-record-faults': () => {
+    for (const host of ['claude', 'codex']) {
+      const missing = store.newId()
+      const session = randomUUID()
+      assert.match(context(guard('prompt', host, promptCall(host, session, store.seatTag(missing))), 'no record'), /record-missing/)
+      assert.deepEqual(store.readIndex(host, session), { id: missing, void: 'record-missing' })
+      assert.equal(existsSync(join(seats, missing)), false, 'a void stamp created a record directory')
+    }
+    const other = admittedSeat('codex')
+    const session = randomUUID()
+    assert.match(context(guard('prompt', 'claude', promptCall('claude', session, other.tag)), 'host mismatch'), /host-mismatch/)
+    assert.deepEqual(store.readIndex('claude', session), { id: other.id, void: 'host-mismatch' })
+    ok('a tag naming no record voids the session without creating one, and a Codex record bound from a Claude session is void')
+
+    for (const host of ['claude', 'codex']) {
+      const { id, tag } = admittedSeat(host)
+      const bound = randomUUID()
+      context(guard('prompt', host, promptCall(host, bound, tag)), 'bind')
+      for (const [what, input] of [
+        ['tool_input a string', preCall(host, bound, 'Bash', JSON.stringify({ command: 'pwd' }))],
+        ['tool_input null', preCall(host, bound, 'Bash', null)],
+        ['tool_name missing', preCall(host, bound, undefined, { command: 'pwd' })],
+      ]) denied(guard('pre', host, input), /could not be read/, `${host}: ${what}`)
+      assert.equal(store.readStamp(id, 'receipt'), null, 'an unreadable call stamped the receipt')
+      writeFileSync(join(seats, id, 'record.json'), '{"v":1,')
+      denied(guard('pre', host, preCall(host, bound, 'Bash', { command: 'pwd' })), /missing or corrupt/, `${host}: corrupt record`)
+      rmSync(join(seats, id), { recursive: true, force: true })
+      denied(guard('pre', host, preCall(host, bound, 'Read', { file_path: '/r/a' })), /missing or corrupt/, `${host}: removed record`)
+    }
+    ok('in a bound seat, an unreadable tool call and a missing or corrupt record are denied on both hosts, before any receipt')
+  },
+
+  'fastpath-silent': () => {
+    const fresh = join(tmp, 'fastpath-state')
+    const env = { FLOW_DELEGATION_STATE_DIR: fresh }
+    const trace = join(tmp, 'fastpath-trace.mjs')
+    const traceLog = join(tmp, 'fastpath-trace.log')
+    writeFileSync(trace, `import { appendFileSync } from 'node:fs'
+import { registerHooks } from 'node:module'
+registerHooks({ resolve(specifier, context, next) { const found = next(specifier, context); appendFileSync(process.env.SEAT_TRACE, found.url + '\\n'); return found } })
+`)
+    const loaded = (mode, host, input) => {
+      rmSync(traceLog, { force: true })
+      silent(guard(mode, host, input, { env: { ...env, SEAT_TRACE: traceLog }, nodeArgs: ['--import', pathToFileURL(trace).href] }), `${mode} ${host} traced`)
+      return readFileSync(traceLog, 'utf8')
+    }
+    for (const host of ['claude', 'codex']) {
+      const session = randomUUID()
+      const calls = [
+        ['prompt', promptCall(host, session, 'Run the prep scouts for issue 12.')],
+        ['prompt', promptCall(host, session, 'Explain what <flow-seat id=xyz> means.')],
+        ['pre', preCall(host, session, 'Bash', { command: 'git status' })],
+        ['pre', preCall(host, session, 'Read', { file_path: '/home/u/repo/README.md' })],
+        ['pre', preCall(host, session, host === 'claude' ? 'mcp__claude_ai_Context7__resolve-library-id' : 'mcp__t3_code__task_status', { libraryName: 'node' },
+          host === 'claude' ? { mcp_server: { name: 'claude.ai Context7', source: 'claudeai' } } : {})],
+        ['pre', preCall(host, session, host === 'claude' ? 'Edit' : 'apply_patch', host === 'claude' ? { file_path: '/home/u/repo/a', old_string: 'a', new_string: 'b' } : { command: '*** Begin Patch\n*** Add File: a\n+x\n*** End Patch' })],
+        ['stop', call(host, session, { hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' })],
+      ]
+      for (const [mode, input] of calls) silent(guard(mode, host, input, { env }), `${host} ${mode} ${input.tool_name ?? ''}`)
+      for (const mode of ['prompt', 'pre', 'stop']) {
+        for (const body of ['', '{', 'null', '[]', '"text"', '{"session_id":']) silent(guard(mode, host, body, { env }), `${host} ${mode} unreadable ${JSON.stringify(body)}`)
+      }
+      assert.ok(!loaded('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })).includes('seat-policy.mjs'), 'a non-seat tool call loaded the policy')
+      assert.ok(!loaded('prompt', host, promptCall(host, session, 'plain prompt')).includes('seat-policy.mjs'), 'a plain prompt loaded the policy')
+      const plain = { task: 'Summarise the README.', role: 'general', runtimeMode: 'auto', target: { providerInstanceId: 'codex', model: MODELS.codex } }
+      assert.ok(loaded('pre', host, preCall(host, session, SPELLING[host], plain)).includes('seat-policy.mjs'), 'the delegate_task gate never loaded the policy, so the trace proves nothing')
+    }
+    assert.equal(existsSync(fresh), false, 'a non-seat session wrote seat state')
+    ok('a non-seat session on either host, with or without a tag-like string, an unreadable body, or an untagged delegate_task, gets no answer, writes no state, and never loads seat-policy.mjs outside the gate')
+  },
+
+  'fastpath-latency': () => {
+    const N = 30
+    const env = { ...process.env, FLOW_DELEGATION_STATE_DIR: join(tmp, 'latency-state') }
+    const input = JSON.stringify(preCall('claude', randomUUID(), 'Bash', { command: 'git status' }))
+    const time = (args) => {
+      const started = performance.now()
+      const run = spawnSync(process.execPath, args, { input, encoding: 'utf8', env })
+      assert.equal(run.status, 0)
+      assert.equal(run.stdout, '')
+      return performance.now() - started
+    }
+    time(['-e', '']); time([GUARD, 'pre', 'claude'])
+    const baseline = []
+    const hook = []
+    for (let i = 0; i < N; i++) {
+      baseline.push(time(['-e', '']))
+      hook.push(time([GUARD, 'pre', 'claude']))
+    }
+    const [b, h] = [median(baseline), median(hook)]
+    console.log(`  fastpath p50 over ${N} runs: seat-guard pre ${h.toFixed(1)} ms, node -e '' ${b.toFixed(1)} ms, added ${(h - b).toFixed(1)} ms`)
+    ok('measured the non-seat PreToolUse cost against a bare node start (no bound asserted)')
   },
 }
 
