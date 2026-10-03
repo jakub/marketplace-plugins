@@ -63,10 +63,17 @@ if (group === 'pr' && verb === 'list') {
   // Each pull request carries only the fields asked for, the way gh answers, so a field the
   // executor forgets to request reads as missing here too.
   const fields = String(at('--json')).split(',')
+  const project = (list) => list.slice(0, Number(at('--limit') ?? 30)).map((p) => Object.fromEntries(fields.filter((f) => f in p).map((f) => [f, p[f]])))
+  if (argv.includes('--base')) {
+    // Open pull requests on a base, and one that opens on its Nth read.
+    st.baseReads = { ...st.baseReads, [at('--base')]: (st.baseReads?.[at('--base')] ?? 0) + 1 }
+    if (st.baseOnRead?.base === at('--base') && st.baseOnRead.read === st.baseReads[at('--base')]) (st.basePrs[at('--base')] ||= []).push(st.baseOnRead.pr)
+    out(project((st.basePrs || {})[at('--base')] || []))
+  }
   // A pull request opened on a branch at its Nth read, as if between the executor's reads.
   st.prReads = { ...st.prReads, [at('--head')]: (st.prReads?.[at('--head')] ?? 0) + 1 }
   if (st.openOnRead?.head === at('--head') && st.openOnRead.read === st.prReads[at('--head')]) (st.prs[at('--head')] ||= []).push(st.openOnRead.pr)
-  out((st.prs[at('--head')] || []).slice(0, Number(at('--limit') ?? 30)).map((p) => Object.fromEntries(fields.filter((f) => f in p).map((f) => [f, p[f]]))))
+  out(project(st.prs[at('--head')] || []))
 }
 if (group === 'issue' && verb === 'view') out(st.issue)
 if (group === 'issue' && verb === 'edit') {
@@ -114,7 +121,7 @@ const makeWorld = (state = {}, { branch = 'main' } = {}) => {
   git(repo, 'remote', 'add', 'origin', 'git@github.com:jakub/demo.git')
   git(repo, 'push', '-q', '-u', 'origin', branch)
   writeFileSync(env.FAKE_GH_STATE, JSON.stringify({
-    calls: [], comments: [], prs: {}, openPrs: [], issues: [], labels: [], runs: [], origin, defaultBranch: branch,
+    calls: [], comments: [], prs: {}, basePrs: {}, openPrs: [], issues: [], labels: [], runs: [], origin, defaultBranch: branch,
     issue: { number: 7, state: 'OPEN', labels: [{ name: 'in-progress' }], updatedAt: new Date(Date.now() - 7 * HOUR).toISOString() }, ...state,
   }))
   return { workspace, origin, repo, env, git, tip: git(repo, 'rev-parse', 'HEAD') }
@@ -347,6 +354,21 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   refused('a pull request opened between the judgment and the push', lateRun, '#18')
   check('and the branch is still on origin, after two reads of its pull requests', onOrigin('feat/late') === late && lateRun.st.prReads['feat/late'] === 2, JSON.stringify(lateRun.st.prReads))
 
+  // A merged branch that open pull requests still use as their base: deleting it would close them.
+  const parent = pushWork('feat/parent', 'merged, with a child stacked on it')
+  setState((st) => { st.prs['feat/parent'] = [{ number: 21, state: 'MERGED', headRefOid: parent, isCrossRepository: false }]; st.basePrs['feat/parent'] = [{ number: 22 }] })
+  refused('a branch an open pull request uses as its base', del('feat/parent'), '#22')
+  check('and the parent is still on origin', onOrigin('feat/parent') === parent)
+  // A child opened on the branch between the judgment and the push.
+  const lateParent = pushWork('feat/late-parent', 'merged, then stacked on')
+  setState((st) => {
+    st.prs['feat/late-parent'] = [{ number: 23, state: 'MERGED', headRefOid: lateParent, isCrossRepository: false }]
+    st.baseOnRead = { base: 'feat/late-parent', read: 2, pr: { number: 24 } }
+  })
+  const lateBase = del('feat/late-parent')
+  refused('a pull request based on the branch, opened between the judgment and the push', lateBase, '#24')
+  check('and the late parent is still on origin, after two reads of its children', onOrigin('feat/late-parent') === lateParent && lateBase.st.baseReads['feat/late-parent'] === 2, JSON.stringify(lateBase.st.baseReads))
+
   // Reads go to origin's fetch URL and pushes to its push URL: a delete there would never read back.
   const split = makeWorld()
   const gone = split.git(split.repo, 'commit-tree', `${split.tip}^{tree}`, '-p', split.tip, '-m', 'merged')
@@ -459,12 +481,14 @@ console.log('\nsurvey reads what the lint judges')
   w.git(w.repo, 'worktree', 'add', '-q', join(w.workspace, 'wt'), '-b', 'feat/wt')
   const work = (msg) => w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', msg)
   const [mergedTip, openTip, spikeTip] = [work('merged'), work('open'), work('spike')]
-  for (const [ref, sha] of [['feat/merged', mergedTip], ['feat/open', openTip], ['feat/spike', spikeTip], ['feat/in-main', w.tip], ['feat/held', mergedTip], ['flow-evidence', w.tip]]) {
+  for (const [ref, sha] of [['feat/merged', mergedTip], ['feat/open', openTip], ['feat/spike', spikeTip], ['feat/in-main', w.tip], ['feat/held', mergedTip], ['feat/stacked', mergedTip], ['flow-evidence', w.tip]]) {
     w.git(w.repo, 'push', '-q', 'origin', `${sha}:refs/heads/${ref}`)
   }
   const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
   w.git(w.repo, 'branch', 'feat/held', mergedTip)
-  Object.assign(st.prs, { 'feat/held': [{ number: 6, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip, isCrossRepository: false }] })
+  st.basePrs['feat/spike'] = [{ number: 7 }, { number: 8 }]
+  st.basePrs['feat/stacked'] = [{ number: 9 }]
+  Object.assign(st.prs, { 'feat/stacked': [{ number: 10, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/held': [{ number: 6, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip, isCrossRepository: false }] })
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
   const originRefs = () => execFileSync('git', ['ls-remote', w.origin], { encoding: 'utf8' })
   const refsBefore = originRefs()
@@ -481,10 +505,11 @@ console.log('\nsurvey reads what the lint judges')
   const flake = (entry) => s?.flakes?.entries?.find((e) => e.entry === entry)
   check('known flakes against the last runs', flake('e2e')?.runsSeen === 2 && flake('e2e')?.runsFailed === 1 && flake('unit:test_x')?.check === 'unit' && flake('gone-check')?.runsSeen === 0, JSON.stringify(s?.flakes))
   const remote = Object.fromEntries((s?.remoteBranches ?? []).map((b) => [b.name, b]))
-  check('origin\'s branches without the default or the protected ones', Object.keys(remote).sort().join() === 'feat/held,feat/in-main,feat/merged,feat/open,feat/spike', JSON.stringify(s?.remoteBranches))
+  check('origin\'s branches without the default or the protected ones', Object.keys(remote).sort().join() === 'feat/held,feat/in-main,feat/merged,feat/open,feat/spike,feat/stacked', JSON.stringify(s?.remoteBranches))
   check('each with its tip, its open pull request and why it is dead, or null', remote['feat/merged']?.tip === mergedTip && remote['feat/merged'].openPr === null && remote['feat/merged'].dead?.includes('#4') &&
     remote['feat/in-main']?.dead === null && remote['feat/open']?.openPr === 5 && remote['feat/open'].dead === null &&
-    remote['feat/spike']?.openPr === null && remote['feat/spike'].dead === null &&
+    remote['feat/spike']?.openPr === null && remote['feat/spike'].dead === null && remote['feat/spike'].basedPrs === 2 && remote['feat/merged'].basedPrs === 0 &&
+    remote['feat/stacked']?.basedPrs === 1 && remote['feat/stacked'].dead === null &&
     remote['feat/held']?.heldHere?.includes('local branch') && remote['feat/held'].dead === null && remote['feat/merged'].heldHere === null, JSON.stringify(s?.remoteBranches))
   check('nothing was edited', edits(r).length === 0 && !r.st.unpinned, JSON.stringify(r.st.calls))
   check('nothing on origin moved: every ref at the same object', originRefs() === refsBefore && refsBefore.includes(`${mergedTip}\trefs/heads/feat/merged`), `${refsBefore}\n---\n${originRefs()}`)

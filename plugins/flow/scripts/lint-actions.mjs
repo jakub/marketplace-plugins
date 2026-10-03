@@ -20,7 +20,7 @@
 // origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
 // delete-remote-branch needs origin to fetch from and push to one URL, and deletes only at the tip
 // it judged dead, through a lease origin checks at delete time, so a branch pushed to after the
-// judgment is never deleted. Its one warrant is a merged or closed pull request from this
+// judgment is never deleted, nor one that open pull requests use as their base. Its one warrant is a merged or closed pull request from this
 // repository whose head is that tip, never ancestry, and it refuses a branch this checkout still
 // holds in a worktree or a local branch. Its known limit: GitHub has no lock, so a pull request opened in the
 // moment between its last open-PR read and origin applying the delete loses its head branch. The
@@ -133,6 +133,22 @@ function run({ action, repoArg, target, rest, env }) {
       prCache.set(branch, list)
     }
     return prCache.get(branch)
+  }
+  // Open pull requests whose base is the branch, from any repository: GitHub closes each of them
+  // when the branch is deleted. fresh skips the cache, like prsFor's.
+  const baseCache = new Map()
+  const basedOn = (branch, { fresh = false } = {}) => {
+    if (fresh || !baseCache.has(branch)) {
+      const list = gh(['pr', 'list', '--repo', id.full, '--base', branch, '--state', 'open', '--limit', String(PR_LIMIT), '--json', 'number'], `gh pr list --base ${branch}`)
+      if (!Array.isArray(list)) refuse(`gh pr list --base ${branch} did not answer a list`)
+      if (list.length >= PR_LIMIT) refuse(`gh pr list --base ${branch} returned ${list.length} pull requests, its limit, so the list may be partial`)
+      baseCache.set(branch, list)
+    }
+    return baseCache.get(branch)
+  }
+  const refuseBased = (branch, opts) => {
+    const based = basedOn(branch, opts)
+    if (based.length > 0) refuse(`${based.length} open pull request(s) use ${branch} as their base (#${based.map((p) => p.number).join(', #')}), and deleting it would close them`)
   }
   // Ancestry is judged against the default branch GitHub names, read once, never a fixed main: a
   // second branch that happens to be called main proves nothing merged.
@@ -295,15 +311,17 @@ function run({ action, repoArg, target, rest, env }) {
     const tip = fromOrigin([target]).get(target)
     if (tip === null) refuse(`${target} does not exist on origin`)
     refuseOpen(target)
+    refuseBased(target)
     const why = prWarrant(target, tip) ??
       refuse('no merged or closed pull request from this repository has this tip as its head, and ancestry is no warrant on origin: not shown dead, so a human decides')
     // GitHub has no lock to hold across the delete, and the lease below checks only the tip, so the
-    // open pull request read is repeated, uncached, straight before the push. The window left is
+    // open pull request reads, head and base, are repeated, uncached, straight before the push. The window left is
     // from this read to origin applying the delete: a pull request opened or reopened inside it
     // loses its head branch, and GitHub closes it. The reason below names the tip, so the branch
     // can be pushed back.
     const late = prsFor(target, { fresh: true }).find((p) => p.state === 'OPEN')
     if (late) refuse(`${target} gained an open pull request (#${late.number}) while it was being judged`)
+    refuseBased(target, { fresh: true })
     const heldLate = heldHere(target)
     if (heldLate) refuse(`${heldLate}, since it was judged`)
     // Compare-and-delete: origin applies the delete only while the branch is still at the tip
@@ -438,7 +456,8 @@ function run({ action, repoArg, target, rest, env }) {
     }).filter(({ name }) => name !== 'HEAD' && name !== defaultBranch() && !PROTECTED.has(name)).map(({ name, tip }) => {
       const open = openPrOf(name)
       const held = heldHere(name)
-      return { name, tip, openPr: open?.number ?? null, heldHere: held, dead: open || held ? null : prWarrant(name, tip) }
+      const based = basedOn(name).length
+      return { name, tip, openPr: open?.number ?? null, basedPrs: based, heldHere: held, dead: open || based > 0 || held ? null : prWarrant(name, tip) }
     })
     survey.issues = pages(`repos/${id.owner}/${id.repo}/issues?state=open&per_page=100`, 'gh api over the open issues').filter((i) => !i.pull_request).map((i) => {
       const labels = (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))
