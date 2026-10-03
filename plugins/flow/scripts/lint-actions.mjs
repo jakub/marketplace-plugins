@@ -12,7 +12,9 @@
 // state and refuses unless all of them hold. Every verb: the repository must resolve, and when
 // FLOW_WORKSPACE is set (always, under FLOW_CRON_JOB) it must be a main checkout directly under it,
 // because the path decides which repository the ambient token acts on. `git fetch --prune --no-tags
-// origin` runs first and a failure refuses. Every gh call is pinned to the repository origin
+// origin` runs first and a failure refuses. That fetch follows remote.origin.fetch, which a clone
+// can narrow, so a verb that deletes then fetches every origin branch it judges against by name,
+// with forced refspecs, and judges only those. Every gh call is pinned to the repository origin
 // parses to. Every mutation is read back, and nothing is undone: a label present after an edit is
 // no proof this run put it there. A relabel a claim could race holds the issue's claim tag on
 // origin, through issue-claim.mjs's own acquire and dropTag, from its re-check to its read-back.
@@ -135,7 +137,35 @@ function run({ action, repoArg, target, rest, env }) {
     if (typeof defaultName !== 'string' || defaultName === '') refuse('gh repo view named no default branch, so nothing is judged against it')
     return defaultName
   }
-  const inMain = (tip) => gitIn(repo, ['merge-base', '--is-ancestor', tip, `refs/remotes/origin/${defaultBranch()}`]) !== null
+  // A verb that deletes judges ancestry against the exact tip fromOrigin fetched; the survey,
+  // which only proposes, judges against the tracking ref the preamble's fetch left.
+  let judgedMain = null
+  const inMain = (tip) => gitIn(repo, ['merge-base', '--is-ancestor', tip, judgedMain ?? `refs/remotes/origin/${defaultBranch()}`]) !== null
+  // What a verb that deletes judges against: origin's branches fetched by name, with forced
+  // explicit refspecs, into their tracking refs. The preamble's fetch honours remote.origin.fetch,
+  // which a clone can narrow or negate, so its success proves nothing about a given tracking ref.
+  // Answers each branch's tip, or null for a branch origin does not have, whose tracking ref may be
+  // stale and is never read. The default branch has to be there, and its tip pins inMain.
+  const originCtx = { cwd: repo, redact, env: gitEnv }
+  const fromOrigin = (branches) => {
+    const tips = new Map()
+    for (const branch of new Set([defaultBranch(), ...branches])) {
+      const listed = readRef(originCtx, `refs/heads/${branch}`)
+      if (listed.state === 'unknown') refuse(listed.detail)
+      tips.set(branch, listed.state === 'present' ? listed.sha : null)
+    }
+    const present = [...tips.keys()].filter((branch) => tips.get(branch) !== null)
+    if (tips.get(defaultBranch()) === null) refuse(`origin has no ${defaultBranch()} branch, so nothing is judged against it`)
+    const fetched = execCapture('git', ['-C', repo, 'fetch', '--quiet', '--no-tags', 'origin', ...present.map((b) => `+refs/heads/${b}:refs/remotes/origin/${b}`)], { timeoutMs: 60_000, env: gitEnv })
+    if (fetched.code !== 0) refuse(`git fetch of ${present.join(', ')} from origin failed, so nothing is judged on possibly stale refs: ${redact(firstLine(fetched.stderr)) || `exit ${fetched.code}`}`)
+    for (const branch of present) {
+      const sha = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
+      if (sha === null) refuse(`origin/${branch} did not read back after its fetch`)
+      tips.set(branch, sha)
+    }
+    judgedMain = tips.get(defaultBranch())
+    return tips
+  }
 
   // gh pr list --head matches the branch name alone, so a fork's pull request from a branch of the
   // same name is listed too. An open one blocks whichever repository it heads from, because that
@@ -148,11 +178,11 @@ function run({ action, repoArg, target, rest, env }) {
     if (open) refuse(`${branch} has an open pull request (#${open.number})`)
   }
   // Recoverable: can origin reproduce this tip after the delete? An open pull request refuses outright.
-  const recoverable = (branch, tip) => {
+  // remoteTip is the branch's tip on origin as fromOrigin fetched it, or null.
+  const recoverable = (branch, tip, remoteTip) => {
     refuseOpen(branch)
-    const remoteTip = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
     if (remoteTip === tip) return `origin/${branch} is at this tip`
-    if (remoteTip !== null && gitIn(repo, ['rev-list', '--count', `refs/remotes/origin/${branch}..${tip}`]) === '0') return `no commits beyond origin/${branch}`
+    if (remoteTip !== null && gitIn(repo, ['rev-list', '--count', `${remoteTip}..${tip}`]) === '0') return `no commits beyond origin/${branch}`
     const closed = closedAt(branch, tip)
     if (closed) return `pull request #${closed.number} (${closed.state}) has this tip as its head`
     if (inMain(tip)) return `the tip is in origin/${defaultBranch()}`
@@ -203,7 +233,8 @@ function run({ action, repoArg, target, rest, env }) {
     const changed = lastChange(path)
     if (changed === null) refuse('the worktree\'s last change could not be read')
     if (Date.now() - changed < RECENT_MS) refuse(`the worktree changed ${Math.round((Date.now() - changed) / HOUR)}h ago, inside the four-day window`)
-    const why = entry.branch ? recoverable(entry.branch, entry.head) : inMain(entry.head) ? `the detached tip is in origin/${defaultBranch()}` : refuse(`the detached tip is not in origin/${defaultBranch()}`)
+    const tips = fromOrigin(entry.branch ? [entry.branch] : [])
+    const why = entry.branch ? recoverable(entry.branch, entry.head, tips.get(entry.branch)) : inMain(entry.head) ? `the detached tip is in origin/${defaultBranch()}` : refuse(`the detached tip is not in origin/${defaultBranch()}`)
     const removed = execCapture('git', ['-C', repo, 'worktree', 'remove', path], { timeoutMs: 60_000, env: gitEnv })
     if (removed.code !== 0) refuse(`git worktree remove refused: ${firstLine(removed.stderr)}`)
     gitIn(repo, ['worktree', 'prune'])
@@ -216,7 +247,8 @@ function run({ action, repoArg, target, rest, env }) {
     if (tip === null) refuse('the branch does not exist')
     if (target === defaultBranch()) refuse(`${target} is the default branch`)
     if (worktrees().some((e) => e.branch === target)) refuse('the branch is checked out in a worktree')
-    const why = `${dead(target, tip)}; ${recoverable(target, tip)}`
+    const tips = fromOrigin([target])
+    const why = `${dead(target, tip)}; ${recoverable(target, tip, tips.get(target))}`
     // update-ref, unlike `git branch -D`, deletes a branch a worktree has checked out, so git's own
     // check is repeated here, after the reads above and straight before the delete.
     if (worktrees().some((e) => e.branch === target)) refuse('the branch was checked out in a worktree while it was being judged')
@@ -236,11 +268,11 @@ function run({ action, repoArg, target, rest, env }) {
     // a branch could be deleted in one repository and judged and read back in another.
     const one = originOfOneUrl(repo, gitEnv)
     if (one.url === undefined) refuse(one.problem === 'no-origin' ? 'the repository has no origin remote' : 'origin fetches from and pushes to URLs that are not one URL, so the delete could land where no read here looks')
-    // The tip is origin's ref as the fetch above left it, not a separate ls-remote. That one fetch
-    // brought the tip's objects here, so the ancestry check can judge it at all, and it read the
-    // tip and origin's default branch at one moment. Freshness is not what keeps the delete safe:
-    // the lease below is, since origin refuses it if the branch moved off this tip after the fetch.
-    const tip = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${target}`])
+    // The tip is the one fromOrigin fetched, not the ls-remote answer before it: the fetch brought
+    // the tip's objects here, so the ancestry check can judge it at all, beside the default branch
+    // fetched in the same command. Freshness is not what keeps the delete safe: the lease below
+    // is, since origin refuses it if the branch moved off this tip after the fetch.
+    const tip = fromOrigin([target]).get(target)
     if (tip === null) refuse(`${target} does not exist on origin`)
     refuseOpen(target)
     const why = dead(target, tip)

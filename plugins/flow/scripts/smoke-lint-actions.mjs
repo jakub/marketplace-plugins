@@ -331,6 +331,26 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   refused('the default branch GitHub names, protected or not', run(w, ['delete-remote-branch', w.repo, 'trunk']), 'default branch')
 }
 
+console.log('\na clone whose fetch refspec skips main judges against origin\'s real main')
+{
+  // origin/main here still holds a commit origin's main has since been rewound off. The clone's
+  // remote.origin.fetch maps feature branches only, so its own fetch succeeds and leaves the stale
+  // origin/main in place. A verb that judged against that ref would call the commit merged.
+  const w = makeWorld()
+  const gone = w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'rewound off main')
+  w.git(w.repo, 'push', '-q', 'origin', `${gone}:refs/heads/main`)
+  w.git(w.repo, 'fetch', '-q', 'origin')
+  w.git(w.repo, 'push', '-q', 'origin', `${gone}:refs/heads/feat/rewound`)
+  w.git(w.repo, 'branch', 'feat/rewound-local', gone)
+  w.git(w.origin, 'update-ref', 'refs/heads/main', w.tip)
+  w.git(w.repo, 'config', 'remote.origin.fetch', '+refs/heads/feat/*:refs/remotes/origin/feat/*')
+  check('the setup: the clone\'s origin/main is stale and holds the commit', w.git(w.repo, 'rev-parse', 'refs/remotes/origin/main') === gone)
+  refused('delete-remote-branch on a tip only the stale origin/main holds', run(w, ['delete-remote-branch', w.repo, 'feat/rewound']), 'not shown dead')
+  check('and the branch is still on origin', spawnSync('git', ['--git-dir', w.origin, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/rewound'], { encoding: 'utf8' }).stdout.trim() === gone)
+  refused('delete-branch on a tip only the stale origin/main holds', run(w, ['delete-branch', w.repo, 'feat/rewound-local']), 'not shown dead')
+  check('and the local branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/rewound-local']).status === 0)
+}
+
 console.log('\nremove-worktree refuses anything dirty or recent')
 {
   const w = makeWorld()
