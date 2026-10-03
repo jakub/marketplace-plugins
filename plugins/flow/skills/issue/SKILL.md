@@ -1,7 +1,7 @@
 ---
 name: issue
 description: Hands-off implementation of one ready-for-agent issue, through a pushed, reviewed, evidenced PR and no further. The orchestrator composes the seats per issue, contains every writer, journals every call to the issue, and never merges. MUST only run when the human explicitly asks to run a specific issue number; never start it from adjacent work, a finished prep, a discovered defect, or a survey of what to do next.
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor, mcp__t3-code__orchestrator_capabilities, mcp__t3-code__delegate_task, mcp__t3-code__task_status, mcp__t3-code__task_cancel
 ---
 
 # issue: the autonomous middle
@@ -97,6 +97,8 @@ An answer that arrives over moved anchors has expired. Journal `stale-answer-rej
 
 **A running seat.** `SendMessage` reaches it with state you verified with git. `TaskOutput` reads its stream, and `TaskStop` ends it.
 
+**Inside T3.** Every seat is a T3 seat, run through `mcp__t3-code__delegate_task` as the `delegate` skill's `## T3 seats` says, and the seats above are the same-family fallback. Wait for each seat's wake, read it mid-turn with `mcp__t3-code__task_status`, stop it with `mcp__t3-code__task_cancel`, and act on its `seat close` verdict. Preflight's doctor still runs, because `flow_delegate` is the cross-family fallback. Invariant 6's "a delegated writer can edit but not commit" binds `flow_delegate` writers only: a T3 writer commits its own paths with `git -C <wt> commit -- <paths>`, and invariant 8 checks those commits against git. For a T3 review seat, invariant 8's snapshots are the review-seat checks: `seat open` pins a detached worktree at the head SHA, and `seat close` requires that worktree unmoved and clean, snapshots the canonical checkout, and compares the review's coverage with the pinned diff.
+
 **Hand-off.** Invoke `flow:babysit` through the `Skill` tool with the PR number.
 
 **Ping.** `PushNotification`, one line naming the issue and what blocks, after the label and the comment are on the issue.
@@ -108,6 +110,8 @@ An answer that arrives over moved anchors has expired. Journal `stale-answer-rej
 **Roots.** Open the project at the canonical checkout. The doctor's one root is the directory the session started in, when that is the repository's top level. The write grant covers `.flow-worktrees/`, but `.git` can stay read-only, so the claim, commits and pushes go through the normal approval prompt. Never widen the grant to the repository's parent.
 
 **Seats.** Native spawns, one checkpoint each. A running seat cannot be reached, so verify with git between batches, and `followup_task` a finished seat with verified state.
+
+**Inside T3.** Every seat is a T3 seat, run through `mcp__t3_code__delegate_task` as the `delegate` skill's `## T3 seats` says, and native spawns are the same-family fallback. Wait for each seat's wake, read it mid-turn with `mcp__t3_code__task_status`, stop it with `mcp__t3_code__task_cancel`, and act on its `seat close` verdict. Preflight's doctor still runs, because `flow_delegate` is the cross-family fallback. Invariant 6's "a delegated writer can edit but not commit" binds `flow_delegate` writers only: a T3 writer commits its own paths with `git -C <wt> commit -- <paths>`, and invariant 8 checks those commits against git. For a T3 review seat, invariant 8's snapshots are the review-seat checks: `seat open` pins a detached worktree at the head SHA, and `seat close` requires that worktree unmoved and clean, snapshots the canonical checkout, and compares the review's coverage with the pinned diff.
 
 **Hand-off.** Invoke the `babysit` skill by name with the PR number.
 

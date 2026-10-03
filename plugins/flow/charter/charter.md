@@ -41,12 +41,12 @@ Starting rungs, OpenAI / Claude:
 
 Match the hardest decision left: meet capability, taste and family needs, then minimize cost. Try a cheaper rung first only when the task should beat its threshold, as settled work often does. Step up one rung after a focused failure, once context and tools are right. Escalate without asking; set no turn, token or spending caps or shorter timeouts unless asked.
 
-Decorrelation is cross-family: your family's diff gets a mandatory adversarial review from the other family against an immutable base, the other family's diff a native one, and a design worth a second proposal one blind proposal per family. Your family's green alone is not a green.
+Decorrelation is cross-family: your family's diff gets a mandatory adversarial review from the other family against an immutable base, the other family's diff one from your family, and a design worth a second proposal one blind proposal per family. Your family's green alone is not a green.
 
 A refusal is a typed result, never a quieter answer from another model. Retry once on a model without classifiers, or elsewhere in the other family if that one refused; for `reasoning_extraction`, fix the prompt. Two refusals stop the task and go to the user. Fable is a third try only on request.
 
 ## Delegation
-Reach the other family only through the `flow_delegate` MCP tools, never the shell. Set model and effort on every call, and read the `flow:delegate` skill before the first.
+Never reach a model through the shell. In T3, every seat is a `delegate_task` seat, review included; one that cannot prove its hooks ran reruns natively, or through `flow_delegate` across families. Elsewhere, reach the other family only through `flow_delegate`. Set model and effort on every call; read the `flow:delegate` skill first.
 
 ## Pipeline
 `prep` is the front door; nothing enters the tracker otherwise. `issue` runs autonomously to a reviewed, pushed, evidenced PR, `babysit` watches it through review and CI, and `land`, rebased on main, is the only merge. The issue body is the spec, edited in place; comments are the journal. Lasting decisions are ADRs on main. Acceptance criteria name their evidence, which the PR carries. Ad-hoc work follows prep discipline without a ticket: find unstated requirements and better approaches, then ask one question at a time, architecture first.
@@ -54,9 +54,7 @@ Reach the other family only through the `flow_delegate` MCP tools, never the she
 ## Hosts
 **Claude Code.** `Agent` takes a model, not an effort. `Explore` is read-only and `general-purpose` is a write seat. Flow's seats: `flow:implementer` writes and cannot spawn, `flow:reader` reads and runs commands, and `flow:bridge` makes one delegate call; never pass it a model. Ask with `AskUserQuestion`, options with the recommendation first, never prose.
 
-**Codex.** `spawn_agent` takes a model and effort; a pipeline seat gets `fork_turns: "none"`, and a child narrows nothing. No transport seat: detach with `waitSeconds: 0`. Ask with up to 4 numbered options, the recommendation first, and end the turn.
-
-On both, a PR merges only through `scripts/land-merge.mjs`; a committed `.flow/managed` makes the hooks deny a raw merge.
+**Codex.** `spawn_agent` takes a model and effort; a pipeline seat gets `fork_turns: "none"`, and a child narrows nothing. Ask with up to 4 numbered options, the recommendation first, and end the turn.
 
 <!-- flow-charter: seat rules. Everything below this line is also delivered to every seat. -->
 
@@ -90,7 +88,7 @@ Not in a git repo? Stop and say so. Single-commit fixes go to main; multi-commit
 Find the root cause, not the symptom. Revert a failed fix; don't stack another. Hard bugs get the full loop: reproduce, minimize, instrument, regression-test.
 
 ## Seat Contract
-In a seat, native or delegated, these rules are mechanical; the orchestrator checks your final message against git and the tree.
+In any seat, these rules are mechanical; the orchestrator checks your final message against git and the tree.
 
 Containment. Do the work here: spawn no agents, start no delegations, reach no model through the shell, and never claim to have delegated or backgrounded anything. Write only inside your assigned worktree, or nothing without one, and keep the shell rooted where it starts. Stage your own files by explicit path, never `git add -A` or `commit -a`. No `--no-verify`, even where no hook watches.
 

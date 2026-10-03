@@ -1,11 +1,11 @@
 ---
 name: delegate
-description: The operating manual for Flow's `flow_delegate` MCP tools. Read it before the first bridge call of a session, and for any question about cross-model or cross-family work, `delegate_to_codex`, `delegate_to_claude`, `delegation_result`, `delegation_steer`, a delegation job or its result envelope. Apply this when the user says "ask Sol", "ask Codex", "ask Fable" or "ask Claude".
+description: The operating manual for Flow's `flow_delegate` MCP tools and for T3 seats, the flow seats that run through T3 Code's `delegate_task`. Read it before the first bridge call or the first `delegate_task` call of a session, and for any question about cross-model or cross-family work, `delegate_to_codex`, `delegate_to_claude`, `delegation_result`, `delegation_steer`, a delegation job, a T3 seat, `scripts/seat.mjs` or a result envelope. Apply this when the user says "ask Sol", "ask Codex", "ask Fable" or "ask Claude".
 ---
 
 # delegate: reaching the other model family
 
-One MCP server, `flow_delegate`, reaches the other family in both directions. A Claude host runs Codex through `codex app-server`, and a Codex host runs Claude through the stream-json control channel of `claude -p`, each as a job the server starts and watches. Each job opens the provider's session, checks your model and effort against the provider's catalog, reads back what the session can reach, and only then sends your prompt. The charter says when to cross the family line and what to do with a refusal. This skill says how the call works.
+Outside T3 Code, one MCP server, `flow_delegate`, reaches the other family in both directions. Inside T3, every seat is a T3 seat instead, which `## T3 seats` covers, and `flow_delegate` is the cross-family fallback. A Claude host runs Codex through `codex app-server`, and a Codex host runs Claude through the stream-json control channel of `claude -p`, each as a job the server starts and watches. Each job opens the provider's session, checks your model and effort against the provider's catalog, reads back what the session can reach, and only then sends your prompt. The charter says when to cross the family line and what to do with a refusal. This skill says how the call works.
 
 ## The five tools
 
@@ -93,3 +93,96 @@ The server depends on these provider interfaces, checked against Codex CLI 0.159
 - Claude: `-p --input-format stream-json --output-format stream-json --verbose --replay-user-messages`, `--model`, `--effort`, `--permission-mode dontAsk`, `--permission-prompts none`, `--setting-sources`, `--strict-mcp-config`, `--settings`, `--tools`, `--allowedTools`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd`, and the control requests `initialize`, `mcp_status` and `interrupt`. A steer is a user message with `priority: "next"`, acknowledged when the CLI replays its `uuid`. That field and the replay come from the Agent SDK's type definitions, and no live turn has shown them yet.
 
 The doctor proves the handshake part of this list on every call. The rest runs only inside a turn. If the doctor passes on a newer CLI and jobs still fail with `PROVIDER_ERROR`, check `turn/start`, `turn/steer`, `turn/interrupt` and `thread/resume` against `codex app-server generate-ts --experimental --out <dir>`. For Claude, check `--model`, `--effort`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd` against `claude --help`.
+
+## T3 seats
+
+A T3 seat is a T3 Code child that `delegate_task` starts for a flow stage, held to the Seat Contract by flow's own hooks. It is neither a native seat (`Agent` or `spawn_agent`) nor a delegated job. Like a native seat, it runs with flow's hooks, the user's config, their credentials and the network. The hooks deny what the Seat Contract forbids and stamp each step they see. They are a guardrail under your authority, not a sandbox: a child that runs as the same user can edit its seat record through Bash, and a Bash write outside its worktree is found at close, not prevented.
+
+### Inside T3
+
+A session is inside T3 when `delegate_task` is in its tool list and `orchestrator_capabilities` answers for the current thread. Outside T3, nothing in this section applies.
+
+Every `delegate_task` call in a flow session names `runtimeMode`, with or without a seat tag, and the hooks deny a call without one. A child copies its parent's mode at spawn, so a parent switched to full access would widen every later child. Pass the mode `seat open` prints, `auto` today. Never pass `full-access`, and never `inherit`, which brings the parent's mode back.
+
+On Claude Code the T3 tools are `mcp__t3-code__<tool>`, and on Codex they are `mcp__t3_code__<tool>`.
+
+### Open the seat
+
+Run `seat open` once per seat:
+
+```sh
+node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|review> \
+  --provider <claude|codex> --model <id> --effort <level> \
+  [--worktree <path>] [--base <sha> --head <sha>] [--schema <file>]
+```
+
+- A writer (`workspace-write`) names its `--worktree`.
+- A review names `--base` and `--head`. `open` resolves both to SHAs and creates a detached worktree under `.flow-worktrees/` at the head, and the seat reviews there.
+- `--schema` is the JSON Schema for the envelope's `answer`, at most 16 KiB, admitted under the keyword rules of `outputSchema` above. A review answers in the findings schema and takes no `--schema`.
+
+`open` writes the seat record under the state directory and prints one JSON line. Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it re-reads Codex's hook trust and refuses the seat if a flow hook is not trusted, because Codex skips an untrusted hook without a word. The flow skill's `setup` grants that trust once per machine. A refused seat goes to the fallback.
+
+### Start it
+
+Call `delegate_task` with these fields:
+
+- `task`: the seat tag alone on line 1, then the worktree, the checkpoints and the work. A tag below line 1 voids the seat.
+- `role: "general"`, so T3 prepends nothing to the task.
+- `runtimeMode`: the value `open` printed.
+- `target`: the provider instance and `model` you gave `open`, as `orchestrator_capabilities` lists them, with the effort in `options` under the option id that call advertises for the model.
+- `mode`: leave it at `async`, the default.
+
+Your own PreToolUse hook admits a tagged call only when its `runtimeMode`, provider and model equal the record and the record has not been admitted before.
+
+The child's hooks then hold the seat. UserPromptSubmit binds the child's session to the record and tells it that the Seat Contract governs it. PreToolUse holds it to its access: no spawns, no MCP tool outside a short read-only allowlist, no `git push`, no `gh` mutation and no model CLI, edits only inside a writer's worktree, and a writer's git writes only as `git -C <worktree>`. Stop checks the final message and blocks the child, at most 3 times, with the problems it found.
+
+### The result envelope
+
+The child's final message is one JSON object in the flow envelope:
+
+```json
+{"status": "done | partial | blocked",
+ "coverage": {"read": [], "partial": [], "unopened": [], "checksRun": []},
+ "notes": "",
+ "answer": {}}
+```
+
+`answer` follows the schema you gave `open`. A writer adds `commits: [{sha, subject}]`. A review's `answer` is the findings schema that `adversarial-review` jobs use, and its `coverage` replaces the follow-up question a delegated review's `findings: []` needs. Say in the task that the final message is this envelope. Stop holds the child to it either way.
+
+Writers in one worktree run at the same time on disjoint files, as native writers do. Each T3 writer commits its own paths with `git -C <worktree> commit -- <paths>`. Put that form in the writer's task: the child's shell starts in the canonical checkout, where a bare `git commit` would land on the wrong branch, so the hooks deny it.
+
+### Wait
+
+A finished child wakes your thread, so end the turn instead of polling. Call `task_status` with the `taskId` only when you need the outcome mid-turn. Never take the answer from its `summary`: after a Stop block, `summary` is the child's last message, not its answer. `task_cancel` stops a seat you no longer need.
+
+### Close it and act on the verdict
+
+When `task_status` reports the task `completed`, `failed`, `cancelled` or `interrupted`, run:
+
+```sh
+node <plugin-root>/scripts/seat.mjs close <seat-id>
+```
+
+It prints one verdict, and a `valid` verdict carries the envelope the Stop hook recorded. Act on the verdict alone:
+
+| Verdict | Meaning | Action |
+|---|---|---|
+| `valid` | Every stamp is present and the result matches its recorded sha256. | Use the envelope. A writer's envelope is still a claim, so check its commits against git. |
+| `invalid` | The hooks worked, and the final answer failed the envelope or the schema. | Rerun once with the errors on the same rung, then step up a rung. |
+| `capped` | Stop blocked the child 3 times, then let it end. | Same as `invalid`. |
+| `unknown` | A stamp is missing: `admitted`, `bound`, `receipt` or `result`. Nothing proves the hooks ran. | Fall back. |
+| `model-mismatch` | The served model differs from the one you asked for. | Discard the answer. A mismatch is not a refusal, so the refusal rule does not count it. |
+| `tree-moved` | The review worktree's HEAD left the head SHA or its tree is dirty, the canonical checkout changed, or the coverage misses a file in the pinned diff. | Treat it as `unknown`. |
+
+A seat that made no tool call has no `receipt`, so it reads `unknown`. On Codex, the served-model check covers the model the hooks saw at UserPromptSubmit and at Stop. On Claude, it reads every model the transcript records for the seat's own turns.
+
+Close every seat you open, cancelled ones included. `close` removes a review's worktree after it records the verdict. An unclosed T3 writer stays in the worktree's lease directory, and `flow_delegate` refuses a write job there with `WORKSPACE_BUSY` until the seat closes.
+
+### Fall back
+
+A seat whose `open` was refused, or whose verdict reads `unknown`, reruns outside T3's `delegate_task`:
+
+- A cross-family seat reruns through `flow_delegate`.
+- A same-family seat reruns as a native seat (`Agent` or `spawn_agent`), because `flow_delegate` reaches only the other family.
+
+Route a family away from T3 only for a capability failure you saw, such as an untrusted Codex hook, and only while the hook configuration stays the same. One cancelled or invalid task does not move a whole family off T3.
