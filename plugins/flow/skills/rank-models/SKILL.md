@@ -48,7 +48,7 @@ For each task class, estimate how often it passes compared with the evaluations;
 
 Edit `## Models` in `plugins/flow/charter/charter.md`:
 
-- The table is `| Rung | Pass | $/solve | Try first above |` with a family row (`| OpenAI | | | |`, `| Claude | | | |`) before each ladder. A rung is its model and effort, such as `Opus medium`, plus `, tools` for the tool-call rung and `, hard rows` for a kept rung. Pass is a whole percent, $/solve has two decimals, and the top rung's threshold is `—`.
+- The table's columns are `Rung | Pass | $/solve | Threshold`, padded so the raw file reads aligned: no outer pipes, the rung left-aligned, the numbers right-aligned (`---: |`) and no trailing spaces. A bare family row, `OpenAI` or `Claude` with no pipes, comes before each ladder. A rung is its model and effort, such as `Opus medium`, plus `, tools` for the tool-call rung and `, hard rows` for a kept rung. Pass is a whole percent, $/solve has two decimals, and the top rung's threshold is `—`.
 - The sentence above the table carries the as-of date, both evaluations with their versions, the tie band, and the Sonnet note while it applies.
 - One line each for the off-ladder models with their reasons, the taste ratings, and the classifiers that can refuse.
 - The starting-rung list: one line per task class, `task: OpenAI rung / Claude rung`.
