@@ -120,7 +120,7 @@ function run({ action, repoArg, target, rest, env }) {
     if (!prCache.has(branch)) {
       // gh pr list fetches 30 by default. An explicit limit, and a full answer read as possibly
       // truncated, keep a destructive decision from resting on a partial list.
-      const list = gh(['pr', 'list', '--repo', id.full, '--head', branch, '--state', 'all', '--limit', String(PR_LIMIT), '--json', 'number,state,headRefOid'], `gh pr list --head ${branch}`)
+      const list = gh(['pr', 'list', '--repo', id.full, '--head', branch, '--state', 'all', '--limit', String(PR_LIMIT), '--json', 'number,state,headRefOid,isCrossRepository'], `gh pr list --head ${branch}`)
       if (!Array.isArray(list)) refuse(`gh pr list --head ${branch} did not answer a list`)
       if (list.length >= PR_LIMIT) refuse(`gh pr list --head ${branch} returned ${list.length} pull requests, its limit, so the list may be partial`)
       prCache.set(branch, list)
@@ -137,7 +137,12 @@ function run({ action, repoArg, target, rest, env }) {
   }
   const inMain = (tip) => gitIn(repo, ['merge-base', '--is-ancestor', tip, `refs/remotes/origin/${defaultBranch()}`]) !== null
 
+  // gh pr list --head matches the branch name alone, so a fork's pull request from a branch of the
+  // same name is listed too. An open one blocks whichever repository it heads from, because that
+  // is the conservative reading; a merged or closed one is a warrant only from this repository,
+  // since a fork's history says nothing about the branch here, even at the same tip.
   const openPrOf = (branch) => prsFor(branch).find((p) => p.state === 'OPEN') ?? null
+  const closedAt = (branch, tip) => prsFor(branch).find((p) => (p.state === 'MERGED' || p.state === 'CLOSED') && p.isCrossRepository === false && p.headRefOid === tip) ?? null
   const refuseOpen = (branch) => {
     const open = openPrOf(branch)
     if (open) refuse(`${branch} has an open pull request (#${open.number})`)
@@ -145,11 +150,10 @@ function run({ action, repoArg, target, rest, env }) {
   // Recoverable: can origin reproduce this tip after the delete? An open pull request refuses outright.
   const recoverable = (branch, tip) => {
     refuseOpen(branch)
-    const prs = prsFor(branch)
     const remoteTip = gitIn(repo, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
     if (remoteTip === tip) return `origin/${branch} is at this tip`
     if (remoteTip !== null && gitIn(repo, ['rev-list', '--count', `refs/remotes/origin/${branch}..${tip}`]) === '0') return `no commits beyond origin/${branch}`
-    const closed = prs.find((p) => (p.state === 'MERGED' || p.state === 'CLOSED') && p.headRefOid === tip)
+    const closed = closedAt(branch, tip)
     if (closed) return `pull request #${closed.number} (${closed.state}) has this tip as its head`
     if (inMain(tip)) return `the tip is in origin/${defaultBranch()}`
     return refuse('the tip is not reproducible from origin (no matching remote branch, pull request head or main ancestry)')
@@ -159,7 +163,7 @@ function run({ action, repoArg, target, rest, env }) {
   // reused for new work after its old pull request closed.
   // deathOf answers null where dead refuses, so the survey can show the same judgment unacted.
   const deathOf = (branch, tip) => {
-    const closed = prsFor(branch).find((p) => (p.state === 'MERGED' || p.state === 'CLOSED') && p.headRefOid === tip)
+    const closed = closedAt(branch, tip)
     if (closed) return `pull request #${closed.number} is ${closed.state}`
     if (inMain(tip)) return `the tip is already in origin/${defaultBranch()}`
     return null

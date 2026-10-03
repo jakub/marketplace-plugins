@@ -60,7 +60,10 @@ if (group === 'pr' && verb === 'list') {
   // A git command that lands while the executor is still reading GitHub: a worktree that checks
   // the branch out, or a push that moves the branch on origin.
   if (st.checkoutDuringRead) { require('node:child_process').execFileSync('git', st.checkoutDuringRead, { stdio: 'ignore' }); delete st.checkoutDuringRead }
-  out((st.prs[at('--head')] || []).slice(0, Number(at('--limit') ?? 30)))
+  // Each pull request carries only the fields asked for, the way gh answers, so a field the
+  // executor forgets to request reads as missing here too.
+  const fields = String(at('--json')).split(',')
+  out((st.prs[at('--head')] || []).slice(0, Number(at('--limit') ?? 30)).map((p) => Object.fromEntries(fields.filter((f) => f in p).map((f) => [f, p[f]]))))
 }
 if (group === 'issue' && verb === 'view') out(st.issue)
 if (group === 'issue' && verb === 'edit') {
@@ -199,14 +202,14 @@ console.log('\ndelete-branch needs a death warrant and a recoverable tip')
   refused('a pushed branch with no pull request', run(w, ['delete-branch', w.repo, 'feat/spike']), 'not shown dead')
   w.git(w.repo, 'branch', 'feat/done')
   const state = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
-  state.prs['feat/done'] = [{ number: 5, state: 'MERGED', headRefOid: w.tip }]
+  state.prs['feat/done'] = [{ number: 5, state: 'MERGED', headRefOid: w.tip, isCrossRepository: false }]
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(state))
   const r = run(w, ['delete-branch', w.repo, 'feat/done'])
   check('a merged branch is deleted and reads back gone', r.code === 0 && spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/done']).status !== 0, JSON.stringify(r.json))
   // A branch with a full page of pull requests may have more: gh pr list stops at its limit.
   w.git(w.repo, 'branch', 'feat/busy')
   const busy = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
-  busy.prs['feat/busy'] = Array.from({ length: 1000 }, (_, i) => ({ number: 100 + i, state: 'MERGED', headRefOid: w.tip }))
+  busy.prs['feat/busy'] = Array.from({ length: 1000 }, (_, i) => ({ number: 100 + i, state: 'MERGED', headRefOid: w.tip, isCrossRepository: false }))
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(busy))
   refused('a branch whose pull request list fills the limit', run(w, ['delete-branch', w.repo, 'feat/busy']), 'may be partial')
   check('and the busy branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/busy']).status === 0)
@@ -215,7 +218,7 @@ console.log('\ndelete-branch needs a death warrant and a recoverable tip')
   w.git(w.repo, 'branch', 'feat/reused', w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'new work'))
   w.git(w.repo, 'push', '-q', 'origin', 'feat/reused')
   const reused = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
-  reused.prs['feat/reused'] = [{ number: 9, state: 'CLOSED', headRefOid: w.tip }]
+  reused.prs['feat/reused'] = [{ number: 9, state: 'CLOSED', headRefOid: w.tip, isCrossRepository: false }]
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(reused))
   refused('a reused branch whose closed pull request had another head', run(w, ['delete-branch', w.repo, 'feat/reused']), 'not shown dead')
   check('and the reused branch still exists', spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/reused']).status === 0)
@@ -223,14 +226,14 @@ console.log('\ndelete-branch needs a death warrant and a recoverable tip')
   // the default branch, so the refusal above comes from the head match and not from ancestry.
   w.git(w.repo, 'branch', 'feat/closed-here', w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', 'closed work'))
   const closedHere = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
-  closedHere.prs['feat/closed-here'] = [{ number: 10, state: 'CLOSED', headRefOid: w.git(w.repo, 'rev-parse', 'feat/closed-here') }]
+  closedHere.prs['feat/closed-here'] = [{ number: 10, state: 'CLOSED', headRefOid: w.git(w.repo, 'rev-parse', 'feat/closed-here'), isCrossRepository: false }]
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(closedHere))
   const closedRun = run(w, ['delete-branch', w.repo, 'feat/closed-here'])
   check('a branch whose closed pull request has its tip as head is deleted and reads back gone',
     closedRun.code === 0 && spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/closed-here']).status !== 0, `${JSON.stringify(closedRun.json)} ${closedRun.stderr}`)
   w.git(w.repo, 'branch', 'feat/taken')
   const taken = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
-  taken.prs['feat/taken'] = [{ number: 6, state: 'MERGED', headRefOid: w.tip }]
+  taken.prs['feat/taken'] = [{ number: 6, state: 'MERGED', headRefOid: w.tip, isCrossRepository: false }]
   taken.checkoutDuringRead = ['-C', w.repo, 'worktree', 'add', '-q', join(w.workspace, 'taken'), 'feat/taken']
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(taken))
   refused('a branch checked out while GitHub was being read', run(w, ['delete-branch', w.repo, 'feat/taken']), 'checked out')
@@ -251,7 +254,7 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   const del = (b, x = w) => run(x, ['delete-remote-branch', x.repo, b])
 
   const merged = pushWork('feat/merged', 'merged work')
-  setState((st) => { st.prs['feat/merged'] = [{ number: 5, state: 'MERGED', headRefOid: merged }] })
+  setState((st) => { st.prs['feat/merged'] = [{ number: 5, state: 'MERGED', headRefOid: merged, isCrossRepository: false }] })
   const m = del('feat/merged')
   check('a branch whose merged pull request has its tip as head is deleted on origin and reads back gone',
     m.code === 0 && m.json?.reason?.includes('#5') && onOrigin('feat/merged') === null, `${JSON.stringify(m.json)} ${m.stderr}`)
@@ -263,7 +266,7 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
     a.code === 0 && a.json?.reason?.includes('origin/main') && onOrigin('feat/in-main') === null, `${JSON.stringify(a.json)} ${a.stderr}`)
 
   const open = pushWork('feat/open', 'open work')
-  setState((st) => { st.prs['feat/open'] = [{ number: 11, state: 'MERGED', headRefOid: open }, { number: 12, state: 'OPEN', headRefOid: open }] })
+  setState((st) => { st.prs['feat/open'] = [{ number: 11, state: 'MERGED', headRefOid: open, isCrossRepository: false }, { number: 12, state: 'OPEN', headRefOid: open, isCrossRepository: false }] })
   refused('a branch an open pull request heads, even beside a merged one at the same tip', del('feat/open'), '#12')
   check('and the open branch is still on origin', onOrigin('feat/open') === open)
 
@@ -277,9 +280,22 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
 
   // Reused name: the closed pull request's head is an older tip, so it is no warrant for this one.
   const reused = pushWork('feat/reused', 'new work on an old name')
-  setState((st) => { st.prs['feat/reused'] = [{ number: 9, state: 'CLOSED', headRefOid: merged }] })
+  setState((st) => { st.prs['feat/reused'] = [{ number: 9, state: 'CLOSED', headRefOid: merged, isCrossRepository: false }] })
   refused('a branch whose closed pull request closed at another tip', del('feat/reused'), 'not shown dead')
   check('and the reused branch is still on origin', onOrigin('feat/reused') === reused)
+
+  // A fork's pull request from a branch of the same name, closed at this exact tip: gh pr list
+  // --head lists it, and it is no warrant for the branch here, on origin or local.
+  const forked = pushWork('feat/forked', 'live work a fork also proposed')
+  w.git(w.repo, 'branch', 'feat/forked', forked)
+  setState((st) => { st.prs['feat/forked'] = [{ number: 14, state: 'CLOSED', headRefOid: forked, isCrossRepository: true }] })
+  refused('a closed fork pull request at the exact tip, for delete-remote-branch', del('feat/forked'), 'not shown dead')
+  refused('a closed fork pull request at the exact tip, for delete-branch', run(w, ['delete-branch', w.repo, 'feat/forked']), 'not shown dead')
+  check('and the branch is still on origin and here', onOrigin('feat/forked') === forked &&
+    spawnSync('git', ['-C', w.repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/feat/forked']).status === 0)
+  const forkOpen = pushWork('feat/fork-open', 'work a fork has open')
+  setState((st) => { st.prs['feat/fork-open'] = [{ number: 15, state: 'MERGED', headRefOid: forkOpen, isCrossRepository: false }, { number: 16, state: 'OPEN', headRefOid: 'f'.repeat(40), isCrossRepository: true }] })
+  refused('an open fork pull request of the same name still blocks', del('feat/fork-open'), '#16')
 
   refused('a branch origin does not have', del('feat/never-pushed'), 'does not exist on origin')
   refused('a name that is not a branch name', del('feat/a..b'), 'not a valid branch name')
@@ -290,7 +306,7 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   const raced = pushWork('feat/raced', 'merged, then reused')
   const newer = w.git(w.origin, 'commit-tree', `${w.tip}^{tree}`, '-p', raced, '-m', 'pushed after the judgment')
   setState((st) => {
-    st.prs['feat/raced'] = [{ number: 13, state: 'MERGED', headRefOid: raced }]
+    st.prs['feat/raced'] = [{ number: 13, state: 'MERGED', headRefOid: raced, isCrossRepository: false }]
     st.checkoutDuringRead = ['--git-dir', w.origin, 'update-ref', 'refs/heads/feat/raced', newer, raced]
   })
   const r = del('feat/raced')
@@ -305,7 +321,7 @@ console.log('\ndelete-remote-branch deletes on origin only a tip shown dead, and
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', other])
   split.git(split.repo, 'config', 'remote.origin.pushurl', 'git@github.com:jakub/other.git')
   const st = JSON.parse(readFileSync(split.env.FAKE_GH_STATE, 'utf8'))
-  st.prs['feat/merged'] = [{ number: 5, state: 'MERGED', headRefOid: gone }]
+  st.prs['feat/merged'] = [{ number: 5, state: 'MERGED', headRefOid: gone, isCrossRepository: false }]
   writeFileSync(split.env.FAKE_GH_STATE, JSON.stringify(st))
   refused('an origin that pushes to another repository than it fetches from', del('feat/merged', split), 'not one URL')
   check('and the branch is still on origin', onOrigin('feat/merged', split.origin) === gone)
@@ -387,7 +403,7 @@ console.log('\nsurvey reads what the lint judges')
     ],
     labels: [{ name: 'needs-triage', color: '000000', description: 'drifted' }, { name: 'wip', color: 'ffffff', description: '' }],
     runs: [{ id: 1, jobs: [{ name: 'e2e', conclusion: 'failure' }, { name: 'unit', conclusion: 'success' }] }, { id: 2, jobs: [{ name: 'e2e', conclusion: 'success' }] }],
-    prs: { 'feat/wt': [{ number: 3, state: 'OPEN', headRefOid: 'x' }] },
+    prs: { 'feat/wt': [{ number: 3, state: 'OPEN', headRefOid: 'x', isCrossRepository: false }] },
   })
   w.git(w.repo, 'worktree', 'add', '-q', join(w.workspace, 'wt'), '-b', 'feat/wt')
   const work = (msg) => w.git(w.repo, 'commit-tree', `${w.tip}^{tree}`, '-p', w.tip, '-m', msg)
@@ -396,7 +412,7 @@ console.log('\nsurvey reads what the lint judges')
     w.git(w.repo, 'push', '-q', 'origin', `${sha}:refs/heads/${ref}`)
   }
   const st = JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
-  Object.assign(st.prs, { 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip }] })
+  Object.assign(st.prs, { 'feat/merged': [{ number: 4, state: 'MERGED', headRefOid: mergedTip, isCrossRepository: false }], 'feat/open': [{ number: 5, state: 'OPEN', headRefOid: openTip, isCrossRepository: false }] })
   writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify(st))
   const r = run(w, ['survey', w.repo])
   const s = r.json
