@@ -110,8 +110,8 @@ function run({ action, repoArg, target, rest, env }) {
   if (pinned.identity === undefined && action !== 'survey') refuse(pinned.refusal)
   const id = pinned.identity ?? null
   const runGh = ghRunner(env)
-  const gh = (args, what) => {
-    const r = runGh(args, { cwd: repo })
+  const gh = (args, what, { timeoutMs } = {}) => {
+    const r = runGh(args, { cwd: repo, timeoutMs })
     const value = r.code === 0 ? parseJson(r.stdout) : null
     if (value === null) refuse(`${what} failed, so nothing is decided without it: ${firstLine(r.stderr) || `exit ${r.code}`}`)
     return value
@@ -172,7 +172,7 @@ function run({ action, repoArg, target, rest, env }) {
   const upstreamOpenOf = (branch, { fresh = false } = {}) => {
     const parent = parentOf()
     if (parent === null) return null
-    if (!fresh && bulk !== null) return bulk.parentOpen.get(`${bulk.owner}:${branch}`) ?? null
+    if (!fresh && bulk !== null) return bulk.parentOpen.get(branch) ?? null
     if (fresh || !upstreamCache.has(branch)) {
       const head = encodeURIComponent(`${canonicalName().split('/')[0]}:${branch}`)
       const open = pages(`repos/${parent}/pulls?state=open&head=${head}&per_page=100`, `gh api over ${parent}'s open pull requests from ${branch}`)[0] ?? null
@@ -548,46 +548,51 @@ function run({ action, repoArg, target, rest, env }) {
 
   // ---- survey: read-only, and every read that fails refuses the whole survey, except the fork
   // parent's, which leaves each remote branch's parent half unknown (parentError, upstreamError).
-  // One paginated read of every pull request, and one of the parent's open ones, stand in for the
-  // per-branch reads, so the survey's cost does not grow with the branch count. The REST shape is
-  // mapped to gh pr list's: MERGED when merged_at is set, and isCrossRepository when the head lives
-  // in another repository than the base, or in one GitHub no longer names, as a deleted fork does.
+  // One read of every pull request, and one of the parent's open ones, stand in for the per-branch
+  // reads, so the survey's cost does not grow with the branch count. Both go through gh pr list's
+  // compact JSON, about 150 bytes a pull request; the REST pulls list embeds both repositories in
+  // every entry, about 23 KB. A list that reaches its limit may be partial and refuses, as prsFor's
+  // does. isCrossRepository counts as false only when gh says false: a deleted fork reads true,
+  // and a missing value is never a warrant.
+  const BULK_LIMIT = 10_000
+  const BULK_MS = 300_000
+  const bulkList = (repoFull, state, fields, what) => {
+    const list = gh(['pr', 'list', '--repo', repoFull, '--state', state, '--limit', String(BULK_LIMIT), '--json', fields], what, { timeoutMs: BULK_MS })
+    if (!Array.isArray(list)) refuse(`${what} did not answer a list`)
+    if (list.length >= BULK_LIMIT) refuse(`${what} returned ${list.length} pull requests, its limit, so the list may be partial`)
+    return list
+  }
   if (id !== null) {
     const byHead = new Map()
     const openByBase = new Map()
-    for (const p of pages(`repos/${id.owner}/${id.repo}/pulls?state=all&per_page=100`, 'gh api over the pull requests')) {
-      if (!Number.isInteger(p?.number) || typeof p?.head?.ref !== 'string' || typeof p?.base?.ref !== 'string' || !['open', 'closed'].includes(p?.state)) {
-        refuse('gh api over the pull requests answered one without a number, a head, a base and a state')
+    for (const p of bulkList(id.full, 'all', 'number,state,headRefName,headRefOid,isCrossRepository,baseRefName', 'gh pr list over the pull requests')) {
+      if (!Number.isInteger(p?.number) || typeof p?.headRefName !== 'string' || typeof p?.baseRefName !== 'string' || !['OPEN', 'CLOSED', 'MERGED'].includes(p?.state)) {
+        refuse('gh pr list over the pull requests answered one without a number, a head, a base and a state')
       }
-      const [headRepo, baseRepo] = [p.head.repo?.full_name, p.base.repo?.full_name]
-      const isCrossRepository = !(typeof headRepo === 'string' && typeof baseRepo === 'string' && headRepo.toLowerCase() === baseRepo.toLowerCase())
-      const state = p.merged_at ? 'MERGED' : p.state === 'open' ? 'OPEN' : 'CLOSED'
-      byHead.set(p.head.ref, [...(byHead.get(p.head.ref) ?? []), { number: p.number, state, headRefOid: p.head.sha ?? null, isCrossRepository }])
-      if (state === 'OPEN') openByBase.set(p.base.ref, [...(openByBase.get(p.base.ref) ?? []), { number: p.number }])
+      byHead.set(p.headRefName, [...(byHead.get(p.headRefName) ?? []), { number: p.number, state: p.state, headRefOid: p.headRefOid ?? null, isCrossRepository: p.isCrossRepository !== false }])
+      if (p.state === 'OPEN') openByBase.set(p.baseRefName, [...(openByBase.get(p.baseRefName) ?? []), { number: p.number }])
     }
     // A parent that cannot be read, or reads malformed, leaves every row's parent half unknown
     // rather than failing the survey, so issues, labels and flakes still come back. A verb that
-    // deletes refuses on the same failure.
+    // deletes refuses on the same failure. Only pull requests whose head lives under GitHub's owner
+    // for origin count; a head owner gh cannot name, a deleted account, is not this one.
     const parentOpen = new Map()
-    let owner = null
     let parentError = null
     try {
       const parent = parentOf()
       if (parent !== null) {
-        owner = canonicalName().split('/')[0].toLowerCase()
-        for (const p of pages(`repos/${parent}/pulls?state=open&per_page=100`, `gh api over ${parent}'s open pull requests`)) {
-          const label = p?.head?.label
-          if (!Number.isInteger(p?.number) || typeof label !== 'string' || !label.includes(':')) refuse(`gh api over ${parent}'s open pull requests answered one without a number and a head label`)
-          const at = label.indexOf(':')
-          const key = `${label.slice(0, at).toLowerCase()}:${label.slice(at + 1)}`
-          if (!parentOpen.has(key)) parentOpen.set(key, { number: p.number, repo: parent })
+        const owner = canonicalName().split('/')[0].toLowerCase()
+        for (const p of bulkList(`${id.host}/${parent}`, 'open', 'number,headRefName,headRepositoryOwner', `gh pr list over ${parent}'s open pull requests`)) {
+          if (!Number.isInteger(p?.number) || typeof p?.headRefName !== 'string') refuse(`gh pr list over ${parent}'s open pull requests answered one without a number and a head`)
+          const headOwner = p.headRepositoryOwner?.login
+          if (typeof headOwner === 'string' && headOwner.toLowerCase() === owner && !parentOpen.has(p.headRefName)) parentOpen.set(p.headRefName, { number: p.number, repo: parent })
         }
       }
     } catch (error) {
       if (!(error instanceof Verdict)) throw error
       parentError = error.reason
     }
-    bulk = { byHead, openByBase, parentOpen, owner, parentError }
+    bulk = { byHead, openByBase, parentOpen, parentError }
   }
   const all = worktrees()
   const branchLines = gitIn(repo, ['for-each-ref', '--format=%(refname:short)%09%(objectname)%09%(upstream:short)%09%(upstream:track)', 'refs/heads'])
