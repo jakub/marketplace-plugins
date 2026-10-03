@@ -29,7 +29,7 @@
 // (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
 // regex, which is why the relabel reason is a single token.
 
-import { lstatSync, readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -262,6 +262,12 @@ function run({ action, repoArg, target, rest, env }) {
     const status = gitIn(path, ['status', '--porcelain'])
     if (status === null) refuse('the worktree status could not be read')
     if (status !== '') refuse('the worktree has tracked changes or untracked files')
+    // .flow-scratch/ is ignored, so status reads clean over it and lastChange never sees it. A run's
+    // scratch is retired by land, with the run, never by the lint.
+    let scratch
+    try { scratch = readdirSync(join(path, '.flow-scratch')).length } catch (error) { scratch = error?.code === 'ENOENT' ? 0 : null }
+    if (scratch === null) refuse('the worktree\'s .flow-scratch/ could not be read')
+    if (scratch > 0) refuse('the worktree holds run scratch; land retires it')
     const changed = lastChange(path)
     if (changed === null) refuse('the worktree\'s last change could not be read')
     if (Date.now() - changed < RECENT_MS) refuse(`the worktree changed ${Math.round((Date.now() - changed) / HOUR)}h ago, inside the four-day window`)

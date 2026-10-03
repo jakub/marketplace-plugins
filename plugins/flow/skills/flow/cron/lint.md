@@ -10,7 +10,7 @@ You are in `claude -p`, so a turn that ends without a tool call ends the session
 
 This is the full list, and everything else is report-only. The executor re-reads every condition from fresh state and refuses unless all of them hold, so propose what the survey shows and let it decide.
 
-1. `remove-worktree <repo> <path>` for a worktree the survey shows clean, with no change for four days, whose branch's pull request is merged or closed.
+1. `remove-worktree <repo> <path>` for a worktree the survey shows clean, with no change for four days, whose branch's pull request is merged or closed. The executor refuses a worktree whose `.flow-scratch/` holds anything, because a run's scratch leaves with the run at land, never through the lint.
 2. `delete-branch <repo> <branch>` for a local branch that is neither protected nor checked out, whose pull request is merged or closed.
 3. `relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>`, with `--seen` set to the `updatedAt` the survey gave. The executor comments on the issue with the reason. It makes three moves and no others:
    - `ready-for-agent` to `needs-triage`, for an issue whose body fails one of the six contract points in `${CLAUDE_PLUGIN_ROOT}/skills/flow/label-contract.md`. The reason names the point.
