@@ -124,11 +124,26 @@ console.log('a claim on a ready issue')
   check('the issue reads in-progress and assigned', r.st.issue.labels.map((l) => l.name).join() === 'in-progress' && r.st.issue.assignees[0]?.login === 'jakub', JSON.stringify(r.st.issue))
   check('the container is private and ignored', (lstatSync(join(w.repo, '.flow-worktrees')).mode & 0o777) === 0o700 &&
     readFileSync(join(w.gitDir, 'info', 'exclude'), 'utf8').split('\n').includes('/.flow-worktrees/'), 'container or exclude')
+  // The scratch line lives in the common exclude file, so it binds inside the issue worktree too.
+  mkdirSync(join(w.path(), '.flow-scratch'))
+  writeFileSync(join(w.path(), '.flow-scratch', 'notes.md'), 'a note\n')
+  check('scratch inside the issue worktree is ignored there', readFileSync(join(w.gitDir, 'info', 'exclude'), 'utf8').split('\n').includes('/.flow-scratch/') &&
+    git(w.path(), 'status', '--porcelain', '--untracked-files=all') === '', git(w.path(), 'status', '--porcelain', '--untracked-files=all'))
   const issueCalls = r.st.calls.filter((c) => c.args[0] === 'issue')
   const apiCalls = r.st.calls.filter((c) => c.args[0] === 'api')
   check('every issue call is pinned with --repo', issueCalls.length === 4 && issueCalls.every((c) => c.args[c.args.indexOf('--repo') + 1] === PIN), JSON.stringify(issueCalls.map((c) => c.args)))
   check('every api call is pinned with --hostname and its endpoint', apiCalls.length === 3 && apiCalls.every((c) => c.args[c.args.indexOf('--hostname') + 1] === 'github.com' &&
     ['user', 'repos/jakub/demo/pulls?state=open&per_page=100'].includes(c.args.at(-1))), JSON.stringify(apiCalls.map((c) => c.args)))
+}
+{
+  // A clone an earlier claim set up holds the container line alone: the claim adds the scratch line
+  // once, after a last line with no newline, and leaves every other line as it was.
+  const w = makeWorld('older-exclude')
+  mkdirSync(join(w.gitDir, 'info'), { recursive: true })
+  writeFileSync(join(w.gitDir, 'info', 'exclude'), '# local\n/.flow-worktrees/\n*.swp')
+  const r = run(w)
+  const lines = readFileSync(join(w.gitDir, 'info', 'exclude'), 'utf8')
+  check('an exclude with the container line alone gains the scratch line, once', r.json?.result === 'claimed' && lines === '# local\n/.flow-worktrees/\n*.swp\n/.flow-scratch/\n', JSON.stringify(lines))
 }
 {
   const w = makeWorld('non-ascii')

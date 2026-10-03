@@ -13,6 +13,10 @@
 // tracked submodule (a gitlink and a coarse status line), and anything outside the worktree. It
 // is a detector for a misbehaving seat, not containment.
 //
+// An issue run's `.flow-scratch/` is one of those ignored paths, through the line the claim keeps
+// in .git/info/exclude, and that is on purpose: the snapshot exists so a review covers the diff
+// that ships, and scratch never ships. A note written there during a review moves no digest.
+//
 // Usage: node tree-snapshot.mjs <path>
 
 import { createHash } from 'node:crypto'

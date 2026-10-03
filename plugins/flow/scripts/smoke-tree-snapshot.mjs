@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -62,6 +62,20 @@ const staged = snapshot()
 assert.ok(moved(rewritten, staged).includes('cached'), 'staging a tracked file did not move the cached digest')
 assert.equal(staged.untracked, rewritten.untracked, 'staging a tracked file moved the untracked digest')
 ok(`staging a tracked file moves ${moved(rewritten, staged).join(' and ')}, and leaves untracked alone`)
+
+// Scratch under an excluded .flow-scratch/ in a linked worktree, the shape an issue run has: the
+// exclude lives in the common git directory, so it binds there, and scratch moves no digest
+// because it never ships. A file beside it that is not excluded still moves the untracked digest.
+const linked = join(tmp, 'linked')
+git('worktree', 'add', '-q', '-b', 'feat/x', linked)
+writeFileSync(join(repo, '.git', 'info', 'exclude'), '/.flow-scratch/\n', { flag: 'a' })
+const beforeScratch = snapshot(linked)
+mkdirSync(join(linked, '.flow-scratch'))
+writeFileSync(join(linked, '.flow-scratch', 'review-notes.md'), 'a note\n')
+assert.deepEqual(moved(beforeScratch, snapshot(linked)), [], 'a write under the excluded .flow-scratch/ moved a digest')
+writeFileSync(join(linked, 'stray.md'), 'not scratch\n')
+assert.ok(moved(beforeScratch, snapshot(linked)).includes('untracked'), 'an unexcluded write beside the scratch moved no untracked digest')
+ok('a write under an excluded .flow-scratch/ in a linked worktree moves no digest, and one beside it does')
 
 // A path that is not a worktree has to fail loudly. A snapshot that quietly returns digests for
 // the wrong tree is worse than no snapshot: the reconcile would compare two of them and pass.

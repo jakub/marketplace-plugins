@@ -12,7 +12,9 @@
 // `## Acceptance Criteria` section with content, digested); scan this clone's worktrees and
 // branches, origin's branches and every open pull request for a live run; fetch and take the
 // tag; scan and read the issue again under it; add the worktree and branch at the tagged SHA
-// under <root>/.flow-worktrees/; push the branch; move the labels and read them back; drop the
+// under <root>/.flow-worktrees/, with `/.flow-worktrees/` and `/.flow-scratch/` in the repository's
+// .git/info/exclude, the second for the run's uncommitted files, which land retires with the
+// worktree; push the branch; move the labels and read them back; drop the
 // tag. The branch reaches origin before the labels move, because the pushed branch is what every
 // later scan finds once the tag is gone, and no scan reads a label.
 //
@@ -49,6 +51,9 @@ const IN_PROGRESS = 'in-progress'
 const LIFECYCLE = ['needs-triage', 'agent-found', READY, IN_PROGRESS, 'needs-info', 'needs-human', 'needs-rebase', 'wontfix', 'deferred']
 const KINDS = ['feat', 'fix', 'chore']
 const SLUG_MAX = 40
+// The lines the claim keeps in .git/info/exclude. The common exclude file applies in every worktree,
+// so the second keeps each run's uncommitted notes and captures out of its own status.
+const EXCLUDED = ['/.flow-worktrees/', '/.flow-scratch/']
 const USAGE = 'usage: issue-claim.mjs claim <issue-number> [--kind feat|fix|chore]\n'
 
 const git = (cwd, args, timeoutMs = LOCAL_MS, env) => execCapture('git', ['-C', cwd, ...args], { timeoutMs, env })
@@ -447,7 +452,9 @@ export function issueClaim({ argv, cwd, env = {}, runGh }) {
         const st = fstatSync(fd)
         if (!st.isFile() || st.nlink !== 1) throw new Error(`${exclude} is not a real, unshared file`)
         const text = readFileSync(fd, 'utf8')
-        if (!text.split(/\r?\n/).includes('/.flow-worktrees/')) writeSync(fd, `${text === '' || text.endsWith('\n') ? '' : '\n'}/.flow-worktrees/\n`)
+        const have = text.split(/\r?\n/)
+        const missing = EXCLUDED.filter((line) => !have.includes(line))
+        if (missing.length > 0) writeSync(fd, `${text === '' || text.endsWith('\n') ? '' : '\n'}${missing.map((line) => `${line}\n`).join('')}`)
       } finally { closeSync(fd) }
     }
   } catch (e) { setup = ['refused', 'worktree-path', String(e?.message ?? e)] }
