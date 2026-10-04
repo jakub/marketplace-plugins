@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -1139,11 +1139,15 @@ const cases = {
   'bind-unindexed': () => {
     for (const host of ['claude', 'codex']) {
       const { id, tag } = admittedSeat(host)
+      // A file where the index directory belongs fails every index write with ENOTDIR, even for
+      // root, which permission bits would not stop.
       const byId = join(seats, 'by-session')
+      const aside = `${byId}.aside`
       mkdirSync(byId, { recursive: true })
-      chmodSync(byId, 0o500)
+      renameSync(byId, aside)
+      writeFileSync(byId, '')
       let run
-      try { run = guard('prompt', host, promptCall(host, randomUUID(), tag)) } finally { chmodSync(byId, 0o700) }
+      try { run = guard('prompt', host, promptCall(host, randomUUID(), tag)) } finally { rmSync(byId, { force: true }); renameSync(aside, byId) }
       blocked(run, /could not be recorded for this session \(bind-failed\)/, `${host} unwritable index`)
       assert.equal(store.readStamp(id, 'bound'), null)
       assert.equal(store.readStamp(id, 'void').reason, 'bind-failed')
@@ -2183,6 +2187,19 @@ const cases = {
     assert.notEqual(store.readRecord(stuck.id), null, 'prune removed a record whose holder it could not check')
     rmSync(jobs.leaseDirOf(unreadable), { force: true })
     ok('a lease directory prune cannot read keeps the record and does not abort open')
+
+    // close reports a writer holder it could not remove or confirm gone, so the parent knows the
+    // worktree may still read busy to flow_delegate.
+    const lost = gitWorktree('lease-cleanup')
+    const lostSeat = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', lost])
+    assert.equal(lostSeat.ok, true, JSON.stringify(lostSeat))
+    rmSync(jobs.leaseDirOf(lost), { recursive: true, force: true })
+    writeFileSync(jobs.leaseDirOf(lost), '')
+    const lostClose = seatCli(['close', lostSeat.id, '--abandon'])
+    rmSync(jobs.leaseDirOf(lost), { force: true })
+    assert.equal(lostClose.ok, true, JSON.stringify(lostClose))
+    assert.ok((lostClose.cleanupProblems ?? []).some((problem) => /lease holder/.test(problem)), `close hid a failed holder cleanup: ${JSON.stringify(lostClose)}`)
+    ok('close reports a writer lease holder it could not remove or confirm gone in cleanupProblems')
 
     // A holder whose open died before the record: past the minute it is abandoned and dropped. A
     // holder with a record holds however old it is, and one inside the minute still holds.

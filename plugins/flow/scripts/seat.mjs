@@ -660,7 +660,9 @@ function dropHolders(id, record) {
 function cleanup(id, record) {
   const problems = []
   if (!record) return problems
-  dropHolders(id, record)
+  if (!dropHolders(id, record)) {
+    problems.push(`the writer's lease holder in ${leaseDirOf(record.worktree)} could not be removed or confirmed gone, so flow_delegate write jobs there may still see the worktree busy; remove ${id}.live and ${id} there`)
+  }
   const path = typeof record.repoRoot === 'string' ? join(record.repoRoot, '.flow-worktrees', `review-${id}`) : null
   if (record.access === 'review' && path && record.reviewWorktree === path && existsSync(path)) {
     if (!openedReview(record, path)) problems.push(`the worktree at ${path} is not the one this seat opened, so it was left in place`)
