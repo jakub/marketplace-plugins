@@ -7,6 +7,9 @@
 // hookSpecificOutput carrying a key it does not know, so a stray key turns a deny into a
 // pass. No helper here emits an explicit allow; a hook that allows prints nothing.
 
+import { readFileSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+
 /** The PreToolUse deny result both harnesses accept today. */
 export const preToolDeny = (reason) => ({
   hookSpecificOutput: {
@@ -96,4 +99,34 @@ export function applyPatchPaths(command) {
 
   if (paths.length === 0) malformed = true
   return { paths: [...new Set(paths)], complete: !malformed }
+}
+
+/**
+ * The models a Claude Code transcript records as serving one session: every assistant entry's
+ * message.model, in first-seen order, from entries of sessionId whose timestamp is at or after
+ * since (an ISO time; null reads every entry). '<synthetic>' marks a message Claude Code wrote
+ * itself, not a model's, and is skipped. An entry that names another session is skipped, and one
+ * whose session or time cannot be read is kept, so a model is never dropped on a guess. Empty when
+ * the transcript is missing or unreadable, which a caller reads as no served model seen.
+ * The entry shape (type, sessionId, timestamp, message.model) was read from Claude Code 2.1.288.
+ */
+export function transcriptModels(path, { sessionId, since = null } = {}) {
+  if (typeof path !== 'string' || !isAbsolute(path)) return []
+  let text
+  try { text = readFileSync(path, 'utf8') } catch { return [] }
+  const from = Date.parse(since)
+  const models = []
+  for (const line of text.split('\n')) {
+    if (!line.includes('"assistant"')) continue
+    let entry
+    try { entry = JSON.parse(line) } catch { continue }
+    if (entry?.type !== 'assistant') continue
+    const model = entry.message?.model
+    if (typeof model !== 'string' || model === '<synthetic>') continue
+    if (typeof entry.sessionId === 'string' && typeof sessionId === 'string' && entry.sessionId !== sessionId) continue
+    const at = Date.parse(entry.timestamp)
+    if (Number.isFinite(from) && Number.isFinite(at) && at < from) continue
+    if (!models.includes(model)) models.push(model)
+  }
+  return models
 }

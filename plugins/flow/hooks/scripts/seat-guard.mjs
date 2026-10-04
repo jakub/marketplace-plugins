@@ -3,16 +3,16 @@
 //
 //   seat-guard.mjs prompt <claude|codex>   UserPromptSubmit: bind a tagged session to its seat
 //   seat-guard.mjs pre <claude|codex>      PreToolUse, every tool: admit delegate_task, hold a seat
-//   seat-guard.mjs stop <claude|codex>     Stop: not registered yet; exits 0 and prints nothing
+//   seat-guard.mjs stop <claude|codex>     Stop: check the final message, record it or block
 //
 // Policy is lib/seat-policy.mjs and the records are lib/seat-store.mjs. This file reads the call,
 // asks the policy, and answers in wire.mjs's shapes. It allows by printing nothing.
 //
 // The PreToolUse group matches every tool in every session, so the path a non-seat session takes
 // is the cost every tool call pays. That path reads stdin and makes one existsSync on the session
-// index, and the prompt path makes one string test and touches no file. seat-policy.mjs is
-// imported only past those checks. The static imports are wire.mjs and seat-store.mjs, which load
-// node built-ins alone.
+// index, the stop path does the same, and the prompt path makes one string test and touches no
+// file. seat-policy.mjs is imported only past those checks. The static imports are wire.mjs and
+// seat-store.mjs, which load node built-ins alone.
 //
 // A body this cannot read exits 0 with no output on both hosts: without a session id it cannot
 // tell a seat from any other session, and a catch-all that failed closed would block every tool
@@ -27,10 +27,19 @@
 // call, so a prompt whose session cannot end with a durable index entry, bound or void, is
 // refused: injecting the void context alone would leave the session's tool calls reading as a
 // non-seat's and running uncontained.
+//
+// Stop holds a bound seat to its answer. The turn is Claude's prompt_id or Codex's turn_id, and a
+// turn that already has a valid result, or was capped, is left alone. A final message that is the
+// flow envelope with a matching answer is written as result-<turn>.json with the models that served
+// it: Codex names its model in the Stop call, and Claude's are read from the session transcript
+// from the bind on. Any other message is blocked with its problems, at most STOP_BLOCKS times a
+// turn. A void seat, a missing record, or a failure in this hook blocks nothing: the stop goes
+// through, and seat close reads the turn's missing result.
 
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import * as store from '../../lib/seat-store.mjs'
-import { applyPatchPaths, preToolDeny, promptBlock, promptContext, readHookInput } from './wire.mjs'
+import { applyPatchPaths, preToolDeny, promptBlock, promptContext, readHookInput, stopBlock, transcriptModels } from './wire.mjs'
 
 const DELEGATE_TASK = /^mcp__t3[-_]code__delegate_task$/
 const [mode, host] = process.argv.slice(2)
@@ -76,7 +85,7 @@ async function prompt(input) {
     const bound = { sessionId, host, permissionMode: input.permission_mode, cwd: typeof input.cwd === 'string' ? input.cwd : null, recordDigest: seat.digest }
     if (typeof input.model === 'string') bound.model = input.model
     if (!store.stamp(id, 'bound', bound)) return voidSeat('bound-lost-race')
-    answer(promptContext(policy.seatContext(seat.record)))
+    answer(promptContext(policy.seatContext(seat.record, seat.schema)))
   } catch (error) {
     complain(`bind: ${error.message}`)
     voidSeat('bind-failed')
@@ -124,13 +133,42 @@ async function pre(input) {
   }
 }
 
+async function stop(input) {
+  const index = store.indexPath(host, input.session_id)
+  if (index === null || !existsSync(index)) return
+  const policy = await loadPolicy()
+  try {
+    const entry = store.readIndex(host, input.session_id)
+    if (entry === null || entry.void !== undefined) return
+    const { id } = entry
+    const seat = store.readRecord(id)
+    if (!seat) return complain(`stop: seat ${id} has no readable record`)
+    const state = policy.stopTurn(store.readState(id), host === 'claude' ? input.prompt_id : input.turn_id)
+    if (state.outcome === 'valid' || state.outcome === 'capped') return
+    const schemaPath = seat.record.schemaSha256 == null ? null : join(store.seatDir(id), 'schema.json')
+    const checked = policy.finalAnswer(seat.record, input.last_assistant_message, schemaPath)
+    if (checked.envelope) {
+      const servedModels = host === 'codex'
+        ? (typeof input.model === 'string' ? [input.model] : [])
+        : transcriptModels(input.transcript_path, { sessionId: input.session_id, since: store.readStamp(id, 'bound')?.at ?? null })
+      store.writeResult(id, state.turn, { envelope: checked.envelope, servedModels, at: new Date().toISOString() })
+      return store.writeState(id, { ...state, outcome: 'valid', errors: [] })
+    }
+    const failed = policy.failedStop(seat.record, state, checked.errors)
+    store.writeState(id, failed.state)
+    if (failed.block) answer(stopBlock(failed.block))
+  } catch (error) {
+    complain(`stop: ${error.message}`)
+  }
+}
+
 async function main() {
   if (!['claude', 'codex'].includes(host)) return complain(`expected host "claude" or "codex", got ${JSON.stringify(host)}`)
   if (!['prompt', 'pre', 'stop'].includes(mode)) return complain(`expected mode "prompt", "pre" or "stop", got ${JSON.stringify(mode)}`)
-  if (mode === 'stop') return
   const input = await readHookInput()
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return
   if (mode === 'prompt') return prompt(input)
+  if (mode === 'stop') return stop(input)
   return pre(input)
 }
 

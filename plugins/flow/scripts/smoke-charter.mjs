@@ -77,6 +77,9 @@ try {
   assert.equal(codexHooks.PreToolUse[0].hooks.length, 3)
   ok(`hooks/codex.json keeps all ${Object.keys(CODEX_TRUSTED).length} trusted hooks at their positions with their command strings`)
 
+  // Codex caps a hook's additionalContext by this limit, in tokens; the seat context carries the
+  // answer schema, up to 16 KiB, so the prompt hook asks for more than the default.
+  const promptLimit = { claude: {}, codex: { additionalContextLimit: 6000 } }
   for (const [file, variable, host, matcher] of [['hooks.json', 'CLAUDE_PLUGIN_ROOT', 'claude', '*'], ['codex.json', 'PLUGIN_ROOT', 'codex', '.*']]) {
     const { hooks } = JSON.parse(readFileSync(join(ROOT, 'hooks', file), 'utf8'))
     const command = (mode) => `node "\${${variable}}/hooks/scripts/seat-guard.mjs" ${mode} ${host}`
@@ -84,11 +87,12 @@ try {
     const pre = hooks.PreToolUse.at(-1)
     assert.deepEqual(seatGroups('PreToolUse'), [pre], `hooks/${file}: the seat guard is not the last PreToolUse group alone`)
     assert.deepEqual(pre, { matcher, hooks: [{ type: 'command', command: command('pre'), timeout: 10 }] })
-    assert.deepEqual(hooks.UserPromptSubmit, [{ hooks: [{ type: 'command', command: command('prompt'), timeout: 10 }] }])
-    for (const event of Object.keys(hooks).filter((name) => !['PreToolUse', 'UserPromptSubmit'].includes(name))) {
+    assert.deepEqual(hooks.UserPromptSubmit, [{ hooks: [{ type: 'command', command: command('prompt'), timeout: 10, ...promptLimit[host] }] }])
+    assert.deepEqual(hooks.Stop, [{ hooks: [{ type: 'command', command: command('stop'), timeout: 30 }] }])
+    for (const event of Object.keys(hooks).filter((name) => !['PreToolUse', 'UserPromptSubmit', 'Stop'].includes(name))) {
       assert.deepEqual(seatGroups(event), [], `hooks/${file} registers the seat guard on ${event}`)
     }
-    ok(`hooks/${file} registers the seat guard as the last PreToolUse group, matcher ${JSON.stringify(matcher)}, and on UserPromptSubmit`)
+    ok(`hooks/${file} registers the seat guard as the last PreToolUse group, matcher ${JSON.stringify(matcher)}, on UserPromptSubmit${host === 'codex' ? ' with a 6000-token context limit' : ''}, and on Stop with a 30 s timeout`)
   }
 
   const seat = seatPayload(charter)

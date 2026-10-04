@@ -128,6 +128,46 @@ export const FINDINGS_SCHEMA = {
   },
 }
 
+/**
+ * The flow envelope a T3 seat's final message must be, for the seat's access. Closed at every
+ * level: status, coverage (four lists of strings: files read whole, read in part and left
+ * unopened, and the checks run), notes, and answer, which this schema admits as any value because
+ * the seat's own answer schema checks it separately. A workspace-write seat also lists its
+ * commits, each a SHA and a subject.
+ */
+export function envelopeSchema(access) {
+  const strings = { type: 'array', items: { type: 'string' } }
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['status', 'coverage', 'notes', 'answer'],
+    properties: {
+      status: { enum: ['done', 'partial', 'blocked'] },
+      coverage: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['read', 'partial', 'unopened', 'checksRun'],
+        properties: { read: strings, partial: strings, unopened: strings, checksRun: strings },
+      },
+      notes: { type: 'string' },
+      answer: true,
+    },
+  }
+  if (access === 'workspace-write') {
+    schema.required.push('commits')
+    schema.properties.commits = {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['sha', 'subject'],
+        properties: { sha: { type: 'string', pattern: '^[0-9a-f]{7,64}$' }, subject: { type: 'string' } },
+      },
+    }
+  }
+  return schema
+}
+
 function same(a, b) {
   if (a === b) return true
   if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => same(item, b[i]))

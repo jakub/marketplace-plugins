@@ -82,7 +82,19 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/scripts/seat-guard.mjs\" prompt codex",
-            "timeout": 10
+            "timeout": 10,
+            "additionalContextLimit": 6000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/scripts/seat-guard.mjs\" stop codex",
+            "timeout": 30
           }
         ]
       }

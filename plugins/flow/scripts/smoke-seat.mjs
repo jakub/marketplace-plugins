@@ -6,7 +6,8 @@
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
 // Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
-// fastpath-*); the containment families run against a real temp git repository as the worktree.
+// stop-*, fastpath-*); the containment families run against a real temp git repository as the
+// worktree, and stop-timeout spends the full CHECK_SECONDS on a schema check that never ends.
 // --case-prefix <p>
 // runs only the cases whose name starts with p, and no match is a failure rather than a vacuous
 // pass. fastpath-latency prints the measured p50 cost of the catch-all hook and asserts no bound.
@@ -28,6 +29,7 @@ process.env.FLOW_DELEGATION_STATE_DIR = state
 const store = await import(pathToFileURL(STORE).href)
 const wire = await import(pathToFileURL(join(PLUGIN, 'hooks', 'scripts', 'wire.mjs')).href)
 const { RETENTION_MS } = await import(pathToFileURL(join(PLUGIN, 'lib', 'state-dir.mjs')).href)
+const schemas = await import(pathToFileURL(join(PLUGIN, 'delegate', 'schema.mjs')).href)
 
 const argv = process.argv.slice(2)
 const prefixAt = argv.indexOf('--case-prefix')
@@ -44,6 +46,8 @@ const RECORD = (fields = {}) => ({
   canonicalSnapshot: null, hooksDigest: null, ...fields,
 })
 const SCHEMA = { type: 'object', required: ['x'], properties: { x: { type: 'string' } } }
+// A final message that passes for a read-only or review seat with SCHEMA as its answer schema.
+const ENVELOPE_OK = { status: 'done', coverage: { read: ['a.txt'], partial: [], unopened: ['b.txt'], checksRun: ['node --test'] }, notes: '', answer: { x: 'ok' } }
 
 // One racer: wait for the go file, then make one write-once claim and print whether it won.
 const racer = join(tmp, 'racer.mjs')
@@ -106,6 +110,12 @@ function context(run, what) {
   return out.additionalContext
 }
 
+function stopBlocked(run, what) {
+  assert.deepEqual(run.answer, { decision: 'block', reason: run.answer?.reason }, `${what}: expected a stop block, got ${run.stdout}`)
+  assert.equal(typeof run.answer.reason, 'string', what)
+  return run.answer.reason
+}
+
 // Fixture calls, shaped like the ones the cp0 pin hook logged from live T3 children: Claude sends
 // prompt_id and, on PreToolUse, effort; Codex sends turn_id and model. tool_input is an object.
 const MODELS = { claude: 'claude-opus-5-5', codex: 'gpt-6-luna' }
@@ -117,6 +127,15 @@ function call(host, session, fields) {
     ? { session_id: session, transcript_path: `/home/u/.claude/projects/-home-u-repo/${session}.jsonl`, cwd: '/home/u/repo', prompt_id: randomUUID(), permission_mode: PERMISSION.claude }
     : { session_id: session, turn_id: randomUUID(), transcript_path: `/home/u/.codex/sessions/2026/10/03/rollout-${session}.jsonl`, cwd: '/home/u/repo', model: MODELS.codex, permission_mode: PERMISSION.codex }
   return { ...base, ...fields }
+}
+// A Stop call: Claude names its turn by prompt_id and Codex by turn_id; key null drops it.
+const stopCall = (host, session, message, key, fields = {}) => {
+  const body = call(host, session, { hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: message, ...fields })
+  const field = host === 'claude' ? 'prompt_id' : 'turn_id'
+  if (key === null) delete body[field]
+  else body[field] = key
+  if (host === 'claude') Object.assign(body, { effort: { level: 'medium' }, background_tasks: [], session_crons: [] })
+  return body
 }
 const promptCall = (host, session, prompt, fields = {}) => call(host, session, { hook_event_name: 'UserPromptSubmit', prompt, ...fields })
 const preCall = (host, session, toolName, toolInput, fields = {}) => call(host, session, {
@@ -567,6 +586,7 @@ const cases = {
       assert.match(text, new RegExp(`Seat ${id}:`))
       assert.match(text, /"status": "done" \| "partial" \| "blocked"/)
       assert.match(text, /"checksRun": \[\]/)
+      assert.ok(text.includes(`\`answer\` must match this JSON Schema:\n${JSON.stringify(SCHEMA)}`), 'the bind did not carry the answer schema')
       assert.ok(!text.includes('<flow-charter'), 'the bind re-sent the charter')
       assert.deepEqual(store.readIndex(host, session), { id })
       const bound = store.readStamp(id, 'bound')
@@ -583,17 +603,22 @@ const cases = {
       silent(guard('pre', host, preCall(host, session, 'Read', { file_path: '/r/README.md' })), `${host} second seat call`)
       assert.deepEqual(store.readStamp(id, 'receipt'), receipt, 'a later call rewrote the receipt')
     }
-    ok(`a tagged first prompt binds on Claude (permission_mode ${PERMISSION.claude}) and Codex (${PERMISSION.codex}): index and bound stamp written, the override and envelope injected, and the first seat call stamps the receipt once`)
+    ok(`a tagged first prompt binds on Claude (permission_mode ${PERMISSION.claude}) and Codex (${PERMISSION.codex}): index and bound stamp written, the override, envelope and answer schema injected, and the first seat call stamps the receipt once`)
 
     const writer = admittedSeat('claude', { access: 'workspace-write', worktree: '/r/.flow-worktrees/w' })
     const writerText = context(guard('prompt', 'claude', promptCall('claude', randomUUID(), writer.tag)), 'writer bind')
-    assert.ok(writerText.includes('git -C /r/.flow-worktrees/w commit -- <paths>'), writerText)
-    assert.match(writerText, /"commits": \[\{"sha": "", "subject": ""\}\]/)
+    assert.ok(writerText.includes('git -C /r/.flow-worktrees/w commit -m <message> -- <paths>'), writerText)
+    assert.match(writerText, /"commits": \[\{"sha": "<sha>", "subject": "<subject>"\}\]\}/)
     const review = admittedSeat('codex', { access: 'review', worktree: '/r/.flow-worktrees/review-x', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) })
     const reviewText = context(guard('prompt', 'codex', promptCall('codex', randomUUID(), review.tag)), 'review bind')
     assert.ok(reviewText.includes(`base ${'a'.repeat(40)}, head ${'b'.repeat(40)}`), reviewText)
     assert.ok(!reviewText.includes('commits'), 'a review was told to report commits')
-    ok('a writer seat is told its worktree, the git -C commit form and the commits field; a review seat its base and head')
+    const bare = seatRecord('claude')
+    const { id: bareId } = store.writeRecord(bare, null)
+    assert.equal(store.stamp(bareId, 'admitted', {}), true)
+    const bareText = context(guard('prompt', 'claude', promptCall('claude', randomUUID(), store.seatTag(bareId))), 'schemaless bind')
+    assert.match(bareText, /this seat has no answer schema/)
+    ok('a writer seat is told its worktree, the git -C commit form and the commits field; a review seat its base and head; a seat with no schema is told so')
   },
 
   'bind-not-admitted': () => {
@@ -1000,6 +1025,212 @@ const cases = {
     ok('a writer seat runs add, rm, mv, commit, restore, stash and apply only as git -C <worktree realpath> with no override, stages and commits only named paths (no -A, -a, -i, --include or abbreviation of them, and no redirection target read as a path), and is denied every other non-read git subcommand, config writes in any scope included')
   },
 
+  'stop-envelope-schema': () => {
+    for (const access of ACCESSES) {
+      const schema = schemas.envelopeSchema(access)
+      assert.equal(schemas.schemaProblem(schema), null, `the ${access} envelope schema uses a keyword the checker cannot check`)
+      assert.deepEqual(schemas.validate(schema, access === 'workspace-write' ? { ...ENVELOPE_OK, commits: [] } : ENVELOPE_OK), [])
+      assert.deepEqual(schema.required.includes('commits'), access === 'workspace-write')
+    }
+    ok('envelopeSchema is admitted by schemaProblem for every access, takes the fixture envelope, and requires commits of a writer alone')
+  },
+
+  'stop-valid': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, session } = boundSeat(host, 'read-only')
+      const key = randomUUID()
+      silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), key)), `${host} valid answer`)
+      assert.deepEqual(store.readState(id), { turn: 1, turnKey: key, blocks: 0, outcome: 'valid', errors: [], stops: 1 })
+      const result = store.readResult(id, 1)
+      assert.equal(result.intact, true)
+      assert.deepEqual(result.body.envelope, ENVELOPE_OK)
+      assert.deepEqual(result.body.servedModels, host === 'codex' ? [MODELS.codex] : [], `${host} served models`)
+      assert.ok(Number.isFinite(Date.parse(result.body.at)))
+      assert.equal(readFileSync(join(seats, id, 'result-1.sha256'), 'utf8').trim(), sha256(readFileSync(join(seats, id, 'result-1.json'))))
+    }
+    ok('a valid final message writes result-1.json, its sha256 and a valid turn state, on both hosts; a Claude transcript that cannot be read serves no model')
+
+    const writer = boundSeat('codex', 'workspace-write')
+    const commits = [{ sha: 'a'.repeat(40), subject: 'feat: x' }]
+    const noCommits = stopBlocked(guard('stop', 'codex', stopCall('codex', writer.session, JSON.stringify(ENVELOPE_OK), randomUUID())), 'writer without commits')
+    assert.match(noCommits, /^\$: missing the required property "commits"$/m)
+    assert.match(noCommits, /"commits": \[\{"sha": "<sha>", "subject": "<subject>"\}\]\}$/)
+    silent(guard('stop', 'codex', stopCall('codex', writer.session, JSON.stringify({ ...ENVELOPE_OK, commits }), randomUUID())), 'writer with commits')
+    assert.deepEqual(store.readResult(writer.id, 2).body.envelope.commits, commits)
+    ok('a writer seat\'s envelope requires commits, and one that lists them is recorded')
+
+    const bare = seatRecord('codex', { access: 'read-only', worktree, repoRoot: worktree })
+    const { id: bareId } = store.writeRecord(bare, null)
+    assert.equal(store.stamp(bareId, 'admitted', {}), true)
+    const bareSession = randomUUID()
+    context(guard('prompt', 'codex', promptCall('codex', bareSession, store.seatTag(bareId))), 'schemaless bind')
+    silent(guard('stop', 'codex', stopCall('codex', bareSession, JSON.stringify({ ...ENVELOPE_OK, answer: [1, 'any'] }), randomUUID())), 'schemaless answer')
+    assert.deepEqual(store.readResult(bareId, 1).body.envelope.answer, [1, 'any'])
+    ok('a seat with no answer schema takes any answer inside a valid envelope')
+  },
+
+  'stop-fenced': () => {
+    const { id, session } = boundSeat('claude', 'read-only')
+    const body = JSON.stringify(ENVELOPE_OK, null, 2)
+    silent(guard('stop', 'claude', stopCall('claude', session, `\`\`\`json\n${body}\n\`\`\``, randomUUID())), 'a fenced answer')
+    assert.deepEqual(store.readResult(id, 1).body.envelope, ENVELOPE_OK)
+    silent(guard('stop', 'claude', stopCall('claude', session, `\n\`\`\`\n${body}\n\`\`\`\n`, randomUUID())), 'a bare fence with blank lines around it')
+    assert.deepEqual(store.readResult(id, 2).body.envelope, ENVELOPE_OK)
+    for (const [what, message] of [
+      ['text before the fence', `Here it is:\n\`\`\`json\n${body}\n\`\`\``],
+      ['two fenced blocks', `\`\`\`json\n${body}\n\`\`\`\n\`\`\`json\n${body}\n\`\`\``],
+      ['JSON followed by prose', `${body}\nDone.`],
+    ]) {
+      assert.match(stopBlocked(guard('stop', 'claude', stopCall('claude', session, message, randomUUID())), what), /^\$: the final message is not one JSON object/m, what)
+    }
+    ok('one fenced block wrapping the whole message is read as the answer; text around it, a second block or trailing prose is blocked')
+  },
+
+  'stop-invalid': () => {
+    const cases = [
+      ['a message that is not JSON', 'All done! The diff looks fine.', [/^\$: the final message is not one JSON object/m]],
+      ['a JSON array', '[1, 2]', [/^\$: the final message is JSON but not one object$/m]],
+      ['an envelope that breaks its schema', JSON.stringify({ status: 'finished', coverage: { read: [1] }, answer: { x: 'ok' }, extra: true }), [
+        /^\$\.status: not one of the allowed values$/m, /^\$\.coverage: missing the required property "partial"$/m,
+        /^\$\.coverage\.read\[0\]: expected string$/m, /^\$: missing the required property "notes"$/m, /^\$\.extra: not a property the schema allows$/m,
+      ]],
+      ['an answer that breaks the answer schema', JSON.stringify({ ...ENVELOPE_OK, answer: { x: 1 } }), [/^\$\.answer\.x: expected string$/m]],
+      ['an answer that is missing', JSON.stringify({ ...ENVELOPE_OK, answer: undefined }), [/^\$: missing the required property "answer"$/m]],
+    ]
+    for (const host of ['claude', 'codex']) {
+      for (const [what, message, patterns] of cases) {
+        const { id, session } = boundSeat(host, 'review')
+        const key = randomUUID()
+        const reason = stopBlocked(guard('stop', host, stopCall(host, session, message, key)), `${host} ${what}`)
+        for (const pattern of patterns) assert.match(reason, pattern, `${host} ${what}`)
+        const lines = reason.split('\n')
+        assert.match(lines[0], /^flow seat: your final message is not a valid flow envelope \(block 1 of 3\)/)
+        assert.match(lines.at(-1), /^Your final message is one JSON object, alone or as the whole of one fenced block: \{"status"/)
+        assert.ok(lines.slice(1, -1).every((line) => /^\$\S*: /.test(line)) && lines.length - 2 <= 10, `${host} ${what}: ${reason}`)
+        const state = store.readState(id)
+        assert.deepEqual({ ...state, errors: undefined }, { turn: 1, turnKey: key, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1 })
+        assert.deepEqual(state.errors, lines.slice(1, -1))
+        assert.equal(store.readResult(id, 1), null)
+      }
+    }
+    const { session } = boundSeat('claude', 'read-only')
+    const many = JSON.stringify({ ...ENVELOPE_OK, coverage: { read: Array.from({ length: 14 }, (_, i) => i), partial: [], unopened: [], checksRun: [] } })
+    assert.equal(stopBlocked(guard('stop', 'claude', stopCall('claude', session, many, randomUUID())), 'many problems').split('\n').length, 12)
+    ok('a final message that is not JSON, not one object, or breaks the envelope or the answer schema is blocked with its `path: problem` lines (at most 10) and the envelope reminder, and records the turn blocked with no result, on both hosts')
+  },
+
+  'stop-cap': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, session } = boundSeat(host, 'read-only')
+      const key = randomUUID()
+      for (const n of [1, 2, 3]) {
+        assert.match(stopBlocked(guard('stop', host, stopCall(host, session, `not json ${n}`, key)), `${host} stop ${n}`), new RegExp(`\\(block ${n} of 3\\)`))
+        assert.equal(store.readState(id).blocks, n)
+      }
+      silent(guard('stop', host, stopCall(host, session, 'not json 4', key)), `${host} the fourth failing stop`)
+      const capped = store.readState(id)
+      assert.deepEqual({ ...capped, errors: undefined }, { turn: 1, turnKey: key, blocks: 3, outcome: 'capped', errors: undefined, stops: 4 })
+      silent(guard('stop', host, stopCall(host, session, 'not json 5', key)), `${host} a stop after the cap`)
+      silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), key)), `${host} a valid message after the cap`)
+      assert.deepEqual(store.readState(id), capped, 'a stop after the cap changed the state')
+      assert.equal(store.readResult(id, 1), null, 'a capped turn took a result')
+    }
+    ok('three failing stops in a turn are blocked, the fourth is let through and records the turn capped with 3 blocks, and later stops in that turn change nothing, on both hosts')
+  },
+
+  'stop-turns': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, session } = boundSeat(host, 'read-only')
+      const [first, second, third] = [randomUUID(), randomUUID(), randomUUID()]
+      stopBlocked(guard('stop', host, stopCall(host, session, 'nope', first)), `${host} turn 1 block 1`)
+      stopBlocked(guard('stop', host, stopCall(host, session, 'nope', first)), `${host} turn 1 block 2`)
+      assert.match(stopBlocked(guard('stop', host, stopCall(host, session, 'nope', second)), `${host} turn 2`), /\(block 1 of 3\)/)
+      assert.deepEqual({ ...store.readState(id), errors: undefined }, { turn: 2, turnKey: second, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1 })
+      silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), second)), `${host} turn 2 valid`)
+      assert.equal(store.readResult(id, 2).intact, true)
+      assert.equal(store.readResult(id, 1), null)
+
+      const settled = store.readState(id)
+      const resultBytes = readFileSync(join(seats, id, 'result-2.json'))
+      silent(guard('stop', host, stopCall(host, session, 'not json', second)), `${host} turn 2 again`)
+      silent(guard('stop', host, stopCall(host, session, JSON.stringify({ ...ENVELOPE_OK, notes: 'changed' }), second)), `${host} turn 2 a second answer`)
+      assert.deepEqual(store.readState(id), settled, 'a stop in a valid turn changed the state')
+      assert.deepEqual(readFileSync(join(seats, id, 'result-2.json')), resultBytes, 'a stop in a valid turn rewrote the result')
+
+      assert.match(stopBlocked(guard('stop', host, stopCall(host, session, 'nope', third)), `${host} turn 3`), /\(block 1 of 3\)/)
+      assert.equal(store.readState(id).turn, 3)
+      const keyless = stopCall(host, session, 'nope', null)
+      assert.match(stopBlocked(guard('stop', host, keyless), `${host} a stop with no turn key`), /\(block 2 of 3\)/)
+      assert.equal(store.readState(id).turn, 3, 'a stop with no turn key started a turn')
+    }
+    ok('a new turn key starts the next turn with its blocks reset, a turn that already has a valid result is left alone, and a stop with no turn key counts against the current turn, on both hosts')
+  },
+
+  'stop-timeout': () => {
+    const schema = { type: 'object', required: ['x'], properties: { x: { type: 'string', pattern: '^(a+)+$' } } }
+    const record = seatRecord('claude', { access: 'read-only', worktree, repoRoot: worktree })
+    const { id } = store.writeRecord(record, schema)
+    assert.equal(store.stamp(id, 'admitted', {}), true)
+    const session = randomUUID()
+    context(guard('prompt', 'claude', promptCall('claude', session, store.seatTag(id))), 'bind')
+    const started = performance.now()
+    const reason = stopBlocked(guard('stop', 'claude', stopCall('claude', session, JSON.stringify({ ...ENVELOPE_OK, answer: { x: `${'a'.repeat(40)}!` } }), randomUUID())), 'a check that never ends')
+    const took = performance.now() - started
+    assert.match(reason, /^\$\.answer: the schema check did not finish in 10 seconds$/m)
+    assert.equal(store.readState(id).outcome, 'blocked')
+    assert.equal(store.readResult(id, 1), null)
+    assert.ok(took >= 10_000 && took < 30_000, `the stop took ${took} ms`)
+    ok(`an answer whose schema check runs past CHECK_SECONDS is a failed stop, blocked with the timeout line, inside the 30 s hook timeout (${(took / 1000).toFixed(1)} s)`)
+  },
+
+  'stop-served-models': () => {
+    const { id, session } = boundSeat('codex', 'read-only')
+    silent(guard('stop', 'codex', stopCall('codex', session, JSON.stringify(ENVELOPE_OK), randomUUID(), { model: 'gpt-6-astra' })), 'codex served model')
+    assert.deepEqual(store.readResult(id, 1).body.servedModels, ['gpt-6-astra'])
+    ok('a Codex seat\'s served model is the model its Stop call names')
+
+    const claude = boundSeat('claude', 'read-only')
+    const boundAt = Date.parse(store.readStamp(claude.id, 'bound').at)
+    const at = (offset) => new Date(boundAt + offset).toISOString()
+    const transcript = join(tmp, `${claude.session}.jsonl`)
+    const entry = (fields) => JSON.stringify({ parentUuid: null, isSidechain: false, userType: 'external', cwd: worktree, sessionId: claude.session, version: '2.1.288', uuid: randomUUID(), ...fields })
+    writeFileSync(transcript, [
+      entry({ type: 'assistant', timestamp: at(-60_000), message: { role: 'assistant', model: 'claude-before-bind', content: [] } }),
+      entry({ type: 'user', timestamp: at(10), promptId: randomUUID(), message: { role: 'user', content: 'task' } }),
+      entry({ type: 'assistant', timestamp: at(20), message: { role: 'assistant', model: MODELS.claude, content: [{ type: 'text', text: 'working' }] } }),
+      entry({ type: 'assistant', timestamp: at(30), message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'No response requested.' }] } }),
+      entry({ type: 'assistant', timestamp: at(40), sessionId: randomUUID(), message: { role: 'assistant', model: 'claude-other-session', content: [] } }),
+      '{"type":"assistant", torn line',
+      entry({ type: 'assistant', timestamp: at(50), message: { role: 'assistant', model: 'claude-haiku-5', content: [] } }),
+      entry({ type: 'assistant', timestamp: at(60), message: { role: 'assistant', model: MODELS.claude, content: [] } }),
+      JSON.stringify({ type: 'last-prompt', leafUuid: randomUUID(), sessionId: claude.session }),
+    ].join('\n'))
+    silent(guard('stop', 'claude', stopCall('claude', claude.session, JSON.stringify(ENVELOPE_OK), randomUUID(), { transcript_path: transcript })), 'claude served models')
+    assert.deepEqual(store.readResult(claude.id, 1).body.servedModels, [MODELS.claude, 'claude-haiku-5'])
+    ok('a Claude seat\'s served models are every assistant message.model its transcript records for the session since the bind, in first-seen order, with <synthetic>, other sessions, earlier entries and torn lines left out')
+  },
+
+  'stop-void': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, tag } = admittedSeat(host)
+      const session = randomUUID()
+      assert.match(context(guard('prompt', host, promptCall(host, session, tag, { permission_mode: 'bypassPermissions' })), 'void bind'), /void seat/)
+      silent(guard('stop', host, stopCall(host, session, 'not an envelope', randomUUID())), `${host} void seat stop`)
+      assert.equal(store.readState(id), null, 'a void seat wrote turn state')
+    }
+    ok('a void seat\'s stop is never blocked and records nothing, on both hosts')
+  },
+
+  'stop-non-seat': () => {
+    const fresh = join(tmp, 'stop-non-seat-state')
+    for (const host of ['claude', 'codex']) {
+      silent(guard('stop', host, stopCall(host, randomUUID(), 'plain prose, no envelope', randomUUID()), { env: { FLOW_DELEGATION_STATE_DIR: fresh } }), `${host} non-seat stop`)
+      silent(guard('stop', host, stopCall(host, '../escape', 'x', randomUUID()), { env: { FLOW_DELEGATION_STATE_DIR: fresh } }), `${host} invalid session id`)
+    }
+    assert.equal(existsSync(fresh), false, 'a non-seat stop wrote seat state')
+    ok('a non-seat session\'s stop, or one whose session id fails validation, gets no answer and writes nothing, on both hosts')
+  },
+
   'fastpath-silent': () => {
     const fresh = join(tmp, 'fastpath-state')
     const env = { FLOW_DELEGATION_STATE_DIR: fresh }
@@ -1032,6 +1263,7 @@ registerHooks({ resolve(specifier, context, next) { const found = next(specifier
       }
       assert.ok(!loaded('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })).includes('seat-policy.mjs'), 'a non-seat tool call loaded the policy')
       assert.ok(!loaded('prompt', host, promptCall(host, session, 'plain prompt')).includes('seat-policy.mjs'), 'a plain prompt loaded the policy')
+      assert.ok(!loaded('stop', host, stopCall(host, session, 'done', randomUUID())).includes('seat-policy.mjs'), 'a non-seat stop loaded the policy')
       assert.ok(!loaded('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' })).includes('node:crypto'), 'a non-seat tool call loaded node:crypto')
       const plain = { task: 'Summarise the README.', role: 'general', runtimeMode: 'auto', target: { providerInstanceId: 'codex', model: MODELS.codex } }
       assert.ok(loaded('pre', host, preCall(host, session, SPELLING[host], plain)).includes('seat-policy.mjs'), 'the delegate_task gate never loaded the policy, so the trace proves nothing')

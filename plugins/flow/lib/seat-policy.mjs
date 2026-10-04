@@ -3,7 +3,7 @@
 // wire.mjs. Reads and writes of seat records go through lib/seat-store.mjs, which the adapter
 // hands in, so this module never names a record path.
 //
-// Three decisions live here:
+// The decisions that live here:
 //
 //   gateDelegateTask   the parent's PreToolUse on T3's delegate_task, in every session. A call
 //                      without an explicit runtimeMode is denied, tagged or not, because a child
@@ -18,6 +18,11 @@
 //                      agent, no MCP tool off a two-name allowlist, edits only inside a writer's
 //                      worktree, and through the shell no push, no gh but its reads, no git off
 //                      the read and writer allowlists, and no model CLI.
+//   stopTurn, finalAnswer, failedStop
+//                      the child's Stop: which turn a stop belongs to, whether the final message
+//                      is the flow envelope with an answer that matches the seat's schema, and
+//                      what a failed one does: block with its problems, up to STOP_BLOCKS times a
+//                      turn, then let the seat stop, capped.
 //
 // Every field a decision reads is checked for shape first, and a field that is missing or of the
 // wrong type denies: a seat call is never admitted on a value this module had to guess at.
@@ -33,6 +38,7 @@
 import { lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { OPAQUE, segments } from './hook-policy.mjs'
+import { CHECK_SECONDS, checkAnswer, envelopeSchema, validate } from '../delegate/schema.mjs'
 import { inside } from './state-dir.mjs'
 
 /** The permission_mode each host reports for T3's `auto` runtime mode, measured on 2026-10-03. */
@@ -804,14 +810,102 @@ function ghApiProblem(args) {
   return null
 }
 
-const ENVELOPE = '{"status": "done" | "partial" | "blocked", "coverage": {"read": [], "partial": [], "unopened": [], "checksRun": []}, "notes": "", "answer": {}}'
+// ----- the final message
+
+/** How many times Stop refuses a turn's final message before it lets the seat stop, capped. */
+export const STOP_BLOCKS = 3
+const LINE_LIMIT = 10
+const SCHEMA_CONTEXT_BYTES = 16 * 1024
+const ENVELOPE = '{"status": "done" | "partial" | "blocked", "coverage": {"read": [], "partial": [], "unopened": [], "checksRun": []}, "notes": "", "answer": <your answer>}'
+const COMMITS = '"commits": [{"sha": "<sha>", "subject": "<subject>"}]'
+const envelopeFor = (access) => (access === 'workspace-write' ? `${ENVELOPE.slice(0, -1)}, ${COMMITS}}` : ENVELOPE)
+
+/**
+ * The turn a stop belongs to, from the state Stop last wrote (null for none) and this stop's turn
+ * key, the host's id for the turn. A new key starts the next turn with no blocks; the same key, or
+ * a stop whose key cannot be read, continues the current one, so blocks still count toward the cap.
+ */
+export function stopTurn(state, turnKey) {
+  const key = typeof turnKey === 'string' && turnKey !== '' ? turnKey : null
+  const current = plainObject(state) && Number.isSafeInteger(state.turn) && state.turn > 0 ? state : null
+  if (current && (key === null || key === current.turnKey)) {
+    return {
+      turn: current.turn,
+      turnKey: current.turnKey ?? null,
+      blocks: Number.isSafeInteger(current.blocks) ? current.blocks : 0,
+      outcome: current.outcome ?? null,
+      errors: Array.isArray(current.errors) ? current.errors : [],
+      stops: (Number.isSafeInteger(current.stops) ? current.stops : 0) + 1,
+    }
+  }
+  return { turn: (current?.turn ?? 0) + 1, turnKey: key, blocks: 0, outcome: null, errors: [], stops: 1 }
+}
+
+/**
+ * The seat's final message checked as its answer: {envelope} when it passes, else {errors}, as
+ * `path: problem` lines (validate stops at ten). The message is one JSON object, alone or as the
+ * whole of one fenced block. The envelope is checked here, against envelopeSchema for the record's access; the answer
+ * inside it is checked against the schema file at schemaPath (null when the seat has none) by
+ * checkAnswer, in a child process killed after CHECK_SECONDS, and a check that does not finish is
+ * a failure like any other.
+ */
+export function finalAnswer(record, text, schemaPath) {
+  const read = readMessage(text)
+  if (read.errors) return read
+  const errors = validate(envelopeSchema(record.access), read.value)
+  if (errors.length > 0) return { errors }
+  if (schemaPath !== null) {
+    let found
+    try { found = checkAnswer(schemaPath, read.value.answer, CHECK_SECONDS * 1000) } catch {
+      return { errors: ['$.answer: the schema check ended without a verdict'] }
+    }
+    if (found === null) return { errors: [`$.answer: the schema check did not finish in ${CHECK_SECONDS} seconds`] }
+    if (found.length > 0) return { errors: found.map((line) => line.replace(/^\$/, '$.answer')) }
+  }
+  return { envelope: read.value }
+}
+
+// A fence that opens the message and one that closes it. A message holding two blocks matches too,
+// with the fences between them inside the capture, and fails to parse: no JSON text holds a line
+// that starts with a fence.
+const FENCED = /^```[\w-]*[ \t]*\r?\n([\s\S]*?)\r?\n```$/
+function readMessage(text) {
+  if (typeof text !== 'string') return { errors: ['$: the final message could not be read'] }
+  const trimmed = text.trim()
+  const fenced = FENCED.exec(trimmed)
+  const body = fenced ? fenced[1] : trimmed
+  let value
+  try { value = JSON.parse(body) } catch {
+    return { errors: ['$: the final message is not one JSON object, alone or as the whole of one fenced block'] }
+  }
+  if (!plainObject(value)) return { errors: ['$: the final message is JSON but not one object'] }
+  return { value }
+}
+
+/**
+ * What Stop does after a final message failed: the next state, and the reason to block with, or
+ * null once the turn has used its STOP_BLOCKS blocks, when the state records the turn capped.
+ * blocks counts the blocks sent, so a capped turn reads STOP_BLOCKS.
+ */
+export function failedStop(record, state, errors) {
+  const lines = errors.slice(0, LINE_LIMIT)
+  if (state.blocks >= STOP_BLOCKS) return { state: { ...state, outcome: 'capped', errors: lines }, block: null }
+  const blocks = state.blocks + 1
+  const reason = [
+    `flow seat: your final message is not a valid flow envelope (block ${blocks} of ${STOP_BLOCKS}). Fix these and end your turn again with the corrected message:`,
+    ...lines,
+    `Your final message is one JSON object, alone or as the whole of one fenced block: ${envelopeFor(record.access)}`,
+  ].join('\n')
+  return { state: { ...state, blocks, outcome: 'blocked', errors: lines }, block: reason }
+}
 
 /**
  * The context a bound seat reads before its task: one sentence that sets the orchestrator half
- * aside, the record's facts, and the envelope its final message must be. The Seat Contract itself
- * arrived at SessionStart and is not repeated.
+ * aside, the record's facts, the envelope its final message must be, and the answer schema from
+ * the record (schema, null when the seat has none). The Seat Contract itself arrived at
+ * SessionStart and is not repeated.
  */
-export function seatContext(record) {
+export function seatContext(record, schema = null) {
   const lines = [
     'The orchestrator half of the flow charter does not apply in this session: you are a flow seat, and the Seat Contract governs.',
     '',
@@ -823,7 +917,7 @@ export function seatContext(record) {
   if (record.access === 'workspace-write') {
     lines.push(
       `- worktree: ${record.worktree}. Edit only inside it.`,
-      `- run every git write as \`git -C ${record.worktree} ...\`, and commit by path: \`git -C ${record.worktree} commit -- <paths>\`.`,
+      `- git reads run as usual. Your git writes are add, rm, mv, commit, restore, stash and apply, each as \`git -C ${record.worktree} ...\`, and you commit by path: \`git -C ${record.worktree} commit -m <message> -- <paths>\`.`,
     )
   } else if (record.access === 'review') {
     lines.push(`- review worktree: ${record.worktree}, base ${record.baseSha}, head ${record.headSha}. Edit nothing.`)
@@ -832,11 +926,15 @@ export function seatContext(record) {
   }
   lines.push(
     '',
-    'Your final message is one JSON object in the flow envelope and nothing else:',
-    ENVELOPE,
-    '`answer` follows the answer schema your task names.',
+    'Your final message is one JSON object in the flow envelope and nothing else, alone or as the whole of one fenced block:',
+    envelopeFor(record.access),
+    'coverage lists the files you read whole, read in part and left unopened, and the checks you ran. A stop hook checks the message and returns any problem to you to fix.',
   )
-  if (record.access === 'workspace-write') lines.push('Add "commits": [{"sha": "", "subject": ""}] with every commit you made.')
+  if (record.access === 'workspace-write') lines.push('commits lists every commit you made, each with its full SHA.')
+  const text = schema === null ? null : JSON.stringify(schema)
+  if (text === null) lines.push('`answer` is the JSON value your task asks for; this seat has no answer schema.')
+  else if (Buffer.byteLength(text) > SCHEMA_CONTEXT_BYTES) lines.push('`answer` follows the answer schema your task names; it is over 16 KiB, so it is not repeated here.')
+  else lines.push('`answer` must match this JSON Schema:', text)
   return lines.join('\n')
 }
 

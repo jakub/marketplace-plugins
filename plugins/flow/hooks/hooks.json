@@ -75,6 +75,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/seat-guard.mjs\" stop claude",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }
