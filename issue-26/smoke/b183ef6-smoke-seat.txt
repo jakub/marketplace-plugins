@@ -1,0 +1,208 @@
+wire-shapes
+  ok: promptContext, promptBlock and stopBlock print exactly the UserPromptSubmit context, UserPromptSubmit block and Stop block shapes, with no extra keys
+store-tag
+  ok: newId is 32 lowercase hex, seatTag refuses anything else, and the tag round-trips through parseTag with or without a body
+  ok: a well-formed tag anywhere but as the whole of line 1 voids the seat, including a valid line 1 with a second tag below it
+  ok: a malformed id or extra attribute is not a tag on any line, and a non-string prompt or plain text is no seat
+store-record
+  ok: writeRecord stores the record with its id and schema digest, and readRecord returns it, the schema, and a stable sha256 of the record bytes
+  ok: a record keeps a caller id, carries no schema when given none, and is never written twice
+  ok: readRecord is null for an unknown or invalid id, a changed schema snapshot, an unparsable record, and a record naming another id
+store-stamp
+  ok: a stamp is written once with its time: a second write returns false and leaves the first content byte for byte, and a caller time wins
+  ok: a stamp on a missing record or an invalid id is refused, and an unknown stamp name throws
+store-race
+  ok: six processes racing one stamp, three rounds: exactly one wins each time and the stamp holds its content
+  ok: six processes racing one session index, three rounds: exactly one creates it
+store-session
+  ok: a session id outside [A-Za-z0-9._-]{1,128} or an unknown host is refused before it reaches a filename, and a dotted id stays one name below by-session
+  ok: the session index lives at <host>-<session>, is created once, and reads back {id}
+store-void
+  ok: voidSession replaces a bound entry or creates one with no id, and a void session cannot be rebound
+  ok: an index entry that exists but cannot be read reads as void, never as no seat
+store-state-result
+  ok: turn state round-trips and is replaced whole, and a write for a bad or missing seat throws
+  ok: writeResult returns the sha256 of the bytes it wrote and records it beside them; readResult reports a changed or unsealed result as not intact
+store-prune
+  ok: pruneSeats removes only a record closed longer ago than RETENTION_MS, with its index entries, and keeps a recent close, an admitted record never closed however old, and an unreadable close time
+store-modes
+  ok: every seat directory is 0700 and every record, stamp, state, result and index file is 0600
+admit-tagged
+  ok: a tagged delegate_task matching its record is admitted once, under both T3 spellings, on both hosts, for both providers; a second admission is denied
+admit-runtime-mode
+  ok: a delegate_task call whose runtimeMode is missing, null or inherit is denied on both hosts, tagged or not, and admits nothing
+  ok: an untagged delegate_task call naming its runtimeMode is allowed and writes nothing
+admit-mismatch
+  ok: a tagged call whose provider, model, runtimeMode or role differs from the record is denied and admits nothing; the matching call is still admitted after
+admit-effort
+  ok: a tagged call is admitted only with the record's effort in target.options under the provider's option id (effort on Claude, reasoningEffort on Codex), as an array of {id, value} or a record; a missing, different, duplicated or other-provider effort is denied
+admit-client-request-id
+  ok: a tagged call is admitted only with clientRequestId exactly flow-seat-<id>, and the admitted stamp records it beside the tool use id
+admit-tag-line
+  ok: a seat tag anywhere but alone on line 1 is denied on both hosts and admits nothing
+admit-unreadable
+  ok: a delegate_task call with an unreadable tool_input, runtimeMode, task or target, or a tag naming no record, is denied on both hosts
+admit-race
+  ok: six concurrent admissions of one record: exactly one is allowed and the rest are denied
+bind-happy
+  ok: a tagged first prompt binds on Claude (permission_mode auto) and Codex (default): index and bound stamp written, the override, envelope and answer schema injected, and the first seat call stamps the receipt once
+  ok: a writer seat is told its worktree, the git -C commit form and the commits field; a review seat its base and head; a seat with no schema is told so
+bind-not-admitted
+  ok: a tag whose record was never admitted voids the session on both hosts: void index and stamp, no bound stamp, and every tool call denied
+bind-replay
+  ok: a seat tag replayed in a second session voids that session alone: the first binding stays in place and the record carries no void stamp, on both hosts
+bind-invalid-session
+  ok: a session id that fails validation refuses the prompt, since no index can hold the session, voids the record and writes no index entry, on both hosts
+bind-permission-mode
+  ok: a permission_mode outside the host's set (Claude auto, Codex default) voids the seat: bypassPermissions, another mode, a wrong case, or none
+bind-tag-line
+  ok: a seat tag below line 1 voids the session with no record named, and every tool call is denied
+bind-record-faults
+  ok: a tag naming no record voids the session without creating one, and a Codex record bound from a Claude session is void
+  ok: in a bound seat, an unreadable tool call and a missing or corrupt record are denied on both hosts, before any receipt
+bind-unindexed
+  ok: a tagged prompt whose session index cannot be written is refused rather than run with no seat, on both hosts; a session that holds a void index has every call denied
+bind-record-void
+  ok: a record voided by a failed first bind stays void: its tag replayed in a fresh session with an allowed mode binds nothing, on both hosts
+spawn-names
+  ok: Agent, Task, Workflow, any *spawn_agent and any collaboration* tool are denied in every seat on both hosts, and Read, Grep, ToolSearch and TaskOutput are not
+mcp-allowlist
+  ok: every MCP tool is denied in every seat on both hosts, T3's delegate_task under both spellings and flow_delegate under both included, except Context7's query-docs and resolve-library-id
+  ok: a seat's own delegate_task for an admissible record is denied and admits nothing
+edit-not-writer
+  ok: a read-only or review seat is denied Edit, Write, NotebookEdit and apply_patch inside its own worktree, on both hosts
+edit-writer
+  ok: a writer seat edits inside its worktree, through an inner symlink or a not-yet-made directory, and is denied a sibling with the worktree as its prefix, a symlink or dangling symlink out, a `..` past a missing directory, and any .git segment
+edit-patch
+  ok: a Codex writer's apply_patch resolves relative targets against the hook's cwd, allows targets and moves inside, and is denied any target outside or an envelope whose targets cannot all be read
+bash-every-seat
+  ok: every seat on both hosts is denied git push, any gh but its reads (pr checkout, secret, run rerun, workflow run, label create and gh api with a non-GET method or a field included), and any git off the read allowlist (remote add, submodule, update-index, an alias); git and gh reads run
+bash-gh-api-clusters
+  ok: a gh api call with clustered short flags (-iXDELETE, -if, -XPOST, even -XGET) is denied in every seat; each flag written apart runs
+bash-model-cli
+  ok: claude, codex and flow-delegate are denied in command position, behind env, exec, nohup, timeout, nice, xargs, builtin, npx, bunx, pnpx, npm exec and a shell, and in a string a shell or eval runs; which codex, command -v codex, ls dir/codex and echo codex run
+bash-seat-executor
+  ok: no seat runs node on a script named seat.mjs, by any path and behind a wrapper or a shell string, so a seat neither opens nor closes a seat; reading the file or running another script is allowed
+bash-background
+  ok: every seat is denied a lone & (in a string a shell runs too), setsid, disown, coproc and Bash run_in_background; &&, 2>&1, &>, >&2, <&0, |& and an & in quoted text or a heredoc body run, and nohup runs as a wrapper in the foreground
+bash-not-writer
+  ok: a read-only or review seat runs only the git read allowlist, -C or not, and is denied every other subcommand, including a config read without --get or --list
+bash-wrappers
+  ok: sudo, command, builtin, time, stdbuf, env (-S included), nice, timeout and xargs are followed, chained, to the command they run; command -v is a lookup
+bash-keywords
+  ok: the command word is read past if, then, else, elif, do, while, until, !, a group's ( or { and watch and eval, and into the command after find -exec, -execdir, -ok or -okdir; a command that merely sits in the keyword's place runs
+bash-git-overrides
+  ok: every seat, reads included, is denied git with -c, --config-env, a GIT_* variable set or exported in the same command, --output, --ext-diff, -O or --open-files-in-pager (or an abbreviation); a $GIT_* reference and --no-ext-diff run
+bash-stash
+  ok: git stash is denied in every seat, list and -C writer forms included, because every worktree of the repository shares the stash stack
+bash-accepted-gaps
+  ok: the accepted gaps stay allowed in every seat: a quoted, escaped, ANSI-C, globbed or brace-built command word, source from stdin, a command substitution, and a Bash write outside the worktree
+bash-writer
+  ok: a writer seat runs add, rm, mv, commit, restore and apply only as git -C <worktree realpath> with no override, commits only named paths (no -a, -i, --include, --amend without paths or abbreviation of them, and no redirection target read as a path), stages with -A, -u, --renormalize or --no-ignore-removal only beside named paths, applies with no --unsafe-paths or --directory, and is denied every other non-read git subcommand, config writes in any scope included
+closed-seat
+  ok: once a seat carries a closed stamp, every tool call in its session is denied, reads and allowlisted MCP included
+stop-envelope-schema
+  ok: envelopeSchema is admitted by schemaProblem for every access, takes the fixture envelope, and requires commits of a writer alone
+stop-valid
+  ok: a valid final message writes result-1.json, its sha256 and a valid turn state, on both hosts; a Claude transcript that cannot be read serves no model
+  ok: a writer seat's envelope requires commits, and one that lists them is recorded
+  ok: a seat with no answer schema takes any answer inside a valid envelope
+stop-fenced
+  ok: one fenced block wrapping the whole message is read as the answer; text around it, a second block or trailing prose is blocked
+stop-invalid
+  ok: a final message that is not JSON, not one object, or breaks the envelope or the answer schema is blocked with its `path: problem` lines (at most 10) and the envelope reminder, and records the turn blocked with no result, on both hosts
+stop-cap
+  ok: three failing stops in a turn are blocked, the fourth is let through and records the turn capped with 3 blocks, the same message again changes nothing, and a changed failing one stays capped without a block, on both hosts
+stop-turns
+  ok: a new turn key starts the next turn with its blocks reset, the same final message in a turn that already has a valid result is left alone, and a stop with no turn key counts against the current turn, on both hosts
+stop-continuation
+  ok: a follow-up prompt in a bound seat records the turn it opens, and close reads a seat whose latest opened turn has no stop as unknown (turn-without-result), not as the earlier turn's valid result
+  ok: a follow-up turn that stopped is judged on its own result: valid when its stop recorded one, invalid when its last stop was blocked
+  ok: on Claude the follow-up is keyed by prompt_id and kept across its stops; a void seat or a non-seat session records nothing
+stop-resumed
+  ok: a turn resumed after it settled checks a changed final message again: a valid one replaces the result, a failing one blocks against the turn's cap and leaves the turn blocked or capped, and a valid one after that reads valid again, on both hosts
+stop-timeout
+  ok: an answer whose schema check runs past CHECK_SECONDS is a failed stop, blocked with the timeout line, inside the 30 s hook timeout (10.0 s)
+stop-served-models
+  ok: a Codex seat's served model is the model its Stop call names
+  ok: a Claude seat's served models are every assistant message.model its transcript records for the session since the bind, in first-seen order, with <synthetic>, other sessions, earlier entries and torn lines left out
+  ok: every stop adds the models it saw to a cumulative set in the turn state, a repeated message on a settled turn included, and close reads model-mismatch when any turn saw another model, unknown when none was seen, and valid when every one is the record's
+stop-void
+  ok: a void seat's stop is never blocked and records nothing, on both hosts
+stop-non-seat
+  ok: a non-seat session's stop, or one whose session id fails validation, gets no answer and writes nothing, on both hosts
+open-access
+  ok: a read-only seat opens in the working directory's worktree: the output names its id, tag, clientRequestId flow-seat-<id>, runtimeMode auto, model, effort and worktree, and the record holds the same with no schema
+  ok: --worktree inside a linked worktree opens at that worktree's top level, with the main worktree as the canonical checkout, and --schema is stored as the answer schema
+  ok: a writer seat writes its holder file into the worktree's lease directory, and close drops it
+open-review
+  ok: a review seat resolves --base and --head to SHAs, adds a detached worktree at the head under .flow-worktrees/review-<id>, answers in the findings schema, and records a canonical snapshot with HEAD and branch and the review worktree's git directory
+  ok: a review seat resolves its revisions in --worktree and still adds its worktree under the canonical checkout
+open-refusals
+  ok: open refuses a bad access, provider, model or effort, a relative, missing or non-repository --worktree, revisions off a review, a writer with no --worktree, an unknown, repeated or valueless flag (BAD_REQUEST), a review with a missing or unresolvable revision (GIT_REF) or with --schema (BAD_SCHEMA), and leaves no record or worktree behind
+  ok: --schema is admitted up to 16 KiB under outputSchema's keyword rules, and a larger, unparsable, non-object, unchecked-keyword, relative or missing one is BAD_SCHEMA
+open-lease
+  ok: open refuses a writer seat with WORKSPACE_BUSY while a live flow_delegate write job holds the worktree, before it writes anything there
+  ok: a write job that takes the lease between the seat's first look and its holder write is seen when the seat looks again, and the seat backs out
+  ok: a leftover lease file of an ended job whose provider group is gone does not refuse a writer seat
+  ok: a write job is refused WORKSPACE_BUSY, naming the seat, while any writer seat on the worktree is unclosed, and takes the lease once every one is closed
+  ok: a holder whose seat record is not yet written refuses a write job, and a closed seat's leftover holder is dropped and the job takes the lease
+  ok: prune drops a closed record's leftover lease holder before the record, so a close that died between its stamp and its drop no longer blocks the worktree once the record ages out
+  ok: a holder with no seat record is held for a minute after its write, as an open in flight, and then dropped as abandoned so a write job takes the lease; a holder with a record holds however old it is
+  ok: an open whose holder was dropped as abandoned before its record went in refuses WORKSPACE_BUSY and voids and closes the record it wrote
+  ok: six rounds of three writer seats racing three write jobs for one worktree never let a seat and a job both in, and the lease directory names exactly the winners
+open-lease-takeover
+  ok: a job that renames a stale pending holder before the seat renames it live takes the lease, and the seat refuses WORKSPACE_BUSY and voids and closes its record
+  ok: a seat that renames its pending holder live before a job that judged it stale renames it keeps the worktree: the job finds no holder to take, looks again and refuses WORKSPACE_BUSY until the seat closes
+  ok: a live holder keeps write jobs out past the minute until its seat is closed, and a closed seat's live holder and a dead takeover's taken file are dropped
+open-undo
+  ok: an open refused after its review worktree went in removes that worktree again
+close-verdicts
+  ok: valid: every stamp present and an intact result whose served models are the record's; the output carries the envelope and the closed stamp records the task status
+  ok: invalid: the last stop of the last turn was blocked, an earlier valid result in that turn included; capped: the turn was capped
+  ok: unknown: a missing admitted, bound or receipt stamp, any void stamp, a record digest the bind did not pin, a bound session whose index is void, missing or names another seat, a result whose sha256 does not match, no served model, no Stop, a valid turn with no result, or a missing or corrupt record
+  ok: model-mismatch: a served model or the model seen at the bind is not the record's, outranking invalid and outranked by unknown
+close-review
+  ok: a review whose worktree stayed at the head and clean, whose canonical checkout did not move, and whose coverage lists every diffed file (read, partial or unopened, relative, ./ or absolute) is valid, and close removes its worktree
+  ok: tree-moved: the review worktree's HEAD moved, it is dirty, the canonical checkout changed, or the coverage misses a diffed file; it outranks capped
+  ok: a review records the canonical checkout's HEAD commit and branch, and reads tree-moved when either changed, the tree unchanged
+  ok: close removes a review worktree only while its path, its admin directory and git's worktree list all still match what open recorded, and otherwise leaves the path alone and reports it in cleanupProblems
+close-rerun
+  ok: a second close prints the verdict and reasons on record, keeps the first task status, and the first close dropped the writer's lease holder
+  ok: the closed stamp pins the turn's result sha256 and the facts; a later close prints the same while the result's bytes match, whatever the verdict, and a null result with result-changed-after-close once they do not, the verdict unchanged
+  ok: close refuses TASK_NOT_TERMINAL, writing nothing and keeping the lease, unless the task status is an object whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs
+  ok: close refuses a missing or malformed seat id, a missing, unparsable or oversized --task-status, and an unknown flag, with BAD_REQUEST
+close-task-match
+  ok: close refuses TASK_MISMATCH, writing nothing and keeping the lease, when the task status of an admitted seat carries no taskId naming flow-seat-<id>
+  ok: close accepts the seat's own task id, plain or URL-encoded, and closes a seat that was never admitted on any finished task status, as unknown
+close-result-models
+  ok: close reads a valid turn whose result names no served model of its own as unknown, whatever earlier stops saw, and a model other than the record's in the result or in any stop as model-mismatch
+prune-void-index
+  ok: pruneSeats removes a void index entry that names no seat once it is older than RETENTION_MS, and keeps a recent one, one naming a seat whose record stays, and an unreadable one
+prune-open
+  ok: open prunes records closed longer ago than RETENTION_MS first, and keeps an unclosed one however old
+trust-list
+  ok: trust lists flow's own Codex hook keys alone, each with its command, trust status and hash, and their digest, through initialize, initialized and hooks/list for the canonical checkout, and writes nothing
+trust-write
+  ok: trust --write upserts hooks.state for flow's keys alone, each as its current hash, leaves another plugin's and a user's hook (one running a flow script included) untouched, and reads the keys back trusted
+  ok: trust --write fails HOOKS_UNTRUSTED when a key does not read trusted after the write
+  ok: trust --write needs --expect with the digest trust listed, and refuses HOOKS_CHANGED, writing nothing, when the hooks listed now have another digest
+  ok: trust selects only this copy's plugin id: flow@other or a foreign plugin with flow's commands and a byte-identical hooks file under another root is never listed or written, and alone it reads HOOKS_MISMATCH
+  ok: the copy trust runs from may be the copy Codex installed: entries rooted at this checkout list as flow's too
+trust-mismatch
+  ok: trust and trust --write refuse HOOKS_MISMATCH, writing nothing, unless Codex lists exactly one hook per flow handler from one root whose hooks/codex.json, the entries' sourcePath, is byte for byte this copy's; no codex on PATH is PROVIDER_NOT_INSTALLED
+trust-open
+  ok: open refuses a Codex seat HOOKS_UNTRUSTED, with the digest of flow's keys and hashes, while a flow hook is untrusted, writes no trust, and leaves no writer's holder or review's worktree behind
+  ok: a disabled or modified flow hook, an install that does not match this flow (a missing handler, a hooks file one byte apart, another plugin id), or no codex on PATH also refuses a Codex seat HOOKS_UNTRUSTED
+  ok: a Codex seat opens from this checkout's seat.mjs once every hook of the flow Codex installed under another root reads trusted, and records the hooks digest; a Claude seat never reads Codex trust and records none
+trust-identity
+  ok: a copy in a plugin cache, <home>/plugins/cache/<marketplace>/flow/<version>, reads its plugin id from that path: flow@other selects flow@other and not flow@jakub
+  ok: a source checkout reads its plugin id from its marketplace manifest: a manifest named mine selects flow@mine and not flow@jakub
+  ok: a source copy whose marketplace manifest is missing, names no marketplace, or names another directory as flow names no plugin id: trust and open fail closed, and nothing is written
+fastpath-silent
+  ok: a non-seat session on either host, with or without a tag-like string, an unreadable body, or an untagged delegate_task, gets no answer, writes no state, never loads node:crypto, and never loads seat-policy.mjs outside the gate
+fastpath-latency
+  fastpath p50 over 30 runs: seat-guard pre 20.0 ms, node -e '' 14.9 ms, added 5.1 ms
+  ok: measured the non-seat PreToolUse cost against a bare node start (no bound asserted)
+
+smoke-seat: ALL PASS (128 checks, 77 cases)

@@ -1,0 +1,15 @@
+  ok: the charter carries exactly one seat marker
+  ok: a claude session gets the whole charter, 9457 characters, under 9500
+  ok: a codex session gets the whole charter, 9457 characters, under 9500
+  ok: hooks/hooks.json registers one session and one subagent charter hook
+  ok: hooks/codex.json registers one session and one subagent charter hook
+  ok: hooks/codex.json keeps all 7 trusted hooks at their positions with their command strings
+  ok: hooks/hooks.json registers the seat guard as the last PreToolUse group, matcher "*", on UserPromptSubmit, and on Stop with a 30 s timeout
+  ok: hooks/codex.json registers the seat guard as the last PreToolUse group, matcher ".*", on UserPromptSubmit with a 6000-token context limit, and on Stop with a 30 s timeout
+  ok: a seat on either host gets seatPayload(), the whole half below the marker, even from an unreadable body
+  ok: Explore and fork are skipped on Claude and delivered on Codex
+  ok: each host reads its own root variable first
+  ok: a charter over 9,800 characters is refused with one comment and no tag, on both hosts
+  ok: a broken or missing charter exits 0 with empty stdout and a stderr diagnostic
+
+charter delivery: ALL PASS (13 checks)
