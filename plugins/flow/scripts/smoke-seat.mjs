@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -198,8 +198,8 @@ const median = (values) => {
 // otherwise, against the same state directory as the store.
 const SEAT_SCRIPT = join(PLUGIN, 'scripts', 'seat.mjs')
 const jobs = await import(pathToFileURL(join(PLUGIN, 'delegate', 'jobs.mjs')).href)
-function seatCli(args, { cwd = canon, env = {} } = {}) {
-  const run = spawnSync(process.execPath, [SEAT_SCRIPT, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...trustedCodex.env, ...env } })
+function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT } = {}) {
+  const run = spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...trustedCodex.env, ...env } })
   const lines = run.stdout.split('\n').filter(Boolean)
   assert.equal(lines.length, 1, `seat.mjs ${args[0]} printed ${JSON.stringify(run.stdout)} ${run.stderr}`)
   const out = JSON.parse(lines[0])
@@ -245,9 +245,23 @@ createInterface({ input: process.stdin }).on('line', (line) => {
 })
 `)
 chmodSync(join(fakeCodexBin, 'codex'), 0o755)
-// Codex lists flow's hooks under the root of the flow copy it installed. trust binds to the copy
-// it runs from, so the entries for this flow carry this checkout's plugin root.
-const FAKE_ROOT = realpathSync(PLUGIN)
+// Codex lists flow's hooks under the root of the flow copy it installed, which is not the copy a
+// Claude session runs seat.mjs from. installedRoot makes such a root, holding a hooks/codex.json of
+// the given bytes (this copy's unless a case says otherwise), and the entries carry FAKE_ROOT, a
+// Codex install of this flow apart from this checkout, so every trust and open case is the
+// cross-host one.
+const OWN_HOOKS = readFileSync(join(PLUGIN, 'hooks', 'codex.json'))
+function installedRoot(name, bytes = OWN_HOOKS) {
+  const root = join(tmp, 'codex-home', name, 'plugins', 'cache', 'jakub', 'flow', '9.9.9')
+  mkdirSync(join(root, 'hooks'), { recursive: true })
+  writeFileSync(join(root, 'hooks', 'codex.json'), bytes)
+  return root
+}
+const FAKE_ROOT = installedRoot('codex')
+// A Codex install whose hooks/codex.json is this copy's with its final newline a space: one byte
+// apart and the same JSON.
+assert.equal(OWN_HOOKS.at(-1), 0x0a)
+const DRIFTED_ROOT = installedRoot('drifted', Buffer.concat([OWN_HOOKS.subarray(0, -1), Buffer.from(' ')]))
 const snake = (event) => event.replace(/[A-Z]/g, (c, at) => `${at ? '_' : ''}${c.toLowerCase()}`)
 // hooks/list entries for this copy of flow's hooks/codex.json, each untrusted or trusted, under
 // pluginId and root; drop removes the handlers whose command includes it.
@@ -2223,9 +2237,11 @@ const cases = {
     }
     ok('trust --write needs --expect with the digest trust listed, and refuses HOOKS_CHANGED, writing nothing, when the hooks listed now have another digest')
 
-    // Flow's keys are the ones under this copy's own plugin root from a flow@ plugin. A plugin whose
-    // commands have flow's shapes under another root, or under another id, is not flow.
-    const lookalikes = [...flowEntries({ pluginId: 'evil@x', root: '/home/u/evil' }), ...flowEntries({ pluginId: 'flow@fork', root: '/home/u/fork/flow' }),
+    // Flow's keys are this copy's plugin id, flow@jakub from the checkout's manifest, from one root
+    // whose hooks/codex.json is byte for byte this copy's, wherever that root is. Another plugin id
+    // is not flow, whatever its commands and hooks file look like.
+    const elsewhere = installedRoot('elsewhere')
+    const lookalikes = [...flowEntries({ pluginId: 'flow@other', root: installedRoot('other') }), ...flowEntries({ pluginId: 'evil@x', root: elsewhere }),
       ...flowEntries({ pluginId: 'evil@here' })]
     const mixed = codexState([...flowEntries(), ...lookalikes])
     const mixedList = seatCli(['trust'], { env: mixed.env })
@@ -2234,12 +2250,23 @@ const cases = {
     assert.equal(seatCli(['trust', '--write', '--expect', mixedList.digest], { env: mixed.env }).ok, true)
     const mixedEdits = codexSent(mixed.dir).find((message) => message.method === 'config/batchWrite').params.edits[0].value
     assert.deepEqual(Object.keys(mixedEdits).sort(), flowEntries().map(({ key }) => key).sort())
-    for (const hook of codexHooks(mixed.dir).filter((entry) => !entry.pluginId.startsWith('flow@jakub'))) assert.equal(hook.trustStatus, 'untrusted', hook.key)
-    const onlyLookalike = codexState(flowEntries({ pluginId: 'evil@x', root: '/home/u/evil' }))
-    const lookalikeWrite = seatCli(['trust', '--write', '--expect', flowDigest(flowEntries({ pluginId: 'evil@x', root: '/home/u/evil' }))], { env: onlyLookalike.env })
-    assert.equal(lookalikeWrite.error?.kind, 'HOOKS_MISMATCH', JSON.stringify(lookalikeWrite))
-    assert.ok(!codexSent(onlyLookalike.dir).some((message) => message.method === 'config/batchWrite'), 'trust wrote a lookalike plugin\'s keys')
-    ok('trust selects only the flow@ plugin under this copy\'s own plugin root: a plugin with flow\'s command shapes under another root or another id is never listed or written, and alone it reads HOOKS_MISMATCH')
+    for (const hook of codexHooks(mixed.dir).filter((entry) => entry.pluginId !== 'flow@jakub')) assert.equal(hook.trustStatus, 'untrusted', hook.key)
+    for (const [what, alone] of [['flow@other with this copy\'s commands and hooks file', flowEntries({ pluginId: 'flow@other', root: installedRoot('other') })],
+      ['a foreign plugin with this copy\'s commands and hooks file', flowEntries({ pluginId: 'evil@x', root: elsewhere })]]) {
+      const only = codexState(alone)
+      const listed = seatCli(['trust'], { env: only.env })
+      assert.equal(listed.error?.kind, 'HOOKS_MISMATCH', `${what}: ${JSON.stringify(listed)}`)
+      assert.equal(listed.error.details.pluginId, 'flow@jakub')
+      const written = seatCli(['trust', '--write', '--expect', flowDigest(alone)], { env: only.env })
+      assert.equal(written.error?.kind, 'HOOKS_MISMATCH', `${what}: ${JSON.stringify(written)}`)
+      assert.ok(!codexSent(only.dir).some((message) => message.method === 'config/batchWrite'), `trust wrote ${what}`)
+      assert.ok(codexHooks(only.dir).every((hook) => hook.trustStatus === 'untrusted'), `${what} was trusted`)
+    }
+    ok('trust selects only this copy\'s plugin id: flow@other or a foreign plugin with flow\'s commands and a byte-identical hooks file under another root is never listed or written, and alone it reads HOOKS_MISMATCH')
+
+    const own = codexState(flowEntries({ root: realpathSync(PLUGIN) }))
+    assert.equal(seatCli(['trust'], { env: own.env }).ok, true, 'this copy\'s own root')
+    ok('the copy trust runs from may be the copy Codex installed: entries rooted at this checkout list as flow\'s too')
   },
 
   'trust-mismatch': () => {
@@ -2252,7 +2279,11 @@ const cases = {
         ...flowEntries({ trusted: true, pluginId: 'flow@fork' }).filter((hook) => hook.command.includes('seat-guard.mjs'))]],
       ['a key from another hooks file', flowEntries({ trusted: true }).map((hook, at) => (at === 0 ? { ...hook, key: hook.key.replace('hooks/codex.json', 'hooks/hooks.json') } : hook))],
       ['one plugin with two roots', [...flowEntries({ trusted: true, drop: 'seat-guard.mjs' }),
-        ...flowEntries({ trusted: true, root: '/home/u/other/flow' }).filter((hook) => hook.command.includes('seat-guard.mjs'))]],
+        ...flowEntries({ trusted: true, root: installedRoot('second') }).filter((hook) => hook.command.includes('seat-guard.mjs'))]],
+      ['a hooks/codex.json that differs by one byte', flowEntries({ trusted: true, root: DRIFTED_ROOT })],
+      ['a sourcePath under another root than the command', flowEntries({ trusted: true, root: DRIFTED_ROOT }).map((hook) => ({ ...hook, sourcePath: `${FAKE_ROOT}/hooks/codex.json` }))],
+      ['no sourcePath', flowEntries({ trusted: true }).map(({ sourcePath, ...hook }) => hook)],
+      ['a root with no hooks file', flowEntries({ trusted: true, root: join(tmp, 'codex-home', 'nowhere') })],
       ['no flow at all', FOREIGN],
     ]) {
       for (const args of [['trust'], ['trust', '--write', '--expect', flowDigest(hooks)]]) {
@@ -2268,7 +2299,7 @@ const cases = {
     symlinkSync(spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim(), join(noCodex, 'git'))
     assert.equal(seatCli(['trust'], { env: { PATH: noCodex } }).error.kind, 'PROVIDER_NOT_INSTALLED')
     assert.equal(seatCli(['trust', '--extra'], { env: trustedCodex.env }).error.kind, 'BAD_REQUEST')
-    ok('trust and trust --write refuse HOOKS_MISMATCH, writing nothing, unless Codex lists exactly one hook per flow handler from one plugin and one root; no codex on PATH is PROVIDER_NOT_INSTALLED')
+    ok('trust and trust --write refuse HOOKS_MISMATCH, writing nothing, unless Codex lists exactly one hook per flow handler from one root whose hooks/codex.json, the entries\' sourcePath, is byte for byte this copy\'s; no codex on PATH is PROVIDER_NOT_INSTALLED')
   },
 
   'trust-open': () => {
@@ -2297,14 +2328,19 @@ const cases = {
     assert.equal(seatCli(args('codex'), { env: codexState(modified).env }).error.kind, 'HOOKS_UNTRUSTED', 'a modified flow hook')
     const mismatch = seatCli(args('codex'), { env: codexState(flowEntries({ trusted: true, drop: 'seat-guard.mjs' })).env })
     assert.deepEqual([mismatch.error.kind, mismatch.error.details.cause], ['HOOKS_UNTRUSTED', 'HOOKS_MISMATCH'])
+    const drifted = seatCli(args('codex'), { env: codexState(flowEntries({ trusted: true, root: DRIFTED_ROOT })).env })
+    assert.deepEqual([drifted.error.kind, drifted.error.details.cause], ['HOOKS_UNTRUSTED', 'HOOKS_MISMATCH'])
+    const otherId = seatCli(args('codex'), { env: codexState(flowEntries({ trusted: true, pluginId: 'flow@other' })).env })
+    assert.deepEqual([otherId.error.kind, otherId.error.details.cause], ['HOOKS_UNTRUSTED', 'HOOKS_MISMATCH'])
     const noCodex = join(tmp, 'no-codex-open-bin')
     mkdirSync(noCodex, { recursive: true })
     symlinkSync(spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim(), join(noCodex, 'git'))
     const missing = seatCli(args('codex'), { env: { PATH: noCodex } })
     assert.deepEqual([missing.error.kind, missing.error.details.cause], ['HOOKS_UNTRUSTED', 'PROVIDER_NOT_INSTALLED'])
-    ok('a disabled or modified flow hook, an install that does not match this flow, or no codex on PATH also refuses a Codex seat HOOKS_UNTRUSTED')
+    ok('a disabled or modified flow hook, an install that does not match this flow (a missing handler, a hooks file one byte apart, another plugin id), or no codex on PATH also refuses a Codex seat HOOKS_UNTRUSTED')
 
     const trusted = codexState([...flowEntries({ trusted: true }), ...FOREIGN])
+    assert.notEqual(FAKE_ROOT, realpathSync(PLUGIN))
     const opened = seatCli(args('codex'), { env: trusted.env })
     assert.equal(opened.ok, true, JSON.stringify(opened))
     assert.equal(store.readRecord(opened.id).record.hooksDigest, flowDigest(flowEntries({ trusted: true })))
@@ -2312,7 +2348,49 @@ const cases = {
     assert.equal(seatCli(args('claude'), { env: claude.env }).ok, true)
     assert.deepEqual(codexSent(claude.dir), [], 'a Claude seat read Codex trust')
     assert.equal(store.readRecord(seatCli(args('claude'), { env: claude.env }).id).record.hooksDigest, null)
-    ok('a Codex seat opens once every flow hook reads trusted and records the hooks digest; a Claude seat never reads Codex trust and records none')
+    ok('a Codex seat opens from this checkout\'s seat.mjs once every hook of the flow Codex installed under another root reads trusted, and records the hooks digest; a Claude seat never reads Codex trust and records none')
+  },
+
+  'trust-identity': () => {
+    // A copy of this flow at path, with a marketplace manifest beside it when one is given.
+    const copyAt = (path, manifest) => {
+      cpSync(PLUGIN, path, { recursive: true })
+      if (manifest) {
+        mkdirSync(join(path, '..', '..', '.claude-plugin'), { recursive: true })
+        writeFileSync(join(path, '..', '..', '.claude-plugin', 'marketplace.json'), JSON.stringify(manifest))
+      }
+      return join(path, 'scripts', 'seat.mjs')
+    }
+    const listedAs = (script, pluginId) => {
+      const { dir, env } = codexState([...flowEntries({ pluginId: 'flow@jakub' }), ...(pluginId === 'flow@jakub' ? [] : flowEntries({ pluginId }))])
+      const out = seatCli(['trust'], { env, script })
+      return { out, dir, keys: out.ok ? [...new Set(out.keys.map(({ key }) => key.split(':')[0]))] : null }
+    }
+
+    const cached = copyAt(join(tmp, 'identity', 'claude-home', 'plugins', 'cache', 'other', 'flow', '1.2.3'))
+    assert.deepEqual(listedAs(cached, 'flow@other').keys, ['flow@other'])
+    const cachedAlone = seatCli(['trust'], { env: codexState(flowEntries()).env, script: cached })
+    assert.deepEqual([cachedAlone.error?.kind, cachedAlone.error?.details.pluginId], ['HOOKS_MISMATCH', 'flow@other'])
+    ok('a copy in a plugin cache, <home>/plugins/cache/<marketplace>/flow/<version>, reads its plugin id from that path: flow@other selects flow@other and not flow@jakub')
+
+    const mine = copyAt(join(tmp, 'identity', 'mine', 'plugins', 'flow'), { name: 'mine', plugins: [{ name: 'flow', source: './plugins/flow' }] })
+    assert.deepEqual(listedAs(mine, 'flow@mine').keys, ['flow@mine'])
+    ok('a source checkout reads its plugin id from its marketplace manifest: a manifest named mine selects flow@mine and not flow@jakub')
+
+    for (const [what, script] of [
+      ['no manifest', copyAt(join(tmp, 'identity', 'bare', 'plugins', 'flow'))],
+      ['a manifest whose flow is another directory', copyAt(join(tmp, 'identity', 'moved', 'plugins', 'flow'), { name: 'jakub', plugins: [{ name: 'flow', source: './plugins/elsewhere' }] })],
+      ['a manifest with no name', copyAt(join(tmp, 'identity', 'nameless', 'plugins', 'flow'), { plugins: [{ name: 'flow', source: './plugins/flow' }] })],
+    ]) {
+      const { dir, env } = codexState(flowEntries({ trusted: true }))
+      const listed = seatCli(['trust'], { env, script })
+      assert.equal(listed.error?.kind, 'HOOKS_MISMATCH', `${what}: ${JSON.stringify(listed)}`)
+      assert.equal(seatCli(['trust', '--write', '--expect', flowDigest(flowEntries({ trusted: true }))], { env, script }).error?.kind, 'HOOKS_MISMATCH', what)
+      assert.ok(!codexSent(dir).some((message) => message.method === 'config/batchWrite'), `${what}: trust was written`)
+      const refused = seatCli(['open', '--access', 'read-only', '--provider', 'codex', '--model', MODELS.codex, '--effort', 'high'], { env, script })
+      assert.deepEqual([refused.error?.kind, refused.error?.details.cause], ['HOOKS_UNTRUSTED', 'HOOKS_MISMATCH'], what)
+    }
+    ok('a source copy whose marketplace manifest is missing, names no marketplace, or names another directory as flow names no plugin id: trust and open fail closed, and nothing is written')
   },
 
   'fastpath-silent': () => {

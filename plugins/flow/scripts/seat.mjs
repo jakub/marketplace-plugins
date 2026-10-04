@@ -83,15 +83,24 @@
 // `<plugin>:hooks/codex.json:<event>:<group>:<handler>`, with a hash of the command. trust spawns
 // `codex app-server --stdio` (the codex on PATH, absolute entries only, through
 // delegate/codex-app-server.mjs's JSON-RPC peer), initializes, and reads hooks/list for the
-// canonical checkout of the working directory. Flow's keys are the plugin-source entries of a
-// plugin whose id starts with flow@ and whose command is one of the handler commands in
-// hooks/codex.json with ${PLUGIN_ROOT} standing for this copy's own plugin root, as a realpath:
-// Codex reports each command with the root already expanded (0.160.0). A plugin under another root
-// or another id is not flow, whatever its commands look like, so trust is read and written only
-// for the flow copy this seat.mjs belongs to, which for a Codex seat must be the copy Codex
-// installed. All of the keys must come from one plugin, and there must be exactly one per handler,
-// or trust fails HOOKS_MISMATCH, which is what an install older or newer than this copy of flow,
-// or another copy of it, reads as.
+// canonical checkout of the working directory. Flow's keys are the plugin-source entries for which
+// all of these hold:
+//   - the pluginId is flow@<marketplace>, the marketplace this copy of flow came from. A plugin
+//     manager installs flow at <home>/plugins/cache/<marketplace>/flow/<version> (Claude Code and
+//     Codex alike), so a copy there reads the marketplace from its own path; a source checkout
+//     reads the name from the manifest of the marketplace repository whose plugins/flow it is.
+//     A copy that is neither names no id, and trust fails HOOKS_MISMATCH rather than guess one.
+//   - the command is one of the handler commands in hooks/codex.json with ${PLUGIN_ROOT} standing
+//     for one plugin root (Codex reports each command with the root already expanded, 0.160.0),
+//     the sourcePath is that root's hooks/codex.json, and that file's bytes are this copy's
+//     hooks/codex.json's bytes.
+// The root is not this copy's: Claude Code and Codex each install their own copy of flow, so the
+// Claude copy's seat.mjs reads and writes the trust of the copy Codex installed, which carries the
+// same hooks file whenever both hosts carry one version. Another plugin id is not flow, whatever its
+// commands and hooks file look like, so trust never reads or writes it. All of the keys must come
+// from one root, there must be exactly one per handler, and each key must start
+// <pluginId>:hooks/codex.json:, or trust fails HOOKS_MISMATCH, which is what an install older or
+// newer than this copy of flow reads as.
 // A plain trust prints the keys and their digest, the sha256 of the sorted [key, currentHash]
 // pairs as JSON, which is also what open records as hooksDigest. The human grants trust to what
 // they were shown, so --write takes that digest as --expect: it lists the keys again and fails
@@ -339,29 +348,58 @@ function flowHandlers() {
 
 const realOrSelf = (path) => { try { return realpathSync(path) } catch { return path } }
 
-// Flow's entries in a hooks/list answer: one per handler, from one flow@ plugin rooted at this
-// copy's own plugin root.
+// The plugin id Codex gives this copy of flow, flow@<marketplace>, read from where the copy sits.
+function ownPluginId() {
+  const parts = PLUGIN_ROOT.split(sep)
+  const at = parts.length - 5
+  if (at >= 0 && parts[at] === 'plugins' && parts[at + 1] === 'cache' && parts[at + 2] !== '' && parts[at + 3] === 'flow') return `flow@${parts[at + 2]}`
+  const repo = dirname(dirname(PLUGIN_ROOT))
+  let manifest = null
+  try { manifest = JSON.parse(readFileSync(join(repo, '.claude-plugin', 'marketplace.json'), 'utf8')) } catch {}
+  const entry = Array.isArray(manifest?.plugins) ? manifest.plugins.find((plugin) => plugin?.name === 'flow') : undefined
+  if (typeof manifest?.name === 'string' && manifest.name !== '' && typeof entry?.source === 'string' && realOrSelf(join(repo, entry.source)) === PLUGIN_ROOT) return `flow@${manifest.name}`
+  fail('HOOKS_MISMATCH', 'This copy of flow is neither in a plugin cache nor the flow of a marketplace repository, so it cannot name the plugin id whose hooks are flow\'s.')
+}
+
+// Whether the file at path holds exactly the bytes own does, read once per path.
+function sameBytes(path, own, seen) {
+  if (!seen.has(path)) {
+    let same = false
+    try { same = statSync(path).isFile() && readFileSync(path).equals(own) } catch {}
+    seen.set(path, same)
+  }
+  return seen.get(path)
+}
+
+// Flow's entries in a hooks/list answer: one per handler, from this copy's plugin id and one root
+// whose hooks/codex.json is byte for byte this copy's.
 function flowKeys(listed, handlers) {
   if (!Array.isArray(listed?.data)) fail('PROVIDER_ERROR', 'Codex answered hooks/list without a list.')
+  const pluginId = ownPluginId()
+  const own = readFileSync(CODEX_HOOKS)
+  const seen = new Map()
   const byKey = new Map()
   for (const scope of listed.data) {
     for (const hook of Array.isArray(scope?.hooks) ? scope.hooks : []) {
       if (hook?.source !== 'plugin' || hook.handlerType !== 'command' || typeof hook.key !== 'string' || typeof hook.command !== 'string') continue
-      if (typeof hook.pluginId !== 'string' || !hook.pluginId.startsWith('flow@')) continue
+      if (hook.pluginId !== pluginId) continue
       for (const handler of handlers) {
         const match = handler.pattern.exec(hook.command)
-        if (match && match.slice(1).every((root) => realOrSelf(root) === PLUGIN_ROOT)) byKey.set(hook.key, { hook, handler, roots: new Set(match.slice(1)) })
+        const roots = new Set(match ? match.slice(1) : [])
+        if (roots.size !== 1) continue
+        const [root] = roots
+        if (hook.sourcePath !== `${root}/hooks/codex.json` || !sameBytes(hook.sourcePath, own, seen)) continue
+        byKey.set(hook.key, { hook, handler, root })
       }
     }
   }
   const found = [...byKey.values()]
-  const plugins = new Set(found.map(({ hook }) => hook.pluginId))
-  const roots = new Set(found.flatMap(({ roots: each }) => [...each]))
+  const roots = new Set(found.map(({ root }) => root))
   const missing = handlers.filter((handler) => found.filter((entry) => entry.handler === handler).length !== 1)
-  const keyed = found.every(({ hook }) => typeof hook.pluginId === 'string' && hook.key.startsWith(`${hook.pluginId}:hooks/codex.json:`))
-  if (missing.length > 0 || found.length !== handlers.length || plugins.size !== 1 || roots.size !== 1 || !keyed) {
-    fail('HOOKS_MISMATCH', `Codex lists ${found.length} hook(s) that run flow's Codex handlers, and this copy of flow registers ${handlers.length}, one each, from one plugin; the installed flow is another version or another copy, so its trust cannot be read against this one.`,
-      { expected: handlers.length, found: found.length, unmatched: missing.map((handler) => handler.command) })
+  const keyed = found.every(({ hook }) => hook.key.startsWith(`${pluginId}:hooks/codex.json:`))
+  if (missing.length > 0 || found.length !== handlers.length || roots.size !== 1 || !keyed) {
+    fail('HOOKS_MISMATCH', `Codex lists ${found.length} hook(s) of ${pluginId} that run flow's Codex handlers from a hooks/codex.json identical to this copy's, and this copy of flow registers ${handlers.length}, one each, from one root; the installed flow is another version, so its trust cannot be read against this one.`,
+      { pluginId, expected: handlers.length, found: found.length, unmatched: missing.map((handler) => handler.command) })
   }
   return found.map(({ hook }) => ({ key: hook.key, command: hook.command, trustStatus: hook.trustStatus, currentHash: hook.currentHash, enabled: hook.enabled !== false }))
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
