@@ -31,7 +31,7 @@
 // node:crypto is loaded on first use rather than imported: the seat guard imports this module on
 // every tool call in every session, and the non-seat path needs indexPath alone. Importing crypto
 // there added about 3.5 ms to each call (measured 2026-10-03, Node 26).
-import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { RETENTION_MS, stateDir } from './state-dir.mjs'
 
@@ -269,7 +269,9 @@ export function readResult(id, n) {
 /**
  * Remove every record whose closed stamp is older than RETENTION_MS, and the index entries that
  * name it. A record without a closed stamp stays however old it is, admitted or not, until a human
- * or the parent reconciles it; so does one whose closed stamp has no readable time.
+ * or the parent reconciles it; so does one whose closed stamp has no readable time. A void index
+ * entry that names no seat ({id: null}, from a prompt whose tag was not on line 1) has no record to
+ * go with, so it goes once its file is older than RETENTION_MS.
  */
 export function pruneSeats(now = Date.now()) {
   const removed = []
@@ -283,12 +285,17 @@ export function pruneSeats(now = Date.now()) {
       removed.push(name)
     } else retained.push(name)
   }
-  if (removed.length > 0) {
-    const gone = new Set(removed)
-    let entries = []
-    try { entries = readdirSync(indexRoot()) } catch {}
-    for (const entry of entries.filter((file) => INDEX_NAME.test(file))) {
-      if (gone.has(readJson(join(indexRoot(), entry))?.id)) rmSync(join(indexRoot(), entry), { force: true })
+  const gone = new Set(removed)
+  let entries = []
+  try { entries = readdirSync(indexRoot()) } catch {}
+  for (const entry of entries.filter((file) => INDEX_NAME.test(file))) {
+    const path = join(indexRoot(), entry)
+    const value = readJson(path)
+    if (gone.has(value?.id)) rmSync(path, { force: true })
+    else if (value?.id === null && typeof value.void === 'string') {
+      let age = NaN
+      try { age = now - statSync(path).mtimeMs } catch {}
+      if (age > RETENTION_MS) rmSync(path, { force: true })
     }
   }
   return { removed, retained }

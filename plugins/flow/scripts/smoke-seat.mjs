@@ -6,8 +6,11 @@
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
 // Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
-// stop-*, fastpath-*); the containment families run against a real temp git repository as the
-// worktree, and stop-timeout spends the full CHECK_SECONDS on a schema check that never ends.
+// stop-*, open-*, close-*, prune-*, fastpath-*); the containment families run against a real temp
+// git repository as the worktree, the executor families (open-*, close-*, prune-open) run
+// scripts/seat.mjs as a process against a real canonical checkout with a linked worktree, and
+// stop-timeout spends the full CHECK_SECONDS on a schema check that never ends. open-lease races
+// writer seats against flow_delegate write jobs as separate processes released together.
 // --case-prefix <p>
 // runs only the cases whose name starts with p, and no match is a failure rather than a vacuous
 // pass. fastpath-latency prints the measured p50 cost of the catch-all hook and asserts no bound.
@@ -15,7 +18,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -187,6 +190,145 @@ const indexEntries = () => (existsSync(join(seats, 'by-session')) ? readdirSync(
 const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+}
+
+// The seat executor, scripts/seat.mjs, as the parent runs it: one process per call, one JSON line
+// out, exit 0 when ok and 1 when refused. It runs in the canonical checkout unless a case says
+// otherwise, against the same state directory as the store.
+const SEAT_SCRIPT = join(PLUGIN, 'scripts', 'seat.mjs')
+const jobs = await import(pathToFileURL(join(PLUGIN, 'delegate', 'jobs.mjs')).href)
+function seatCli(args, { cwd = canon, env = {} } = {}) {
+  const run = spawnSync(process.execPath, [SEAT_SCRIPT, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...env } })
+  const lines = run.stdout.split('\n').filter(Boolean)
+  assert.equal(lines.length, 1, `seat.mjs ${args[0]} printed ${JSON.stringify(run.stdout)} ${run.stderr}`)
+  const out = JSON.parse(lines[0])
+  assert.equal(run.status, out.ok ? 0 : 1, `seat.mjs ${args[0]} exit ${run.status}`)
+  return out
+}
+const closeSeat = (id, taskStatus = { status: 'completed', taskId: 'task-1' }) => seatCli(['close', id, '--task-status', JSON.stringify(taskStatus)])
+
+// The executor's repositories: a canonical checkout with two commits (base adds a.txt, b.txt and
+// sub/x.txt; head changes a.txt and adds c.txt), which keeps .flow-worktrees/ in its exclude file
+// as the issue claim does, and a linked worktree of it outside it.
+const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'smoke',
+  GIT_AUTHOR_EMAIL: 'smoke@example.invalid', GIT_COMMITTER_NAME: 'smoke', GIT_COMMITTER_EMAIL: 'smoke@example.invalid' }
+const gitOut = (cwd, ...args) => {
+  const run = spawnSync('git', ['-C', cwd, ...args], { env: gitEnv, encoding: 'utf8' })
+  assert.equal(run.status, 0, `git ${args.join(' ')}: ${run.stderr}`)
+  return run.stdout.trim()
+}
+const canon = join(tmp, 'canon')
+mkdirSync(join(canon, 'sub'), { recursive: true })
+gitOut(canon, 'init', '-q', '-b', 'main')
+writeFileSync(join(canon, '.git', 'info', 'exclude'), '/.flow-worktrees/\n')
+for (const [file, text] of [['a.txt', 'a\n'], ['b.txt', 'b\n'], ['sub/x.txt', 'x\n']]) writeFileSync(join(canon, file), text)
+gitOut(canon, 'add', '-A')
+gitOut(canon, 'commit', '-q', '-m', 'base')
+const baseSha = gitOut(canon, 'rev-parse', 'HEAD')
+writeFileSync(join(canon, 'a.txt'), 'a2\n')
+writeFileSync(join(canon, 'c.txt'), 'c\n')
+gitOut(canon, 'add', '-A')
+gitOut(canon, 'commit', '-q', '-m', 'head')
+const headSha = gitOut(canon, 'rev-parse', 'HEAD')
+const linkedWt = join(tmp, 'linked')
+gitOut(canon, 'worktree', 'add', '-q', '-b', 'linked', linkedWt)
+// A fresh repository of its own, for a case that needs a worktree no other case touches.
+const gitWorktree = (name) => {
+  const path = join(tmp, 'repos', name)
+  mkdirSync(path, { recursive: true })
+  gitOut(path, 'init', '-q')
+  return path
+}
+// A flow_delegate write job's record: queued (live, inside its grace) or ended with no provider
+// group on record (gone).
+function jobRecord(worktree, status) {
+  const ended = status !== 'queued'
+  const job = { id: randomUUID(), access: 'workspace-write', worktree, status, createdAt: new Date().toISOString(), endedAt: ended ? new Date().toISOString() : null }
+  mkdirSync(jobs.jobDir(job.id), { recursive: true })
+  jobs.writeJob(job)
+  return job
+}
+// A seat the hooks ran in, written straight through the store: the record (a new read-only one
+// unless id names one seat open wrote), the stamps listed, the bound stamp pinning digest, and
+// turn 1 ending as outcome, with a result for a valid turn unless result is false.
+function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], stamps = ['admitted', 'bound', 'receipt'], digest = null, boundModel = null,
+  outcome = 'valid', blocks = 0, errors = [], served = [model], envelope = ENVELOPE_OK, result = true } = {}) {
+  const seatId = id ?? store.writeRecord(RECORD({ provider, model, worktree: canon, repoRoot: canon }), null).id
+  const loaded = store.readRecord(seatId)
+  const bound = { sessionId: `s-${seatId}`, host: provider, permissionMode: PERMISSION[provider], cwd: canon, recordDigest: digest ?? loaded.digest }
+  if (boundModel) bound.model = boundModel
+  const bodies = { admitted: { toolUseId: 'toolu_x' }, bound, receipt: { tool: 'Bash' } }
+  for (const name of stamps) assert.equal(store.stamp(seatId, name, bodies[name]), true)
+  if (outcome !== null) {
+    store.writeState(seatId, { turn: 1, turnKey: 'k1', blocks, outcome, errors, stops: blocks + 1, messageSha256: 'c'.repeat(64) })
+    if (outcome === 'valid' && result) store.writeResult(seatId, 1, { envelope, servedModels: served, messageSha256: 'c'.repeat(64), at: new Date().toISOString() })
+  }
+  return { id: seatId }
+}
+// Preloaded into a seat process: it holds the process at the write of its lease holder file until
+// <SEAT_GATE>.go exists, having written <SEAT_GATE>.waiting, so a case can act in that window.
+const holderGate = join(tmp, 'holder-gate.mjs')
+writeFileSync(holderGate, `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const real = fs.writeFileSync
+fs.writeFileSync = function (path, ...rest) {
+  if (typeof path === 'string' && /\\/leases\\/[0-9a-f]{64}\\/[0-9a-f]{32}$/.test(path)) {
+    real(process.env.SEAT_GATE + '.waiting', '')
+    const nap = new Int32Array(new SharedArrayBuffer(4))
+    while (!fs.existsSync(process.env.SEAT_GATE + '.go')) Atomics.wait(nap, 0, 0, 5)
+  }
+  return real.call(this, path, ...rest)
+}
+syncBuiltinESMExports()
+`)
+// Writer seats and write jobs racing for one worktree, released together: each racer loads what
+// it needs, says it is ready, waits for the go file, then makes its one attempt and prints
+// `seat ok <id>`, `job ok <id>`, or the kind it was refused with.
+const leaseRacer = join(tmp, 'lease-racer.mjs')
+writeFileSync(leaseRacer, `import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
+const [kind, worktree, ready, go, plugin] = process.argv.slice(2)
+const jobs = await import(pathToFileURL(plugin + '/delegate/jobs.mjs').href)
+await import(pathToFileURL(plugin + '/lib/seat-store.mjs').href)
+let job
+if (kind === 'job') {
+  job = { id: randomUUID(), access: 'workspace-write', worktree, status: 'queued', createdAt: new Date().toISOString(), endedAt: null }
+  mkdirSync(jobs.jobDir(job.id), { recursive: true })
+  jobs.writeJob(job)
+}
+writeFileSync(ready, '')
+const nap = new Int32Array(new SharedArrayBuffer(4))
+while (!existsSync(go)) Atomics.wait(nap, 0, 0, 1)
+if (kind === 'job') {
+  try { jobs.acquireLease(job); process.stdout.write('job ok ' + job.id) } catch (error) { process.stdout.write('job ' + (error.kind ?? error.message)) }
+} else {
+  const lines = []
+  process.stdout.write = (chunk) => { lines.push(String(chunk)); return true }
+  process.argv = [process.argv[0], plugin + '/scripts/seat.mjs', 'open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', worktree]
+  await import(pathToFileURL(plugin + '/scripts/seat.mjs').href)
+  const out = JSON.parse(lines.join(''))
+  process.exitCode = 0
+  process.stderr.write(out.ok ? 'seat ok ' + out.id : 'seat ' + out.error.kind)
+}
+`)
+async function leaseRace(worktree, seatCount, jobCount) {
+  const round = mkdtempSync(join(tmp, 'lease-race-'))
+  const go = join(round, 'go')
+  const kinds = [...Array(seatCount).fill('seat'), ...Array(jobCount).fill('job')]
+  const runs = kinds.map((kind, at) => {
+    const child = spawn(process.execPath, [leaseRacer, kind, worktree, join(round, `ready-${at}`), go, PLUGIN], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.on('data', (chunk) => { out += chunk })
+    return new Promise((resolve, reject) => child.on('close', (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(`racer exit ${code}: ${out}`)))))
+  })
+  for (const end = Date.now() + 15_000; readdirSync(round).filter((f) => f.startsWith('ready-')).length < kinds.length;) {
+    if (Date.now() > end) throw new Error('lease racers never became ready')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  writeFileSync(go, '')
+  return Promise.all(runs)
 }
 
 const cases = {
@@ -1351,6 +1493,383 @@ const cases = {
     }
     assert.equal(existsSync(fresh), false, 'a non-seat stop wrote seat state')
     ok('a non-seat session\'s stop, or one whose session id fails validation, gets no answer and writes nothing, on both hosts')
+  },
+
+  'open-access': () => {
+    const read = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high'])
+    assert.deepEqual(Object.keys(read), ['ok', 'id', 'tag', 'runtimeMode', 'provider', 'model', 'effort', 'worktree', 'reviewWorktree'])
+    assert.equal(read.ok, true)
+    assert.match(read.id, /^[0-9a-f]{32}$/)
+    assert.equal(read.tag, `<flow-seat id=${read.id}>`)
+    assert.deepEqual({ ...read, id: undefined, tag: undefined }, { ok: true, id: undefined, tag: undefined, runtimeMode: 'auto', provider: 'claude', model: 'claude-opus-5-5', effort: 'high', worktree: canon, reviewWorktree: null })
+    const loaded = store.readRecord(read.id)
+    assert.deepEqual({ ...loaded.record, createdAt: undefined }, {
+      v: 1, id: read.id, createdAt: undefined, access: 'read-only', repoRoot: canon, worktree: canon, reviewWorktree: null, baseSha: null, headSha: null,
+      provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto', canonicalSnapshot: null, hooksDigest: null, schemaSha256: null,
+    })
+    assert.equal(loaded.schema, null)
+    ok('a read-only seat opens in the working directory\'s worktree: the output names its id, tag, runtimeMode auto, model, effort and worktree, and the record holds the same with no schema')
+
+    const schemaFile = join(tmp, 'answer-schema.json')
+    writeFileSync(schemaFile, JSON.stringify(SCHEMA))
+    const linked = seatCli(['open', '--access', 'read-only', '--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'medium', '--worktree', join(linkedWt, 'sub'), '--schema', schemaFile])
+    assert.equal(linked.worktree, linkedWt)
+    const linkedRecord = store.readRecord(linked.id)
+    assert.equal(linkedRecord.record.repoRoot, canon, 'the canonical checkout of a linked worktree is the main worktree')
+    assert.equal(linkedRecord.record.worktree, linkedWt)
+    assert.deepEqual(linkedRecord.schema, SCHEMA)
+    ok('--worktree inside a linked worktree opens at that worktree\'s top level, with the main worktree as the canonical checkout, and --schema is stored as the answer schema')
+
+    const writer = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', linkedWt])
+    assert.equal(writer.worktree, linkedWt)
+    assert.deepEqual(readdirSync(jobs.leaseDirOf(linkedWt)), [writer.id], 'the writer holds the worktree\'s lease directory under its seat id')
+    assert.equal(store.readRecord(writer.id).record.access, 'workspace-write')
+    closeSeat(writer.id)
+    assert.equal(existsSync(jobs.leaseDirOf(linkedWt)), false, 'close dropped the holder and the empty lease directory')
+    ok('a writer seat writes its holder file into the worktree\'s lease directory, and close drops it')
+  },
+
+  'open-review': () => {
+    const review = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', 'main~1', '--head', 'main'])
+    const path = join(canon, '.flow-worktrees', `review-${review.id}`)
+    assert.equal(review.worktree, path)
+    assert.equal(review.reviewWorktree, path)
+    assert.equal(gitOut(path, 'rev-parse', 'HEAD'), headSha, 'the review worktree is at the head')
+    assert.equal(spawnSync('git', ['-C', path, 'symbolic-ref', '-q', 'HEAD']).status, 1, 'the review worktree is detached')
+    const { record, schema } = store.readRecord(review.id)
+    assert.deepEqual([record.baseSha, record.headSha, record.repoRoot, record.worktree, record.reviewWorktree], [baseSha, headSha, canon, path, path])
+    assert.deepEqual(schema, schemas.FINDINGS_SCHEMA)
+    assert.deepEqual(Object.keys(record.canonicalSnapshot).sort(), ['cached', 'diff', 'status', 'untracked'])
+    assert.equal(gitOut(canon, 'status', '--porcelain'), '', 'the review worktree shows nowhere in the canonical checkout')
+    ok('a review seat resolves --base and --head to SHAs, adds a detached worktree at the head under .flow-worktrees/review-<id>, answers in the findings schema, and records a canonical snapshot')
+
+    const byWorktree = seatCli(['open', '--access', 'review', '--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'high', '--worktree', linkedWt, '--base', 'HEAD~1', '--head', 'HEAD'])
+    assert.equal(store.readRecord(byWorktree.id).record.headSha, gitOut(linkedWt, 'rev-parse', 'HEAD'), '--worktree names where the revisions resolve')
+    assert.ok(byWorktree.reviewWorktree.startsWith(join(canon, '.flow-worktrees', 'review-')), 'the review worktree lives under the canonical checkout')
+    ok('a review seat resolves its revisions in --worktree and still adds its worktree under the canonical checkout')
+  },
+
+  'open-refusals': () => {
+    const base = ['--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high']
+    const before = () => [existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [], gitOut(canon, 'worktree', 'list', '--porcelain')]
+    const snapshot = before()
+    const refusals = [
+      [['open'], 'BAD_REQUEST'], [['open', '--access', 'admin', ...base], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', '--provider', 'gemini', '--model', 'm', '--effort', 'high'], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', '--provider', 'claude', '--model', 'a b', '--effort', 'high'], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', '--provider', 'claude', '--model', 'm', '--effort', 'HIGH'], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', ...base, '--worktree', 'relative/path'], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', ...base, '--worktree', join(tmp, 'no-such-dir')], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', ...base, '--worktree', tmp], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', ...base, '--base', 'HEAD~1', '--head', 'HEAD'], 'BAD_REQUEST'],
+      [['open', '--access', 'workspace-write', ...base], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', ...base, '--color', 'red'], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', '--access', 'review', ...base], 'BAD_REQUEST'],
+      [['open', '--access', 'read-only', ...base, '--worktree'], 'BAD_REQUEST'],
+      [['open', '--access', 'review', ...base, '--base', 'HEAD~1'], 'GIT_REF'],
+      [['open', '--access', 'review', ...base, '--base', 'no-such-ref', '--head', 'HEAD'], 'GIT_REF'],
+      [['open', '--access', 'review', ...base, '--base', '--output=x', '--head', 'HEAD'], 'GIT_REF'],
+      [['open', '--access', 'review', ...base, '--base', 'HEAD~1', '--head', 'HEAD', '--schema', join(tmp, 'answer-schema.json')], 'BAD_SCHEMA'],
+      [['bogus'], 'BAD_REQUEST'],
+    ]
+    for (const [args, kind] of refusals) {
+      const out = seatCli(args)
+      assert.equal(out.ok, false, args.join(' '))
+      assert.deepEqual(Object.keys(out), ['ok', 'error'])
+      assert.equal(out.error.kind, kind, `${args.join(' ')}: ${out.error.message}`)
+      assert.equal(typeof out.error.message, 'string')
+    }
+    assert.deepEqual(before(), snapshot, 'a refused open left a record or a worktree behind')
+    ok('open refuses a bad access, provider, model or effort, a relative, missing or non-repository --worktree, revisions off a review, a writer with no --worktree, an unknown, repeated or valueless flag (BAD_REQUEST), a review with a missing or unresolvable revision (GIT_REF) or with --schema (BAD_SCHEMA), and leaves no record or worktree behind')
+
+    const schemaCase = (name, bytes) => {
+      const file = join(tmp, `schema-${name}.json`)
+      writeFileSync(file, bytes)
+      return seatCli(['open', '--access', 'read-only', ...base, '--schema', file])
+    }
+    const padded = (size) => {
+      const shell = { type: 'object', description: '' }
+      const text = JSON.stringify({ ...shell, description: 'x'.repeat(size - JSON.stringify(shell).length) })
+      assert.equal(Buffer.byteLength(text), size)
+      return text
+    }
+    assert.equal(schemaCase('cap', padded(16 * 1024)).ok, true, 'a schema of exactly 16 KiB')
+    for (const [name, bytes] of [
+      ['over', padded(16 * 1024 + 1)], ['not-json', '{"type": '], ['array', '[]'], ['not-object-type', '{"type": "string"}'],
+      ['unchecked', '{"type": "object", "patternProperties": {}}'],
+    ]) {
+      const out = schemaCase(name, bytes)
+      assert.equal(out.ok, false, name)
+      assert.equal(out.error.kind, 'BAD_SCHEMA', `${name}: ${out.error.message}`)
+    }
+    for (const path of ['relative.json', join(tmp, 'no-such-schema.json')]) assert.equal(seatCli(['open', '--access', 'read-only', ...base, '--schema', path]).error.kind, 'BAD_SCHEMA')
+    ok('--schema is admitted up to 16 KiB under outputSchema\'s keyword rules, and a larger, unparsable, non-object, unchecked-keyword, relative or missing one is BAD_SCHEMA')
+  },
+
+  'open-lease': async () => {
+    // A live write job holds the worktree: the seat is refused and leaves no holder behind.
+    const held = gitWorktree('lease-job')
+    const job = jobRecord(held, 'queued')
+    jobs.acquireLease(job)
+    const touched = statSync(jobs.leaseDirOf(held)).mtimeMs
+    const refused = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', held])
+    assert.deepEqual(refused.error, { kind: 'WORKSPACE_BUSY', message: `Write job ${job.id} holds this worktree.`, details: { jobId: job.id } })
+    assert.deepEqual(readdirSync(jobs.leaseDirOf(held)), [job.id])
+    assert.equal(statSync(jobs.leaseDirOf(held)).mtimeMs, touched, 'a seat refused up front wrote into the lease directory')
+    jobs.releaseLease(job)
+    const readOnly = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', held])
+    assert.equal(readOnly.ok, true, 'a read-only seat takes no lease')
+    ok('open refuses a writer seat with WORKSPACE_BUSY while a live flow_delegate write job holds the worktree, before it writes anything there')
+
+    // A write job that takes the lease after the seat's first look but before its holder lands:
+    // the seat process is held at its holder write while the job takes the lease, then let go.
+    const window = gitWorktree('lease-window')
+    const gate = join(tmp, 'holder-gate')
+    const gated = spawn(process.execPath, ['--import', pathToFileURL(holderGate).href, SEAT_SCRIPT, 'open', '--access', 'workspace-write', '--provider', 'claude',
+      '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', window], { cwd: canon, env: { ...process.env, SEAT_GATE: gate }, stdio: ['ignore', 'pipe', 'inherit'] })
+    let printed = ''
+    gated.stdout.on('data', (chunk) => { printed += chunk })
+    const finished = new Promise((resolve) => gated.on('close', resolve))
+    for (const end = Date.now() + 15_000; !existsSync(`${gate}.waiting`);) {
+      if (Date.now() > end) throw new Error('the seat never reached its holder write')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const late = jobRecord(window, 'queued')
+    jobs.acquireLease(late)
+    writeFileSync(`${gate}.go`, '')
+    assert.equal(await finished, 1)
+    assert.deepEqual(JSON.parse(printed).error, { kind: 'WORKSPACE_BUSY', message: `Write job ${late.id} holds this worktree.`, details: { jobId: late.id } })
+    assert.deepEqual(readdirSync(jobs.leaseDirOf(window)), [late.id], 'the seat left its holder beside the job')
+    jobs.releaseLease(late)
+    ok('a write job that takes the lease between the seat\'s first look and its holder write is seen when the seat looks again, and the seat backs out')
+
+    // An ended job's leftover lease file does not stop a seat.
+    const stale = gitWorktree('lease-stale')
+    const ended = jobRecord(stale, 'succeeded')
+    jobs.acquireLease(ended)
+    const seat = seatCli(['open', '--access', 'workspace-write', '--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'high', '--worktree', stale])
+    assert.equal(seat.ok, true, JSON.stringify(seat))
+    ok('a leftover lease file of an ended job whose provider group is gone does not refuse a writer seat')
+
+    // An unclosed seat holds the worktree against a write job, and its close releases it.
+    assert.throws(() => jobs.acquireLease(jobRecord(stale, 'queued')), (error) => error.kind === 'WORKSPACE_BUSY' && error.details?.seatId === seat.id)
+    const second = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', stale])
+    assert.equal(second.ok, true, 'writer seats share a worktree')
+    closeSeat(seat.id)
+    assert.throws(() => jobs.acquireLease(jobRecord(stale, 'queued')), (error) => error.details?.seatId === second.id, 'the second seat still holds it')
+    closeSeat(second.id)
+    const taker = jobRecord(stale, 'queued')
+    jobs.acquireLease(taker)
+    assert.deepEqual(readdirSync(jobs.leaseDirOf(stale)), [taker.id])
+    jobs.releaseLease(taker)
+    ok('a write job is refused WORKSPACE_BUSY, naming the seat, while any writer seat on the worktree is unclosed, and takes the lease once every one is closed')
+
+    // A holder file whose record is not written yet (an open in progress) holds; a closed seat's
+    // leftover holder is dropped by the next write job.
+    const pending = gitWorktree('lease-pending')
+    const pendingId = store.newId()
+    mkdirSync(jobs.leaseDirOf(pending), { recursive: true })
+    writeFileSync(join(jobs.leaseDirOf(pending), pendingId), '')
+    assert.throws(() => jobs.acquireLease(jobRecord(pending, 'queued')), (error) => error.details?.seatId === pendingId)
+    store.writeRecord(RECORD({ id: pendingId, access: 'workspace-write', worktree: pending }), null)
+    store.stamp(pendingId, 'closed', { verdict: 'unknown', reasons: [] })
+    const after = jobRecord(pending, 'queued')
+    jobs.acquireLease(after)
+    assert.deepEqual(readdirSync(jobs.leaseDirOf(pending)), [after.id], 'a closed seat\'s leftover holder was not dropped')
+    jobs.releaseLease(after)
+    ok('a holder whose seat record is not yet written refuses a write job, and a closed seat\'s leftover holder is dropped and the job takes the lease')
+
+    // Seats and write jobs racing for one worktree: never a seat and a job both.
+    for (let round = 0; round < 6; round++) {
+      const contested = gitWorktree(`lease-race-${round}`)
+      const results = await leaseRace(contested, 3, 3)
+      const seatsWon = results.filter((line) => line.startsWith('seat ok'))
+      const jobsWon = results.filter((line) => line.startsWith('job ok'))
+      assert.ok(results.every((line) => /^(?:seat|job) (?:ok|WORKSPACE_BUSY)/.test(line)), results.join(' | '))
+      assert.ok(jobsWon.length <= 1, `round ${round}: two jobs took one lease`)
+      assert.ok(seatsWon.length === 0 || jobsWon.length === 0, `round ${round}: a seat and a job both took the worktree: ${results.join(' | ')}`)
+      assert.ok(seatsWon.length + jobsWon.length > 0, `round ${round}: nobody took the worktree`)
+      const names = readdirSync(jobs.leaseDirOf(contested)).sort()
+      const expected = jobsWon.length ? [jobsWon[0].split(' ')[2]] : seatsWon.map((line) => line.split(' ')[2]).sort()
+      assert.deepEqual(names, expected, `round ${round}: the lease directory names exactly the winners`)
+    }
+    ok('six rounds of three writer seats racing three write jobs for one worktree never let a seat and a job both in, and the lease directory names exactly the winners')
+  },
+
+  'open-undo': () => {
+    // A PATH with git and bash but no tar: the worktree goes in, then the canonical snapshot fails.
+    const bin = join(tmp, 'no-tar-bin')
+    mkdirSync(bin, { recursive: true })
+    for (const tool of ['git', 'bash', 'sort']) {
+      const found = spawnSync('bash', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim()
+      symlinkSync(found, join(bin, tool))
+    }
+    const worktrees = () => gitOut(canon, 'worktree', 'list', '--porcelain')
+    const reviews = () => (existsSync(join(canon, '.flow-worktrees')) ? readdirSync(join(canon, '.flow-worktrees')).sort() : [])
+    const before = [worktrees(), reviews()]
+    const out = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha], { env: { PATH: bin } })
+    assert.deepEqual(out.error, { kind: 'GIT_REF', message: 'The canonical checkout could not be snapshotted.' })
+    assert.deepEqual([worktrees(), reviews()], before, 'the refused open left its review worktree behind')
+    ok('an open refused after its review worktree went in removes that worktree again')
+  },
+
+  'close-verdicts': () => {
+    const verdict = (id, expected, pattern, what) => {
+      const out = closeSeat(id)
+      assert.deepEqual(Object.keys(out), ['ok', 'id', 'verdict', 'reasons', 'turn', 'result', 'servedModels', 'blocks', 'errors'], what)
+      assert.equal(out.verdict, expected, `${what}: ${JSON.stringify(out.reasons)}`)
+      if (pattern) assert.ok(out.reasons.some((reason) => pattern.test(reason)), `${what}: ${JSON.stringify(out.reasons)}`)
+      assert.equal(store.readStamp(id, 'closed')?.verdict ?? null, existsSync(join(seats, id)) ? expected : null, what)
+      return out
+    }
+
+    const valid = hookedSeat({})
+    const out = verdict(valid.id, 'valid', null, 'valid')
+    assert.deepEqual(out.result, ENVELOPE_OK)
+    assert.deepEqual(out.servedModels, ['claude-opus-5-5'])
+    assert.deepEqual([out.turn, out.blocks, out.errors, out.reasons], [1, 0, [], []])
+    assert.deepEqual(store.readStamp(valid.id, 'closed').taskStatus, { status: 'completed', taskId: 'task-1' })
+    ok('valid: every stamp present and an intact result whose served models are the record\'s; the output carries the envelope and the closed stamp records the task status')
+
+    const invalid = hookedSeat({ outcome: 'blocked', blocks: 1, errors: ['$.status: not one of the allowed values'] })
+    const inv = verdict(invalid.id, 'invalid', /last final message failed/, 'invalid')
+    assert.deepEqual([inv.result, inv.blocks, inv.errors], [null, 1, ['$.status: not one of the allowed values']])
+    const resumed = hookedSeat({ outcome: 'blocked', blocks: 1, errors: ['$: x'] })
+    store.writeResult(resumed.id, 1, { envelope: ENVELOPE_OK, servedModels: ['claude-opus-5-5'], messageSha256: 'a'.repeat(64), at: new Date().toISOString() })
+    verdict(resumed.id, 'invalid', null, 'an earlier valid result in a turn whose last stop failed')
+    verdict(hookedSeat({ outcome: 'capped', blocks: 3, errors: ['$: x'] }).id, 'capped', /blocked 3 times/, 'capped')
+    ok('invalid: the last stop of the last turn was blocked, an earlier valid result in that turn included; capped: the turn was capped')
+
+    verdict(hookedSeat({ stamps: ['bound', 'receipt'] }).id, 'unknown', /admitted stamp is missing/, 'no admitted stamp')
+    verdict(hookedSeat({ stamps: ['admitted', 'receipt'] }).id, 'unknown', /bound stamp is missing/, 'no bound stamp')
+    verdict(hookedSeat({ stamps: ['admitted', 'bound'] }).id, 'unknown', /receipt stamp is missing/, 'no receipt stamp')
+    const voided = hookedSeat({})
+    store.stamp(voided.id, 'void', { reason: 'bound-lost-race' })
+    verdict(voided.id, 'unknown', /void: bound-lost-race/, 'a void stamp beside a full set')
+    verdict(hookedSeat({ digest: 'f'.repeat(64) }).id, 'unknown', /record changed after the bind/, 'a record digest mismatch')
+    const tampered = hookedSeat({})
+    writeFileSync(join(seats, tampered.id, 'result-1.json'), JSON.stringify({ envelope: { ...ENVELOPE_OK, notes: 'edited' }, servedModels: ['claude-opus-5-5'] }))
+    verdict(tampered.id, 'unknown', /does not match its recorded sha256/, 'a result sha mismatch')
+    verdict(hookedSeat({ served: [] }).id, 'unknown', /names no served model/, 'empty served models')
+    verdict(hookedSeat({ outcome: null }).id, 'unknown', /no Stop was recorded/, 'no Stop')
+    verdict(hookedSeat({ result: false }).id, 'unknown', /has no result/, 'a valid turn with no result file')
+    const gone = hookedSeat({})
+    rmSync(join(seats, gone.id, 'record.json'))
+    verdict(gone.id, 'unknown', /missing or corrupt/, 'a missing record')
+    const corrupt = hookedSeat({})
+    writeFileSync(join(seats, corrupt.id, 'record.json'), '{"v": 1')
+    verdict(corrupt.id, 'unknown', /missing or corrupt/, 'a corrupt record')
+    verdict(store.newId(), 'unknown', /missing or corrupt/, 'an id with no record directory at all')
+    ok('unknown: a missing admitted, bound or receipt stamp, any void stamp, a record digest the bind did not pin, a result whose sha256 does not match, no served model, no Stop, a valid turn with no result, or a missing or corrupt record')
+
+    verdict(hookedSeat({ served: ['claude-sonnet-5-5'] }).id, 'model-mismatch', /served by claude-sonnet-5-5, not claude-opus-5-5/, 'served model mismatch')
+    verdict(hookedSeat({ provider: 'codex', model: 'gpt-6-luna', boundModel: 'gpt-6-mini', served: ['gpt-6-luna'] }).id, 'model-mismatch', /gpt-6-mini/, 'bind model mismatch')
+    verdict(hookedSeat({ boundModel: 'claude-sonnet-5-5', outcome: 'blocked', blocks: 1, errors: ['$: x'] }).id, 'model-mismatch', null, 'a mismatch outranks invalid')
+    const both = hookedSeat({ served: ['claude-sonnet-5-5'] })
+    store.stamp(both.id, 'void', { reason: 'r' })
+    verdict(both.id, 'unknown', /void/, 'unknown outranks model-mismatch')
+    ok('model-mismatch: a served model or the model seen at the bind is not the record\'s, outranking invalid and outranked by unknown')
+  },
+
+  'close-review': () => {
+    const covering = (extra = {}) => ({ ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read: ['a.txt'], partial: ['./c.txt'], unopened: [], checksRun: [] }, ...extra })
+    const reviewSeat = (envelope = covering(), fields = {}) => {
+      const opened = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+      assert.equal(opened.ok, true, JSON.stringify(opened))
+      return hookedSeat({ id: opened.id, envelope, ...fields })
+    }
+
+    const clean = reviewSeat()
+    const path = store.readRecord(clean.id).record.reviewWorktree
+    const out = closeSeat(clean.id)
+    assert.equal(out.verdict, 'valid', JSON.stringify(out.reasons))
+    assert.equal(existsSync(path), false, 'close removed the review worktree')
+    assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(path), 'git still lists the review worktree')
+    const absolute = reviewSeat(covering({ coverage: { read: [], partial: [], unopened: [], checksRun: [] } }))
+    const absPath = store.readRecord(absolute.id).record.reviewWorktree
+    store.writeResult(absolute.id, 1, { envelope: covering({ coverage: { read: [join(absPath, 'a.txt')], partial: [], unopened: ['c.txt'], checksRun: [] } }), servedModels: ['claude-opus-5-5'], messageSha256: 'b'.repeat(64), at: new Date().toISOString() })
+    assert.equal(closeSeat(absolute.id).verdict, 'valid', 'an absolute coverage path inside the review worktree counts')
+    ok('a review whose worktree stayed at the head and clean, whose canonical checkout did not move, and whose coverage lists every diffed file (read, partial or unopened, relative, ./ or absolute) is valid, and close removes its worktree')
+
+    const moved = reviewSeat()
+    spawnSync('git', ['-C', store.readRecord(moved.id).record.reviewWorktree, 'checkout', '-q', '--detach', baseSha])
+    assert.equal(closeSeat(moved.id).verdict, 'tree-moved')
+    const dirty = reviewSeat()
+    writeFileSync(join(store.readRecord(dirty.id).record.reviewWorktree, 'scratch.txt'), 'x')
+    const dirtyOut = closeSeat(dirty.id)
+    assert.equal(dirtyOut.verdict, 'tree-moved')
+    assert.ok(dirtyOut.reasons.some((reason) => /dirty/.test(reason)), JSON.stringify(dirtyOut.reasons))
+    const canonical = reviewSeat()
+    writeFileSync(join(canon, 'stray.txt'), 'x')
+    const canonOut = closeSeat(canonical.id)
+    rmSync(join(canon, 'stray.txt'))
+    assert.equal(canonOut.verdict, 'tree-moved')
+    assert.ok(canonOut.reasons.some((reason) => /canonical checkout changed/.test(reason)), JSON.stringify(canonOut.reasons))
+    const partial = reviewSeat(covering({ coverage: { read: ['a.txt'], partial: [], unopened: [], checksRun: [] } }))
+    const partialOut = closeSeat(partial.id)
+    assert.equal(partialOut.verdict, 'tree-moved')
+    assert.ok(partialOut.reasons.some((reason) => /coverage misses 1 file\(s\) in the pinned diff: c\.txt/.test(reason)), JSON.stringify(partialOut.reasons))
+    assert.equal(closeSeat(reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] }).id).verdict, 'capped', 'a capped review with no envelope is not judged on coverage')
+    const cappedMoved = reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })
+    writeFileSync(join(store.readRecord(cappedMoved.id).record.reviewWorktree, 'scratch.txt'), 'x')
+    assert.equal(closeSeat(cappedMoved.id).verdict, 'tree-moved', 'tree-moved outranks capped')
+    ok('tree-moved: the review worktree\'s HEAD moved, it is dirty, the canonical checkout changed, or the coverage misses a diffed file; it outranks capped')
+  },
+
+  'close-rerun': () => {
+    const writerWt = gitWorktree('close-rerun')
+    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const seat = hookedSeat({ id: opened.id, envelope: { ...ENVELOPE_OK, commits: [{ sha: 'a'.repeat(40), subject: 'feat: x' }] } })
+    const first = closeSeat(seat.id, { status: 'completed', run: 1 })
+    assert.equal(first.verdict, 'valid')
+    assert.equal(existsSync(join(jobs.leaseDirOf(writerWt), seat.id)), false, 'close dropped the writer\'s holder')
+    store.writeState(seat.id, { ...store.readState(seat.id), outcome: 'blocked', blocks: 1 })
+    const again = closeSeat(seat.id, { status: 'failed', run: 2 })
+    assert.equal(again.verdict, 'valid', 'a second close re-judged the seat')
+    assert.deepEqual(store.readStamp(seat.id, 'closed').taskStatus, { status: 'completed', run: 1 })
+    ok('a second close prints the verdict and reasons on record, keeps the first task status, and the first close dropped the writer\'s lease holder')
+
+    for (const [args, kind] of [
+      [['close'], 'BAD_REQUEST'], [['close', 'xyz', '--task-status', '{}'], 'BAD_REQUEST'], [['close', seat.id], 'BAD_REQUEST'],
+      [['close', seat.id, '--task-status', 'not json'], 'BAD_REQUEST'], [['close', seat.id, '--task-status', '{}', '--x', '1'], 'BAD_REQUEST'],
+      [['close', seat.id, '--task-status', JSON.stringify('x'.repeat(70_000))], 'BAD_REQUEST'],
+    ]) assert.equal(seatCli(args).error?.kind, kind, args.join(' ').slice(0, 80))
+    ok('close refuses a missing or malformed seat id, a missing, unparsable or oversized --task-status, and an unknown flag, with BAD_REQUEST')
+  },
+
+  'prune-void-index': () => {
+    const now = Date.now()
+    const oldTime = (now - RETENTION_MS - 60_000) / 1000
+    store.voidSession('claude', 'prune-old-null', null, 'tag-not-on-line-1')
+    utimesSync(store.indexPath('claude', 'prune-old-null'), oldTime, oldTime)
+    store.voidSession('codex', 'prune-recent-null', null, 'tag-not-on-line-1')
+    const recentTime = (now - RETENTION_MS + 60_000) / 1000
+    utimesSync(store.indexPath('codex', 'prune-recent-null'), recentTime, recentTime)
+    const keep = store.writeRecord(RECORD(), null).id
+    store.voidSession('claude', 'prune-old-named', keep, 'permission-mode-not-allowed')
+    utimesSync(store.indexPath('claude', 'prune-old-named'), oldTime, oldTime)
+    store.indexSession('codex', 'prune-old-bound', { id: keep })
+    utimesSync(store.indexPath('codex', 'prune-old-bound'), oldTime, oldTime)
+    writeFileSync(store.indexPath('claude', 'prune-old-garbled'), 'not json')
+    utimesSync(store.indexPath('claude', 'prune-old-garbled'), oldTime, oldTime)
+    store.pruneSeats(now)
+    assert.equal(store.readIndex('claude', 'prune-old-null'), null, 'an old void entry naming no seat stayed')
+    assert.deepEqual(store.readIndex('codex', 'prune-recent-null'), { id: null, void: 'tag-not-on-line-1' })
+    assert.deepEqual(store.readIndex('claude', 'prune-old-named'), { id: keep, void: 'permission-mode-not-allowed' })
+    assert.deepEqual(store.readIndex('codex', 'prune-old-bound'), { id: keep })
+    assert.deepEqual(store.readIndex('claude', 'prune-old-garbled'), { id: null, void: 'index-unreadable' })
+    ok('pruneSeats removes a void index entry that names no seat once it is older than RETENTION_MS, and keeps a recent one, one naming a seat whose record stays, and an unreadable one')
+  },
+
+  'prune-open': () => {
+    const old = new Date(Date.now() - RETENTION_MS - 60_000).toISOString()
+    const stale = store.writeRecord(RECORD(), null).id
+    store.stamp(stale, 'closed', { at: old, verdict: 'valid', reasons: [] })
+    const unclosed = store.writeRecord(RECORD({ createdAt: old }), null).id
+    assert.equal(seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high']).ok, true)
+    assert.equal(existsSync(join(seats, stale)), false, 'open did not prune a record closed past retention')
+    assert.ok(store.readRecord(unclosed), 'open pruned an unclosed record')
+    ok('open prunes records closed longer ago than RETENTION_MS first, and keeps an unclosed one however old')
   },
 
   'fastpath-silent': () => {

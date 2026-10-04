@@ -13,6 +13,7 @@ import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { readStamp } from '../lib/seat-store.mjs'
 import { inside, RETENTION_MS, stateDir } from '../lib/state-dir.mjs'
 import { FINDINGS_SCHEMA, outputSchemaProblem } from './schema.mjs'
 
@@ -373,7 +374,15 @@ export async function admit(input, { host, roots }) {
 // both take it. Only a file under its owner's own name is ever moved out, and the directory is
 // then removed only if still empty, so neither a release nor the takeover of a stale lease can
 // remove a lease that changed hands in between.
+//
+// A T3 writer seat holds the same directory through a file named for its seat id, 32 hex
+// characters, that scripts/seat.mjs writes before the seat's record and drops at close. A holder
+// whose seat has no closed stamp, its record not yet written included, keeps every write job out;
+// a closed one is a leftover, dropped like a dead job's file before the next try. seat.mjs checks
+// for a live job after writing its holder, so of a seat and a job racing for one worktree, at
+// most one goes on.
 export const leaseDirOf = (worktree) => join(stateDir(), 'leases', createHash('sha256').update(worktree).digest('hex'))
+const SEAT_HOLDER = /^[0-9a-f]{32}$/
 // The holder is reconciled first: a queued job past its grace is claimed and settled, so no
 // runner can start it once its lease is gone, and a running one whose runner died is settled
 // after its provider group is killed. An ended job still holds the lease while its provider group
@@ -396,11 +405,19 @@ export function acquireLease(job) {
   try {
     for (let attempt = 0; attempt < 5; attempt++) {
       try { renameSync(mine, dir); return } catch (error) { if (!['ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error }
-      let owner
-      try { owner = readdirSync(dir).find((name) => JOB_ID.test(name)) } catch { continue }
-      if (!owner) continue
-      if (leaseLive(owner)) fail('WORKSPACE_BUSY', `Write job ${owner} holds this worktree.`, { jobId: owner })
-      dropLease(dir, owner)
+      let names
+      try { names = readdirSync(dir) } catch { continue }
+      const owner = names.find((name) => JOB_ID.test(name))
+      if (owner) {
+        if (leaseLive(owner)) fail('WORKSPACE_BUSY', `Write job ${owner} holds this worktree.`, { jobId: owner })
+        dropLease(dir, owner)
+      }
+      for (const seat of names.filter((name) => SEAT_HOLDER.test(name))) {
+        if (readStamp(seat, 'closed') === null) {
+          fail('WORKSPACE_BUSY', `T3 seat ${seat} holds this worktree until it is closed with seat.mjs close.`, { seatId: seat })
+        }
+        dropLease(dir, seat)
+      }
     }
     fail('WORKSPACE_BUSY', 'The worktree lease is contended.')
   } finally { rmSync(mine, { recursive: true, force: true }) }

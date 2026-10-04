@@ -113,14 +113,22 @@ Run `seat open` once per seat:
 ```sh
 node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|review> \
   --provider <claude|codex> --model <id> --effort <level> \
-  [--worktree <path>] [--base <sha> --head <sha>] [--schema <file>]
+  [--worktree <absolute-path>] [--base <rev> --head <rev>] [--schema <absolute-file>]
 ```
 
+- The seat's worktree is the top level of the Git worktree that `--worktree` names, or of the working directory when it names none.
 - A writer (`workspace-write`) names its `--worktree`.
-- A review names `--base` and `--head`. `open` resolves both to SHAs and creates a detached worktree under `.flow-worktrees/` at the head, and the seat reviews there.
+- A review names `--base` and `--head`. `open` resolves both to SHAs in `--worktree`, or in the working directory, and creates a detached worktree at the head under the canonical checkout's `.flow-worktrees/`. The seat reviews there.
 - `--schema` is the JSON Schema for the envelope's `answer`, at most 16 KiB, admitted under the keyword rules of `outputSchema` above. A review answers in the findings schema and takes no `--schema`.
 
-`open` writes the seat record under the state directory and prints one JSON line. Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it re-reads Codex's hook trust and refuses the seat if a flow hook is not trusted, because Codex skips an untrusted hook without a word. The flow skill's `setup` grants that trust once per machine. A refused seat goes to the fallback.
+`open` writes the seat record under the state directory and prints one JSON line:
+
+```json
+{"ok": true, "id": "<32 hex>", "tag": "<flow-seat id=<32 hex>>", "runtimeMode": "auto",
+ "provider": "claude", "model": "<id>", "effort": "<level>", "worktree": "<path>", "reviewWorktree": null}
+```
+
+Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. A refused seat goes to the fallback.
 
 ### Start it
 
@@ -157,26 +165,33 @@ A finished child wakes your thread, so end the turn instead of polling. Call `ta
 
 ### Close it and act on the verdict
 
-When `task_status` reports the task `completed`, `failed`, `cancelled` or `interrupted`, run:
+When `task_status` reports the task `completed`, `failed`, `cancelled` or `interrupted`, pass that `task_status` answer to `close` as JSON:
 
 ```sh
-node <plugin-root>/scripts/seat.mjs close <seat-id>
+node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status JSON>'
 ```
 
-It prints one verdict, and a `valid` verdict carries the envelope the Stop hook recorded. Act on the verdict alone:
+`close` records the task status beside the verdict and prints one JSON line:
+
+```json
+{"ok": true, "id": "<32 hex>", "verdict": "valid", "reasons": [], "turn": 1, "result": {},
+ "servedModels": ["<id>"], "blocks": 0, "errors": []}
+```
+
+`result` is the envelope the Stop hook recorded, and it is `null` for every verdict but `valid`. `reasons` says why the verdict is not `valid`, and `errors` holds the last turn's problem lines from Stop. A `cleanupProblems` list appears only when `close` could not remove a review worktree. Act on the verdict alone:
 
 | Verdict | Meaning | Action |
 |---|---|---|
 | `valid` | Every stamp is present and the result matches its recorded sha256. | Use the envelope. A writer's envelope is still a claim, so check its commits against git. |
-| `invalid` | The hooks worked, and the final answer failed the envelope or the schema. | Rerun once with the errors on the same rung, then step up a rung. |
+| `invalid` | The hooks worked, and the last final message failed the envelope or the schema. | Rerun once with the errors on the same rung, then step up a rung. |
 | `capped` | Stop blocked the child 3 times, then let it end. | Same as `invalid`. |
-| `unknown` | A stamp is missing: `admitted`, `bound`, `receipt` or `result`. Nothing proves the hooks ran. | Fall back. |
+| `unknown` | A stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the bind, the result does not match its sha256, or no served model is on record. Nothing proves the hooks held the seat. | Fall back. |
 | `model-mismatch` | The served model differs from the one you asked for. | Discard the answer. A mismatch is not a refusal, so the refusal rule does not count it. |
 | `tree-moved` | The review worktree's HEAD left the head SHA or its tree is dirty, the canonical checkout changed, or the coverage misses a file in the pinned diff. | Treat it as `unknown`. |
 
 A seat that made no tool call has no `receipt`, so it reads `unknown`. On Codex, the served-model check covers the model the hooks saw at UserPromptSubmit and at Stop. On Claude, it reads every model the transcript records for the seat's own turns.
 
-Close every seat you open, cancelled ones included. `close` removes a review's worktree after it records the verdict. An unclosed T3 writer stays in the worktree's lease directory, and `flow_delegate` refuses a write job there with `WORKSPACE_BUSY` until the seat closes.
+Close every seat you open, cancelled ones included. `close` records the verdict first, then drops a writer's lease holder and removes a review's worktree. A second `close` prints the verdict on record. An unclosed T3 writer stays in the worktree's lease directory, and `flow_delegate` refuses a write job there with `WORKSPACE_BUSY` until the seat closes.
 
 ### Fall back
 
