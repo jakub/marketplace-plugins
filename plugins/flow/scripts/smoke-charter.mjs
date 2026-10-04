@@ -77,8 +77,9 @@ try {
   assert.equal(codexHooks.PreToolUse[0].hooks.length, 3)
   ok(`hooks/codex.json keeps all ${Object.keys(CODEX_TRUSTED).length} trusted hooks at their positions with their command strings`)
 
-  // Codex caps a hook's additionalContext by this limit, in tokens; the seat context carries the
-  // answer schema, up to 16 KiB, so the prompt hook asks for more than the default.
+  // Codex caps a hook's additionalContext by this limit, in tokens; the seat context inlines the
+  // answer schema while the whole context stays within 6000 bytes, which no tokenizer counts as
+  // more than 6000 tokens, so the prompt hook asks for more than the default.
   const promptLimit = { claude: {}, codex: { additionalContextLimit: 6000 } }
   for (const [file, variable, host, matcher] of [['hooks.json', 'CLAUDE_PLUGIN_ROOT', 'claude', '*'], ['codex.json', 'PLUGIN_ROOT', 'codex', '.*']]) {
     const { hooks } = JSON.parse(readFileSync(join(ROOT, 'hooks', file), 'utf8'))

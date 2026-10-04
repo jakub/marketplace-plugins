@@ -597,7 +597,11 @@ function ghApiProblem(args) {
 /** How many times Stop refuses a turn's final message before it lets the seat stop, capped. */
 export const STOP_BLOCKS = 3
 const LINE_LIMIT = 10
-const SCHEMA_CONTEXT_BYTES = 16 * 1024
+// Codex hands a prompt hook's context to the model under the additionalContextLimit that
+// hooks/codex.json sets, 6000 tokens. A token is at least one byte, so a context of at most 6000
+// UTF-8 bytes is never cut on any tokenizer, and it is under Claude Code's 10,000-character cap on
+// hook output too. One rule serves both hosts.
+const CONTEXT_BYTES = 6000
 const ENVELOPE = '{"status": "done" | "partial" | "blocked", "coverage": {"read": [], "partial": [], "unopened": [], "checksRun": []}, "notes": "", "answer": <your answer>}'
 const COMMITS = '"commits": [{"sha": "<sha>", "subject": "<subject>"}]'
 const envelopeFor = (access) => (access === 'workspace-write' ? `${ENVELOPE.slice(0, -1)}, ${COMMITS}}` : ENVELOPE)
@@ -701,10 +705,12 @@ export function failedStop(record, state, errors) {
 /**
  * The context a bound seat reads before its task: one sentence that sets the orchestrator half
  * aside, the record's facts, the envelope its final message must be, and the answer schema from
- * the record (schema, null when the seat has none). The Seat Contract itself arrived at
+ * the record (schema, null when the seat has none). The schema is inlined only while the whole
+ * context stays within CONTEXT_BYTES; past that, the context names schemaPath, the absolute path
+ * of the record's schema.json, and tells the seat to read it. The Seat Contract itself arrived at
  * SessionStart and is not repeated.
  */
-export function seatContext(record, schema = null) {
+export function seatContext(record, schema = null, schemaPath = null) {
   const lines = [
     'The orchestrator half of the flow charter does not apply in this session: you are a flow seat, and the Seat Contract governs.',
     '',
@@ -730,10 +736,13 @@ export function seatContext(record, schema = null) {
     'coverage lists the files you read whole, read in part and left unopened, and the checks you ran. A stop hook checks the message and returns any problem to you to fix.',
   )
   if (record.access === 'workspace-write') lines.push('commits lists every commit you made, each with its full SHA.')
-  const text = schema === null ? null : JSON.stringify(schema)
-  if (text === null) lines.push('`answer` is the JSON value your task asks for; this seat has no answer schema.')
-  else if (Buffer.byteLength(text) > SCHEMA_CONTEXT_BYTES) lines.push('`answer` follows the answer schema your task names; it is over 16 KiB, so it is not repeated here.')
-  else lines.push('`answer` must match this JSON Schema:', text)
+  if (schema === null) {
+    lines.push('`answer` is the JSON value your task asks for; this seat has no answer schema.')
+    return lines.join('\n')
+  }
+  const inline = [...lines, '`answer` must match this JSON Schema:', JSON.stringify(schema)].join('\n')
+  if (Buffer.byteLength(inline) <= CONTEXT_BYTES) return inline
+  lines.push(`\`answer\` must match the JSON Schema in ${schemaPath}, which is too long to repeat here. Read that file before you write your final message.`)
   return lines.join('\n')
 }
 

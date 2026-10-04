@@ -119,7 +119,7 @@ node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|rev
 - The seat's worktree is the top level of the Git worktree that `--worktree` names, or of the working directory when it names none.
 - A writer (`workspace-write`) names its `--worktree`.
 - A review names `--base` and `--head`. `open` resolves both to SHAs in `--worktree`, or in the working directory, and creates a detached worktree at the head under the canonical checkout's `.flow-worktrees/`. The seat reviews there.
-- `--schema` is the JSON Schema for the envelope's `answer`, at most 16 KiB, admitted under the keyword rules of `outputSchema` above. A review answers in the findings schema and takes no `--schema`.
+- `--schema` is the JSON Schema for the envelope's `answer`, at most 16 KiB, admitted under the keyword rules of `outputSchema` above. A review answers in the findings schema and takes no `--schema`. The child's seat context repeats the schema only while the whole context stays within 6000 bytes, so that Codex's 6000-token hook limit never cuts it. Past that, the context names the absolute path of the record's `schema.json` and tells the child to read that file before it writes its final message.
 
 `open` writes the seat record under the state directory and prints one JSON line:
 

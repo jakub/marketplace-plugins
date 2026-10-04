@@ -45,7 +45,7 @@
 // through, and seat close reads the turn's missing result.
 
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import * as store from '../../lib/seat-store.mjs'
 import { applyPatchPaths, preToolDeny, promptBlock, promptContext, readHookInput, stopBlock, transcriptModels } from './wire.mjs'
 
@@ -94,7 +94,7 @@ async function prompt(input) {
     const bound = { sessionId, host, permissionMode: input.permission_mode, cwd: typeof input.cwd === 'string' ? input.cwd : null, recordDigest: seat.digest }
     if (typeof input.model === 'string') bound.model = input.model
     if (!store.stamp(id, 'bound', bound)) return voidSeat('bound-lost-race')
-    answer(promptContext(policy.seatContext(seat.record, seat.schema)))
+    answer(promptContext(policy.seatContext(seat.record, seat.schema, resolve(store.seatDir(id), 'schema.json'))))
   } catch (error) {
     complain(`bind: ${error.message}`)
     voidSeat('bind-failed')

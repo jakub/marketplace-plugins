@@ -977,6 +977,42 @@ const cases = {
     ok('a writer seat is told its worktree, the git -C commit form and the commits field; a review seat its base and head; a seat with no schema is told so')
   },
 
+  'bind-schema-budget': () => {
+    // Codex delivers the prompt hook's context under a 6000-token limit, so the seat context inlines
+    // the answer schema only while the whole context is at most 6000 UTF-8 bytes.
+    const LIMIT = 6000
+    const bindWith = (host, description) => {
+      const schema = { ...SCHEMA, description }
+      const record = seatRecord(host)
+      const { id } = store.writeRecord(record, schema)
+      assert.equal(store.stamp(id, 'admitted', {}), true)
+      return { id, schema, text: context(guard('prompt', host, promptCall(host, randomUUID(), store.seatTag(id))), `${host} bind`) }
+    }
+    for (const host of ['claude', 'codex']) {
+      const small = bindWith(host, '')
+      assert.ok(small.text.endsWith(`\`answer\` must match this JSON Schema:\n${JSON.stringify(small.schema)}`), small.text)
+      // Every seat id and path in the fixture has one length, so the context grows byte for byte
+      // with the description from here.
+      const room = LIMIT - Buffer.byteLength(small.text)
+      const fits = bindWith(host, 'a'.repeat(room))
+      assert.equal(Buffer.byteLength(fits.text), LIMIT)
+      assert.ok(fits.text.endsWith(JSON.stringify(fits.schema)), 'a context of exactly 6000 bytes did not inline the schema')
+      ok(`${host}: a small schema is inlined, and so is one that brings the context to exactly ${LIMIT} bytes`)
+
+      for (const [what, description] of [['one byte over', 'a'.repeat(room + 1)], ['multi-byte, under 6000 characters', 'é'.repeat(room)]]) {
+        const big = bindWith(host, description)
+        const path = join(seats, big.id, 'schema.json')
+        assert.ok(!big.text.includes(description), `${what}: the schema was inlined`)
+        assert.ok(Buffer.byteLength(big.text) <= LIMIT, `${what}: the context is ${Buffer.byteLength(big.text)} bytes`)
+        assert.ok(big.text.includes(path), `${what}: the context does not name ${path}: ${big.text}`)
+        assert.match(big.text, /Read that file before you write your final message/)
+        assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), big.schema, `${what}: the path named is not the record's schema`)
+        if (what.startsWith('multi')) assert.ok(`${small.text}${description}`.length <= LIMIT, 'the multi-byte fixture is not under 6000 characters')
+      }
+      ok(`${host}: a schema that would take the context past ${LIMIT} bytes, by one byte or in multi-byte characters under ${LIMIT} characters, is replaced by the record's schema.json path, and the context stays within ${LIMIT} bytes`)
+    }
+  },
+
   'bind-not-admitted': () => {
     for (const host of ['claude', 'codex']) {
       const { id } = store.writeRecord(seatRecord(host), SCHEMA)
