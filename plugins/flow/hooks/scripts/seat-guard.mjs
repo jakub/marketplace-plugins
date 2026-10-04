@@ -10,8 +10,8 @@
 //
 // The PreToolUse group matches every tool in every session, so the path a non-seat session takes
 // is the cost every tool call pays. That path reads stdin and makes one existsSync on the session
-// index, the stop path does the same, and the prompt path makes one string test and touches no
-// file. seat-policy.mjs is imported only past those checks. The static imports are wire.mjs and
+// index, the stop path does the same, and the prompt path makes one string test for a tag and,
+// with none, the same one existsSync. seat-policy.mjs is imported only past those checks. The static imports are wire.mjs and
 // seat-store.mjs, which load node built-ins alone.
 //
 // A body this cannot read exits 0 with no output on both hosts: without a session id it cannot
@@ -26,7 +26,9 @@
 // context; or refused outright. The session index is what makes every later tool call a seat
 // call, so a prompt whose session cannot end with a durable index entry, bound or void, is
 // refused: injecting the void context alone would leave the session's tool calls reading as a
-// non-seat's and running uncontained.
+// non-seat's and running uncontained. An untagged prompt in a bound seat's session records the
+// turn it opens (see continued), so a follow-up turn that never reaches Stop is not judged by the
+// turn before it.
 //
 // Stop holds a bound seat to its answer. The turn is Claude's prompt_id or Codex's turn_id. A final
 // message that is the flow envelope with a matching answer is written as result-<turn>.json with
@@ -55,9 +57,9 @@ const loadPolicy = () => import('../../lib/seat-policy.mjs')
 
 async function prompt(input) {
   const text = input.prompt
-  if (typeof text !== 'string' || !text.includes('<flow-seat ')) return
-  const tag = store.parseTag(text)
-  if (tag === null) return
+  if (typeof text !== 'string') return
+  const tag = text.includes('<flow-seat ') ? store.parseTag(text) : null
+  if (tag === null) return continued(input)
   const policy = await loadPolicy()
   const sessionId = input.session_id
   const id = tag.id ?? null
@@ -95,6 +97,24 @@ async function prompt(input) {
   } catch (error) {
     complain(`bind: ${error.message}`)
     voidSeat('bind-failed')
+  }
+}
+
+// A prompt with no seat tag in a session bound to a seat opens another turn of that seat, such as
+// the parent's follow-up after a finished turn. Its turn key goes into the turn state as opened,
+// so seat close judges that turn and reads it unknown when no stop of it was ever recorded.
+async function continued(input) {
+  const index = store.indexPath(host, input.session_id)
+  if (index === null || !existsSync(index)) return
+  const policy = await loadPolicy()
+  try {
+    const entry = store.readIndex(host, input.session_id)
+    if (entry === null || entry.void !== undefined) return
+    const prior = store.readState(entry.id)
+    const state = prior !== null && typeof prior === 'object' && !Array.isArray(prior) ? prior : {}
+    store.writeState(entry.id, { ...state, opened: policy.turnKeyOf(host === 'claude' ? input.prompt_id : input.turn_id) })
+  } catch (error) {
+    complain(`prompt: ${error.message}`)
   }
 }
 

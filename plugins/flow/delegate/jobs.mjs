@@ -375,25 +375,32 @@ export async function admit(input, { host, roots }) {
 // then removed only if still empty, so neither a release nor the takeover of a stale lease can
 // remove a lease that changed hands in between.
 //
-// A T3 writer seat holds the same directory through a file named for its seat id, 32 hex
-// characters, that scripts/seat.mjs writes before the seat's record and drops at close. A holder
-// whose seat has a record and no closed stamp keeps every write job out. A closed one is a
-// leftover, dropped like a dead job's file before the next try. One with no record is an open in
-// flight for SEAT_HOLDER_GRACE_MS after its write, and keeps jobs out that long; after that it is
-// the leftover of an open that died between the holder and the record, and is dropped too. The
-// holder's mtime is read before the record is looked for, so a drop needs the record still absent
-// a full grace after the holder went in. seat.mjs writes nothing slow between the two and checks
-// its holder is still there once the record is written. seat.mjs also checks for a live job
-// after writing its holder, so of a seat and a job racing for one worktree, at most one goes on.
+// A T3 writer seat holds the same directory through a holder file that scripts/seat.mjs writes
+// as <seat id>, 32 hex characters, before the seat's record. Once the record is written, seat.mjs
+// renames it to <seat id>.live, and seat close drops it. Each holder's fate is decided by one
+// rename, which only one of a seat and a job can win:
+//   - a live holder keeps every write job out until its seat is closed;
+//   - a pending holder keeps write jobs out while it is younger than SEAT_HOLDER_GRACE_MS or its
+//     seat has a record. Past that it is the leftover of an open that died before its record, and
+//     a job takes it over by renaming it to <seat id>.taken-<job id> before dropping it. If that
+//     rename finds no file, the seat renamed it live first, and the job looks again. If the job
+//     renames first, the seat's own rename finds no file, and the seat voids its record;
+//   - a closed seat's holder, and a taken file a dead job left behind, are dropped.
+// seat.mjs also checks for a live job after writing its holder, so of a seat and a job racing for
+// one worktree, at most one goes on.
 export const leaseDirOf = (worktree) => join(stateDir(), 'leases', createHash('sha256').update(worktree).digest('hex'))
-const SEAT_HOLDER = /^[0-9a-f]{32}$/
+const SEAT_HOLDER = /^([0-9a-f]{32})(\.live|\.taken-.+)?$/
 const SEAT_HOLDER_GRACE_MS = 60_000
-// Whether the seat holder file `seat` in lease directory dir still keeps write jobs out.
-function seatHolds(dir, seat) {
-  if (readStamp(seat, 'closed') !== null) return false
-  const held = lstatSync(join(dir, seat), { throwIfNoEntry: false })
-  if (!held) return false
-  return Date.now() - held.mtimeMs < SEAT_HOLDER_GRACE_MS || hasRecord(seat)
+// What acquireLease does with the seat holder file name in lease directory dir: 'hold' while it
+// keeps write jobs out, 'drop' once it is a leftover, 'take' when it is a pending holder to take
+// over, and 'gone' when it vanished while this looked.
+function seatHolder(dir, name) {
+  const [, seat, suffix] = SEAT_HOLDER.exec(name)
+  if (suffix?.startsWith('.taken-') || readStamp(seat, 'closed') !== null) return 'drop'
+  if (suffix === '.live') return 'hold'
+  const held = lstatSync(join(dir, name), { throwIfNoEntry: false })
+  if (!held) return 'gone'
+  return Date.now() - held.mtimeMs < SEAT_HOLDER_GRACE_MS || hasRecord(seat) ? 'hold' : 'take'
 }
 // The holder is reconciled first: a queued job past its grace is claimed and settled, so no
 // runner can start it once its lease is gone, and a running one whose runner died is settled
@@ -424,11 +431,18 @@ export function acquireLease(job) {
         if (leaseLive(owner)) fail('WORKSPACE_BUSY', `Write job ${owner} holds this worktree.`, { jobId: owner })
         dropLease(dir, owner)
       }
-      for (const seat of names.filter((name) => SEAT_HOLDER.test(name))) {
-        if (seatHolds(dir, seat)) {
-          fail('WORKSPACE_BUSY', `T3 seat ${seat} holds this worktree until it is closed with seat.mjs close.`, { seatId: seat })
+      for (const name of names.filter((entry) => SEAT_HOLDER.test(entry))) {
+        const seat = name.slice(0, 32)
+        const fate = seatHolder(dir, name)
+        if (fate === 'hold') fail('WORKSPACE_BUSY', `T3 seat ${seat} holds this worktree until it is closed with seat.mjs close.`, { seatId: seat })
+        if (fate === 'drop') dropLease(dir, name)
+        if (fate !== 'take') continue
+        const taken = `${seat}.taken-${job.id}`
+        try { renameSync(join(dir, name), join(dir, taken)) } catch (error) {
+          if (error.code === 'ENOENT') continue
+          throw error
         }
-        dropLease(dir, seat)
+        dropLease(dir, taken)
       }
     }
     fail('WORKSPACE_BUSY', 'The worktree lease is contended.')

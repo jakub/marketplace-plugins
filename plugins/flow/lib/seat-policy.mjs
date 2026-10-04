@@ -9,7 +9,9 @@
 //                      without an explicit runtimeMode is denied, tagged or not, because a child
 //                      copies its parent's mode at spawn and a parent switched to full access would
 //                      silently widen every later child. A tagged call is admitted once, and only
-//                      when it asks for exactly what the seat record names.
+//                      when it asks for exactly what the seat record names: the runtime mode, the
+//                      provider, the model, the effort, and clientRequestId flow-seat-<id>, which
+//                      T3 builds the task id from, so close can tell this seat's task from another.
 //   bindProblem        the child's UserPromptSubmit: whether this session may bind the record. A
 //                      failed bind makes a void seat, which the adapter records and announces.
 //   seatCallProblem    the child's PreToolUse before containment: a void seat, a record that is
@@ -52,6 +54,16 @@ const PROVIDERS = new Map([['claudeAgent', 'claude'], ['codex', 'codex']])
 const ACCESS = new Set(['read-only', 'workspace-write', 'review'])
 
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+// The option id under which each provider's target carries its effort, as orchestrator_capabilities
+// advertises it. T3 takes options as an array of {id, value} or as a record of id to value.
+const EFFORT_OPTION = { claude: 'effort', codex: 'reasoningEffort' }
+function optionValue(options, id) {
+  if (Array.isArray(options)) {
+    const named = options.filter((option) => plainObject(option) && option.id === id)
+    return named.length === 1 ? named[0].value : undefined
+  }
+  return plainObject(options) && Object.hasOwn(options, id) ? options[id] : undefined
+}
 // Text from the call that is echoed back in a reason is capped, so the answer stays small.
 const quote = (text) => JSON.stringify(String(text).slice(0, 200))
 const deny = (why) => ({ deny: `flow seat: ${why}` })
@@ -60,7 +72,7 @@ const deny = (why) => ({ deny: `flow seat: ${why}` })
  * The parent's gate on one delegate_task call. Returns null when the call is not a seat call and
  * names its runtimeMode, which the caller allows by printing nothing; {deny: reason} to refuse it;
  * {admit: id} once the record's admitted stamp is written. deps.store is lib/seat-store.mjs and
- * deps.toolUseId, when a string, is recorded in the stamp. The stamp is write-once, so of two
+ * deps.toolUseId, when a string, is recorded in the stamp beside the clientRequestId. The stamp is write-once, so of two
  * calls racing to admit one record exactly one is admitted and the other is denied.
  */
 export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
@@ -88,16 +100,19 @@ export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
   }
   const provider = PROVIDERS.get(target.providerInstanceId)
   if (!provider) return deny(`provider instance ${JSON.stringify(target.providerInstanceId.slice(0, 64))} is neither claudeAgent nor codex.`)
+  const clientRequestId = `flow-seat-${id}`
   const mismatched = [
     ['runtimeMode', runtimeMode, record.runtimeMode],
     ['provider', provider, record.provider],
     ['model', target.model, record.model],
+    [`target.options ${EFFORT_OPTION[provider]}`, optionValue(target.options, EFFORT_OPTION[provider]), record.effort],
+    ['clientRequestId', toolInput.clientRequestId, clientRequestId],
   ].filter(([, asked, recorded]) => asked !== recorded)
   if (mismatched.length > 0) {
     const lines = mismatched.map(([field, , recorded]) => `${field} must be ${JSON.stringify(recorded)}`)
     return deny(`the call does not match seat ${id}'s record: ${lines.join('; ')}.`)
   }
-  const stamp = typeof toolUseId === 'string' ? { toolUseId } : {}
+  const stamp = typeof toolUseId === 'string' ? { toolUseId, clientRequestId } : { clientRequestId }
   if (!store.stamp(id, 'admitted', stamp)) return deny(`seat ${id} was admitted by another call first.`)
   return { admit: id }
 }
@@ -551,17 +566,23 @@ const ENVELOPE = '{"status": "done" | "partial" | "blocked", "coverage": {"read"
 const COMMITS = '"commits": [{"sha": "<sha>", "subject": "<subject>"}]'
 const envelopeFor = (access) => (access === 'workspace-write' ? `${ENVELOPE.slice(0, -1)}, ${COMMITS}}` : ENVELOPE)
 
+/** A turn key as the hooks record it: the host's id for the turn, or null when it cannot be read. */
+export const turnKeyOf = (key) => (typeof key === 'string' && key !== '' ? key : null)
+
 /**
  * The turn a stop belongs to, from the state Stop last wrote (null for none) and this stop's turn
  * key, the host's id for the turn. A new key starts the next turn with no blocks; the same key, or
  * a stop whose key cannot be read, continues the current one, so blocks still count toward the cap.
  * messageSha256 is the digest of the last final message Stop checked in the turn, null in a new one.
+ * opened, the key of the last turn a prompt opened after the bind, is carried over unchanged.
  */
 export function stopTurn(state, turnKey) {
-  const key = typeof turnKey === 'string' && turnKey !== '' ? turnKey : null
+  const key = turnKeyOf(turnKey)
+  const opened = plainObject(state) && Object.hasOwn(state, 'opened') ? { opened: state.opened } : {}
   const current = plainObject(state) && Number.isSafeInteger(state.turn) && state.turn > 0 ? state : null
   if (current && (key === null || key === current.turnKey)) {
     return {
+      ...opened,
       turn: current.turn,
       turnKey: current.turnKey ?? null,
       blocks: Number.isSafeInteger(current.blocks) ? current.blocks : 0,
@@ -571,7 +592,7 @@ export function stopTurn(state, turnKey) {
       messageSha256: typeof current.messageSha256 === 'string' ? current.messageSha256 : null,
     }
   }
-  return { turn: (current?.turn ?? 0) + 1, turnKey: key, blocks: 0, outcome: null, errors: [], stops: 1, messageSha256: null }
+  return { ...opened, turn: (current?.turn ?? 0) + 1, turnKey: key, blocks: 0, outcome: null, errors: [], stops: 1, messageSha256: null }
 }
 
 /**

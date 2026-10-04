@@ -124,11 +124,11 @@ node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|rev
 `open` writes the seat record under the state directory and prints one JSON line:
 
 ```json
-{"ok": true, "id": "<32 hex>", "tag": "<flow-seat id=<32 hex>>", "runtimeMode": "auto",
+{"ok": true, "id": "<32 hex>", "tag": "<flow-seat id=<32 hex>>", "clientRequestId": "flow-seat-<32 hex>", "runtimeMode": "auto",
  "provider": "claude", "model": "<id>", "effort": "<level>", "worktree": "<path>", "reviewWorktree": null}
 ```
 
-Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. Either host's flow copy may open a Codex-family seat. It counts as flow's hooks only those of `flow@<marketplace>`, the plugin id of the copy you run, and only when their `hooks/codex.json` matches that copy's byte for byte, so both hosts must carry one version of flow. The flow skill's `setup` grants that trust once per machine in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
+Copy its `tag`, `clientRequestId` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. Either host's flow copy may open a Codex-family seat. It counts as flow's hooks only those of `flow@<marketplace>`, the plugin id of the copy you run, and only when their `hooks/codex.json` matches that copy's byte for byte, so both hosts must carry one version of flow. The flow skill's `setup` grants that trust once per machine in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
 
 ### Start it
 
@@ -137,10 +137,11 @@ Call `delegate_task` with these fields:
 - `task`: the seat tag alone on line 1, then the worktree, the checkpoints and the work. A tag below line 1 voids the seat.
 - `role: "general"`, so T3 prepends nothing to the task.
 - `runtimeMode`: the value `open` printed.
-- `target`: the provider instance and `model` you gave `open`, as `orchestrator_capabilities` lists them, with the effort in `options` under the option id that call advertises for the model.
+- `clientRequestId`: the value `open` printed, `flow-seat-<id>`. T3 builds the task's id from it, which is how `close` knows the task status is this seat's.
+- `target`: the provider instance and `model` you gave `open`, as `orchestrator_capabilities` lists them, with the effort you gave `open` in `options` under the option id that call advertises for the model: `effort` on Claude and `reasoningEffort` on Codex, as `[{"id": "effort", "value": "high"}]` or `{"effort": "high"}`.
 - `mode`: leave it at `async`, the default.
 
-Your own PreToolUse hook admits a tagged call only when its `runtimeMode`, provider and model equal the record and the record has not been admitted before.
+Your own PreToolUse hook admits a tagged call only when its `runtimeMode`, provider, model, effort and `clientRequestId` equal the record's and the record has not been admitted before.
 
 The child's hooks then hold the seat. UserPromptSubmit binds the child's session to the record and tells it that the Seat Contract governs it. PreToolUse holds it to its access: no spawns, no MCP tool outside a short read-only allowlist, edits only inside a writer's worktree, and nothing at all once the seat is closed. In the shell it reads each command word, through `env`, `sudo`, `timeout`, `npx` and the other common wrappers, and through a `bash -c` string. It denies a model CLI, `seat.mjs`, any `gh` but its reads, a `gh api` with clustered short flags, git off the read allowlist, git with `-c`, a `GIT_*` variable, `--output`, `-O` or `--ext-diff`, `git stash` and `git push`. It also denies anything run in the background: a lone `&`, `setsid`, `disown` or `run_in_background`. A writer also runs `git add`, `rm`, `mv`, `commit`, `restore` and `apply`, each only as `git -C <worktree>`. Its commits and its `add -A` name their paths. The shell reads a quoted argument as missing, so tell a seat to write its git and gh arguments out. Stop checks the final message and blocks the child, at most 3 times, with the problems it found.
 
@@ -159,7 +160,7 @@ The child's final message is one JSON object in the flow envelope:
 
 Writers in one worktree run at the same time on disjoint files, as native writers do. Each T3 writer commits its own paths with `git -C <worktree> commit -- <paths>`. Put that form in the writer's task: the child's shell starts in the canonical checkout, where a bare `git commit` would land on the wrong branch, so the hooks deny it. A Codex writer's sandbox keeps `.git` read-only, so its first `git add` asks for a wider write, which T3's `auto` mode grants through its auto-reviewer.
 
-To give a finished seat another round, send it a message with `t3_thread_send` to its `childThreadId` before you close it. The child answers in a new turn, and Stop requires a fresh envelope for that turn, so `close` judges the latest turn.
+To give a finished seat another round, send it a message with `t3_thread_send` to its `childThreadId` before you close it. The child answers in a new turn, and Stop requires a fresh envelope for that turn. The child's UserPromptSubmit hook records the turn your message opened, so `close` judges that turn, and reads it `unknown` (`turn-without-result`) when no stop of it was recorded.
 
 ### Wait
 
@@ -167,7 +168,7 @@ A finished child wakes your thread, so end the turn instead of polling. Call `ta
 
 ### Close it and act on the verdict
 
-When `task_status` reports the task finished, pass that `task_status` answer to `close` as JSON. Finished means its `status` is `completed`, `failed`, `cancelled` or `interrupted`, its `workState` is not `working` or `waiting_for_children`, and `hasPendingChildRuns` is not `true`. `close` refuses any other answer, a running task or an empty object included, with `TASK_NOT_TERMINAL`, writes nothing, and keeps a writer's lease:
+When `task_status` reports the task finished, pass that `task_status` answer to `close` as JSON. Finished means its `status` is `completed`, `failed`, `cancelled` or `interrupted`, its `workState` is not `working` or `waiting_for_children`, and `hasPendingChildRuns` is not `true`. `close` refuses any other answer, a running task or an empty object included, with `TASK_NOT_TERMINAL`, writes nothing, and keeps a writer's lease. It refuses an admitted seat's close the same way, with `TASK_MISMATCH`, when the answer's `taskId` does not carry the seat's `clientRequestId`, so pass the status of this seat's own task:
 
 ```sh
 node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status JSON>'
@@ -187,7 +188,7 @@ node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status 
 | `valid` | Every stamp is present and the result matches its recorded sha256. | Use the envelope. A writer's envelope is still a claim, so check its commits against git. |
 | `invalid` | The hooks worked, and the last final message failed the envelope or the schema. | Rerun once with the errors on the same rung, then step up a rung. |
 | `capped` | Stop blocked the child 3 times, then let it end. | Same as `invalid`. |
-| `unknown` | A stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the bind, the bound session's index entry is void (`session-index-void`) or missing or names another seat (`session-index-mismatch`), the result does not match its sha256, or no served model is on record. Nothing proves the hooks held the seat. | Fall back. |
+| `unknown` | A stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the bind, the bound session's index entry is void (`session-index-void`) or missing or names another seat (`session-index-mismatch`), the latest turn a prompt opened has no stop on record (`turn-without-result`), the result does not match its sha256, the latest result names no served model of its own, or no served model is on record. Nothing proves the hooks held the seat. | Fall back. |
 | `model-mismatch` | A model seen serving the seat, at the bind or at any stop in any turn, differs from the one you asked for. | Discard the answer. A mismatch is not a refusal, so the refusal rule does not count it. |
 | `tree-moved` | The review worktree's HEAD left the head SHA or its tree is dirty, the canonical checkout's tree, HEAD commit or branch changed, or the coverage misses a file in the pinned diff. | Treat it as `unknown`. |
 

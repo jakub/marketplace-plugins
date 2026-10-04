@@ -8,12 +8,12 @@
 //   seat.mjs close <seat-id> --task-status <json>
 //   seat.mjs trust [--write --expect <digest>]
 //
-// stdout is one JSON line. open prints {ok: true, id, tag, runtimeMode, provider, model, effort,
-// worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
+// stdout is one JSON line. open prints {ok: true, id, tag, clientRequestId, runtimeMode, provider,
+// model, effort, worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
 // servedModels, blocks, errors}, trust prints {ok: true, keys: [{key, command, trustStatus,
 // currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
 // details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and
-// HOOKS_UNTRUSTED from open; BAD_REQUEST and TASK_NOT_TERMINAL from close; BAD_REQUEST,
+// HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_TERMINAL and TASK_MISMATCH from close; BAD_REQUEST,
 // HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App
 // Server's own failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for
 // anything this script did not expect, INTERNAL.
@@ -33,29 +33,34 @@
 //
 // The lease. A writer seat and a flow_delegate write job never share a worktree. open refuses when
 // a live write job owns the lease directory delegate/jobs.mjs keys by the worktree, writes its
-// holder file <leaseDirOf(worktree)>/<id> there, and then reads the directory again and backs out
-// if a live job owner appeared meanwhile. acquireLease refuses a write job while a holder's seat
-// has no closed stamp, so whichever of the two writes first, the other sees it. A holder whose
-// seat has no record yet is an open in flight for a minute after its write, and after that
-// acquireLease drops it as the leftover of an open that died before its record. So nothing slow
-// runs between the holder and the record (the Codex trust read comes first), and once the record
-// is written open checks its holder is still there. If it is not, the open stalled past the
-// minute and a write job may hold the worktree: open voids the record it wrote, closes it as
-// unknown so it is pruned like any closed record, and refuses WORKSPACE_BUSY. Writer seats share a
-// worktree with each other, each committing its own paths, as native writers do.
+// pending holder file <leaseDirOf(worktree)>/<id> there, and then reads the directory again and
+// backs out if a live job owner appeared meanwhile. acquireLease refuses a write job while a
+// holder's seat has no closed stamp, so whichever of the two writes first, the other sees it. A
+// pending holder whose seat has no record is an open in flight for a minute after its write, and
+// after that acquireLease may take it over as the leftover of an open that died before its record,
+// by renaming it. So nothing slow runs between the holder and the record (the Codex trust read
+// comes first), and once the record is written open renames its holder to <id>.live, the holder
+// no job takes over. Of the two renames of the pending holder, exactly one finds the file. If the
+// job's came first, open voids the record it wrote, closes it as unknown so it is pruned like any
+// closed record, and refuses WORKSPACE_BUSY. Writer seats share a worktree with each other, each
+// committing its own paths, as native writers do.
 //
 // close first refuses TASK_NOT_TERMINAL, writing nothing, unless --task-status is a task_status
 // answer T3 gives for a finished task: an object whose status is completed, failed, cancelled or
 // interrupted, whose workState is not working or waiting_for_children, and whose
-// hasPendingChildRuns is not true. A writer's lease stays held until then. It then judges the seat
+// hasPendingChildRuns is not true. A writer's lease stays held until then. Once the seat was
+// admitted, close also refuses TASK_MISMATCH, writing nothing, unless the task status's taskId
+// carries flow-seat-<id>, the clientRequestId the admitted call named, plainly or URL-encoded, so
+// one seat is never closed on another task's status. It then judges the seat
 // from its record and the stamps and results the hooks wrote, in this order of precedence, the
 // first that holds being the verdict:
 //   unknown         no readable record; a void stamp; no admitted, bound or receipt stamp; a
 //                   record whose bytes no longer match the digest the bind pinned; a bound
 //                   session whose index entry is void (session-index-void) or missing or names
-//                   another seat (session-index-mismatch); no Stop on record; a last stop that
-//                   was valid with no intact result for its turn; or no served model on record
-//                   from any stop
+//                   another seat (session-index-mismatch); no Stop on record; a turn a prompt
+//                   opened after the bind with no stop on record (turn-without-result); a last
+//                   stop that was valid with no intact result for its turn, or with a result that
+//                   names no served model; or no served model on record from any stop
 //   model-mismatch  a model the hooks saw serving the seat, at the bind or at any stop in any
 //                   turn (Stop keeps them as one set in the turn state), is not the record's
 //   tree-moved      for a review: the review worktree's HEAD left the head SHA or its tree is
@@ -115,7 +120,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../delegate/codex-app-server.mjs'
@@ -258,6 +263,20 @@ function holdWorktree(worktree, id) {
   }
 }
 
+// Turn this seat's pending holder live, once its record is written. False when the holder is gone:
+// a write job took it over as abandoned first. The rename is the one step both sides race on.
+function holdLive(worktree, id) {
+  const dir = leaseDirOf(worktree)
+  try { renameSync(join(dir, id), join(dir, `${id}.live`)) } catch (error) {
+    if (error.code === 'ENOENT') return false
+    throw error
+  }
+  return true
+}
+
+// The clientRequestId a seat's delegate_task call carries, which T3 builds the task id from.
+const clientRequestIdOf = (id) => `flow-seat-${id}`
+
 async function open(argv) {
   const opts = flags(argv, ['--access', '--provider', '--model', '--effort', '--worktree', '--base', '--head', '--schema'])
   const access = opts['--access']
@@ -315,13 +334,13 @@ async function open(argv) {
       v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, reviewGitDir, baseSha, headSha,
       provider, model, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot, hooksDigest: digest,
     }, schema)
-    if (access === 'workspace-write' && !existsSync(join(leaseDirOf(worktree), id))) {
-      const reason = 'the lease holder was dropped as abandoned before the record was written'
+    if (access === 'workspace-write' && !holdLive(worktree, id)) {
+      const reason = 'a write job took the lease holder over as abandoned before the record was written'
       store.stamp(id, 'void', { reason: 'lease-lost-at-open' })
       store.stamp(id, 'closed', { verdict: 'unknown', reasons: [reason], taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
       fail('WORKSPACE_BUSY', `This open stalled for over a minute, so ${reason}, and a write job may hold the worktree now.`)
     }
-    return { ok: true, id, tag: store.seatTag(id), runtimeMode: RUNTIME_MODE, provider, model, effort, worktree, reviewWorktree }
+    return { ok: true, id, tag: store.seatTag(id), clientRequestId: clientRequestIdOf(id), runtimeMode: RUNTIME_MODE, provider, model, effort, worktree, reviewWorktree }
   } catch (error) {
     for (const step of undo.reverse()) { try { step() } catch {} }
     throw error
@@ -552,6 +571,9 @@ function judge(id, loaded) {
   if (entry === null || entry.id !== id) return unknown('session-index-mismatch')
   const state = store.readState(id)
   if (!state || !Number.isSafeInteger(state.turn) || state.turn < 1) return unknown('no Stop was recorded, so there is no result')
+  // A prompt after the bind opened a turn that no stop was ever recorded for: the result on record
+  // answers an earlier turn.
+  if (Object.hasOwn(state, 'opened') && state.opened !== state.turnKey) return unknown('turn-without-result')
   facts.turn = state.turn
   facts.blocks = Number.isSafeInteger(state.blocks) ? state.blocks : 0
   facts.errors = Array.isArray(state.errors) ? state.errors : []
@@ -568,9 +590,12 @@ function judge(id, loaded) {
     return unknown(`turn ${state.turn} has no result`)
   }
   // Every model a stop saw, in any turn, and the result's own: one turn on another model taints
-  // the seat even when the last turn's answer came from the record's.
+  // the seat even when the last turn's answer came from the record's. The result must name its own
+  // models, so a result is never vouched for by the models of another turn.
   const strings = (list) => (Array.isArray(list) ? list.filter((model) => typeof model === 'string') : [])
-  facts.servedModels = [...new Set([...strings(state.models), ...(envelope ? strings(result.body.servedModels) : [])])]
+  const resultModels = envelope ? strings(result.body.servedModels) : []
+  facts.servedModels = [...new Set([...strings(state.models), ...resultModels])]
+  if (envelope && resultModels.length === 0) return unknown(`turn ${state.turn}'s result names no served model`)
   if (facts.servedModels.length === 0) return unknown('no served model is on record for any of the seat\'s stops')
   const seen = [...(typeof bound.model === 'string' ? [bound.model] : []), ...facts.servedModels]
   const others = [...new Set(seen.filter((model) => model !== record.model))]
@@ -589,7 +614,9 @@ function judge(id, loaded) {
 function cleanup(id, record) {
   const problems = []
   if (!record) return problems
-  if (record.access === 'workspace-write' && typeof record.worktree === 'string') dropLease(leaseDirOf(record.worktree), id)
+  if (record.access === 'workspace-write' && typeof record.worktree === 'string') {
+    for (const holder of [`${id}.live`, id]) dropLease(leaseDirOf(record.worktree), holder)
+  }
   const path = typeof record.repoRoot === 'string' ? join(record.repoRoot, '.flow-worktrees', `review-${id}`) : null
   if (record.access === 'review' && path && record.reviewWorktree === path && existsSync(path)) {
     if (!openedReview(record, path)) problems.push(`the worktree at ${path} is not the one this seat opened, so it was left in place`)
@@ -638,6 +665,15 @@ const TASK_BUSY = new Set(['working', 'waiting_for_children'])
 const terminalTask = (status) => status !== null && typeof status === 'object' && !Array.isArray(status) &&
   TASK_ENDED.has(status.status) && !TASK_BUSY.has(status.workState) && status.hasPendingChildRuns !== true
 
+// Whether a task status is the seat's own task: T3 builds the task id from the call's
+// clientRequestId, URL-encoded inside it, as in `...delegate-task%3Aflow-seat-<id>`.
+function taskOf(status, id) {
+  if (typeof status.taskId !== 'string') return false
+  let decoded = status.taskId
+  try { decoded = decodeURIComponent(status.taskId) } catch {}
+  return [status.taskId, decoded].some((text) => text.includes(clientRequestIdOf(id)))
+}
+
 function close(argv) {
   const [id, ...rest] = argv
   if (typeof id !== 'string' || !SEAT_ID.test(id)) fail('BAD_REQUEST', 'close takes a seat id, 32 lowercase hex characters.')
@@ -649,6 +685,9 @@ function close(argv) {
   try { taskStatus = JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
   if (!terminalTask(taskStatus)) {
     fail('TASK_NOT_TERMINAL', 'close records a seat whose task T3 reports finished: a task_status answer whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs. Wait for the task to finish, then close it.')
+  }
+  if (store.readStamp(id, 'admitted') !== null && !taskOf(taskStatus, id)) {
+    fail('TASK_MISMATCH', `The task status is not this seat's task: its taskId does not carry ${clientRequestIdOf(id)}, the clientRequestId the seat's delegate_task call was admitted with. Pass the task_status answer for this seat's own task.`)
   }
 
   const loaded = store.readRecord(id)
