@@ -1,0 +1,1 @@
+{"tool":"mcp__t3-code__delegate_task","clientRequestId":"wrong-id","error":"PreToolUse:mcp__t3-code__delegate_task hook error: flow seat: the call does not match seat 5ae2b6fb228563d4e5d51bb9026a1f89's record: clientRequestId must be \"flow-seat-5ae2b6fb228563d4e5d51bb9026a1f89\"."}

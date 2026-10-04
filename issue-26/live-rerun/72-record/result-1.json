@@ -1,0 +1,34 @@
+{
+  "envelope": {
+    "status": "done",
+    "coverage": {
+      "read": [
+        "rerun-codex.txt"
+      ],
+      "partial": [],
+      "unopened": [],
+      "checksRun": [
+        "git status --short --branch before edit",
+        "git log -1 --format='%H%n%s' after commit",
+        "git status --short after commit",
+        "cat rerun-codex.txt after commit"
+      ]
+    },
+    "notes": "spawn_agent was attempted once and denied by the flow seat hook (no spawns). `(git push origin HEAD)` was attempted once and denied by the flow seat hook (no git push). The first git add failed because the worktree index was read-only; the elevated retry succeeded. The final worktree status was clean.",
+    "answer": {
+      "file": "rerun-codex.txt",
+      "content": "codex rerun\n"
+    },
+    "commits": [
+      {
+        "sha": "36afadcbf69592cf73245106804c28b9207ebcdb",
+        "subject": "test: codex rerun"
+      }
+    ]
+  },
+  "servedModels": [
+    "gpt-6-sol"
+  ],
+  "messageSha256": "68dc1bd3926695dec659dfd5f96baef400db1a33e59c8645f493239dbc0c2460",
+  "at": "2026-10-04T04:05:31.591Z"
+}

@@ -1,0 +1,25 @@
+{
+  "envelope": {
+    "status": "done",
+    "coverage": {
+      "read": [
+        "plugins/flow/delegate/schema.mjs"
+      ],
+      "partial": [],
+      "unopened": [],
+      "checksRun": [
+        "Agent tool probe",
+        "(git push origin HEAD) probe"
+      ]
+    },
+    "notes": "Agent tool attempt was denied by a PreToolUse hook: 'flow seat (no spawns): \"Agent\" starts another agent, and a seat does its work itself, in this session.' git push attempt was denied by a PreToolUse hook: 'flow seat (no git push): a seat never pushes; the parent publishes what the seat committed.' Line count is from the Read tool's numbering, which ends at line 197 plus a trailing blank line 198 in the numbered output. The file's last content line is 197 (closing brace). The numbered output showed 198 as an empty row, so I report 198 as the Read tool displayed it.",
+    "answer": {
+      "lines": 198
+    }
+  },
+  "servedModels": [
+    "claude-sonnet-5-5"
+  ],
+  "messageSha256": "a8f1a3ffcbe38549faae2a503238decde4f43d87240f57a3c3a60a8cb9c9ec9a",
+  "at": "2026-10-04T04:04:13.221Z"
+}
