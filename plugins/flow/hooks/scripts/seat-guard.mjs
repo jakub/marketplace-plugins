@@ -42,7 +42,9 @@
 // alone. Every stop, that one included, adds the models it saw to `models` in the turn state, a set
 // kept across turns, so a result replaced or a turn passed over never drops a model from what seat
 // close judges. A void seat, a missing record, or a failure in this hook blocks nothing: the stop goes
-// through, and seat close reads the turn's missing result.
+// through, and seat close reads the turn's missing result. A failure once the seat is known also
+// stamps the record void (stop-state-unwritten), because the turn state left on disk can be an
+// earlier stop's valid one, and close reads a void record as unknown.
 
 import { existsSync } from 'node:fs'
 import * as store from '../../lib/seat-store.mjs'
@@ -166,10 +168,11 @@ async function stop(input) {
   const index = store.indexPath(host, input.session_id)
   if (index === null || !existsSync(index)) return
   const policy = await loadPolicy()
+  let id = null
   try {
     const entry = store.readIndex(host, input.session_id)
     if (entry === null || entry.void !== undefined) return
-    const { id } = entry
+    id = entry.id
     const seat = store.readRecord(id)
     if (!seat) return complain(`stop: seat ${id} has no readable record`)
     const prior = store.readState(id)
@@ -196,6 +199,12 @@ async function stop(input) {
     if (failed.block) answer(stopBlock(failed.block))
   } catch (error) {
     complain(`stop: ${error.message}`)
+    // The turn state on disk may be an earlier stop's, such as the valid answer a resumed turn
+    // has since changed, so the record is voided and close reads unknown rather than that state.
+    // The stamp is write-once; a record already void stays void with its first reason.
+    if (id !== null) {
+      try { store.stamp(id, 'void', { reason: 'stop-state-unwritten' }) } catch (stampError) { complain(`stop void stamp: ${stampError.message}`) }
+    }
   }
 }
 

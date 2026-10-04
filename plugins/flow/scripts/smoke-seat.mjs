@@ -1826,6 +1826,34 @@ const cases = {
     ok('a turn resumed after it settled checks a changed final message again: a valid one replaces the result, a failing one blocks against the turn\'s cap and leaves the turn blocked or capped, and a valid one after that reads valid again, on both hosts')
   },
 
+  'stop-state-unwritten': () => {
+    // A turn with a valid answer on record, resumed by another Stop hook, stops again with a changed
+    // failing message whose state cannot be written: a directory where state.json belongs fails the
+    // write for any user. The earlier valid state must not stand for close.
+    const host = 'codex'
+    const { id, tag } = admittedSeat(host)
+    const session = randomUUID()
+    const key = randomUUID()
+    context(guard('prompt', host, promptCall(host, session, tag, { turn_id: key })), 'bind')
+    silent(guard('pre', host, preCall(host, session, 'Bash', { command: 'ls' }, { turn_id: key })), 'receipt')
+    silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), key)), 'a valid first stop')
+    assert.equal(store.readStamp(id, 'void'), null, 'a valid stop voided the record')
+    const statePath = join(seats, id, 'state.json')
+    const stateBytes = readFileSync(statePath)
+    rmSync(statePath)
+    mkdirSync(statePath)
+    let run
+    try { run = guard('stop', host, stopCall(host, session, 'resumed, then broke the answer', key)) } finally { rmSync(statePath, { recursive: true }); writeFileSync(statePath, stateBytes) }
+    silent(run, 'a stop whose state cannot be written')
+    assert.match(run.stderr, /^seat-guard: stop: /m, 'the failed write was not logged')
+    assert.equal(store.readStamp(id, 'void')?.reason, 'stop-state-unwritten', 'the record was not stamped void')
+    assert.equal(store.readState(id).outcome, 'valid', 'the restored state no longer reads the earlier valid stop')
+    const out = closeSeat(id)
+    assert.equal(out.verdict, 'unknown', JSON.stringify(out))
+    assert.ok(out.reasons.some((reason) => /stop-state-unwritten/.test(reason)), JSON.stringify(out.reasons))
+    ok('a stop that cannot write its turn state stamps the record void (stop-state-unwritten), so close reads unknown rather than the earlier valid stop')
+  },
+
   'stop-timeout': () => {
     const schema = { type: 'object', required: ['x'], properties: { x: { type: 'string', pattern: '^(a+)+$' } } }
     const record = seatRecord('claude', { access: 'read-only', worktree, repoRoot: worktree })
