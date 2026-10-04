@@ -546,6 +546,16 @@ const cases = {
     ok('a malformed id or extra attribute is not a tag on any line, and a non-string prompt or plain text is no seat')
   },
 
+  'store-schema-path': () => {
+    // open measures the seat context with the schema path the prompt hook will inject, so the two
+    // must be one absolute spelling even under a relative FLOW_DELEGATION_STATE_DIR.
+    const probe = `const s = await import(${JSON.stringify(pathToFileURL(join(PLUGIN, 'lib', 'seat-store.mjs')).href)}); process.stdout.write(s.schemaPath('0123456789abcdef0123456789abcdef'))`
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { cwd: tmp, env: { ...process.env, FLOW_DELEGATION_STATE_DIR: 'rel-state' }, encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stderr)
+    assert.equal(run.stdout, join(realpathSync(tmp), 'rel-state', 'seats', '0123456789abcdef0123456789abcdef', 'schema.json'))
+    ok('schemaPath is absolute under a relative state directory, so open and the prompt hook measure the same context')
+  },
+
   'store-record': () => {
     const record = RECORD()
     const { id, digest } = store.writeRecord(record, SCHEMA)

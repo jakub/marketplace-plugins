@@ -32,7 +32,7 @@
 // every tool call in every session, and the non-seat path needs indexPath alone. Importing crypto
 // there added about 3.5 ms to each call (measured 2026-10-03, Node 26).
 import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { RETENTION_MS, stateDir } from './state-dir.mjs'
 
 const ID = /^[0-9a-f]{32}$/
@@ -107,6 +107,9 @@ export function parseTag(prompt) {
 
 /** The record directory for id, or null when id is not a seat id. */
 export const seatDir = (id) => (validId(id) ? join(seatsRoot(), id) : null)
+// The one spelling of a seat's schema path: absolute, so the context seat.mjs open measures is
+// byte for byte the one the prompt hook injects, even under a relative state directory.
+export const schemaPath = (id) => (validId(id) ? resolve(seatsRoot(), id, 'schema.json') : null)
 
 /** The index file for one host session, or null when the host or the session id fails validation. */
 export const indexPath = (host, sessionId) =>

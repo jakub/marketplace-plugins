@@ -45,7 +45,6 @@
 // through, and seat close reads the turn's missing result.
 
 import { existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
 import * as store from '../../lib/seat-store.mjs'
 import { applyPatchPaths, preToolDeny, promptBlock, promptContext, readHookInput, stopBlock, transcriptModels } from './wire.mjs'
 
@@ -94,7 +93,7 @@ async function prompt(input) {
     const bound = { sessionId, host, permissionMode: input.permission_mode, cwd: typeof input.cwd === 'string' ? input.cwd : null, recordDigest: seat.digest }
     if (typeof input.model === 'string') bound.model = input.model
     if (!store.stamp(id, 'bound', bound)) return voidSeat('bound-lost-race')
-    answer(promptContext(policy.seatContext(seat.record, seat.schema, resolve(store.seatDir(id), 'schema.json'))))
+    answer(promptContext(policy.seatContext(seat.record, seat.schema, store.schemaPath(id))))
   } catch (error) {
     complain(`bind: ${error.message}`)
     voidSeat('bind-failed')
@@ -184,7 +183,7 @@ async function stop(input) {
       if (models.length !== (prior.models?.length ?? 0)) store.writeState(id, { ...prior, models })
       return
     }
-    const schemaPath = seat.record.schemaSha256 == null ? null : join(store.seatDir(id), 'schema.json')
+    const schemaPath = seat.record.schemaSha256 == null ? null : store.schemaPath(id)
     const checked = policy.finalAnswer(seat.record, input.last_assistant_message, schemaPath)
     if (checked.envelope) {
       store.writeResult(id, state.turn, { envelope: checked.envelope, servedModels, messageSha256, at: new Date().toISOString() })

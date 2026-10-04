@@ -354,7 +354,7 @@ async function open(argv) {
     }
     // The seat's context repeats its paths, and the prompt hook cannot deliver one past the hook
     // budget, so a seat whose context cannot fit is refused here, before the holder and the record.
-    try { seatContext(record, schema, join(store.seatDir(id), 'schema.json')) } catch (error) {
+    try { seatContext(record, schema, store.schemaPath(id)) } catch (error) {
       if (error.code !== 'CONTEXT_TOO_LONG') throw error
       fail('BAD_REQUEST', 'The seat\'s paths make its context longer than the 6000-byte hook budget; use shorter paths.')
     }
