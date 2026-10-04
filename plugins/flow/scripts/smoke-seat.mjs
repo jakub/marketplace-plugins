@@ -5,7 +5,7 @@
 // The state directory is a temp directory named by FLOW_DELEGATION_STATE_DIR, and the races run as
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
-// Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
+// Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, spawn-*, mcp-*, edit-*, bash-*, closed-*,
 // stop-*, open-*, close-*, prune-*, trust-*, fastpath-*); the containment families run against a
 // real temp git repository as the worktree, the executor families (open-*, close-*, prune-open,
 // trust-*) run scripts/seat.mjs as a process against a real canonical checkout with a linked
@@ -1118,15 +1118,15 @@ const cases = {
   'bash-every-seat': () => {
     const refused = [
       ['git push', /\(no git push\)/], ['git push origin HEAD', /\(no git push\)/], [`git -C ${worktree} push`, /\(no git push\)/],
-      ['cd /r && git push --force-with-lease', /\(no git push\)/], ['bash -c "git push"', /\(no git push\)/], ['echo $(git push)', /\(no git push\)/],
-      ['/usr/bin/git -c x=y push', /\(no git push\)/], ['git "push"', /\(git\)/],
+      ['cd /r && git push --force-with-lease', /\(no git push\)/], ['bash -c "git push"', /\(no git push\)/], ['\\git push', /\(no git push\)/],
+      ['/usr/bin/git -c x=y push', /\(no git push\)/],
       ['gh pr create --title t --body b', /\(gh reads only\)/], [['gh -R o/r pr', 'merge 3'].join(' '), /\(gh reads only\)/], ['gh issue comment 4 --body x', /\(gh reads only\)/],
       ['gh release create v1', /\(gh reads only\)/], ['gh repo delete o/r --yes', /\(gh reads only\)/],
       ['gh pr checkout 3', /\(gh reads only\)/], ['gh secret set TOKEN', /\(gh reads only\)/], ['gh variable set X', /\(gh reads only\)/],
       ['gh run rerun 12', /\(gh reads only\)/], ['gh run cancel 12', /\(gh reads only\)/], ['gh workflow run ci.yml', /\(gh reads only\)/],
       ['gh label create bug', /\(gh reads only\)/], ['gh auth token', /\(gh reads only\)/], ['gh co 3', /\(gh reads only\)/], ['gh', /\(gh reads only\)/],
       ['gh pr "view" 3', /\(gh reads only\)/],
-      ['gh api -X POST repos/o/r/issues', /\(gh reads only\)/], ['gh api --method=PATCH repos/o/r', /\(gh reads only\)/], ['gh api -XDELETE repos/o/r', /\(gh reads only\)/],
+      ['gh api -X POST repos/o/r/issues', /\(gh reads only\)/], ['gh api --method=PATCH repos/o/r', /\(gh reads only\)/], ['gh api --method DELETE repos/o/r', /\(gh reads only\)/],
       ['gh api repos/o/r/issues -f title=x', /\(gh reads only\)/], ['gh api graphql -F n=1', /\(gh reads only\)/], ['gh api repos/o/r --input body.json', /\(gh reads only\)/],
       ['gh api repos/o/r --raw-field=a=b', /\(gh reads only\)/], ['gh api -X "POST" repos/o/r', /\(gh reads only\)/],
       ['git remote add up https://x/y', /\(git (?:read|write) allowlist\)/], ['git submodule update --init', /\(git (?:read|write) allowlist\)/],
@@ -1138,10 +1138,10 @@ const cases = {
       'echo "git push"', 'echo \'codex exec\'', 'printf "%s" "gh pr create"', 'cat <<\'E\'\ngit push\ngh pr create\nE', 'ls -la', 'node --version',
       'git status', 'git log --oneline -5', 'git diff HEAD~1', 'git show HEAD', 'git branch --show-current', 'git branch -a', 'git branch --contains HEAD',
       'git branch --list "feat/*"', 'git tag', 'git tag -l "v*"', 'git remote', 'git remote -v', 'git config --get user.name', 'git config --list',
-      'git worktree list', 'git stash list', 'git reflog', 'git reflog show HEAD', 'git --version', 'git -C /r rev-parse HEAD', 'git ls-files', 'git rev-list --count HEAD',
+      'git worktree list', 'git reflog', 'git reflog show HEAD', 'git --version', 'git -C /r rev-parse HEAD', 'git ls-files', 'git rev-list --count HEAD',
       'gh pr view 3', 'gh pr list --search "create"', 'gh pr checks 3', 'gh pr diff 3', 'gh issue view 4 --comments', 'gh run view 12 --log', 'gh workflow list',
       'gh release list', 'gh repo view o/r', 'gh label list', 'gh gist list', 'gh search prs --author x', 'gh auth status', 'gh --version', 'gh -R o/r pr view 3',
-      'gh api repos/o/r/pulls', 'gh api repos/x', 'gh api -X GET repos/o/r', 'gh api --method get repos/o/r',
+      'gh api repos/o/r/pulls', 'gh api repos/x', 'gh api -X GET repos/o/r', 'gh api --method get repos/o/r', 'gh api "repos/o/r/pulls?per_page=1&page=2"',
     ]
     for (const host of ['claude', 'codex']) {
       for (const access of ACCESSES) {
@@ -1154,53 +1154,81 @@ const cases = {
     ok('every seat on both hosts is denied git push, any gh but its reads (pr checkout, secret, run rerun, workflow run, label create and gh api with a non-GET method or a field included), and any git off the read allowlist (remote add, submodule, update-index, an alias); git and gh reads run')
   },
 
-  'bash-model-cli': () => {
-    const refused = [
-      'codex exec "fix it"', 'claude -p "hi"', 'flow-delegate --help', '/home/u/.local/bin/flow-delegate run', 'X=1 codex',
-      'env X=1 codex', 'env -i PATH=/bin codex', 'exec codex', 'nohup codex exec x &', 'timeout 5 codex', 'timeout -s KILL 5m claude -p x',
-      'nice -n 5 codex', 'xargs -n1 codex < list', 'npx codex', 'npx -y @openai/codex@latest exec x', 'bunx codex', 'pnpx codex', 'npm exec codex',
-      'npm exec -- codex', 'npx -c codex', 'sh -c \'claude -p x\'', 'bash -c "codex exec"', 'bash -lc codex', 'eval codex exec', 'if codex; then :; fi',
-      'ls && codex exec x', 'echo `codex exec`', 'echo $(claude -p x)', 'r="$(codex exec t)"', 'env -S "codex exec"', 'npx -c "codex exec"',
-    ]
-    const allowed = ['which codex', 'ls dir/codex', 'echo codex', 'cat codex.md', 'grep -r claude .', 'type flow-delegate', 'echo "$(which codex)"', 'git log --grep codex']
+  'bash-gh-api-clusters': () => {
+    const refused = ['gh api -iXDELETE repos/o/r', 'gh api -if title=x repos/o/r/issues', 'gh api -XPOST repos/o/r', 'gh api -XGET repos/o/r', 'gh api repos/o/r -iFx=1']
+    const allowed = ['gh api -i repos/o/r', 'gh api -X GET -i repos/o/r', 'gh api --paginate repos/o/r/pulls', 'gh api -H "Accept: x" repos/o/r']
     for (const host of ['claude', 'codex']) {
-      for (const access of ACCESSES) {
-        const { session } = boundSeat(host, access)
-        for (const command of refused) denied(seatCall(host, session, 'Bash', { command }), /\(no model through the shell\)|\(shell\): `(?:env|npx)` runs a quoted command line/, `${host} ${access} ${command}`)
-        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
-      }
+      const { session } = boundSeat(host, 'read-only')
+      for (const command of refused) denied(seatCall(host, session, 'Bash', { command }), /\(gh api separate flags\)/, `${host} ${command}`)
+      for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${command}`)
     }
-    ok('claude, codex and flow-delegate are denied in command position, behind env, exec, nohup, timeout, nice, xargs, npx, bunx, pnpx, npm exec, eval and a shell -c string, inside a substitution and as a quoted command line; which codex, ls dir/codex and echo codex run')
+    ok('a gh api call with clustered short flags (-iXDELETE, -if, -XPOST, even -XGET) is denied in every seat; each flag written apart runs')
   },
 
-  'bash-substitution': () => {
+  'bash-model-cli': () => {
     const refused = [
-      ['echo "$(git push origin HEAD)"', /\(no git push\)/], ['r="$(gh pr create -t x -b y)"', /\(gh reads only\)/], ['r="$(codex exec t)"', /\(no model/],
-      ['echo "a $(echo "$(git push)")"', /\(no git push\)/], ['echo "`git push`"', /\(no git push\)/], ['diff <(git push) x', /\(no git push\)/],
-      ['tee >(codex exec) < x', /\(no model/], ['x=${y:-$(git push)}', /\(no git push\)/], ['cat <<E\n$(git push)\nE', /\(no git push\)/],
-      ['bash -c \'echo "$(git push)"\'', /\(no git push\)/], ['echo $(git push', /\(shell\): a quote, command substitution/],
-      ['echo "$(git status"', /\(shell\): a quote, command substitution/], ['echo `git status', /\(shell\): a quote, command substitution/],
+      'codex exec "fix it"', 'claude -p "hi"', 'flow-delegate --help', '/home/u/.local/bin/flow-delegate run', 'X=1 codex', '\\codex exec',
+      'env X=1 codex', 'env -i PATH=/bin codex', 'exec codex', 'nohup codex exec x', 'timeout 5 codex', 'timeout -s KILL 5m claude -p x',
+      'nice -n 5 codex', 'xargs -n1 codex < list', 'npx codex', 'npx -y @openai/codex@latest exec x', 'bunx codex', 'pnpx codex', 'npm exec codex', 'npm x codex',
+      'npm exec -- codex', 'npx -c codex', 'sh -c \'claude -p x\'', 'bash -c "codex exec"', 'zsh -c "codex exec"', 'bash -lc codex', 'eval "codex exec"',
+      'ls && codex exec x', 'ls | codex', 'ls\ncodex', 'builtin codex', 'env -S codex\\ exec',
+    ]
+    const allowed = ['which codex', 'ls dir/codex', 'echo codex', 'cat codex.md', 'grep -r claude .', 'type flow-delegate', 'echo "$(which codex)"', 'git log --grep codex', 'command -v codex', 'command -pv claude']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { session } = boundSeat(host, access)
+        for (const command of refused) denied(seatCall(host, session, 'Bash', { command }), /\(no model through the shell\)/, `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+      }
+    }
+    ok('claude, codex and flow-delegate are denied in command position, behind env, exec, nohup, timeout, nice, xargs, builtin, npx, bunx, pnpx, npm exec and a shell, and in a string a shell or eval runs; which codex, command -v codex, ls dir/codex and echo codex run')
+  },
+
+  'bash-seat-executor': () => {
+    const script = join(PLUGIN, 'scripts', 'seat.mjs')
+    const refused = [
+      `node ${script} open --access read-only --provider claude --model m --effort high`, `node ${script} close ${'a'.repeat(32)} --task-status '{}'`,
+      'node scripts/seat.mjs trust', 'node --no-warnings ./seat.mjs close x', `env FOO=1 node ${script} close x`, 'cd /x && node seat.mjs open',
+      `bash -c "node ${script} close x"`, `timeout 30 /usr/bin/node ${script} trust --write`,
+    ]
+    const allowed = [`cat ${script}`, `node ${join(PLUGIN, 'scripts', 'smoke-seat.mjs')} --case-prefix x`, 'node -e 1', 'grep -n seat.mjs README.md', 'node scripts/seat.mjsx']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { session } = boundSeat(host, access)
+        for (const command of refused) denied(seatCall(host, session, 'Bash', { command }), /\(no seat executor\)/, `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+      }
+    }
+    ok('no seat runs node on a script named seat.mjs, by any path and behind a wrapper or a shell string, so a seat neither opens nor closes a seat; reading the file or running another script is allowed')
+  },
+
+  'bash-background': () => {
+    const refused = [
+      'sleep 60 &', 'npm test & echo started', 'make&', 'nohup node server.js &', 'nohup node server.js > out.log 2>&1 &', '(sleep 5; ls) &',
+      'bash -c \'sleep 9 &\'', 'setsid node server.js', 'setsid -f ls', 'ls; disown', 'env setsid ls', 'sudo setsid ls',
     ]
     const allowed = [
-      'echo \'$(git push)\'', 'cat <<\'E\'\n$(git push) and `codex`\nE', 'echo "$(git rev-parse HEAD)"', 'echo "\\$(git push)"',
-      'git -C /r log -1 --format="$(echo %H)"', 'echo "a)b"', 'echo $((1 + 2))', '# a comment that doesn\'t close\nls',
+      'ls && echo ok', 'ls 2>&1 | head', 'ls &>/dev/null', 'ls >&2', 'cat <&0', 'ls |& cat', 'echo "a & b"', 'gh api "repos/o/r/pulls?a=1&b=2"',
+      'nohup node -e 1', 'cat <<\'E\'\nrun me &\nE', 'echo a\\&b',
     ]
     for (const host of ['claude', 'codex']) {
       for (const access of ACCESSES) {
         const { session } = boundSeat(host, access)
-        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
+        for (const command of refused) denied(seatCall(host, session, 'Bash', { command }), /\(no background\)/, `${host} ${access} ${command}`)
         for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+        denied(seatCall(host, session, 'Bash', { command: 'npm test', run_in_background: true }), /\(no background\)/, `${host} ${access} run_in_background`)
+        silent(seatCall(host, session, 'Bash', { command: 'npm test', run_in_background: false }), `${host} ${access} run_in_background false`)
       }
     }
-    ok('a command substitution outside single quotes is checked as a command, inside double quotes, nested, backquoted, as <( ) or >( ), in a parameter default, in an unquoted heredoc and inside a single-quoted bash -c string; an unclosed one is denied, and a single-quoted or quoted-heredoc one is text')
+    ok('every seat is denied a lone & (in a string a shell runs too), setsid, disown and Bash run_in_background; &&, 2>&1, &>, >&2, <&0, |& and an & in quoted text or a heredoc body run, and nohup runs as a wrapper in the foreground')
   },
 
   'bash-not-writer': () => {
     const refused = [
       'git commit -m x -- a.txt', `git -C ${worktree} commit -m x -- a.txt`, 'git add a.txt', `git -C ${worktree} add a.txt`, 'git checkout main', 'git switch -c x',
-      'git restore a.txt', 'git reset --hard', 'git branch -D x', 'git branch --move a b', 'git branch -df x', 'git stash', 'git tag v1', 'git fetch', 'git pull',
+      'git restore a.txt', 'git reset --hard', 'git branch -D x', 'git branch --move a b', 'git branch -df x', 'git tag v1', 'git fetch', 'git pull',
       'git config user.name x', 'git config set user.name x', 'git config --unset user.name', 'git config user.name', 'git worktree add ../x',
-      'git update-ref refs/heads/x HEAD', 'git clean -n', 'git remote show origin', 'git reflog expire --all',
+      'git update-ref refs/heads/x HEAD', 'git clean -n', 'git remote show origin', 'git reflog expire --all', 'git apply p.diff',
     ]
     const allowed = ['git status', 'git log', 'git diff', 'git show HEAD', 'git branch', 'git branch -a', 'git config --get user.name', 'git config --list', 'git -C /r rev-parse HEAD', `git -C ${worktree} log -1`]
     for (const host of ['claude', 'codex']) {
@@ -1217,15 +1245,10 @@ const cases = {
     const refused = [
       ['sudo codex exec x', /\(no model/], ['sudo -u root -- git push', /\(no git push\)/], ['sudo -E X=1 claude -p x', /\(no model/],
       ['command codex', /\(no model/], ['command -p git push', /\(no git push\)/], ['time -p codex', /\(no model/], ['/usr/bin/time -f %e -o t.log codex', /\(no model/],
-      ['watch -n 5 git push', /\(no git push\)/], ['watch \'gh pr create -t x -b y\'', /\(gh reads only\)/], ['stdbuf -oL -e 0 codex exec x', /\(no model/],
-      ['find . -exec git push \\;', /\(no git push\)/], ['find . -name x -execdir codex {} +', /\(no model/],
-      ['find . -exec echo {} \\; -exec git push \\;', /\(no git push\)/], ['find . -ok gh pr create \';\'', /\(gh reads only\)/],
-      ['find . -okdir claude -p x {} \\;', /\(no model/], ['find . -exec sudo codex {} +', /\(no model/],
+      ['stdbuf -oL -e 0 codex exec x', /\(no model/], ['builtin command git push', /\(no git push\)/], ['builtin exec gh pr create', /\(gh reads only\)/],
+      ['env -S git\\ push', /\(no git push\)/], ['nice -n 5 timeout 9 env git push', /\(no git push\)/], ['xargs -I {} git push', /\(no git push\)/],
     ]
-    const allowed = [
-      'command -v codex', 'command -V git', 'command -pv claude', 'sudo -l', 'time -p ls', 'watch -n 5 git status', 'stdbuf -oL git log',
-      'find . -name "*.mjs" -exec grep -l codex {} \\;', 'find . -exec cat {} +', 'find . -type f -print', 'echo a\\; git push',
-    ]
+    const allowed = ['command -v codex', 'command -V git', 'command -pv claude', 'sudo -l', 'time -p ls', 'stdbuf -oL git log', 'builtin cd /tmp', 'env', 'nohup']
     for (const host of ['claude', 'codex']) {
       for (const access of ['read-only', 'workspace-write']) {
         const { session } = boundSeat(host, access)
@@ -1233,7 +1256,7 @@ const cases = {
         for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
       }
     }
-    ok('sudo, command, time, watch (its quoted text included), stdbuf and each find -exec, -execdir, -ok and -okdir clause are read for the command they run; command -v is a lookup and an escaped ; outside find is a word')
+    ok('sudo, command, builtin, time, stdbuf, env (-S included), nice, timeout and xargs are followed, chained, to the command they run; command -v is a lookup')
   },
 
   'bash-git-overrides': () => {
@@ -1246,17 +1269,10 @@ const cases = {
       ['export GIT_DIR; git log', config], ['env GIT_CONFIG_COUNT=1 git status', config], ['GIT_CONFIG_PARAMETERS="x" git log', config],
       ['git log --output=/tmp/x', output], ['git diff --output /tmp/x', output], ['git show --outp=/tmp/x HEAD', output],
       ['git diff --ext-diff', output], ['git log -p --ext-diff', output], [`git -C ${worktree} diff --ext-diff`, output],
+      ['git grep -O less x', output], ['git grep -Oless x', output], ['git grep -nO x', output], ['git grep --open-files-in-pager=less x', output], ['git grep --open x', output],
     ]
-    const unreadable = /\(git\): .*expanded at run time/
-    refused.push(
-      ["git diff '--output=/tmp/x'", output], ['git diff "--ext-diff"', output], ["git log '--outp=/tmp/x y'", output], ["git diff '--ext-diff' HEAD", output],
-      ["git log -p '--ext''-diff'", output], ['git diff -\\-output=/tmp/x', output], ['git log -p -\\-ext-diff', output], ['git diff "$X"', unreadable], ['git diff "-$X"', unreadable], ['git diff $X', unreadable],
-      ['git log "--out$X"', unreadable], ["git diff \"$(echo --output=/tmp/x)\"", unreadable], ['git diff "\\-\\-ext-diff"', unreadable],
-      ["gh api '-XPOST' repos/o/r", /\(gh reads only\)/], ["gh api repos/o/r '--input' body.json", /\(gh reads only\)/], ['gh api repos/o/r "-f" a=b', /\(gh reads only\)/],
-      ['gh pr view "$N"', /\(gh reads only\)/], ["gh 'pr' 'merge' 3", /\(gh reads only\)/], ["gh 'pr' view 3", /\(gh reads only\)/],
-    )
     const allowed = ['git diff --no-ext-diff', 'echo $GIT_DIR; git log', 'git log --oneline', 'git diff --output-indicator-new=+ HEAD', 'GIT_X=1 ls', `git -C ${worktree} log -1`,
-      "git log 'HEAD~1'", 'git log "HEAD~$N"', "git diff '--stat'", 'git log --grep="fix it"', "gh api 'repos/o/r/pulls'", 'gh api "repos/$REPO/pulls"']
+      "git log 'HEAD~1'", 'git log "HEAD~$N"', "git diff '--stat'", 'git log --grep="fix it"', "gh api 'repos/o/r/pulls'", 'gh api "repos/$REPO/pulls"', 'git grep -n x']
     for (const host of ['claude', 'codex']) {
       for (const access of ACCESSES) {
         const { session } = boundSeat(host, access)
@@ -1264,53 +1280,35 @@ const cases = {
         for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
       }
     }
-    ok('every seat, reads included, is denied git with -c, --config-env, a GIT_* variable set or exported in the same command, --output (or an abbreviation) and --ext-diff; a $GIT_* reference and --no-ext-diff run')
-    ok('a quoted git or gh argument with no expansion is read as its literal value, so a quoted --output, --ext-diff, -XPOST or --input is denied; an argument expanded at run time that could start with - is denied as unreadable, and one with a plain leading part runs')
+    ok('every seat, reads included, is denied git with -c, --config-env, a GIT_* variable set or exported in the same command, --output, --ext-diff, -O or --open-files-in-pager (or an abbreviation); a $GIT_* reference and --no-ext-diff run')
   },
 
-  'bash-compound': () => {
-    const compound = /\(compound shell forms\)/
-    const refused = [
-      ['case x in x) git push;; esac', compound], ['case $1 in *) ls;; esac', compound], ['if true; then case x in x) codex;; esac; fi', compound],
-      ['publish() { gh pr create -t x -b y; }; publish', compound], ['run() { codex exec t; }; run', compound], ['run () { ls; }', compound],
-      ['function run { ls; }', compound], ['function run() { ls; }', compound], ['coproc git log', compound], ['coproc w { codex; }', compound],
-      ['if true; then git push; fi', /\(no git push\)/], ['if git push; then :; fi', /\(no git push\)/], ['if false; then :; elif true; then git push; fi', /\(no git push\)/],
-      ['if false; then :; else codex; fi', /\(no model/], ['for f in a; do codex; done', /\(no model/], ['while true; do gh pr create; done', /\(gh reads only\)/],
-      ['until false; do git push; done', /\(no git push\)/], ['{ git push; }', /\(no git push\)/], ['( git push )', /\(no git push\)/], ['(git push)', /\(no git push\)/],
-      ['! git push', /\(no git push\)/], ['time git push', /\(no git push\)/], ['ls | codex', /\(no model/], ['ls\ngit push', /\(no git push\)/],
-    ]
-    const allowed = ['echo case', 'grep -r "function" .', 'if true; then git status; fi', 'for f in a b; do echo $f; done', '{ ls; }', '(ls)', 'echo "f() { x; }"']
+  'bash-stash': () => {
     for (const host of ['claude', 'codex']) {
-      for (const access of ['read-only', 'workspace-write']) {
+      for (const access of ACCESSES) {
         const { session } = boundSeat(host, access)
-        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
-        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+        for (const command of ['git stash', 'git stash list', 'git stash pop', `git -C ${worktree} stash`, `git -C ${worktree} stash push -m x -- a.txt`, 'git stash show -p']) {
+          denied(seatCall(host, session, 'Bash', { command }), /\(no git stash\)/, `${host} ${access} ${command}`)
+        }
       }
     }
-    ok('case, function definitions and coproc are denied in a seat; the body of if, elif, else, for, while, until, { } and ( ), and the word after !, time and every separator, are read in command position')
+    ok('git stash is denied in every seat, list and -C writer forms included, because every worktree of the repository shares the stash stack')
   },
 
-  'bash-redirect-forms': () => {
-    const refused = [
-      ['cat <<\'END DATA\'\ndon\'t\nEND DATA\ngit push \'x\'', /\(no git push\)/], ['cat <<E\nbody\nE\ngit push\nE', /\(no git push\)/],
-      ['cat <<"A B"\n$(git push)\nA B\ngit push', /\(no git push\)/], ['cat <<A\\ B\nx\nA B\ncodex', /\(no model/], ['cat <&0 && git push', /\(no git push\)/],
-      ['cat <<\'END', /\(shell\): a quote, command substitution/], ['cat <<"END', /\(shell\): a quote, command substitution/],
-    ]
-    const allowed = [
-      'printf x | cat <&0', 'cat 0<&3', 'cat <&-', 'exec 3<&0', 'cat <<\'END DATA\'\nok\nEND DATA', 'cat <<\'END DATA\'\ngit push\nEND DATA',
-      'cat <<"A B"\nx\nA B', 'cat <<-\'E F\'\n\tx\n\tE F', 'cat <<\'\'\nx\n',
+  'bash-accepted-gaps': () => {
+    // The class-B forms this guardrail does not catch, asserted allowed so that the gap stays
+    // explicit and a change to it is deliberate. Native seats run Bash under the same posture.
+    const accepted = [
+      "'git' push origin HEAD", 'g\\it push', "$'\\x67\\x69\\x74' push", '/usr/bin/g[i]t push', '{g..g}it push',
+      "source /dev/stdin <<< 'git push'", 'echo "$(git push)"', 'printf x > /outside/file',
     ]
     for (const host of ['claude', 'codex']) {
-      for (const access of ['read-only', 'workspace-write']) {
+      for (const access of ACCESSES) {
         const { session } = boundSeat(host, access)
-        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
-        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+        for (const command of accepted) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} accepted gap ${command}`)
       }
-      const { session } = boundSeat(host, 'workspace-write')
-      silent(seatCall(host, session, 'Bash', { command: `cat > ${worktree}/f.txt <<'END DATA'\nhello\nEND DATA` }), `${host} writer heredoc with a spaced delimiter`)
-      silent(seatCall(host, session, 'Bash', { command: `git -C ${worktree} commit -F - -- a.txt <<'END DATA'\nfeat: x\nEND DATA` }), `${host} writer commit message heredoc`)
     }
-    ok('an input duplication or close (<&0, 0<&3, <&-) is not a target-less redirection, a quoted heredoc delimiter is one shell word whitespace and all, and a heredoc body never hides or masks the commands after its delimiter line')
+    ok('the accepted gaps stay allowed in every seat: a quoted, escaped, ANSI-C, globbed or brace-built command word, source from stdin, a command substitution, and a Bash write outside the worktree')
   },
 
   'bash-writer': () => {
@@ -1318,25 +1316,30 @@ const cases = {
     const form = (sub) => new RegExp(`\\(git -C the worktree\\): a git write in this seat runs only as \`git -C ${escaped} ${sub}`)
     const commitForm = form('commit -m <message> -- <paths>`')
     const byPath = /\(commit by path\)/
+    const addByPath = /\(add by path\)/
     const refused = [
       ['git commit -m x', commitForm],
       ['git commit -m x -- a.txt', commitForm],
       [`cd ${worktree} && git add a.txt`, form('add \\.\\.\\.`')],
-      [`git -C ${worktree}/ add a.txt`, form('add')], [`git -C ${worktree}-x add a.txt`, form('add')], [`git -C "${worktree}" add a.txt`, form('add')],
+      [`git -C ${worktree}/ add a.txt`, form('add')], [`git -C ${worktree}-x add a.txt`, form('add')],
+      [`git -C "${worktree}" add a.txt`, /\(git -C the worktree\)|\(git write allowlist\)/],
       [`git -C ${worktree} --git-dir=/x commit -m x -- a.txt`, commitForm], [`git -C ${worktree} --work-tree /x add a.txt`, form('add')],
       [`git -C ${worktree} -C ${worktree} add a.txt`, form('add')], [`git -C ${worktree} -c user.name=x commit -m x -- a.txt`, /\(git configuration\)/],
       [`GIT_DIR=/x/.git git -C ${worktree} commit -m x -- a.txt`, /\(git configuration\)/], [`export GIT_WORK_TREE=/x; git -C ${worktree} add a.txt`, /\(git configuration\)/],
-      [`git -C ${worktree} commit -m x`, byPath], [`git -C ${worktree} commit -am x -- a.txt`, byPath],
-      [`git -C ${worktree} commit --all -m x`, byPath], [`git -C ${worktree} commit -m "a b" --`, byPath],
-      [`git -C ${worktree} commit --pathspec-from-file=list -m x`, byPath],
+      [`git -C ${worktree} commit -m x`, byPath], [`git -C ${worktree} commit -m "a b"`, byPath], [`git -C ${worktree} commit -am x -- a.txt`, byPath],
+      [`git -C ${worktree} commit --all -m x`, byPath], [`git -C ${worktree} commit -m "a b" --`, byPath], [`git -C ${worktree} commit -m "a b" -a`, byPath],
+      [`git -C ${worktree} commit --pathspec-from-file=list -m x`, byPath], [`git -C ${worktree} commit -m "x" -i a.txt`, byPath],
       [`git -C ${worktree} commit --include -m x -- owned.txt`, byPath], [`git -C ${worktree} commit -i -m x -- owned.txt`, byPath],
-      [`git -C ${worktree} commit --incl -m x -- owned.txt`, byPath], [`git -C ${worktree} commit --mess x`, byPath],
+      [`git -C ${worktree} commit --incl -m x -- owned.txt`, byPath], [`git -C ${worktree} commit --mess x`, byPath], [`git -C ${worktree} commit --amend --no-edit`, byPath],
       [`git -C ${worktree} commit -m x >/tmp/commit.log`, byPath], [`git -C ${worktree} commit -m x 2>/tmp/err`, byPath],
       [`git -C ${worktree} commit -m x > /tmp/commit.log`, byPath], [`git -C ${worktree} commit -m x >>log`, byPath],
       [`git -C ${worktree} commit -m x &>log`, byPath], [`git -C ${worktree} commit -m x >&log`, byPath], [`git -C ${worktree} commit -m x <in`, byPath],
-      [`git -C ${worktree} commit -m x 2>&-`, byPath], [`git -C ${worktree} commit -F - <<'E'\nfeat: x\nE`, byPath],
-      [`git -C ${worktree} commit -m x >`, /\(shell\): a redirection in this command names no target/],
-      [`git -C ${worktree} add -A`, /\(add by path\)/], [`git -C ${worktree} add --all`, /\(add by path\)/], [`git -C ${worktree} add -fA x`, /\(add by path\)/],
+      [`git -C ${worktree} commit -m x 2>&-`, byPath], [`git -C ${worktree} commit -F - <<'E'\nfeat: x\nE`, byPath], [`git -C ${worktree} commit -m x >`, byPath],
+      [`git -C ${worktree} add -A`, addByPath], [`git -C ${worktree} add --all`, addByPath], [`git -C ${worktree} add -u`, addByPath], [`git -C ${worktree} add --update`, addByPath],
+      [`git -C ${worktree} add --renormalize`, addByPath], [`git -C ${worktree} add --no-ignore-removal`, addByPath], [`git -C ${worktree} add -fA`, addByPath],
+      [`git -C ${worktree} add -A --`, addByPath], [`git -C ${worktree} add --upd`, addByPath],
+      [`git -C ${worktree} apply --unsafe-paths p.diff`, /\(git apply in place\)/], [`git -C ${worktree} apply --directory=sub p.diff`, /\(git apply in place\)/],
+      [`git -C ${worktree} apply --directory sub p.diff`, /\(git apply in place\)/], [`git -C ${worktree} apply --unsafe p.diff`, /\(git apply in place\)/],
       [`git -C ${worktree} push`, /\(no git push\)/],
     ]
     const allowlist = /\(git write allowlist\)/
@@ -1349,12 +1352,13 @@ const cases = {
     ]) refused.push([command, allowlist])
     refused.push([`git -C ${worktree} archive --output=/tmp/a.tar HEAD`, /\(git output\)/])
     const allowed = [
-      `git -C ${worktree} commit -m x -- a.txt`, `git -C ${worktree} commit -m "feat: x y" a.txt b.txt`, `git -C ${worktree} commit -F msg.txt -- "a b.txt"`,
-      `git -C ${worktree} commit -m x --amend -- a.txt`, `git -C ${worktree} commit -mi -- a.txt`, `git -C ${worktree} commit -m x a.txt>log`,
+      `git -C ${worktree} commit -m x -- a.txt`, `git -C ${worktree} commit -m "feat: x y" a.txt b.txt`, `git -C ${worktree} commit -F msg.txt -- a.txt`,
+      `git -C ${worktree} commit -m "feat: x y" -- a.txt`, `git -C ${worktree} commit -m x --amend -- a.txt`, `git -C ${worktree} commit -mi -- a.txt`,
       `git -C ${worktree} commit -m x -- a.txt 2>&1 | tee log`, `git -C ${worktree} commit -F - -- a.txt <<'E'\nfeat: x\nE`,
       `git -C ${worktree} commit -m "$(cat <<'E'\nfeat: x\nE\n)" -- a.txt`,
-      `git -C ${worktree} add a.txt`, `git -C ${worktree} add -- a.txt`, `git -C ${worktree} rm a.txt`, `git -C ${worktree} mv a.txt b.txt`,
-      `git -C ${worktree} restore --staged a.txt`, `git -C ${worktree} stash`, `git -C ${worktree} apply p.diff`, `git -C ${worktree} remote -v`,
+      `git -C ${worktree} add a.txt`, `git -C ${worktree} add -- a.txt`, `git -C ${worktree} add -A -- a.txt`, `git -C ${worktree} add -u sub`,
+      `git -C ${worktree} rm a.txt`, `git -C ${worktree} mv a.txt b.txt`,
+      `git -C ${worktree} restore --staged a.txt`, `git -C ${worktree} apply p.diff`, `git -C ${worktree} apply --check p.diff`, `git -C ${worktree} remote -v`,
       'git status', 'git log --oneline', `git -C ${worktree} diff`, 'git branch',
     ]
     for (const host of ['claude', 'codex']) {
@@ -1362,7 +1366,21 @@ const cases = {
       for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${command}`)
       for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${command}`)
     }
-    ok('a writer seat runs add, rm, mv, commit, restore, stash and apply only as git -C <worktree realpath> with no override, stages and commits only named paths (no -A, -a, -i, --include or abbreviation of them, and no redirection target read as a path), and is denied every other non-read git subcommand, config writes in any scope included')
+    ok('a writer seat runs add, rm, mv, commit, restore and apply only as git -C <worktree realpath> with no override, commits only named paths (no -a, -i, --include, --amend without paths or abbreviation of them, and no redirection target read as a path), stages with -A, -u, --renormalize or --no-ignore-removal only beside named paths, applies with no --unsafe-paths or --directory, and is denied every other non-read git subcommand, config writes in any scope included')
+  },
+
+  'closed-seat': () => {
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { id, session } = boundSeat(host, access)
+        silent(seatCall(host, session, 'Bash', { command: 'ls' }), `${host} ${access} open seat`)
+        assert.equal(store.stamp(id, 'closed', { verdict: 'valid', reasons: [] }), true)
+        for (const [name, input] of [['Bash', { command: 'ls' }], ['Read', { file_path: join(worktree, 'a.txt') }], ['Grep', { pattern: 'x' }], ['mcp__claude_ai_Context7__query-docs', { query: 'x' }]]) {
+          denied(seatCall(host, session, name, input), /this seat was closed/, `${host} ${access} ${name} after close`)
+        }
+      }
+    }
+    ok('once a seat carries a closed stamp, every tool call in its session is denied, reads and allowlisted MCP included')
   },
 
   'stop-envelope-schema': () => {

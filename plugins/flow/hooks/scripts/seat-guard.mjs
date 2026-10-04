@@ -111,7 +111,8 @@ async function pre(input) {
       const entry = store.readIndex(host, input.session_id)
       if (entry !== null) {
         const seat = entry.void === undefined ? store.readRecord(entry.id) : null
-        const problem = policy.seatCallProblem({ entry, seat, toolName, toolInput: input.tool_input })
+        const closed = seat ? store.readStamp(entry.id, 'closed') : null
+        const problem = policy.seatCallProblem({ entry, seat, closed, toolName, toolInput: input.tool_input })
         if (problem) return answer(preToolDeny(problem))
         // The receipt proves a seat call reached this hook. It is written before any decision on
         // the call, so a seat whose first call is denied still shows the hook ran.
