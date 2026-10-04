@@ -13,19 +13,21 @@
 // servedModels, blocks, errors}, trust prints {ok: true, keys: [{key, command, trustStatus,
 // currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
 // details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and
-// HOOKS_UNTRUSTED from open; BAD_REQUEST, HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED,
-// PROVIDER_NOT_INSTALLED and the Codex App Server's own failure kinds (PROVIDER_ERROR,
-// PROVIDER_AUTH, TIMEOUT) from trust; and, for anything this script did not expect, INTERNAL.
+// HOOKS_UNTRUSTED from open; BAD_REQUEST and TASK_NOT_TERMINAL from close; BAD_REQUEST,
+// HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App
+// Server's own failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for
+// anything this script did not expect, INTERNAL.
 //
 // open, in this order: prune closed records past retention; find the repository from --worktree,
 // or the working directory, and its canonical checkout, the main worktree; for a review, resolve
 // --base and --head to commit SHAs where --worktree (or the working directory) resolves them and
 // add a detached worktree at the head under <canonical>/.flow-worktrees/review-<id>, the seat's
-// worktree, with the findings schema as its answer schema; for a Codex seat, read flow's Codex
+// worktree, recording its admin directory (`git rev-parse --absolute-git-dir` there) as
+// reviewGitDir, with the findings schema as its answer schema; for a Codex seat, read flow's Codex
 // hook trust (below) and refuse with HOOKS_UNTRUSTED unless every flow hook is there, enabled and
 // trusted, recording the digest of the keys and hashes it read as hooksDigest; for a writer, hold
 // the worktree's write lease directory (below); for a review, snapshot the canonical checkout
-// with tree-snapshot.mjs; then write the schema and the record, last, through lib/seat-store.mjs.
+// with tree-snapshot.mjs and add its HEAD commit and the branch HEAD names; then write the schema and the record, last, through lib/seat-store.mjs.
 // A failure undoes whatever this run created, the review worktree and the lease holder, so a
 // refused open leaves nothing behind, with one exception under The lease.
 //
@@ -42,16 +44,23 @@
 // unknown so it is pruned like any closed record, and refuses WORKSPACE_BUSY. Writer seats share a
 // worktree with each other, each committing its own paths, as native writers do.
 //
-// close judges the seat from its record and the stamps and results the hooks wrote, in this
-// order of precedence, the first that holds being the verdict:
+// close first refuses TASK_NOT_TERMINAL, writing nothing, unless --task-status is a task_status
+// answer T3 gives for a finished task: an object whose status is completed, failed, cancelled or
+// interrupted, whose workState is not working or waiting_for_children, and whose
+// hasPendingChildRuns is not true. A writer's lease stays held until then. It then judges the seat
+// from its record and the stamps and results the hooks wrote, in this order of precedence, the
+// first that holds being the verdict:
 //   unknown         no readable record; a void stamp; no admitted, bound or receipt stamp; a
-//                   record whose bytes no longer match the digest the bind pinned; no Stop on
-//                   record; or a last stop that was valid with no intact result for its turn, or
-//                   with no served model on record
-//   model-mismatch  a model the hooks saw serving the seat, at the bind or in the result, is not
-//                   the record's
+//                   record whose bytes no longer match the digest the bind pinned; a bound
+//                   session whose index entry is void (session-index-void) or missing or names
+//                   another seat (session-index-mismatch); no Stop on record; a last stop that
+//                   was valid with no intact result for its turn; or no served model on record
+//                   from any stop
+//   model-mismatch  a model the hooks saw serving the seat, at the bind or at any stop in any
+//                   turn (Stop keeps them as one set in the turn state), is not the record's
 //   tree-moved      for a review: the review worktree's HEAD left the head SHA or its tree is
-//                   dirty, the canonical checkout's snapshot changed, or the coverage (read,
+//                   dirty, the canonical checkout's snapshot, HEAD commit or branch changed, or
+//                   the coverage (read,
 //                   partial and unopened together) misses a file in `git diff --name-only base
 //                   head`, the last only when there is an envelope to read it from
 //   capped          the last turn was capped
@@ -60,7 +69,10 @@
 // It writes the closed stamp first, with the verdict, the reasons, the task status the parent
 // read from T3, and the facts the output reports: the turn, the sha256 of that turn's result bytes
 // as judge read them (null with no result), the served models, the blocks and the errors. It
-// then drops the writer's lease holder and removes the review worktree it created. The stamp is
+// then drops the writer's lease holder and removes the review worktree it created, only while the
+// path still resolves to the recorded worktree, its admin directory is still reviewGitDir, and
+// `git worktree list` still lists it; a worktree that is not the one open added is left in place
+// and reported. The stamp is
 // write-once and is the record, so a second close, or a racing one, prints the stamp's verdict
 // and facts, with the result read again from the pinned turn: that result while its bytes still
 // hash to the pinned sha256, and otherwise null, with result-changed-after-close among the
@@ -71,11 +83,15 @@
 // `<plugin>:hooks/codex.json:<event>:<group>:<handler>`, with a hash of the command. trust spawns
 // `codex app-server --stdio` (the codex on PATH, absolute entries only, through
 // delegate/codex-app-server.mjs's JSON-RPC peer), initializes, and reads hooks/list for the
-// canonical checkout of the working directory. Flow's keys are the plugin-source entries whose
-// command is one of the handler commands in hooks/codex.json with ${PLUGIN_ROOT} standing for a
-// plugin root: Codex reports each command with the root already expanded (0.160.0). All of them
-// must come from one plugin and one root, and there must be exactly one per handler, or trust
-// fails HOOKS_MISMATCH, which is what an install older or newer than this copy of flow reads as.
+// canonical checkout of the working directory. Flow's keys are the plugin-source entries of a
+// plugin whose id starts with flow@ and whose command is one of the handler commands in
+// hooks/codex.json with ${PLUGIN_ROOT} standing for this copy's own plugin root, as a realpath:
+// Codex reports each command with the root already expanded (0.160.0). A plugin under another root
+// or another id is not flow, whatever its commands look like, so trust is read and written only
+// for the flow copy this seat.mjs belongs to, which for a Codex seat must be the copy Codex
+// installed. All of the keys must come from one plugin, and there must be exactly one per handler,
+// or trust fails HOOKS_MISMATCH, which is what an install older or newer than this copy of flow,
+// or another copy of it, reads as.
 // A plain trust prints the keys and their digest, the sha256 of the sorted [key, currentHash]
 // pairs as JSON, which is also what open records as hooksDigest. The human grants trust to what
 // they were shown, so --write takes that digest as --expect: it lists the keys again and fails
@@ -103,6 +119,7 @@ import { inside } from '../lib/state-dir.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TREE_SNAPSHOT = join(HERE, 'tree-snapshot.mjs')
 const CODEX_HOOKS = join(HERE, '..', 'hooks', 'codex.json')
+const PLUGIN_ROOT = realpathSync(join(HERE, '..'))
 const VERSION = JSON.parse(readFileSync(join(HERE, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version
 const CLOSE_MS = 5_000
 const ACCESS = ['read-only', 'workspace-write', 'review']
@@ -143,6 +160,13 @@ function snapshot(path) {
   try { return JSON.parse(run.stdout) } catch { return null }
 }
 const sameSnapshot = (a, b) => ['status', 'diff', 'cached', 'untracked'].every((key) => typeof a?.[key] === 'string' && a[key] === b?.[key])
+// The canonical checkout as a review pins it: the four digests, the HEAD commit (null when unborn)
+// and the branch HEAD names (null when detached), or null when tree-snapshot cannot take them.
+function canonicalState(path) {
+  const digests = snapshot(path)
+  if (!digests) return null
+  return { ...digests, head: gitLine(path, ['rev-parse', '--verify', '--quiet', 'HEAD']), branch: gitLine(path, ['symbolic-ref', '--quiet', 'HEAD']) }
+}
 
 // ----- arguments
 
@@ -250,6 +274,7 @@ async function open(argv) {
   try {
     let worktree = top
     let reviewWorktree = null
+    let reviewGitDir = null
     let baseSha = null
     let headSha = null
     let canonicalSnapshot = null
@@ -261,6 +286,9 @@ async function open(argv) {
       if (!added.ok) fail('GIT_REF', `The review worktree could not be added: ${added.stderr.slice(0, 200)}`)
       undo.push(() => git(repoRoot, ['worktree', 'remove', '--force', path]))
       reviewWorktree = realpathSync(path)
+      const gitDir = gitLine(reviewWorktree, ['rev-parse', '--absolute-git-dir'])
+      if (!gitDir) fail('GIT_REF', 'The review worktree\'s git directory could not be read.')
+      reviewGitDir = realpathSync(gitDir)
       worktree = reviewWorktree
     }
     // The trust read can take a minute, so it comes before the holder: nothing slow may sit between
@@ -271,11 +299,11 @@ async function open(argv) {
       undo.push(() => dropLease(leaseDirOf(worktree), id))
     }
     if (review) {
-      canonicalSnapshot = snapshot(repoRoot)
+      canonicalSnapshot = canonicalState(repoRoot)
       if (!canonicalSnapshot) fail('GIT_REF', 'The canonical checkout could not be snapshotted.')
     }
     store.writeRecord({
-      v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, baseSha, headSha,
+      v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, reviewGitDir, baseSha, headSha,
       provider, model, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot, hooksDigest: digest,
     }, schema)
     if (access === 'workspace-write' && !existsSync(join(leaseDirOf(worktree), id))) {
@@ -309,16 +337,20 @@ function flowHandlers() {
   return handlers
 }
 
-// Flow's entries in a hooks/list answer: one per handler, from one plugin and one root.
+const realOrSelf = (path) => { try { return realpathSync(path) } catch { return path } }
+
+// Flow's entries in a hooks/list answer: one per handler, from one flow@ plugin rooted at this
+// copy's own plugin root.
 function flowKeys(listed, handlers) {
   if (!Array.isArray(listed?.data)) fail('PROVIDER_ERROR', 'Codex answered hooks/list without a list.')
   const byKey = new Map()
   for (const scope of listed.data) {
     for (const hook of Array.isArray(scope?.hooks) ? scope.hooks : []) {
       if (hook?.source !== 'plugin' || hook.handlerType !== 'command' || typeof hook.key !== 'string' || typeof hook.command !== 'string') continue
+      if (typeof hook.pluginId !== 'string' || !hook.pluginId.startsWith('flow@')) continue
       for (const handler of handlers) {
         const match = handler.pattern.exec(hook.command)
-        if (match) byKey.set(hook.key, { hook, handler, roots: new Set(match.slice(1)) })
+        if (match && match.slice(1).every((root) => realOrSelf(root) === PLUGIN_ROOT)) byKey.set(hook.key, { hook, handler, roots: new Set(match.slice(1)) })
       }
     }
   }
@@ -442,9 +474,15 @@ function treeReasons(record, envelope) {
   const status = typeof at === 'string' ? git(at, ['status', '--porcelain', '--untracked-files=all']) : { ok: false }
   if (!status.ok) reasons.push('the review worktree\'s status could not be read')
   else if (status.stdout.trim() !== '') reasons.push('the review worktree is dirty')
-  const now = snapshot(record.repoRoot)
+  const now = canonicalState(record.repoRoot)
+  const then = record.canonicalSnapshot
   if (!now) reasons.push('the canonical checkout could not be snapshotted')
-  else if (!sameSnapshot(now, record.canonicalSnapshot)) reasons.push('the canonical checkout changed while the seat ran')
+  else {
+    if (!sameSnapshot(now, then)) reasons.push('the canonical checkout changed while the seat ran')
+    if (now.head !== then?.head || now.branch !== then?.branch) {
+      reasons.push(`the canonical checkout's HEAD moved while the seat ran: ${now.head ?? 'unborn'} on ${now.branch ?? 'a detached HEAD'}, not ${then?.head ?? 'unborn'} on ${then?.branch ?? 'a detached HEAD'}`)
+    }
+  }
   if (envelope && typeof at === 'string') {
     const diff = git(at, ['diff', '--no-ext-diff', '--name-only', '-z', record.baseSha, record.headSha])
     if (!diff.ok) reasons.push('the pinned diff\'s file list could not be read')
@@ -469,6 +507,11 @@ function judge(id, loaded) {
   for (const name of STAMPS) if (!store.readStamp(id, name)) return unknown(`the ${name} stamp is missing`)
   const bound = store.readStamp(id, 'bound')
   if (bound.recordDigest !== digest) return unknown('the record changed after the bind')
+  // The bound session's index entry is what made its tool calls seat calls. Voided or replaced
+  // after the bind, the hooks no longer held that session as this seat.
+  const entry = store.readIndex(bound.host, bound.sessionId)
+  if (entry?.void !== undefined) return unknown('session-index-void')
+  if (entry === null || entry.id !== id) return unknown('session-index-mismatch')
   const state = store.readState(id)
   if (!state || !Number.isSafeInteger(state.turn) || state.turn < 1) return unknown('no Stop was recorded, so there is no result')
   facts.turn = state.turn
@@ -481,14 +524,16 @@ function judge(id, loaded) {
   if (state.outcome === 'valid') {
     if (!result) return unknown(`turn ${state.turn} has no result`)
     if (!result.intact) return unknown(`turn ${state.turn}'s result does not match its recorded sha256`)
-    const served = result.body?.servedModels
-    if (!Array.isArray(served) || served.length === 0) return unknown(`turn ${state.turn}'s result names no served model`)
-    facts.servedModels = served
     envelope = result.body.envelope
     facts.envelope = envelope
   } else if (state.outcome !== 'blocked' && state.outcome !== 'capped') {
     return unknown(`turn ${state.turn} has no result`)
   }
+  // Every model a stop saw, in any turn, and the result's own: one turn on another model taints
+  // the seat even when the last turn's answer came from the record's.
+  const strings = (list) => (Array.isArray(list) ? list.filter((model) => typeof model === 'string') : [])
+  facts.servedModels = [...new Set([...strings(state.models), ...(envelope ? strings(result.body.servedModels) : [])])]
+  if (facts.servedModels.length === 0) return unknown('no served model is on record for any of the seat\'s stops')
   const seen = [...(typeof bound.model === 'string' ? [bound.model] : []), ...facts.servedModels]
   const others = [...new Set(seen.filter((model) => model !== record.model))]
   if (others.length > 0) {
@@ -509,10 +554,26 @@ function cleanup(id, record) {
   if (record.access === 'workspace-write' && typeof record.worktree === 'string') dropLease(leaseDirOf(record.worktree), id)
   const path = typeof record.repoRoot === 'string' ? join(record.repoRoot, '.flow-worktrees', `review-${id}`) : null
   if (record.access === 'review' && path && record.reviewWorktree === path && existsSync(path)) {
-    const removed = git(record.repoRoot, ['worktree', 'remove', '--force', path])
-    if (!removed.ok) problems.push(`the review worktree could not be removed: ${removed.stderr.slice(0, 200)}`)
+    if (!openedReview(record, path)) problems.push(`the worktree at ${path} is not the one this seat opened, so it was left in place`)
+    else {
+      const removed = git(record.repoRoot, ['worktree', 'remove', '--force', path])
+      if (!removed.ok) problems.push(`the review worktree could not be removed: ${removed.stderr.slice(0, 200)}`)
+    }
   }
   return problems
+}
+
+// Whether path is still the review worktree open added: the same real path, the same admin
+// directory under the common .git, and listed by git as a worktree.
+function openedReview(record, path) {
+  let real = null
+  try { real = realpathSync(path) } catch {}
+  const gitDir = gitLine(path, ['rev-parse', '--absolute-git-dir'])
+  let realGitDir = null
+  try { realGitDir = gitDir && realpathSync(gitDir) } catch {}
+  const listed = git(record.repoRoot, ['worktree', 'list', '--porcelain'])
+  return real === record.reviewWorktree && typeof record.reviewGitDir === 'string' && realGitDir === record.reviewGitDir &&
+    listed.ok && listed.stdout.split('\n').includes(`worktree ${path}`)
 }
 
 // A later close's output: the closed stamp's verdict and facts, and the result it pinned while the
@@ -534,6 +595,11 @@ function onRecord(id, recorded) {
   }
 }
 
+const TASK_ENDED = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
+const TASK_BUSY = new Set(['working', 'waiting_for_children'])
+const terminalTask = (status) => status !== null && typeof status === 'object' && !Array.isArray(status) &&
+  TASK_ENDED.has(status.status) && !TASK_BUSY.has(status.workState) && status.hasPendingChildRuns !== true
+
 function close(argv) {
   const [id, ...rest] = argv
   if (typeof id !== 'string' || !SEAT_ID.test(id)) fail('BAD_REQUEST', 'close takes a seat id, 32 lowercase hex characters.')
@@ -543,6 +609,9 @@ function close(argv) {
   if (Buffer.byteLength(text) > TASK_STATUS_BYTES) fail('BAD_REQUEST', '--task-status is over 64 KiB.')
   let taskStatus
   try { taskStatus = JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
+  if (!terminalTask(taskStatus)) {
+    fail('TASK_NOT_TERMINAL', 'close records a seat whose task T3 reports finished: a task_status answer whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs. Wait for the task to finish, then close it.')
+  }
 
   const loaded = store.readRecord(id)
   const { verdict, reasons, facts } = judge(id, loaded)

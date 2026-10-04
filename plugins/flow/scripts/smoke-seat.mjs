@@ -245,7 +245,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
 })
 `)
 chmodSync(join(fakeCodexBin, 'codex'), 0o755)
-const FAKE_ROOT = '/home/u/.codex/plugins/cache/jakub/flow/9.9.9'
+// Codex lists flow's hooks under the root of the flow copy it installed. trust binds to the copy
+// it runs from, so the entries for this flow carry this checkout's plugin root.
+const FAKE_ROOT = realpathSync(PLUGIN)
 const snake = (event) => event.replace(/[A-Z]/g, (c, at) => `${at ? '_' : ''}${c.toLowerCase()}`)
 // hooks/list entries for this copy of flow's hooks/codex.json, each untrusted or trusted, under
 // pluginId and root; drop removes the handlers whose command includes it.
@@ -325,18 +327,21 @@ function jobRecord(worktree, status) {
   return job
 }
 // A seat the hooks ran in, written straight through the store: the record (a new read-only one
-// unless id names one seat open wrote), the stamps listed, the bound stamp pinning digest, and
-// turn 1 ending as outcome, with a result for a valid turn unless result is false.
+// unless id names one seat open wrote), the stamps listed, the bound stamp pinning digest, the
+// bound session's index entry naming the seat (index 'own'; 'none' writes none), and turn 1
+// ending as outcome with models as the models seen serving it, with a result for a valid turn
+// unless result is false.
 function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], stamps = ['admitted', 'bound', 'receipt'], digest = null, boundModel = null,
-  outcome = 'valid', blocks = 0, errors = [], served = [model], envelope = ENVELOPE_OK, result = true } = {}) {
+  outcome = 'valid', blocks = 0, errors = [], served = [model], models = served, envelope = ENVELOPE_OK, result = true, index = 'own' } = {}) {
   const seatId = id ?? store.writeRecord(RECORD({ provider, model, worktree: canon, repoRoot: canon }), null).id
   const loaded = store.readRecord(seatId)
   const bound = { sessionId: `s-${seatId}`, host: provider, permissionMode: PERMISSION[provider], cwd: canon, recordDigest: digest ?? loaded.digest }
   if (boundModel) bound.model = boundModel
   const bodies = { admitted: { toolUseId: 'toolu_x' }, bound, receipt: { tool: 'Bash' } }
   for (const name of stamps) assert.equal(store.stamp(seatId, name, bodies[name]), true)
+  if (index === 'own') assert.equal(store.indexSession(provider, bound.sessionId, { id: seatId }), true)
   if (outcome !== null) {
-    store.writeState(seatId, { turn: 1, turnKey: 'k1', blocks, outcome, errors, stops: blocks + 1, messageSha256: 'c'.repeat(64) })
+    store.writeState(seatId, { turn: 1, turnKey: 'k1', blocks, outcome, errors, stops: blocks + 1, messageSha256: 'c'.repeat(64), models })
     if (outcome === 'valid' && result) store.writeResult(seatId, 1, { envelope, servedModels: served, messageSha256: 'c'.repeat(64), at: new Date().toISOString() })
   }
   return { id: seatId }
@@ -1228,7 +1233,16 @@ const cases = {
       ['git log --output=/tmp/x', output], ['git diff --output /tmp/x', output], ['git show --outp=/tmp/x HEAD', output],
       ['git diff --ext-diff', output], ['git log -p --ext-diff', output], [`git -C ${worktree} diff --ext-diff`, output],
     ]
-    const allowed = ['git diff --no-ext-diff', 'echo $GIT_DIR; git log', 'git log --oneline', 'git diff --output-indicator-new=+ HEAD', 'GIT_X=1 ls', `git -C ${worktree} log -1`]
+    const unreadable = /\(git\): .*expanded at run time/
+    refused.push(
+      ["git diff '--output=/tmp/x'", output], ['git diff "--ext-diff"', output], ["git log '--outp=/tmp/x y'", output], ["git diff '--ext-diff' HEAD", output],
+      ["git log -p '--ext''-diff'", output], ['git diff -\\-output=/tmp/x', output], ['git log -p -\\-ext-diff', output], ['git diff "$X"', unreadable], ['git diff "-$X"', unreadable], ['git diff $X', unreadable],
+      ['git log "--out$X"', unreadable], ["git diff \"$(echo --output=/tmp/x)\"", unreadable], ['git diff "\\-\\-ext-diff"', unreadable],
+      ["gh api '-XPOST' repos/o/r", /\(gh reads only\)/], ["gh api repos/o/r '--input' body.json", /\(gh reads only\)/], ['gh api repos/o/r "-f" a=b', /\(gh reads only\)/],
+      ['gh pr view "$N"', /\(gh reads only\)/], ["gh 'pr' 'merge' 3", /\(gh reads only\)/], ["gh 'pr' view 3", /\(gh reads only\)/],
+    )
+    const allowed = ['git diff --no-ext-diff', 'echo $GIT_DIR; git log', 'git log --oneline', 'git diff --output-indicator-new=+ HEAD', 'GIT_X=1 ls', `git -C ${worktree} log -1`,
+      "git log 'HEAD~1'", 'git log "HEAD~$N"', "git diff '--stat'", 'git log --grep="fix it"', "gh api 'repos/o/r/pulls'", 'gh api "repos/$REPO/pulls"']
     for (const host of ['claude', 'codex']) {
       for (const access of ACCESSES) {
         const { session } = boundSeat(host, access)
@@ -1237,6 +1251,7 @@ const cases = {
       }
     }
     ok('every seat, reads included, is denied git with -c, --config-env, a GIT_* variable set or exported in the same command, --output (or an abbreviation) and --ext-diff; a $GIT_* reference and --no-ext-diff run')
+    ok('a quoted git or gh argument with no expansion is read as its literal value, so a quoted --output, --ext-diff, -XPOST or --input is denied; an argument expanded at run time that could start with - is denied as unreadable, and one with a plain leading part runs')
   },
 
   'bash-compound': () => {
@@ -1352,7 +1367,7 @@ const cases = {
       const key = randomUUID()
       silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), key)), `${host} valid answer`)
       const messageSha256 = sha256(JSON.stringify(ENVELOPE_OK))
-      assert.deepEqual(store.readState(id), { turn: 1, turnKey: key, blocks: 0, outcome: 'valid', errors: [], stops: 1, messageSha256 })
+      assert.deepEqual(store.readState(id), { turn: 1, turnKey: key, blocks: 0, outcome: 'valid', errors: [], stops: 1, messageSha256, models: host === 'codex' ? [MODELS.codex] : [] })
       const result = store.readResult(id, 1)
       assert.equal(result.intact, true)
       assert.deepEqual(result.body.envelope, ENVELOPE_OK)
@@ -1421,7 +1436,7 @@ const cases = {
         assert.match(lines.at(-1), /^Your final message is one JSON object, alone or as the whole of one fenced block: \{"status"/)
         assert.ok(lines.slice(1, -1).every((line) => /^\$\S*: /.test(line)) && lines.length - 2 <= 10, `${host} ${what}: ${reason}`)
         const state = store.readState(id)
-        assert.deepEqual({ ...state, errors: undefined }, { turn: 1, turnKey: key, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1, messageSha256: sha256(message) })
+        assert.deepEqual({ ...state, errors: undefined }, { turn: 1, turnKey: key, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1, messageSha256: sha256(message), models: host === 'codex' ? [MODELS.codex] : [] })
         assert.deepEqual(state.errors, lines.slice(1, -1))
         assert.equal(store.readResult(id, 1), null)
       }
@@ -1442,7 +1457,7 @@ const cases = {
       }
       silent(guard('stop', host, stopCall(host, session, 'not json 4', key)), `${host} the fourth failing stop`)
       const capped = store.readState(id)
-      assert.deepEqual({ ...capped, errors: undefined }, { turn: 1, turnKey: key, blocks: 3, outcome: 'capped', errors: undefined, stops: 4, messageSha256: sha256('not json 4') })
+      assert.deepEqual({ ...capped, errors: undefined }, { turn: 1, turnKey: key, blocks: 3, outcome: 'capped', errors: undefined, stops: 4, messageSha256: sha256('not json 4'), models: host === 'codex' ? [MODELS.codex] : [] })
       silent(guard('stop', host, stopCall(host, session, 'not json 4', key)), `${host} the same message after the cap`)
       assert.deepEqual(store.readState(id), capped, 'the same message after the cap changed the state')
       silent(guard('stop', host, stopCall(host, session, 'not json 5', key)), `${host} a changed failing message after the cap`)
@@ -1459,7 +1474,7 @@ const cases = {
       stopBlocked(guard('stop', host, stopCall(host, session, 'nope', first)), `${host} turn 1 block 1`)
       stopBlocked(guard('stop', host, stopCall(host, session, 'nope', first)), `${host} turn 1 block 2`)
       assert.match(stopBlocked(guard('stop', host, stopCall(host, session, 'nope', second)), `${host} turn 2`), /\(block 1 of 3\)/)
-      assert.deepEqual({ ...store.readState(id), errors: undefined }, { turn: 2, turnKey: second, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1, messageSha256: sha256('nope') })
+      assert.deepEqual({ ...store.readState(id), errors: undefined }, { turn: 2, turnKey: second, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1, messageSha256: sha256('nope'), models: host === 'codex' ? [MODELS.codex] : [] })
       silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), second)), `${host} turn 2 valid`)
       assert.equal(store.readResult(id, 2).intact, true)
       assert.equal(store.readResult(id, 1), null)
@@ -1490,7 +1505,7 @@ const cases = {
       assert.equal(replaced.intact, true)
       assert.deepEqual(replaced.body.envelope, changed, `${host}: a changed valid message did not replace the result`)
       assert.equal(replaced.body.messageSha256, sha256(JSON.stringify(changed)))
-      assert.deepEqual({ ...store.readState(id), errors: undefined }, { turn: 1, turnKey: key, blocks: 0, outcome: 'valid', errors: undefined, stops: 2, messageSha256: sha256(JSON.stringify(changed)) })
+      assert.deepEqual({ ...store.readState(id), errors: undefined }, { turn: 1, turnKey: key, blocks: 0, outcome: 'valid', errors: undefined, stops: 2, messageSha256: sha256(JSON.stringify(changed)), models: host === 'codex' ? [MODELS.codex] : [] })
 
       const reason = stopBlocked(guard('stop', host, stopCall(host, session, 'resumed, then broke the answer', key)), `${host} a changed failing message after a valid one`)
       assert.match(reason, /\(block 1 of 3\)/)
@@ -1550,6 +1565,49 @@ const cases = {
     silent(guard('stop', 'claude', stopCall('claude', claude.session, JSON.stringify(ENVELOPE_OK), randomUUID(), { transcript_path: transcript })), 'claude served models')
     assert.deepEqual(store.readResult(claude.id, 1).body.servedModels, [MODELS.claude, 'claude-haiku-5'])
     ok('a Claude seat\'s served models are every assistant message.model its transcript records for the session since the bind, in first-seen order, with <synthetic>, other sessions, earlier entries and torn lines left out')
+
+    // Every stop adds the models it saw to the seat's cumulative set, a stop on a settled turn with
+    // the same message included, and close judges the whole set across turns.
+    const received = (seat, host) => assert.equal(store.stamp(seat.id, 'receipt', { tool: 'Bash' }), true, `${host} receipt`)
+    const earlier = boundSeat('codex', 'read-only')
+    received(earlier, 'codex')
+    silent(guard('stop', 'codex', stopCall('codex', earlier.session, JSON.stringify(ENVELOPE_OK), randomUUID(), { model: 'gpt-6-mini' })), 'turn 1 on another model')
+    silent(guard('stop', 'codex', stopCall('codex', earlier.session, JSON.stringify({ ...ENVELOPE_OK, notes: 'turn 2' }), randomUUID())), 'turn 2 on the record\'s model')
+    assert.deepEqual(store.readState(earlier.id).models, ['gpt-6-mini', MODELS.codex])
+    const earlierOut = closeSeat(earlier.id)
+    assert.equal(earlierOut.verdict, 'model-mismatch', JSON.stringify(earlierOut))
+    assert.ok(earlierOut.reasons.some((reason) => /gpt-6-mini/.test(reason)), JSON.stringify(earlierOut.reasons))
+
+    const repeated = boundSeat('codex', 'read-only')
+    received(repeated, 'codex')
+    const repeatKey = randomUUID()
+    silent(guard('stop', 'codex', stopCall('codex', repeated.session, JSON.stringify(ENVELOPE_OK), repeatKey)), 'a valid stop')
+    silent(guard('stop', 'codex', stopCall('codex', repeated.session, JSON.stringify(ENVELOPE_OK), repeatKey, { model: 'gpt-6-mini' })), 'the same message again, on another model')
+    assert.deepEqual(store.readState(repeated.id).models, [MODELS.codex, 'gpt-6-mini'])
+    assert.equal(closeSeat(repeated.id).verdict, 'model-mismatch', 'a model seen on a repeated stop was dropped')
+
+    const replaced = boundSeat('codex', 'read-only')
+    received(replaced, 'codex')
+    const replacedKey = randomUUID()
+    silent(guard('stop', 'codex', stopCall('codex', replaced.session, JSON.stringify(ENVELOPE_OK), replacedKey, { model: 'gpt-6-mini' })), 'a valid stop on another model')
+    silent(guard('stop', 'codex', stopCall('codex', replaced.session, JSON.stringify({ ...ENVELOPE_OK, notes: 'changed' }), replacedKey)), 'a changed valid stop on the record\'s model')
+    assert.deepEqual(store.readResult(replaced.id, 1).body.servedModels, [MODELS.codex])
+    assert.equal(closeSeat(replaced.id).verdict, 'model-mismatch', 'a changed message dropped the model of the result it replaced')
+
+    const unseen = boundSeat('claude', 'read-only')
+    received(unseen, 'claude')
+    silent(guard('stop', 'claude', stopCall('claude', unseen.session, JSON.stringify(ENVELOPE_OK), randomUUID())), 'a Claude stop with no readable transcript')
+    const unseenOut = closeSeat(unseen.id)
+    assert.equal(unseenOut.verdict, 'unknown', JSON.stringify(unseenOut))
+    assert.ok(unseenOut.reasons.some((reason) => /no served model/.test(reason)), JSON.stringify(unseenOut.reasons))
+
+    const fine = boundSeat('codex', 'read-only')
+    received(fine, 'codex')
+    silent(guard('stop', 'codex', stopCall('codex', fine.session, JSON.stringify(ENVELOPE_OK), randomUUID())), 'a valid stop')
+    silent(guard('stop', 'codex', stopCall('codex', fine.session, JSON.stringify({ ...ENVELOPE_OK, notes: 'turn 2' }), randomUUID())), 'turn 2')
+    const fineOut = closeSeat(fine.id)
+    assert.deepEqual([fineOut.verdict, fineOut.servedModels], ['valid', [MODELS.codex]], JSON.stringify(fineOut))
+    ok('every stop adds the models it saw to a cumulative set in the turn state, a repeated message on a settled turn included, and close reads model-mismatch when any turn saw another model, unknown when none was seen, and valid when every one is the record\'s')
   },
 
   'stop-void': () => {
@@ -1583,7 +1641,7 @@ const cases = {
     const loaded = store.readRecord(read.id)
     assert.deepEqual({ ...loaded.record, createdAt: undefined }, {
       v: 1, id: read.id, createdAt: undefined, access: 'read-only', repoRoot: canon, worktree: canon, reviewWorktree: null, baseSha: null, headSha: null,
-      provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto', canonicalSnapshot: null, hooksDigest: null, schemaSha256: null,
+      reviewGitDir: null, provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto', canonicalSnapshot: null, hooksDigest: null, schemaSha256: null,
     })
     assert.equal(loaded.schema, null)
     ok('a read-only seat opens in the working directory\'s worktree: the output names its id, tag, runtimeMode auto, model, effort and worktree, and the record holds the same with no schema')
@@ -1617,9 +1675,10 @@ const cases = {
     const { record, schema } = store.readRecord(review.id)
     assert.deepEqual([record.baseSha, record.headSha, record.repoRoot, record.worktree, record.reviewWorktree], [baseSha, headSha, canon, path, path])
     assert.deepEqual(schema, schemas.FINDINGS_SCHEMA)
-    assert.deepEqual(Object.keys(record.canonicalSnapshot).sort(), ['cached', 'diff', 'status', 'untracked'])
+    assert.deepEqual(Object.keys(record.canonicalSnapshot).sort(), ['branch', 'cached', 'diff', 'head', 'status', 'untracked'])
+    assert.equal(record.reviewGitDir, realpathSync(gitOut(path, 'rev-parse', '--absolute-git-dir')))
     assert.equal(gitOut(canon, 'status', '--porcelain'), '', 'the review worktree shows nowhere in the canonical checkout')
-    ok('a review seat resolves --base and --head to SHAs, adds a detached worktree at the head under .flow-worktrees/review-<id>, answers in the findings schema, and records a canonical snapshot')
+    ok('a review seat resolves --base and --head to SHAs, adds a detached worktree at the head under .flow-worktrees/review-<id>, answers in the findings schema, and records a canonical snapshot with HEAD and branch and the review worktree\'s git directory')
 
     const byWorktree = seatCli(['open', '--access', 'review', '--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'high', '--worktree', linkedWt, '--base', 'HEAD~1', '--head', 'HEAD'])
     assert.equal(store.readRecord(byWorktree.id).record.headSha, gitOut(linkedWt, 'rev-parse', 'HEAD'), '--worktree names where the revisions resolve')
@@ -1886,7 +1945,14 @@ const cases = {
     const tampered = hookedSeat({})
     writeFileSync(join(seats, tampered.id, 'result-1.json'), JSON.stringify({ envelope: { ...ENVELOPE_OK, notes: 'edited' }, servedModels: ['claude-opus-5-5'] }))
     verdict(tampered.id, 'unknown', /does not match its recorded sha256/, 'a result sha mismatch')
-    verdict(hookedSeat({ served: [] }).id, 'unknown', /names no served model/, 'empty served models')
+    verdict(hookedSeat({ served: [] }).id, 'unknown', /no served model/, 'empty served models')
+    const voidIndex = hookedSeat({})
+    store.voidSession('claude', `s-${voidIndex.id}`, voidIndex.id, 'replayed-tag')
+    verdict(voidIndex.id, 'unknown', /^session-index-void$/, 'a bound session whose index was voided')
+    verdict(hookedSeat({ index: 'none' }).id, 'unknown', /^session-index-mismatch$/, 'a bound session with no index entry')
+    const otherIndex = hookedSeat({ index: 'none' })
+    store.indexSession('claude', `s-${otherIndex.id}`, { id: store.newId() })
+    verdict(otherIndex.id, 'unknown', /^session-index-mismatch$/, 'a bound session whose index names another seat')
     verdict(hookedSeat({ outcome: null }).id, 'unknown', /no Stop was recorded/, 'no Stop')
     verdict(hookedSeat({ result: false }).id, 'unknown', /has no result/, 'a valid turn with no result file')
     const gone = hookedSeat({})
@@ -1896,7 +1962,7 @@ const cases = {
     writeFileSync(join(seats, corrupt.id, 'record.json'), '{"v": 1')
     verdict(corrupt.id, 'unknown', /missing or corrupt/, 'a corrupt record')
     verdict(store.newId(), 'unknown', /missing or corrupt/, 'an id with no record directory at all')
-    ok('unknown: a missing admitted, bound or receipt stamp, any void stamp, a record digest the bind did not pin, a result whose sha256 does not match, no served model, no Stop, a valid turn with no result, or a missing or corrupt record')
+    ok('unknown: a missing admitted, bound or receipt stamp, any void stamp, a record digest the bind did not pin, a bound session whose index is void, missing or names another seat, a result whose sha256 does not match, no served model, no Stop, a valid turn with no result, or a missing or corrupt record')
 
     verdict(hookedSeat({ served: ['claude-sonnet-5-5'] }).id, 'model-mismatch', /served by claude-sonnet-5-5, not claude-opus-5-5/, 'served model mismatch')
     verdict(hookedSeat({ provider: 'codex', model: 'gpt-6-luna', boundModel: 'gpt-6-mini', served: ['gpt-6-luna'] }).id, 'model-mismatch', /gpt-6-mini/, 'bind model mismatch')
@@ -1950,6 +2016,49 @@ const cases = {
     writeFileSync(join(store.readRecord(cappedMoved.id).record.reviewWorktree, 'scratch.txt'), 'x')
     assert.equal(closeSeat(cappedMoved.id).verdict, 'tree-moved', 'tree-moved outranks capped')
     ok('tree-moved: the review worktree\'s HEAD moved, it is dirty, the canonical checkout changed, or the coverage misses a diffed file; it outranks capped')
+
+    // The canonical checkout's HEAD is part of what a review pins: a detach or a commit that leaves
+    // the tree as it was still moves it.
+    const detached = reviewSeat()
+    gitOut(canon, 'checkout', '-q', '--detach', 'HEAD')
+    const detachedOut = closeSeat(detached.id)
+    gitOut(canon, 'checkout', '-q', 'main')
+    assert.equal(detachedOut.verdict, 'tree-moved', JSON.stringify(detachedOut))
+    assert.ok(detachedOut.reasons.some((reason) => /canonical checkout's HEAD/.test(reason)), JSON.stringify(detachedOut.reasons))
+    const committed = reviewSeat()
+    gitOut(canon, 'commit', '-q', '--allow-empty', '-m', 'empty')
+    const committedOut = closeSeat(committed.id)
+    gitOut(canon, 'reset', '-q', '--soft', headSha)
+    assert.equal(gitOut(canon, 'rev-parse', 'HEAD'), headSha)
+    assert.equal(committedOut.verdict, 'tree-moved', JSON.stringify(committedOut))
+    const record = store.readRecord(committed.id).record
+    assert.deepEqual([record.canonicalSnapshot.head, record.canonicalSnapshot.branch], [headSha, 'refs/heads/main'])
+    ok('a review records the canonical checkout\'s HEAD commit and branch, and reads tree-moved when either changed, the tree unchanged')
+
+    // close removes only the worktree its open added: the same path, the same admin directory, and
+    // still listed by git. One moved away and replaced at that path by another is left in place.
+    const swapped = reviewSeat()
+    const swappedRecord = store.readRecord(swapped.id).record
+    assert.equal(swappedRecord.reviewGitDir, realpathSync(gitOut(swappedRecord.reviewWorktree, 'rev-parse', '--absolute-git-dir')))
+    const movedTo = join(tmp, `moved-${swapped.id}`)
+    gitOut(canon, 'worktree', 'move', swappedRecord.reviewWorktree, movedTo)
+    gitOut(canon, 'worktree', 'add', '-q', '--detach', swappedRecord.reviewWorktree, headSha)
+    const swappedOut = closeSeat(swapped.id)
+    assert.ok(existsSync(swappedRecord.reviewWorktree), 'close removed a worktree it did not add')
+    assert.ok(existsSync(movedTo), 'close touched the moved worktree')
+    assert.ok(swappedOut.cleanupProblems?.some((problem) => /not the one this seat opened/.test(problem)), JSON.stringify(swappedOut))
+    gitOut(canon, 'worktree', 'remove', '--force', swappedRecord.reviewWorktree)
+    gitOut(canon, 'worktree', 'remove', '--force', movedTo)
+    const plain = reviewSeat()
+    const plainPath = store.readRecord(plain.id).record.reviewWorktree
+    gitOut(canon, 'worktree', 'remove', '--force', plainPath)
+    mkdirSync(plainPath)
+    writeFileSync(join(plainPath, 'keep.txt'), 'x')
+    const plainOut = closeSeat(plain.id)
+    assert.ok(existsSync(join(plainPath, 'keep.txt')), 'close removed a plain directory at the review path')
+    assert.ok(plainOut.cleanupProblems?.length > 0, JSON.stringify(plainOut))
+    rmSync(plainPath, { recursive: true })
+    ok('close removes a review worktree only while its path, its admin directory and git\'s worktree list all still match what open recorded, and otherwise leaves the path alone and reports it in cleanupProblems')
   },
 
   'close-rerun': () => {
@@ -1986,6 +2095,26 @@ const cases = {
     const firstNoStop = closeSeat(noStop.id)
     assert.deepEqual(closeSeat(noStop.id), firstNoStop, 'a seat with no result read as changed after close')
     ok('the closed stamp pins the turn\'s result sha256 and the facts; a later close prints the same while the result\'s bytes match, whatever the verdict, and a null result with result-changed-after-close once they do not, the verdict unchanged')
+
+    // close records a seat T3 reports finished, and nothing else: a running task, a child still
+    // working or waiting on its own children, or a status that is not one of T3's terminal ones.
+    const runningWt = gitWorktree('close-running')
+    const running = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', runningWt])
+    hookedSeat({ id: running.id })
+    for (const status of [{ status: 'running' }, {}, null, [], 'completed', { status: 'completed', workState: 'working' },
+      { status: 'failed', workState: 'waiting_for_children' }, { status: 'cancelled', hasPendingChildRuns: true }, { status: 'Completed' }]) {
+      const refused = closeSeat(running.id, status)
+      assert.equal(refused.error?.kind, 'TASK_NOT_TERMINAL', `${JSON.stringify(status)}: ${JSON.stringify(refused)}`)
+      assert.equal(store.readStamp(running.id, 'closed'), null, `${JSON.stringify(status)} stamped the seat closed`)
+      assert.ok(existsSync(join(jobs.leaseDirOf(runningWt), running.id)), `${JSON.stringify(status)} dropped the writer's holder`)
+    }
+    for (const status of ['completed', 'failed', 'cancelled', 'interrupted']) {
+      const each = hookedSeat({})
+      assert.equal(closeSeat(each.id, { status, workState: 'result_available', hasPendingChildRuns: false }).ok, true, status)
+    }
+    assert.equal(closeSeat(running.id, { taskId: 't', status: 'completed', workState: 'result_available', hasPendingChildRuns: false }).verdict, 'valid')
+    assert.equal(existsSync(join(jobs.leaseDirOf(runningWt), running.id)), false)
+    ok('close refuses TASK_NOT_TERMINAL, writing nothing and keeping the lease, unless the task status is an object whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs')
 
     for (const [args, kind] of [
       [['close'], 'BAD_REQUEST'], [['close', 'xyz', '--task-status', '{}'], 'BAD_REQUEST'], [['close', seat.id], 'BAD_REQUEST'],
@@ -2093,12 +2222,29 @@ const cases = {
       assert.deepEqual(codexSent(bad.dir), [], `${args.join(' ')} reached Codex`)
     }
     ok('trust --write needs --expect with the digest trust listed, and refuses HOOKS_CHANGED, writing nothing, when the hooks listed now have another digest')
+
+    // Flow's keys are the ones under this copy's own plugin root from a flow@ plugin. A plugin whose
+    // commands have flow's shapes under another root, or under another id, is not flow.
+    const lookalikes = [...flowEntries({ pluginId: 'evil@x', root: '/home/u/evil' }), ...flowEntries({ pluginId: 'flow@fork', root: '/home/u/fork/flow' }),
+      ...flowEntries({ pluginId: 'evil@here' })]
+    const mixed = codexState([...flowEntries(), ...lookalikes])
+    const mixedList = seatCli(['trust'], { env: mixed.env })
+    assert.equal(mixedList.ok, true, JSON.stringify(mixedList))
+    assert.deepEqual(mixedList.keys.map(({ key }) => key).sort(), flowEntries().map(({ key }) => key).sort())
+    assert.equal(seatCli(['trust', '--write', '--expect', mixedList.digest], { env: mixed.env }).ok, true)
+    const mixedEdits = codexSent(mixed.dir).find((message) => message.method === 'config/batchWrite').params.edits[0].value
+    assert.deepEqual(Object.keys(mixedEdits).sort(), flowEntries().map(({ key }) => key).sort())
+    for (const hook of codexHooks(mixed.dir).filter((entry) => !entry.pluginId.startsWith('flow@jakub'))) assert.equal(hook.trustStatus, 'untrusted', hook.key)
+    const onlyLookalike = codexState(flowEntries({ pluginId: 'evil@x', root: '/home/u/evil' }))
+    const lookalikeWrite = seatCli(['trust', '--write', '--expect', flowDigest(flowEntries({ pluginId: 'evil@x', root: '/home/u/evil' }))], { env: onlyLookalike.env })
+    assert.equal(lookalikeWrite.error?.kind, 'HOOKS_MISMATCH', JSON.stringify(lookalikeWrite))
+    assert.ok(!codexSent(onlyLookalike.dir).some((message) => message.method === 'config/batchWrite'), 'trust wrote a lookalike plugin\'s keys')
+    ok('trust selects only the flow@ plugin under this copy\'s own plugin root: a plugin with flow\'s command shapes under another root or another id is never listed or written, and alone it reads HOOKS_MISMATCH')
   },
 
   'trust-mismatch': () => {
     for (const [what, hooks] of [
       ['an install without the seat guard', [...flowEntries({ trusted: true, drop: 'seat-guard.mjs' }), ...FOREIGN]],
-      ['two copies of flow', [...flowEntries({ trusted: true }), ...flowEntries({ trusted: true, pluginId: 'flow@fork', root: '/home/u/fork/flow' })]],
       ['one handler missing', flowEntries({ trusted: true, drop: 'install-delegate.mjs' })],
       ['the handlers split across two copies', [...flowEntries({ trusted: true, drop: 'seat-guard.mjs' }),
         ...flowEntries({ trusted: true, pluginId: 'flow@fork', root: '/home/u/fork/flow' }).filter((hook) => hook.command.includes('seat-guard.mjs'))]],

@@ -276,6 +276,14 @@ function resolveTarget(target, cwd) {
 // read run a program (a pager, an external diff, a textconv); nor --output, which writes a file,
 // nor --ext-diff, which runs one. gh runs its read verbs, a GET `gh api`, `gh auth status` and
 // `gh --version`, and nothing else.
+//
+// git's and gh's arguments are read as the shell passes them (argValue): quotes and backslash
+// escapes removed, so `'--output=x'`, `"--ext-diff"` and `-\-output` are the options they spell. An
+// argument that expands at run time ($X, "$X", "$(...)", a backquote) has no value to read. If the
+// text before its first expansion is empty or starts with `-`, it could be an option, and the call
+// is denied as unreadable; otherwise (`HEAD~$N`, `"repos/$R"`) it runs. Exempt are a word after
+// `--`, which git and gh read as an operand, a git commit's message or file value, and a long
+// option whose `--name=` is written out, which the option checks read by its name.
 
 const MODEL_CLIS = new Set(['claude', 'codex', 'flow-delegate'])
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'ksh', 'dash'])
@@ -330,6 +338,38 @@ const commandName = (word) => {
   return name.slice(name.lastIndexOf('/') + 1)
 }
 const unreadable = (word) => word.includes(OPAQUE) || word.startsWith('$')
+
+// A word as the shell passes it to the command: {value} when nothing in it expands at run time,
+// else {prefix}, the text before its first expansion. Literals arrive encoded by segments().
+const HELD = new RegExp(`${OPAQUE}([SDX])([0-9a-f]*)${OPAQUE}`, 'g')
+function argValue(word) {
+  let value = ''
+  let at = 0
+  const plain = (text) => {
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '$' || text[i] === '`') return false
+      if (text[i] === '\\') i++
+      if (i < text.length) value += text[i]
+    }
+    return true
+  }
+  for (const match of word.matchAll(HELD)) {
+    if (!plain(word.slice(at, match.index))) return { prefix: value }
+    const text = Buffer.from(match[2], 'hex').toString('utf8')
+    if (match[1] === 'X') {
+      const cut = text.search(/[$`\\\0]/)
+      return { prefix: value + (cut < 0 ? text : text.slice(0, cut)) }
+    }
+    value += text
+    at = match.index + match[0].length
+  }
+  return plain(word.slice(at)) ? { value } : { prefix: value }
+}
+// Whether an argument expanded at run time could be an option git or gh would act on. A long
+// option whose name and `=` are written out (`--format="$F"`) keeps its name whatever the value
+// expands to, so the option checks read it by name; anything else that starts with `-`, or that
+// starts with an expansion, could spell any option.
+const mayBeOption = (prefix) => (prefix === '' || prefix.startsWith('-')) && !/^--[^=]+=/.test(prefix)
 // The command a package runner runs from a package spec: `@openai/codex@1.2` runs codex.
 const packageCommand = (word) => {
   const name = commandName(word)
@@ -769,7 +809,16 @@ function gitProblem(record, args, gitEnv) {
     return 'flow seat (git): the git subcommand is quoted or expanded at run time, so this guard cannot read it and the command is denied. Write the subcommand plainly.'
   }
   const sub = bareWord(args[at])
-  const rest = args.slice(at + 1).map(bareWord)
+  const rest = []
+  for (const word of args.slice(at + 1)) {
+    const read = argValue(word)
+    if (read.value !== undefined) { rest.push(read.value); continue }
+    const operand = rest.includes('--') || (sub === 'commit' && commitValue(rest.at(-1), read.prefix))
+    if (mayBeOption(read.prefix) && !operand) {
+      return 'flow seat (git): an argument of this git call is expanded at run time and could be an option, so this guard cannot read it and the command is denied. Write the argument out plainly.'
+    }
+    rest.push(bareWord(word))
+  }
   if (sub === 'push') return 'flow seat (no git push): a seat never pushes; the parent publishes what the seat committed.'
   if (config) return GIT_CONFIG_DENIED
   const file = rest.find((word) => word.startsWith('--') && (abbreviates(word, '--output') || abbreviates(word, '--ext-diff')))
@@ -847,6 +896,21 @@ function addsAll(rest) {
 const COMMIT_VALUE_SHORT = new Set(['m', 'F', 'C', 'c', 't'])
 const COMMIT_VALUE_LONG = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--author', '--date', '--fixup', '--squash', '--template', '--cleanup', '--trailer'])
 const COMMIT_WHOLE_INDEX = ['--all', '--include', '--pathspec-from-file']
+// Whether a commit argument whose readable part is prefix is a message or file value: the word
+// after an option that takes one (previous), or one whose value is attached (`-m"$X"`,
+// `--message="$X"`).
+function commitValue(previous, prefix) {
+  const shortValue = (word, attached) => {
+    if (typeof word !== 'string' || !/^-[A-Za-z]/.test(word) || word.startsWith('--')) return false
+    for (let i = 1; i < word.length; i++) if (COMMIT_VALUE_SHORT.has(word[i])) return attached || i === word.length - 1
+    return false
+  }
+  const longValue = (word) => typeof word === 'string' && word.startsWith('--') && [...COMMIT_VALUE_LONG].some((option) => abbreviates(word, option))
+  if (prefix.startsWith('--')) return prefix.includes('=') && longValue(prefix)
+  if (prefix.startsWith('-')) return shortValue(prefix, true)
+  return shortValue(previous, false) || (longValue(previous) && !previous.includes('='))
+}
+
 // True when the commit names at least one path on its command line and commits nothing beyond them:
 // no -a or --all, and no -i or --include, which commits the index as staged beside the paths.
 function commitNamesPaths(rest) {
@@ -882,7 +946,16 @@ const GH_READS = new Set(['view', 'list', 'status', 'diff', 'checks', 'search'])
 const GH_SEARCHES = new Set(['code', 'commits', 'issues', 'prs', 'repos'])
 const GH_DENIED = (what) => `flow seat (gh reads only): \`gh ${what}\` is not one of the gh reads a seat runs, and a seat changes nothing on GitHub. The reads are gh pr, issue, release, repo, run, workflow, label or gist with view, list, status, diff, checks or search; gh search; gh api as a GET; gh auth status; gh --version. Put anything else in your report for the parent.`
 
-function ghProblem(args) {
+function ghProblem(words) {
+  const args = []
+  for (const word of words) {
+    const read = argValue(word)
+    if (read.value !== undefined) { args.push(read.value); continue }
+    if (mayBeOption(read.prefix) && !args.includes('--')) {
+      return 'flow seat (gh reads only): an argument of this gh call is expanded at run time and could be an option, so this guard cannot read it and the command is denied. Write the argument out plainly.'
+    }
+    args.push(word)
+  }
   if (args.length === 1 && bareWord(args[0]) === '--version') return null
   const verbAfter = (from) => {
     let at = from
@@ -891,12 +964,13 @@ function ghProblem(args) {
   }
   const groupAt = verbAfter(0)
   if (groupAt >= args.length) return GH_DENIED(args.map(bareWord).join(' ').slice(0, 80))
-  if (unreadable(args[groupAt])) return GH_DENIED('<unreadable>')
+  // The group and the verb are read as written: a quoted one is denied, as a quoted git subcommand is.
+  if (unreadable(words[groupAt])) return GH_DENIED('<unreadable>')
   const group = bareWord(args[groupAt])
   if (group === 'api') return ghApiProblem(args.slice(groupAt + 1))
   const verbAt = verbAfter(groupAt + 1)
   if (verbAt >= args.length) return GH_DENIED(group)
-  if (unreadable(args[verbAt])) return GH_DENIED(`${group} <unreadable>`)
+  if (unreadable(words[verbAt])) return GH_DENIED(`${group} <unreadable>`)
   const verb = bareWord(args[verbAt])
   const reads = (group === 'auth' && verb === 'status') || (group === 'search' && GH_SEARCHES.has(verb)) ||
     (GH_GROUPS.has(group) && GH_READS.has(verb))
@@ -948,6 +1022,15 @@ export function stopTurn(state, turnKey) {
     }
   }
   return { turn: (current?.turn ?? 0) + 1, turnKey: key, blocks: 0, outcome: null, errors: [], stops: 1, messageSha256: null }
+}
+
+/**
+ * The seat's cumulative served models after a stop: the set the state Stop last wrote holds (null
+ * for none), with the models this stop saw added in first-seen order.
+ */
+export function seenModels(state, seen) {
+  const before = plainObject(state) && Array.isArray(state.models) ? state.models.filter((model) => typeof model === 'string') : []
+  return [...new Set([...before, ...seen.filter((model) => typeof model === 'string')])]
 }
 
 /**

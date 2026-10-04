@@ -81,33 +81,44 @@ const RUNS_TEXT = /(?:^|\s)(?:\S*\/)?(?:sh|bash|zsh|ksh|dash)(?:\s+--?[A-Za-z][\
 const NESTING = 4
 
 // Every literal becomes a numbered placeholder, so the bare and the open reading of a command
-// split into the same segments by construction.
+// split into the same segments by construction. kinds[i] says how literal i reads: S for single
+// quotes, D for double quotes with nothing in them the shell expands or escapes, and X for double
+// quotes holding a $, a backquote or a backslash, for a heredoc body, and for a literal a heredoc
+// was read inside.
 function mask(command) {
   const literals = []
-  const hold = (text) => `\0${literals.push(text) - 1}\0`
+  const kinds = []
+  const hold = (text, kind) => { kinds.push(kind); return `\0${literals.push(text) - 1}\0` }
   const text = String(command)
     .replace(/\0/g, '')
-    .replace(HEREDOC, (_m, _q, _d, rest, body) => `${hold(body)}${rest}`)
+    .replace(HEREDOC, (_m, _q, _d, rest, body) => `${hold(body, 'X')}${rest}`)
     .replace(CONTINUATION, '$1 ')
-    .replace(LITERAL, (literal) => hold(literal.slice(1, -1)))
+    .replace(LITERAL, (literal) => {
+      const inner = literal.slice(1, -1)
+      // A literal that holds a placeholder had a heredoc read inside it: its text is not its value.
+      return hold(inner, inner.includes('\0') ? 'X' : literal[0] === "'" ? 'S' : /[$`\\]/.test(inner) ? 'X' : 'D')
+    })
     .replace(FD_REDIRECT, ' ')
-  return { text, literals }
+  return { text, literals, kinds }
 }
 
 // Each shell segment three ways: `bare` with literals blanked, `open` with their text restored,
-// and `words`, the segment split on whitespace with each literal replaced by OPAQUE in place, so a
-// quoted argument stays one word (or part of one, as in `--message="..."`) and keeps the position
-// a parser of argv needs. OPAQUE is a NUL, which mask() strips from the command, so a word that
-// holds one held a quoted string and equals no plain word. A segment that runs its literals as
-// commands is followed by their segments, read the same way.
+// and `words`, the segment split on whitespace with each literal held in place, so a quoted
+// argument stays one word (or part of one, as in `--message="..."`) and keeps the position a parser
+// of argv needs. A literal in a word is OPAQUE, its kind letter from mask(), its text as lowercase
+// hex, and OPAQUE again. OPAQUE is a NUL, which mask() strips from the command, so a word that
+// holds one held a quoted string and equals no plain word, and the encoding cannot be forged from
+// the command. A segment that runs its literals as commands is followed by their segments, read
+// the same way.
 export const OPAQUE = '\0'
 export function segments(command, depth = 0) {
-  const { text, literals } = mask(command)
+  const { text, literals, kinds } = mask(command)
+  const held = (_m, i) => `${OPAQUE}${kinds[i]}${Buffer.from(literals[i], 'utf8').toString('hex')}${OPAQUE}`
   return text.split(SEPARATOR).flatMap((segment) => {
     const own = {
       bare: segment.replace(PLACEHOLDER, ' '),
       open: segment.replace(PLACEHOLDER, (_m, i) => ` ${literals[i]} `),
-      words: segment.replace(PLACEHOLDER, OPAQUE).split(/\s+/).filter(Boolean),
+      words: segment.replace(PLACEHOLDER, held).split(/\s+/).filter(Boolean),
     }
     if (depth >= NESTING || !RUNS_TEXT.test(segment)) return [own]
     return [own, ...[...segment.matchAll(PLACEHOLDER)].flatMap(([, i]) => segments(literals[i], depth + 1))]

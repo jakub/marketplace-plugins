@@ -128,7 +128,7 @@ node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|rev
  "provider": "claude", "model": "<id>", "effort": "<level>", "worktree": "<path>", "reviewWorktree": null}
 ```
 
-Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. The flow skill's `setup` grants that trust once per machine in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
+Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. It counts as flow's hooks only those of a `flow@` plugin rooted at the flow copy the `seat.mjs` you run belongs to, so open a Codex-family seat with the `seat.mjs` of the flow copy Codex installed. From a Codex session that is `<plugin-root>`. From a Claude session it is another copy, and from the Claude copy every Codex seat is refused `HOOKS_UNTRUSTED`. The flow skill's `setup` grants that trust once per machine in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
 
 ### Start it
 
@@ -142,7 +142,7 @@ Call `delegate_task` with these fields:
 
 Your own PreToolUse hook admits a tagged call only when its `runtimeMode`, provider and model equal the record and the record has not been admitted before.
 
-The child's hooks then hold the seat. UserPromptSubmit binds the child's session to the record and tells it that the Seat Contract governs it. PreToolUse holds it to its access: no spawns, no MCP tool outside a short read-only allowlist, no model CLI, no `case`, function definition or `coproc`, `gh` reads only, git reads only with no `-c`, `GIT_*` variable, `--output` or `--ext-diff`, and edits only inside a writer's worktree. A writer also runs `git add`, `rm`, `mv`, `commit`, `restore`, `stash` and `apply`, each only as `git -C <worktree>`, and every seat is denied `git push`. Stop checks the final message and blocks the child, at most 3 times, with the problems it found.
+The child's hooks then hold the seat. UserPromptSubmit binds the child's session to the record and tells it that the Seat Contract governs it. PreToolUse holds it to its access: no spawns, no MCP tool outside a short read-only allowlist, no model CLI, no `case`, function definition or `coproc`, `gh` reads only, git reads only with no `-c`, `GIT_*` variable, `--output` or `--ext-diff`, and edits only inside a writer's worktree. A quoted git or gh argument counts as the text it quotes, and one expanded at run time that could be an option is denied, so tell a seat to write its git and gh arguments out. A writer also runs `git add`, `rm`, `mv`, `commit`, `restore`, `stash` and `apply`, each only as `git -C <worktree>`, and every seat is denied `git push`. Stop checks the final message and blocks the child, at most 3 times, with the problems it found.
 
 ### The result envelope
 
@@ -165,7 +165,7 @@ A finished child wakes your thread, so end the turn instead of polling. Call `ta
 
 ### Close it and act on the verdict
 
-When `task_status` reports the task `completed`, `failed`, `cancelled` or `interrupted`, pass that `task_status` answer to `close` as JSON:
+When `task_status` reports the task finished, pass that `task_status` answer to `close` as JSON. Finished means its `status` is `completed`, `failed`, `cancelled` or `interrupted`, its `workState` is not `working` or `waiting_for_children`, and `hasPendingChildRuns` is not `true`. `close` refuses any other answer, a running task or an empty object included, with `TASK_NOT_TERMINAL`, writes nothing, and keeps a writer's lease:
 
 ```sh
 node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status JSON>'
@@ -178,16 +178,16 @@ node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status 
  "servedModels": ["<id>"], "blocks": 0, "errors": []}
 ```
 
-`result` is the envelope the Stop hook recorded, and it is `null` for every verdict but `valid`. `reasons` says why the verdict is not `valid`, and `errors` holds the last turn's problem lines from Stop. A `cleanupProblems` list appears only when `close` could not remove a review worktree. Act on the verdict alone:
+`result` is the envelope the Stop hook recorded, and it is `null` for every verdict but `valid`. `reasons` says why the verdict is not `valid`, and `errors` holds the last turn's problem lines from Stop. A `cleanupProblems` list appears only when `close` did not remove a review worktree: it removes one only while the path, its git directory and `git worktree list` still match what `open` recorded, and leaves anything else at that path alone. Act on the verdict alone:
 
 | Verdict | Meaning | Action |
 |---|---|---|
 | `valid` | Every stamp is present and the result matches its recorded sha256. | Use the envelope. A writer's envelope is still a claim, so check its commits against git. |
 | `invalid` | The hooks worked, and the last final message failed the envelope or the schema. | Rerun once with the errors on the same rung, then step up a rung. |
 | `capped` | Stop blocked the child 3 times, then let it end. | Same as `invalid`. |
-| `unknown` | A stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the bind, the result does not match its sha256, or no served model is on record. Nothing proves the hooks held the seat. | Fall back. |
-| `model-mismatch` | The served model differs from the one you asked for. | Discard the answer. A mismatch is not a refusal, so the refusal rule does not count it. |
-| `tree-moved` | The review worktree's HEAD left the head SHA or its tree is dirty, the canonical checkout changed, or the coverage misses a file in the pinned diff. | Treat it as `unknown`. |
+| `unknown` | A stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the bind, the bound session's index entry is void (`session-index-void`) or missing or names another seat (`session-index-mismatch`), the result does not match its sha256, or no served model is on record. Nothing proves the hooks held the seat. | Fall back. |
+| `model-mismatch` | A model seen serving the seat, at the bind or at any stop in any turn, differs from the one you asked for. | Discard the answer. A mismatch is not a refusal, so the refusal rule does not count it. |
+| `tree-moved` | The review worktree's HEAD left the head SHA or its tree is dirty, the canonical checkout's tree, HEAD commit or branch changed, or the coverage misses a file in the pinned diff. | Treat it as `unknown`. |
 
 A seat that made no tool call has no `receipt`, so it reads `unknown`. On Codex, the served-model check covers the model the hooks saw at UserPromptSubmit and at Stop. On Claude, it reads every model the transcript records for the seat's own turns.
 
