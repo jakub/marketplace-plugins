@@ -127,6 +127,7 @@ import { connect } from '../delegate/codex-app-server.mjs'
 import { dropLease, JOB_ID, leaseDirOf, leaseLive } from '../delegate/jobs.mjs'
 import { findExecutable } from '../delegate/providers.mjs'
 import { FINDINGS_SCHEMA, outputSchemaProblem } from '../delegate/schema.mjs'
+import { plainShellWord } from '../lib/seat-policy.mjs'
 import * as store from '../lib/seat-store.mjs'
 import { inside } from '../lib/state-dir.mjs'
 
@@ -298,6 +299,9 @@ async function open(argv) {
   const id = store.newId()
   store.pruneSeats(Date.now(), dropHolders)
   const { top, repoRoot } = repository(opts['--worktree'] ?? process.cwd())
+  if (access === 'workspace-write' && !plainShellWord(realpathSync.native(top))) {
+    fail('BAD_REQUEST', 'A writer\'s worktree path must be a plain shell word (letters, digits and _ . / : @ + , -), because its git writes name it unquoted after -C. Use a worktree under such a path.')
+  }
   const undo = []
   try {
     let worktree = top

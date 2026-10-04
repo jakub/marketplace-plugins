@@ -225,6 +225,13 @@ function editTargets(toolName, toolInput, patchPaths) {
   return targets.length > 0 ? targets : null
 }
 
+// A writer's git writes name its worktree as one unquoted `-C` word, because the shell rules read
+// no quoting. seat.mjs open refuses a writer whose worktree path fails this, so it never opens a
+// seat that could edit but never commit.
+export function plainShellWord(path) {
+  return typeof path === 'string' && /^[A-Za-z0-9_./:@+,-]+$/.test(path)
+}
+
 function realWorktree(record) {
   if (typeof record.worktree !== 'string' || !isAbsolute(record.worktree)) return null
   try { return realpathSync.native(record.worktree) } catch { return null }
@@ -440,7 +447,7 @@ function gitProblem(record, args, gitEnv) {
   }
   const worktree = realWorktree(record)
   const form = sub === 'commit' ? `git -C ${worktree} commit -m <message> -- <paths>` : `git -C ${worktree} ${sub} ...`
-  if (!worktree || !/^[A-Za-z0-9_./:@+,-]+$/.test(worktree)) {
+  if (!worktree || !plainShellWord(worktree)) {
     return 'flow seat (git -C the worktree): this seat\'s worktree path could not be resolved to a plain shell word, so no git write is allowed.'
   }
   if (dirs.length !== 1 || dirs[0] !== worktree || override) {

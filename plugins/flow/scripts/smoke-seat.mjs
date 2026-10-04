@@ -1907,7 +1907,15 @@ const cases = {
       assert.equal(out.error.kind, kind, `${args.join(' ')}: ${out.error.message}`)
       assert.equal(typeof out.error.message, 'string')
     }
+    const spaced = join(tmp, 'has space', 'repo')
+    mkdirSync(spaced, { recursive: true })
+    gitOut(spaced, 'init', '-q')
+    const unaddressable = seatCli(['open', '--access', 'workspace-write', ...base, '--worktree', spaced])
+    assert.equal(unaddressable.ok, false, 'a writer whose worktree path is not a plain shell word opened')
+    assert.equal(unaddressable.error.kind, 'BAD_REQUEST')
+    assert.match(unaddressable.error.message, /plain shell word/)
     assert.deepEqual(before(), snapshot, 'a refused open left a record or a worktree behind')
+    ok('open refuses a writer whose worktree path is not a plain shell word, since its git writes could never name it after -C')
     ok('open refuses a bad access, provider, model or effort, a relative, missing or non-repository --worktree, revisions off a review, a writer with no --worktree, an unknown, repeated or valueless flag (BAD_REQUEST), a review with a missing or unresolvable revision (GIT_REF) or with --schema (BAD_SCHEMA), and leaves no record or worktree behind')
 
     const schemaCase = (name, bytes) => {
