@@ -344,6 +344,9 @@ async function open(argv) {
       try {
         const info = join(commonDir, 'info')
         try { mkdirSync(info, { mode: 0o700 }) } catch (error) { if (error.code !== 'EEXIST') throw error }
+        // ensureExcluded's O_NOFOLLOW guards only the last component, so info itself must be a real
+        // directory, not a symlink that carries the append to a file outside the repository.
+        if (!lstatSync(info).isDirectory()) throw new Error(`${info} is not a real directory`)
         ensureExcluded(join(info, 'exclude'), ['/.flow-worktrees/'])
       } catch (error) { fail('GIT_REF', `/.flow-worktrees/ could not be added to the repository's info/exclude: ${String(error.message).slice(0, 200)}`) }
       const added = git(repoRoot, ['worktree', 'add', '--detach', path, headSha])

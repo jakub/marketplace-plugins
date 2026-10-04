@@ -2040,6 +2040,18 @@ const cases = {
     }
     const exclude = (repo) => readFileSync(join(repo.path, '.git', 'info', 'exclude'), 'utf8')
 
+    // A symlinked info directory would carry the append to a file outside the repository.
+    const linked = reviewRepo('exclude-linked-info')
+    const outside = mkdtempSync(join(tmp, 'outside-info-'))
+    writeFileSync(join(outside, 'exclude'), 'outside\n')
+    rmSync(join(linked.path, '.git', 'info'), { recursive: true, force: true })
+    symlinkSync(outside, join(linked.path, '.git', 'info'))
+    const refusedLink = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', linked.base, '--head', linked.head], { cwd: linked.path })
+    assert.equal(refusedLink.ok, false, 'a review seat opened through a symlinked .git/info')
+    assert.equal(refusedLink.error.kind, 'GIT_REF')
+    assert.equal(readFileSync(join(outside, 'exclude'), 'utf8'), 'outside\n', 'open wrote through a symlinked .git/info')
+    ok('open refuses a review seat whose .git/info is a symlink and writes nothing through it')
+
     const bare = reviewRepo('exclude-no-info')
     rmSync(join(bare.path, '.git', 'info'), { recursive: true })
     openReview(bare)
