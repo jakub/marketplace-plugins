@@ -1,7 +1,7 @@
 ---
 name: prep
 description: Design-harden an issue OR a free-text idea/spike into ready-for-agent. Nothing enters the issue tracker except through here; this stage creates new issues and revises existing ones. MUST only run when the human explicitly asks to prep or grill a specific issue or idea; never start it from adjacent work, a discovered defect, or a 'what next' survey.
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Skill, AskUserQuestion, Agent, SendMessage, TaskOutput, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor, mcp__t3-code__orchestrator_capabilities, mcp__t3-code__delegate_task, mcp__t3-code__task_status, mcp__t3-code__task_cancel
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Skill, AskUserQuestion, Agent, SendMessage, TaskOutput, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor, mcp__t3-code__orchestrator_capabilities, mcp__t3-code__delegate_task, mcp__t3-code__task_status, mcp__t3-code__task_cancel, mcp__t3-code__t3_thread_send
 ---
 
 # prep: the front door
@@ -88,7 +88,7 @@ Write one line naming the outcome (ready for the issue stage, done now, split, o
 
 **Mutual critique.** `SendMessage` carries the other family's sheet to the native leg, so launch that leg as a background `Agent` call.
 
-**Inside T3.** Every scout and both design legs are T3 seats, run through `mcp__t3-code__delegate_task` as the `delegate` skill's `## T3 seats` says. Launch them together and let their wakes bring the sheets in, reading one with `mcp__t3-code__task_status` only when you need it mid-turn. Act on each seat's `seat close` verdict, never on its `summary`. For mutual critique, a T3 leg gets a fresh read-only seat with both sheets inline in its task, not a continuation of the finished child. A seat that falls back runs as a background `Agent` call or through `flow_delegate`, and critiques the way this subsection says above.
+**Inside T3.** Every scout and both design legs are T3 seats, run through `mcp__t3-code__delegate_task` as the `delegate` skill's `## T3 seats` says. Launch them together and let their wakes bring the sheets in, reading one with `mcp__t3-code__task_status` only when you need it mid-turn. Act on each seat's `seat close` verdict, never on its `summary`. For mutual critique, continue each finished T3 leg before you close it: `mcp__t3-code__t3_thread_send` carries the rival sheet to the leg's `childThreadId`, the leg answers in a new turn, and its Stop requires a fresh envelope for that turn. Close the seat after the critique turn finishes. A seat that falls back runs as a background `Agent` call or through `flow_delegate`, and critiques the way this subsection says above.
 
 **Grill.** `grill-with-docs` through the `Skill` tool, when the grill plugin is installed.
 
@@ -100,7 +100,7 @@ Write one line naming the outcome (ready for the issue stage, done now, split, o
 
 **Mutual critique.** `followup_task` on the native leg carries the sheet and starts its next turn. `send_message` only queues text and resumes nothing.
 
-**Inside T3.** Every scout and both design legs are T3 seats, run through `mcp__t3_code__delegate_task` as the `delegate` skill's `## T3 seats` says. Launch them together and let their wakes bring the sheets in, reading one with `mcp__t3_code__task_status` only when you need it mid-turn. Act on each seat's `seat close` verdict, never on its `summary`. For mutual critique, a T3 leg gets a fresh read-only seat with both sheets inline in its task, not a `followup_task` or a continuation of the finished child. A seat that falls back runs as a native spawn or through `flow_delegate`, and critiques the way this subsection says above.
+**Inside T3.** Every scout and both design legs are T3 seats, run through `mcp__t3_code__delegate_task` as the `delegate` skill's `## T3 seats` says. Launch them together and let their wakes bring the sheets in, reading one with `mcp__t3_code__task_status` only when you need it mid-turn. Act on each seat's `seat close` verdict, never on its `summary`. For mutual critique, continue each finished T3 leg before you close it: `mcp__t3_code__t3_thread_send` carries the rival sheet to the leg's `childThreadId`, the leg answers in a new turn, and its Stop requires a fresh envelope for that turn. Close the seat after the critique turn finishes. A seat that falls back runs as a native spawn or through `flow_delegate`, and critiques the way this subsection says above.
 
 **Grill.** `$grill:grill-with-docs`. With no Skill tool here, that skill reads its sibling skills by path, as its own text says. Rounds are one question per turn.
 

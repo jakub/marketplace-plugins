@@ -157,7 +157,9 @@ The child's final message is one JSON object in the flow envelope:
 
 `answer` follows the schema you gave `open`. A writer adds `commits: [{sha, subject}]`. A review's `answer` is the findings schema that `adversarial-review` jobs use, and its `coverage` replaces the follow-up question a delegated review's `findings: []` needs. Say in the task that the final message is this envelope. Stop holds the child to it either way.
 
-Writers in one worktree run at the same time on disjoint files, as native writers do. Each T3 writer commits its own paths with `git -C <worktree> commit -- <paths>`. Put that form in the writer's task: the child's shell starts in the canonical checkout, where a bare `git commit` would land on the wrong branch, so the hooks deny it.
+Writers in one worktree run at the same time on disjoint files, as native writers do. Each T3 writer commits its own paths with `git -C <worktree> commit -- <paths>`. Put that form in the writer's task: the child's shell starts in the canonical checkout, where a bare `git commit` would land on the wrong branch, so the hooks deny it. A Codex writer's sandbox keeps `.git` read-only, so its first `git add` asks for a wider write, which T3's `auto` mode grants through its auto-reviewer.
+
+To give a finished seat another round, send it a message with `t3_thread_send` to its `childThreadId` before you close it. The child answers in a new turn, and Stop requires a fresh envelope for that turn, so `close` judges the latest turn.
 
 ### Wait
 
