@@ -742,10 +742,14 @@ const cases = {
     const badTime = store.writeRecord(RECORD({ createdAt: old }), null).id
     store.stamp(badTime, 'closed', { at: 'not a time' })
     store.voidSession('claude', 'no-id', null, 'tag-not-on-line-1')
+    const corrupt = store.writeRecord(RECORD({ createdAt: old }), null).id
+    store.stamp(corrupt, 'closed', { at: old, verdict: 'valid' })
+    writeFileSync(join(seats, corrupt, 'record.json'), '{"v":1,')
 
     const { removed, retained } = store.pruneSeats(now)
     assert.deepEqual(removed, [oldClosed])
-    assert.deepEqual(retained.sort(), [recentClosed, admittedOpen, badTime].sort())
+    assert.deepEqual(retained.sort(), [recentClosed, admittedOpen, badTime, corrupt].sort())
+    assert.ok(existsSync(join(seats, corrupt)), 'prune removed a closed record whose record.json it could not read')
     assert.equal(existsSync(join(seats, oldClosed)), false)
     assert.equal(store.readIndex('claude', 'old-closed'), null)
     assert.equal(store.readIndex('codex', 'old-closed-void'), null)
@@ -1750,6 +1754,18 @@ const cases = {
     const out = closeSeat(unanswered.id)
     assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['turn-without-result'], null], JSON.stringify(out))
     ok('a follow-up prompt in a bound seat records the turn it opens, and close reads a seat whose latest opened turn has no stop as unknown (turn-without-result), not as the earlier turn\'s valid result')
+
+    // A follow-up turn that cannot be recorded does not run: a directory where state.json belongs
+    // fails the write for any user.
+    const unrecorded = firstTurn()
+    const statePath = join(seats, unrecorded.id, 'state.json')
+    const stateBytes = readFileSync(statePath)
+    rmSync(statePath)
+    mkdirSync(statePath)
+    let run
+    try { run = guard('prompt', host, promptCall(host, unrecorded.session, 'Look again.', { turn_id: randomUUID() })) } finally { rmSync(statePath, { recursive: true }); writeFileSync(statePath, stateBytes) }
+    blocked(run, /could not be recorded/, 'unrecordable follow-up')
+    ok('a follow-up prompt whose turn cannot be recorded is blocked, so close never judges an unrecorded turn by the earlier result')
 
     const answered = firstTurn()
     const key = followUp(answered)

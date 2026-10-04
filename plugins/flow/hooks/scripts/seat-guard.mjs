@@ -114,7 +114,9 @@ async function continued(input) {
     const state = prior !== null && typeof prior === 'object' && !Array.isArray(prior) ? prior : {}
     store.writeState(entry.id, { ...state, opened: policy.turnKeyOf(host === 'claude' ? input.prompt_id : input.turn_id) })
   } catch (error) {
+    // An unrecorded turn would let close judge the earlier turn's result, so the turn does not run.
     complain(`prompt: ${error.message}`)
+    answer(promptBlock('flow seat: this turn could not be recorded on the seat record, so it does not run. The parent can retry the message or close the seat.'))
   }
 }
 

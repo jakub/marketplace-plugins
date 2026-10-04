@@ -288,8 +288,9 @@ export function readResult(id, n) {
  * Close stamps a record closed before it drops a writer's lease holder, so a close that died
  * between the two leaves a closed record with a holder, and a record pruned past that would leave
  * the holder with no closed record to say it is a leftover. release(id, record) is the caller's
- * way to drop the holder: it gets the record as record.json reads (null when that is unreadable)
- * and returns true once no holder of the seat remains. The record stays until it does. This module
+ * way to drop the holder: it gets the record and returns true once no holder of the seat remains.
+ * A record whose record.json is unreadable is kept without calling it, since nothing says where
+ * a writer's holder would be. The record stays until it does. This module
  * does not import the lease code, because a hook loads it on every call.
  */
 export function pruneSeats(now = Date.now(), release = () => true) {
@@ -300,7 +301,10 @@ export function pruneSeats(now = Date.now(), release = () => true) {
   for (const name of names.filter((entry) => ID.test(entry))) {
     const at = Date.parse(readStamp(name, 'closed')?.at)
     if (Number.isFinite(at) && now - at > RETENTION_MS) {
-      if (!release(name, readJson(join(seatsRoot(), name, 'record.json')))) {
+      // An unreadable record can't say where a writer's holder lives, so it is kept rather than
+      // pruned into an orphaned holder that reads busy forever.
+      const record = readJson(join(seatsRoot(), name, 'record.json'))
+      if (record === null || !release(name, record)) {
         retained.push(name)
         continue
       }
