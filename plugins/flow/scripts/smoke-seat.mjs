@@ -32,6 +32,7 @@ const state = join(tmp, 'state')
 process.env.FLOW_DELEGATION_STATE_DIR = state
 const store = await import(pathToFileURL(STORE).href)
 const wire = await import(pathToFileURL(join(PLUGIN, 'hooks', 'scripts', 'wire.mjs')).href)
+const seatPolicy = await import(pathToFileURL(join(PLUGIN, 'lib', 'seat-policy.mjs')).href)
 const { RETENTION_MS } = await import(pathToFileURL(join(PLUGIN, 'lib', 'state-dir.mjs')).href)
 const schemas = await import(pathToFileURL(join(PLUGIN, 'delegate', 'schema.mjs')).href)
 
@@ -2022,6 +2023,50 @@ const cases = {
     }
     for (const path of ['relative.json', join(tmp, 'no-such-schema.json')]) assert.equal(seatCli(['open', '--access', 'read-only', ...base, '--schema', path]).error.kind, 'BAD_SCHEMA')
     ok('--schema is admitted up to 16 KiB under outputSchema\'s keyword rules, and a larger, unparsable, non-object, unchecked-keyword, relative or missing one is BAD_SCHEMA')
+  },
+
+  'open-context-budget': () => {
+    // The seat context repeats the record's paths, and a writer's repeats its worktree three times
+    // and the repository once, so a path of about 1.6 KB cannot be delivered under the 6000-byte
+    // hook budget even with the schema left out by path.
+    const LIMIT = 6000
+    const base = ['--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high']
+    const chain = (name, parts) => {
+      const path = join(tmp, 'long', name, ...Array.from({ length: parts }, (_, at) => `${at}${'d'.repeat(199)}`))
+      mkdirSync(path, { recursive: true })
+      gitOut(path, 'init', '-q')
+      return realpathSync(path)
+    }
+    const seatDirs = () => (existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [])
+
+    const tooLong = chain('too-long', 8)
+    assert.ok(tooLong.length > 1600, `${tooLong.length}`)
+    const dirsBefore = seatDirs()
+    const refused = seatCli(['open', '--access', 'workspace-write', ...base, '--worktree', tooLong])
+    assert.equal(refused.ok, false, 'a seat whose context cannot fit the hook budget opened')
+    assert.equal(refused.error.kind, 'BAD_REQUEST')
+    assert.match(refused.error.message, /longer than the 6000-byte hook budget; use shorter paths/)
+    assert.deepEqual(seatDirs(), dirsBefore, 'the refused open left a seat directory behind')
+    assert.equal(existsSync(jobs.leaseDirOf(tooLong)), false, 'the refused open left a lease holder behind')
+    assert.throws(() => seatPolicy.seatContext({ ...RECORD({ access: 'workspace-write' }), worktree: tooLong, repoRoot: tooLong }, SCHEMA, '/s/schema.json'), { code: 'CONTEXT_TOO_LONG' })
+    ok('open refuses a writer whose long paths make the context past 6000 bytes, BAD_REQUEST, leaving no seat record and no lease holder')
+
+    const fitting = chain('fitting', 4)
+    const schemaFile = join(tmp, 'long-answer-schema.json')
+    writeFileSync(schemaFile, JSON.stringify({ ...SCHEMA, description: 'a'.repeat(LIMIT) }))
+    const opened = seatCli(['open', '--access', 'workspace-write', ...base, '--worktree', fitting, '--schema', schemaFile])
+    assert.equal(opened.ok, true, JSON.stringify(opened))
+    const loaded = store.readRecord(opened.id)
+    const path = join(seats, opened.id, 'schema.json')
+    const text = seatPolicy.seatContext(loaded.record, loaded.schema, path)
+    assert.ok(Buffer.byteLength(text) <= LIMIT && Buffer.byteLength(text) > LIMIT - 2000, `${Buffer.byteLength(text)} bytes`)
+    assert.ok(text.includes(path) && !text.includes('aaaaaaaaaa'), 'the long-path context did not name the schema file in place of the schema')
+    assert.match(text, /Read that file before you write your final message/)
+    ok('a writer with long paths whose fallback context still fits opens, and its context, with the schema left out by path, is at most 6000 bytes')
+
+    const normal = seatCli(['open', '--access', 'read-only', ...base])
+    assert.equal(normal.ok, true)
+    ok('a normal open still works')
   },
 
   'open-lease': async () => {

@@ -708,7 +708,9 @@ export function failedStop(record, state, errors) {
  * the record (schema, null when the seat has none). The schema is inlined only while the whole
  * context stays within CONTEXT_BYTES; past that, the context names schemaPath, the absolute path
  * of the record's schema.json, and tells the seat to read it. The Seat Contract itself arrived at
- * SessionStart and is not repeated.
+ * SessionStart and is not repeated. The context returned is always within CONTEXT_BYTES: the
+ * record's paths repeat in it, so a context that cannot fit even with the schema left out by path
+ * throws a CONTEXT_TOO_LONG error, which seat.mjs open turns into a refusal before it writes anything.
  */
 export function seatContext(record, schema = null, schemaPath = null) {
   const lines = [
@@ -738,12 +740,19 @@ export function seatContext(record, schema = null, schemaPath = null) {
   if (record.access === 'workspace-write') lines.push('commits lists every commit you made, each with its full SHA.')
   if (schema === null) {
     lines.push('`answer` is the JSON value your task asks for; this seat has no answer schema.')
-    return lines.join('\n')
+    return withinBudget(lines.join('\n'))
   }
   const inline = [...lines, '`answer` must match this JSON Schema:', JSON.stringify(schema)].join('\n')
   if (Buffer.byteLength(inline) <= CONTEXT_BYTES) return inline
   lines.push(`\`answer\` must match the JSON Schema in ${schemaPath}, which is too long to repeat here. Read that file before you write your final message.`)
-  return lines.join('\n')
+  return withinBudget(lines.join('\n'))
+}
+
+// The text, or a CONTEXT_TOO_LONG error when it is past CONTEXT_BYTES: a context Codex may cut
+// would lose its last lines, the read-the-schema instruction among them.
+function withinBudget(text) {
+  if (Buffer.byteLength(text) <= CONTEXT_BYTES) return text
+  throw Object.assign(new Error(`the seat context is ${Buffer.byteLength(text)} bytes, over the ${CONTEXT_BYTES}-byte hook budget`), { code: 'CONTEXT_TOO_LONG' })
 }
 
 /**

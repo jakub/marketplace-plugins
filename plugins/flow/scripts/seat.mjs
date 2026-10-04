@@ -28,7 +28,7 @@
 // hook trust (below) and refuse with HOOKS_UNTRUSTED unless every flow hook is there, enabled and
 // trusted, recording the digest of the keys and hashes it read as hooksDigest; for a writer, hold
 // the worktree's write lease directory (below); for a review, snapshot the canonical checkout
-// with tree-snapshot.mjs and add its HEAD commit and the branch HEAD names; then write the schema and the record, last, through lib/seat-store.mjs.
+// with tree-snapshot.mjs and add its HEAD commit and the branch HEAD names; then write the schema and the record, last, through lib/seat-store.mjs. Before the holder, open builds the seat's context as the prompt hook will (with the real schema.json path) and refuses BAD_REQUEST when the paths make it past the 6000-byte hook budget even with the schema left out by path.
 // A failure undoes whatever this run created, the review worktree and the lease holder, so a
 // refused open leaves nothing behind, with one exception under The lease.
 //
@@ -149,7 +149,7 @@ import { connect } from '../delegate/codex-app-server.mjs'
 import { dropLease, JOB_ID, leaseDirOf, leaseLive } from '../delegate/jobs.mjs'
 import { findExecutable } from '../delegate/providers.mjs'
 import { FINDINGS_SCHEMA, outputSchemaProblem } from '../delegate/schema.mjs'
-import { plainShellWord } from '../lib/seat-policy.mjs'
+import { plainShellWord, seatContext } from '../lib/seat-policy.mjs'
 import * as store from '../lib/seat-store.mjs'
 import { inside } from '../lib/state-dir.mjs'
 
@@ -348,6 +348,16 @@ async function open(argv) {
     // The trust read can take a minute, so it comes before the holder: nothing slow may sit between
     // the holder and the record (see The lease, above).
     const digest = provider === 'codex' ? await seatTrust(repoRoot) : null
+    const record = {
+      v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, reviewGitDir, baseSha, headSha,
+      provider, model, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot: null, hooksDigest: digest,
+    }
+    // The seat's context repeats its paths, and the prompt hook cannot deliver one past the hook
+    // budget, so a seat whose context cannot fit is refused here, before the holder and the record.
+    try { seatContext(record, schema, join(store.seatDir(id), 'schema.json')) } catch (error) {
+      if (error.code !== 'CONTEXT_TOO_LONG') throw error
+      fail('BAD_REQUEST', 'The seat\'s paths make its context longer than the 6000-byte hook budget; use shorter paths.')
+    }
     if (access === 'workspace-write') {
       holdWorktree(worktree, id)
       undo.push(() => dropLease(leaseDirOf(worktree), id))
@@ -356,10 +366,7 @@ async function open(argv) {
       canonicalSnapshot = canonicalState(repoRoot)
       if (!canonicalSnapshot) fail('GIT_REF', 'The canonical checkout could not be snapshotted.')
     }
-    store.writeRecord({
-      v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, reviewGitDir, baseSha, headSha,
-      provider, model, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot, hooksDigest: digest,
-    }, schema)
+    store.writeRecord({ ...record, canonicalSnapshot }, schema)
     if (access === 'workspace-write' && !holdLive(worktree, id)) {
       const reason = 'a write job took the lease holder over as abandoned before the record was written'
       store.stamp(id, 'void', { reason: 'lease-lost-at-open' })
