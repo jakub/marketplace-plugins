@@ -268,12 +268,14 @@ function resolveTarget(target, cwd) {
 // A guardrail for a confused seat, at the parity native seats have, not a sandbox. Each rule
 // reads hook-policy's segments(): every segment of the command with its quoted text and heredoc
 // bodies blanked, and a string a shell or eval runs (`bash -c '...'`) read again as segments of
-// its own. A rule looks at the command word: the first word after VAR=value assignments, with a
+// its own. A rule looks at the command word: the first word after VAR=value assignments, shell
+// keywords (`if`, `then`, `while`, `!` and the rest of KEYWORDS) and a group's `(` or `{`, with a
 // leading backslash stripped and a path reduced to its basename, followed through the WRAPPERS
-// below to the command they run. That catches the plain forms a seat writes, `git push`,
-// `env codex`, `bash -c "gh pr create"`. It does not catch a command word or argument that is
-// quoted, escaped or expanded, a command run by `source`, a command substitution or a command
-// built at run time, a command after a shell keyword or inside a group, or a command a wrapper off
+// below to the command they run, and for `find` into the command after -exec, -execdir, -ok or
+// -okdir. That catches the plain forms a seat writes, `git push`, `env codex`, `(git push)`,
+// `if git push; then`, `bash -c "gh pr create"`. It does not catch a command word or argument that
+// is quoted, escaped or expanded, a command run by `source`, a command substitution or a command
+// built at run time, a find command after the first `\;` of its -exec, or a command a wrapper off
 // the list runs. A Bash write outside the worktree is not read at all, and a read-only seat is
 // read-only by instruction for Bash. Native seats run Bash under the same posture.
 //
@@ -300,7 +302,14 @@ const WRAPPERS = new Map(Object.entries({
   sudo: ['-u', '--user', '-g', '--group', '-U', '--other-user', '-C', '--close-from', '-D', '--chdir', '-p', '--prompt', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-R', '--chroot', '--host'],
   time: ['-f', '--format', '-o', '--output'], stdbuf: ['-i', '--input', '-o', '--output', '-e', '--error'],
   npx: RUNNER, bunx: RUNNER, pnpx: RUNNER, sh: SHELL, bash: SHELL, zsh: SHELL,
+  watch: ['-n', '--interval'], eval: [],
 }))
+// Reserved words that stand before a command, skipped as a wrapper is. A group's `(` or `{`, stuck
+// to the word or standing apart, is skipped the same way, and a `)` closing the segment is dropped.
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!'])
+// The options of find that run a command. `-exec ... \;` ends with its segment, so the command is the
+// rest of the words; `-exec ... {} +` ends at the `+`, and what follows is find's again.
+const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir'])
 // `command -v` and `command -V` look a name up and run nothing.
 const LOOKUP = /^-p*[vV]/
 // A GIT_* variable set or exported anywhere in a command that runs git. A reference sets nothing.
@@ -319,9 +328,7 @@ function shellProblem(record, command, background) {
   if (background === true || segments(command.replace(LONE_AMPERSAND, ` ${MARK} `)).some(({ bare }) => bare.includes(MARK))) return NO_BACKGROUND
   const reads = segments(command.replace(AMPERSAND_REDIRECT, '>')).map(({ bare }) => argvOf(bare.split(/\\?\s+/).filter(Boolean)))
   const gitEnv = reads.some((words) => words.some((word) => GIT_ENV.test(word)))
-  for (const words of reads) {
-    const found = commandOf(words)
-    if (!found) continue
+  for (const found of reads.flatMap(commandsOf)) {
     const { name, args } = found
     if (MODEL_CLIS.has(name)) {
       return `flow seat (no model through the shell): \`${name}\` reaches a model, and a seat reaches none through the shell. Do the work in this session.`
@@ -347,12 +354,28 @@ function argvOf(words) {
   return argv
 }
 
+// Every command a segment runs: its command word, and for `find` each command after an -exec.
+function commandsOf(words) {
+  const found = commandOf(words)
+  if (!found) return []
+  const runs = [found]
+  if (found.name !== 'find') return runs
+  for (let at = 0; at < found.args.length; at++) {
+    if (!FIND_EXEC.has(found.args[at])) continue
+    const end = found.args.indexOf('+', at)
+    runs.push(...commandsOf(found.args.slice(at + 1, end < 0 ? undefined : end)))
+  }
+  return runs
+}
+
 // The command words run: {name, args}, or null when the segment runs no command.
 function commandOf(words) {
+  words = words.length ? [...words.slice(0, -1), words.at(-1).replace(/\)+$/, '')].filter(Boolean) : words
   let runner = false
   for (let at = 0; at < words.length;) {
-    if (ASSIGNMENT.test(words[at])) { at++; continue }
-    const word = words[at].replace(/^\\/, '')
+    const open = words[at].replace(/^[({]+/, '')
+    if (open === '' || KEYWORDS.has(open) || ASSIGNMENT.test(open)) { at++; continue }
+    const word = open.replace(/^\\/, '')
     let name = word.slice(word.lastIndexOf('/') + 1)
     if (runner) name = name.split('@')[0]
     const npmExec = name === 'npm' && ['exec', 'x'].includes(words[at + 1])

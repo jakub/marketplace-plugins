@@ -1332,6 +1332,30 @@ const cases = {
     ok('sudo, command, builtin, time, stdbuf, env (-S included), nice, timeout and xargs are followed, chained, to the command they run; command -v is a lookup')
   },
 
+  'bash-keywords': () => {
+    const push = /\(no git push\)/
+    const model = /\(no model/
+    const refused = [
+      ['(git push origin HEAD)', push], ['( git push )', push], ['{ git push; }', push], ['if git push; then :; fi', push], ['while codex exec x; do :; done', model],
+      ['until git push; do :; done', push], ['if :; then git push; else :; fi', push], ['if :; then :; else git push; fi', push], ['if :; then :; elif git push; then :; fi', push], ['for x in a; do git push; done', push],
+      ['! git push', push], ['watch git push', push], ['watch -n 5 git push', push], ['eval git push', push],
+      ['find . -exec git push \\;', push], ['find . -execdir codex exec x +', model], ['find . -ok git push \\;', push], ['find . -okdir git push {} +', push],
+      ['find . -exec env git push \\;', push], ['nice find . -exec git push \\;', push],
+    ]
+    const allowed = [
+      'if test -f x; then cat x; fi', '(cd /tmp && ls)', '(git status)', '( git log -1 )', '{ ls; }', "find . -name '*.mjs' -exec grep -l stateDir {} +", 'find . -exec echo {} \\;', 'find . -exec node -e 1 {} + -name seat.mjs',
+      'watch -n1 ls', 'watch -n 1 git status', 'eval ls', 'while read x; do echo $x; done', '! test -f x', 'echo if then git push',
+    ]
+    for (const host of ['claude', 'codex']) {
+      for (const access of ['read-only', 'workspace-write']) {
+        const { session } = boundSeat(host, access)
+        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+      }
+    }
+    ok('the command word is read past if, then, else, elif, do, while, until, !, a group\'s ( or { and watch and eval, and into the command after find -exec, -execdir, -ok or -okdir; a command that merely sits in the keyword\'s place runs')
+  },
+
   'bash-git-overrides': () => {
     const config = /\(git configuration\)/
     const output = /\(git output\)/
