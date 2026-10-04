@@ -120,7 +120,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../delegate/codex-app-server.mjs'
@@ -296,7 +296,7 @@ async function open(argv) {
   const schema = review ? FINDINGS_SCHEMA : opts['--schema'] === undefined ? null : readSchema(opts['--schema'])
 
   const id = store.newId()
-  store.pruneSeats()
+  store.pruneSeats(Date.now(), dropHolders)
   const { top, repoRoot } = repository(opts['--worktree'] ?? process.cwd())
   const undo = []
   try {
@@ -611,12 +611,19 @@ function judge(id, loaded) {
   return { verdict: 'valid', reasons: [], facts }
 }
 
+// Drop a writer seat's lease holder, live or still pending, from its worktree's lease directory.
+// True when none of its holders is left, and when the record names no worktree to look in.
+function dropHolders(id, record) {
+  if (record?.access !== 'workspace-write' || typeof record.worktree !== 'string') return true
+  const dir = leaseDirOf(record.worktree)
+  for (const holder of [`${id}.live`, id]) dropLease(dir, holder)
+  return [`${id}.live`, id].every((holder) => lstatSync(join(dir, holder), { throwIfNoEntry: false }) === undefined)
+}
+
 function cleanup(id, record) {
   const problems = []
   if (!record) return problems
-  if (record.access === 'workspace-write' && typeof record.worktree === 'string') {
-    for (const holder of [`${id}.live`, id]) dropLease(leaseDirOf(record.worktree), holder)
-  }
+  dropHolders(id, record)
   const path = typeof record.repoRoot === 'string' ? join(record.repoRoot, '.flow-worktrees', `review-${id}`) : null
   if (record.access === 'review' && path && record.reviewWorktree === path && existsSync(path)) {
     if (!openedReview(record, path)) problems.push(`the worktree at ${path} is not the one this seat opened, so it was left in place`)

@@ -289,7 +289,7 @@ function resolveTarget(target, cwd) {
 // background, and no seat opens or closes a seat.
 
 const MODEL_CLIS = new Set(['claude', 'codex', 'flow-delegate'])
-const DETACHES = new Set(['setsid', 'disown'])
+const DETACHES = new Set(['setsid', 'disown', 'coproc'])
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 // The wrappers followed to the command they run, each with the options that take a separate value.
 // timeout's duration is skipped too. A package runner runs the command its package spec names.
@@ -322,7 +322,7 @@ const MARK = '\u0001'
 // `&>file` and `>&file` redirect as plainly as `>file`; segments() would leave their target as a word.
 const AMPERSAND_REDIRECT = /&>|>&(?![\d-])/g
 
-const NO_BACKGROUND = 'flow seat (no background): a seat runs every command in the foreground and watches it finish, so `&`, setsid, disown and run_in_background are denied. Run the command and wait for it.'
+const NO_BACKGROUND = 'flow seat (no background): a seat runs every command in the foreground and watches it finish, so `&`, setsid, disown, coproc and run_in_background are denied. Run the command and wait for it.'
 
 function shellProblem(record, command, background) {
   if (background === true || segments(command.replace(LONE_AMPERSAND, ` ${MARK} `)).some(({ bare }) => bare.includes(MARK))) return NO_BACKGROUND

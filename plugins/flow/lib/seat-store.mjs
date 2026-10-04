@@ -281,8 +281,15 @@ export function readResult(id, n) {
  * or the parent reconciles it; so does one whose closed stamp has no readable time. A void index
  * entry that names no seat ({id: null}, from a prompt whose tag was not on line 1) has no record to
  * go with, so it goes once its file is older than RETENTION_MS.
+ *
+ * Close stamps a record closed before it drops a writer's lease holder, so a close that died
+ * between the two leaves a closed record with a holder, and a record pruned past that would leave
+ * the holder with no closed record to say it is a leftover. release(id, record) is the caller's
+ * way to drop the holder: it gets the record as record.json reads (null when that is unreadable)
+ * and returns true once no holder of the seat remains. The record stays until it does. This module
+ * does not import the lease code, because a hook loads it on every call.
  */
-export function pruneSeats(now = Date.now()) {
+export function pruneSeats(now = Date.now(), release = () => true) {
   const removed = []
   const retained = []
   let names
@@ -290,6 +297,10 @@ export function pruneSeats(now = Date.now()) {
   for (const name of names.filter((entry) => ID.test(entry))) {
     const at = Date.parse(readStamp(name, 'closed')?.at)
     if (Number.isFinite(at) && now - at > RETENTION_MS) {
+      if (!release(name, readJson(join(seatsRoot(), name, 'record.json')))) {
+        retained.push(name)
+        continue
+      }
       rmSync(join(seatsRoot(), name), { recursive: true, force: true })
       removed.push(name)
     } else retained.push(name)

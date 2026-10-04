@@ -1279,6 +1279,7 @@ const cases = {
     const refused = [
       'sleep 60 &', 'npm test & echo started', 'make&', 'nohup node server.js &', 'nohup node server.js > out.log 2>&1 &', '(sleep 5; ls) &',
       'bash -c \'sleep 9 &\'', 'setsid node server.js', 'setsid -f ls', 'ls; disown', 'env setsid ls', 'sudo setsid ls',
+      'coproc git push origin HEAD', 'coproc codex exec t', 'coproc sleep 60', 'ls; coproc { sleep 60; }', 'env coproc ls',
     ]
     const allowed = [
       'ls && echo ok', 'ls 2>&1 | head', 'ls &>/dev/null', 'ls >&2', 'cat <&0', 'ls |& cat', 'echo "a & b"', 'gh api "repos/o/r/pulls?a=1&b=2"',
@@ -1293,7 +1294,7 @@ const cases = {
         silent(seatCall(host, session, 'Bash', { command: 'npm test', run_in_background: false }), `${host} ${access} run_in_background false`)
       }
     }
-    ok('every seat is denied a lone & (in a string a shell runs too), setsid, disown and Bash run_in_background; &&, 2>&1, &>, >&2, <&0, |& and an & in quoted text or a heredoc body run, and nohup runs as a wrapper in the foreground')
+    ok('every seat is denied a lone & (in a string a shell runs too), setsid, disown, coproc and Bash run_in_background; &&, 2>&1, &>, >&2, <&0, |& and an & in quoted text or a heredoc body run, and nohup runs as a wrapper in the foreground')
   },
 
   'bash-not-writer': () => {
@@ -2005,6 +2006,24 @@ const cases = {
     assert.deepEqual(readdirSync(jobs.leaseDirOf(pending)), [after.id], 'a closed seat\'s leftover holder was not dropped')
     jobs.releaseLease(after)
     ok('a holder whose seat record is not yet written refuses a write job, and a closed seat\'s leftover holder is dropped and the job takes the lease')
+
+    // A close that died after its closed stamp and before it dropped the holder leaves a closed
+    // record with a live holder. Once the record ages past retention, prune must drop the holder
+    // with it: a holder with no record reads as a live seat's, and holds the worktree forever.
+    const interrupted = gitWorktree('lease-interrupted')
+    const orphan = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', interrupted])
+    assert.equal(orphan.ok, true, JSON.stringify(orphan))
+    const longAgo = new Date(Date.now() - RETENTION_MS - 60_000).toISOString()
+    assert.equal(store.stamp(orphan.id, 'closed', { at: longAgo, verdict: 'unknown', reasons: [] }), true)
+    assert.deepEqual(readdirSync(jobs.leaseDirOf(interrupted)), [`${orphan.id}.live`])
+    const sweeper = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', interrupted])
+    assert.equal(sweeper.ok, true, JSON.stringify(sweeper))
+    assert.equal(store.readRecord(orphan.id), null, 'the closed record past retention was not pruned')
+    assert.equal(existsSync(jobs.leaseDirOf(interrupted)), false, "prune left the closed seat's holder behind")
+    const unblocked = jobRecord(interrupted, 'queued')
+    jobs.acquireLease(unblocked)
+    jobs.releaseLease(unblocked)
+    ok("prune drops a closed record's leftover lease holder before the record, so a close that died between its stamp and its drop no longer blocks the worktree once the record ages out")
 
     // A holder whose open died before the record: past the minute it is abandoned and dropped. A
     // holder with a record holds however old it is, and one inside the minute still holds.
