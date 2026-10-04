@@ -1131,10 +1131,12 @@ const cases = {
       const { id, session } = boundSeat(host, 'read-only')
       const key = randomUUID()
       silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), key)), `${host} valid answer`)
-      assert.deepEqual(store.readState(id), { turn: 1, turnKey: key, blocks: 0, outcome: 'valid', errors: [], stops: 1 })
+      const messageSha256 = sha256(JSON.stringify(ENVELOPE_OK))
+      assert.deepEqual(store.readState(id), { turn: 1, turnKey: key, blocks: 0, outcome: 'valid', errors: [], stops: 1, messageSha256 })
       const result = store.readResult(id, 1)
       assert.equal(result.intact, true)
       assert.deepEqual(result.body.envelope, ENVELOPE_OK)
+      assert.equal(result.body.messageSha256, messageSha256)
       assert.deepEqual(result.body.servedModels, host === 'codex' ? [MODELS.codex] : [], `${host} served models`)
       assert.ok(Number.isFinite(Date.parse(result.body.at)))
       assert.equal(readFileSync(join(seats, id, 'result-1.sha256'), 'utf8').trim(), sha256(readFileSync(join(seats, id, 'result-1.json'))))
@@ -1199,7 +1201,7 @@ const cases = {
         assert.match(lines.at(-1), /^Your final message is one JSON object, alone or as the whole of one fenced block: \{"status"/)
         assert.ok(lines.slice(1, -1).every((line) => /^\$\S*: /.test(line)) && lines.length - 2 <= 10, `${host} ${what}: ${reason}`)
         const state = store.readState(id)
-        assert.deepEqual({ ...state, errors: undefined }, { turn: 1, turnKey: key, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1 })
+        assert.deepEqual({ ...state, errors: undefined }, { turn: 1, turnKey: key, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1, messageSha256: sha256(message) })
         assert.deepEqual(state.errors, lines.slice(1, -1))
         assert.equal(store.readResult(id, 1), null)
       }
@@ -1220,13 +1222,14 @@ const cases = {
       }
       silent(guard('stop', host, stopCall(host, session, 'not json 4', key)), `${host} the fourth failing stop`)
       const capped = store.readState(id)
-      assert.deepEqual({ ...capped, errors: undefined }, { turn: 1, turnKey: key, blocks: 3, outcome: 'capped', errors: undefined, stops: 4 })
-      silent(guard('stop', host, stopCall(host, session, 'not json 5', key)), `${host} a stop after the cap`)
-      silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), key)), `${host} a valid message after the cap`)
-      assert.deepEqual(store.readState(id), capped, 'a stop after the cap changed the state')
+      assert.deepEqual({ ...capped, errors: undefined }, { turn: 1, turnKey: key, blocks: 3, outcome: 'capped', errors: undefined, stops: 4, messageSha256: sha256('not json 4') })
+      silent(guard('stop', host, stopCall(host, session, 'not json 4', key)), `${host} the same message after the cap`)
+      assert.deepEqual(store.readState(id), capped, 'the same message after the cap changed the state')
+      silent(guard('stop', host, stopCall(host, session, 'not json 5', key)), `${host} a changed failing message after the cap`)
+      assert.deepEqual({ ...store.readState(id), errors: undefined }, { ...capped, errors: undefined, stops: 5, messageSha256: sha256('not json 5') })
       assert.equal(store.readResult(id, 1), null, 'a capped turn took a result')
     }
-    ok('three failing stops in a turn are blocked, the fourth is let through and records the turn capped with 3 blocks, and later stops in that turn change nothing, on both hosts')
+    ok('three failing stops in a turn are blocked, the fourth is let through and records the turn capped with 3 blocks, the same message again changes nothing, and a changed failing one stays capped without a block, on both hosts')
   },
 
   'stop-turns': () => {
@@ -1236,17 +1239,16 @@ const cases = {
       stopBlocked(guard('stop', host, stopCall(host, session, 'nope', first)), `${host} turn 1 block 1`)
       stopBlocked(guard('stop', host, stopCall(host, session, 'nope', first)), `${host} turn 1 block 2`)
       assert.match(stopBlocked(guard('stop', host, stopCall(host, session, 'nope', second)), `${host} turn 2`), /\(block 1 of 3\)/)
-      assert.deepEqual({ ...store.readState(id), errors: undefined }, { turn: 2, turnKey: second, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1 })
+      assert.deepEqual({ ...store.readState(id), errors: undefined }, { turn: 2, turnKey: second, blocks: 1, outcome: 'blocked', errors: undefined, stops: 1, messageSha256: sha256('nope') })
       silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), second)), `${host} turn 2 valid`)
       assert.equal(store.readResult(id, 2).intact, true)
       assert.equal(store.readResult(id, 1), null)
 
       const settled = store.readState(id)
       const resultBytes = readFileSync(join(seats, id, 'result-2.json'))
-      silent(guard('stop', host, stopCall(host, session, 'not json', second)), `${host} turn 2 again`)
-      silent(guard('stop', host, stopCall(host, session, JSON.stringify({ ...ENVELOPE_OK, notes: 'changed' }), second)), `${host} turn 2 a second answer`)
-      assert.deepEqual(store.readState(id), settled, 'a stop in a valid turn changed the state')
-      assert.deepEqual(readFileSync(join(seats, id, 'result-2.json')), resultBytes, 'a stop in a valid turn rewrote the result')
+      silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), second)), `${host} turn 2 the same answer again`)
+      assert.deepEqual(store.readState(id), settled, 'the same message in a valid turn changed the state')
+      assert.deepEqual(readFileSync(join(seats, id, 'result-2.json')), resultBytes, 'the same message in a valid turn rewrote the result')
 
       assert.match(stopBlocked(guard('stop', host, stopCall(host, session, 'nope', third)), `${host} turn 3`), /\(block 1 of 3\)/)
       assert.equal(store.readState(id).turn, 3)
@@ -1254,7 +1256,36 @@ const cases = {
       assert.match(stopBlocked(guard('stop', host, keyless), `${host} a stop with no turn key`), /\(block 2 of 3\)/)
       assert.equal(store.readState(id).turn, 3, 'a stop with no turn key started a turn')
     }
-    ok('a new turn key starts the next turn with its blocks reset, a turn that already has a valid result is left alone, and a stop with no turn key counts against the current turn, on both hosts')
+    ok('a new turn key starts the next turn with its blocks reset, the same final message in a turn that already has a valid result is left alone, and a stop with no turn key counts against the current turn, on both hosts')
+  },
+
+  'stop-resumed': () => {
+    for (const host of ['claude', 'codex']) {
+      const { id, session } = boundSeat(host, 'read-only')
+      const key = randomUUID()
+      silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), key)), `${host} first valid answer`)
+      const changed = { ...ENVELOPE_OK, notes: 'resumed and changed', answer: { x: 'second' } }
+      silent(guard('stop', host, stopCall(host, session, JSON.stringify(changed), key)), `${host} a changed valid answer in the same turn`)
+      const replaced = store.readResult(id, 1)
+      assert.equal(replaced.intact, true)
+      assert.deepEqual(replaced.body.envelope, changed, `${host}: a changed valid message did not replace the result`)
+      assert.equal(replaced.body.messageSha256, sha256(JSON.stringify(changed)))
+      assert.deepEqual({ ...store.readState(id), errors: undefined }, { turn: 1, turnKey: key, blocks: 0, outcome: 'valid', errors: undefined, stops: 2, messageSha256: sha256(JSON.stringify(changed)) })
+
+      const reason = stopBlocked(guard('stop', host, stopCall(host, session, 'resumed, then broke the answer', key)), `${host} a changed failing message after a valid one`)
+      assert.match(reason, /\(block 1 of 3\)/)
+      const after = store.readState(id)
+      assert.equal(after.outcome, 'blocked', `${host}: the turn's last message failed, so the turn reads blocked`)
+      assert.equal(after.blocks, 1)
+      stopBlocked(guard('stop', host, stopCall(host, session, 'still broken', key)), `${host} block 2`)
+      stopBlocked(guard('stop', host, stopCall(host, session, 'still broken 2', key)), `${host} block 3`)
+      silent(guard('stop', host, stopCall(host, session, 'still broken 3', key)), `${host} capped`)
+      assert.equal(store.readState(id).outcome, 'capped')
+      silent(guard('stop', host, stopCall(host, session, JSON.stringify(ENVELOPE_OK), key)), `${host} a changed valid message after the cap`)
+      assert.equal(store.readState(id).outcome, 'valid', `${host}: a valid last message after the cap reads valid`)
+      assert.deepEqual(store.readResult(id, 1).body.envelope, ENVELOPE_OK)
+    }
+    ok('a turn resumed after it settled checks a changed final message again: a valid one replaces the result, a failing one blocks against the turn\'s cap and leaves the turn blocked or capped, and a valid one after that reads valid again, on both hosts')
   },
 
   'stop-timeout': () => {

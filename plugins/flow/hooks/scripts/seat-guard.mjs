@@ -28,12 +28,16 @@
 // refused: injecting the void context alone would leave the session's tool calls reading as a
 // non-seat's and running uncontained.
 //
-// Stop holds a bound seat to its answer. The turn is Claude's prompt_id or Codex's turn_id, and a
-// turn that already has a valid result, or was capped, is left alone. A final message that is the
-// flow envelope with a matching answer is written as result-<turn>.json with the models that served
-// it: Codex names its model in the Stop call, and Claude's are read from the session transcript
-// from the bind on. Any other message is blocked with its problems, at most STOP_BLOCKS times a
-// turn. A void seat, a missing record, or a failure in this hook blocks nothing: the stop goes
+// Stop holds a bound seat to its answer. The turn is Claude's prompt_id or Codex's turn_id. A final
+// message that is the flow envelope with a matching answer is written as result-<turn>.json with
+// the digest of the message and the models that served it: Codex names its model in the Stop call,
+// and Claude's are read from the session transcript from the bind on. Any other message is blocked
+// with its problems, at most STOP_BLOCKS times a turn. A turn can stop again after it was settled,
+// valid or capped, when another Stop hook blocks and the host resumes it, so the final message is
+// checked again whenever it differs from the one last checked in the turn: a changed valid message
+// replaces the result, and a changed failing one counts against the turn's blocks like any other,
+// leaving the turn blocked or capped, which is what seat close reads. The same message is left
+// alone. A void seat, a missing record, or a failure in this hook blocks nothing: the stop goes
 // through, and seat close reads the turn's missing result.
 
 import { existsSync } from 'node:fs'
@@ -144,18 +148,20 @@ async function stop(input) {
     const seat = store.readRecord(id)
     if (!seat) return complain(`stop: seat ${id} has no readable record`)
     const state = policy.stopTurn(store.readState(id), host === 'claude' ? input.prompt_id : input.turn_id)
-    if (state.outcome === 'valid' || state.outcome === 'capped') return
+    const messageSha256 = store.textDigest(input.last_assistant_message)
+    const settled = state.outcome === 'valid' || state.outcome === 'capped'
+    if (settled && messageSha256 !== null && messageSha256 === state.messageSha256) return
     const schemaPath = seat.record.schemaSha256 == null ? null : join(store.seatDir(id), 'schema.json')
     const checked = policy.finalAnswer(seat.record, input.last_assistant_message, schemaPath)
     if (checked.envelope) {
       const servedModels = host === 'codex'
         ? (typeof input.model === 'string' ? [input.model] : [])
         : transcriptModels(input.transcript_path, { sessionId: input.session_id, since: store.readStamp(id, 'bound')?.at ?? null })
-      store.writeResult(id, state.turn, { envelope: checked.envelope, servedModels, at: new Date().toISOString() })
-      return store.writeState(id, { ...state, outcome: 'valid', errors: [] })
+      store.writeResult(id, state.turn, { envelope: checked.envelope, servedModels, messageSha256, at: new Date().toISOString() })
+      return store.writeState(id, { ...state, outcome: 'valid', errors: [], messageSha256 })
     }
     const failed = policy.failedStop(seat.record, state, checked.errors)
-    store.writeState(id, failed.state)
+    store.writeState(id, { ...failed.state, messageSha256 })
     if (failed.block) answer(stopBlock(failed.block))
   } catch (error) {
     complain(`stop: ${error.message}`)

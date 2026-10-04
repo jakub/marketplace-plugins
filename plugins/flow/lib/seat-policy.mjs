@@ -931,6 +931,7 @@ const envelopeFor = (access) => (access === 'workspace-write' ? `${ENVELOPE.slic
  * The turn a stop belongs to, from the state Stop last wrote (null for none) and this stop's turn
  * key, the host's id for the turn. A new key starts the next turn with no blocks; the same key, or
  * a stop whose key cannot be read, continues the current one, so blocks still count toward the cap.
+ * messageSha256 is the digest of the last final message Stop checked in the turn, null in a new one.
  */
 export function stopTurn(state, turnKey) {
   const key = typeof turnKey === 'string' && turnKey !== '' ? turnKey : null
@@ -943,9 +944,10 @@ export function stopTurn(state, turnKey) {
       outcome: current.outcome ?? null,
       errors: Array.isArray(current.errors) ? current.errors : [],
       stops: (Number.isSafeInteger(current.stops) ? current.stops : 0) + 1,
+      messageSha256: typeof current.messageSha256 === 'string' ? current.messageSha256 : null,
     }
   }
-  return { turn: (current?.turn ?? 0) + 1, turnKey: key, blocks: 0, outcome: null, errors: [], stops: 1 }
+  return { turn: (current?.turn ?? 0) + 1, turnKey: key, blocks: 0, outcome: null, errors: [], stops: 1, messageSha256: null }
 }
 
 /**

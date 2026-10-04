@@ -10,7 +10,8 @@
 //   seats/<id>/schema.json         the answer schema snapshot, pinned by record.schemaSha256
 //   seats/<id>/<stamp>.json        admitted, bound, receipt, void, closed; each written once
 //   seats/<id>/state.json          the Stop hook's turn state, replaced whole
-//   seats/<id>/result-<n>.json     turn n's result, with result-<n>.sha256 written after it
+//   seats/<id>/result-<n>.json     turn n's latest valid result, with result-<n>.sha256 written
+//                                  after it; state.json says whether the turn's last stop was valid
 //   seats/by-session/<host>-<sessionId>   {id} or {id, void}
 //
 // Stamps are write-once because each one is a claim that a step happened exactly once: one
@@ -75,6 +76,9 @@ function createFile(path, bytes) {
     throw error
   } finally { rmSync(temp, { force: true }) }
 }
+
+/** The sha256 of a string's UTF-8 bytes, or null for anything else: how Stop tells one final message from another. */
+export const textDigest = (text) => (typeof text === 'string' ? sha256(text) : null)
 
 /** A fresh seat id: 128 random bits as 32 lowercase hex characters. */
 export const newId = () => crypto().randomBytes(16).toString('hex')
