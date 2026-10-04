@@ -2018,6 +2018,53 @@ const cases = {
     ok('a review seat resolves its revisions in --worktree and still adds its worktree under the canonical checkout')
   },
 
+  'open-exclude': () => {
+    // Outside the claim, a repository's exclude file need not hold /.flow-worktrees/. A repository
+    // with canon's two commits, whose info directory is gone or whose exclude lacks the line.
+    const reviewRepo = (name) => {
+      const path = gitWorktree(name)
+      for (const [file, text] of [['a.txt', 'a\n'], ['b.txt', 'b\n']]) writeFileSync(join(path, file), text)
+      gitOut(path, 'add', '-A')
+      gitOut(path, 'commit', '-q', '-m', 'base')
+      const base = gitOut(path, 'rev-parse', 'HEAD')
+      writeFileSync(join(path, 'a.txt'), 'a2\n')
+      writeFileSync(join(path, 'c.txt'), 'c\n')
+      gitOut(path, 'add', '-A')
+      gitOut(path, 'commit', '-q', '-m', 'head')
+      return { path, base, head: gitOut(path, 'rev-parse', 'HEAD') }
+    }
+    const openReview = (repo) => {
+      const out = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', repo.base, '--head', repo.head], { cwd: repo.path })
+      assert.equal(out.ok, true, JSON.stringify(out))
+      return out
+    }
+    const exclude = (repo) => readFileSync(join(repo.path, '.git', 'info', 'exclude'), 'utf8')
+
+    const bare = reviewRepo('exclude-no-info')
+    rmSync(join(bare.path, '.git', 'info'), { recursive: true })
+    openReview(bare)
+    assert.equal(exclude(bare), '/.flow-worktrees/\n', 'open did not create info/exclude with the line')
+    const unterminated = reviewRepo('exclude-unterminated')
+    writeFileSync(join(unterminated.path, '.git', 'info', 'exclude'), '*.log')
+    openReview(unterminated)
+    openReview(unterminated)
+    assert.equal(exclude(unterminated), '*.log\n/.flow-worktrees/\n', 'open did not append the line once, on a line of its own')
+    ok('a review seat\'s open adds /.flow-worktrees/ to the repository\'s exclude file once, creating info/ when it is missing')
+
+    // Two review seats overlap in one repository: the second's worktree must not move the first's
+    // canonical snapshot, nor the first's removal at close the second's.
+    const repo = reviewRepo('exclude-overlap')
+    const envelope = { ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read: ['a.txt', 'c.txt'], partial: [], unopened: [], checksRun: [] } }
+    const first = hookedSeat({ id: openReview(repo).id, envelope })
+    const second = hookedSeat({ id: openReview(repo).id, envelope })
+    assert.equal(gitOut(repo.path, 'status', '--porcelain'), '', 'a review worktree shows in the canonical checkout')
+    for (const seat of [first, second]) {
+      const out = closeSeat(seat.id)
+      assert.deepEqual([out.verdict, out.reasons], ['valid', []], JSON.stringify(out))
+    }
+    ok('two overlapping review seats in a repository whose exclude lacked the line each close valid, neither reading the other\'s worktree as tree-moved')
+  },
+
   'open-refusals': () => {
     const base = ['--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high']
     const before = () => [existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [], gitOut(canon, 'worktree', 'list', '--porcelain')]

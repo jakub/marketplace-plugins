@@ -21,7 +21,9 @@
 //
 // open, in this order: prune closed records past retention; find the repository from --worktree,
 // or the working directory, and its canonical checkout, the main worktree; for a review, resolve
-// --base and --head to commit SHAs where --worktree (or the working directory) resolves them and
+// --base and --head to commit SHAs where --worktree (or the working directory) resolves them,
+// add `/.flow-worktrees/` to the common .git/info/exclude through lib/git-exclude.mjs (creating
+// info/ when it is missing), so no review worktree shows in the canonical checkout's snapshot, and
 // add a detached worktree at the head under <canonical>/.flow-worktrees/review-<id>, the seat's
 // worktree, recording its admin directory (`git rev-parse --absolute-git-dir` there) as
 // reviewGitDir, with the findings schema as its answer schema; for a Codex seat, read flow's Codex
@@ -149,6 +151,7 @@ import { connect } from '../delegate/codex-app-server.mjs'
 import { dropLease, JOB_ID, leaseDirOf, leaseLive } from '../delegate/jobs.mjs'
 import { findExecutable } from '../delegate/providers.mjs'
 import { FINDINGS_SCHEMA, outputSchemaProblem } from '../delegate/schema.mjs'
+import { ensureExcluded } from '../lib/git-exclude.mjs'
 import { plainShellWord, seatContext } from '../lib/seat-policy.mjs'
 import * as store from '../lib/seat-store.mjs'
 import { inside } from '../lib/state-dir.mjs'
@@ -233,8 +236,8 @@ function readSchema(path) {
 
 // ----- open
 
-// The worktree a path is in (its top level, as a realpath) and the repository's canonical
-// checkout, the main worktree, whose .git directory is the common one.
+// The worktree a path is in (its top level, as a realpath), the repository's canonical
+// checkout, the main worktree, and its .git directory, the common one, as a realpath.
 function repository(start) {
   let real
   try {
@@ -245,7 +248,7 @@ function repository(start) {
   const common = gitLine(real, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
   if (!top || !common) fail('BAD_REQUEST', 'The seat\'s directory is not inside a Git worktree.')
   if (basename(common) !== '.git') fail('BAD_REQUEST', 'The repository has no main worktree to call its canonical checkout.')
-  return { top: realpathSync(top), repoRoot: realpathSync(dirname(common)) }
+  return { top: realpathSync(top), repoRoot: realpathSync(dirname(common)), commonDir: realpathSync(common) }
 }
 
 function commit(cwd, name, ref) {
@@ -320,7 +323,7 @@ async function open(argv) {
 
   const id = store.newId()
   store.pruneSeats(Date.now(), dropHolders)
-  const { top, repoRoot } = repository(opts['--worktree'] ?? process.cwd())
+  const { top, repoRoot, commonDir } = repository(opts['--worktree'] ?? process.cwd())
   if (access === 'workspace-write' && !plainShellWord(realpathSync.native(top))) {
     fail('BAD_REQUEST', 'A writer\'s worktree path must be a plain shell word (letters, digits and _ . / : @ + , -), because its git writes name it unquoted after -C. Use a worktree under such a path.')
   }
@@ -336,6 +339,13 @@ async function open(argv) {
       baseSha = commit(top, '--base', opts['--base'])
       headSha = commit(top, '--head', opts['--head'])
       const path = join(repoRoot, '.flow-worktrees', `review-${id}`)
+      // Outside the claim, the exclude file may lack the line, and then this worktree and every
+      // other review's would show in the canonical snapshot, so overlapping reviews read tree-moved.
+      try {
+        const info = join(commonDir, 'info')
+        try { mkdirSync(info, { mode: 0o700 }) } catch (error) { if (error.code !== 'EEXIST') throw error }
+        ensureExcluded(join(info, 'exclude'), ['/.flow-worktrees/'])
+      } catch (error) { fail('GIT_REF', `/.flow-worktrees/ could not be added to the repository's info/exclude: ${String(error.message).slice(0, 200)}`) }
       const added = git(repoRoot, ['worktree', 'add', '--detach', path, headSha])
       if (!added.ok) fail('GIT_REF', `The review worktree could not be added: ${added.stderr.slice(0, 200)}`)
       undo.push(() => git(repoRoot, ['worktree', 'remove', '--force', path]))
