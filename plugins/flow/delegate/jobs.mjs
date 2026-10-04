@@ -10,10 +10,12 @@ import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { schemaProblem } from './schema.mjs'
+import { hasRecord, readStamp } from '../lib/seat-store.mjs'
+import { inside, RETENTION_MS, stateDir } from '../lib/state-dir.mjs'
+import { FINDINGS_SCHEMA, outputSchemaProblem } from './schema.mjs'
 
 const execFileAsync = promisify(execFile)
 const MAIN = fileURLToPath(new URL('./main.mjs', import.meta.url))
@@ -24,7 +26,6 @@ const MODEL = /^[a-z0-9][a-z0-9.-]*$/
 const START_KEYS = ['prompt', 'model', 'effort', 'cwd', 'mode', 'access', 'base', 'head', 'outputSchema', 'continue',
   'timeBudgetSeconds', 'waitSeconds', 'maxTurns', 'maxBudgetUsd']
 const QUEUE_GRACE_MS = 60_000
-const PRUNE_MS = 14 * 86_400_000
 const STEER_BYTES = 65_536
 const STEER_WAIT_MS = 30_000
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -34,35 +35,6 @@ export class DelegateError extends Error {
 }
 export const fail = (kind, message, details) => { throw new DelegateError(kind, message, details) }
 
-// Written in the subset Codex enforces for structured output: closed objects, every property
-// required. Like every schema a job carries, a reply is checked against it before success.
-export const FINDINGS_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['findings'],
-  properties: {
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['severity', 'confidence', 'title', 'file', 'line', 'detail', 'systemic'],
-        properties: {
-          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
-          confidence: { type: 'integer', minimum: 0, maximum: 100 },
-          title: { type: 'string' },
-          file: { type: 'string' },
-          line: { type: 'integer', minimum: 0 },
-          detail: { type: 'string' },
-          systemic: { type: 'boolean' },
-        },
-      },
-    },
-  },
-}
-
-export const stateDir = () => process.env.FLOW_DELEGATION_STATE_DIR
-  || join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'flow')
 export const jobDir = (id) => join(stateDir(), 'jobs', id)
 
 // A provider's private TMPDIR, outside the job directory. Claude Code's sandbox creates its proxy
@@ -224,10 +196,6 @@ export function providerGroupAlive(job, proc = PROC) {
   return members === 0
 }
 
-export const inside = (root, path) => {
-  const rel = relative(root, path)
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
-}
 export function canonicalRoots(paths) {
   const roots = []
   for (const path of paths) {
@@ -299,12 +267,8 @@ function validateStart(input, target) {
   if (input.outputSchema !== undefined) {
     const schema = input.outputSchema
     if (review) fail('BAD_SCHEMA', 'adversarial-review answers in the fixed findings schema.')
-    if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.type !== 'object') {
-      fail('BAD_SCHEMA', 'outputSchema must be a JSON Schema object whose type is "object".')
-    }
-    if (Buffer.byteLength(JSON.stringify(schema)) > 65_536) fail('BAD_SCHEMA', 'outputSchema exceeds 64 KiB.')
-    const problem = schemaProblem(schema)
-    if (problem) fail('BAD_SCHEMA', `outputSchema: ${problem}.`)
+    const problem = outputSchemaProblem(schema)
+    if (problem) fail('BAD_SCHEMA', problem)
   }
   if (input.continue !== undefined) {
     if (typeof input.continue !== 'string' || !JOB_ID.test(input.continue)) fail('BAD_REQUEST', 'continue must be a job id.')
@@ -410,40 +374,87 @@ export async function admit(input, { host, roots }) {
 // both take it. Only a file under its owner's own name is ever moved out, and the directory is
 // then removed only if still empty, so neither a release nor the takeover of a stale lease can
 // remove a lease that changed hands in between.
-const leaseDir = (job) => join(stateDir(), 'leases', createHash('sha256').update(job.worktree).digest('hex'))
+//
+// A T3 writer seat holds the same directory through a holder file that scripts/seat.mjs writes
+// as <seat id>, 32 hex characters, before the seat's record. Once the record is written, seat.mjs
+// renames it to <seat id>.live, and seat close drops it. Each holder's fate is decided by one
+// rename, which only one of a seat and a job can win:
+//   - a live holder keeps every write job out until its seat is closed;
+//   - a pending holder keeps write jobs out while it is younger than SEAT_HOLDER_GRACE_MS or its
+//     seat has a record. Past that it is the leftover of an open that died before its record, and
+//     a job takes it over by renaming it to <seat id>.taken-<job id> before dropping it. If that
+//     rename finds no file, the seat renamed it live first, and the job looks again. If the job
+//     renames first, the seat's own rename finds no file, and the seat voids its record;
+//   - a closed seat's holder, and a taken file a dead job left behind, are dropped, except the
+//     holder of a seat that seat.mjs close --abandon closed and a bind still reached (it has a bound
+//     stamp): its child may still be running, so the holder keeps write jobs out until close runs
+//     with the task's status and drops it.
+// seat.mjs also checks for a live job after writing its holder, so of a seat and a job racing for
+// one worktree, at most one goes on.
+export const leaseDirOf = (worktree) => join(stateDir(), 'leases', createHash('sha256').update(worktree).digest('hex'))
+const SEAT_HOLDER = /^([0-9a-f]{32})(\.live|\.taken-.+)?$/
+const SEAT_HOLDER_GRACE_MS = 60_000
+// What acquireLease does with the seat holder file name in lease directory dir: 'hold' while it
+// keeps write jobs out, 'drop' once it is a leftover, 'take' when it is a pending holder to take
+// over, and 'gone' when it vanished while this looked.
+function seatHolder(dir, name) {
+  const [, seat, suffix] = SEAT_HOLDER.exec(name)
+  if (suffix?.startsWith('.taken-')) return 'drop'
+  const closed = readStamp(seat, 'closed')
+  if (closed !== null && !(closed.abandoned === true && readStamp(seat, 'bound') !== null)) return 'drop'
+  if (suffix === '.live') return 'hold'
+  const held = lstatSync(join(dir, name), { throwIfNoEntry: false })
+  if (!held) return 'gone'
+  return Date.now() - held.mtimeMs < SEAT_HOLDER_GRACE_MS || hasRecord(seat) ? 'hold' : 'take'
+}
 // The holder is reconciled first: a queued job past its grace is claimed and settled, so no
 // runner can start it once its lease is gone, and a running one whose runner died is settled
 // after its provider group is killed. An ended job still holds the lease while its provider group
 // has not read gone, so no two writers ever share a worktree.
-function leaseLive(jobId) {
+export function leaseLive(jobId) {
   const held = typeof jobId === 'string' && JOB_ID.test(jobId) ? reconcile(readJob(jobId)) : null
   return Boolean(held) && (!TERMINAL.has(held.status) || providerGroupAlive(held))
 }
-function dropLease(dir, owner) {
+export function dropLease(dir, owner) {
   const aside = join(dirname(dir), `.drop.${randomUUID()}`)
   try { renameSync(join(dir, owner), aside) } catch { return }
   rmSync(aside, { force: true })
   try { rmdirSync(dir) } catch {}
 }
 export function acquireLease(job) {
-  const dir = leaseDir(job)
+  const dir = leaseDirOf(job.worktree)
   const mine = join(dirname(dir), `.new.${job.id}`)
   mkdirSync(mine, { recursive: true, mode: 0o700 })
   writeFileSync(join(mine, job.id), '', { mode: 0o600 })
   try {
     for (let attempt = 0; attempt < 5; attempt++) {
       try { renameSync(mine, dir); return } catch (error) { if (!['ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error }
-      let owner
-      try { owner = readdirSync(dir).find((name) => JOB_ID.test(name)) } catch { continue }
-      if (!owner) continue
-      if (leaseLive(owner)) fail('WORKSPACE_BUSY', `Write job ${owner} holds this worktree.`, { jobId: owner })
-      dropLease(dir, owner)
+      let names
+      try { names = readdirSync(dir) } catch { continue }
+      const owner = names.find((name) => JOB_ID.test(name))
+      if (owner) {
+        if (leaseLive(owner)) fail('WORKSPACE_BUSY', `Write job ${owner} holds this worktree.`, { jobId: owner })
+        dropLease(dir, owner)
+      }
+      for (const name of names.filter((entry) => SEAT_HOLDER.test(entry))) {
+        const seat = name.slice(0, 32)
+        const fate = seatHolder(dir, name)
+        if (fate === 'hold') fail('WORKSPACE_BUSY', `T3 seat ${seat} holds this worktree until it is closed with seat.mjs close.`, { seatId: seat })
+        if (fate === 'drop') dropLease(dir, name)
+        if (fate !== 'take') continue
+        const taken = `${seat}.taken-${job.id}`
+        try { renameSync(join(dir, name), join(dir, taken)) } catch (error) {
+          if (error.code === 'ENOENT') continue
+          throw error
+        }
+        dropLease(dir, taken)
+      }
     }
     fail('WORKSPACE_BUSY', 'The worktree lease is contended.')
   } finally { rmSync(mine, { recursive: true, force: true }) }
 }
 export function releaseLease(job) {
-  if (job.access === 'workspace-write') dropLease(leaseDir(job), job.id)
+  if (job.access === 'workspace-write') dropLease(leaseDirOf(job.worktree), job.id)
 }
 
 function spawnRunner(job) {
@@ -574,7 +585,7 @@ export async function requestSteer(input, { host, roots, signal }) {
 // ended holder whose group is gone. So a record whose lease is still held stays, however old,
 // until the lease is released or taken over. The lease file stays the bare name it is built as;
 // putting the group in it would make the runner a second writer of the lease after admission.
-const leaseHeld = (job) => job?.access === 'workspace-write' && Boolean(lstatSync(join(leaseDir(job), job.id), { throwIfNoEntry: false }))
+const leaseHeld = (job) => job?.access === 'workspace-write' && Boolean(lstatSync(join(leaseDirOf(job.worktree), job.id), { throwIfNoEntry: false }))
 export function prune() {
   const root = join(stateDir(), 'jobs')
   let names = []
@@ -583,7 +594,7 @@ export function prune() {
     const job = readJob(name)
     let ended = NaN
     try { ended = job ? (TERMINAL.has(job.status) ? Date.parse(job.endedAt) : NaN) : statSync(join(root, name)).mtimeMs } catch {}
-    if (Date.now() - ended > PRUNE_MS && !leaseHeld(job)) rmSync(join(root, name), { recursive: true, force: true })
+    if (Date.now() - ended > RETENTION_MS && !leaseHeld(job)) rmSync(join(root, name), { recursive: true, force: true })
   }
 }
 

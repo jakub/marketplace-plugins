@@ -30,11 +30,12 @@
 // only at the SHA this run created it at, and origin re-checks that object at delete time.
 
 import { createHash } from 'node:crypto'
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeSync } from 'node:fs'
+import { lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { execCapture, ghRunner, parseJson, parseObject, runExecutor } from '../lib/gh-exec.mjs'
+import { ensureExcluded } from '../lib/git-exclude.mjs'
 import { firstLine, makeRedactor } from '../lib/redact.mjs'
 import { allowedHostsFrom, identityOfRemote } from '../lib/remote-identity.mjs'
 
@@ -446,17 +447,7 @@ export function issueClaim({ argv, cwd, env = {}, runGh }) {
       try { mkdirSync(dir, { mode: 0o700 }) } catch (e) { if (e?.code !== 'EEXIST') throw e }
     }
     setup = boundary()
-    if (setup === null) {
-      const fd = openSync(exclude, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
-      try {
-        const st = fstatSync(fd)
-        if (!st.isFile() || st.nlink !== 1) throw new Error(`${exclude} is not a real, unshared file`)
-        const text = readFileSync(fd, 'utf8')
-        const have = text.split(/\r?\n/)
-        const missing = EXCLUDED.filter((line) => !have.includes(line))
-        if (missing.length > 0) writeSync(fd, `${text === '' || text.endsWith('\n') ? '' : '\n'}${missing.map((line) => `${line}\n`).join('')}`)
-      } finally { closeSync(fd) }
-    }
+    if (setup === null) ensureExcluded(exclude, EXCLUDED)
   } catch (e) { setup = ['refused', 'worktree-path', String(e?.message ?? e)] }
   if (setup !== null) return standDown(setup[0], setup[1], setup[2])
 

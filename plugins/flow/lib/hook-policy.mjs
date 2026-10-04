@@ -96,7 +96,7 @@ function mask(command) {
 
 // Each shell segment twice: `bare` with literals blanked, `open` with their text restored. A
 // segment that runs its literals as commands is followed by their segments, read the same way.
-function segments(command, depth = 0) {
+export function segments(command, depth = 0) {
   const { text, literals } = mask(command)
   return text.split(SEPARATOR).flatMap((segment) => {
     const own = {

@@ -26,8 +26,8 @@ import { seatPayload } from '../lib/charter-payload.mjs'
 import { transport as claudeTransport } from '../delegate/claude-control.mjs'
 import { transport as codexTransport } from '../delegate/codex-app-server.mjs'
 import * as jobs from '../delegate/jobs.mjs'
-import { checkAnswer, schemaProblem, validate } from '../delegate/schema.mjs'
-const { FINDINGS_SCHEMA } = jobs
+import { checkAnswer, FINDINGS_SCHEMA, schemaProblem, validate } from '../delegate/schema.mjs'
+import * as seatStore from '../lib/seat-store.mjs'
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MAIN = join(PLUGIN, 'delegate', 'main.mjs')
@@ -1167,6 +1167,36 @@ try {
   jobs.prune()
   assert.equal(existsSync(jobs.jobDir(oldWriter.id)), false, 'the prune kept an old record whose lease was taken over')
   ok('the prune keeps the record of an ended job while its lease is held, and removes it once the lease has moved on')
+
+  // A T3 writer seat holds a worktree's lease directory through a file named for its seat id. While
+  // its seat has no closed stamp, its record not yet written included while the holder is under a
+  // minute old, every write job there is refused; once closed, the leftover holder is dropped and
+  // the job takes the lease.
+  const seatHeld = join(tmp, `seat-held-${randomUUID()}`)
+  const holder = seatStore.newId()
+  mkdirSync(jobs.leaseDirOf(seatHeld), { recursive: true })
+  writeFileSync(join(jobs.leaseDirOf(seatHeld), holder), '')
+  const seatBusy = () => assert.throws(() => jobs.acquireLease(writer(seatHeld)), (error) => error.kind === 'WORKSPACE_BUSY' &&
+    error.message === `T3 seat ${holder} holds this worktree until it is closed with seat.mjs close.` && error.details?.seatId === holder)
+  seatBusy()
+  seatStore.writeRecord({ v: 1, id: holder, access: 'workspace-write', worktree: seatHeld }, null)
+  seatBusy()
+  assert.deepEqual(leaseOf(seatHeld), [holder], 'a refused write job touched the seat holder')
+  seatStore.stamp(holder, 'closed', { verdict: 'valid', reasons: [] })
+  const afterSeat = writer(seatHeld)
+  jobs.acquireLease(afterSeat)
+  assert.deepEqual(leaseOf(seatHeld), [afterSeat.id])
+  jobs.releaseLease(afterSeat)
+  // A stale job file beside an unclosed seat holder: the job file goes, and the seat still holds.
+  const both = join(tmp, `seat-and-job-${randomUUID()}`)
+  const staleJob = writer(both)
+  jobs.acquireLease(staleJob)
+  jobs.writeJob({ ...readJob(staleJob.id), status: 'succeeded', endedAt: new Date().toISOString() })
+  const second = seatStore.newId()
+  writeFileSync(join(jobs.leaseDirOf(both), second), '')
+  assert.throws(() => jobs.acquireLease(writer(both)), (error) => error.details?.seatId === second)
+  assert.deepEqual(leaseOf(both), [second])
+  ok('an unclosed T3 seat holder in a worktree\'s lease directory refuses a write job WORKSPACE_BUSY naming the seat, beside a stale job file too, and a closed one is dropped so the job takes the lease')
 
   // A record names its job's TMPDIR, and reconcile removes that path only when it is one tmpPath
   // could have given the job: a direct child of /tmp, the job's prefix and 8 hex characters, and a

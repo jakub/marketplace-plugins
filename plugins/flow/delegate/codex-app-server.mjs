@@ -81,7 +81,7 @@ function errorText(text) {
 // One JSON-RPC peer over the child's stdio. Each stdout line is dispatched, then handed to onLine
 // unchanged. A request fails when the provider refuses it, stays silent past its timeout, or exits
 // first.
-function connect(child, { onLine, onNotification, onRequest, diagnostics = 'stderr.txt beside the events file has its diagnostics' }) {
+export function connect(child, { onLine, onNotification, onRequest, diagnostics = 'stderr.txt beside the events file has its diagnostics' }) {
   const pending = new Map()
   let next = 0
   let gone = null

@@ -1,5 +1,5 @@
 {
-  "description": "flow: charter injection at session and subagent start, plus no-backlog, git, publish and protected-file guards.",
+  "description": "flow: charter injection at session and subagent start, plus no-backlog, git, publish, protected-file and T3 seat guards.",
   "hooks": {
     "SessionStart": [
       {
@@ -51,6 +51,38 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/protect-files.mjs\"",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/seat-guard.mjs\" pre claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/seat-guard.mjs\" prompt claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/seat-guard.mjs\" stop claude",
+            "timeout": 30
           }
         ]
       }

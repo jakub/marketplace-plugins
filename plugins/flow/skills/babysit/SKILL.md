@@ -1,7 +1,7 @@
 ---
 name: babysit
 description: Watch one open pull request through external review and CI until everything is green, then hand it to the land stage. Validate and fix reviewer findings, answer every thread, and keep the branch rebased. Use when the human asks to monitor, watch, or babysit a PR, and whenever an issue run reaches its pushed PR, which always continues here.
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Agent, TaskOutput, TaskStop, SendMessage, Monitor, PushNotification, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, Agent, TaskOutput, TaskStop, SendMessage, Monitor, PushNotification, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor, mcp__t3-code__orchestrator_capabilities, mcp__t3-code__delegate_task, mcp__t3-code__task_status, mcp__t3-code__task_cancel, mcp__t3-code__watch_pull_request, mcp__t3-code__unwatch_pull_request, mcp__t3-code__schedule_task, mcp__t3-code__delete_scheduled_task
 ---
 
 # babysit: the watch between push and land
@@ -57,6 +57,8 @@ When the PR is clean, say so, naming the head and the land stage as the next mov
 
 **Seats.** Fix minor findings inline in the worktree, and hand a substantial round to `flow:implementer` with the worktree path. The cross-family review is `delegate_to_codex` in `adversarial-review` mode.
 
+**Inside T3.** Arm `mcp__t3-code__watch_pull_request` on the PR and a `mcp__t3-code__schedule_task` wake into this thread every 5 minutes or sooner (`schedule: {type: "interval", everyMs: 300000}`, `bindToCurrentThread: true`, a prompt that names the PR), then end the turn. Start every wake, from either source, with a full gather. An errored watch is unknown, not quiet. If you cannot show that `schedule_task` wakes this same thread with its context, keep the `Monitor` waiting above instead. When the PR is clean or escalated, remove both with `mcp__t3-code__unwatch_pull_request` and `mcp__t3-code__delete_scheduled_task`. A fix round's writer and the cross-family review are T3 seats, run through `mcp__t3-code__delegate_task` as the `delegate` skill's `## T3 seats` says, with `mcp__t3-code__task_status` and `mcp__t3-code__task_cancel`. The seats above are their fallback.
+
 ### Codex
 
 **Argument.** The PR number in the human's message that names this skill or asks for the watch in words. Empty means the current branch.
@@ -66,3 +68,5 @@ When the PR is clean, say so, naming the head and the land stage as the next mov
 **Git writes.** The repository grant can leave `.git` read-only, so worktree creation, commits, rebases and pushes go through the normal approval prompt.
 
 **Seats.** Native spawns into the worktree, each small enough to verify with git before the next. The cross-family review is `delegate_to_claude` in `adversarial-review` mode.
+
+**Inside T3.** Arm `mcp__t3_code__watch_pull_request` on the PR and a `mcp__t3_code__schedule_task` wake into this thread every 5 minutes or sooner (`schedule: {type: "interval", everyMs: 300000}`, `bindToCurrentThread: true`, a prompt that names the PR), then end the turn. Start every wake, from either source, with a full gather. An errored watch is unknown, not quiet. If you cannot show that `schedule_task` wakes this same thread with its context, keep the shell-sleep waiting above instead. When the PR is clean or escalated, remove both with `mcp__t3_code__unwatch_pull_request` and `mcp__t3_code__delete_scheduled_task`. A fix round's writer and the cross-family review are T3 seats, run through `mcp__t3_code__delegate_task` as the `delegate` skill's `## T3 seats` says, with `mcp__t3_code__task_status` and `mcp__t3_code__task_cancel`. The seats above are their fallback.

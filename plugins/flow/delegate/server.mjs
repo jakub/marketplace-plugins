@@ -6,6 +6,7 @@
 import { mkdirSync, realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
+import { stateDir } from '../lib/state-dir.mjs'
 import { transport as claude } from './claude-control.mjs'
 import { transport as codex } from './codex-app-server.mjs'
 import * as jobs from './jobs.mjs'
@@ -145,11 +146,11 @@ export async function serve({ host, version }) {
   // be the cwd and holds the server.log that a failed handshake points to. It sends no prompt, and
   // it removes the TMPDIR afterwards.
   async function checkTransport(bin, usable) {
-    mkdirSync(jobs.stateDir(), { recursive: true, mode: 0o700 })
+    mkdirSync(stateDir(), { recursive: true, mode: 0o700 })
     const tmp = jobs.tmpPath('doctor')
     jobs.makeTmp(tmp)
     try {
-      const cwd = usable[0] ?? realpathSync(jobs.stateDir())
+      const cwd = usable[0] ?? realpathSync(stateDir())
       return await TRANSPORTS[target].check({ cwd, bin, env: providerEnv({ id: 'doctor', target }, tmp) })
     } finally { jobs.dropTmp('doctor', tmp) }
   }
@@ -168,7 +169,7 @@ export async function serve({ host, version }) {
     const ready = transport?.ok && `${target} ${provider.version} ready: ${transport.catalog.length} model(s) listed, ${transport.profile ? `profile ${transport.profile}, ` : ''}${transport.mcpServersDisabled} MCP server(s) disabled, no turn`
     return toolResult({
       ok: !error, summary: error ? `${error.kind}: ${error.message}` : ready,
-      host, target, provider, transport, roots: usable, stateDir: jobs.stateDir(), node: process.version, client: clientInfo,
+      host, target, provider, transport, roots: usable, stateDir: stateDir(), node: process.version, client: clientInfo,
       ...(error ? { error } : {}),
     })
   }
