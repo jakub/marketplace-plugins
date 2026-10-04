@@ -385,7 +385,10 @@ export async function admit(input, { host, roots }) {
 //     a job takes it over by renaming it to <seat id>.taken-<job id> before dropping it. If that
 //     rename finds no file, the seat renamed it live first, and the job looks again. If the job
 //     renames first, the seat's own rename finds no file, and the seat voids its record;
-//   - a closed seat's holder, and a taken file a dead job left behind, are dropped.
+//   - a closed seat's holder, and a taken file a dead job left behind, are dropped, except the
+//     holder of a seat that seat.mjs close --abandon closed and a bind still reached (it has a bound
+//     stamp): its child may still be running, so the holder keeps write jobs out until close runs
+//     with the task's status and drops it.
 // seat.mjs also checks for a live job after writing its holder, so of a seat and a job racing for
 // one worktree, at most one goes on.
 export const leaseDirOf = (worktree) => join(stateDir(), 'leases', createHash('sha256').update(worktree).digest('hex'))
@@ -396,7 +399,9 @@ const SEAT_HOLDER_GRACE_MS = 60_000
 // over, and 'gone' when it vanished while this looked.
 function seatHolder(dir, name) {
   const [, seat, suffix] = SEAT_HOLDER.exec(name)
-  if (suffix?.startsWith('.taken-') || readStamp(seat, 'closed') !== null) return 'drop'
+  if (suffix?.startsWith('.taken-')) return 'drop'
+  const closed = readStamp(seat, 'closed')
+  if (closed !== null && !(closed.abandoned === true && readStamp(seat, 'bound') !== null)) return 'drop'
   if (suffix === '.live') return 'hold'
   const held = lstatSync(join(dir, name), { throwIfNoEntry: false })
   if (!held) return 'gone'

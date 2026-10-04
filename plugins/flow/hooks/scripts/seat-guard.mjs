@@ -87,6 +87,7 @@ async function prompt(input) {
       admitted: store.readStamp(id, 'admitted'),
       bound: store.readStamp(id, 'bound'),
       voided: store.readStamp(id, 'void'),
+      closed: store.readStamp(id, 'closed'),
     })
     if (problem) return voidSeat(problem)
     if (!store.indexSession(host, sessionId, { id })) return voidSeat('session-already-indexed')

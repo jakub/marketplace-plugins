@@ -120,13 +120,16 @@ export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
 /**
  * Why this session may not bind the seat, or null when it may. Each fact is read by the caller:
  * the host the hook runs on, whether the session id passed the store's validation, the session's
- * permission_mode, the readRecord result, and the admitted, bound and void stamps (null when
- * absent).
+ * permission_mode, the readRecord result, and the admitted, bound, void and closed stamps (null
+ * when absent).
  * Creating the session index and the bound stamp are the bind's last two steps and can still be
  * lost to a racer after a null here; the caller reports those as their own reasons.
  */
-export function bindProblem({ host, sessionValid, permissionMode, seat, admitted, bound, voided }) {
+export function bindProblem({ host, sessionValid, permissionMode, seat, admitted, bound, voided, closed }) {
   if (!seat) return 'record-missing'
+  // A closed record is over, such as one seat close --abandon gave up on after its delegate_task
+  // call made no task: a child that starts for it late binds nothing.
+  if (closed !== null && closed !== undefined) return 'record-closed'
   // A record voided by a failed first bind stays void: a retry needs a fresh record and admission.
   if (voided !== null && voided !== undefined) return 'record-void'
   if (admitted === null || admitted === undefined) return 'not-admitted'

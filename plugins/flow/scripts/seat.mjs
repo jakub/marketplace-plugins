@@ -6,11 +6,12 @@
 //   seat.mjs open --access read-only|workspace-write|review --provider claude|codex --model <id>
 //                 --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>]
 //   seat.mjs close <seat-id> --task-status <json>
+//   seat.mjs close <seat-id> --abandon
 //   seat.mjs trust [--write --expect <digest>]
 //
 // stdout is one JSON line. open prints {ok: true, id, tag, clientRequestId, runtimeMode, provider,
 // model, effort, worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
-// servedModels, blocks, errors}, trust prints {ok: true, keys: [{key, command, trustStatus,
+// servedModels, blocks, errors, cleanupProblems?}, with or without --abandon, trust prints {ok: true, keys: [{key, command, trustStatus,
 // currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
 // details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and
 // HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_TERMINAL and TASK_MISMATCH from close; BAD_REQUEST,
@@ -83,6 +84,27 @@
 // hash to the pinned sha256, and otherwise null, with result-changed-after-close among the
 // reasons and the verdict unchanged. It also retries the cleanup. Cleanup that fails is listed in
 // cleanupProblems and does not change the verdict.
+//
+// close --abandon closes a seat whose delegate_task call made no task: T3 refused or lost the call
+// after the parent's PreToolUse admitted it, so no task_status will ever name the seat, and close
+// with one could never run. It takes no --task-status, and refuses BAD_REQUEST, writing nothing,
+// once the seat has a bound stamp: a bound seat's child ran, so it closes with its task status.
+// Otherwise it writes the closed stamp with verdict unknown, reasons ['abandoned-before-bind'] and
+// abandoned: true, then reads the bound stamp again, and with none it drops the writer's lease
+// holder and removes the review worktree as close does. A bind refuses a record with a closed stamp
+// (record-closed), so a child that starts after that is a void seat. A bind reads the closed stamp
+// before it writes its bound stamp, and that order against abandon's makes a racing bind safe either
+// way:
+//   - the bound stamp lands after abandon's second read. The closed stamp was on disk before it,
+//     and the child's tool calls all come after its bind, so the closed-seat rule denies every one
+//     and nothing of the child's runs under the dropped holder.
+//   - the bound stamp lands before abandon's second read. A call of the child may have passed
+//     before the closed stamp, so the child may still be working. Abandon reports reasons
+//     ['abandon-raced-bind'], keeps the holder and the review worktree, and lists them in
+//     cleanupProblems. delegate/jobs.mjs holds a holder of an abandoned seat with a bound stamp, and
+//     close with the task's status, once T3 reports it finished, prints the abandon on record and
+//     drops it.
+// Any later close of an abandoned seat prints abandon-raced-bind whenever the seat has a bound stamp.
 //
 // trust. Codex skips a hook it does not trust without a word, and keys its trust by position,
 // `<plugin>:hooks/codex.json:<event>:<group>:<handler>`, with a hash of the command. trust spawns
@@ -658,12 +680,14 @@ function openedReview(record, path) {
 
 // A later close's output: the closed stamp's verdict and facts, and the result it pinned while the
 // result file's bytes still hash to the pinned sha256. Once they do not, the result is null and
-// the reasons say so; the verdict stays the one on record.
-function onRecord(id, recorded) {
+// the reasons say so; the verdict stays the one on record. An abandon's reason is read from bound,
+// whether the seat has a bound stamp now (see close --abandon above).
+function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
   const turn = Number.isSafeInteger(recorded.turn) && recorded.turn > 0 ? recorded.turn : null
   const pinned = typeof recorded.resultSha256 === 'string' ? recorded.resultSha256 : null
   const now = turn === null ? null : store.readResult(id, turn)
-  const reasons = Array.isArray(recorded.reasons) ? [...recorded.reasons] : []
+  const reasons = recorded.abandoned === true ? [bound ? 'abandon-raced-bind' : 'abandoned-before-bind']
+    : Array.isArray(recorded.reasons) ? [...recorded.reasons] : []
   let result = null
   if ((now?.sha256 ?? null) !== pinned) reasons.push('result-changed-after-close')
   else if (recorded.verdict === 'valid') result = now?.body?.envelope ?? null
@@ -692,6 +716,10 @@ function taskOf(status, id) {
 function close(argv) {
   const [id, ...rest] = argv
   if (typeof id !== 'string' || !SEAT_ID.test(id)) fail('BAD_REQUEST', 'close takes a seat id, 32 lowercase hex characters.')
+  if (rest.includes('--abandon')) {
+    if (rest.length !== 1) fail('BAD_REQUEST', 'close --abandon takes nothing else: no --task-status and no value.')
+    return abandon(id)
+  }
   const opts = flags(rest, ['--task-status'])
   const text = opts['--task-status']
   if (text === undefined) fail('BAD_REQUEST', 'close needs --task-status, the task_status answer for the seat\'s task, as JSON.')
@@ -721,9 +749,33 @@ function close(argv) {
   return out
 }
 
+const ABANDON_RACED = 'a child bound this seat while it was abandoned and may still be running, so its lease holder and review worktree are kept; close it with --task-status once T3 reports its task finished'
+
+// close --abandon: see the header for the order of its writes and reads and why it is safe.
+function abandon(id) {
+  if (store.readStamp(id, 'bound') !== null) {
+    fail('BAD_REQUEST', 'A bound seat closes with its task status: its child ran, so wait for task_status to report the task finished and pass it with --task-status.')
+  }
+  const loaded = store.readRecord(id)
+  store.stamp(id, 'closed', { verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
+  // Read only once the closed stamp is on disk, whoever wrote it.
+  const bound = store.readStamp(id, 'bound') !== null
+  const recorded = store.readStamp(id, 'closed')
+  // No closed stamp to read means no record directory, so nothing was recorded.
+  const out = recorded ? onRecord(id, recorded, bound)
+    : { ok: true, id, verdict: 'unknown', reasons: ['abandoned-before-bind'], turn: null, result: null, servedModels: [], blocks: 0, errors: [] }
+  if (bound) {
+    out.cleanupProblems = [ABANDON_RACED]
+    return out
+  }
+  const problems = cleanup(id, loaded?.record ?? null)
+  if (problems.length > 0) out.cleanupProblems = problems
+  return out
+}
+
 // ----- main
 
-const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> --model <id> --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs trust [--write --expect <digest>]'
+const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> --model <id> --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
 const [verb, ...argv] = process.argv.slice(2)
 let answer
 try {

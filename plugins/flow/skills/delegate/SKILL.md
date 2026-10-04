@@ -181,7 +181,7 @@ node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status 
  "servedModels": ["<id>"], "blocks": 0, "errors": []}
 ```
 
-`result` is the envelope the Stop hook recorded, and it is `null` for every verdict but `valid`. `reasons` says why the verdict is not `valid`, and `errors` holds the last turn's problem lines from Stop. A `cleanupProblems` list appears only when `close` did not remove a review worktree: it removes one only while the path, its git directory and `git worktree list` still match what `open` recorded, and leaves anything else at that path alone. Act on the verdict alone:
+`result` is the envelope the Stop hook recorded, and it is `null` for every verdict but `valid`. `reasons` says why the verdict is not `valid`, and `errors` holds the last turn's problem lines from Stop. A `cleanupProblems` list appears only when `close` did not remove a review worktree or a writer's lease holder. It removes a review worktree only while the path, its git directory and `git worktree list` still match what `open` recorded, and leaves anything else at that path alone. Act on the verdict alone:
 
 | Verdict | Meaning | Action |
 |---|---|---|
@@ -193,6 +193,14 @@ node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status 
 | `tree-moved` | The review worktree's HEAD left the head SHA or its tree is dirty, the canonical checkout's tree, HEAD commit or branch changed, or the coverage misses a file in the pinned diff. | Treat it as `unknown`. |
 
 A seat that made no tool call has no `receipt`, so it reads `unknown`. On Codex, the served-model check covers the model the hooks saw at UserPromptSubmit and at Stop. On Claude, it reads every model the transcript records for the seat's own turns.
+
+When the `delegate_task` call errors or returns no `taskId`, no `task_status` will ever name the seat. Close it with `--abandon` instead of `--task-status`:
+
+```sh
+node <plugin-root>/scripts/seat.mjs close <seat-id> --abandon
+```
+
+It records `unknown` with `abandoned-before-bind`, drops a writer's lease holder and removes a review worktree, as a normal `close` does. A child that starts after that is a void seat. `--abandon` refuses a seat whose child already bound it with `BAD_REQUEST` and writes nothing: that child ran, so its task exists, and you close it with its task status. If a child binds while the abandon runs, the reason is `abandon-raced-bind`. In that case `close` keeps the lease holder and the review worktree, says so in `cleanupProblems`, and denies every later tool call of the child. Find the child's task, wait for it to finish, then `close` it with `--task-status` to release them.
 
 Close every seat you open, cancelled ones included. `close` records the verdict first, then drops a writer's lease holder and removes a review's worktree. A second `close` prints what the first recorded, verdict included. Its `result` is the recorded result while that file's bytes are unchanged, and `null` once they changed, with `result-changed-after-close` added to `reasons`. An unclosed T3 writer stays in the worktree's lease directory, and `flow_delegate` refuses a write job there with `WORKSPACE_BUSY` until the seat closes. A holder left by an `open` that died before writing its record holds for a minute, and then a write job drops it.
 

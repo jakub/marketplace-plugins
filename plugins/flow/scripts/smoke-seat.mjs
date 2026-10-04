@@ -400,6 +400,50 @@ fs.renameSync = function (from, ...rest) {
 }
 syncBuiltinESMExports()
 `)
+// Preloaded into a seat guard or seat.mjs process: with STAMP_GATE_AT=bound it holds the process at
+// the write of a bound stamp's temp file, after the bind read every stamp and before its bound
+// stamp exists; with STAMP_GATE_AT=closed it holds the process just after the closed stamp is
+// linked into place. Either way it writes <STAMP_GATE>.waiting and waits for <STAMP_GATE>.go.
+const stampGate = join(tmp, 'stamp-gate.mjs')
+writeFileSync(stampGate, `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const realWrite = fs.writeFileSync
+const realLink = fs.linkSync
+const hold = () => {
+  realWrite(process.env.STAMP_GATE + '.waiting', '')
+  const nap = new Int32Array(new SharedArrayBuffer(4))
+  while (!fs.existsSync(process.env.STAMP_GATE + '.go')) Atomics.wait(nap, 0, 0, 5)
+}
+if (process.env.STAMP_GATE_AT === 'bound') {
+  fs.writeFileSync = function (path, ...rest) {
+    if (typeof path === 'string' && /\\/seats\\/[0-9a-f]{32}\\/\\.bound\\.json\\./.test(path)) hold()
+    return realWrite.call(this, path, ...rest)
+  }
+} else {
+  fs.linkSync = function (from, to, ...rest) {
+    const out = realLink.call(this, from, to, ...rest)
+    if (typeof to === 'string' && /\\/seats\\/[0-9a-f]{32}\\/closed\\.json$/.test(to)) hold()
+    return out
+  }
+}
+syncBuiltinESMExports()
+`)
+// A process run under stampGate, returned once it is held at the gate: done resolves to its exit
+// code and stdout after the case writes <gate>.go. One still held when the run ends is killed, so
+// a failing case cannot leave it waiting forever.
+const heldChildren = new Set()
+async function heldAt(args, gate, at, input = null) {
+  const child = spawn(process.execPath, ['--import', pathToFileURL(stampGate).href, ...args], {
+    cwd: canon, env: { ...process.env, STAMP_GATE: gate, STAMP_GATE_AT: at }, stdio: [input === null ? 'ignore' : 'pipe', 'pipe', 'inherit'],
+  })
+  let out = ''
+  child.stdout.on('data', (chunk) => { out += chunk })
+  if (input !== null) child.stdin.end(JSON.stringify(input))
+  heldChildren.add(child)
+  const done = new Promise((resolve) => child.on('close', (code) => { heldChildren.delete(child); resolve({ code, out }) }))
+  await waitFor(`${gate}.waiting`, `the process never reached the ${at} gate`)
+  return { done }
+}
 async function waitFor(path, what) {
   for (const end = Date.now() + 15_000; !existsSync(path);) {
     if (Date.now() > end) throw new Error(what)
@@ -2457,6 +2501,122 @@ const cases = {
     ok('close accepts the seat\'s own task id, plain or URL-encoded, and closes a seat that was never admitted on any finished task status, as unknown')
   },
 
+  'close-abandon': () => {
+    // A writer seat the parent's gate admitted, whose delegate_task call then made no task.
+    const openWriter = (name) => {
+      const at = gitWorktree(name)
+      const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', at])
+      assert.equal(opened.ok, true, JSON.stringify(opened))
+      silent(guard('pre', 'claude', preCall('claude', randomUUID(), SPELLING.claude, delegateInput(store.readRecord(opened.id).record, opened.id))), `${name}: the parent's gate`)
+      assert.notEqual(store.readStamp(opened.id, 'admitted'), null, `${name} was not admitted`)
+      return { id: opened.id, at, holder: join(jobs.leaseDirOf(at), `${opened.id}.live`) }
+    }
+    const writer = openWriter('close-abandon')
+    assert.ok(existsSync(writer.holder))
+    for (const args of [['--abandon', '--task-status', JSON.stringify(taskStatusOf(writer.id))], ['--task-status', JSON.stringify(taskStatusOf(writer.id)), '--abandon'], ['--abandon', '--abandon'], ['--abandon', 'x']]) {
+      const refused = seatCli(['close', writer.id, ...args])
+      assert.equal(refused.error?.kind, 'BAD_REQUEST', `${args.join(' ')}: ${JSON.stringify(refused)}`)
+      assert.equal(store.readStamp(writer.id, 'closed'), null, `${args.join(' ')} stamped the seat closed`)
+      assert.ok(existsSync(writer.holder), `${args.join(' ')} dropped the holder`)
+    }
+    ok('close takes --abandon alone: beside --task-status, twice or with a value it is BAD_REQUEST, writing nothing and keeping the holder')
+
+    const abandoned = seatCli(['close', writer.id, '--abandon'])
+    const expected = { ok: true, id: writer.id, verdict: 'unknown', reasons: ['abandoned-before-bind'], turn: null, result: null, servedModels: [], blocks: 0, errors: [] }
+    assert.deepEqual(abandoned, expected)
+    const stamped = store.readStamp(writer.id, 'closed')
+    assert.deepEqual({ ...stamped, at: undefined }, { at: undefined, verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
+    assert.equal(existsSync(writer.holder), false, 'abandon kept the writer\'s holder')
+    const taker = jobRecord(writer.at, 'queued')
+    jobs.acquireLease(taker)
+    jobs.releaseLease(taker)
+    assert.deepEqual(seatCli(['close', writer.id, '--abandon']), expected, 'a second abandon does not print what the first recorded')
+    ok('close --abandon of an admitted seat with no bound stamp records unknown (abandoned-before-bind), drops the writer\'s holder, and a write job then takes the worktree; a second abandon prints the record')
+
+    for (const host of ['claude', 'codex']) {
+      const session = randomUUID()
+      const text = context(guard('prompt', host, promptCall(host, session, store.seatTag(writer.id))), `${host} late bind`)
+      assert.match(text, /void seat/)
+      assert.match(text, /record-closed/)
+      assert.deepEqual(store.readIndex(host, session), { id: writer.id, void: 'record-closed' })
+      denied(seatCall(host, session, 'Bash', { command: 'ls' }), /void seat \(record-closed\)/, `${host} tool call of a late child`)
+    }
+    assert.equal(store.readStamp(writer.id, 'bound'), null, 'a closed record was bound')
+    ok('a child that starts after its seat was abandoned binds nothing: its session is a void seat (record-closed) and its tool calls are denied, on both hosts')
+
+    const bound = openWriter('close-abandon-bound')
+    context(guard('prompt', 'claude', promptCall('claude', randomUUID(), store.seatTag(bound.id))), 'bind')
+    assert.notEqual(store.readStamp(bound.id, 'bound'), null)
+    const refused = seatCli(['close', bound.id, '--abandon'])
+    assert.equal(refused.error?.kind, 'BAD_REQUEST', JSON.stringify(refused))
+    assert.match(refused.error.message, /a bound seat closes with its task status/i)
+    assert.equal(store.readStamp(bound.id, 'closed'), null, 'abandon stamped a bound seat closed')
+    assert.ok(existsSync(bound.holder), 'abandon dropped a bound seat\'s holder')
+    assert.equal(closeSeat(bound.id).verdict, 'unknown')
+    assert.equal(existsSync(bound.holder), false)
+    ok('close --abandon refuses a bound seat with BAD_REQUEST, writing nothing and keeping its holder; close with its task status still closes it')
+
+    const review = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    assert.equal(review.ok, true, JSON.stringify(review))
+    assert.equal(seatCli(['close', review.id, '--abandon']).verdict, 'unknown')
+    assert.equal(existsSync(review.reviewWorktree), false, 'abandon left the review worktree')
+    assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(review.reviewWorktree), 'git still lists the review worktree')
+    ok('close --abandon removes a review seat\'s worktree as close does')
+  },
+
+  'close-abandon-race': async () => {
+    // Abandon writes its closed stamp, then reads the bound stamp again; a bind reads the closed
+    // stamp, then writes its bound stamp. Both orders of the two writes are run.
+    const contested = async (name) => {
+      const at = gitWorktree(name)
+      const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', at])
+      silent(guard('pre', 'claude', preCall('claude', randomUUID(), SPELLING.claude, delegateInput(store.readRecord(opened.id).record, opened.id))), `${name}: the parent's gate`)
+      const session = randomUUID()
+      const binding = await heldAt([GUARD, 'prompt', 'claude'], join(tmp, `${name}-bind`), 'bound', promptCall('claude', session, store.seatTag(opened.id)))
+      return { id: opened.id, at, session, binding, bindGate: join(tmp, `${name}-bind`), holder: join(jobs.leaseDirOf(at), `${opened.id}.live`) }
+    }
+
+    // The bound stamp lands between abandon's closed stamp and its second read.
+    const raced = await contested('abandon-raced')
+    const abandoning = await heldAt([SEAT_SCRIPT, 'close', raced.id, '--abandon'], join(tmp, 'abandon-raced-close'), 'closed')
+    writeFileSync(`${raced.bindGate}.go`, '')
+    const bind = await raced.binding.done
+    assert.equal(bind.code, 0)
+    assert.match(JSON.parse(bind.out).hookSpecificOutput.additionalContext, new RegExp(`Seat ${raced.id}:`), 'the held bind did not bind')
+    writeFileSync(join(tmp, 'abandon-raced-close.go'), '')
+    const racedOut = await abandoning.done
+    const out = JSON.parse(racedOut.out)
+    assert.equal(racedOut.code, 0, racedOut.out)
+    assert.deepEqual([out.verdict, out.reasons], ['unknown', ['abandon-raced-bind']])
+    assert.equal(out.cleanupProblems?.length, 1, racedOut.out)
+    assert.match(out.cleanupProblems[0], /bound/)
+    assert.ok(existsSync(raced.holder), 'abandon dropped the holder of a seat a bind raced')
+    assert.throws(() => jobs.acquireLease(jobRecord(raced.at, 'queued')), (error) => error.kind === 'WORKSPACE_BUSY' && error.details?.seatId === raced.id)
+    denied(seatCall('claude', raced.session, 'Bash', { command: 'ls' }), /this seat was closed/, 'the raced child\'s next call')
+    ok('a bind whose bound stamp lands between abandon\'s closed stamp and its second read: abandon reports abandon-raced-bind and keeps the writer\'s holder, which a write job still respects, and the child\'s calls are denied')
+
+    const settled = closeSeat(raced.id)
+    assert.deepEqual([settled.verdict, settled.reasons], ['unknown', ['abandon-raced-bind']])
+    assert.equal(existsSync(raced.holder), false, 'close with the task status kept the holder')
+    const taker = jobRecord(raced.at, 'queued')
+    jobs.acquireLease(taker)
+    jobs.releaseLease(taker)
+    ok('close with the raced seat\'s task status prints the abandon on record and drops the holder, and a write job then takes the worktree')
+
+    // The bound stamp lands after abandon finished: the holder is gone, and the child is held by the
+    // closed stamp alone.
+    const late = await contested('abandon-late')
+    const lateOut = seatCli(['close', late.id, '--abandon'])
+    assert.deepEqual([lateOut.verdict, lateOut.reasons, lateOut.cleanupProblems], ['unknown', ['abandoned-before-bind'], undefined])
+    assert.equal(existsSync(late.holder), false)
+    writeFileSync(`${late.bindGate}.go`, '')
+    assert.equal((await late.binding.done).code, 0)
+    assert.notEqual(store.readStamp(late.id, 'bound'), null, 'the held bind did not bind')
+    denied(seatCall('claude', late.session, 'Bash', { command: 'ls' }), /this seat was closed/, 'the late child\'s first call')
+    denied(seatCall('claude', late.session, 'Write', { file_path: join(late.at, 'x.txt'), content: 'x' }), /this seat was closed/, 'the late child\'s write')
+    ok('a bind whose bound stamp lands after abandon\'s second read finds the holder dropped, and every call of its child is denied by the closed stamp that was on disk first')
+  },
+
   'close-result-models': () => {
     const model = 'claude-opus-5-5'
     const cases = [
@@ -2803,6 +2963,7 @@ try {
     await cases[name]()
   }
 } finally {
+  for (const child of heldChildren) child.kill('SIGKILL')
   rmSync(tmp, { recursive: true, force: true })
 }
 
