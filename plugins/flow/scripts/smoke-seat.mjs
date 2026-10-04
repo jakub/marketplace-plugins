@@ -1194,6 +1194,7 @@ const cases = {
       ['cd /r && git push --force-with-lease', /\(no git push\)/], ['bash -c "git push"', /\(no git push\)/], ['\\git push', /\(no git push\)/],
       ['/usr/bin/git -c x=y push', /\(no git push\)/],
       ['gh auth status --show-token', /\(gh reads only\)/], ['gh auth status -t', /\(gh reads only\)/], ['gh auth status -ht github.com', /\(gh reads only\)/],
+      ['gh auth --show-token=true status', /\(gh reads only\)/], ['gh --show-token=true auth status', /\(gh reads only\)/], ['gh -t auth status', /\(gh reads only\)/],
       ['gh pr create --title t --body b', /\(gh reads only\)/], [['gh -R o/r pr', 'merge 3'].join(' '), /\(gh reads only\)/], ['gh issue comment 4 --body x', /\(gh reads only\)/],
       ['gh release create v1', /\(gh reads only\)/], ['gh repo delete o/r --yes', /\(gh reads only\)/],
       ['gh pr checkout 3', /\(gh reads only\)/], ['gh secret set TOKEN', /\(gh reads only\)/], ['gh variable set X', /\(gh reads only\)/],

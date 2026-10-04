@@ -566,8 +566,9 @@ function ghProblem(args) {
   const verbAt = verbAfter(groupAt + 1)
   const verb = args[verbAt]
   if (verb === undefined) return GH_DENIED(group)
-  // `gh auth status` is a read only bare: --show-token (-t) prints the credential into the transcript.
-  const reads = (group === 'auth' && verb === 'status' && verbAt === args.length - 1) || (group === 'search' && GH_SEARCHES.has(verb)) ||
+  // `gh auth status` is a read only as exactly those two words: --show-token (-t) prints the
+  // credential into the transcript, and gh parses it wherever it sits, before either word too.
+  const reads = (args.length === 2 && args[0] === 'auth' && args[1] === 'status') || (group === 'search' && GH_SEARCHES.has(verb)) ||
     (GH_GROUPS.has(group) && GH_READS.has(verb))
   return reads ? null : GH_DENIED(`${group} ${verb}`)
 }
