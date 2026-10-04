@@ -13,7 +13,7 @@ import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { readStamp } from '../lib/seat-store.mjs'
+import { hasRecord, readStamp } from '../lib/seat-store.mjs'
 import { inside, RETENTION_MS, stateDir } from '../lib/state-dir.mjs'
 import { FINDINGS_SCHEMA, outputSchemaProblem } from './schema.mjs'
 
@@ -377,12 +377,24 @@ export async function admit(input, { host, roots }) {
 //
 // A T3 writer seat holds the same directory through a file named for its seat id, 32 hex
 // characters, that scripts/seat.mjs writes before the seat's record and drops at close. A holder
-// whose seat has no closed stamp, its record not yet written included, keeps every write job out;
-// a closed one is a leftover, dropped like a dead job's file before the next try. seat.mjs checks
-// for a live job after writing its holder, so of a seat and a job racing for one worktree, at
-// most one goes on.
+// whose seat has a record and no closed stamp keeps every write job out. A closed one is a
+// leftover, dropped like a dead job's file before the next try. One with no record is an open in
+// flight for SEAT_HOLDER_GRACE_MS after its write, and keeps jobs out that long; after that it is
+// the leftover of an open that died between the holder and the record, and is dropped too. The
+// holder's mtime is read before the record is looked for, so a drop needs the record still absent
+// a full grace after the holder went in. seat.mjs writes nothing slow between the two and checks
+// its holder is still there once the record is written. seat.mjs also checks for a live job
+// after writing its holder, so of a seat and a job racing for one worktree, at most one goes on.
 export const leaseDirOf = (worktree) => join(stateDir(), 'leases', createHash('sha256').update(worktree).digest('hex'))
 const SEAT_HOLDER = /^[0-9a-f]{32}$/
+const SEAT_HOLDER_GRACE_MS = 60_000
+// Whether the seat holder file `seat` in lease directory dir still keeps write jobs out.
+function seatHolds(dir, seat) {
+  if (readStamp(seat, 'closed') !== null) return false
+  const held = lstatSync(join(dir, seat), { throwIfNoEntry: false })
+  if (!held) return false
+  return Date.now() - held.mtimeMs < SEAT_HOLDER_GRACE_MS || hasRecord(seat)
+}
 // The holder is reconciled first: a queued job past its grace is claimed and settled, so no
 // runner can start it once its lease is gone, and a running one whose runner died is settled
 // after its provider group is killed. An ended job still holds the lease while its provider group
@@ -413,7 +425,7 @@ export function acquireLease(job) {
         dropLease(dir, owner)
       }
       for (const seat of names.filter((name) => SEAT_HOLDER.test(name))) {
-        if (readStamp(seat, 'closed') === null) {
+        if (seatHolds(dir, seat)) {
           fail('WORKSPACE_BUSY', `T3 seat ${seat} holds this worktree until it is closed with seat.mjs close.`, { seatId: seat })
         }
         dropLease(dir, seat)

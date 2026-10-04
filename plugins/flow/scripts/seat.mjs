@@ -6,35 +6,41 @@
 //   seat.mjs open --access read-only|workspace-write|review --provider claude|codex --model <id>
 //                 --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>]
 //   seat.mjs close <seat-id> --task-status <json>
-//   seat.mjs trust [--write]
+//   seat.mjs trust [--write --expect <digest>]
 //
 // stdout is one JSON line. open prints {ok: true, id, tag, runtimeMode, provider, model, effort,
 // worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
 // servedModels, blocks, errors}, trust prints {ok: true, keys: [{key, command, trustStatus,
-// currentHash}], wrote}, and a refusal prints {ok: false, error: {kind, message, details?}} with
-// exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and HOOKS_UNTRUSTED from
-// open; HOOKS_MISMATCH, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App Server's own
-// failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for anything this script
-// did not expect, INTERNAL.
+// currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
+// details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and
+// HOOKS_UNTRUSTED from open; BAD_REQUEST, HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED,
+// PROVIDER_NOT_INSTALLED and the Codex App Server's own failure kinds (PROVIDER_ERROR,
+// PROVIDER_AUTH, TIMEOUT) from trust; and, for anything this script did not expect, INTERNAL.
 //
 // open, in this order: prune closed records past retention; find the repository from --worktree,
 // or the working directory, and its canonical checkout, the main worktree; for a review, resolve
 // --base and --head to commit SHAs where --worktree (or the working directory) resolves them and
 // add a detached worktree at the head under <canonical>/.flow-worktrees/review-<id>, the seat's
-// worktree, with the findings schema as its answer schema; for a writer, hold the worktree's
-// write lease directory (below); for a review, snapshot the canonical checkout with
-// tree-snapshot.mjs; for a Codex seat, read flow's Codex hook trust (below) and refuse with
-// HOOKS_UNTRUSTED unless every flow hook is there, enabled and trusted, recording the digest of
-// the keys and hashes it read as hooksDigest; then write the schema and the record, last, through
-// lib/seat-store.mjs. A failure undoes whatever this run created, the review worktree and the
-// lease holder, so a refused open leaves nothing behind.
+// worktree, with the findings schema as its answer schema; for a Codex seat, read flow's Codex
+// hook trust (below) and refuse with HOOKS_UNTRUSTED unless every flow hook is there, enabled and
+// trusted, recording the digest of the keys and hashes it read as hooksDigest; for a writer, hold
+// the worktree's write lease directory (below); for a review, snapshot the canonical checkout
+// with tree-snapshot.mjs; then write the schema and the record, last, through lib/seat-store.mjs.
+// A failure undoes whatever this run created, the review worktree and the lease holder, so a
+// refused open leaves nothing behind, with one exception under The lease.
 //
 // The lease. A writer seat and a flow_delegate write job never share a worktree. open refuses when
 // a live write job owns the lease directory delegate/jobs.mjs keys by the worktree, writes its
 // holder file <leaseDirOf(worktree)>/<id> there, and then reads the directory again and backs out
 // if a live job owner appeared meanwhile. acquireLease refuses a write job while a holder's seat
-// has no closed stamp, so whichever of the two writes first, the other sees it. Writer seats
-// share a worktree with each other, each committing its own paths, as native writers do.
+// has no closed stamp, so whichever of the two writes first, the other sees it. A holder whose
+// seat has no record yet is an open in flight for a minute after its write, and after that
+// acquireLease drops it as the leftover of an open that died before its record. So nothing slow
+// runs between the holder and the record (the Codex trust read comes first), and once the record
+// is written open checks its holder is still there. If it is not, the open stalled past the
+// minute and a write job may hold the worktree: open voids the record it wrote, closes it as
+// unknown so it is pruned like any closed record, and refuses WORKSPACE_BUSY. Writer seats share a
+// worktree with each other, each committing its own paths, as native writers do.
 //
 // close judges the seat from its record and the stamps and results the hooks wrote, in this
 // order of precedence, the first that holds being the verdict:
@@ -51,11 +57,15 @@
 //   capped          the last turn was capped
 //   invalid         the last stop in the last turn was blocked
 //   valid           otherwise; result is the envelope Stop recorded
-// It writes the closed stamp first, with the verdict, the reasons and the task status the parent
-// read from T3, then drops the writer's lease holder and removes the review worktree it created.
-// The stamp is write-once, so a second close, or a racing one, prints the verdict on record and
-// retries the cleanup. Cleanup that fails is listed in cleanupProblems and does not change the
-// verdict.
+// It writes the closed stamp first, with the verdict, the reasons, the task status the parent
+// read from T3, and the facts the output reports: the turn, the sha256 of that turn's result bytes
+// as judge read them (null with no result), the served models, the blocks and the errors. It
+// then drops the writer's lease holder and removes the review worktree it created. The stamp is
+// write-once and is the record, so a second close, or a racing one, prints the stamp's verdict
+// and facts, with the result read again from the pinned turn: that result while its bytes still
+// hash to the pinned sha256, and otherwise null, with result-changed-after-close among the
+// reasons and the verdict unchanged. It also retries the cleanup. Cleanup that fails is listed in
+// cleanupProblems and does not change the verdict.
 //
 // trust. Codex skips a hook it does not trust without a word, and keys its trust by position,
 // `<plugin>:hooks/codex.json:<event>:<group>:<handler>`, with a hash of the command. trust spawns
@@ -66,10 +76,13 @@
 // plugin root: Codex reports each command with the root already expanded (0.160.0). All of them
 // must come from one plugin and one root, and there must be exactly one per handler, or trust
 // fails HOOKS_MISMATCH, which is what an install older or newer than this copy of flow reads as.
-// --write then upserts those keys, and no other, into hooks.state with config/batchWrite, each
-// as {trusted_hash: <its currentHash>}, reads hooks/list again, and fails HOOKS_UNTRUSTED unless
-// every one reads trusted. A user's, a project's or another plugin's hook is never written.
-// hooksDigest is the sha256 of the sorted [key, currentHash] pairs, as JSON.
+// A plain trust prints the keys and their digest, the sha256 of the sorted [key, currentHash]
+// pairs as JSON, which is also what open records as hooksDigest. The human grants trust to what
+// they were shown, so --write takes that digest as --expect: it lists the keys again and fails
+// HOOKS_CHANGED, writing nothing, unless their digest is the expected one. It then upserts those
+// keys, and no other, into hooks.state with config/batchWrite, each as {trusted_hash: <its
+// currentHash>}, reads hooks/list again, and fails HOOKS_UNTRUSTED unless every one reads
+// trusted. A user's, a project's or another plugin's hook is never written.
 //
 // git runs with no GIT_* variable from the caller and no user or system configuration, as in
 // delegate/jobs.mjs, so neither the caller's environment nor a config file decides which
@@ -97,6 +110,7 @@ const PROVIDERS = ['claude', 'codex']
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@+/[\]-]{0,127}$/
 const EFFORT = /^[a-z][a-z0-9-]{0,31}$/
 const SEAT_ID = /^[0-9a-f]{32}$/
+const DIGEST = /^[0-9a-f]{64}$/
 const SCHEMA_BYTES = 16 * 1024
 const TASK_STATUS_BYTES = 64 * 1024
 const GIT_MS = 60_000
@@ -249,11 +263,13 @@ async function open(argv) {
       reviewWorktree = realpathSync(path)
       worktree = reviewWorktree
     }
+    // The trust read can take a minute, so it comes before the holder: nothing slow may sit between
+    // the holder and the record (see The lease, above).
+    const digest = provider === 'codex' ? await seatTrust(repoRoot) : null
     if (access === 'workspace-write') {
       holdWorktree(worktree, id)
       undo.push(() => dropLease(leaseDirOf(worktree), id))
     }
-    const digest = provider === 'codex' ? await seatTrust(repoRoot) : null
     if (review) {
       canonicalSnapshot = snapshot(repoRoot)
       if (!canonicalSnapshot) fail('GIT_REF', 'The canonical checkout could not be snapshotted.')
@@ -262,6 +278,12 @@ async function open(argv) {
       v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, baseSha, headSha,
       provider, model, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot, hooksDigest: digest,
     }, schema)
+    if (access === 'workspace-write' && !existsSync(join(leaseDirOf(worktree), id))) {
+      const reason = 'the lease holder was dropped as abandoned before the record was written'
+      store.stamp(id, 'void', { reason: 'lease-lost-at-open' })
+      store.stamp(id, 'closed', { verdict: 'unknown', reasons: [reason], taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
+      fail('WORKSPACE_BUSY', `This open stalled for over a minute, so ${reason}, and a write job may hold the worktree now.`)
+    }
     return { ok: true, id, tag: store.seatTag(id), runtimeMode: RUNTIME_MODE, provider, model, effort, worktree, reviewWorktree }
   } catch (error) {
     for (const step of undo.reverse()) { try { step() } catch {} }
@@ -356,13 +378,21 @@ function trustCwd() {
 }
 
 async function trust(argv) {
-  const write = argv.length === 1 && argv[0] === '--write'
-  if (argv.length > 0 && !write) fail('BAD_REQUEST', 'trust takes --write or nothing.')
+  const write = argv[0] === '--write'
+  const opts = flags(write ? argv.slice(1) : argv, ['--expect'])
+  const expected = opts['--expect']
+  if (!write && expected !== undefined) fail('BAD_REQUEST', 'trust takes nothing, or --write --expect <digest>, the digest a plain trust listed.')
+  if (write && (typeof expected !== 'string' || !DIGEST.test(expected))) fail('BAD_REQUEST', 'trust --write needs --expect <digest>, the 64 hex digest a plain trust listed.')
   const cwd = trustCwd()
   const handlers = flowHandlers()
   return withCodex(cwd, async (rpc) => {
     const keys = await listFlowKeys(rpc, cwd, handlers)
-    if (!write) return { ok: true, keys: shown(keys), wrote: false }
+    const digest = hooksDigest(keys)
+    if (!write) return { ok: true, keys: shown(keys), digest, wrote: false }
+    if (digest !== expected) {
+      fail('HOOKS_CHANGED', 'Flow\'s Codex hooks are not the ones listed under the expected digest, so nothing was written. Run trust again and show the human the new list.',
+        { expected, digest, keys: shown(keys) })
+    }
     const value = Object.fromEntries(keys.map(({ key, currentHash }) => [key, { trusted_hash: currentHash }]))
     await rpc.request('config/batchWrite', { edits: [{ keyPath: 'hooks.state', value, mergeStrategy: 'upsert' }], reloadUserConfig: true })
     const after = await listFlowKeys(rpc, cwd, handlers)
@@ -370,7 +400,7 @@ async function trust(argv) {
     if (still.length > 0) {
       fail('HOOKS_UNTRUSTED', `Codex still reads ${still.length} of flow's hooks as not trusted after the write.`, { keys: shown(still) })
     }
-    return { ok: true, keys: shown(after), wrote: true }
+    return { ok: true, keys: shown(after), digest: hooksDigest(after), wrote: true }
   })
 }
 
@@ -427,10 +457,10 @@ function treeReasons(record, envelope) {
   return reasons
 }
 
-// The verdict, its reasons, and what the output reports from the seat's files. The facts are read
-// whatever the verdict, so a second close, which prints the verdict on record, reports them too.
+// The verdict, its reasons, and what the output reports from the seat's files, with the sha256 of
+// the last turn's result bytes as read here (null with none), so the closed stamp can pin them.
 function judge(id, loaded) {
-  const facts = { turn: null, envelope: null, servedModels: [], blocks: 0, errors: [] }
+  const facts = { turn: null, envelope: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] }
   const unknown = (reason) => ({ verdict: 'unknown', reasons: [reason], facts })
   if (!loaded) return unknown('the seat record is missing or corrupt')
   const { record, digest } = loaded
@@ -444,9 +474,11 @@ function judge(id, loaded) {
   facts.turn = state.turn
   facts.blocks = Number.isSafeInteger(state.blocks) ? state.blocks : 0
   facts.errors = Array.isArray(state.errors) ? state.errors : []
+  // Read once whatever the outcome, so the closed stamp pins the bytes on disk for the turn.
+  const result = store.readResult(id, state.turn)
+  facts.resultSha256 = result?.sha256 ?? null
   let envelope = null
   if (state.outcome === 'valid') {
-    const result = store.readResult(id, state.turn)
     if (!result) return unknown(`turn ${state.turn} has no result`)
     if (!result.intact) return unknown(`turn ${state.turn}'s result does not match its recorded sha256`)
     const served = result.body?.servedModels
@@ -483,6 +515,25 @@ function cleanup(id, record) {
   return problems
 }
 
+// A later close's output: the closed stamp's verdict and facts, and the result it pinned while the
+// result file's bytes still hash to the pinned sha256. Once they do not, the result is null and
+// the reasons say so; the verdict stays the one on record.
+function onRecord(id, recorded) {
+  const turn = Number.isSafeInteger(recorded.turn) && recorded.turn > 0 ? recorded.turn : null
+  const pinned = typeof recorded.resultSha256 === 'string' ? recorded.resultSha256 : null
+  const now = turn === null ? null : store.readResult(id, turn)
+  const reasons = Array.isArray(recorded.reasons) ? [...recorded.reasons] : []
+  let result = null
+  if ((now?.sha256 ?? null) !== pinned) reasons.push('result-changed-after-close')
+  else if (recorded.verdict === 'valid') result = now?.body?.envelope ?? null
+  return {
+    ok: true, id, verdict: recorded.verdict, reasons, turn, result,
+    servedModels: Array.isArray(recorded.servedModels) ? recorded.servedModels : [],
+    blocks: Number.isSafeInteger(recorded.blocks) ? recorded.blocks : 0,
+    errors: Array.isArray(recorded.errors) ? recorded.errors : [],
+  }
+}
+
 function close(argv) {
   const [id, ...rest] = argv
   if (typeof id !== 'string' || !SEAT_ID.test(id)) fail('BAD_REQUEST', 'close takes a seat id, 32 lowercase hex characters.')
@@ -494,18 +545,15 @@ function close(argv) {
   try { taskStatus = JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
 
   const loaded = store.readRecord(id)
-  const judged = judge(id, loaded)
-  let { verdict, reasons } = judged
-  if (!store.stamp(id, 'closed', { verdict, reasons, taskStatus })) {
-    // An earlier or racing close holds the stamp, and its verdict stands; or the record
-    // directory is gone, and nothing can be recorded.
+  const { verdict, reasons, facts } = judge(id, loaded)
+  const { turn, resultSha256, servedModels, blocks, errors } = facts
+  const closed = { verdict, reasons, taskStatus, turn, resultSha256, servedModels, blocks, errors }
+  let out = { ok: true, id, verdict, reasons, turn, result: verdict === 'valid' ? facts.envelope : null, servedModels, blocks, errors }
+  if (!store.stamp(id, 'closed', closed)) {
+    // An earlier or racing close holds the stamp, and its record stands; or the record directory
+    // is gone, and nothing can be recorded.
     const recorded = store.readStamp(id, 'closed')
-    if (recorded) ({ verdict, reasons } = recorded)
-  }
-  const { facts } = judged
-  const out = {
-    ok: true, id, verdict, reasons, turn: facts.turn, result: verdict === 'valid' ? facts.envelope : null,
-    servedModels: facts.servedModels, blocks: facts.blocks, errors: facts.errors,
+    if (recorded) out = onRecord(id, recorded)
   }
   const problems = cleanup(id, loaded?.record ?? null)
   if (problems.length > 0) out.cleanupProblems = problems
@@ -514,7 +562,7 @@ function close(argv) {
 
 // ----- main
 
-const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> --model <id> --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs trust [--write]'
+const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> --model <id> --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs trust [--write --expect <digest>]'
 const [verb, ...argv] = process.argv.slice(2)
 let answer
 try {

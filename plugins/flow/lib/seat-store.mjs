@@ -160,6 +160,15 @@ export function readRecord(id) {
 }
 
 /**
+ * Whether id's record.json exists, whatever its bytes. A seat open that died after its lease
+ * holder and before its record leaves a holder for which this is false.
+ */
+export function hasRecord(id) {
+  const dir = seatDir(id)
+  return dir !== null && statSync(join(dir, 'record.json'), { throwIfNoEntry: false }) !== undefined
+}
+
+/**
  * Write stamp name once, as {at, ...obj}; a caller's own `at` wins. True when this call wrote it.
  * False when the stamp already exists, whoever wrote it, and when the record directory does not
  * exist or id is not a seat id. An unknown stamp name is a programming error and throws.

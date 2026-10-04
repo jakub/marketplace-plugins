@@ -128,7 +128,7 @@ node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|rev
  "provider": "claude", "model": "<id>", "effort": "<level>", "worktree": "<path>", "reviewWorktree": null}
 ```
 
-Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. The flow skill's `setup` grants that trust once per machine. A refused seat goes to the fallback.
+Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. The flow skill's `setup` grants that trust once per machine in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
 
 ### Start it
 
@@ -191,7 +191,7 @@ node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status 
 
 A seat that made no tool call has no `receipt`, so it reads `unknown`. On Codex, the served-model check covers the model the hooks saw at UserPromptSubmit and at Stop. On Claude, it reads every model the transcript records for the seat's own turns.
 
-Close every seat you open, cancelled ones included. `close` records the verdict first, then drops a writer's lease holder and removes a review's worktree. A second `close` prints the verdict on record. An unclosed T3 writer stays in the worktree's lease directory, and `flow_delegate` refuses a write job there with `WORKSPACE_BUSY` until the seat closes.
+Close every seat you open, cancelled ones included. `close` records the verdict first, then drops a writer's lease holder and removes a review's worktree. A second `close` prints what the first recorded, verdict included. Its `result` is the recorded result while that file's bytes are unchanged, and `null` once they changed, with `result-changed-after-close` added to `reasons`. An unclosed T3 writer stays in the worktree's lease directory, and `flow_delegate` refuses a write job there with `WORKSPACE_BUSY` until the seat closes. A holder left by an `open` that died before writing its record holds for a minute, and then a write job drops it.
 
 ### Fall back
 

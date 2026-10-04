@@ -1169,8 +1169,9 @@ try {
   ok('the prune keeps the record of an ended job while its lease is held, and removes it once the lease has moved on')
 
   // A T3 writer seat holds a worktree's lease directory through a file named for its seat id. While
-  // its seat has no closed stamp, its record not yet written included, every write job there is
-  // refused; once closed, the leftover holder is dropped and the job takes the lease.
+  // its seat has no closed stamp, its record not yet written included while the holder is under a
+  // minute old, every write job there is refused; once closed, the leftover holder is dropped and
+  // the job takes the lease.
   const seatHeld = join(tmp, `seat-held-${randomUUID()}`)
   const holder = seatStore.newId()
   mkdirSync(jobs.leaseDirOf(seatHeld), { recursive: true })

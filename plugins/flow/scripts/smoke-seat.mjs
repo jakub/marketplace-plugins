@@ -341,14 +341,16 @@ function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], 
   }
   return { id: seatId }
 }
-// Preloaded into a seat process: it holds the process at the write of its lease holder file until
-// <SEAT_GATE>.go exists, having written <SEAT_GATE>.waiting, so a case can act in that window.
+// Preloaded into a seat process: it holds the process at the write of its lease holder file, or
+// with SEAT_GATE_AT=record at the write of its record's temp file, until <SEAT_GATE>.go exists,
+// having written <SEAT_GATE>.waiting, so a case can act in that window.
 const holderGate = join(tmp, 'holder-gate.mjs')
 writeFileSync(holderGate, `import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 const real = fs.writeFileSync
+const at = process.env.SEAT_GATE_AT === 'record' ? /\\/seats\\/[0-9a-f]{32}\\/\\.record\\.json\\./ : /\\/leases\\/[0-9a-f]{64}\\/[0-9a-f]{32}$/
 fs.writeFileSync = function (path, ...rest) {
-  if (typeof path === 'string' && /\\/leases\\/[0-9a-f]{64}\\/[0-9a-f]{32}$/.test(path)) {
+  if (typeof path === 'string' && at.test(path)) {
     real(process.env.SEAT_GATE + '.waiting', '')
     const nap = new Int32Array(new SharedArrayBuffer(4))
     while (!fs.existsSync(process.env.SEAT_GATE + '.go')) Atomics.wait(nap, 0, 0, 5)
@@ -1755,6 +1757,64 @@ const cases = {
     jobs.releaseLease(after)
     ok('a holder whose seat record is not yet written refuses a write job, and a closed seat\'s leftover holder is dropped and the job takes the lease')
 
+    // A holder whose open died before the record: past the minute it is abandoned and dropped. A
+    // holder with a record holds however old it is, and one inside the minute still holds.
+    const abandoned = gitWorktree('lease-abandoned')
+    const stale61 = new Date(Date.now() - 61_000)
+    const holderAt = (id, when) => {
+      mkdirSync(jobs.leaseDirOf(abandoned), { recursive: true })
+      writeFileSync(join(jobs.leaseDirOf(abandoned), id), '')
+      utimesSync(join(jobs.leaseDirOf(abandoned), id), when, when)
+    }
+    const takeAndRelease = () => {
+      const job = jobRecord(abandoned, 'queued')
+      jobs.acquireLease(job)
+      assert.deepEqual(readdirSync(jobs.leaseDirOf(abandoned)), [job.id])
+      jobs.releaseLease(job)
+    }
+    const deadId = store.newId()
+    holderAt(deadId, stale61)
+    takeAndRelease()
+    const youngId = store.newId()
+    holderAt(youngId, new Date(Date.now() - 50_000))
+    assert.throws(() => jobs.acquireLease(jobRecord(abandoned, 'queued')), (error) => error.kind === 'WORKSPACE_BUSY' && error.details?.seatId === youngId)
+    utimesSync(join(jobs.leaseDirOf(abandoned), youngId), stale61, stale61)
+    takeAndRelease()
+    const liveId = store.newId()
+    holderAt(liveId, stale61)
+    store.writeRecord(RECORD({ id: liveId, access: 'workspace-write', worktree: abandoned }), null)
+    assert.throws(() => jobs.acquireLease(jobRecord(abandoned, 'queued')), (error) => error.kind === 'WORKSPACE_BUSY' && error.details?.seatId === liveId)
+    assert.deepEqual(readdirSync(jobs.leaseDirOf(abandoned)), [liveId])
+    store.stamp(liveId, 'closed', { verdict: 'valid', reasons: [] })
+    takeAndRelease()
+    ok('a holder with no seat record is held for a minute after its write, as an open in flight, and then dropped as abandoned so a write job takes the lease; a holder with a record holds however old it is')
+
+    // An open stalled past the minute between its holder and its record: a write job drops the
+    // holder and takes the lease, so the seat must not open on a worktree it no longer holds.
+    const stalled = gitWorktree('lease-stalled')
+    const recordGate = join(tmp, 'record-gate')
+    const stalledOpen = spawn(process.execPath, ['--import', pathToFileURL(holderGate).href, SEAT_SCRIPT, 'open', '--access', 'workspace-write', '--provider', 'claude',
+      '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', stalled], { cwd: canon, env: { ...process.env, SEAT_GATE: recordGate, SEAT_GATE_AT: 'record' }, stdio: ['ignore', 'pipe', 'inherit'] })
+    let heldOut = ''
+    stalledOpen.stdout.on('data', (chunk) => { heldOut += chunk })
+    const heldDone = new Promise((resolve) => stalledOpen.on('close', resolve))
+    for (const end = Date.now() + 15_000; !existsSync(`${recordGate}.waiting`);) {
+      if (Date.now() > end) throw new Error('the seat never reached its record write')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const [stalledId] = readdirSync(jobs.leaseDirOf(stalled))
+    utimesSync(join(jobs.leaseDirOf(stalled), stalledId), stale61, stale61)
+    const overtaker = jobRecord(stalled, 'queued')
+    jobs.acquireLease(overtaker)
+    writeFileSync(`${recordGate}.go`, '')
+    assert.equal(await heldDone, 1)
+    assert.equal(JSON.parse(heldOut).error?.kind, 'WORKSPACE_BUSY', heldOut)
+    assert.deepEqual(readdirSync(jobs.leaseDirOf(stalled)), [overtaker.id])
+    assert.ok(store.readStamp(stalledId, 'void'), 'the stalled seat\'s record was not voided')
+    assert.equal(store.readStamp(stalledId, 'closed')?.verdict, 'unknown', 'the stalled seat\'s record was not closed')
+    jobs.releaseLease(overtaker)
+    ok('an open whose holder was dropped as abandoned before its record went in refuses WORKSPACE_BUSY and voids and closes the record it wrote')
+
     // Seats and write jobs racing for one worktree: never a seat and a job both.
     for (let round = 0; round < 6; round++) {
       const contested = gitWorktree(`lease-race-${round}`)
@@ -1905,6 +1965,28 @@ const cases = {
     assert.deepEqual(store.readStamp(seat.id, 'closed').taskStatus, { status: 'completed', run: 1 })
     ok('a second close prints the verdict and reasons on record, keeps the first task status, and the first close dropped the writer\'s lease holder')
 
+    const resultPath = join(seats, seat.id, 'result-1.json')
+    const stamped = store.readStamp(seat.id, 'closed')
+    assert.equal(stamped.resultSha256, sha256(readFileSync(resultPath)), 'the closed stamp does not pin the result it judged')
+    assert.equal(stamped.turn, 1)
+    assert.deepEqual([again.reasons, again.result, again.turn, again.servedModels], [[], first.result, 1, ['claude-opus-5-5']], 'a second close did not return the result on record')
+    store.writeResult(seat.id, 1, { envelope: { ...first.result, notes: 'rewritten after close' }, servedModels: ['claude-opus-5-5'], at: new Date().toISOString() })
+    const third = closeSeat(seat.id)
+    assert.equal(third.verdict, 'valid', 'the verdict on record changed')
+    assert.equal(third.result, null, 'a result rewritten after the close was returned')
+    assert.ok(third.reasons.includes('result-changed-after-close'), JSON.stringify(third.reasons))
+    assert.deepEqual(store.readStamp(seat.id, 'closed'), stamped, 'a later close rewrote the closed stamp')
+    assert.deepEqual(again, first, 'a second close with the result unchanged printed something else')
+    const blockedTurn = hookedSeat({ outcome: 'blocked', blocks: 1, errors: ['$: x'] })
+    store.writeResult(blockedTurn.id, 1, { envelope: ENVELOPE_OK, servedModels: ['claude-opus-5-5'], messageSha256: 'a'.repeat(64), at: new Date().toISOString() })
+    const firstBlocked = closeSeat(blockedTurn.id)
+    assert.equal(firstBlocked.verdict, 'invalid')
+    assert.deepEqual(closeSeat(blockedTurn.id), firstBlocked, 'an invalid seat\'s unchanged earlier result read as changed after close')
+    const noStop = hookedSeat({ outcome: null })
+    const firstNoStop = closeSeat(noStop.id)
+    assert.deepEqual(closeSeat(noStop.id), firstNoStop, 'a seat with no result read as changed after close')
+    ok('the closed stamp pins the turn\'s result sha256 and the facts; a later close prints the same while the result\'s bytes match, whatever the verdict, and a null result with result-changed-after-close once they do not, the verdict unchanged')
+
     for (const [args, kind] of [
       [['close'], 'BAD_REQUEST'], [['close', 'xyz', '--task-status', '{}'], 'BAD_REQUEST'], [['close', seat.id], 'BAD_REQUEST'],
       [['close', seat.id, '--task-status', 'not json'], 'BAD_REQUEST'], [['close', seat.id, '--task-status', '{}', '--x', '1'], 'BAD_REQUEST'],
@@ -1951,8 +2033,9 @@ const cases = {
   'trust-list': () => {
     const { dir, env } = codexState([...flowEntries(), ...FOREIGN])
     const out = seatCli(['trust'], { env })
-    assert.deepEqual(Object.keys(out), ['ok', 'keys', 'wrote'])
+    assert.deepEqual(Object.keys(out), ['ok', 'keys', 'digest', 'wrote'])
     assert.equal(out.wrote, false)
+    assert.equal(out.digest, flowDigest(flowEntries()), 'the listed digest is not the hooksDigest open records')
     const expected = flowEntries().map(({ key, command, trustStatus, currentHash }) => ({ key, command, trustStatus, currentHash })).sort((a, b) => (a.key < b.key ? -1 : 1))
     assert.deepEqual(out.keys, expected)
     assert.equal(out.keys.length, 10)
@@ -1960,18 +2043,20 @@ const cases = {
     assert.deepEqual(sent.map((message) => message.method), ['initialize', 'initialized', 'hooks/list'])
     assert.equal(sent[0].params.capabilities.experimentalApi, true)
     assert.deepEqual(sent[2].params, { cwds: [canon] })
-    ok('trust lists flow\'s own Codex hook keys alone, each with its command, trust status and hash, through initialize, initialized and hooks/list for the canonical checkout, and writes nothing')
+    ok('trust lists flow\'s own Codex hook keys alone, each with its command, trust status and hash, and their digest, through initialize, initialized and hooks/list for the canonical checkout, and writes nothing')
   },
 
   'trust-write': () => {
     const { dir, env } = codexState([...flowEntries(), ...FOREIGN])
-    const out = seatCli(['trust', '--write'], { env })
+    const listed = seatCli(['trust'], { env })
+    const out = seatCli(['trust', '--write', '--expect', listed.digest], { env })
     assert.equal(out.ok, true, JSON.stringify(out))
     assert.equal(out.wrote, true)
+    assert.equal(out.digest, listed.digest)
     assert.ok(out.keys.every((key) => key.trustStatus === 'trusted'))
     const sent = codexSent(dir)
-    assert.deepEqual(sent.map((message) => message.method), ['initialize', 'initialized', 'hooks/list', 'config/batchWrite', 'hooks/list'])
-    const { edits } = sent[3].params
+    assert.deepEqual(sent.map((message) => message.method), ['initialize', 'initialized', 'hooks/list', 'initialize', 'initialized', 'hooks/list', 'config/batchWrite', 'hooks/list'])
+    const { edits } = sent[6].params
     const flow = flowEntries()
     assert.deepEqual(edits, [{ keyPath: 'hooks.state', value: Object.fromEntries(flow.map(({ key, currentHash }) => [key, { trusted_hash: currentHash }])), mergeStrategy: 'upsert' }])
     assert.deepEqual(Object.keys(edits[0].value).sort(), flow.map(({ key }) => key).sort())
@@ -1980,10 +2065,34 @@ const cases = {
     ok('trust --write upserts hooks.state for flow\'s keys alone, each as its current hash, leaves another plugin\'s and a user\'s hook (one running a flow script included) untouched, and reads the keys back trusted')
 
     const ignored = codexState([...flowEntries(), ...FOREIGN], { ignoreWrites: true })
-    const refused = seatCli(['trust', '--write'], { env: ignored.env })
+    const refused = seatCli(['trust', '--write', '--expect', flowDigest(flowEntries())], { env: ignored.env })
     assert.equal(refused.error.kind, 'HOOKS_UNTRUSTED')
     assert.equal(refused.error.details.keys.length, 10)
     ok('trust --write fails HOOKS_UNTRUSTED when a key does not read trusted after the write')
+
+    // The write is bound to the list the human saw: a hook whose hash moved since then, or a digest
+    // from anywhere else, refuses HOOKS_CHANGED before anything is written.
+    const moving = codexState([...flowEntries(), ...FOREIGN])
+    const seen = seatCli(['trust'], { env: moving.env })
+    const hooks = codexHooks(moving.dir)
+    const target = hooks.find((hook) => hook.key === seen.keys[0].key)
+    target.currentHash = `sha256:${'e'.repeat(64)}`
+    writeFileSync(join(moving.dir, 'hooks.json'), JSON.stringify({ hooks, ignoreWrites: false }))
+    const changed = seatCli(['trust', '--write', '--expect', seen.digest], { env: moving.env })
+    assert.equal(changed.error?.kind, 'HOOKS_CHANGED', JSON.stringify(changed))
+    assert.equal(changed.error.details.expected, seen.digest)
+    assert.equal(changed.error.details.digest, flowDigest(hooks.filter((hook) => seen.keys.some(({ key }) => key === hook.key))))
+    assert.ok(!codexSent(moving.dir).some((message) => message.method === 'config/batchWrite'), 'a changed list was written')
+    assert.equal(codexHooks(moving.dir).find((hook) => hook.key === target.key).trustStatus, 'untrusted')
+    const wrongDigest = seatCli(['trust', '--write', '--expect', 'f'.repeat(64)], { env: moving.env })
+    assert.equal(wrongDigest.error?.kind, 'HOOKS_CHANGED')
+    assert.ok(!codexSent(moving.dir).some((message) => message.method === 'config/batchWrite'), 'a wrong digest was written')
+    for (const args of [['trust', '--write'], ['trust', '--expect', seen.digest], ['trust', '--write', '--expect', 'xyz'], ['trust', '--write', '--expect']]) {
+      const bad = codexState([...flowEntries(), ...FOREIGN])
+      assert.equal(seatCli(args, { env: bad.env }).error?.kind, 'BAD_REQUEST', args.join(' '))
+      assert.deepEqual(codexSent(bad.dir), [], `${args.join(' ')} reached Codex`)
+    }
+    ok('trust --write needs --expect with the digest trust listed, and refuses HOOKS_CHANGED, writing nothing, when the hooks listed now have another digest')
   },
 
   'trust-mismatch': () => {
@@ -2000,7 +2109,7 @@ const cases = {
         ...flowEntries({ trusted: true, root: '/home/u/other/flow' }).filter((hook) => hook.command.includes('seat-guard.mjs'))]],
       ['no flow at all', FOREIGN],
     ]) {
-      for (const args of [['trust'], ['trust', '--write']]) {
+      for (const args of [['trust'], ['trust', '--write', '--expect', flowDigest(hooks)]]) {
         const { dir, env } = codexState(hooks)
         const out = seatCli(args, { env })
         assert.equal(out.error?.kind, 'HOOKS_MISMATCH', `${what} ${args.join(' ')}: ${JSON.stringify(out)}`)
@@ -2034,7 +2143,7 @@ const cases = {
     assert.equal(seatCli(args('codex', 'review', ['--base', baseSha, '--head', headSha]), { env }).error.kind, 'HOOKS_UNTRUSTED')
     assert.equal(gitOut(canon, 'worktree', 'list', '--porcelain'), reviewsBefore, 'a refused Codex review left its worktree')
     assert.deepEqual(records(), before, 'a refused Codex seat left a record')
-    ok('open refuses a Codex seat HOOKS_UNTRUSTED, with the digest of flow\'s keys and hashes, while a flow hook is untrusted, writes no trust, and undoes a writer\'s holder and a review\'s worktree')
+    ok('open refuses a Codex seat HOOKS_UNTRUSTED, with the digest of flow\'s keys and hashes, while a flow hook is untrusted, writes no trust, and leaves no writer\'s holder or review\'s worktree behind')
 
     const disabled = flowEntries({ trusted: true }).map((hook, at) => (at === 0 ? { ...hook, enabled: false } : hook))
     assert.equal(seatCli(args('codex'), { env: codexState(disabled).env }).error.kind, 'HOOKS_UNTRUSTED', 'a disabled flow hook')
