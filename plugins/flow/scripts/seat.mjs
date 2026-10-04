@@ -621,7 +621,11 @@ function dropHolders(id, record) {
   if (record?.access !== 'workspace-write' || typeof record.worktree !== 'string') return true
   const dir = leaseDirOf(record.worktree)
   for (const holder of [`${id}.live`, id]) dropLease(dir, holder)
-  return [`${id}.live`, id].every((holder) => lstatSync(join(dir, holder), { throwIfNoEntry: false }) === undefined)
+  // A holder whose absence can't be confirmed (an unreadable lease directory) counts as present,
+  // so prune keeps the record rather than aborting every open.
+  return [`${id}.live`, id].every((holder) => {
+    try { return lstatSync(join(dir, holder), { throwIfNoEntry: false }) === undefined } catch { return false }
+  })
 }
 
 function cleanup(id, record) {

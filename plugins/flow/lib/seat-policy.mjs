@@ -563,9 +563,11 @@ function ghProblem(args) {
   const group = args[groupAt]
   if (group === undefined) return GH_DENIED(args.join(' ').slice(0, 80))
   if (group === 'api') return ghApiProblem(args.slice(groupAt + 1))
-  const verb = args[verbAfter(groupAt + 1)]
+  const verbAt = verbAfter(groupAt + 1)
+  const verb = args[verbAt]
   if (verb === undefined) return GH_DENIED(group)
-  const reads = (group === 'auth' && verb === 'status') || (group === 'search' && GH_SEARCHES.has(verb)) ||
+  // `gh auth status` is a read only bare: --show-token (-t) prints the credential into the transcript.
+  const reads = (group === 'auth' && verb === 'status' && verbAt === args.length - 1) || (group === 'search' && GH_SEARCHES.has(verb)) ||
     (GH_GROUPS.has(group) && GH_READS.has(verb))
   return reads ? null : GH_DENIED(`${group} ${verb}`)
 }

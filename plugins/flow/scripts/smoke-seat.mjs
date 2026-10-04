@@ -1193,6 +1193,7 @@ const cases = {
       ['git push', /\(no git push\)/], ['git push origin HEAD', /\(no git push\)/], [`git -C ${worktree} push`, /\(no git push\)/],
       ['cd /r && git push --force-with-lease', /\(no git push\)/], ['bash -c "git push"', /\(no git push\)/], ['\\git push', /\(no git push\)/],
       ['/usr/bin/git -c x=y push', /\(no git push\)/],
+      ['gh auth status --show-token', /\(gh reads only\)/], ['gh auth status -t', /\(gh reads only\)/], ['gh auth status -ht github.com', /\(gh reads only\)/],
       ['gh pr create --title t --body b', /\(gh reads only\)/], [['gh -R o/r pr', 'merge 3'].join(' '), /\(gh reads only\)/], ['gh issue comment 4 --body x', /\(gh reads only\)/],
       ['gh release create v1', /\(gh reads only\)/], ['gh repo delete o/r --yes', /\(gh reads only\)/],
       ['gh pr checkout 3', /\(gh reads only\)/], ['gh secret set TOKEN', /\(gh reads only\)/], ['gh variable set X', /\(gh reads only\)/],
@@ -2032,6 +2033,20 @@ const cases = {
     jobs.acquireLease(unblocked)
     jobs.releaseLease(unblocked)
     ok("prune drops a closed record's leftover lease holder before the record, so a close that died between its stamp and its drop no longer blocks the worktree once the record ages out")
+
+    // A lease directory prune cannot read (here a file where the directory should be, so lstat
+    // under it fails ENOTDIR) keeps the record instead of aborting every open with INTERNAL.
+    const unreadable = gitWorktree('lease-unreadable')
+    const stuck = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', unreadable])
+    assert.equal(stuck.ok, true, JSON.stringify(stuck))
+    assert.equal(store.stamp(stuck.id, 'closed', { at: longAgo, verdict: 'unknown', reasons: [] }), true)
+    rmSync(jobs.leaseDirOf(unreadable), { recursive: true, force: true })
+    writeFileSync(jobs.leaseDirOf(unreadable), '')
+    const survives = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', unreadable])
+    assert.equal(survives.ok, true, `an unreadable lease directory aborted open: ${JSON.stringify(survives)}`)
+    assert.notEqual(store.readRecord(stuck.id), null, 'prune removed a record whose holder it could not check')
+    rmSync(jobs.leaseDirOf(unreadable), { force: true })
+    ok('a lease directory prune cannot read keeps the record and does not abort open')
 
     // A holder whose open died before the record: past the minute it is abandoned and dropped. A
     // holder with a record holds however old it is, and one inside the minute still holds.
