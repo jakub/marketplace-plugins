@@ -974,6 +974,96 @@ const cases = {
     ok('a read-only or review seat runs only the git read allowlist, -C or not, and is denied every other subcommand, including a config read without --get or --list')
   },
 
+  'bash-wrappers': () => {
+    const refused = [
+      ['sudo codex exec x', /\(no model/], ['sudo -u root -- git push', /\(no git push\)/], ['sudo -E X=1 claude -p x', /\(no model/],
+      ['command codex', /\(no model/], ['command -p git push', /\(no git push\)/], ['time -p codex', /\(no model/], ['/usr/bin/time -f %e -o t.log codex', /\(no model/],
+      ['watch -n 5 git push', /\(no git push\)/], ['watch \'gh pr create -t x -b y\'', /\(gh reads only\)/], ['stdbuf -oL -e 0 codex exec x', /\(no model/],
+      ['find . -exec git push \\;', /\(no git push\)/], ['find . -name x -execdir codex {} +', /\(no model/],
+      ['find . -exec echo {} \\; -exec git push \\;', /\(no git push\)/], ['find . -ok gh pr create \';\'', /\(gh reads only\)/],
+      ['find . -okdir claude -p x {} \\;', /\(no model/], ['find . -exec sudo codex {} +', /\(no model/],
+    ]
+    const allowed = [
+      'command -v codex', 'command -V git', 'command -pv claude', 'sudo -l', 'time -p ls', 'watch -n 5 git status', 'stdbuf -oL git log',
+      'find . -name "*.mjs" -exec grep -l codex {} \\;', 'find . -exec cat {} +', 'find . -type f -print', 'echo a\\; git push',
+    ]
+    for (const host of ['claude', 'codex']) {
+      for (const access of ['read-only', 'workspace-write']) {
+        const { session } = boundSeat(host, access)
+        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+      }
+    }
+    ok('sudo, command, time, watch (its quoted text included), stdbuf and each find -exec, -execdir, -ok and -okdir clause are read for the command they run; command -v is a lookup and an escaped ; outside find is a word')
+  },
+
+  'bash-git-overrides': () => {
+    const config = /\(git configuration\)/
+    const output = /\(git output\)/
+    const refused = [
+      ['git -c core.pager=x log', config], ['git -c diff.external=x diff', config], ['git -ccore.pager=x log', config],
+      ['git --config-env=core.pager=P log', config], ['git --config-env core.pager=P show', config], ['git -c x=y', config],
+      ['GIT_PAGER=x git log', config], ['GIT_EXTERNAL_DIFF=x git diff', config], ['export GIT_EXTERNAL_DIFF=x; git diff', config],
+      ['export GIT_DIR; git log', config], ['env GIT_CONFIG_COUNT=1 git status', config], ['GIT_CONFIG_PARAMETERS="x" git log', config],
+      ['git log --output=/tmp/x', output], ['git diff --output /tmp/x', output], ['git show --outp=/tmp/x HEAD', output],
+      ['git diff --ext-diff', output], ['git log -p --ext-diff', output], [`git -C ${worktree} diff --ext-diff`, output],
+    ]
+    const allowed = ['git diff --no-ext-diff', 'echo $GIT_DIR; git log', 'git log --oneline', 'git diff --output-indicator-new=+ HEAD', 'GIT_X=1 ls', `git -C ${worktree} log -1`]
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { session } = boundSeat(host, access)
+        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+      }
+    }
+    ok('every seat, reads included, is denied git with -c, --config-env, a GIT_* variable set or exported in the same command, --output (or an abbreviation) and --ext-diff; a $GIT_* reference and --no-ext-diff run')
+  },
+
+  'bash-compound': () => {
+    const compound = /\(compound shell forms\)/
+    const refused = [
+      ['case x in x) git push;; esac', compound], ['case $1 in *) ls;; esac', compound], ['if true; then case x in x) codex;; esac; fi', compound],
+      ['publish() { gh pr create -t x -b y; }; publish', compound], ['run() { codex exec t; }; run', compound], ['run () { ls; }', compound],
+      ['function run { ls; }', compound], ['function run() { ls; }', compound], ['coproc git log', compound], ['coproc w { codex; }', compound],
+      ['if true; then git push; fi', /\(no git push\)/], ['if git push; then :; fi', /\(no git push\)/], ['if false; then :; elif true; then git push; fi', /\(no git push\)/],
+      ['if false; then :; else codex; fi', /\(no model/], ['for f in a; do codex; done', /\(no model/], ['while true; do gh pr create; done', /\(gh reads only\)/],
+      ['until false; do git push; done', /\(no git push\)/], ['{ git push; }', /\(no git push\)/], ['( git push )', /\(no git push\)/], ['(git push)', /\(no git push\)/],
+      ['! git push', /\(no git push\)/], ['time git push', /\(no git push\)/], ['ls | codex', /\(no model/], ['ls\ngit push', /\(no git push\)/],
+    ]
+    const allowed = ['echo case', 'grep -r "function" .', 'if true; then git status; fi', 'for f in a b; do echo $f; done', '{ ls; }', '(ls)', 'echo "f() { x; }"']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ['read-only', 'workspace-write']) {
+        const { session } = boundSeat(host, access)
+        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+      }
+    }
+    ok('case, function definitions and coproc are denied in a seat; the body of if, elif, else, for, while, until, { } and ( ), and the word after !, time and every separator, are read in command position')
+  },
+
+  'bash-redirect-forms': () => {
+    const refused = [
+      ['cat <<\'END DATA\'\ndon\'t\nEND DATA\ngit push \'x\'', /\(no git push\)/], ['cat <<E\nbody\nE\ngit push\nE', /\(no git push\)/],
+      ['cat <<"A B"\n$(git push)\nA B\ngit push', /\(no git push\)/], ['cat <<A\\ B\nx\nA B\ncodex', /\(no model/], ['cat <&0 && git push', /\(no git push\)/],
+      ['cat <<\'END', /\(shell\): a quote, command substitution/], ['cat <<"END', /\(shell\): a quote, command substitution/],
+    ]
+    const allowed = [
+      'printf x | cat <&0', 'cat 0<&3', 'cat <&-', 'exec 3<&0', 'cat <<\'END DATA\'\nok\nEND DATA', 'cat <<\'END DATA\'\ngit push\nEND DATA',
+      'cat <<"A B"\nx\nA B', 'cat <<-\'E F\'\n\tx\n\tE F', 'cat <<\'\'\nx\n',
+    ]
+    for (const host of ['claude', 'codex']) {
+      for (const access of ['read-only', 'workspace-write']) {
+        const { session } = boundSeat(host, access)
+        for (const [command, pattern] of refused) denied(seatCall(host, session, 'Bash', { command }), pattern, `${host} ${access} ${command}`)
+        for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${access} ${command}`)
+      }
+      const { session } = boundSeat(host, 'workspace-write')
+      silent(seatCall(host, session, 'Bash', { command: `cat > ${worktree}/f.txt <<'END DATA'\nhello\nEND DATA` }), `${host} writer heredoc with a spaced delimiter`)
+      silent(seatCall(host, session, 'Bash', { command: `git -C ${worktree} commit -F - -- a.txt <<'END DATA'\nfeat: x\nEND DATA` }), `${host} writer commit message heredoc`)
+    }
+    ok('an input duplication or close (<&0, 0<&3, <&-) is not a target-less redirection, a quoted heredoc delimiter is one shell word whitespace and all, and a heredoc body never hides or masks the commands after its delimiter line')
+  },
+
   'bash-writer': () => {
     const escaped = worktree.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const form = (sub) => new RegExp(`\\(git -C the worktree\\): a git write in this seat runs only as \`git -C ${escaped} ${sub}`)
@@ -985,8 +1075,8 @@ const cases = {
       [`cd ${worktree} && git add a.txt`, form('add \\.\\.\\.`')],
       [`git -C ${worktree}/ add a.txt`, form('add')], [`git -C ${worktree}-x add a.txt`, form('add')], [`git -C "${worktree}" add a.txt`, form('add')],
       [`git -C ${worktree} --git-dir=/x commit -m x -- a.txt`, commitForm], [`git -C ${worktree} --work-tree /x add a.txt`, form('add')],
-      [`git -C ${worktree} -C ${worktree} add a.txt`, form('add')], [`git -C ${worktree} -c user.name=x commit -m x -- a.txt`, commitForm],
-      [`GIT_DIR=/x/.git git -C ${worktree} commit -m x -- a.txt`, commitForm], [`export GIT_WORK_TREE=/x; git -C ${worktree} add a.txt`, form('add')],
+      [`git -C ${worktree} -C ${worktree} add a.txt`, form('add')], [`git -C ${worktree} -c user.name=x commit -m x -- a.txt`, /\(git configuration\)/],
+      [`GIT_DIR=/x/.git git -C ${worktree} commit -m x -- a.txt`, /\(git configuration\)/], [`export GIT_WORK_TREE=/x; git -C ${worktree} add a.txt`, /\(git configuration\)/],
       [`git -C ${worktree} commit -m x`, byPath], [`git -C ${worktree} commit -am x -- a.txt`, byPath],
       [`git -C ${worktree} commit --all -m x`, byPath], [`git -C ${worktree} commit -m "a b" --`, byPath],
       [`git -C ${worktree} commit --pathspec-from-file=list -m x`, byPath],
@@ -1004,10 +1094,11 @@ const cases = {
     for (const command of [
       `git -C ${worktree} config --global user.name x`, `git -C ${worktree} config --file /tmp/x a.b c`, `git -C ${worktree} config user.name x`,
       `git -C ${worktree} worktree add ../x`, `git -C ${worktree} clone https://x/y`, `git -C ${worktree} init`, `git -C ${worktree} bundle create /tmp/b HEAD`,
-      `git -C ${worktree} archive --output=/tmp/a.tar HEAD`, `git -C ${worktree} format-patch -o /tmp HEAD~1`, `git -C ${worktree} switch main`,
+      `git -C ${worktree} format-patch -o /tmp HEAD~1`, `git -C ${worktree} switch main`,
       `git -C ${worktree} checkout main`, `git -C ${worktree} branch -D old`, `git -C ${worktree} remote add up https://x/y`, `git -C ${worktree} reset --hard`,
       'git remote add up https://x/y', 'git submodule update', 'git update-index --assume-unchanged a.txt', 'git co main',
     ]) refused.push([command, allowlist])
+    refused.push([`git -C ${worktree} archive --output=/tmp/a.tar HEAD`, /\(git output\)/])
     const allowed = [
       `git -C ${worktree} commit -m x -- a.txt`, `git -C ${worktree} commit -m "feat: x y" a.txt b.txt`, `git -C ${worktree} commit -F msg.txt -- "a b.txt"`,
       `git -C ${worktree} commit -m x --amend -- a.txt`, `git -C ${worktree} commit -mi -- a.txt`, `git -C ${worktree} commit -m x a.txt>log`,
