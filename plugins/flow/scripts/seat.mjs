@@ -1,16 +1,21 @@
 #!/usr/bin/env node
-// The T3 seat executor: it opens a seat's record before the parent's delegate_task call and closes
-// the seat with the one verdict the parent acts on.
+// The T3 seat executor: it opens a seat's record before the parent's delegate_task call, closes
+// the seat with the one verdict the parent acts on, and reads or grants Codex's trust in flow's
+// own Codex hooks.
 //
 //   seat.mjs open --access read-only|workspace-write|review --provider claude|codex --model <id>
 //                 --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>]
 //   seat.mjs close <seat-id> --task-status <json>
+//   seat.mjs trust [--write]
 //
 // stdout is one JSON line. open prints {ok: true, id, tag, runtimeMode, provider, model, effort,
 // worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
-// servedModels, blocks, errors}, and a refusal prints {ok: false, error: {kind, message,
-// details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and,
-// for anything this script did not expect, INTERNAL.
+// servedModels, blocks, errors}, trust prints {ok: true, keys: [{key, command, trustStatus,
+// currentHash}], wrote}, and a refusal prints {ok: false, error: {kind, message, details?}} with
+// exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and HOOKS_UNTRUSTED from
+// open; HOOKS_MISMATCH, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App Server's own
+// failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for anything this script
+// did not expect, INTERNAL.
 //
 // open, in this order: prune closed records past retention; find the repository from --worktree,
 // or the working directory, and its canonical checkout, the main worktree; for a review, resolve
@@ -18,9 +23,11 @@
 // add a detached worktree at the head under <canonical>/.flow-worktrees/review-<id>, the seat's
 // worktree, with the findings schema as its answer schema; for a writer, hold the worktree's
 // write lease directory (below); for a review, snapshot the canonical checkout with
-// tree-snapshot.mjs; then write the schema and the record, last, through lib/seat-store.mjs. A
-// failure undoes whatever this run created, the review worktree and the lease holder, so a refused
-// open leaves nothing behind.
+// tree-snapshot.mjs; for a Codex seat, read flow's Codex hook trust (below) and refuse with
+// HOOKS_UNTRUSTED unless every flow hook is there, enabled and trusted, recording the digest of
+// the keys and hashes it read as hooksDigest; then write the schema and the record, last, through
+// lib/seat-store.mjs. A failure undoes whatever this run created, the review worktree and the
+// lease holder, so a refused open leaves nothing behind.
 //
 // The lease. A writer seat and a flow_delegate write job never share a worktree. open refuses when
 // a live write job owns the lease directory delegate/jobs.mjs keys by the worktree, writes its
@@ -50,21 +57,41 @@
 // retries the cleanup. Cleanup that fails is listed in cleanupProblems and does not change the
 // verdict.
 //
+// trust. Codex skips a hook it does not trust without a word, and keys its trust by position,
+// `<plugin>:hooks/codex.json:<event>:<group>:<handler>`, with a hash of the command. trust spawns
+// `codex app-server --stdio` (the codex on PATH, absolute entries only, through
+// delegate/codex-app-server.mjs's JSON-RPC peer), initializes, and reads hooks/list for the
+// canonical checkout of the working directory. Flow's keys are the plugin-source entries whose
+// command is one of the handler commands in hooks/codex.json with ${PLUGIN_ROOT} standing for a
+// plugin root: Codex reports each command with the root already expanded (0.160.0). All of them
+// must come from one plugin and one root, and there must be exactly one per handler, or trust
+// fails HOOKS_MISMATCH, which is what an install older or newer than this copy of flow reads as.
+// --write then upserts those keys, and no other, into hooks.state with config/batchWrite, each
+// as {trusted_hash: <its currentHash>}, reads hooks/list again, and fails HOOKS_UNTRUSTED unless
+// every one reads trusted. A user's, a project's or another plugin's hook is never written.
+// hooksDigest is the sha256 of the sorted [key, currentHash] pairs, as JSON.
+//
 // git runs with no GIT_* variable from the caller and no user or system configuration, as in
 // delegate/jobs.mjs, so neither the caller's environment nor a config file decides which
 // repository answers or what a revision means.
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { connect } from '../delegate/codex-app-server.mjs'
 import { dropLease, JOB_ID, leaseDirOf, leaseLive } from '../delegate/jobs.mjs'
+import { findExecutable } from '../delegate/providers.mjs'
 import { FINDINGS_SCHEMA, outputSchemaProblem } from '../delegate/schema.mjs'
 import * as store from '../lib/seat-store.mjs'
 import { inside } from '../lib/state-dir.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TREE_SNAPSHOT = join(HERE, 'tree-snapshot.mjs')
+const CODEX_HOOKS = join(HERE, '..', 'hooks', 'codex.json')
+const VERSION = JSON.parse(readFileSync(join(HERE, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version
+const CLOSE_MS = 5_000
 const ACCESS = ['read-only', 'workspace-write', 'review']
 const PROVIDERS = ['claude', 'codex']
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@+/[\]-]{0,127}$/
@@ -184,7 +211,7 @@ function holdWorktree(worktree, id) {
   }
 }
 
-function open(argv) {
+async function open(argv) {
   const opts = flags(argv, ['--access', '--provider', '--model', '--effort', '--worktree', '--base', '--head', '--schema'])
   const access = opts['--access']
   const provider = opts['--provider']
@@ -226,19 +253,141 @@ function open(argv) {
       holdWorktree(worktree, id)
       undo.push(() => dropLease(leaseDirOf(worktree), id))
     }
+    const digest = provider === 'codex' ? await seatTrust(repoRoot) : null
     if (review) {
       canonicalSnapshot = snapshot(repoRoot)
       if (!canonicalSnapshot) fail('GIT_REF', 'The canonical checkout could not be snapshotted.')
     }
     store.writeRecord({
       v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, baseSha, headSha,
-      provider, model, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot, hooksDigest: null,
+      provider, model, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot, hooksDigest: digest,
     }, schema)
     return { ok: true, id, tag: store.seatTag(id), runtimeMode: RUNTIME_MODE, provider, model, effort, worktree, reviewWorktree }
   } catch (error) {
     for (const step of undo.reverse()) { try { step() } catch {} }
     throw error
   }
+}
+
+// ----- trust
+
+// Each handler command in hooks/codex.json, as a pattern in which ${PLUGIN_ROOT} matches a root.
+function flowHandlers() {
+  const handlers = []
+  const events = JSON.parse(readFileSync(CODEX_HOOKS, 'utf8')).hooks
+  for (const groups of Object.values(events)) {
+    for (const group of groups) {
+      for (const handler of group.hooks) {
+        if (handler.type !== 'command') continue
+        const parts = handler.command.split('${PLUGIN_ROOT}').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        handlers.push({ command: handler.command, pattern: new RegExp(`^${parts.join('(.+)')}$`) })
+      }
+    }
+  }
+  return handlers
+}
+
+// Flow's entries in a hooks/list answer: one per handler, from one plugin and one root.
+function flowKeys(listed, handlers) {
+  if (!Array.isArray(listed?.data)) fail('PROVIDER_ERROR', 'Codex answered hooks/list without a list.')
+  const byKey = new Map()
+  for (const scope of listed.data) {
+    for (const hook of Array.isArray(scope?.hooks) ? scope.hooks : []) {
+      if (hook?.source !== 'plugin' || hook.handlerType !== 'command' || typeof hook.key !== 'string' || typeof hook.command !== 'string') continue
+      for (const handler of handlers) {
+        const match = handler.pattern.exec(hook.command)
+        if (match) byKey.set(hook.key, { hook, handler, roots: new Set(match.slice(1)) })
+      }
+    }
+  }
+  const found = [...byKey.values()]
+  const plugins = new Set(found.map(({ hook }) => hook.pluginId))
+  const roots = new Set(found.flatMap(({ roots: each }) => [...each]))
+  const missing = handlers.filter((handler) => found.filter((entry) => entry.handler === handler).length !== 1)
+  const keyed = found.every(({ hook }) => typeof hook.pluginId === 'string' && hook.key.startsWith(`${hook.pluginId}:hooks/codex.json:`))
+  if (missing.length > 0 || found.length !== handlers.length || plugins.size !== 1 || roots.size !== 1 || !keyed) {
+    fail('HOOKS_MISMATCH', `Codex lists ${found.length} hook(s) that run flow's Codex handlers, and this copy of flow registers ${handlers.length}, one each, from one plugin; the installed flow is another version or another copy, so its trust cannot be read against this one.`,
+      { expected: handlers.length, found: found.length, unmatched: missing.map((handler) => handler.command) })
+  }
+  return found.map(({ hook }) => ({ key: hook.key, command: hook.command, trustStatus: hook.trustStatus, currentHash: hook.currentHash, enabled: hook.enabled !== false }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+}
+
+const hooksDigest = (keys) => createHash('sha256').update(JSON.stringify(keys.map(({ key, currentHash }) => [key, currentHash]))).digest('hex')
+const untrusted = (keys) => keys.filter((key) => key.trustStatus !== 'trusted' || !key.enabled || typeof key.currentHash !== 'string')
+const shown = (keys) => keys.map(({ key, command, trustStatus, currentHash }) => ({ key, command, trustStatus, currentHash }))
+
+// One Codex App Server session in cwd for steps(rpc), closed and reaped whatever happens. A
+// failure the peer reports keeps its kind.
+async function withCodex(cwd, steps) {
+  const bin = findExecutable('codex')
+  if (!bin) fail('PROVIDER_NOT_INSTALLED', 'No codex executable is on PATH, so Codex\'s hook trust cannot be read.')
+  const child = spawn(bin, ['app-server', '--stdio'], { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
+  child.stderr.on('data', () => {})
+  const closed = new Promise((resolve) => child.on('close', resolve))
+  const rpc = connect(child, {
+    onLine: () => {}, onNotification: () => {},
+    onRequest: (method) => ({ error: { code: -32601, message: `seat.mjs does not answer ${method}.` } }),
+    diagnostics: 'run it again, or run codex app-server yourself to see its stderr',
+  })
+  try {
+    await rpc.request('initialize', { clientInfo: { name: 'flow-seat', title: 'Flow seat trust', version: VERSION }, capabilities: { experimentalApi: true } })
+    rpc.notify('initialized')
+    return await steps(rpc)
+  } catch (error) {
+    if (error?.kind && !(error instanceof SeatError)) fail(error.kind, error.message)
+    throw error
+  } finally {
+    rpc.close()
+    let timer
+    await Promise.race([closed, new Promise((resolve) => { timer = setTimeout(resolve, CLOSE_MS) })])
+    clearTimeout(timer)
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  }
+}
+
+const listFlowKeys = async (rpc, cwd, handlers) => flowKeys(await rpc.request('hooks/list', { cwds: [cwd] }), handlers)
+
+// Where trust reads hooks/list: the canonical checkout of the working directory, or the working
+// directory itself outside a repository.
+function trustCwd() {
+  const common = gitLine(process.cwd(), ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  return common && basename(common) === '.git' ? realpathSync(dirname(common)) : realpathSync(process.cwd())
+}
+
+async function trust(argv) {
+  const write = argv.length === 1 && argv[0] === '--write'
+  if (argv.length > 0 && !write) fail('BAD_REQUEST', 'trust takes --write or nothing.')
+  const cwd = trustCwd()
+  const handlers = flowHandlers()
+  return withCodex(cwd, async (rpc) => {
+    const keys = await listFlowKeys(rpc, cwd, handlers)
+    if (!write) return { ok: true, keys: shown(keys), wrote: false }
+    const value = Object.fromEntries(keys.map(({ key, currentHash }) => [key, { trusted_hash: currentHash }]))
+    await rpc.request('config/batchWrite', { edits: [{ keyPath: 'hooks.state', value, mergeStrategy: 'upsert' }], reloadUserConfig: true })
+    const after = await listFlowKeys(rpc, cwd, handlers)
+    const still = untrusted(after)
+    if (still.length > 0) {
+      fail('HOOKS_UNTRUSTED', `Codex still reads ${still.length} of flow's hooks as not trusted after the write.`, { keys: shown(still) })
+    }
+    return { ok: true, keys: shown(after), wrote: true }
+  })
+}
+
+// open's read of the trust a Codex seat depends on: the digest, or HOOKS_UNTRUSTED.
+async function seatTrust(cwd) {
+  let keys
+  try { keys = await withCodex(cwd, (rpc) => listFlowKeys(rpc, cwd, flowHandlers())) } catch (error) {
+    if (!(error instanceof SeatError)) throw error
+    fail('HOOKS_UNTRUSTED', `Flow's Codex hook trust could not be confirmed (${error.kind}): ${error.message}`, { hooksDigest: null, cause: error.kind })
+  }
+  const digest = hooksDigest(keys)
+  const still = untrusted(keys)
+  if (still.length > 0) {
+    fail('HOOKS_UNTRUSTED', `Codex does not run ${still.length} of flow's hooks (not trusted, modified or disabled), so a Codex seat would run unguarded. Run seat.mjs trust as the flow skill's setup says.`,
+      { hooksDigest: digest, keys: shown(still) })
+  }
+  return digest
 }
 
 // ----- close
@@ -365,12 +514,13 @@ function close(argv) {
 
 // ----- main
 
-const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> --model <id> --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json>'
+const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> --model <id> --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs trust [--write]'
 const [verb, ...argv] = process.argv.slice(2)
 let answer
 try {
-  if (verb === 'open') answer = open(argv)
+  if (verb === 'open') answer = await open(argv)
   else if (verb === 'close') answer = close(argv)
+  else if (verb === 'trust') answer = await trust(argv)
   else fail('BAD_REQUEST', USAGE)
 } catch (error) {
   answer = error instanceof SeatError

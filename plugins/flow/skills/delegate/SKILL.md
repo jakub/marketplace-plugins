@@ -128,7 +128,7 @@ node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|rev
  "provider": "claude", "model": "<id>", "effort": "<level>", "worktree": "<path>", "reviewWorktree": null}
 ```
 
-Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. A refused seat goes to the fallback.
+Copy its `tag` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. The flow skill's `setup` grants that trust once per machine. A refused seat goes to the fallback.
 
 ### Start it
 

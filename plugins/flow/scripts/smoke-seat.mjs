@@ -6,9 +6,10 @@
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
 // Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
-// stop-*, open-*, close-*, prune-*, fastpath-*); the containment families run against a real temp
-// git repository as the worktree, the executor families (open-*, close-*, prune-open) run
-// scripts/seat.mjs as a process against a real canonical checkout with a linked worktree, and
+// stop-*, open-*, close-*, prune-*, trust-*, fastpath-*); the containment families run against a
+// real temp git repository as the worktree, the executor families (open-*, close-*, prune-open,
+// trust-*) run scripts/seat.mjs as a process against a real canonical checkout with a linked
+// worktree and a fake codex first on PATH that speaks the App Server's JSON-RPC, and
 // stop-timeout spends the full CHECK_SECONDS on a schema check that never ends. open-lease races
 // writer seats against flow_delegate write jobs as separate processes released together.
 // --case-prefix <p>
@@ -198,13 +199,88 @@ const median = (values) => {
 const SEAT_SCRIPT = join(PLUGIN, 'scripts', 'seat.mjs')
 const jobs = await import(pathToFileURL(join(PLUGIN, 'delegate', 'jobs.mjs')).href)
 function seatCli(args, { cwd = canon, env = {} } = {}) {
-  const run = spawnSync(process.execPath, [SEAT_SCRIPT, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...env } })
+  const run = spawnSync(process.execPath, [SEAT_SCRIPT, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...trustedCodex.env, ...env } })
   const lines = run.stdout.split('\n').filter(Boolean)
   assert.equal(lines.length, 1, `seat.mjs ${args[0]} printed ${JSON.stringify(run.stdout)} ${run.stderr}`)
   const out = JSON.parse(lines[0])
   assert.equal(run.status, out.ok ? 0 : 1, `seat.mjs ${args[0]} exit ${run.status}`)
   return out
 }
+// A fake `codex` first on PATH for the trust cases: an App Server peer over stdio that answers
+// initialize, hooks/list from <FAKE_CODEX_STATE>/hooks.json and config/batchWrite, applying an
+// upsert into hooks.state the way Codex does (a key whose trusted_hash is its current hash reads
+// trusted), unless the state says to ignore writes. It records every message it is sent in
+// sent.jsonl. The hook entries take the shape codex 0.160.0's hooks/list answered with live, the
+// command carrying the plugin root already expanded.
+const fakeCodexBin = join(tmp, 'fake-codex-bin')
+mkdirSync(fakeCodexBin, { recursive: true })
+writeFileSync(join(fakeCodexBin, 'codex'), `#!${process.execPath}
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { createInterface } from 'node:readline'
+const dir = process.env.FAKE_CODEX_STATE
+if (process.argv[2] !== 'app-server' || process.argv[3] !== '--stdio') { process.stderr.write('fake codex: unexpected argv'); process.exit(2) }
+const state = () => JSON.parse(readFileSync(dir + '/hooks.json', 'utf8'))
+const reply = (id, body) => process.stdout.write(JSON.stringify({ id, ...body }) + '\\n')
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const message = JSON.parse(line)
+  appendFileSync(dir + '/sent.jsonl', JSON.stringify(message) + '\\n')
+  if (message.id === undefined) return
+  if (message.method === 'initialize') return reply(message.id, { result: { userAgent: 'fake-codex/0.160.0' } })
+  if (message.method === 'hooks/list') return reply(message.id, { result: { data: [{ cwd: message.params.cwds[0], hooks: state().hooks, errors: [], warnings: [] }] } })
+  if (message.method === 'config/batchWrite') {
+    const now = state()
+    if (!now.ignoreWrites) {
+      for (const edit of message.params.edits) {
+        if (edit.keyPath !== 'hooks.state' || edit.mergeStrategy !== 'upsert') continue
+        for (const [key, value] of Object.entries(edit.value)) {
+          const hook = now.hooks.find((entry) => entry.key === key)
+          if (hook && value.trusted_hash === hook.currentHash) hook.trustStatus = 'trusted'
+        }
+      }
+    }
+    writeFileSync(dir + '/hooks.json', JSON.stringify(now))
+    return reply(message.id, { result: { status: 'ok', version: '1', filePath: '/fake/config.toml' } })
+  }
+  reply(message.id, { error: { code: -32601, message: 'fake codex does not know ' + message.method } })
+})
+`)
+chmodSync(join(fakeCodexBin, 'codex'), 0o755)
+const FAKE_ROOT = '/home/u/.codex/plugins/cache/jakub/flow/9.9.9'
+const snake = (event) => event.replace(/[A-Z]/g, (c, at) => `${at ? '_' : ''}${c.toLowerCase()}`)
+// hooks/list entries for this copy of flow's hooks/codex.json, each untrusted or trusted, under
+// pluginId and root; drop removes the handlers whose command includes it.
+function flowEntries({ trusted = false, pluginId = 'flow@jakub', root = FAKE_ROOT, drop = null } = {}) {
+  const events = JSON.parse(readFileSync(join(PLUGIN, 'hooks', 'codex.json'), 'utf8')).hooks
+  const entries = []
+  for (const [event, groups] of Object.entries(events)) {
+    groups.forEach((group, g) => group.hooks.forEach((handler, h) => {
+      if (drop && handler.command.includes(drop)) return
+      const command = handler.command.replaceAll('${PLUGIN_ROOT}', root)
+      entries.push({ key: `${pluginId}:hooks/codex.json:${snake(event)}:${g}:${h}`, command, handlerType: 'command', async: false, currentHash: `sha256:${sha256(command)}`,
+        displayOrder: entries.length, enabled: true, eventName: event[0].toLowerCase() + event.slice(1), isManaged: false, matcher: group.matcher ?? null,
+        pluginId, source: 'plugin', sourcePath: `${root}/hooks/codex.json`, timeoutSec: handler.timeout, trustStatus: trusted ? 'trusted' : 'untrusted' })
+    }))
+  }
+  return entries
+}
+// Hooks that are not flow's: another plugin's, and a user hook that runs a flow script by path.
+const FOREIGN = [
+  { key: 'gripe@jakub:hooks/codex.json:stop:0:0', command: 'node "/home/u/.codex/plugins/cache/jakub/gripe/1.0.0/hooks/scripts/stop.mjs"', handlerType: 'command', currentHash: 'sha256:g', enabled: true, pluginId: 'gripe@jakub', source: 'plugin', trustStatus: 'untrusted' },
+  { key: '/home/u/.codex/hooks.json:pre_tool_use:0:0', command: `node "${FAKE_ROOT}/hooks/scripts/seat-guard.mjs" pre codex`, handlerType: 'command', currentHash: 'sha256:u', enabled: true, pluginId: null, source: 'user', trustStatus: 'untrusted' },
+]
+// A fake Codex state directory holding hooks, and the environment that puts the fake first on PATH.
+function codexState(hooks, { ignoreWrites = false } = {}) {
+  const dir = mkdtempSync(join(tmp, 'codex-state-'))
+  writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks, ignoreWrites }))
+  return { dir, env: { PATH: `${fakeCodexBin}:${process.env.PATH}`, FAKE_CODEX_STATE: dir } }
+}
+const codexSent = (dir) => (existsSync(join(dir, 'sent.jsonl')) ? readFileSync(join(dir, 'sent.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
+const codexHooks = (dir) => JSON.parse(readFileSync(join(dir, 'hooks.json'), 'utf8')).hooks
+const flowDigest = (entries) => sha256(JSON.stringify(entries.map(({ key, currentHash }) => [key, currentHash]).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
+// Every open in the executor cases sees a Codex that trusts all of flow's hooks, unless a case
+// names another state.
+const trustedCodex = codexState([...flowEntries({ trusted: true }), ...FOREIGN])
+
 const closeSeat = (id, taskStatus = { status: 'completed', taskId: 'task-1' }) => seatCli(['close', id, '--task-status', JSON.stringify(taskStatus)])
 
 // The executor's repositories: a canonical checkout with two commits (base adds a.txt, b.txt and
@@ -1870,6 +1946,118 @@ const cases = {
     assert.equal(existsSync(join(seats, stale)), false, 'open did not prune a record closed past retention')
     assert.ok(store.readRecord(unclosed), 'open pruned an unclosed record')
     ok('open prunes records closed longer ago than RETENTION_MS first, and keeps an unclosed one however old')
+  },
+
+  'trust-list': () => {
+    const { dir, env } = codexState([...flowEntries(), ...FOREIGN])
+    const out = seatCli(['trust'], { env })
+    assert.deepEqual(Object.keys(out), ['ok', 'keys', 'wrote'])
+    assert.equal(out.wrote, false)
+    const expected = flowEntries().map(({ key, command, trustStatus, currentHash }) => ({ key, command, trustStatus, currentHash })).sort((a, b) => (a.key < b.key ? -1 : 1))
+    assert.deepEqual(out.keys, expected)
+    assert.equal(out.keys.length, 10)
+    const sent = codexSent(dir)
+    assert.deepEqual(sent.map((message) => message.method), ['initialize', 'initialized', 'hooks/list'])
+    assert.equal(sent[0].params.capabilities.experimentalApi, true)
+    assert.deepEqual(sent[2].params, { cwds: [canon] })
+    ok('trust lists flow\'s own Codex hook keys alone, each with its command, trust status and hash, through initialize, initialized and hooks/list for the canonical checkout, and writes nothing')
+  },
+
+  'trust-write': () => {
+    const { dir, env } = codexState([...flowEntries(), ...FOREIGN])
+    const out = seatCli(['trust', '--write'], { env })
+    assert.equal(out.ok, true, JSON.stringify(out))
+    assert.equal(out.wrote, true)
+    assert.ok(out.keys.every((key) => key.trustStatus === 'trusted'))
+    const sent = codexSent(dir)
+    assert.deepEqual(sent.map((message) => message.method), ['initialize', 'initialized', 'hooks/list', 'config/batchWrite', 'hooks/list'])
+    const { edits } = sent[3].params
+    const flow = flowEntries()
+    assert.deepEqual(edits, [{ keyPath: 'hooks.state', value: Object.fromEntries(flow.map(({ key, currentHash }) => [key, { trusted_hash: currentHash }])), mergeStrategy: 'upsert' }])
+    assert.deepEqual(Object.keys(edits[0].value).sort(), flow.map(({ key }) => key).sort())
+    for (const foreign of FOREIGN) assert.equal(Object.hasOwn(edits[0].value, foreign.key), false, `${foreign.key} was written`)
+    for (const foreign of FOREIGN) assert.equal(codexHooks(dir).find((hook) => hook.key === foreign.key).trustStatus, 'untrusted')
+    ok('trust --write upserts hooks.state for flow\'s keys alone, each as its current hash, leaves another plugin\'s and a user\'s hook (one running a flow script included) untouched, and reads the keys back trusted')
+
+    const ignored = codexState([...flowEntries(), ...FOREIGN], { ignoreWrites: true })
+    const refused = seatCli(['trust', '--write'], { env: ignored.env })
+    assert.equal(refused.error.kind, 'HOOKS_UNTRUSTED')
+    assert.equal(refused.error.details.keys.length, 10)
+    ok('trust --write fails HOOKS_UNTRUSTED when a key does not read trusted after the write')
+  },
+
+  'trust-mismatch': () => {
+    for (const [what, hooks] of [
+      ['an install without the seat guard', [...flowEntries({ trusted: true, drop: 'seat-guard.mjs' }), ...FOREIGN]],
+      ['two copies of flow', [...flowEntries({ trusted: true }), ...flowEntries({ trusted: true, pluginId: 'flow@fork', root: '/home/u/fork/flow' })]],
+      ['one handler missing', flowEntries({ trusted: true, drop: 'install-delegate.mjs' })],
+      ['the handlers split across two copies', [...flowEntries({ trusted: true, drop: 'seat-guard.mjs' }),
+        ...flowEntries({ trusted: true, pluginId: 'flow@fork', root: '/home/u/fork/flow' }).filter((hook) => hook.command.includes('seat-guard.mjs'))]],
+      ['two plugins under one root', [...flowEntries({ trusted: true, drop: 'seat-guard.mjs' }),
+        ...flowEntries({ trusted: true, pluginId: 'flow@fork' }).filter((hook) => hook.command.includes('seat-guard.mjs'))]],
+      ['a key from another hooks file', flowEntries({ trusted: true }).map((hook, at) => (at === 0 ? { ...hook, key: hook.key.replace('hooks/codex.json', 'hooks/hooks.json') } : hook))],
+      ['one plugin with two roots', [...flowEntries({ trusted: true, drop: 'seat-guard.mjs' }),
+        ...flowEntries({ trusted: true, root: '/home/u/other/flow' }).filter((hook) => hook.command.includes('seat-guard.mjs'))]],
+      ['no flow at all', FOREIGN],
+    ]) {
+      for (const args of [['trust'], ['trust', '--write']]) {
+        const { dir, env } = codexState(hooks)
+        const out = seatCli(args, { env })
+        assert.equal(out.error?.kind, 'HOOKS_MISMATCH', `${what} ${args.join(' ')}: ${JSON.stringify(out)}`)
+        assert.equal(out.error.details.expected, 10)
+        assert.ok(!codexSent(dir).some((message) => message.method === 'config/batchWrite'), `${what}: a mismatch wrote trust`)
+      }
+    }
+    const noCodex = join(tmp, 'no-codex-bin')
+    mkdirSync(noCodex, { recursive: true })
+    symlinkSync(spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim(), join(noCodex, 'git'))
+    assert.equal(seatCli(['trust'], { env: { PATH: noCodex } }).error.kind, 'PROVIDER_NOT_INSTALLED')
+    assert.equal(seatCli(['trust', '--extra'], { env: trustedCodex.env }).error.kind, 'BAD_REQUEST')
+    ok('trust and trust --write refuse HOOKS_MISMATCH, writing nothing, unless Codex lists exactly one hook per flow handler from one plugin and one root; no codex on PATH is PROVIDER_NOT_INSTALLED')
+  },
+
+  'trust-open': () => {
+    const args = (provider, access = 'read-only', extra = []) => ['open', '--access', access, '--provider', provider, '--model', MODELS[provider], '--effort', 'high', ...extra]
+    const records = () => (existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [])
+    const untrustedFlow = flowEntries()
+    const { dir, env } = codexState([...untrustedFlow, ...FOREIGN])
+    const before = records()
+    const refused = seatCli(args('codex'), { env })
+    assert.equal(refused.error.kind, 'HOOKS_UNTRUSTED')
+    assert.equal(refused.error.details.hooksDigest, flowDigest(untrustedFlow))
+    assert.equal(refused.error.details.keys.length, 10)
+    assert.ok(!codexSent(dir).some((message) => message.method === 'config/batchWrite'), 'open wrote trust')
+    const writerWt = gitWorktree('trust-open-writer')
+    assert.equal(seatCli(args('codex', 'workspace-write', ['--worktree', writerWt]), { env }).error.kind, 'HOOKS_UNTRUSTED')
+    assert.equal(existsSync(jobs.leaseDirOf(writerWt)), false, 'a refused Codex writer left its lease holder')
+    const reviewsBefore = gitOut(canon, 'worktree', 'list', '--porcelain')
+    assert.equal(seatCli(args('codex', 'review', ['--base', baseSha, '--head', headSha]), { env }).error.kind, 'HOOKS_UNTRUSTED')
+    assert.equal(gitOut(canon, 'worktree', 'list', '--porcelain'), reviewsBefore, 'a refused Codex review left its worktree')
+    assert.deepEqual(records(), before, 'a refused Codex seat left a record')
+    ok('open refuses a Codex seat HOOKS_UNTRUSTED, with the digest of flow\'s keys and hashes, while a flow hook is untrusted, writes no trust, and undoes a writer\'s holder and a review\'s worktree')
+
+    const disabled = flowEntries({ trusted: true }).map((hook, at) => (at === 0 ? { ...hook, enabled: false } : hook))
+    assert.equal(seatCli(args('codex'), { env: codexState(disabled).env }).error.kind, 'HOOKS_UNTRUSTED', 'a disabled flow hook')
+    const modified = flowEntries({ trusted: true }).map((hook, at) => (at === 1 ? { ...hook, trustStatus: 'modified' } : hook))
+    assert.equal(seatCli(args('codex'), { env: codexState(modified).env }).error.kind, 'HOOKS_UNTRUSTED', 'a modified flow hook')
+    const mismatch = seatCli(args('codex'), { env: codexState(flowEntries({ trusted: true, drop: 'seat-guard.mjs' })).env })
+    assert.deepEqual([mismatch.error.kind, mismatch.error.details.cause], ['HOOKS_UNTRUSTED', 'HOOKS_MISMATCH'])
+    const noCodex = join(tmp, 'no-codex-open-bin')
+    mkdirSync(noCodex, { recursive: true })
+    symlinkSync(spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim(), join(noCodex, 'git'))
+    const missing = seatCli(args('codex'), { env: { PATH: noCodex } })
+    assert.deepEqual([missing.error.kind, missing.error.details.cause], ['HOOKS_UNTRUSTED', 'PROVIDER_NOT_INSTALLED'])
+    ok('a disabled or modified flow hook, an install that does not match this flow, or no codex on PATH also refuses a Codex seat HOOKS_UNTRUSTED')
+
+    const trusted = codexState([...flowEntries({ trusted: true }), ...FOREIGN])
+    const opened = seatCli(args('codex'), { env: trusted.env })
+    assert.equal(opened.ok, true, JSON.stringify(opened))
+    assert.equal(store.readRecord(opened.id).record.hooksDigest, flowDigest(flowEntries({ trusted: true })))
+    const claude = codexState(flowEntries())
+    assert.equal(seatCli(args('claude'), { env: claude.env }).ok, true)
+    assert.deepEqual(codexSent(claude.dir), [], 'a Claude seat read Codex trust')
+    assert.equal(store.readRecord(seatCli(args('claude'), { env: claude.env }).id).record.hooksDigest, null)
+    ok('a Codex seat opens once every flow hook reads trusted and records the hooks digest; a Claude seat never reads Codex trust and records none')
   },
 
   'fastpath-silent': () => {
