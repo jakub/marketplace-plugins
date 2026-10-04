@@ -1,0 +1,12 @@
+{
+  "turn": 1,
+  "turnKey": "12f8a645-3026-44c2-841e-b1b6164ed769",
+  "blocks": 0,
+  "outcome": "valid",
+  "errors": [],
+  "stops": 1,
+  "messageSha256": "2a93fee5d4310bb8d5292be853645e7e3d30307e0108b56e94b6d1c01c72515d",
+  "models": [
+    "claude-sonnet-5-5"
+  ]
+}

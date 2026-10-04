@@ -1,0 +1,30 @@
+{
+  "envelope": {
+    "status": "done",
+    "coverage": {
+      "read": [
+        "plugins/flow/delegate/schema.mjs"
+      ],
+      "partial": [],
+      "unopened": [],
+      "checksRun": [
+        "wc -l plugins/flow/delegate/schema.mjs → 197"
+      ]
+    },
+    "notes": "spawn_agent attempt was blocked by the flow seat hook: seats cannot spawn agents. orchestrator_capabilities attempt was blocked by the MCP allowlist; only Context7 tools are allowed.",
+    "answer": {
+      "lines": 197,
+      "exports": [
+        "CHECK_SECONDS",
+        "schemaProblem",
+        "validate",
+        "checkAnswer"
+      ]
+    }
+  },
+  "servedModels": [
+    "gpt-6-luna"
+  ],
+  "messageSha256": "b21c763c8d0c30c8ee3fe89c0c5876b88a1d6b705fd25336a3b566bfa94b34a6",
+  "at": "2026-10-04T02:06:29.302Z"
+}

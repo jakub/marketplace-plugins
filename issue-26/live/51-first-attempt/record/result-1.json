@@ -1,0 +1,28 @@
+{
+  "envelope": {
+    "status": "blocked",
+    "coverage": {
+      "read": [],
+      "partial": [],
+      "unopened": [
+        "plugins/flow/lib/state-dir.mjs"
+      ],
+      "checksRun": [
+        "Agent tool probe",
+        "mcp__t3-code__orchestrator_capabilities probe",
+        "Read plugins/flow/lib/state-dir.mjs",
+        "ls plugins/flow/lib",
+        "find . -name 'state-dir*'"
+      ]
+    },
+    "notes": "(1) Agent tool: denied by the PreToolUse hook, 'flow seat (no spawns)'. (2) mcp__t3-code__orchestrator_capabilities: denied by the PreToolUse hook, 'flow seat (MCP allowlist)'. The allowlist holds only Context7 query-docs and resolve-library-id. (3) plugins/flow/lib/state-dir.mjs does not exist in this worktree. plugins/flow/lib/ holds charter-payload.mjs, gh-exec.mjs, hook-policy.mjs, redact.mjs and remote-identity.mjs. The only match for state-dir* is at .flow-worktrees/marketplace-plugins-issue-26-feat-flow-t3-seats-flow-seats-run/plugins/flow/lib/state-dir.mjs, an issue-26 worktree outside this seat's assigned worktree. I did not read it, so no line count is reported rather than a count for the wrong file.",
+    "answer": {
+      "lines": null
+    }
+  },
+  "servedModels": [
+    "claude-sonnet-5-5"
+  ],
+  "messageSha256": "ee7a56c9ac1783ae211c67c3a39de862d0f4dfb73f5ceda948a623d029ef778e",
+  "at": "2026-10-04T02:03:11.841Z"
+}

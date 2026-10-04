@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "id": "5f8d9c97a94d0481ef3686aa016a53d6",
+  "createdAt": "2026-10-04T02:03:18.587Z",
+  "access": "workspace-write",
+  "repoRoot": "/home/jakub/code/marketplace-plugins",
+  "worktree": "/home/jakub/code/marketplace-plugins/.flow-worktrees/seat-live-scratch",
+  "reviewWorktree": null,
+  "reviewGitDir": null,
+  "baseSha": null,
+  "headSha": null,
+  "provider": "claude",
+  "model": "claude-sonnet-5-5",
+  "effort": "medium",
+  "runtimeMode": "auto",
+  "canonicalSnapshot": null,
+  "hooksDigest": null,
+  "schemaSha256": null
+}

@@ -1,0 +1,28 @@
+# excerpt of a plain 'codex exec' session (full log withheld: it echoes local Codex memories)
+Reading additional input from stdin...
+OpenAI Codex v0.160.0
+--------
+workdir: /home/jakub/code/marketplace-plugins
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: medium
+reasoning summaries: detailed
+session id: 01a104b4-3a7e-7451-95a8-3cd7fc4a5839
+--------
+user
+Prep scout, read-only: spawn one subagent with spawn_agent to find which file defines the function stateDir in plugins/flow, then reply with that path in one line. Edit nothing.
+warning: Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /home/jakub/.codex/config.toml.
+warning: clamping SessionEnd hook timeout to 3s in /home/jakub/.codex/plugins/cache/openai-codex/codex/1.0.6/hooks/hooks.json
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+...
+186:collab: Wait
+199:tokens used
+...
+plugins/flow/delegate/jobs.mjs
+
+

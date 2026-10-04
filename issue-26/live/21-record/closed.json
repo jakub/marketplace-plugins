@@ -1,0 +1,30 @@
+{
+  "at": "2026-10-04T02:06:45.386Z",
+  "verdict": "valid",
+  "reasons": [],
+  "taskStatus": {
+    "taskId": "node:delegated-task:command%3Amcp%3A04c0dd60-448a-48f2-9a5a-92e7db5b2deb%3Adelegate-task%3Aissue26-live-21",
+    "childThreadId": "thread:delegated-task:command%3Amcp%3A04c0dd60-448a-48f2-9a5a-92e7db5b2deb%3Adelegate-task%3Aissue26-live-21",
+    "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253A04c0dd60-448a-48f2-9a5a-92e7db5b2deb%253Adelegate-task%253Aissue26-live-21:ordinal:1",
+    "childNodeId": "node:delegated-task:command%3Amcp%3A04c0dd60-448a-48f2-9a5a-92e7db5b2deb%3Adelegate-task%3Aissue26-live-21",
+    "status": "completed",
+    "workState": "result_available",
+    "hasPendingChildRuns": false,
+    "latestTerminalRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253A04c0dd60-448a-48f2-9a5a-92e7db5b2deb%253Adelegate-task%253Aissue26-live-21:ordinal:1",
+    "latestTerminalStatus": "completed",
+    "latestTerminalSummary": "{\"status\":\"done\",\"coverage\":{\"read\":[\"plugins/flow/delegate/schema.mjs\"],\"partial\":[],\"unopened\":[],\"checksRun\":[\"wc -l plugins/flow/delegate/schema.mjs → 197\"]},\"notes\":\"spawn_agent attempt was blocked by the flow seat hook: seats cannot spawn agents. orchestrator_capabilities attempt was blocked by the MCP allowlist; only Context7 tools are allowed.\",\"answer\":{\"lines\":197,\"exports\":[\"CHECK_SECONDS\",\"schemaProblem\",\"validate\",\"checkAnswer\"]}}",
+    "latestTerminalResultContextTransferId": "context-transfer:type:subagent_result:source-thread:thread%3Adelegated-task%3Acommand%253Amcp%253A04c0dd60-448a-48f2-9a5a-92e7db5b2deb%253Adelegate-task%253Aissue26-live-21:target-thread:mcp%3Af4670732-38de-42ed-9a7c-a5e83fa8cad8:2b95bff8-086e-46e2-a197-f038560122a6",
+    "providerInstanceId": "codex",
+    "model": "gpt-6-luna",
+    "summary": "{\"status\":\"done\",\"coverage\":{\"read\":[\"plugins/flow/delegate/schema.mjs\"],\"partial\":[],\"unopened\":[],\"checksRun\":[\"wc -l plugins/flow/delegate/schema.mjs → 197\"]},\"notes\":\"spawn_agent attempt was blocked by the flow seat hook: seats cannot spawn agents. orchestrator_capabilities attempt was blocked by the MCP allowlist; only Context7 tools are allowed.\",\"answer\":{\"lines\":197,\"exports\":[\"CHECK_SECONDS\",\"schemaProblem\",\"validate\",\"checkAnswer\"]}}",
+    "resultContextTransferId": "context-transfer:type:subagent_result:source-thread:thread%3Adelegated-task%3Acommand%253Amcp%253A04c0dd60-448a-48f2-9a5a-92e7db5b2deb%253Adelegate-task%253Aissue26-live-21:target-thread:mcp%3Af4670732-38de-42ed-9a7c-a5e83fa8cad8:2b95bff8-086e-46e2-a197-f038560122a6",
+    "waitTimedOut": false
+  },
+  "turn": 1,
+  "resultSha256": "1f20004a1b9b9ce46e7787ee2b9513039b670b56d7855fa8f83111cbcf84d939",
+  "servedModels": [
+    "gpt-6-luna"
+  ],
+  "blocks": 0,
+  "errors": []
+}

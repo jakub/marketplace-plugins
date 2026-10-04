@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "id": "6192549e6c35bd6ca0c38c119eb4f1e5",
+  "createdAt": "2026-10-04T02:02:31.538Z",
+  "access": "read-only",
+  "repoRoot": "/home/jakub/code/marketplace-plugins",
+  "worktree": "/home/jakub/code/marketplace-plugins",
+  "reviewWorktree": null,
+  "reviewGitDir": null,
+  "baseSha": null,
+  "headSha": null,
+  "provider": "claude",
+  "model": "claude-sonnet-5-5",
+  "effort": "medium",
+  "runtimeMode": "auto",
+  "canonicalSnapshot": null,
+  "hooksDigest": null,
+  "schemaSha256": null
+}

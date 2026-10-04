@@ -1,0 +1,26 @@
+{
+  "v": 1,
+  "id": "d8402c7e38185cf655f7c6c6cdd8a88a",
+  "createdAt": "2026-10-04T02:04:12.264Z",
+  "access": "review",
+  "repoRoot": "/home/jakub/code/marketplace-plugins",
+  "worktree": "/home/jakub/code/marketplace-plugins/.flow-worktrees/review-d8402c7e38185cf655f7c6c6cdd8a88a",
+  "reviewWorktree": "/home/jakub/code/marketplace-plugins/.flow-worktrees/review-d8402c7e38185cf655f7c6c6cdd8a88a",
+  "reviewGitDir": "/home/jakub/code/marketplace-plugins/.git/worktrees/review-d8402c7e38185cf655f7c6c6cdd8a88a",
+  "baseSha": "2c77e49b6a22741ff2ee41a4cb0aad32802ef542",
+  "headSha": "87015df94c7bbe8b7b59cb85e23b4b34427fc022",
+  "provider": "claude",
+  "model": "claude-sonnet-5-5",
+  "effort": "medium",
+  "runtimeMode": "auto",
+  "canonicalSnapshot": {
+    "status": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "cached": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked": "84ff92691f909a05b224e1c56abb4864f01b4f8e3c854e4bb4c7baf1d3f6d652",
+    "head": "2c77e49b6a22741ff2ee41a4cb0aad32802ef542",
+    "branch": "refs/heads/main"
+  },
+  "hooksDigest": null,
+  "schemaSha256": "8e8e5c96395c0260f9a611f27457f05ef74a26c411fe3f816a31d97adab30c83"
+}

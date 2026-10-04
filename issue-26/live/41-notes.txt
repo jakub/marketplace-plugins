@@ -1,0 +1,1 @@
+41 t3_thread_send reached the finished child: yes (delivery=started, run ordinal 2 completed); state.json shows turn 2 with a valid result: yes (turn=2, outcome=valid, result-2.json present, close verdict valid with answer {"round":2})

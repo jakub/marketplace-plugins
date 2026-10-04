@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "id": "49349f525c44b6cb8052dff3f9cee453",
+  "createdAt": "2026-10-04T02:06:08.096Z",
+  "access": "read-only",
+  "repoRoot": "/home/jakub/code/marketplace-plugins",
+  "worktree": "/home/jakub/code/marketplace-plugins",
+  "reviewWorktree": null,
+  "reviewGitDir": null,
+  "baseSha": null,
+  "headSha": null,
+  "provider": "codex",
+  "model": "gpt-6-luna",
+  "effort": "medium",
+  "runtimeMode": "auto",
+  "canonicalSnapshot": null,
+  "hooksDigest": "88c6e6cf5384d83e0a34de4f11982e9edf4b2f912c1d6ffab3c7fc25951e9bd6",
+  "schemaSha256": null
+}

@@ -1,0 +1,8 @@
+11 verdict=valid permissionMode=auto servedModels=claude-sonnet-5-5
+12 verdict=valid permissionMode=auto servedModels=claude-sonnet-5-5
+13 verdict=valid permissionMode=auto servedModels=claude-sonnet-5-5
+21 verdict=valid permissionMode=default servedModels=gpt-6-luna
+22 verdict=valid permissionMode=default servedModels=gpt-6-sol
+23 verdict=valid permissionMode=default servedModels=gpt-6-sol
+31 flow_delegate ok=true status=succeeded servedModel=gpt-6-luna commandFailures=0 (no seat record; not a T3 seat)
+41 verdict=valid permissionMode=auto servedModels=claude-sonnet-5-5
