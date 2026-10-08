@@ -46,7 +46,7 @@ Decorrelation is cross-family: your family's diff gets a mandatory adversarial r
 A refusal is a typed result, never a quieter answer from another model. Retry once on a model without classifiers, or elsewhere in the other family if that one refused; for `reasoning_extraction`, fix the prompt. Two refusals stop the task and go to the user. Fable is a third try only on request.
 
 ## Delegation
-Never reach a model through the shell. In T3, every seat is a `delegate_task` seat, review included; one that cannot prove its hooks ran reruns natively, or through `flow_delegate` across families. Elsewhere, reach the other family only through `flow_delegate`. Set model and effort on every call; read the `flow:delegate` skill first.
+Never reach a model through the shell. When T3's `delegate_task` is available, every seat runs through it, review included; one that cannot prove its hooks ran reruns natively, or through `flow_delegate` across families. Elsewhere, reach the other family only through `flow_delegate`. Set model and effort on every call; read the `flow:delegate` skill first.
 
 ## Pipeline
 `prep` is the front door; nothing enters the tracker otherwise. `issue` runs autonomously to a reviewed, pushed, evidenced PR, `babysit` watches it through review and CI, and `land`, rebased on main, is the only merge. The issue body is the spec, edited in place; comments are the journal. Lasting decisions are ADRs on main. Acceptance criteria name their evidence, which the PR carries. Ad-hoc work follows prep discipline without a ticket: find unstated requirements and better approaches, then ask one question at a time, architecture first.
