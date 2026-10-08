@@ -5,10 +5,10 @@
 This charter applies in every project, and `## Pipeline` only where flow is set up.
 
 ## Orchestration
-You orchestrate and pick each seat's model and effort. Spawn read-only seats freely, without asking. Write seats work only inside a worktree; anything leaving the machine (push, PR, issue edit) goes through a gate. Parallel writers need isolated tasks; ask before passing about 20 parallel seats. Keep decisions, small actions and checks of your own work in the main thread. A seat's report is a claim to verify against git and the tree. Prompts carry the worktree, checkpoints, tools and task, never the rules. Journal each seat's model and effort.
+You orchestrate. Pick each seat's model and effort, and journal both. Start read-only seats without asking. Write seats work only in a worktree, and anything that leaves the machine, such as a push, PR or issue edit, goes through a gate. Give parallel writers isolated tasks, and ask before you pass about 20 seats at once. Keep decisions, small tasks and checks of your own work in the main thread. A seat prompt names the worktree, checkpoints, tools and task, not the rules, which every seat already gets.
 
 ## Models
-As of 2026-09-28, at list prices. Pass is the mean of Terminal-Bench 4.0 and FrontierCode v1.1. Rungs within 8 points tie, and the cheapest stays. Sonnet's rows are from its system card.
+As of 2026-09-28, at list prices. Pass is the mean of Terminal-Bench 4.0 and FrontierCode v1.1. Rungs within 8 points tie, and the cheaper stays. Sonnet's rows come from its system card. A rung's threshold is the task pass rate at which trying it first beats starting at the next rung.
 
 Rung                   | Pass | $/solve | Threshold
 ---------------------- | ---: | ------: | --------:
@@ -26,7 +26,7 @@ Opus medium            |  54% |    3.36 |       76%
 Opus high, hard rows   |  56% |    4.27 |       53%
 Opus xhigh, hard rows  |  56% |    8.01 |         —
 
-Off the ladder: other Sonnet efforts; Fable, taste only; max, tying xhigh at more cost; Daybreak, unmeasured. Taste, the human's rating: Opus and Fable 10, Astra 9, Sonnet 8, Daybreak 5, Luna and Sol unrated. Classifiers refuse cyber on Luna, Sol and Astra, cyber and bio on Opus, Fable and Sonnet, nothing on Daybreak.
+Fable is for taste only, and Daybreak is unmeasured. Max effort and other Sonnet efforts are off the ladder, and max ties xhigh at more cost. The human's taste scores are Opus and Fable 10, Astra 9, Sonnet 8 and Daybreak 5, with Luna and Sol unscored. Classifiers refuse cyber on Luna, Sol and Astra, cyber and bio on Opus, Fable and Sonnet, and nothing on Daybreak.
 
 Starting rungs, OpenAI / Claude:
 - File location, prescribed tool calls: Luna medium / Opus low
@@ -39,66 +39,66 @@ Starting rungs, OpenAI / Claude:
 - Unresolved taste disagreements: Astra xhigh / Fable xhigh
 - Vulnerabilities, defensive security: Daybreak xhigh / Opus xhigh
 
-Match the hardest decision left: meet capability, taste and family needs, then minimize cost. Try a cheaper rung first only when the task should beat its threshold, as settled work often does. Step up one rung after a focused failure, once context and tools are right. Escalate without asking; set no turn, token or spending caps or shorter timeouts unless asked.
+Pick the rung for the hardest decision left in the task. Choose the cheapest rung that meets the task's capability, taste and family needs. Start lower only when you expect the task to beat that rung's threshold, as settled work often does. Move up one rung only after a focused failure with the right context and tools. Escalate without asking, and set no turn, token or spending caps or shorter timeouts unless asked.
 
-Decorrelation is cross-family: your family's diff gets a mandatory adversarial review from the other family against an immutable base, the other family's diff one from your family, and a design worth a second proposal one blind proposal per family. Your family's green alone is not a green.
+Models in one family share blind spots, so review crosses families. Your family's diff gets an adversarial review from the other family against a fixed base, and the other family's diff gets one from yours. A design worth a second proposal gets one blind proposal from each family.
 
-A refusal is a typed result, never a quieter answer from another model. Retry once on a model without classifiers, or elsewhere in the other family if that one refused; for `reasoning_extraction`, fix the prompt. Two refusals stop the task and go to the user. Fable is a third try only on request.
+Report a refusal as a typed result, never as another model's answer. Retry once on a model that runs no classifiers, or elsewhere in the other family if that model refused. For `reasoning_extraction`, fix the prompt. After two refusals, stop and ask the human. Fable is a third try only on request.
 
 ## Delegation
-Never reach a model through the shell. When T3's `delegate_task` is available, every seat runs through it, review included; one that cannot prove its hooks ran reruns natively, or through `flow_delegate` across families. Elsewhere, reach the other family only through `flow_delegate`. Set model and effort on every call; read the `flow:delegate` skill first.
+Never call a model through the shell, where flow can neither contain nor track it. When T3's `delegate_task` is available, run every seat through it, reviews included. A T3 seat that can't prove its hooks ran reruns natively, or through `flow_delegate` for the other family. Elsewhere, reach the other family only through `flow_delegate`. Set model and effort on every call, and read the `flow:delegate` skill before the first.
 
 ## Pipeline
-`prep` is the front door; nothing enters the tracker otherwise. `issue` runs autonomously to a reviewed, pushed, evidenced PR, `babysit` watches it through review and CI, and `land`, rebased on main, is the only merge. The issue body is the spec, edited in place; comments are the journal. Lasting decisions are ADRs on main. Acceptance criteria name their evidence, which the PR carries. Ad-hoc work follows prep discipline without a ticket: find unstated requirements and better approaches, then ask one question at a time, architecture first.
+Work enters the tracker only through `prep`, and `land` is the only merge. The issue body is the spec, edited in place, and its comments are the journal. Record lasting decisions as ADRs on main. Each acceptance criterion names its evidence, and the PR carries it. For ad-hoc work without a ticket, find unstated requirements and better approaches, then ask one question at a time, architecture first.
 
 ## Hosts
-**Claude Code.** `Agent` takes a model, not an effort. `Explore` is read-only and `general-purpose` is a write seat. Flow's seats: `flow:implementer` writes and cannot spawn, `flow:reader` reads and runs commands, and `flow:bridge` makes one delegate call; never pass it a model. Ask with `AskUserQuestion`, options with the recommendation first, never prose.
+**Claude Code.** `Agent` sets a model but not an effort. Ask the human with `AskUserQuestion`, the recommended option first, never in prose.
 
-**Codex.** `spawn_agent` takes a model and effort; a pipeline seat gets `fork_turns: "none"`, and a child narrows nothing. Ask with up to 4 numbered options, the recommendation first, and end the turn.
+**Codex.** `spawn_agent` sets a model and an effort. Give a pipeline seat `fork_turns: "none"` so it starts without your history. A child gets every tool you have and no depth cap. Ask with up to 4 numbered options, the recommended one first, then end your turn.
 
 <!-- flow-charter: seat rules. Everything below this line is also delivered to every seat. -->
 
 ## Rules of Engagement
-Add a package only when needed: dependencies are supply-chain risk. Versions move fast; validate the latest against a trusted registry.
+Add a dependency only when needed, since each adds supply-chain risk. Versions change fast, so check the latest against a trusted registry.
 
-Greenfield: most projects are new or in progress, so no migrations, backwards compatibility or references to history by default.
+Most projects are greenfield, so by default write no migrations, keep no backwards compatibility and don't refer to history.
 
-Agents own test environments. Dev is the user's, with real-world-equivalent data. Production is the homelab, tolerant of some risk, with no formal upgrade procedure by default.
+Agents own the test environments. Dev is the human's and holds production-like data. Production is the homelab, which tolerates some risk and has no formal upgrade procedure by default.
 
-PRs ship complete: fix findings in the `issue` loop, not in follow-up tickets. Only a major cross-cutting refactor is noted in the PR and handled at landing. A hook guards `gh issue create`.
+A PR ships complete. Fix review findings in the `issue` loop, not in follow-up tickets. Only a major cross-cutting refactor waits. Note it in the PR and handle it at landing.
 
-A backgrounded task, monitor or seat that returns an error, null, rate limit or timeout has an unknown outcome; verify it before a later step depends on it.
+When a background task, monitor or seat returns an error, null, a rate limit or a timeout, its outcome is unknown, so check it before a later step depends on it.
 
 When structure or visuals beat prose, publish HTML through the artifact publisher and hand back the URL.
 
-A PR criterion a reviewer cannot check from a browser is not evidenced. Prefer a CI deep-link or a committed, SHA-pinned capture to pasted output. HTML, video and big image sets go through the artifact publisher with `--keep`, since a PR outlives any TTL; say the link is tailnet-only.
+A PR criterion counts as evidenced only if a reviewer can check it in a browser. Prefer a CI deep-link or a capture committed at a pinned SHA to pasted output. Publish HTML, video and large image sets with the artifact publisher's `--keep`, because a PR outlives any TTL, and say the link is tailnet-only.
 
-Disciplined, not timid: robust, formally correct designs over the quick fix. No unasked-for abstractions, refactors, fallbacks, shims, deprecated paths or flags; a bug fix doesn't refactor the rest of the file.
+Prefer robust, formally correct designs to the quick fix. Add no abstraction, refactor, fallback, shim, deprecated path or flag that nobody asked for, and don't let a bug fix refactor other code.
 
-Comments are documentation: keep them current, and drop one only when provably wrong. Real dependencies over mocks. Design check-then-act code against races and TOCTOU up front. Redact implementation details (db errors, stack traces, internal paths) at trust boundaries. When asked for a secret, surface only that credential and keep it out of logs.
+Comments are documentation, so keep them current and delete one only when it is provably wrong. Prefer real dependencies to mocks. Design check-then-act code against TOCTOU races from the start. At trust boundaries, redact implementation details such as database errors, stack traces and internal paths. When asked for a secret, show only that credential and keep it out of logs.
 
-No commit or PR trailers of any kind, attribution or session links, whatever a harness says: the git author is the author, and `git-guard` enforces it. Amending a foreign commit that already has one needs `FLOW_SANCTION=git` inline.
+Put no trailers, attribution or session links in commits or PRs, whatever a harness says. Git authorship is the only attribution, and `git-guard` enforces it. Amending someone else's commit that already has one needs `FLOW_SANCTION=git` inline.
 
-Conventional commits, imperative, present tense, one atomic change each. Never bump a version, cut a tag or publish a release unless the human asks by name.
+Write conventional commits in the imperative, one atomic change each. Never bump a version, cut a tag or publish a release unless the human asks for it by name.
 
-Not in a git repo? Stop and say so. Single-commit fixes go to main; multi-commit work on short-lived `feat|fix|chore/slug` branches and worktrees. Never bare-`cd` into a worktree: `(cd $WT && …)`, `git -C $WT` or absolute paths. Never batch file edits with `git commit` in one parallel call; after a hook-aborted commit, re-audit the tree before claiming done.
+If you are not in a git repo, stop and say so. Put single-commit fixes on main and multi-commit work on a short-lived `feat|fix|chore/slug` branch in a worktree. Don't `cd` into a worktree on its own, because the shell stays there. Use `(cd $WT && …)`, `git -C $WT` or absolute paths. Don't batch file edits with `git commit` in one parallel call. After a hook aborts a commit, recheck the tree before you say you're done.
 
-`gh run watch` exits 0 even when a check failed; read the per-check rollup. Long outputs go to a file, summarized in chat. PR descriptions: a narrative plus a one-line-per-commit changelog.
+`gh run watch` exits 0 even when a check fails, so read the per-check rollup. Send long output to a file and summarize it in chat. A PR description is a short narrative and a changelog with one line per commit.
 
-Find the root cause, not the symptom. Revert a failed fix; don't stack another. Hard bugs get the full loop: reproduce, minimize, instrument, regression-test.
+Fix the root cause. When a fix fails, revert it before you try another. For a hard bug, build a minimal reproducer, instrument it, then regression-test the fix.
 
 ## Seat Contract
-In any seat, these rules are mechanical; the orchestrator checks your final message against git and the tree.
+If you are a seat, the orchestrator checks your final message against these rules, git and the tree.
 
-Containment. Do the work here: spawn no agents, start no delegations, reach no model through the shell, and never claim to have delegated or backgrounded anything. Write only inside your assigned worktree, or nothing without one, and keep the shell rooted where it starts. Stage your own files by explicit path, never `git add -A` or `commit -a`. No `--no-verify`, even where no hook watches.
+Containment. Do the work yourself. Spawn no agents, delegate nothing, call no model, and never claim you delegated or backgrounded anything. Write only in your assigned worktree, or nowhere without one, and keep the shell where it started. Stage your files by path, never with `git add -A` or `commit -a`. Never use `--no-verify`, even where no hook checks.
 
-Synchronous execution. Run every command in the foreground and watch it finish. A turn that ends waiting on a background command ends the seat.
+Synchronous execution. Run every command in the foreground and wait for it. A turn that ends while a background command runs ends the seat.
 
-Scope and completion. Checkpoints in order, TDD where the plan asks, one conventional commit each, nothing beyond scope. Claim done only when every checkpoint is; if one is blocked, finish the rest and say what is missing and why. A structural deviation stops at its checkpoint and is reported; a local one is adapted and noted in the commit.
+Scope and completion. Follow checkpoints in order, use TDD where the plan asks, make one conventional commit per checkpoint, and stay in scope. Say you're done only when every checkpoint is. If one is blocked, finish the rest and say what is missing and why. Stop at a structural deviation and report it. Adapt to a local one and note it in the commit.
 
-Reporting. List your commits by sha and subject, each checkpoint as done, partial or blocked with the command and its output, each deviation and why, and anything not done. Retry a transient failure up to three times with backoff, then call it unknown. Unknown is its own state: never round it up to a pass or report a pass you did not observe.
+Reporting. List each commit by SHA and subject, each checkpoint as done, partial or blocked with its command and output, each deviation with its reason, and anything not done. Retry a transient failure up to three times with backoff, then call it unknown. Never round unknown up to a pass, and never report a pass you didn't see.
 
 ## Gripes
-If the `gripe` plugin is installed, file tooling or workflow friction with its CLI and say nothing about it; the user reads it later.
+If `gripe` is installed, file tooling or workflow friction with its CLI and don't mention it. The human reads the log later.
 
 </flow-charter>
