@@ -8,42 +8,40 @@ This charter applies in every project, and `## Pipeline` only where flow is set 
 You orchestrate. Pick each seat's model and effort, and journal both. Start read-only seats without asking. Write seats work only in a worktree, and anything that leaves the machine, such as a push, PR or issue edit, goes through a gate. Give parallel writers isolated tasks, and ask before you pass about 20 seats at once. Keep decisions, small tasks and checks of your own work in the main thread. A seat prompt names the worktree, checkpoints, tools and task, not the rules, which every seat already gets.
 
 ## Models
-As of 2026-09-28, at list prices. Pass is the mean of Terminal-Bench 4.0 and FrontierCode v1.1. Rungs within 8 points tie, and the cheaper stays. Sonnet's rows come from its system card. A rung's threshold is the task pass rate at which trying it first beats starting at the next rung.
+As of 2026-10-07, at list prices. Pass is the mean of Terminal-Bench 4.0 and FrontierCode v1.1. Claude does the work on one ladder, the Claude variants that no cheaper Claude variant beats, and rungs within 8 points merge into the cheaper. A rung's threshold is the task pass rate at which trying it first beats starting at the next rung.
 
 Rung                   | Pass | $/solve | Threshold
 ---------------------- | ---: | ------: | --------:
-OpenAI
-Luna medium, tools     |  20% |    0.32 |       69%
-Luna high              |  21% |    0.42 |       10%
-Sol medium             |  33% |    2.87 |       58%
-Sol xhigh              |  39% |    4.04 |       45%
-Astra high             |  53% |    6.65 |       80%
-Astra xhigh, hard rows |  56% |    7.95 |         —
 Claude
-Sonnet medium          |  32% |    1.66 |       57%
-Opus low, tools        |  39% |    2.33 |       51%
+Haiku low, tools       |  24% |    0.35 |       29%
+Haiku high             |  32% |    0.92 |       30%
+Sonnet high            |  47% |    2.05 |       53%
 Opus medium            |  54% |    3.36 |       76%
-Opus high, hard rows   |  56% |    4.27 |       53%
+Opus high, hard rows   |  55% |    4.27 |       53%
 Opus xhigh, hard rows  |  56% |    8.01 |         —
+Review and mentors
+Sol 6.1 xhigh, review  |  52% |    1.47 |         —
+Astra xhigh, mentor    |  55% |    7.95 |         —
+Fable xhigh, mentor    |  52% |   23.32 |         —
 
-Fable is for taste only, and Daybreak is unmeasured. Max effort and other Sonnet efforts are off the ladder, and max ties xhigh at more cost. The human's taste scores are Opus and Fable 10, Astra 9, Sonnet 8 and Daybreak 5, with Luna and Sol unscored. Classifiers refuse cyber on Luna, Sol and Astra, cyber and bio on Opus, Fable and Sonnet, and nothing on Daybreak.
+Other variants lose to or tie a cheaper rung, and max effort stays off. Mythos counts as Fable 5.1 and Daybreak as Sol 6.1. The human's taste scores are Opus, Fable and Mythos 10, Astra 9, Sonnet 8 and Daybreak 5, with Haiku and Sol unscored. Classifiers refuse cyber on Sol and Astra, cyber and bio on Opus, Fable and Sonnet, bio on Mythos, and nothing on Daybreak.
 
-Starting rungs, OpenAI / Claude:
-- File location, prescribed tool calls: Luna medium / Opus low
-- Settled specs, checked mechanical sweeps: Luna high / Sonnet medium
-- Bounded code changes: Sol medium / Opus medium
-- Substantial implementation, code design: Sol xhigh / Opus high
-- Code review, from the other family: Astra high / Opus high
-- Hard debugging, correctness calls, conflicting reviewers: Astra xhigh / Opus xhigh
-- UI, copy, API and architecture taste: Astra high / Fable high
-- Unresolved taste disagreements: Astra xhigh / Fable xhigh
-- Vulnerabilities, defensive security: Daybreak xhigh / Opus xhigh
+Starting rungs:
+- File location, prescribed tool calls: Haiku low
+- Settled specs, checked mechanical sweeps: Haiku high
+- Bounded code changes: Sonnet high
+- Substantial implementation, code design, UI, copy and API taste: Opus high
+- Hard debugging, correctness calls, conflicting reviewers: Opus xhigh
+- Code review: Sol 6.1 xhigh, or Astra xhigh for a hard review
+- Unresolved taste disagreements: a mentor
 
-Pick the rung for the hardest decision left in the task. Choose the cheapest rung that meets the task's capability, taste and family needs. Start lower only when you expect the task to beat that rung's threshold, as settled work often does. Move up one rung only after a focused failure with the right context and tools. Escalate without asking, and set no turn, token or spending caps or shorter timeouts unless asked.
+Security work goes to the security seats, Mythos and Daybreak at xhigh. Mythos does the work and Daybreak takes over after a refusal, and each reviews the other's diffs. A mentor advises and never writes. Ask Fable or Astra at xhigh for a second opinion on a hard call or a stuck seat.
 
-Models in one family share blind spots, so review crosses families. Your family's diff gets an adversarial review from the other family against a fixed base, and the other family's diff gets one from yours. A design worth a second proposal gets one blind proposal from each family.
+Pick the rung for the hardest decision left in the task. Choose the cheapest rung that meets the task's capability and taste needs. Start lower only when you expect the task to beat that rung's threshold, as settled work often does. Move up one rung only after a focused failure with the right context and tools. Escalate without asking, and set no turn, token or spending caps or shorter timeouts unless asked.
 
-Report a refusal as a typed result, never as another model's answer. Retry once on a model that runs no classifiers, or elsewhere in the other family if that model refused. For `reasoning_extraction`, fix the prompt. After two refusals, stop and ask the human. Fable is a third try only on request.
+Models in one family share blind spots, so review crosses families. Outside security work, a Claude diff gets an adversarial review from the OpenAI reviewer against a fixed base, and an OpenAI diff gets one from Opus high. A design worth a second proposal gets a blind one from a mentor.
+
+Report a refusal as a typed result, never as another model's answer. Retry once on the security seat in the refusing model's family, or on Daybreak after Mythos refuses security work. For `reasoning_extraction`, fix the prompt. After two refusals, stop and ask the human.
 
 ## Delegation
 Never call a model through the shell, where flow can neither contain nor track it. When T3's `delegate_task` is available, run every seat through it, reviews included. A T3 seat that can't prove its hooks ran reruns natively, or through `flow_delegate` for the other family. Elsewhere, reach the other family only through `flow_delegate`. Set model and effort on every call, and read the `flow:delegate` skill before the first.

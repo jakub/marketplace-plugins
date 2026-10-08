@@ -108,7 +108,7 @@ Two timers run in the background once the flow skill's `setup` has installed the
 Two supporting skills sit outside the pipeline:
 
 - [`hillclimb`](plugins/flow/skills/hillclimb/SKILL.md) agrees a workload, benchmark, target and constraints with you. After you say "run it", it tries independent hypotheses in parallel and measures them one at a time. It keeps every attempt on a local branch, rejected ones included, and delivers a reviewed local branch. Pushing or opening a PR needs your go-ahead.
-- [`rank-models`](plugins/flow/skills/rank-models/SKILL.md) rewrites the charter's `## Models` section when a model ships, from Artificial Analysis's Terminal-Bench run and Cognition's FrontierCode. It asks you only for what no benchmark measures: which models your plans run, taste ratings and quota limits.
+- [`rank-models`](plugins/flow/skills/rank-models/SKILL.md) rewrites the charter's `## Models` section when a model ships: one Claude ladder, an OpenAI reviewer and two mentors, from Artificial Analysis's Terminal-Bench run and Cognition's FrontierCode. It asks you only for what no benchmark measures: which models your plans run, taste ratings and quota limits.
 
 | Path | What's there |
 |---|---|
