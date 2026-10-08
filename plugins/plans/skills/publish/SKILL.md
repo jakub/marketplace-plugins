@@ -1,5 +1,5 @@
 ---
-name: artifacts
+name: publish
 description: Publish, verify, and delete artifacts (HTML plans, images, video) through the installed Plans CLI against a self-hosted Plans server, turning a file or stdin into a viewable URL with a TTL or permanent retention. Use for "artifact", "upload a plan", "publish this page", "host this", "share this screenshot", "upload the recording". Not claude.ai Artifacts.
 ---
 
