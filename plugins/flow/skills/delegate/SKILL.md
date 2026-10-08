@@ -106,6 +106,8 @@ Every `delegate_task` call in a flow session names `runtimeMode`, with or withou
 
 On Claude Code the T3 tools are `mcp__t3-code__<tool>`, and on Codex they are `mcp__t3_code__<tool>`.
 
+`delegate_task` takes only a model that `orchestrator_capabilities` advertises, with only the options it advertises. To add one T3 does not list, such as `claude-mythos-5-1`, append it to `providerInstances.<instance>.config.customModels` in `~/.t3/userdata/settings.json`, which T3 reloads on change. A flow seat needs the object form, `{slug, name, capabilities: {optionDescriptors: [...]}}`, with an `effort` select that lists the effort you will pass. A bare slug is valid but advertises no options, so `delegate_task` refuses any effort for it. Never write `capabilities: null`: T3 rejects the entry and disables the whole provider instance until the file is fixed.
+
 ### Open the seat
 
 Run `seat open` once per seat:
