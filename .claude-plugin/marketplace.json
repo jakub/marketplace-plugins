@@ -42,6 +42,15 @@
         "name": "jakub"
       },
       "source": "./plugins/unslop"
+    },
+    {
+      "name": "plans",
+      "description": "Publish, verify, and delete HTML plans, images, and video as viewable URLs through the open-source plans CLI and a self-hosted plansd server.",
+      "version": "0.1.0",
+      "author": {
+        "name": "jakub"
+      },
+      "source": "./plugins/plans"
     }
   ]
 }

@@ -1,6 +1,6 @@
 # marketplace-plugins
 
-Jakub's personal plugin marketplace for Claude Code and Codex. Flow and gripe carry a Codex manifest, because Codex reads hook and MCP registrations only from one. Grill and unslop ship skills alone and need none, since Codex finds `skills/*/SKILL.md` by itself. Both hosts read the one catalog at `.claude-plugin/marketplace.json`.
+Jakub's personal plugin marketplace for Claude Code and Codex. Flow and gripe carry a Codex manifest, because Codex reads hook and MCP registrations only from one. Grill, unslop, and plans ship skills alone and need none, since Codex finds `skills/*/SKILL.md` by itself. Both hosts read the one catalog at `.claude-plugin/marketplace.json`.
 
 ```bash
 claude plugin marketplace add jakub/marketplace-plugins
@@ -68,6 +68,7 @@ If a plugin is registered on both hosts, update both before you go back to work.
 | **grill** | `grill@jakub` | Used by `prep` to hammer out the issue design. Vendored from [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT). |
 | **unslop** | `unslop@jakub` | Cuts AI tells from writing, and holds the technical-writing standard for docs a reader comes back to. ***Under evaluation.*** Both skills are model-invocable, with no hooks: an earlier version force-injected the rules at SessionStart, and 0.6.0 tests whether invocation alone covers the same ground. Vendored from [Lauren Tan's pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
 | **gripe** | `gripe@jakub` | A circular filing cabinet for the agents. If they hit friction during a task, repeat errors, or are just unhappy about something, they're encouraged to file a gripe, or where possible, a Claude or Codex hook does it for them. |
+| **plans** | `plans@jakub` | One skill, `artifacts`, that drives the [`plans`](https://github.com/jakub/plans) CLI to publish an HTML plan, screenshot, or recording to a self-hosted `plansd` server and hand back a viewable URL, then verify or delete it. Needs the CLI (`go install github.com/jakub/plans/cmd/plans@latest`) and an API URL and token you configure yourself; there is no default server. |
 
 ## flow
 
