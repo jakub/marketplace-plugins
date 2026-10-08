@@ -133,20 +133,26 @@ The client accepts either the capability key or the full viewer URL. Deleting a 
 - Human output is one `deleted <key>` line per removed key, plan first.
 - `--json` prints `{"deleted":["<plan-key>","<attachment-key>", ...]}`.
 - Deleting an attachment directly is allowed and leaves its plan in place, with that media broken.
-- On a partial failure the server may remove the plan but not finish the cascade. The CLI still prints what was deleted, in either format, then exits `1`, and stderr names the keys still present. Run `plans delete` on each of those keys directly. The plan was the only record of its attachments, so keep that stderr message.
+- A partial failure still prints what was deleted, in either format, then exits `1`. The server reports it in one of two forms:
+  - The cascade started but did not finish. `--json` adds `"failed":[...]` and `"error"`, and stderr ends with `still present, delete each directly: <keys>`. Run `plans delete` on each of those keys.
+  - The plan's metadata could not be read. The plan is deleted, but its attachments were never attempted, and their keys are unknown to the server. `--json` has `"error"` and no `"failed"`. Delete the attachment keys you already know from the original publish result. If you have none, tell the user that attachment cleanup is unresolved. Do not guess keys.
+
+The plan's metadata was the only server-side record of its attachments, so keep the publish result and the delete output until cleanup is confirmed.
 
 Verify a subsequent viewer request returns `404` when confirmation matters.
 
 ## Handle failures
 
+API errors print as `plans: plans API returned HTTP <code>: <message>`.
+
 - `plans: command not found`: report the missing client and give the user the install command (`go install github.com/jakub/plans/cmd/plans@latest`); check whether Go's bin directory (`$(go env GOPATH)/bin`) is on `PATH` first. Do not install it yourself.
-- `no plans API URL configured`: stop and tell the user to pass `--api-url`, set `PLANS_API_URL`, or write the URL to `~/.config/plans/api-url`. Do not guess an endpoint.
+- `no plans API URL configured`: stop and tell the user to pass `--api-url`, set `PLANS_API_URL`, or write the URL to the file path the error names (`$XDG_CONFIG_HOME/plans/api-url`, or `~/.config/plans/api-url` when `XDG_CONFIG_HOME` is unset). Do not guess an endpoint.
 - Unsupported extension: the CLI refuses before uploading. Convert to an allowlisted type rather than renaming the file.
 - Token-file read error: report the configured path problem without displaying file contents.
-- `401 Unauthorized`: treat the local token and the server's stored digest as out of sync; do not rotate credentials automatically.
+- HTTP `401` (`unauthorized`): treat the local token and the server's stored digest as out of sync; do not rotate credentials automatically.
 - DNS, TLS, or connection failure: report the configured API origin and ask the user to confirm the server is up and reachable from this machine (VPN or private network, if the deployment uses one).
-- `413 Request Entity Too Large`: reduce the artifact below the server's upload limit — re-encode video, or drop resolution rather than splitting the file.
-- `415 Unsupported Media Type`: the declared type is outside the eight-type allowlist.
+- HTTP `413` (`artifact exceeds the upload limit`): reduce the artifact below the server's upload limit — re-encode video, or drop resolution rather than splitting the file.
+- HTTP `415` (`unsupported artifact content type`): the declared type is outside the eight-type allowlist.
 - Missing or escaping media reference: nothing was published; fix the path or the reference and re-run.
 - `404 Not Found` when viewing: treat the key as unknown, expired, or deleted; do not try to enumerate alternatives.
 
