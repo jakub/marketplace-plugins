@@ -29,8 +29,8 @@ The `elicitation` column records who decided that a row was worth writing.
 - `observed`: a hook wrote the row from an event that happened, with no agent involved. The
   one source is StopFailure, a turn that failed outright. Hooks write through `lib/store.mjs`
   directly, so this lane never passes through a shell or depends on PATH.
-- `spontaneous`, `error_nudge`, and `checkpoint`: an agent wrote the row through `gripe add`,
-  unprompted, after the PostToolUseFailure nudge, or after the Stop checkpoint.
+- `spontaneous` and `error_nudge`: an agent wrote the row through `gripe add`, unprompted or
+  after the PostToolUseFailure nudge.
 
 The lanes record provenance, not identity. An agent has Bash under the uid that owns the
 database, so it can forge any row. The CLI files `--via observed` as `spontaneous` with one
@@ -88,41 +88,26 @@ means the host has no such event.
 
 | Event | Claude | Codex | Job |
 | --- | --- | --- | --- |
-| SessionStart | yes | yes | Advertise `gripe add`, write the session mark, publish the shim, and remove `scan/` and `gate/` files older than three days. |
+| SessionStart | yes | yes | Advertise `gripe add`, write the session mark, publish the shim, and remove `gate/` files older than three days. |
 | SubagentStart | yes | yes | Advertise `gripe add` with `--agent` and `--prompt` written into the recipe. |
 | PostToolUseFailure | yes | none | Nudge on the second failure of one fingerprint. |
-| PostToolUse | no | yes | Count tool targets into the checkpoint state. |
 | StopFailure | yes | none | Write an observed row. |
-| Stop | yes | yes | Cite repeated failures or a target hit three or more times, once per session and actor, after at least 15 tool calls. |
-| SubagentStop | yes | no | The Stop checkpoint for one subagent. |
 
 - Claude sends failed tool calls through a separate executor, so a hook on PostToolUse never
   sees the failures. PostToolUseFailure is the event. Its payload is `{ tool_name, tool_input,
   tool_use_id, error, is_interrupt, duration_ms }`.
 - Codex has no failure event. Codex CLI 0.149.1 on 2026-08-26 sent `tool_response: ""` for
-  `sh -c "exit 7"`, with no exit status anywhere in the payload.
-  `scripts/fixtures/codex-cli-0.149.1-post-tool-use-failed.json` is that capture. The Codex
-  adapter counts targets and never infers a failure.
-- Codex PostToolUse does not name the subagent that made the call, so Codex has no
-  SubagentStop checkpoint. The parent's Stop reads the session's combined counters.
-- Under the Codex hook contract as of 2026-08-26, Stop answers `decision: "block"` with the
-  note as `reason`, which starts one continuation prompt without failing the turn. Claude
-  answers with `additionalContext`. On both hosts each checkpoint costs at least one extra
-  assistant turn, which is why it fires once per session and actor.
+  `sh -c "exit 7"` on PostToolUse, with no exit status anywhere in the payload, so Codex gets
+  no repeat-failure nudge.
 - SessionStart output reaches the main agent only. Measured 2026-08-23, a spawned subagent
   reported no flow charter, which arrives through the same kind of hook. PreToolUse does fire
   inside subagents. In the same run a subagent ran three Bash commands, and flow's guard
   denied the middle one.
-- SubagentStop output reaches the subagent, not the parent. The Claude binary's schema
-  description says "delivered to the subagent; the subagent continues so it can act on it."
-- Codex PostToolUse and Stop share a per-session lock file around each counter update: one
-  `wx` create, 25 tries 20 ms apart, and the hook removes a lock older than 10 s as orphaned.
-  Measured 2026-09-01 with 20 concurrent hooks on one session, a 100 ms budget lost one count
-  in 1 run of 10, and the 500 ms budget lost none in 15.
-- Gate and checkpoint state live in JSON files, not in the database, because they are written
-  on every tool call and would contend with real filings for the write lock.
+- Gate state lives in JSON files, not in the database, because it is written on every failed
+  tool call and would contend with real filings for the write lock.
 
-Gripe registers no PreCompact, SessionEnd, PreToolUse, or UserPromptSubmit hook. PreCompact
+Gripe registers no Stop, SubagentStop, PreCompact, SessionEnd, PreToolUse, or UserPromptSubmit
+hook. A Stop hook that asks for a gripe costs an extra assistant turn each time it fires. PreCompact
 fires when context is most crowded and skews toward long sessions. SessionEnd output reaches
 no context. PreToolUse has nothing to say before a call. UserPromptSubmit is the user's
 channel, and guessing annoyance from prompt text gives bad rows.

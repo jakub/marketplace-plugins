@@ -18,8 +18,8 @@ need the reasoning behind a sharp edge.
 ## The machine, briefly
 
 Everything lives under `$XDG_STATE_HOME/gripe/` (default `~/.local/state/gripe/`): the
-database `gripe.db`, plus `scan/` and `gate/` state files the hooks use to avoid repeating
-themselves. The `gripe` command on PATH is a shim that resolves the installed plugin at
+database `gripe.db`, plus `gate/` state files the error nudge uses to avoid repeating
+itself. The `gripe` command on PATH is a shim that resolves the installed plugin at
 exec time. `gripe add` never exits non-zero and never prompts, by invariant; the cost of
 that is its failures are silent, which is why the analysis below starts with `doctor`.
 
@@ -28,11 +28,9 @@ Rows arrive through two lanes, and the `elicitation` column records which:
 - **observed**: written by hooks with no agent involved, from events that measurably
   happened: a turn that failed outright. Only hooks can write this value; the CLI
   refuses `--via observed`.
-- **spontaneous / error_nudge / checkpoint**: written by an agent through `gripe add`.
+- **spontaneous / error_nudge**: written by an agent through `gripe add`.
   `spontaneous` means it decided to file on its own. `error_nudge` means the
-  PostToolUseFailure hook noticed the same failure shape twice and asked. `checkpoint`
-  means the end-of-turn scanner found repeated failures or the same tool aimed at the
-  same target three-plus times, cited the evidence, and asked.
+  PostToolUseFailure hook noticed the same failure shape twice and asked.
 
 The distinction is mechanically-derived versus self-reported, not authenticated: anything
 with Bash on this machine could forge any row. Weigh accordingly, don't trust accordingly.
@@ -83,8 +81,8 @@ because nobody observable assigned one. The method:
    against the db is fine for this, e.g. `sqlite3 -readonly ~/.local/state/gripe/gripe.db
    "SELECT COUNT(*) FROM sessions WHERE first_seen >= '...'"`) and report rates: "4 of 61
    sessions since the last review".
-3. **Weigh the lanes.** Observed rows happened. Nudged and checkpoint rows were prompted
-   but had to survive a gate that demanded concrete evidence. Spontaneous rows are an
+3. **Weigh the lanes.** Observed rows happened. Nudged rows were prompted but had to
+   survive a gate that demanded concrete evidence. Spontaneous rows are an
    agent's unprompted opinion, which makes them the most interesting and the least
    verified. Say which lanes feed each cluster.
 4. **Recurrence is the status field.** A cluster present in this dump and the last one is

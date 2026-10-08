@@ -74,7 +74,7 @@ function publishShim() {
 
 function sweep() {
   const now = Date.now()
-  for (const sub of ['scan', 'gate']) {
+  for (const sub of ['gate']) {
     try {
       const dir = join(stateDir(), sub)
       for (const f of readdirSync(dir)) {

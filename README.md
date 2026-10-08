@@ -137,7 +137,7 @@ One database, one command, both hosts. On every run, the `gripe` on PATH globs `
 
 Gripes arrive in two ways:
 
-1. Hooks. On both hosts, gripe is advertised at session and subagent start, and an end-of-turn checkpoint asks for a gripe when the turn's own events show friction. On Claude, a turn that fails outright is filed directly, and a repeated tool failure gets a nudge.
+1. Hooks. On both hosts, gripe is advertised at session and subagent start. On Claude, a turn that fails outright is filed directly, and a repeated tool failure gets a nudge.
 2. Self-reported gripes, filed by the agent because it wanted to. The agent is encouraged to file gripes for basically anything it finds irritating.
 
 There's no clustering, no tags and no severity field. A model understands and groups these better than any code would, and realistically I'm never reading these anyway. Just pipe that shit straight into an LLM and ask it what to do.
@@ -148,6 +148,6 @@ The `/gripe` skill is unneeded day-to-day, but tells the agent how to read the d
 |---|---|
 | `plugins/gripe/bin/gripe` | The CLI. `add`, `dump`, `seen`, `search`, and `doctor` all live here. |
 | `plugins/gripe/bin/shim.mjs` | The resolver. A copy of it sits on PATH at `~/.local/bin/gripe`, picks the newest live install of this plugin in either plugin cache at exec time, and hands off to that install's `bin/gripe`, so reinstalls and version bumps don't strand it. |
-| `plugins/gripe/hooks/` | Claude and Codex registrations plus thin adapters for advertisements, observations, and checkpoints. |
+| `plugins/gripe/hooks/` | Claude and Codex registrations plus thin adapters for advertisements, observations, and nudges. |
 | `plugins/gripe/skills/gripe/` | How to read the gripe database. For doing analysis, not for normal work. |
 | `docs/gripe/DESIGN.md` | The measured facts behind gripe's design, and the shim's resolution rules. |

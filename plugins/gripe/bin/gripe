@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-const ELICITATIONS = new Set(['spontaneous', 'error_nudge', 'checkpoint'])
+const ELICITATIONS = new Set(['spontaneous', 'error_nudge'])
 
 const line = (s) => process.stderr.write(`gripe: ${s}\n`)
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // gripe: PostToolUseFailure. Fires on the failures PostToolUse never sees. Nudges on
 // repeats, not firsts: the first failure of a given shape is ordinary work, the second
-// is a pattern. Every fingerprint it nudges on lands in the shared gate state so the
-// Stop checkpoint does not cite the same fight a second time.
+// is a pattern. Every fingerprint it nudges on lands in the gate state, so one fight
+// buys one interruption.
 //
 // Claude only. Codex has no failure event, and its PostToolUse carries no reliable exit
-// status, so the Codex adapter records targets and never runs this policy.
+// status, so Codex never runs this policy.
 //
 // Contract: read hook JSON on stdin, optionally emit hookSpecificOutput JSON, exit 0.
 

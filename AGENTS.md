@@ -71,13 +71,12 @@ The timers find flow through `~/.claude/plugins/installed_plugins.json`, which i
 
 ## gripe
 
-`plugins/gripe/` is first-party. `lib/` holds `store.mjs` (SQLite and migrations), `context.mjs` (repo and session identity), and `gate.mjs` and `checkpoint.mjs` (noise policy and bounded state). The hook scripts under `hooks/scripts/` stay thin, and `bin/gripe` is the CLI. `docs/gripe/DESIGN.md` holds the measured facts and the shim's resolution rules, and `scripts/smoke-shim.mjs` holds the shim's contract. Read both before touching `bin/shim.mjs`.
+`plugins/gripe/` is first-party. `lib/` holds `store.mjs` (SQLite and migrations), `context.mjs` (repo and session identity), and `gate.mjs` (noise policy and bounded state). The hook scripts under `hooks/scripts/` stay thin, and `bin/gripe` is the CLI. `docs/gripe/DESIGN.md` holds the measured facts and the shim's resolution rules, and `scripts/smoke-shim.mjs` holds the shim's contract. Read both before touching `bin/shim.mjs`.
 
 **Filing must stay free**: `gripe add` always exits 0 and never prompts, and every hook relies on that. Every hook reads its call through `readHookEvent` in `lib/context.mjs`, which validates `session_id` and `agent_id` before either reaches a filename.
 
-Three things not to add until the Codex event stream supports them:
+Two things not to add until the Codex event stream supports them:
 
-- A Codex SubagentStop checkpoint. Codex does not name the subagent in PostToolUse, so the checkpoint is parent-session state on main Stop only.
 - A Codex repeated-failure nudge. PostToolUse carries no reliable failure status: on 0.149.1, a Bash command that exited 7 supplied `tool_response: ""`.
 - A Codex StopFailure lane. A nearby Codex event with a different meaning is not a compatibility layer.
 
