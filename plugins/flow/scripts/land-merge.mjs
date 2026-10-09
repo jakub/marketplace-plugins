@@ -83,16 +83,19 @@ const nonEmpty = (value) => (typeof value === 'string' && value.trim() !== '' ? 
 const upper = (value) => (typeof value === 'string' ? value.trim().toUpperCase() : '')
 const truncate = (text, limit) => { const s = String(text ?? ''); return s.length <= limit ? s : `${s.slice(0, limit)}...` }
 const oneLine = (text) => String(text).replace(/\s*\n\s*/g, ' ').trim()
-// A plans capability is a 22-character base64url key that grants access on its own, and a squash
-// message is permanent history. So an http(s) URL or a scheme-relative `//` token, through to the
-// next whitespace, and any 22-character [A-Za-z0-9_-] run holding an uppercase letter or a digit,
-// wherever it sits, each become a fixed placeholder. Run it on a line already folded by oneLine.
+// A plans capability is a bare key that grants access on its own, and a squash message is permanent
+// history. The key is base64url (no padding) of 16 random bytes, so it is exactly 22 characters of
+// [A-Za-z0-9_-] and its last character is always one of A, Q, g, w (the last 4 bits are zero
+// padding). So an http(s) URL or a scheme-relative `//` token, through to the next whitespace, and
+// every maximal [A-Za-z0-9_-] run of exactly 22 characters ending in one of those four, wherever it
+// sits and whatever case it holds, each become a fixed placeholder. A 22-character run ending
+// elsewhere cannot be a key and survives. Run it on a line already folded by oneLine.
 const LINK_REMOVED = '<link removed>'
-const CAPABILITY_KEY = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/g
+const CAPABILITY_KEY = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{21}[AQgw](?![A-Za-z0-9_-])/g
 const stripLinks = (text) => String(text)
   .replace(/https?:\/\/\S*/gi, LINK_REMOVED)
   .replace(/(?<!:)\/\/\S+/g, LINK_REMOVED)
-  .replace(CAPABILITY_KEY, (run) => (/[A-Z0-9]/.test(run) ? LINK_REMOVED : run))
+  .replace(CAPABILITY_KEY, LINK_REMOVED)
 const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
 
 const bucketOf = (entry) => {

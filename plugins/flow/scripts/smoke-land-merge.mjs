@@ -200,13 +200,13 @@ console.log('the executor merges once, pinned to the gated head')
   // whatever URL spelling carries it. The gate reads the same calls whether or not a key was there.
   const KEY = 'AbCdEf0123456789_-xYzA'
   const SHA40 = 'a1b2c3d4e5'.repeat(4)
-  const leakCase = (name, { title = TITLE, headline = null }, subject, body) => {
+  const leakCase = (name, { title = TITLE, headline = null, key = KEY }, subject, body) => {
     const r = run(ARGS, { st: freshState({ pr: { title, commits: [{ oid: '1'.repeat(40), messageHeadline: headline ?? 'fix: plain headline' }] } }) })
     const args = r.st.merges[0] ?? []
     const subjectGot = args[args.indexOf('--subject') + 1]
     const bodyGot = args[args.indexOf('--body') + 1]
     const gateCalls = (x) => JSON.stringify(x.st.calls.filter((a) => !(a[0] === 'pr' && a[1] === 'merge')))
-    check(name, merged(r) && args.every((a) => !String(a).includes(KEY)) && subjectGot === subject && bodyGot === body &&
+    check(name, merged(r) && args.every((a) => !String(a).includes(key)) && subjectGot === subject && bodyGot === body &&
       gateCalls(r) === gateCalls(run()), JSON.stringify({ subjectGot, bodyGot, merges: r.st.merges }))
   }
   const LR = '<link removed>'
@@ -218,8 +218,19 @@ console.log('the executor merges once, pinned to the gated head')
   leakCase('a markdown link in a headline loses the key', { headline: `see [doc](https://plans.example/${KEY}) ok` }, `${TITLE} (#${PR})`, `- see [doc](${LR} ok`)
   leakCase('a URL folded across a newline loses both halves', { headline: `see https://plans.example/\n${KEY}` }, `${TITLE} (#${PR})`, `- see ${LR} ${LR}`)
   leakCase('an uppercase scheme is replaced', { headline: `see HTTPS://PLANS.EXAMPLE/${KEY} ok` }, `${TITLE} (#${PR})`, `- see ${LR} ok`)
+  // The canonical key is base64url of 16 bytes: 22 characters, the last always one of A, Q, g, w.
+  // So an all-lowercase key is still a capability and goes, whatever letters it holds.
+  const LOWER = 'abcdefghijklmnopqrstug'
+  leakCase('an all-lowercase capability key bare in the title is replaced', { title: `ship ${LOWER} now`, key: LOWER }, `ship ${LR} now (#${PR})`, '- fix: plain headline')
+  leakCase('an all-lowercase key after plans.internal/ keeps the host and loses the key', { headline: `see plans.internal/${LOWER} ok`, key: LOWER }, `${TITLE} (#${PR})`, `- see plans.internal/${LR} ok`)
+  leakCase('an all-lowercase key folded after https://plans.internal/ across a newline loses both halves', { headline: `see https://plans.internal/\n${LOWER}`, key: LOWER }, `${TITLE} (#${PR})`, `- see ${LR} ${LR}`)
+  for (const last of ['A', 'Q', 'g', 'w']) {
+    const key = `abcdefghijklmnopqrstu${last}`
+    leakCase(`a lowercase-bodied capability key ending in ${last} is replaced`, { headline: `see ${key} ok`, key }, `${TITLE} (#${PR})`, `- see ${LR} ok`)
+  }
   for (const [what, token] of [['a lowercase kebab word of 22 characters', 'smoke-plugin-manifests'], ['a 40-character commit SHA', SHA40],
-    ['a 21-character mixed token', KEY.slice(0, 21)], ['a 23-character mixed token', `Z${KEY.slice(1)}B`]]) {
+    ['a 21-character mixed token', KEY.slice(0, 21)], ['a 23-character mixed token', `Z${KEY.slice(1)}B`],
+    ['a 22-character mixed-case token whose last character cannot end a key (a deliberate false negative)', `${KEY.slice(0, 21)}B`]]) {
     leakCase(`${what} survives unchanged`, { headline: `fix: ${token} again` }, `${TITLE} (#${PR})`, `- fix: ${token} again`)
   }
   check('the title and commits are not in the gate snapshot: a title edit between the reads still lands, with the newer title', (() => {
