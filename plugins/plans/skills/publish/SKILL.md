@@ -37,7 +37,7 @@ This section is the one statement of when to publish, how long to keep an artifa
 - Use the default of seven days when the user only says to publish or share.
 - Use `--keep` when the user explicitly asks for permanence, or when the artifact is PR evidence.
 - Use `--ttl 12h` for a Document that replaces an Inline render the host could not show.
-- Use `--ttl 12h`, `--ttl 7d`, or `--ttl 2w` when the user names a lifetime. A duration uses hours, whole days, or whole weeks, and cannot exceed 365 days.
+- When the user names a lifetime, pass it as `--ttl <duration>`. For example, three days is `--ttl 3d`. A duration uses hours, whole days, or whole weeks, and cannot exceed 365 days.
 - Never combine `--ttl` and `--keep`.
 
 Attachments inherit the plan's retention, so `--keep` on a plan makes its media permanent too.
@@ -134,7 +134,7 @@ The render check loads the live page in a real browser and looks for the faults 
 
 1. Start to capture console messages, page errors, and failed requests before you navigate. A fault that occurs during the first load is lost if capture starts late.
 2. Load the live URL at 390×844 and at 1440×900. At each size, load it in light and in dark through emulated `prefers-color-scheme`.
-3. For a runtime document, which is a page that `plans:doc` packed, check each of the four views again with every claim open, and again with the Respond sheet open.
+3. For a runtime document, which is a page that `plans:doc` packed, check each of the four views again with every claim open. If the page takes feedback, check the four views again with the Respond sheet open. A page in reading mode, such as a walkthrough or report page with `<body data-feedback="off">`, has no Respond sheet. For that page, check instead that it shows no Respond, comment, strike, or edit control.
 4. Fail the check on any of these faults, and report each one separately:
    - horizontal overflow on the root element
    - an element clipped outside a scroller the reader can reach

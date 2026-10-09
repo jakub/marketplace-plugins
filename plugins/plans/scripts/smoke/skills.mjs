@@ -207,7 +207,8 @@ export default async function (t) {
   const render = section(publish, '## Render check')
   const renderNeedles = [
     'before you navigate', '390×844', '1440×900', 'emulated `prefers-color-scheme`', 'light and in dark',
-    'every claim open', 'the Respond sheet open', 'report each one separately',
+    'every claim open', 'If the page takes feedback', 'the Respond sheet open', '<body data-feedback="off">',
+    'no Respond, comment, strike, or edit control', 'report each one separately',
     'horizontal overflow on the root element', 'clipped outside a scroller', '"Refused to"', 'an uncaught error',
     'fails to load or decode', 'A `206` response is healthy', 'record the render check as unknown',
     'Unknown is never a pass.', 'keep the publish result and its attachment keys', 'under the same authorization',
