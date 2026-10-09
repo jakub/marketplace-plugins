@@ -27,7 +27,8 @@ export default async function ({ ROOT, check }) {
     const repo = join(base, 'repo'); mkdirSync(repo)
     const git = (...args) => spawnSync('git', ['-C', repo, ...args], { env: GITENV, encoding: 'utf8' })
     writeFileSync(join(repo, 'a.txt'), 'committed one\ncommitted two\ncommitted three\n')
-    const made = [git('init', '-q'), git('add', 'a.txt'), git('-c', 'user.name=smoke', '-c', 'user.email=smoke@example.com', 'commit', '-q', '-m', 'a')]
+    writeFileSync(join(repo, 'big.txt'), Buffer.alloc(65e6 + 1, 0x78))   // one byte over pack's 64e6 read buffer, so git can read it and pack cannot
+    const made = [git('init', '-q'), git('add', 'a.txt', 'big.txt'), git('-c', 'user.name=smoke', '-c', 'user.email=smoke@example.com', 'commit', '-q', '-m', 'a')]
     check('the fixture repository has one commit', made.every((r) => r.status === 0), made.map((r) => r.stderr).join(' '))
     writeFileSync(join(repo, 'a.txt'), 'working one\nworking two\nworking three\n')   // the working tree now differs from HEAD
 
@@ -39,12 +40,14 @@ export default async function ({ ROOT, check }) {
       return { r, dir, same: listing(dir) === before, packed: () => readFileSync(join(dir, 'page.packed.html'), 'utf8') }
     }
 
-    for (const [name, body] of [['doc-code src', code('nope-0000')], ['doc-calls row', calls('nope-0000')]]) {
+    for (const [name, body, why] of [['doc-code src', code('nope-0000'), /ref="nope-0000" — git cannot read a\.txt at that ref/],
+      ['doc-calls row', calls('nope-0000'), /<doc-calls>: ref="nope-0000" — git cannot resolve that ref/],
+      ['doc-calls + row', rows('nope-0000', '+   **newFn()**   @ new.ts:10'), /<doc-calls>: ref="nope-0000" — git cannot resolve that ref/]]) {
       for (const mode of [[], ['--lint-only']]) {
         const { r, same } = run(body, ...mode); const said = r.stdout + r.stderr
         const tag = `${name} with a ref git cannot read${mode.length ? ' (--lint-only)' : ''}`
         check(`${tag}: exit 1 with nothing written`, r.status === 1 && same, out(r))
-        check(`${tag}: the error names the ref and the file`, /ref="nope-0000" — git cannot read a\.txt at that ref/.test(said), out(r))
+        check(`${tag}: the error names the ref${name.endsWith('src') ? ' and the file' : ''}`, why.test(said), out(r))
         check(`${tag}: git's own message is not echoed`, !/fatal:|Not a valid object name|invalid object/i.test(said), out(r))
       }
     }
@@ -72,10 +75,12 @@ export default async function ({ ROOT, check }) {
       check('with no excerpt for the added file and none from the working tree, and the readable row\'s excerpt kept',
         !o.includes('data-excerpt="new.ts:10"') && !o.includes('working new') && /data-excerpt="a\.txt:2" data-start="1" data-sha="HEAD">\ncommitted one/.test(o))
     }
-    for (const [name, text] of [['a ~ row', '~ old()           @ old.ts:3'],
+    for (const [name, text] of [['a ~ row', '~ old()           @ old.ts:3'], ['a + row on a file git holds but pack cannot read whole', '+   **big()**     @ big.txt:1'],
+      ['a ~ row on a file git holds but pack cannot read whole', '~ big()           @ big.txt:1'],
       ['a context row on a file a + row also names', '~ main()          @ a.txt:2\n+   **newFn()**   @ old.ts:10\n    helper()      @ old.ts:4']]) {
       const { r, same } = run(rows('HEAD', text))
-      check(`${name} on a file missing at the ref still exits 1 with nothing written`, r.status === 1 && same && /ref="HEAD" — git cannot read old\.ts at that ref/.test(r.stdout + r.stderr), out(r))
+      check(`${name} at the ref still exits 1 with nothing written`, r.status === 1 && same && /ref="HEAD" — git cannot read (old\.ts|big\.txt) at that ref/.test(r.stdout + r.stderr), out(r))
+      check(`${name}: git's own message is not echoed`, !/fatal:|Not a valid object name|invalid object|ENOBUFS|maxBuffer/i.test(r.stdout + r.stderr), out(r))
     }
     const plain = run(code(null))
     check('with no ref, doc-code reads the working tree and marks it +wt', plain.r.status === 0 && plain.packed().includes('working two') && /sha="[0-9a-f]+\+wt"/.test(plain.packed()), out(plain.r))

@@ -270,9 +270,9 @@ const findFile = (p) => { for (const cand of [...roots.map((r) => resolve(r, p))
     if (SECRET_NAME.test(f)) { if (!refused.has(p)) { refused.add(p); err(`"${p}" looks like a secrets file — not reading it`); } continue; }
     return f; } return null; };
 /** read a file at a git ref: tries `git show ref:path` in each --root that is a git checkout */
-// Only two plumbing commands are ever run: `rev-parse` and `cat-file blob`. Neither touches the work tree, so no filter, hook, fsmonitor,
-// pager, diff or credential program named in a repo's config can be started. (`status`, `diff` and `show` can start one, so they are not used.)
-const git = (r, cmd, ...args) => { if (cmd !== 'rev-parse' && cmd !== 'cat-file') throw new Error('git ' + cmd + ' is not allowed'); return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', r, cmd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64e6, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat' } }); };
+// Only three plumbing commands are ever run: `rev-parse`, `cat-file blob` and `ls-tree`. None touches the work tree, so no filter, hook,
+// fsmonitor, pager, diff or credential program named in a repo's config can be started. (`status`, `diff` and `show` can start one, so they are not used.)
+const git = (r, cmd, ...args) => { if (cmd !== 'rev-parse' && cmd !== 'cat-file' && cmd !== 'ls-tree') throw new Error('git ' + cmd + ' is not allowed'); return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', r, cmd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64e6, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat' } }); };
 /** short sha of the --root checkout a file sits in (+wt when the file has uncommitted changes); '' when it is not under a root or not in git */
 const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr || !(f === rr || f.startsWith(rr + sep))) continue; try { const top = git(rr, 'rev-parse', '--short', 'HEAD').trim(); let same = true; if (wt) { try { same = git(rr, 'cat-file', 'blob', `HEAD:${relative(rr, f).split(sep).join('/')}`) === readFileSync(f, 'utf8'); } catch { same = false; } } return top + (same ? '' : '+wt'); } catch {} } return ''; };
 const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
@@ -280,9 +280,21 @@ const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p
   for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
 // A pinned ref names the bytes a page cites. When git cannot read the file at that ref, the working-tree copy would show other
 // bytes under the ref's name, so both call sites stop with an error instead. git's own message is not echoed. A call-row file
-// that only + rows name is one the change adds, which has no bytes at the ref: doc-calls skips it as a missing file, as it
-// does with no ref, and never reads the working tree for it.
+// that only + rows name is one the change adds, which has no bytes at the ref: when git confirms that, doc-calls skips it as a
+// missing file, as it does with no ref, and never reads the working tree for it.
 const atRef = (at, ref, p) => { const g = gitShow(ref, p); if (g) return g; const k = ref + ':' + p; if (!refused.has(k)) { refused.add(k); err(`${at}: ref="${ref}" — git cannot read ${p} at that ref in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')}; a pinned ref never falls back to the working tree`); } return null; };
+// A doc-calls block first resolves its ref as a tree in every --root, once: a plain ref that no root resolves is an error for the
+// block, whatever its rows hold, and a ref that is not plain is left to gitShow to refuse by name. A file that only + rows name is
+// then skipped only when git confirms it absent, with `ls-tree` naming no entry at the ref in each root that resolves it. Any
+// other answer, a file git holds but pack cannot read whole among them, goes to atRef and its hard error. gitShow returns null
+// for every failure alike, so absence is never read from it.
+const refTrees = new Map();   // ref → the roots that resolve it as a tree; [] for a ref that is not plain; null when no root resolves it
+const refRoots = (at, ref) => {
+  if (!refTrees.has(ref)) { const rs = REF_OK.test(ref) ? roots.filter((r) => { try { git(r, 'rev-parse', '--verify', '--quiet', `${ref}^{tree}`); return true; } catch { return false; } }) : [];
+    refTrees.set(ref, REF_OK.test(ref) && !rs.length ? null : rs);
+    if (refTrees.get(ref) === null) err(`${at}: ref="${ref}" — git cannot resolve that ref in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')}; no row can be read at it, and a pinned ref never falls back to the working tree`); }
+  return refTrees.get(ref); };
+const gitAbsent = (rs, ref, p) => rs.length > 0 && !(/(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) && rs.every((r) => { try { return git(r, 'ls-tree', ref, '--', p) === ''; } catch { return false; } });
 const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
 const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
 
@@ -365,7 +377,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
       let added = 0, missing = 0, extra = '';
       const seen = new Set();
       for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
-        let text = null, sha = ''; if (a.ref) { const added = m.nodes.every((o) => o.file !== nd.file || o.mark === '+'); const g = added ? gitShow(a.ref, nd.file) : atRef(at, a.ref, nd.file); if (!g && !added) continue; if (g) { text = g.text; sha = a.ref; } } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
+        let text = null, sha = ''; if (a.ref) { const rs = refRoots(at, a.ref); if (rs === null) continue; const added = m.nodes.every((o) => o.file !== nd.file || o.mark === '+'); if (added && gitAbsent(rs, a.ref, nd.file)) { missing++; continue; } const g = atRef(at, a.ref, nd.file); if (!g) continue; text = g.text; sha = a.ref; } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
         if (text == null) { missing++; continue; }
         if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
         const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
