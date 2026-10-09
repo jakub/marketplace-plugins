@@ -40,6 +40,11 @@ const REFUSALS = [
   { name: 'doc-shot-missing', body: '<doc-shot src="nope.png"></doc-shot>', why: /<doc-shot>: src="nope\.png" is not in the page's folder/ },
   { name: 'remote', body: '<img src="https://example.com/x.png" alt="">', why: /is remote/ },
   { name: 'remote-protocol-relative', body: '<video src="//example.com/x.webm"></video>', why: /is remote/ },
+  // A block's source that holds </script ends its text/plain script there (patch 0014), so its own closing tag closes nothing.
+  { name: 'source-holds-script-end', body: '<doc-code lang="html" caption="c"><script type="text/plain">\n<script src="x.js"></script>\n</script></doc-code>',
+    why: /line 11: a <\/script> here closes no open <script>, so a block's source contains "<\/script".*write it as <\\\/script in inline source, or put the code in a file and use src=/ },
+  { name: 'source-holds-script-end-in-a-string', body: '<doc-code lang="js" caption="c"><script type="text/plain">\nconst end = \'</script >\';\n</script></doc-code>',
+    why: /closes no open <script>/ },
   { name: 'remote-source', body: '<video><source src="https://example.com/x.mp4" type="video/mp4"></video>', why: /<source>: .*is remote/ },
   { name: 'doc-shot-remote', body: '<doc-shot src="https://example.com/x.png"></doc-shot>', why: /<doc-shot>: .*is remote/ },
   { name: 'html-src', setup: (d) => writeFileSync(join(d, 'other.html'), '<p>x</p>\n'), body: '<img src="other.html" alt="">', why: /is an HTML file/ },
@@ -323,6 +328,12 @@ export default async function ({ ROOT, check }) {
     check('ids, flow nodes, sequence actors, machine states and traces named constructor or __proto__ are ordinary names to pack', rn.status === 0 && !/duplicate id/.test(rn.stdout), out(rn))
     check('an href to an id the page lacks is warned about whatever the name', /href="#toString" points at no id/.test(rn.stdout), rn.stdout.slice(-600))
     check('a mock frame named constructor gets the default width and its width warning', /constructor mock w=800 renders/.test(rn.stdout), rn.stdout.slice(-600))
+
+    // The escaped spelling is the one blocks.md gives, and the page's own scripts close what they open.
+    const escaped = fixture('source-escaped-script-end', page('<doc-code lang="html" caption="c"><script type="text/plain">\n<script src="x.js"><\\/script>\n</script></doc-code>'))
+    const rx = run(escaped, 'page.html')
+    check('a block source that writes <\\/script packs, and keeps it as written', rx.status === 0 && !/closes no open/.test(rx.stdout + rx.stderr) &&
+      readFileSync(join(escaped, 'page.packed.html'), 'utf8').includes('<script src="x.js"><\\/script>'), out(rx))
 
     const src = fixture('src-name', page('<p>x</p>')); writeFileSync(join(src, 'doc.src.html'), page('<p>x</p>'))
     const rs = run(src, 'doc.src.html')

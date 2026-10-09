@@ -189,6 +189,13 @@ it, so a later patch's context is the text an earlier one wrote.
     constructor was never created, a data-play naming a trace the machine lacks passed pack's check, an
     id="constructor" was a false duplicate, and frame="constructor" or via="constructor" drew NaN or the
     function's source.
+0014-source-and-quote-text.patch
+    Says in blocks.md that a block's source must not hold </script, which ends its
+    <script type="text/plain"> early and turns the rest of the source into page markup, and
+    how to write it instead. pack refuses that page: the ported tokenizer returns end tags,
+    and a </script> that closes no open script is the trace the cut leaves. blocks.md also
+    says to escape &, < and > in quoted text, so a quoted source's markup never becomes page
+    markup.
 -----END PATCHES-----
 
 RE-SYNCING

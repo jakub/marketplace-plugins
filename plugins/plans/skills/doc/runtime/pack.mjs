@@ -65,7 +65,8 @@ const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.ht
 // plaintext runs to the end of the file; a tag the end of the file cuts is no tag, and nothing follows it. Names and attribute
 // keys lowercase A-Z only, the first of a repeated key wins, NUL reads as U+FFFD, and each attribute keeps its offsets and its
 // raw text, so an edit never guesses. Text is not returned, nor a comment, except a <!-- comment with its data, so a comment
-// pack itself wrote can be found as the token the CLI reads, never as text.
+// pack itself wrote can be found as the token the CLI reads, never as text. An end tag comes back as an end token with its name
+// and offsets, except the one that closes a raw-text element, which that element's close holds.
 const WS = (c) => c === ' ' || c === '\n' || c === '\r' || c === '\t' || c === '\f';
 const ALPHA = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 const lower = (s) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) | 32)).replace(/\0/g, '\uFFFD');
@@ -208,7 +209,7 @@ function tokenize(src) {
       if (lt + 2 >= n) break;
       const d = src[lt + 2];
       if (d === '>') i = lt + 3;
-      else if (ALPHA(d)) { const t = readTag(lt + 2, false); if (!t) break; i = t.end; }
+      else if (ALPHA(d)) { const t = readTag(lt + 2, false); if (!t) break; out.push({ type: 'end', name: t.name, start: lt, end: t.end }); i = t.end; }
       else { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
     } else if (c === '!') {
       if (lt + 4 > n) break;
@@ -232,6 +233,10 @@ for (const c of tokenize(html).filter((t) => t.type === 'comment' && t.data.star
 const errors = [], warns = [], info = [];
 const err = (m) => errors.push(m), warn = (m) => warns.push(m);
 const lineOf = (idx) => html.slice(0, idx).split('\n').length;
+// A block's source text sits in <script type="text/plain">, which runs to the first </script>. A source that holds </script ends
+// its block there, the rest of the source becomes page markup, and the block's own closing tag is left closing no script. That
+// end tag is the trace the cut leaves, so pack reads it as the CLI's tokenizer does and refuses the page.
+for (const t of tokenize(html)) if (t.type === 'end' && t.name === 'script') err(`line ${lineOf(t.start)}: a </script> here closes no open <script>, so a block's source contains "</script", which ended its <script type="text/plain"> early and made the rest of it page markup — write it as <\\/script in inline source, or put the code in a file and use src=`);
 const attrs = (s) => { const o = {}; s.replace(/([\w:.-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g, (m, k, a, b, c) => { o[k.toLowerCase()] = a ?? b ?? c ?? ''; return ''; }); return o; };
 const unent = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 const blockSrc = (inner) => { const m = inner.match(/<script\s+type=["']?text\/(?:plain|source)["']?\s*>([\s\S]*?)<\/script>/i); return NW.util.dedent(m ? m[1] : unent(inner.replace(/<doc-pin[\s\S]*?<\/doc-pin>|<template[\s\S]*?<\/template>|<[^>]+>/g, ''))); };
