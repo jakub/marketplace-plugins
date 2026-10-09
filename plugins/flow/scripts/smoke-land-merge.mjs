@@ -5,7 +5,9 @@
 // `gh api --paginate --slurp` prints an outer array with one element per page (a check-runs page
 // is an object carrying check_runs, a statuses page is the array itself), paged at the 100 the
 // executor asks for, so a 101st check really is on a second page. The fake records every call and
-// every merge. Every case reads the one JSON line and the exit; each refusal asserts that nothing
+// every merge. `gh pr view` answers with exactly the --json fields asked for, so a gate that stops
+// asking for a field it needs reads null rather than a value the fake volunteered, and the commit
+// headlines come only from the paged commits query, 100 to a page like GitHub's. Every case reads the one JSON line and the exit; each refusal asserts that nothing
 // merged, and each unproven outcome asserts that it does not read as a refusal. One case runs the
 // real gh runner against a fake gh binary to prove that GH_REPO and GH_HOST never reach gh, and
 // two prove that a gh or git planted behind a relative PATH entry never runs.
@@ -58,16 +60,23 @@ const thread = (id, resolved = true) => ({ id, isResolved: resolved, isOutdated:
 const pagesOf = (list) => { const pages = []; for (let i = 0; i < list.length; i += 100) pages.push(list.slice(i, i + 100)); return pages.length ? pages : [[]] }
 
 // `fail` names one read that answers HTTP 500, and `malformed` one that answers in the wrong shape.
+// `commits` is the pull request's commit list; commitTotal overrides the totalCount every commit
+// page reports, commitPageFails names a page (0-based) whose read fails, and commitsNoCursor drops
+// the cursor that leads past the first page.
+const commit = (messageHeadline, i) => ({ oid: String(i % 10).repeat(40), messageHeadline, messageBody: `see ${CAPABILITY_URL}` })
 const freshState = (over = {}) => ({
   defaultBranch: 'main', mergeExit: 0, landsNothing: false, confirmFails: false, queue: null, queueFails: false, recheck: {}, after: {},
   queueAfter: undefined, queueAfterFails: false, merged: false, fail: null, malformed: null, behindBy: 0, baseTip: 'f'.repeat(40), tipAtMerge: null, suiteCount: null,
   suites: [{ id: 501, status: 'completed', conclusion: 'success' }, { id: 502, status: 'completed', conclusion: 'success' }],
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')], totalCount: null, statuses: [],
+  commits: HEADLINES.map(commit), commitTotal: null, commitPageFails: null, commitsNoCursor: false,
   threadPages: [[thread('T1')]], threadsNoCursor: false, baseFlakes: null, headFlakes: null, flakesHttp: null, flakesEncoding: 'base64',
   calls: [], merges: [], ...over,
   pr: { headRefOid: HEAD, headRefName: BRANCH, state: 'OPEN', isDraft: false, baseRefName: 'main', url: PR_URL, autoMergeRequest: null,
-    title: TITLE, body: PR_BODY, commits: HEADLINES.map((messageHeadline, i) => ({ oid: String(i).repeat(40), messageHeadline, messageBody: `see ${CAPABILITY_URL}` })), ...(over.pr || {}) },
+    title: TITLE, body: PR_BODY, ...(over.pr || {}) },
 })
+// What `gh pr view --json <fields>` prints: every field asked for, null when the pull request has none, and nothing else.
+const project = (value, fields) => Object.fromEntries(fields.split(',').map((key) => [key, value[key] ?? null]))
 const field = (args, key) => { const hit = args.find((a) => String(a).startsWith(`${key}=`)); return hit === undefined ? null : String(hit).slice(key.length + 1) }
 const makeRunGh = (st) => (args) => {
   st.calls.push(args)
@@ -83,13 +92,22 @@ const makeRunGh = (st) => (args) => {
     const fields = args[args.indexOf('--json') + 1]
     if (fields.startsWith('state,')) {
       if (st.confirmFails) return fail('fake gh: view failed\n')
-      return ok({ ...st.pr, state: st.merged ? 'MERGED' : st.pr.state, autoMergeRequest: null, ...st.after })
+      return ok(project({ ...st.pr, state: st.merged ? 'MERGED' : st.pr.state, autoMergeRequest: null, ...st.after }, fields))
     }
-    if (again('pr')) return st.fail === 'recheck' || st.failLater === 'pr' ? serverError() : ok({ ...st.pr, ...st.recheck, ...st.later?.pr })
-    return st.fail === 'view' ? serverError() : ok(st.pr)
+    if (again('pr')) return st.fail === 'recheck' || st.failLater === 'pr' ? serverError() : ok(project({ ...st.pr, ...st.recheck, ...st.later?.pr }, fields))
+    return st.fail === 'view' ? serverError() : ok(project(st.pr, fields))
   }
   if (args[0] === 'repo' && args[1] === 'view') return st.fail === 'repo' ? serverError() : ok({ defaultBranchRef: { name: st.defaultBranch } })
   if (args[0] === 'api' && args[1] === 'graphql') {
+    if ((field(args, 'query') ?? '').includes('commits(')) {
+      const pages = pagesOf(st.commits)
+      const index = field(args, 'cursor') === null ? 0 : Number(field(args, 'cursor').slice(1))
+      if (st.commitPageFails === index) return fail('fake gh: graphql failed\n')
+      const more = index < pages.length - 1
+      const nodes = pages[index].map((c) => ({ commit: { oid: c.oid, messageHeadline: c.messageHeadline, messageBody: c.messageBody } }))
+      return ok({ data: { repository: { pullRequest: { commits: { totalCount: st.commitTotal ?? st.commits.length,
+        pageInfo: { hasNextPage: more, endCursor: more && !st.commitsNoCursor ? `k${index + 1}` : null }, nodes } } } } })
+    }
     if ((field(args, 'query') ?? '').includes('reviewThreads')) {
       if (st.fail === 'threads') return fail("gh: Field 'reviewThreads' doesn't exist\n")
       if (field(args, 'cursor') === null) st.threadRead = again('threads') ? 'later' : 'first'
@@ -187,10 +205,7 @@ console.log('the executor merges once, pinned to the gated head')
   check('a URL in the title or in a commit headline is replaced by <link removed> and reaches no merge argument', (() => {
     const titleUrl = `evidence ${CAPABILITY_URL} done`
     const headlineUrl = 'http://plans.example.ts.net/p/ZzYy9876543210'
-    const leaky = run(ARGS, { st: freshState({ pr: {
-      title: titleUrl,
-      commits: [{ oid: '1'.repeat(40), messageHeadline: `docs: see ${headlineUrl}, then stop` }, { oid: '2'.repeat(40), messageHeadline: 'fix: plain headline' }],
-    } }) })
+    const leaky = run(ARGS, { st: freshState({ pr: { title: titleUrl }, commits: [`docs: see ${headlineUrl}, then stop`, 'fix: plain headline'].map(commit) }) })
     const args = leaky.st.merges[0] ?? []
     return merged(leaky) && args.every((a) => !/https?:\/\//.test(String(a)) && !String(a).includes('plans.example.ts.net')) &&
       args[args.indexOf('--subject') + 1] === `evidence <link removed> done (#${PR})` &&
@@ -201,7 +216,7 @@ console.log('the executor merges once, pinned to the gated head')
   const KEY = 'AbCdEf0123456789_-xYzA'
   const SHA40 = 'a1b2c3d4e5'.repeat(4)
   const leakCase = (name, { title = TITLE, headline = null, key = KEY }, subject, body) => {
-    const r = run(ARGS, { st: freshState({ pr: { title, commits: [{ oid: '1'.repeat(40), messageHeadline: headline ?? 'fix: plain headline' }] } }) })
+    const r = run(ARGS, { st: freshState({ pr: { title }, commits: [commit(headline ?? 'fix: plain headline', 1)] }) })
     const args = r.st.merges[0] ?? []
     const subjectGot = args[args.indexOf('--subject') + 1]
     const bodyGot = args[args.indexOf('--body') + 1]
@@ -239,9 +254,29 @@ console.log('the executor merges once, pinned to the gated head')
   })())
   check('an unreadable title or a commit list with no headline refuses read-failed and nothing merges', (() => {
     const noTitle = run(ARGS, { st: freshState({ pr: { title: '' } }) })
-    const noCommits = run(ARGS, { st: freshState({ pr: { commits: [] } }) })
+    const noCommits = run(ARGS, { st: freshState({ commits: [] }) })
     return refusedWith(noTitle, 'read-failed', 'title') && refusedWith(noCommits, 'read-failed', 'commit headlines')
   })())
+  check('gh pr view is never asked for commits, which it serves only the first 100 of', r.st.calls.filter((a) => a[0] === 'pr' && a[1] === 'view')
+    .every((a) => !a[a.indexOf('--json') + 1].split(',').includes('commits')), JSON.stringify(r.st.calls.filter((a) => a[0] === 'pr')))
+  // GitHub pages the commits connection at 100, and the body has to list every commit, not the first page.
+  const longHeadlines = Array.from({ length: 150 }, (unused, i) => `fix: step ${i + 1}`)
+  const long = run(ARGS, { st: freshState({ commits: longHeadlines.map(commit) }) })
+  const longBody = long.st.merges[0]?.[long.st.merges[0].indexOf('--body') + 1]
+  check('150 commits across two pages all reach the squash body, in order', merged(long) && longBody === longHeadlines.map((h) => `- ${h}`).join('\n') &&
+    long.st.calls.filter((a) => a[1] === 'graphql' && (field(a, 'query') ?? '').includes('commits(') && field(a, 'cursor') === 'k1').length === 2, shown(long))
+  for (const [name, over, text] of [
+    ['a failed second commit page', { commits: longHeadlines.map(commit), commitPageFails: 1 }, 'failed on page 2'],
+    ['another commit page with no cursor', { commits: longHeadlines.map(commit), commitsNoCursor: true }, 'no cursor'],
+    ['a commit count short of totalCount', { commitTotal: 3 }, 'collected 2 commit(s) and reported totalCount 3'],
+    ['one commit with an empty headline among readable ones', { commits: ['fix: one', '', 'fix: three'].map(commit) }, '1 of 3 commit(s) have no readable headline'],
+    ['one commit with no headline at all', { commits: [commit('fix: one', 1), { oid: '2'.repeat(40) }] }, '1 of 2 commit(s) have no readable headline'],
+  ]) {
+    const r = run(ARGS, { st: freshState(over) })
+    check(`${name} refuses read-failed and nothing merges`, refusedWith(r, 'read-failed', text), shown(r))
+  }
+  const endlessCommits = run(ARGS, { st: freshState({ commits: Array.from({ length: 2001 }, (unused, i) => commit(`fix: ${i}`, i)) }) })
+  check('a commit read still paging after 20 pages refuses read-failed', refusedWith(endlessCommits, 'read-failed', '20 pages'), shown(endlessCommits))
   check('every gh call names origin\'s repository', r.st.calls.every(pinnedTo(IDENTITY, 'github.com')), JSON.stringify(r.st.calls.filter((a) => !pinnedTo(IDENTITY, 'github.com')(a))))
 }
 

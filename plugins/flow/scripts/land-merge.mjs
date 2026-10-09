@@ -15,7 +15,7 @@
 // page fails green: check runs and commit statuses on the argument head over `gh api --paginate
 // --slurp`, with the check runs collected equal to the total_count GitHub reported and the head
 // carrying fewer than the 1000 check suites the check-runs endpoint serves from, and review
-// threads over paged GraphQL, 20 pages at most. A check run is pending until it is completed; a
+// threads and the pull request's commits over paged GraphQL, 20 pages at most each. A check run is pending until it is completed; a
 // commit status counts only as the newest of its context; a nameless entry, a conclusion outside
 // the known sets and no checks at all are each unknown, which is how a pull request looks in the
 // seconds after a push.
@@ -39,7 +39,11 @@
 // redaction targets an accidental paste of a capability URL or key; a deliberately encoded form (a
 // backslash scheme, a percent-encoded key character) is out of scope, because the author could
 // equally commit the key directly. Title and commits are read with the gate but kept out of its
-// snapshot, so editing the title between the reads does not stop a land; a title or commit list that cannot be read does.
+// snapshot, so editing the title between the reads does not stop a land. The headlines come from
+// their own paged query rather than `gh pr view --json commits`, which serves the first 100 commits
+// and no more. A title that cannot be read, a commit read that is not whole (a failed page, a page
+// with no cursor, the page cap, a count other than totalCount) and any commit with no readable
+// headline each stop the land, so the body never lists only part of the pull request.
 // It proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
 // code. It prints one JSON line: exit 0 `merged`, exit 1 `refused` with every stop found (nothing
 // merged), exit 4 `unknown`, which a human looks at before anything is retried. stderr carries one
@@ -57,9 +61,10 @@ const SHA = /^[0-9a-f]{40}$/
 // The check-runs endpoint serves from at most this many of a ref's most recent check suites.
 const MAX_CHECK_SUITES = 1000
 const MAX_THREAD_PAGES = 20
+const MAX_COMMIT_PAGES = 20
 const FLAKES_PATH = '.github/known-flakes.txt'
 const HTTP_404 = /\(HTTP 404\)|\bNot Found\b/
-const PR_FIELDS = 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest,title,commits'
+const PR_FIELDS = 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest,title'
 const USAGE_LINE = 'usage: land-merge.mjs <pull-request-number> <expected-head-sha> [--accept-flake <check-name>:<test_name>]...'
 const USAGE = `${USAGE_LINE}
 
@@ -74,6 +79,12 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $pr: Int!, $cursor
   repository(owner: $owner, name: $name) { pullRequest(number: $pr) { reviewThreads(first: 100, after: $cursor) {
     pageInfo { hasNextPage endCursor }
     nodes { id isResolved comments(last: 20) { nodes { author { login } body path url } } }
+  } } }
+}`
+const COMMITS_QUERY = `query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $pr) { commits(first: 100, after: $cursor) {
+    totalCount pageInfo { hasNextPage endCursor }
+    nodes { commit { messageHeadline } }
   } } }
 }`
 
@@ -222,11 +233,45 @@ export function landMerge({ argv, env, cwd, runGh }) {
       return { early: { code: 'redirected', detail: `the pull request GitHub returned (${JSON.stringify(scrubUserinfo(pull.url ?? '') || null)}) is not #${pr} of ${id.full}, so the read was redirected` } }
     }
 
+    // The commit headlines, paged to the end like the review threads in step 12. Every page has to
+    // report the same totalCount, and the commits collected have to match it.
     const title = nonEmpty(pull.title)
-    const headlines = Array.isArray(pull.commits) ? pull.commits.map((c) => nonEmpty(c?.messageHeadline)).filter((h) => h !== null) : []
     if (title === null) unreadable('read-failed', `the title of #${pr} could not be read, so the squash subject cannot be built`)
-    if (headlines.length === 0) unreadable('read-failed', `the commit headlines of #${pr} could not be read, so the squash body cannot be built`)
-    const message = title === null ? null : { subject: `${stripLinks(oneLine(title))} (#${pr})`, body: headlines.map((h) => `- ${stripLinks(oneLine(h))}`).join('\n') }
+    const readHeadlines = () => {
+      const headlines = []
+      let total = null
+      let missing = 0
+      let cursor = null
+      for (let page = 0; page < MAX_COMMIT_PAGES; page += 1) {
+        const r = graphql(COMMITS_QUERY, { owner: id.owner, name: id.repo, pr, ...(cursor === null ? {} : { cursor }) })
+        const commitPage = (r.code === 0 ? parseObject(r.stdout) : null)?.data?.repository?.pullRequest?.commits
+        if (!Array.isArray(commitPage?.nodes)) return `the commit query failed on page ${page + 1} (${r.code === 0 ? 'no commits in the answer' : said(r)})`
+        const count = commitPage.totalCount
+        if (!Number.isSafeInteger(count) || count < 0 || (total !== null && count !== total)) {
+          return `the commit query reported totalCount ${JSON.stringify(count ?? null)} on page ${page + 1}${total === null ? '' : ` after ${total}`}`
+        }
+        total = count
+        for (const node of commitPage.nodes) {
+          const headline = nonEmpty(node?.commit?.messageHeadline)
+          if (headline === null) missing += 1
+          else headlines.push(headline)
+        }
+        if (commitPage.pageInfo?.hasNextPage !== true) {
+          const seen = headlines.length + missing
+          if (seen !== total) return `the commit query collected ${seen} commit(s) and reported totalCount ${total}`
+          if (missing > 0) return `${missing} of ${total} commit(s) have no readable headline`
+          if (total === 0) return 'the commit query returned no commits'
+          return headlines
+        }
+        cursor = nonEmpty(commitPage.pageInfo?.endCursor)
+        if (cursor === null) return 'the commit query reported another page and no cursor'
+      }
+      return `the commit query was still paging after ${MAX_COMMIT_PAGES} pages`
+    }
+    const headlines = readHeadlines()
+    if (!Array.isArray(headlines)) unreadable('read-failed', `the commit headlines of #${pr} could not be read whole: ${headlines}, so the squash body cannot be built`)
+    const message = title === null || !Array.isArray(headlines) ? null
+      : { subject: `${stripLinks(oneLine(title))} (#${pr})`, body: headlines.map((h) => `- ${stripLinks(oneLine(h))}`).join('\n') }
 
     // ---- 5 to 7: state, head, base, arming. From here every stop is collected.
     const state = nonEmpty(pull.state)
