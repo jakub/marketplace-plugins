@@ -50,6 +50,171 @@ const roots = (cli.values.root || []).map((r) => resolve(r.replace(/^~(?=\/)/, p
 const pageDir = realpathSync(baseDir); const inName = basename(inPath);
 const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
 
+/* ── tags, as the plans CLI reads them ── */
+// The plans CLI finds the media it uploads with golang.org/x/net/html's tokenizer, at v0.58.0 as its go.mod pins it, so pack reads
+// tags with a port of that tokenizer's Next, readTag, readRawOrRCDATA, readScript, readComment and readMarkupDeclaration, on
+// UTF-16 code units in place of bytes: every delimiter is ASCII, and an ASCII byte is one code unit in the same place. So a
+// comment ends at -->, at --!>, or at a > right after <!-- or <!---; <!x>, <?x>, </ x> and <!doctype x> end at the first >; an
+// end tag reads its attributes, so a quoted > does not end it; the text of script, style, textarea, title, xmp, iframe, noembed,
+// noframes and noscript holds no tag, script with the escape states of the HTML spec (<!-- … <script> … </script> … -->), and
+// plaintext runs to the end of the file; a tag the end of the file cuts is no tag, and nothing follows it. Names and attribute
+// keys lowercase A-Z only, the first of a repeated key wins, NUL reads as U+FFFD, and each attribute keeps its offsets and its
+// raw text, so an edit never guesses. Text is not returned, nor a comment, except a <!-- comment with its data, so a comment
+// pack itself wrote can be found as the token the CLI reads, never as text.
+const WS = (c) => c === ' ' || c === '\n' || c === '\r' || c === '\t' || c === '\f';
+const ALPHA = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+const lower = (s) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) | 32)).replace(/\0/g, '\uFFFD');
+const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext']);
+// An attribute value as the CLI's TagAttr returns it: CR and CRLF become LF, NUL becomes U+FFFD, then each character reference is
+// consumed as its unescapeEntity consumes one in an attribute. A numeric reference decodes exactly, with the Windows-1252 and
+// replacement-character rules. Of the named ones, pack decodes the five the HTML spec has always had, in the forms the CLI's
+// table holds them, and leaves a reference before "=" literal as the CLI does. Any other &name or &name; comes back in `bad`:
+// pack carries no copy of the CLI's 2,231-entry table, so it cannot know whether the CLI decodes it, and a media src that holds
+// one is refused rather than checked under the wrong name.
+const WIN1252 = [0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178];
+const NAMED = { 'amp;': '&', 'AMP;': '&', amp: '&', AMP: '&', 'lt;': '<', 'LT;': '<', lt: '<', LT: '<', 'gt;': '>', 'GT;': '>', gt: '>', GT: '>', 'quot;': '"', 'QUOT;': '"', quot: '"', QUOT: '"', 'apos;': "'" };
+function decodeAttr(raw) {
+  const s = raw.replace(/\r\n?/g, '\n').replace(/\0/g, '\uFFFD'); const bad = []; let out = '', i = 0;
+  while (i < s.length) {
+    const amp = s.indexOf('&', i); if (amp < 0) { out += s.slice(i); break; }
+    out += s.slice(i, amp); i = amp + 1; let j = i;
+    if (s[i] === '#') {
+      j++; const hex = s[j] === 'x' || s[j] === 'X'; if (hex) j++;
+      let x = 0, digits = 0;
+      for (; j < s.length; j++, digits++) { const c = s.charCodeAt(j); let d; if (c >= 48 && c <= 57) d = c - 48; else if (hex && c >= 97 && c <= 102) d = c - 87; else if (hex && c >= 65 && c <= 70) d = c - 55; else break; if (x <= 0x10ffff) x = x * (hex ? 16 : 10) + d; }
+      if (!digits) { out += '&'; continue; }
+      if (s[j] === ';') j++;
+      if (x >= 0x80 && x <= 0x9f) x = WIN1252[x - 0x80]; else if (x === 0 || (x >= 0xd800 && x <= 0xdfff) || x > 0x10ffff) x = 0xfffd;
+      out += String.fromCodePoint(x); i = j; continue;
+    }
+    if (!ALPHA(s[i])) { out += '&'; continue; }   // no entity name starts otherwise, so the CLI reads a lone &
+    while (j < s.length && (ALPHA(s[j]) || (s[j] >= '0' && s[j] <= '9'))) j++;
+    if (s[j] === ';') j++; const name = s.slice(i, j);
+    if (!name.endsWith(';') && s[j] === '=') { out += '&'; continue; }
+    if (NAMED[name] !== undefined) { out += NAMED[name]; i = j; continue; }
+    bad.push('&' + name); out += '&';
+  }
+  return { value: out, bad };
+}
+function tokenize(src) {
+  const n = src.length, out = []; let i = 0;
+  // readRawEndTag: right after "</" at `from`, does `tag` follow, then whitespace, "/" or ">"? If so the end tag starts at `hit`,
+  // else scanning goes on at `next`, which is the end of the file when the file ends first.
+  const rawEnd = (from, tag) => { let k = from; for (let j = 0; j < tag.length; j++, k++) { if (k >= n) return { next: n }; const c = src[k]; if (c !== tag[j] && c !== tag[j].toUpperCase()) return { next: k }; } if (k >= n) return { next: n }; const c = src[k]; return WS(c) || c === '/' || c === '>' ? { hit: from - 2 } : { next: k }; };
+  const rawText = (from, tag) => { let p = from; for (;;) { const lt = src.indexOf('<', p); if (lt < 0 || lt + 1 >= n) return n; if (src[lt + 1] !== '/') { p = lt + 1; continue; } const r = rawEnd(lt + 2, tag); if (r.hit !== undefined) return r.hit; p = r.next; if (p >= n) return n; } };
+  const script = (from) => {   // readScript: 0 data, 1 escaped, 2 escaped dash, 3 escaped dash dash, 4 double escaped, 5 its dash, 6 its dash dash
+    let p = from, st = 0;
+    const end = (fallback) => { const r = rawEnd(p, 'script'); if (r.hit !== undefined) return r.hit; p = r.next; st = fallback; return -1; };
+    while (p < n) {
+      const c = src[p++];
+      if (st === 0) {
+        if (c !== '<' || p >= n) continue;
+        const d = src[p++];
+        if (d === '/') { const e = end(0); if (e >= 0) return e; }
+        else if (d === '!') { if (src[p] === '-' && src[p + 1] === '-') { p += 2; st = 3; } }
+        else p--;
+      } else if (st <= 3) {
+        if (c === '-') st = st === 1 ? 2 : 3;
+        else if (c === '>' && st === 3) st = 0;
+        else if (c === '<') {
+          if (p >= n) return n;
+          const d = src[p++];
+          if (d === '/') { const e = end(1); if (e >= 0) return e; }
+          else if (ALPHA(d)) {
+            p--; let same = true;
+            for (let j = 0; j < 6; j++, p++) { if (p >= n) return n; const e = src[p]; if (e !== 'script'[j] && e !== 'SCRIPT'[j]) { same = false; break; } }
+            if (!same) { st = 1; continue; }
+            if (p >= n) return n; const e = src[p]; if (WS(e) || e === '/' || e === '>') { p++; st = 4; } else st = 1;
+          }
+          else { p--; st = 0; }
+        } else st = 1;
+      } else {
+        if (c === '-') st = st === 4 ? 5 : 6;
+        else if (c === '>' && st === 6) st = 0;
+        else if (c === '<') {
+          if (p >= n) return n;
+          const d = src[p++];
+          if (d === '/') { const r = rawEnd(p, 'script'); if (r.hit !== undefined) { p = r.hit + 9; st = 1; } else { p = r.next; st = 4; } }
+          else { p--; st = 4; }
+        } else st = 4;
+      }
+    }
+    return n;
+  };
+  const comment = (from) => {   // readComment, right after "<!--"
+    let p = from, dash = 0, beginning = true;
+    const abrupt = () => { const raw = src.slice(from); const cut = raw.endsWith('--!') ? 3 : raw.endsWith('--') ? 2 : raw.endsWith('-') ? 1 : 0; return { end: n, data: raw.slice(0, raw.length - cut) }; };
+    for (;;) {
+      if (p >= n) return abrupt();
+      const c = src[p++];
+      if (c === '-') { dash++; continue; }
+      if (c === '>' && (dash >= 2 || beginning)) return { end: p, data: src.slice(from, Math.max(from, p - 3)) };
+      if (c === '!' && dash >= 2) {
+        if (p >= n) return abrupt();
+        const d = src[p++];
+        if (d === '>') return { end: p, data: src.slice(from, Math.max(from, p - 4)) };
+        if (d === '-') { dash = 1; beginning = false; continue; }
+      }
+      dash = 0; beginning = false;
+    }
+  };
+  const readTag = (ns, save) => {   // readTag, with the letter at `ns` right after "<" or "</"; null when the file ends inside the tag
+    let k = ns + 1, ne;
+    for (;;) { if (k >= n) return null; const c = src[k]; if (WS(c)) { ne = k++; break; } if (c === '/' || c === '>') { ne = k; break; } k++; }
+    const t = { type: 'tag', name: lower(src.slice(ns, ne)), attrs: [] }; const seen = new Set();
+    while (k < n && WS(src[k])) k++;
+    for (;;) {
+      if (k >= n) return null;
+      if (src[k] === '>') { t.end = k + 1; return t; }
+      const a = { from: k, q: '' };
+      for (;;) { if (k >= n) return null; const c = src[k]; if (c === '=' && k > a.from) break; if (c !== '=' && (WS(c) || c === '/' || c === '>')) break; k++; }
+      const ke = k; a.name = lower(src.slice(a.from, ke)); a.vs = a.ve = a.to = ke;
+      while (k < n && WS(src[k])) k++; if (k >= n) return null;
+      const c = src[k++];
+      if (c === '/') { /* the value stays empty and the solidus is consumed */ }
+      else if (c !== '=') k--;
+      else {
+        while (k < n && WS(src[k])) k++; if (k >= n) return null;
+        const q = src[k++];
+        if (q === '>') { k--; a.vs = a.ve = a.to = k; }
+        else if (q === '"' || q === "'") { a.q = q; a.vs = k; for (;;) { if (k >= n) return null; if (src[k++] === q) break; } a.ve = k - 1; a.to = k; }
+        else { a.vs = k - 1; for (;;) { if (k >= n) return null; const d = src[k]; if (WS(d)) { a.ve = a.to = k++; break; } if (d === '>') { a.ve = a.to = k; break; } k++; } }
+      }
+      a.raw = src.slice(a.vs, a.ve); const dec = decodeAttr(a.raw); a.value = dec.value; a.bad = dec.bad;
+      if (save && ke > a.from && !seen.has(a.name)) { seen.add(a.name); t.attrs.push(a); }
+      while (k < n && WS(src[k])) k++;
+    }
+  };
+  while (i < n) {
+    const lt = src.indexOf('<', i); if (lt < 0 || lt + 1 >= n) break;
+    const c = src[lt + 1];
+    if (ALPHA(c)) {
+      const t = readTag(lt + 1, true); if (!t) break;
+      t.start = lt; out.push(t); i = t.end;
+      if (RAW_TEXT.has(t.name)) {
+        const e = t.name === 'plaintext' ? n : t.name === 'script' ? script(i) : rawText(i, t.name);
+        t.text = src.slice(i, e);
+        if (e >= n) { t.close = n; break; }
+        const et = readTag(e + 2, false); if (!et) { t.close = n; break; }
+        t.close = et.end; i = et.end;
+      }
+    } else if (c === '/') {
+      if (lt + 2 >= n) break;
+      const d = src[lt + 2];
+      if (d === '>') i = lt + 3;
+      else if (ALPHA(d)) { const t = readTag(lt + 2, false); if (!t) break; i = t.end; }
+      else { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
+    } else if (c === '!') {
+      if (lt + 4 > n) break;
+      if (src[lt + 2] === '-' && src[lt + 3] === '-') { const cm = comment(lt + 4); out.push({ type: 'comment', start: lt, end: cm.end, data: cm.data }); i = cm.end; }
+      else { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
+    } else if (c === '?') { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
+    else i = lt + 1;
+  }
+  return out;
+}
+const scanTags = (src) => tokenize(src).filter((t) => t.type === 'tag');
+
 let html = readFileSync(inPath, 'utf8');
 // A packed page can be packed again. Its inlined runtime is pack's own text, not the author's, so the lint never reads it: the
 // tags stay empty here, and the runtime from this folder takes their place below.
@@ -307,41 +472,6 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
 // plans:publish without .html and .htm, and the plans smoke holds the two together. Every check here runs under --lint-only too.
 const MEDIA_EXT = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.webm'];
 const MEDIA_MAX = 64;
-// Tags as the CLI's tokenizer (golang.org/x/net/html) reads them. Comments and the text of raw-text elements hold no tags, so a
-// code sample in <script type="text/plain"> is never scanned, while a <template>'s markup is. Names are lowercased, the first of
-// a repeated attribute wins, and every attribute keeps its offsets, so an edit never guesses.
-const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext']);
-const NAMED = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-const decodeAttr = (s) => s.replace(/&(?:#[xX]([0-9a-fA-F]+);?|#(\d+);?|(amp|lt|gt|quot|apos);)/g, (m, x, d, n) => { if (n) return NAMED[n]; const c = x ? parseInt(x, 16) : +d; return c > 0 && c <= 0x10ffff ? String.fromCodePoint(c) : '�'; });
-function scanTags(src) {
-  const low = src.toLowerCase(), out = []; let i = 0;
-  const closeOf = (name, from) => { for (let k = low.indexOf('</' + name, from); k >= 0; k = low.indexOf('</' + name, k + 2)) if (/[\s/>]/.test(low[k + 2 + name.length] || '>')) return k; return -1; };
-  while ((i = src.indexOf('<', i)) >= 0) {
-    if (src.startsWith('<!--', i)) { const e = src.indexOf('-->', i + 4); i = e < 0 ? src.length : e + 3; continue; }
-    if (/[!?/]/.test(src[i + 1] || '')) { const e = src.indexOf('>', i + 2); i = e < 0 ? src.length : e + 1; continue; }
-    if (!/[a-z]/i.test(src[i + 1] || '')) { i++; continue; }
-    let p = i + 1; while (p < src.length && !/[\s/>]/.test(src[p])) p++;
-    const t = { name: low.slice(i + 1, p), start: i, attrs: [] };
-    for (;;) {
-      while (p < src.length && /[\s/]/.test(src[p])) p++;
-      if (p >= src.length || src[p] === '>') break;
-      const a = { from: p, q: '' }; p++; while (p < src.length && !/[\s/>=]/.test(src[p])) p++;
-      a.name = low.slice(a.from, p); a.vs = a.ve = a.to = p;
-      let k = p; while (k < src.length && /\s/.test(src[k])) k++;
-      if (src[k] === '=') {
-        k++; while (k < src.length && /\s/.test(src[k])) k++;
-        if (src[k] === '"' || src[k] === "'") { a.q = src[k]; const e = src.indexOf(a.q, k + 1); a.vs = k + 1; a.ve = e < 0 ? src.length : e; p = e < 0 ? src.length : e + 1; }
-        else { a.vs = k; p = k; while (p < src.length && !/[\s>]/.test(src[p])) p++; a.ve = p; }
-        a.to = p;
-      }
-      a.value = decodeAttr(src.slice(a.vs, a.ve)); if (!t.attrs.some((b) => b.name === a.name)) t.attrs.push(a);
-    }
-    t.end = Math.min(src.length, p + 1);
-    if (RAW_TEXT.has(t.name)) { const c = t.name === 'plaintext' ? -1 : closeOf(t.name, t.end); t.text = src.slice(t.end, c < 0 ? src.length : c); t.close = c < 0 ? src.length : (src.indexOf('>', c) + 1 || src.length); }
-    out.push(t); i = t.close ?? t.end;
-  }
-  return out;
-}
 const isRemote = (v) => /^[a-z][a-z0-9+.-]*:/i.test(v) || v.startsWith('//');
 // a reference as written → the relative path it names, or why it names none. The CLI's rules: drop the #fragment and the ?query,
 // then percent-decode.
@@ -361,9 +491,11 @@ function pageFile(p) {
   if (!statSync(f).isFile()) return { why: 'is not a file' };
   return { f };
 }
-const media = new Map();   // the real path of each distinct local media file → the reference as first written
-function checkMedia(at, value) {
-  const v = value.trim(); if (!v || v.startsWith('#') || /^data:/i.test(v)) return;   // what the CLI leaves alone
+const MEDIA_TAGS = ['img', 'video', 'audio', 'source'];   // the elements whose src the CLI uploads; doc-shot's moves onto an img below
+const media = new Map();   // the real path of each distinct local media file → the reference as first written, decoded as the CLI reads it
+function checkMedia(at, a) {
+  if (a.bad.length) return err(`${at}: src="${a.raw}" holds ${a.bad.map((b) => `"${b}"`).join(', ')}, a character reference pack does not decode as the plans CLI would, so it cannot check the file the CLI would upload — write the character itself, or a numeric reference such as &#47;`);
+  const value = a.value, v = value.trim(); if (!v || v.startsWith('#') || /^data:/i.test(v)) return;   // what the CLI leaves alone
   const l = localPath(v); if (l.why) return err(`${at}: src="${value}" ${l.why}`);
   const ext = extname(l.p).toLowerCase();
   if (ext === '.html' || ext === '.htm') return err(`${at}: src="${value}" is an HTML file, which no media element renders`);
@@ -390,10 +522,10 @@ const fileName = (v) => basename((v || '').replace(/[?#].*$/s, '').trim());
 const edits = []; let nCss = 0, nJs = 0;   // edits are [start, end, text] on html, none overlapping
 for (const t of scanTags(html)) {
   const at = `line ${lineOf(t.start)} <${t.name}>`; const get = (n) => t.attrs.find((a) => a.name === n); const val = (n) => get(n)?.value;
-  if (['img', 'video', 'audio', 'source'].includes(t.name) && get('src')) checkMedia(at, val('src'));
+  if (MEDIA_TAGS.includes(t.name) && get('src')) checkMedia(at, get('src'));
   if (t.name === 'doc-shot' && get('src')) {   // the screenshot moves onto a literal <img> child, which the CLI sees and the runtime adopts
-    const a = get('src'); checkMedia(at, a.value); let ws = a.from; while (/\s/.test(html[ws - 1])) ws--;
-    edits.push([ws, a.to, ''], [t.end, t.end, `<img src=${a.q}${html.slice(a.vs, a.ve)}${a.q}>`]);
+    const a = get('src'); checkMedia(at, a); let ws = a.from; while (WS(html[ws - 1])) ws--;
+    edits.push([ws, a.to, ''], [t.end, t.end, `<img src=${a.q}${a.raw}${a.q}>`]);
   }
   if (get('srcset')) srcsetUrls(val('srcset')).forEach((u) => onlyData(at, 'srcset', u));
   if (get('poster')) onlyData(at, 'poster', val('poster'));

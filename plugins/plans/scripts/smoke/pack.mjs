@@ -54,6 +54,25 @@ const REFUSALS = [
   { name: 'missing-stylesheet', head: '<link rel="stylesheet" href="gone.css">\n', body: '<p>x</p>', why: /stylesheet "gone\.css" is not in the page's folder/ },
   { name: 'meta-csp', head: '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">\n', body: '<p>x</p>', why: /<meta> Content-Security-Policy/ },
   { name: 'runtime-twice', head: '<link rel="stylesheet" href="../runtime/htmlplan.css">\n', body: '<p>x</p>', why: /htmlplan\.css appears 2 times/ },
+  // pack reads a src as the CLI's tokenizer (golang.org/x/net/html) does, or refuses. &sol; names public/private.png to the CLI; pack
+  // holds no entity table, so it refuses the reference instead of checking the literal file. An unquoted value ends at HTML
+  // whitespace only, so U+00A0 is part of the name the CLI reads.
+  { name: 'entity-unknown', setup: (d) => { mkdirSync(join(d, 'public')); writeFileSync(join(d, 'public/private.png'), 'the file the CLI would upload'); writeFileSync(join(d, 'public&sol;private.png'), 'the file pack once checked') },
+    body: '<img src="public&sol;private.png" alt="">', why: /src="public&sol;private\.png" holds "&sol;"/ },
+  { name: 'unquoted-nbsp', setup: (d) => { writeFileSync(join(d, 'a.png'), 'png'); writeFileSync(join(d, 'a.png b'), 'the file the CLI would read') },
+    body: '<img src=a.png b alt="">', why: /src="a\.png b" — "\.png b" is not a media type/ },
+  // A comment ends at --!> for the CLI. With the runtime linked before it, 65 media tags after it once passed pack unseen.
+  { name: 'comment-bang-close', setup: (d) => { for (let i = 0; i < 65; i++) writeFileSync(join(d, `m${i}.png`), `png ${i}`) },
+    html: () => '<!doctype html>\n<html lang="en">\n<meta charset="utf-8">\n<title>Fixture</title>\n<link rel="stylesheet" href="htmlplan.css">\n<script src="htmlplan.js" defer></script>\n' +
+      `<body>\n<main>\n<h1>Fixture</h1>\n<!-- x --!>\n${Array.from({ length: 65 }, (_, i) => `<img src="m${i}.png" alt="">`).join('\n')}\n</main>\n</body>\n</html>\n`, why: /65 distinct local media files/ },
+  // Markup the CLI's tokenizer steps over, or ends where pack once did not, followed by a media reference the CLI acts on.
+  ...[
+    ['comment-empty', '<!-->'], ['comment-dash', '<!--->'], ['comment-bang', '<!-- x --!>'],
+    ['end-tag-quoted-gt', '</a x="><script>">'],
+    ['script-double-escaped', '<script><!--<script></script><style>--></script>'],
+    ['raw-text-end-tag-attrs', '<style></style x="><script>">'],
+    ['bogus-comment', '<!x>'], ['processing-instruction', '<?x>'], ['end-tag-bogus', '</ x>'],
+  ].map(([name, markup]) => ({ name: `seen-after-${name}`, body: `${markup}<img src="nope.png" alt="">`, why: /<img>: src="nope\.png" is not in the page's folder/ })),
 ]
 
 // The positive fixture: every form of media pack must leave literal, and every control a refusal must not catch.
@@ -66,6 +85,8 @@ const GOOD = page([
   '<video controls poster="data:image/png;base64,iVBORw0KGgo="><source src="sub/clip.mp4" type="video/mp4"></video>',
   '<img src="data:image/png;base64,iVBORw0KGgo=" srcset="data:image/png;base64,iVBORw0KGgo= 2x" alt="data">',
   '<img src="shot.png?v=2#top" alt="query and fragment">',
+  '<img src="shot.png?x=1&copy=2" alt="a reference before = stays literal for the CLI">',
+  '<img src="a&amp;b.png" alt="named"><img src="a&#38;b.png" alt="decimal"><img src="a&#x26;b.png" alt="hex">',
   '<div style="color: red; background: url(data:image/png;base64,iVBORw0KGgo=)">styled</div>',
   '<doc-mock frame="none" w="300"><template><img src="shot.png" alt="in a mock"></template></doc-mock>',
   '<!-- <img src="../commented-out.png"> -->',
@@ -90,7 +111,7 @@ export default async function ({ ROOT, check }) {
 
     // Positive: literal media, one runtime from pack's own folder, the output beside the input.
     const good = fixture('good', GOOD, (d) => {
-      writeFileSync(join(d, 'my shot.png'), 'png'); writeFileSync(join(d, 'sub/clip.mp4'), 'mp4')
+      writeFileSync(join(d, 'my shot.png'), 'png'); writeFileSync(join(d, 'sub/clip.mp4'), 'mp4'); writeFileSync(join(d, 'a&b.png'), 'png')
       symlinkSync('shot.png', join(d, 'inside-link.png'))
       writeFileSync(join(d, 'page.css'), '.p { color: blue }\n')
       // decoys beside the page: pack must take the runtime from its own folder, never these
@@ -106,18 +127,20 @@ export default async function ({ ROOT, check }) {
       o.includes('<doc-shot data-src="keep.png" label="Shot"><img src="shot.png"><doc-pin') && o.includes("<doc-shot><img src='my%20shot.png'></doc-shot>"))
     check('img, video and source keep their literal src',
       ['<img src="shot.png" alt="again">', '<img src="inside-link.png"', '<video controls src="clip.webm">', '<source src="sub/clip.mp4"',
-        '<img src="shot.png?v=2#top"', '<template><img src="shot.png" alt="in a mock">'].every((s) => o.includes(s)))
+        '<img src="shot.png?v=2#top"', '<img src="shot.png?x=1&copy=2"', '<img src="a&amp;b.png"', '<img src="a&#38;b.png"', '<img src="a&#x26;b.png"',
+        '<template><img src="shot.png" alt="in a mock">'].every((s) => o.includes(s)))
     check('nothing is base64-inlined beyond the authored data: URIs', count(o, ';base64,') === count(GOOD, ';base64,') && !o.includes('data:video') && !o.includes('png bytes'))
     check('the runtime CSS and JS are inlined once each', count(o, '<style data-htmlplan>') === 1 && count(o, '<script data-htmlplan>') === 1 && !/<link[^>]*htmlplan|<script[^>]*src=/i.test(o))
     check('the inlined runtime is pack\'s own, not the copy beside the page',
       o.includes(`<style data-htmlplan>\n${css}\n</style>`) && o.includes(`<script data-htmlplan>\n${js}\n</script>`) && !o.includes('DECOY-RUNTIME'))
     check('the page\'s own stylesheet is inlined from its folder', o.includes('<style>/* page.css */\n.p { color: blue }\n\n</style>') && !/rel="stylesheet"/.test(o),
       o.match(/[^\n]{0,80}(page\.css|rel="stylesheet")[^\n]{0,80}/g)?.join(' | '))
-    check('pack reports the four distinct media files it left for the CLI', /4 local media files stay beside the page/.test(r.stdout) && /4 media files beside it/.test(r.stdout), r.stdout.slice(-400))
+    check('pack reports the five distinct media files it left for the CLI', /5 local media files stay beside the page/.test(r.stdout) && /5 media files beside it/.test(r.stdout), r.stdout.slice(-400))
+    check('the three spellings of a&b.png are one file to pack, listed once by the name the CLI reads', /: [^\n]*\ba&b\.png/.test(r.stdout) && !/a&amp;b|a&#38;b|a&#x26;b/.test(r.stdout), r.stdout.match(/[^\n]*a&[^\n]*/g)?.join(' | '))
     check('commented-out and text/plain markup is never scanned', !/commented-out|not-a-tag/.test(r.stdout))
 
     const lintDir = fixture('good-lint', GOOD, (d) => {
-      writeFileSync(join(d, 'my shot.png'), 'png'); writeFileSync(join(d, 'sub/clip.mp4'), 'mp4')
+      writeFileSync(join(d, 'my shot.png'), 'png'); writeFileSync(join(d, 'sub/clip.mp4'), 'mp4'); writeFileSync(join(d, 'a&b.png'), 'png')
       symlinkSync('shot.png', join(d, 'inside-link.png')); writeFileSync(join(d, 'page.css'), '.p { color: blue }\n')
     })
     const before = listing(lintDir); const rl = run(lintDir, '--lint-only', 'page.html')
@@ -130,7 +153,7 @@ export default async function ({ ROOT, check }) {
     // Refusals: exit 1, the folder unchanged (names, sizes, mtimes), an existing output untouched, in both modes.
     const rootDir = join(base, 'a-root'); mkdirSync(rootDir); writeFileSync(join(rootDir, 'only-root.png'), 'only under the root')
     for (const c of REFUSALS) {
-      const d = fixture(c.name, (dd) => page(typeof c.body === 'function' ? c.body(dd) : c.body, c.head), c.setup)
+      const d = fixture(c.name, (dd) => c.html ? c.html(dd) : page(typeof c.body === 'function' ? c.body(dd) : c.body, c.head), c.setup)
       writeFileSync(join(d, 'page.packed.html'), SENTINEL)
       const args = [...(c.root ? ['--root', rootDir] : []), 'page.html']
       for (const mode of [[], ['--lint-only']]) {

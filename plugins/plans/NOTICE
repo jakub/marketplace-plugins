@@ -98,8 +98,11 @@ it, so a later patch's context is the text an earlier one wrote.
     refuses an escape, a missing or root-only file, remote media, a local .html src, a type
     outside plans:publish's table, more than 64 files, local paths in srcset, poster, CSS
     url() or style, leftover external scripts or stylesheets, and a meta CSP, under
-    --lint-only too. The runtime is inlined once from pack's own folder, and the output goes
-    beside the input and never over it.
+    --lint-only too. pack reads tags with a port of the CLI's tokenizer, golang.org/x/net/html
+    at v0.58.0, so it sees every media src the CLI acts on, with the value the CLI decodes:
+    numeric references and the five basic named ones decode exactly, and a src holding any
+    other character reference is refused. The runtime is inlined once from pack's own folder,
+    and the output goes beside the input and never over it.
 0006-pack-cli.patch
     Parses pack's arguments with node:util parseArgs in strict mode: --root (repeatable),
     -o/--out, --lint-only, --quiet, --help, -- and exactly one input. A syntax error exits

@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index ee07c58ad1a4fb2b73fe4197ce868ff69da94af4..1ba8cf6db36f827049205a9981e69b49787fb75d 100644
+index 5c616dbf4004817209070842696e66e2c208410e..7b2f50d8303f12708d583bbf23102d62a9bbcab5 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -149,7 +149,7 @@ export async function assertUnderLimit(userId: string) {
@@ -17,14 +17,14 @@ index ee07c58ad1a4fb2b73fe4197ce868ff69da94af4..1ba8cf6db36f827049205a9981e69b49
  - Lints every block with the same parsers the browser uses, and the shape of the tree.
 -- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
 +- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
- - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. `data:` URIs pass.
+ - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads a `src` as the CLI does: `&amp;` and numeric references decode, and any other `&name;` is refused, so write the character itself. `data:` URIs pass.
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index b5cfb8210cc7449aac8b07106cd9d2eeb6fdd78a..c4e911c3665900902b7f646a54f998fe010f90ef 100644
+index f7788e49b7b7b7bd35c5d553f29b78c67e9b94e0..f44072b1a47a04da0fd48276fcde3cfff99402cb 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
-@@ -85,6 +85,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
+@@ -250,6 +250,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
  const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
  const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) { if (!refused.has(ref + ':' + p)) { refused.add(ref + ':' + p); err(`ref="${ref}" with "${p}" — not a plain git ref and a path inside the repo; not running git`); } return null; }
    for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
@@ -34,7 +34,7 @@ index b5cfb8210cc7449aac8b07106cd9d2eeb6fdd78a..c4e911c3665900902b7f646a54f998fe
  const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
  const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
  
-@@ -134,7 +137,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -299,7 +302,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        let added = 0, missing = 0, extra = '';
        const seen = new Set();
        for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
@@ -43,7 +43,7 @@ index b5cfb8210cc7449aac8b07106cd9d2eeb6fdd78a..c4e911c3665900902b7f646a54f998fe
          if (text == null) { missing++; continue; }
          if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
          const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
-@@ -163,12 +166,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -328,12 +331,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        if (a.src && !hasScript) {
          let text, where;
          let sha = '';

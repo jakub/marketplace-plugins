@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index bdff20b21ddc74d73d006f83a363143c7bd7fb27..f3f316d1fc7938d52ff3776b6c45b4af35060e48 100644
+index 296f3ee14dc9bfeac7e579112aa7524f2aab9d86..a8e2b0f70f58641b53bc363e5f254ae2bd9691a8 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -218,7 +218,7 @@ For a few steps in order, use plain cards: `<div class="cols"><div class="card">
@@ -12,14 +12,14 @@ index bdff20b21ddc74d73d006f83a363143c7bd7fb27..f3f316d1fc7938d52ff3776b6c45b4af
  
  - Lints every block with the same parsers the browser uses, and the shape of the tree.
 @@ -226,5 +226,5 @@ node runtime/pack.mjs plan.html [--root <repo>]… [-o out.html] [--lint-only] [
- - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. `data:` URIs pass.
+ - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads a `src` as the CLI does: `&amp;` and numeric references decode, and any other `&name;` is refused, so write the character itself. `data:` URIs pass.
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 -- `--artifact` also writes `plan.artifact.html`, the page without its own `<html>` and `<body>`, for a host that adds them.
 +- A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
  - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index c392411bed70ffeeb8cec07913dd5667d0aca55e..b5cfb8210cc7449aac8b07106cd9d2eeb6fdd78a 100644
+index 57a7f86f23aef207b06487825df1151a757c2abe..f7788e49b7b7b7bd35c5d553f29b78c67e9b94e0 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,7 +1,7 @@
@@ -82,9 +82,9 @@ index c392411bed70ffeeb8cec07913dd5667d0aca55e..b5cfb8210cc7449aac8b07106cd9d2ee
 -const outPath = resolve(pageDir, opt('-o', opt('--out', inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html'))));
 +const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
  
- let html = readFileSync(inPath, 'utf8');
- const errors = [], warns = [], info = [];
-@@ -409,13 +431,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
+ /* ── tags, as the plans CLI reads them ── */
+ // The plans CLI finds the media it uploads with golang.org/x/net/html's tokenizer, at v0.58.0 as its go.mod pins it, so pack reads
+@@ -541,13 +563,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
    const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let made = false;
    try { writeFileSync(tmp, packed, { flag: 'wx' }); made = true; renameSync(tmp, outPath); }
    catch (e) { if (made) { try { unlinkSync(tmp); } catch {} } console.log(`✗ could not write ${rel(outPath)}: ${e.code || e.message}`); process.exit(1); } }

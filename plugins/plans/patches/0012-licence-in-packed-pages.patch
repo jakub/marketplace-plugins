@@ -1,22 +1,22 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index 1ba8cf6db36f827049205a9981e69b49787fb75d..0c3e33a751745c9169d48e0af09b3860b787176c 100644
+index 7b2f50d8303f12708d583bbf23102d62a9bbcab5..11168565cdc73439a942d8013cbd01e07a5a7f48 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -229,7 +229,7 @@ node runtime/pack.mjs [--root <repo>]… [-o out.html] [--lint-only] [--quiet] [
  
  - Lints every block with the same parsers the browser uses, and the shape of the tree.
  - Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
--- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. `data:` URIs pass.
-+- Inlines the runtime from its own folder, once, with its licence: right after the doctype, a comment that names the upstream work and the local changes and holds the Apache-2.0 text. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. `data:` URIs pass.
+-- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads a `src` as the CLI does: `&amp;` and numeric references decode, and any other `&name;` is refused, so write the character itself. `data:` URIs pass.
++- Inlines the runtime from its own folder, once, with its licence: right after the doctype, a comment that names the upstream work and the local changes and holds the Apache-2.0 text. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads a `src` as the CLI does: `&amp;` and numeric references decode, and any other `&name;` is refused, so write the character itself. `data:` URIs pass.
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
  - A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index c4e911c3665900902b7f646a54f998fe010f90ef..5a5a50f079d39a2de681fa9633a19cc9f03436cc 100644
+index f44072b1a47a04da0fd48276fcde3cfff99402cb..94443d83ea5b2ff625092061d6eb3a227cb46203 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
-@@ -51,6 +51,9 @@ const pageDir = realpathSync(baseDir); const inName = basename(inPath);
- const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
+@@ -216,6 +216,9 @@ function tokenize(src) {
+ const scanTags = (src) => tokenize(src).filter((t) => t.type === 'tag');
  
  let html = readFileSync(inPath, 'utf8');
 +// A packed page can be packed again. Its inlined runtime is pack's own text, not the author's, so the lint never reads it: the
@@ -25,7 +25,7 @@ index c4e911c3665900902b7f646a54f998fe010f90ef..5a5a50f079d39a2de681fa9633a19cc9
  const errors = [], warns = [], info = [];
  const err = (m) => errors.push(m), warn = (m) => warns.push(m);
  const lineOf = (idx) => html.slice(0, idx).split('\n').length;
-@@ -418,6 +421,22 @@ if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's'
+@@ -550,6 +553,22 @@ if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's'
  let packed = html;
  for (const [s, e, text] of edits.sort((x, y) => y[0] - x[0])) packed = packed.slice(0, s) + text + packed.slice(e);
  if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');
