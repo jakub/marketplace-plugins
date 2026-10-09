@@ -111,6 +111,12 @@ it, so a later patch's context is the text an earlier one wrote.
     empty label draws none, and any other value is set as a text node, never as markup, so
     a walkthrough can say "Landed". Zero counts still hide the element. The pure view is
     exported as HtmlPlan.changesView for the smoke.
+0008-quote-links.patch
+    Opens a doc-quote's link in the same frame, with rel="noopener noreferrer" and no
+    target, after writing the state to the URL, so Back returns to it. The viewer's sandbox
+    allows no popup and no top-level navigation, so upstream's target="_blank" was a dead
+    click. Only http and https links render, by the URL parser's reading of the scheme;
+    anything else is plain text. The check is exported as HtmlPlan.safeHref for the smoke.
 -----END PATCHES-----
 
 RE-SYNCING

@@ -1,0 +1,32 @@
+diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
+index 909ec077fa404bdea8cde6250cfb65962d0a9f8c..ddb3b3cb3172bfb9bcad09ecc6bb69af09af211b 100644
+--- a/plugins/plans/skills/doc/runtime/htmlplan.js
++++ b/plugins/plans/skills/doc/runtime/htmlplan.js
+@@ -488,6 +488,15 @@ NW.changesView = function changesView({ new: add, changed, deleted, label = null
+   return { hidden: !total, label: label == null ? 'Proposed' : String(label), total, parts };
+ };
+ 
++/* ───────────────────────── quote links (pure) ───────────────────────── */
++/** A doc-quote's href → the URL to link, or null. Only http and https pass. The URL parser decides the scheme, so case,
++    whitespace and control characters cannot slip another one past it, and a relative or unparsable value has none. */
++NW.safeHref = function safeHref(href) {
++  if (typeof href !== 'string') return null;
++  let u; try { u = new URL(href); } catch { return null; }
++  return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null;
++};
++
+ globalThis.HtmlPlan = NW;
+ if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
+ 
+@@ -1349,7 +1358,10 @@ define('doc-quote', (el) => {
+   const via = el.getAttribute('via') || 'source'; const from = el.getAttribute('from'); const at = el.getAttribute('at'); const href = el.getAttribute('href'); const role = el.getAttribute('role');
+   const body = h('div', { class: 'q-body' }); while (el.firstChild) body.append(el.firstChild);
+   const viaTxt = { prompt: 'prompt', slack: 'slack', github: 'github', pr: 'PR', transcript: role || 'transcript', doc: 'doc', tools: 'tools', email: 'email', meeting: 'meeting' }[via] || via;
+-  el.append(h('div', { class: 'q-head' }, h('span', { class: 'q-via' }, viaTxt), from ? h('span', { class: 'q-from' }, from) : null, el.getAttribute('where') ? h('span', null, el.getAttribute('where')) : null, h('span', { class: 'q-at' }, href ? h('a', { href, target: '_blank', rel: 'noopener' }, at || 'link ↗') : (at || ''))), body);
++  // The link opens in this frame: the viewer's sandbox allows no popup and no top-level navigation. The state is written to the
++  // URL first, so Back returns to it. Any scheme but http and https renders as plain text.
++  const link = href && NW.safeHref(href);
++  el.append(h('div', { class: 'q-head' }, h('span', { class: 'q-via' }, viaTxt), from ? h('span', { class: 'q-from' }, from) : null, el.getAttribute('where') ? h('span', null, el.getAttribute('where')) : null, h('span', { class: 'q-at' }, link ? h('a', { href: link, rel: 'noopener noreferrer', onclick: () => flushState() }, at || 'link ↗') : (at || href || ''))), body);
+   if (via === 'tools') { body.style.cssText = 'font:12.5px var(--plans-mono);color:var(--plans-ink-2);padding:7px 14px'; }
+ });
+ 
