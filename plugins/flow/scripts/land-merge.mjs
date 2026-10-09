@@ -34,7 +34,8 @@
 // '- <headline>' line per commit>"` so GitHub re-checks the head itself. The message is built here
 // from the title and the commit headlines of the last gate read, never from the pull request
 // description, which can hold capability URLs that GitHub would otherwise copy into permanent
-// history. Title and commits are read with the gate but kept out of its snapshot, so editing the
+// history. A URL in the title or a headline, through to the next whitespace, becomes
+// `<link removed>` for the same reason. Title and commits are read with the gate but kept out of its snapshot, so editing the
 // title between the reads does not stop a land; a title or commit list that cannot be read does.
 // It proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
 // code. It prints one JSON line: exit 0 `merged`, exit 1 `refused` with every stop found (nothing
@@ -82,6 +83,9 @@ const nonEmpty = (value) => (typeof value === 'string' && value.trim() !== '' ? 
 const upper = (value) => (typeof value === 'string' ? value.trim().toUpperCase() : '')
 const truncate = (text, limit) => { const s = String(text ?? ''); return s.length <= limit ? s : `${s.slice(0, limit)}...` }
 const oneLine = (text) => String(text).replace(/\s*\n\s*/g, ' ').trim()
+// A URL in the title or a headline could be a capability URL, and a squash message is permanent
+// history, so each one, through to the next whitespace, becomes a fixed placeholder.
+const stripLinks = (text) => String(text).replace(/https?:\/\/\S*/gi, '<link removed>')
 const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
 
 const bucketOf = (entry) => {
@@ -209,7 +213,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
     const headlines = Array.isArray(pull.commits) ? pull.commits.map((c) => nonEmpty(c?.messageHeadline)).filter((h) => h !== null) : []
     if (title === null) unreadable('read-failed', `the title of #${pr} could not be read, so the squash subject cannot be built`)
     if (headlines.length === 0) unreadable('read-failed', `the commit headlines of #${pr} could not be read, so the squash body cannot be built`)
-    const message = title === null ? null : { subject: `${oneLine(title)} (#${pr})`, body: headlines.map((h) => `- ${oneLine(h)}`).join('\n') }
+    const message = title === null ? null : { subject: `${stripLinks(oneLine(title))} (#${pr})`, body: headlines.map((h) => `- ${stripLinks(oneLine(h))}`).join('\n') }
 
     // ---- 5 to 7: state, head, base, arming. From here every stop is collected.
     const state = nonEmpty(pull.state)

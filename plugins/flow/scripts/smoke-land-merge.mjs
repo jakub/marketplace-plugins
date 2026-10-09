@@ -184,6 +184,18 @@ console.log('the executor merges once, pinned to the gated head')
     '--subject', `${TITLE} (#${PR})`, '--body', HEADLINES.map((h) => `- ${h}`).join('\n')]), JSON.stringify(r.st.merges))
   check('no merge argument carries the description\'s capability URL, any URL from the description, or a commit body', r.st.merges[0].every((a) =>
     !String(a).includes(CAPABILITY_URL) && !(PR_BODY.match(/https?:\/\/[^\s)]+/g) ?? []).some((u) => String(a).includes(u)) && !String(a).includes('see ')), JSON.stringify(r.st.merges))
+  check('a URL in the title or in a commit headline is replaced by <link removed> and reaches no merge argument', (() => {
+    const titleUrl = `evidence ${CAPABILITY_URL} done`
+    const headlineUrl = 'http://plans.example.ts.net/p/ZzYy9876543210'
+    const leaky = run(ARGS, { st: freshState({ pr: {
+      title: titleUrl,
+      commits: [{ oid: '1'.repeat(40), messageHeadline: `docs: see ${headlineUrl}, then stop` }, { oid: '2'.repeat(40), messageHeadline: 'fix: plain headline' }],
+    } }) })
+    const args = leaky.st.merges[0] ?? []
+    return merged(leaky) && args.every((a) => !/https?:\/\//.test(String(a)) && !String(a).includes('plans.example.ts.net')) &&
+      args[args.indexOf('--subject') + 1] === `evidence <link removed> done (#${PR})` &&
+      args[args.indexOf('--body') + 1] === '- docs: see <link removed> then stop\n- fix: plain headline'
+  })(), 'a URL in the title or a headline reached the squash message')
   check('the title and commits are not in the gate snapshot: a title edit between the reads still lands, with the newer title', (() => {
     const edited = run(ARGS, { st: freshState({ recheck: { title: 'feat(flow): gate the merge, reworded' } }) })
     return merged(edited) && edited.st.merges[0].includes(`feat(flow): gate the merge, reworded (#${PR})`)
