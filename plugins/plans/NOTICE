@@ -81,6 +81,15 @@ it, so a later patch's context is the text an earlier one wrote.
     variables where they exist, else a 12% color-mix, with the upstream pairs under
     @supports. Text on a solid accent reads --primary-foreground. Mockup content keeps
     its own palette. The token block is shared byte for byte with skills/show/tokens.css.
+0004-fragment-state.patch
+    Moves the reader's state out of localStorage, which throws in the viewer's opaque-origin
+    sandbox, into the URL fragment: #pl1.<base64url(UTF-8 JSON)>, then an optional
+    ~<percent-encoded anchor>, written only by history.replaceState. In-page links scroll
+    and rewrite only the anchor, reset keeps only the anchor, leaving the page flushes a
+    pending save, and a link pasted into an open page reloads it to restore that link's
+    state. A fragment over 32 KiB or JSON over 24 KiB is not written, and a persistent note
+    asks the reader to copy their response. A malformed payload restores nothing. The pure
+    codec is exported as HtmlPlan.fragment for the smoke.
 -----END PATCHES-----
 
 RE-SYNCING

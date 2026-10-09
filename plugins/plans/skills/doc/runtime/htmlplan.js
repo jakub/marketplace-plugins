@@ -420,6 +420,63 @@ NW.diffWords = function diffWords(a, b) {
   return out;
 };
 
+/* ───────────────────────── fragment state (pure) ───────────────────────── */
+/* The reader's state lives in the URL fragment, so a copied link carries it and nothing touches storage: the viewer's
+   sandbox gives the page an opaque origin, where web storage throws. The form is  #pl1.<base64url(UTF-8 JSON)>, then an
+   optional  ~<percent-encoded anchor>, split at the first '~' (base64url has none). A fragment that does not start with
+   pl<digits>. is a plain #id and stays navigation, so an element id of that shape can't be the target of a bare link.
+   The whole fragment, '#' included, is at most LIMITS.fragment UTF-8 bytes, and encode refuses JSON over LIMITS.json
+   bytes; decode needs no JSON bound, since a payload inside the fragment bound decodes to less. decode never throws. A
+   payload that is malformed, of another version, over the bound or of the wrong shape restores nothing and keeps a valid
+   anchor, and its problem is a short phrase that never quotes it. */
+const FRAG_VERSION = 1, FRAG_LIMITS = { fragment: 32768, json: 24576 };
+const FRAG_KEYS = ['answers', 'comments', 'drafts', 'strikes', 'seen'];
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const isStr = (v) => typeof v === 'string';
+const isStrs = (v) => Array.isArray(v) && v.every(isStr);
+const hasOnly = (o, keys) => Object.keys(o).every((k) => keys.includes(k));
+const FRAG_ENTRY = {   // what one entry of each map may hold
+  answers: (v) => v === null || isStr(v) || typeof v === 'boolean' || isStrs(v),
+  comments: (v) => isObj(v) && hasOnly(v, ['label', 'text', 't']) && isStr(v.label) && isStr(v.text) && Number.isFinite(v.t),
+  drafts: isStr,
+  strikes: (v) => isObj(v) && hasOnly(v, ['label', 'reason', 't', 'drops']) && isStr(v.label) && isStr(v.reason) && Number.isFinite(v.t) && (v.drops === undefined || isStrs(v.drops)),
+  seen: (v) => v === 1,
+};
+const utf8 = (s) => new TextEncoder().encode(s);
+const decodeAnchor = (s) => { if (!s) return null; try { return decodeURIComponent(s); } catch { return null; } };
+/** (state, anchor) → { hash, oversize }. hash is '' for no state and no anchor; on oversize ('json' | 'fragment') it is null. */
+function encodeFragment(state, anchor) {
+  const tail = anchor ? encodeURIComponent(anchor) : '';
+  const kept = {}; FRAG_KEYS.forEach((k) => { if (state?.[k] && Object.keys(state[k]).length) kept[k] = state[k]; });
+  if (!Object.keys(kept).length) return { hash: tail && '#' + tail, oversize: null };
+  const json = utf8(JSON.stringify(kept)); if (json.length > FRAG_LIMITS.json) return { hash: null, oversize: 'json' };
+  const hash = `#pl${FRAG_VERSION}.` + btoa(String.fromCharCode(...json)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + (tail && '~' + tail);
+  return utf8(hash).length > FRAG_LIMITS.fragment ? { hash: null, oversize: 'fragment' } : { hash, oversize: null };
+}
+/** location.hash → { state: { answers, comments, drafts, strikes, seen } | null, anchor: string | null, problem: string | null } */
+function decodeFragment(hash) {
+  const raw = isStr(hash) ? hash.replace(/^#/, '') : ''; const m = raw.match(/^pl(\d+)\./);
+  if (!m) return { state: null, anchor: decodeAnchor(raw), problem: null };
+  const cut = raw.indexOf('~'); const anchor = cut < 0 ? null : decodeAnchor(raw.slice(cut + 1));
+  const body = raw.slice(m[0].length, cut < 0 ? undefined : cut); const fail = (problem) => ({ state: null, anchor, problem });
+  if (utf8('#' + raw).length > FRAG_LIMITS.fragment) return fail('too large');
+  if (m[1] !== String(FRAG_VERSION)) return fail('unknown version');
+  if (!/^[A-Za-z0-9_-]*$/.test(body) || body.length % 4 === 1) return fail('not base64url');
+  let bytes, text, v;
+  try { bytes = Uint8Array.from(atob(body.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)); } catch { return fail('not base64url'); }
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return fail('not UTF-8'); }
+  try { v = JSON.parse(text); } catch { return fail('not JSON'); }
+  if (!isObj(v) || !hasOnly(v, FRAG_KEYS)) return fail('wrong shape');
+  const state = {};
+  for (const k of FRAG_KEYS) {   // a __proto__ key is refused, so nothing restored can reach a prototype
+    const map = Object.hasOwn(v, k) ? v[k] : {};
+    if (!isObj(map) || Object.keys(map).some((n) => n === '__proto__' || !FRAG_ENTRY[k](map[n]))) return fail('wrong shape');
+    state[k] = map;
+  }
+  return { state, anchor, problem: null };
+}
+NW.fragment = { VERSION: FRAG_VERSION, LIMITS: FRAG_LIMITS, encode: encodeFragment, decode: decodeFragment };
+
 globalThis.HtmlPlan = NW;
 if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
 
@@ -437,15 +494,57 @@ const capHtml = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
 function toast(msg) { const t = h('div', { class: 'nw-toast' }, msg); document.body.append(t); setTimeout(() => t.remove(), 1600); }
 function errBox(el, errors, what) { if (!errors.length) return; el.prepend(h('div', { class: 'nw-err' }, `${what}: \n` + errors.join('\n'))); console.warn(`[htmlplan] ${what}`, errors); }
 
-/* ── state: answers, comments, drafts — persisted per document ── */
-const KEY = 'nw:' + location.pathname + ':' + document.title;
+/* ── state: answers, comments, drafts — kept in the URL fragment (NW.fragment), read here before any block is built ── */
 const S = { defaults: {}, comments: {}, drafts: {}, strikes: {}, seen: {}, loaded: null };
-try { S.loaded = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch {}
+const fromUrl = NW.fragment.decode(location.hash);
+if (fromUrl.problem) console.warn(`[htmlplan] this link's saved state was not restored (${fromUrl.problem}), so the page starts fresh`);
+S.loaded = fromUrl.state;
 if (S.loaded?.comments) S.comments = S.loaded.comments;
 if (S.loaded?.drafts) S.drafts = S.loaded.drafts;
 if (S.loaded?.strikes) S.strikes = S.loaded.strikes;
 if (S.loaded?.seen) S.seen = S.loaded.seen;
-let saveT; function save() { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify({ answers: readAnswers(), comments: S.comments, drafts: S.drafts, strikes: S.strikes, seen: S.seen })); } catch {} }, 250); refreshChrome(); }
+let urlAnchor = fromUrl.anchor;   // the in-page target the fragment names; links set it, reset keeps it
+let saveT, lastWrite = 0, stale = null, written = location.hash;   // written: the fragment this page last loaded or wrote
+/** A lone change is written at once. A burst, such as typing, is coalesced into one write at most 250 ms after its last
+    change, so the history API is never flooded. A reload requests the URL it started from, so it can miss only a burst's
+    last 250 ms; leaving for another page runs beforeunload, which flushes. */
+function save() { clearTimeout(saveT); const wait = lastWrite + 250 - Date.now(); if (wait > 0) saveT = setTimeout(flushState, wait); else flushState(); refreshChrome(); }
+/** Writes the state into the fragment now, cancelling a pending save. The one place that decides what the URL holds and
+    the only URL writer: save(), in-page links, reset and leaving the page come here, and code that navigates away
+    calls it first. When the state does not fit, or the host refuses the write, the edits stay in memory, the URL keeps the
+    last fragment that fit, and a note stays up until a write succeeds. A fragment that changed under the page is left for
+    followFragment, so a reload never saves the old state over a pasted link. */
+function flushState() {
+  clearTimeout(saveT); if (location.hash !== written) return;
+  const r = NW.fragment.encode(persisted(), urlAnchor); let ok = !r.oversize;
+  if (ok && r.hash !== location.hash) { try { history.replaceState(history.state, '', location.href.split('#')[0] + r.hash); written = location.hash; lastWrite = Date.now(); } catch { ok = false; } }   // absolute, so a <base> can't redirect it
+  if (ok) { stale?.remove(); stale = null; }
+  else if (!stale) { stale = h('div', { class: 'nw-stale', role: 'status' }, h('span', null, 'The link to this page no longer holds your latest edits. Copy your response before you leave.'), h('button', { class: 'nw-btn', onclick: openResponse }, 'Respond')); document.body.append(stale); }
+}
+/** What the fragment carries: each answer that differs from its default, and every comment, draft, strike and seen flag.
+    Machines are left out: they always start at their initial state. */
+function persisted() {
+  const ans = readAnswers(), answers = {};
+  controls().forEach((c) => { const nm = c.name || c.dataset.name; if (!same(ans[nm], S.defaults[nm])) answers[nm] = ans[nm]; });
+  return { answers, comments: S.comments, drafts: S.drafts, strikes: S.strikes, seen: S.seen };
+}
+function goTo(t) { for (let d = t.closest('details'); d; d = d.parentElement?.closest('details')) d.open = true; t.closest('doc-plan')?._reveal?.(t); t.scrollIntoView(); }
+/** An in-page link scrolls here and rewrites only the anchor part: the browser's own jump would replace the fragment and drop the state. */
+function followLink(e) {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const href = e.composedPath().find((n) => n.localName === 'a' && n.hasAttribute?.('href'))?.getAttribute('href'); if (!href?.startsWith('#')) return;
+  e.preventDefault();
+  const raw = href.slice(1), id = decodeAnchor(raw); const t = raw && (document.getElementById(raw) || (id && document.getElementById(id)));
+  if (t) { goTo(t); urlAnchor = t.id; } else if (!raw || raw.toLowerCase() === 'top') { window.scrollTo(0, 0); urlAnchor = null; } else return;
+  flushState();
+}
+/** A fragment the page did not write (the address bar, Back or Forward across entries). A payload belongs to that entry, so
+    the page reloads to restore it; a bare #id moves the anchor, and the state in memory follows it. */
+function followFragment() {
+  const d = NW.fragment.decode(location.hash); if (d.state || d.problem) { location.reload(); return; }
+  written = location.hash; const t = d.anchor && document.getElementById(d.anchor); urlAnchor = t ? d.anchor : null; if (t) goTo(t);
+  flushState();
+}
 
 /* ── section context for labels ── */
 function sectionOf(el) { let n = el; while (n && n !== document.body) { let p = n; while (p) { if (p.matches?.('h2[data-sec]')) return p; let s = p.previousElementSibling; while (s) { if (s.matches('h2[data-sec]')) return s; const inner = s.querySelectorAll?.('h2[data-sec]'); if (inner?.length) return inner[inner.length - 1]; s = s.previousElementSibling; } p = null; } n = n.parentElement; } return null; }
@@ -627,7 +726,7 @@ function openResponse() {
   const state = h('span', { class: 'nw-send-state' });
   const liveOn = false, send = null;
   const copy = h('button', { class: 'nw-btn' + (liveOn ? '' : ' primary'), onclick: async () => { try { await navigator.clipboard.writeText(r.md); toast('Copied — paste it back to Claude'); } catch { const ta = h('textarea'); ta.value = r.md; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Copied'); } } }, 'Copy response');
-  const reset = h('button', { class: 'nw-btn danger', onclick: () => { if (reset.dataset.arm !== '1') { reset.dataset.arm = '1'; reset.textContent = 'Clear everything?'; setTimeout(() => { reset.dataset.arm = ''; reset.textContent = 'Reset'; }, 3000); return; } S.comments = {}; S.drafts = {}; S.strikes = {}; S.seen = {}; writeAnswers(S.defaults); $$('doc-calls').forEach((d) => d._reset?.()); $$('doc-draft, doc-schema').forEach((d) => d._reset?.()); try { localStorage.removeItem(KEY); } catch {} $$('.has-comment').forEach((e) => e.classList.remove('has-comment')); onFormChange(); closeSheet(); toast('Reset'); } }, 'Reset');
+  const reset = h('button', { class: 'nw-btn danger', onclick: () => { if (reset.dataset.arm !== '1') { reset.dataset.arm = '1'; reset.textContent = 'Clear everything?'; setTimeout(() => { reset.dataset.arm = ''; reset.textContent = 'Reset'; }, 3000); return; } S.comments = {}; S.drafts = {}; S.strikes = {}; S.seen = {}; writeAnswers(S.defaults); $$('doc-calls').forEach((d) => d._reset?.()); $$('doc-draft, doc-schema').forEach((d) => d._reset?.()); $$('doc-ask').forEach((a) => clearTimeout(a._seenT)); $$('.has-comment').forEach((e) => e.classList.remove('has-comment')); onFormChange(); flushState(); closeSheet(); toast('Reset'); } }, 'Reset');
   openSheet('Your response', [list, h('p', { class: 'hint' }, liveOn ? 'This goes to Claude when you press Send.' : 'Copy this and paste it to Claude.'), pre], [reset, state, h('span', { class: 'sp' }), copy, send]);
 }
 function refreshChrome() {
@@ -1269,11 +1368,15 @@ function boot() {
   $$('doc-ask').forEach((a, i) => { if (!a.id) a.id = 'ask-n' + (i + 1); });
   $$('a[href^="#"]').forEach((a) => { if (a.closest('.nw-toc') || a.textContent.trim()) return; const t = document.getElementById(a.getAttribute('href').slice(1)); if (!t) { a.textContent = a.getAttribute('href'); return; } const sec = t.matches('h2[data-sec]') ? t : sectionOf(t); const own = t.matches('h2') ? '' : (t.getAttribute('label') || t.getAttribute('caption') || t.querySelector?.(':scope > p')?.textContent || t.textContent || '').trim(); a.textContent = (sec ? `§${sec.dataset.sec}${t === sec ? ' ' + sec.dataset.title : ''}` : '') + (t !== sec && own ? (sec ? ' › ' : '') + words(own, 6) : ''); });
   upgradeAll();
+  document.addEventListener('click', followLink, true);   // after upgradeAll, so each doc-plan's reveal listener runs first
+  window.addEventListener('hashchange', followFragment);
+  window.addEventListener('beforeunload', flushState);   // Chromium drops a replaceState made in pagehide, but keeps one made here
+  window.addEventListener('pagehide', flushState);
   // snapshot defaults BEFORE restoring saved answers
   Object.values(machines).forEach((mc) => mc.reset(true));   // after every block exists, so bindings resolve
-  $$('doc-ask input[data-play]:checked').forEach((inp) => { lastPlay[inp.name || inp.dataset.play] = inp.dataset.play; });   // a pre-checked option must not autoplay on load
   S.defaults = readAnswers();
   if (S.loaded?.answers) writeAnswers(S.loaded.answers);
+  $$('doc-ask input[data-play]:checked').forEach((inp) => { lastPlay[inp.name || inp.dataset.play] = inp.dataset.play; });   // neither a pre-checked nor a restored option autoplays on load
   // block-level comment buttons
   $$('main h2, main h3, main > p, main > section > p, section > p, article > p, main li, doc-note, doc-quote, main > .cols > .card, .tldr').forEach((el, i) => {
     if (el.closest('doc-ask, doc-mock, template, .nw-sheet, doc-quote .q-body, nav') && !el.matches('doc-quote')) return;
@@ -1292,8 +1395,9 @@ function boot() {
     const io = new IntersectionObserver((ents) => ents.forEach((en) => { const a = en.target; clearTimeout(a._seenT); if (en.isIntersecting) a._seenT = setTimeout(() => markSeen(a), 900); }), { threshold: 0.4 });
     $$('doc-ask').forEach((a) => { io.observe(a); a.addEventListener('pointerdown', () => markSeen(a)); });
   }
+  const target = urlAnchor && document.getElementById(urlAnchor);
+  if (target) setTimeout(() => goTo(target), 60); else urlAnchor = null;   // an anchor that names nothing here is not carried into a save
   onFormChange();
-  if (location.hash) setTimeout(() => { const t = document.getElementById(location.hash.slice(1)); t?.closest('doc-plan')?._reveal?.(t); t?.scrollIntoView(); }, 60);
   document.documentElement.dataset.nwReady = '1';
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
