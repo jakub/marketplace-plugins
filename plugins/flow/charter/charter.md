@@ -24,7 +24,7 @@ Sol 6.1 xhigh, review  |  52% |    1.47 |         —
 Astra xhigh, mentor    |  55% |    7.95 |         —
 Fable xhigh, mentor    |  52% |   23.32 |         —
 
-Other variants lose to or tie a cheaper rung, and max effort stays off. Mythos counts as Fable 5.1 and Daybreak as Sol 6.1. The human's taste scores are Opus, Fable and Mythos 10, Astra 9, Sonnet 8 and Daybreak 5, with Haiku and Sol unscored. Classifiers refuse cyber on Sol and Astra, cyber and bio on Opus, Fable and Sonnet, bio on Mythos, and nothing on Daybreak.
+Other variants lose to or tie a cheaper rung, and max effort stays off. Mythos counts as Fable 5.1 and Daybreak as Sol 6.1. The human's taste scores are Opus, Fable and Mythos 10, Astra 9, Sonnet 8 and Sol/Daybreak 5, with Haiku unscored. Daybreak and Mythos do not have cyber-classifiers and can be used for defensive cyber work.
 
 Starting rungs:
 - File location, prescribed tool calls: Haiku low
