@@ -551,7 +551,7 @@ function checkMedia(at, a) {
   const g = pageFile(l.p); if (g.why) return err(`${at}: src="${value}" ${g.why}`);
   if (!media.has(l.p)) media.set(l.p, goTrimSpace(value));
 }
-// srcset, poster and CSS url() are never uploaded, so each may only hold a data: URI (or, in CSS, a #fragment)
+// srcset, poster, CSS url() and the CSS image functions are never uploaded, so each may only hold a data: URI (or, in CSS, a #fragment)
 function onlyData(at, what, value, css = false) {
   const v = value.trim(); if (!v || /^data:/i.test(v) || (css && v.startsWith('#'))) return;
   err(`${at}: ${what} "${v.length > 60 ? v.slice(0, 60) + '…' : v}" — ${isRemote(v) ? 'remote, and the viewer\'s CSP blocks it' : 'the plans CLI uploads only a literal src, so this path would break'}; use ${css ? 'an <img>' : 'src'} for a local file, or a data: URI`);
@@ -566,16 +566,35 @@ const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { wh
 // token, so a fake string hides no name and a comment opened inside a string hides no url(). Blanking keeps every offset, so a
 // url( found in the text with its strings is checked only where it starts outside one.
 const cssPreprocess = (css) => css.replace(/\r\n?|\f/g, '\n').replace(/\0/g, '\uFFFD');
-function cssBlank(css, strings) {   // css with its comments blanked, and its strings too unless `strings` keeps them
-  let out = '', i = 0; const n = css.length;
+function cssLex(css) {   // the css with its comments blanked (kept), with its strings blanked too (code), and each string's [start, end)
+  let kept = '', code = '', i = 0; const n = css.length, strings = [];
   while (i < n) {
     const c = css[i];
-    if (c === '/' && css[i + 1] === '*') { const e = css.indexOf('*/', i + 2); const j = e < 0 ? n : e + 2; out += ' '.repeat(j - i); i = j; continue; }
-    if (c === '"' || c === "'") { let j = i + 1; while (j < n && css[j] !== c && css[j] !== '\n') j += css[j] === '\\' ? 2 : 1; if (j < n && css[j] === c) j++; out += strings ? css.slice(i, j) : ' '.repeat(j - i); i = j; continue; }
-    if (c === '\\') { out += css.slice(i, i + 2); i += 2; continue; }
-    out += c; i++;
+    if (c === '/' && css[i + 1] === '*') { const e = css.indexOf('*/', i + 2); const j = e < 0 ? n : e + 2; const b = ' '.repeat(j - i); kept += b; code += b; i = j; continue; }
+    if (c === '"' || c === "'") { let j = i + 1; while (j < n && css[j] !== c && css[j] !== '\n') j += css[j] === '\\' ? 2 : 1; if (j < n && css[j] === c) j++; strings.push([i, j]); kept += css.slice(i, j); code += ' '.repeat(j - i); i = j; continue; }
+    if (c === '\\') { const e = css.slice(i, i + 2); kept += e; code += e; i += 2; continue; }
+    kept += c; code += c; i++;
   }
-  return out;
+  return { kept, code, strings };
+}
+// CSS loads an image through more than url(). image-set() and -webkit-image-set() take a quoted string, image(), cross-fade() and
+// -webkit-cross-fade() take strings or url()s, src() is url() under another name, and element() and -moz-element() paint an
+// element of the page, which pack cannot check. pack finds each name in the blanked text, with no identifier character before it
+// and its "(" right after it, and reads its arguments to the ")" that closes it, where a "(", "[" or "{" opens a block that its own
+// closer ends and the end of the text closes everything, as CSS does. Every string in those arguments must be a data: URI, but
+// one inside type(), which names a MIME type; a url() in them is checked as every url() is, and names its string first. The
+// innermost function names a string, once. The same escaped-name rule as url()'s stands: an escape in a name is refused above.
+const CSS_IMAGE_FN = /(?<![-\w\u0080-\uffff\\])(-webkit-image-set|image-set|image|-webkit-cross-fade|cross-fade|src|-moz-element|element)\(/gi;
+const CSS_TYPE_FN = /(?<![-\w\u0080-\uffff\\])type\(/gi;
+function cssArgsEnd(code, from) {   // the index of the ")" that closes the function whose "(" ends at from, or the end of the text
+  const closer = { '(': ')', '[': ']', '{': '}' }; const stack = [')'];
+  for (let i = from; i < code.length; i++) {
+    const c = code[i];
+    if (c === '\\') i++;
+    else if (closer[c]) stack.push(closer[c]);
+    else if (c === stack[stack.length - 1]) { stack.pop(); if (!stack.length) return i; }
+  }
+  return code.length;
 }
 const CSS_ESC = /\\(?:[0-9a-fA-F]{1,6}(?:\r\n|[ \t\n\f\r])?|[^\n\r\f0-9a-fA-F])/y, CSS_IDENT = /[-\w\u0080-\uffff]/;
 function cssEscapedName(code) {   // the first function or at-rule name in blanked css that holds an escape, with its "(" or "@", or null
@@ -590,9 +609,22 @@ function cssEscapedName(code) {   // the first function or at-rule name in blank
   return null;
 }
 function checkCss(at, text) {
-  const css = cssPreprocess(text); const kept = cssBlank(css, true), code = cssBlank(css, false);
+  const css = cssPreprocess(text); const { kept, code, strings } = cssLex(css);
   const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
-  for (const m of kept.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) if (code[m.index] !== ' ') onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
+  const named = new Set();   // the start of each string a url() or an image function has named
+  for (const m of kept.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) if (code[m.index] !== ' ') {
+    onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
+    for (const [s] of strings) if (s >= m.index && s < m.index + m[0].length) named.add(s);
+  }
+  const mime = [...code.matchAll(CSS_TYPE_FN)].map((m) => [m.index + m[0].length, cssArgsEnd(code, m.index + m[0].length)]);
+  for (const m of [...code.matchAll(CSS_IMAGE_FN)].reverse()) {
+    const fn = m[1], from = m.index + m[0].length, to = cssArgsEnd(code, from);
+    if (/element/i.test(fn)) { err(`${at}: CSS ${fn}() — it paints an element of the page, which pack cannot check; use an <img> for a local file, or a data: URI`); continue; }
+    for (const [s, e] of strings) {
+      if (s < from || s >= to || named.has(s) || mime.some(([a, b]) => s >= a && s < b)) continue;
+      named.add(s); onlyData(at, `CSS ${fn}()`, css.slice(s + 1, e - (e - s >= 2 && css[e - 1] === css[s] ? 1 : 0)), true);
+    }
+  }
   if (/@import\b/i.test(code)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);
 }
 const RUNTIME = {   // always this folder's runtime, never a copy beside the page

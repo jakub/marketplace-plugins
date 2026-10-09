@@ -82,6 +82,30 @@ const REFUSALS = [
     head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: CSS url\(\) "shot\.png"/ },
   { name: 'css-cr-ends-string-attribute', body: '<div style="content:&quot;bad&#13;;background:url(shot.png)">x</div>', why: /style="": CSS url\(\) "shot\.png"/ },
   { name: 'css-ff-ends-string-attribute', body: '<div style="content:&quot;bad&#12;;background:url(shot.png)">x</div>', why: /style="": CSS url\(\) "shot\.png"/ },
+  // CSS loads an image through more than url(): image-set() and -webkit-image-set() take a quoted string, image(), cross-fade()
+  // and -webkit-cross-fade() take strings or url()s, src() is url() under another name, and element() or -moz-element() paints an
+  // element of the page. The plans CLI uploads none of them, so pack refuses each unless every string or url() in it is a data:
+  // URI, and element() outright, in a <style>, a style="" and the page's own stylesheet, to the matching ")" or the end of the
+  // text, which closes an open function in CSS. A string inside type() names a MIME type and is not a URL.
+  { name: 'css-image-set', head: '<style>.x{background:image-set("shot.png" 1x)}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS image-set\(\) "shot\.png"/ },
+  { name: 'css-image-set-attribute', body: '<div style="background:image-set(&quot;shot.png&quot; 1x)">x</div>', why: /style="": CSS image-set\(\) "shot\.png"/ },
+  { name: 'css-image-set-linked', setup: (d) => writeFileSync(join(d, 'local.css'), ".x{background:image-set('shot.png' 1x)}\n"),
+    head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: CSS image-set\(\) "shot\.png"/ },
+  { name: 'css-webkit-image-set', head: "<style>.x{background:-webkit-image-set('shot.png' 1x, 'shot@2x.png' 2x)}</style>\n", body: '<p class="x">x</p>', why: /CSS -webkit-image-set\(\) "shot\.png"/ },
+  { name: 'css-image-set-upper', head: '<style>.x{background:IMAGE-SET("shot.png" 1x)}</style>\n', body: '<p class="x">x</p>', why: /CSS IMAGE-SET\(\) "shot\.png"/ },
+  { name: 'css-image-set-mixed', head: '<style>.x{background:image-set("data:image/png;base64,iVBORw0KGgo=" 1x, "shot.png" 2x)}</style>\n', body: '<p class="x">x</p>', why: /CSS image-set\(\) "shot\.png"/ },
+  { name: 'css-image-set-unclosed', head: '<style>.x{background:image-set("shot.png" 1x</style>\n', body: '<p class="x">x</p>', why: /CSS image-set\(\) "shot\.png"/ },
+  { name: 'css-image-set-after-block', head: '<style>.x{background:image-set([)] "shot.png" 1x)}</style>\n', body: '<p class="x">x</p>', why: /CSS image-set\(\) "shot\.png"/ },
+  { name: 'css-image-set-nested', head: '<style>.x{background:image-set(image("shot.png") 1x)}</style>\n', body: '<p class="x">x</p>', why: /CSS image\(\) "shot\.png"/ },
+  { name: 'css-image-set-escaped-name', head: '<style>.x{background:imag\\65-set("shot.png" 1x)}</style>\n', body: '<p class="x">x</p>', why: /"imag\\65-set\(" holds a backslash escape/ },
+  { name: 'css-cr-before-image-set', head: '<style>a{content:"bad\r}.x{background:image-set("shot.png" 1x)}</style>\n', body: '<p class="x">x</p>', why: /CSS image-set\(\) "shot\.png"/ },
+  { name: 'css-image-function', head: '<style>.x{background:image("x.png")}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS image\(\) "x\.png"/ },
+  { name: 'css-cross-fade', head: '<style>.x{background:cross-fade(url(a.png), "b.png", 50%)}</style>\n', body: '<p class="x">x</p>', why: /CSS cross-fade\(\) "b\.png"/ },
+  { name: 'css-cross-fade-url', head: '<style>.x{background:cross-fade(url(a.png), url(b.png), 50%)}</style>\n', body: '<p class="x">x</p>', why: /CSS url\(\) "a\.png"/ },
+  { name: 'css-webkit-cross-fade', head: '<style>.x{background:-webkit-cross-fade("a.png", "b.png", 50%)}</style>\n', body: '<p class="x">x</p>', why: /CSS -webkit-cross-fade\(\) "a\.png"/ },
+  { name: 'css-src-function', head: '<style>.x{background:src("shot.png")}</style>\n', body: '<p class="x">x</p>', why: /CSS src\(\) "shot\.png"/ },
+  { name: 'css-element', head: '<style>.x{background:element(#y)}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS element\(\)/ },
+  { name: 'css-moz-element', body: '<div style="background:-moz-element(#y)">x</div>', why: /style="": CSS -moz-element\(\)/ },
   // pack reads a src as the CLI's tokenizer (golang.org/x/net/html) does, or refuses. &sol; names public/private.png to the CLI; pack
   // holds no entity table, so it refuses the reference instead of checking the literal file. An unquoted value ends at HTML
   // whitespace only, so U+00A0 is part of the name the CLI reads.
@@ -187,6 +211,14 @@ export default async function ({ ROOT, check }) {
       '<style>.a::before{content:"b\\\r\nurl(shot.png)"} .b::before{content:"c\\\nurl(shot.png)"} .c::before{content:"d\\\rurl(shot.png)"} .d::before{content:"e\\\furl(shot.png)"}</style>\n'))
     const rc = run(continued, 'page.html')
     check('a url() after an escaped LF, CRLF, CR or FF inside a CSS string is accepted', rc.status === 0, out(rc))
+
+    // The image functions pass when every string and url() in them is a data: URI, with a type() MIME string beside them; the
+    // names inside a string, a comment or a longer identifier are not function calls.
+    const D = 'data:image/png;base64,iVBORw0KGgo='
+    const imageFns = fixture('css-image-functions-data', page(`<div style="background:image-set(&quot;${D}&quot; 1x)">x</div>`,
+      `<style>.a{background:image-set("${D}" 1x, url(${D}) 2x type("image/png"))} .b{background:-webkit-image-set('${D}' 1x)} .c{background:cross-fade(url("${D}"), url(${D}), 50%)} .d{background:src("${D}")} .e{background:image(rtl "${D}", red)} .f::before{content:"image-set('shot.png' 1x) element(#y)"} /* image-set("shot.png") */ .my-image-set{background:my-image(x) x-element(#y)}</style>\n`))
+    const ri = run(imageFns, 'page.html')
+    check('image-set, cross-fade, src and image that hold only data: URIs are accepted, as are the names in a string, a comment or a longer identifier', ri.status === 0, out(ri))
 
     // A named reference in text is not an attribute value, so pack leaves it to the browser.
     const text = fixture('entity-in-text', page('<p>a tab &Tab; a space &nbsp; an ellipsis &hellip; and a copy sign &copy; in text</p>'))
