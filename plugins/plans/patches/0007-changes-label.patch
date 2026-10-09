@@ -12,10 +12,10 @@ index 48e5ac6e04023804b840e892680a0663aff4901b..428df4df13c691b464f0b2be77527839
  
  ```html
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index 2f76750b62de2513778c620e0b2893f5993542a0..db1bca77742d21a0693c9626702996bf84296801 100644
+index 564d9b6c82a48bf96409ef01b76ed78c380dadb2..9035be31b76bdf2fdd17fa13c922abd7fab508f2 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
-@@ -484,6 +484,17 @@ function decodeFragment(hash) {
+@@ -487,6 +487,17 @@ function decodeFragment(hash) {
  }
  NW.fragment = { VERSION: FRAG_VERSION, LIMITS: FRAG_LIMITS, encode: encodeFragment, decode: decodeFragment };
  
@@ -33,7 +33,7 @@ index 2f76750b62de2513778c620e0b2893f5993542a0..db1bca77742d21a0693c9626702996bf
  globalThis.HtmlPlan = NW;
  if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
  
-@@ -1361,9 +1372,9 @@ define('doc-quote', (el) => {
+@@ -1364,9 +1375,9 @@ define('doc-quote', (el) => {
  
  /* ── doc-changes: the size of the proposed change, drawn like a diff stat ── */
  define('doc-changes', (el) => {

@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f62738a1cb 100644
+index ebbc5a53756ddfa033ee369ad1899c3c2908a804..755c6534c1cedea170da08703b5135db9b8b173c 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
 @@ -11,6 +11,7 @@ const HAS_DOM = typeof document !== 'undefined';
@@ -147,7 +147,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
  const LITS = new Set('true false null undefined None True False nil NULL'.split(' '));
  NW.langOf = (l) => { l = String(l || '').toLowerCase(); return LANG_ALIAS[l] || l; };
  NW.highlight = function highlight(code, lang) {
-@@ -437,7 +439,6 @@ const FRAG_KEYS = ['answers', 'comments', 'drafts', 'strikes', 'seen'];
+@@ -440,7 +442,6 @@ const FRAG_KEYS = ['answers', 'comments', 'drafts', 'strikes', 'seen'];
  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
  const isStr = (v) => typeof v === 'string';
  const isStrs = (v) => Array.isArray(v) && v.every(isStr);
@@ -155,7 +155,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
  const hasOnly = (o, keys) => Object.keys(o).every((k) => keys.includes(k));
  const FRAG_ENTRY = {   // what one entry of each map may hold
    answers: (v) => v === null || isStr(v) || typeof v === 'boolean' || isStrs(v),
-@@ -643,8 +644,8 @@ function commentable(el, key, label, { button = true, anchor, extra } = {}) {
+@@ -646,8 +647,8 @@ function commentable(el, key, label, { button = true, anchor, extra } = {}) {
  
  /* ───────────────────────── answers (forms inside doc-ask) ───────────────────────── */
  function controls() { return $$('doc-ask input[name], doc-ask textarea[name], doc-ask select[name], doc-ask ol.rank[data-name]'); }
@@ -166,7 +166,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
  function readAnswers() {
    const out = dict(); Object.values(machines).forEach((mc) => { out[mc.name] = mc.state; });
    controls().forEach((c) => {
-@@ -922,7 +923,7 @@ define('doc-flow', (el) => {
+@@ -925,7 +926,7 @@ define('doc-flow', (el) => {
      if (e.label) { const { tw, th, lines } = e; g.append(svg('rect', { class: 'lbl', x: lx - tw / 2, y: ly - th / 2, width: tw, height: th, rx: 4 })); lines.forEach((ln, i) => g.append(svg('text', { x: lx, y: ly + (i - (lines.length - 1) / 2) * 13 + 0.5 }, ln))); }
      root.append(g);
    });
@@ -175,7 +175,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
    Object.values(lay.boxes).forEach((b) => {
      const n = b.n; const cls = ['node', n.tone && 't-' + n.tone, n.mark, (n.detail.length || templates[n.id] || n.href) && 'has-detail'].filter(Boolean).join(' ');
      const g = svg('g', { class: cls, 'data-node': n.id, tabindex: 0 }); g.append(shapePath(n.shape, b.x, b.y, b.w, b.h));
-@@ -1028,7 +1029,7 @@ define('doc-schema', (el) => {
+@@ -1031,7 +1032,7 @@ define('doc-schema', (el) => {
    // no lang=: the old field-table DSL, kept so earlier artifacts still render
    const m = NW.parseSchema(srcOf(el)); errBox(el, m.errors, 'doc-schema');
    const sid = el.id || $$('doc-schema').indexOf(el);
@@ -184,7 +184,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
    m.entities.forEach((e) => {
      const rows = [];
      e.fields.forEach((f) => {
-@@ -1054,7 +1055,7 @@ define('doc-calls', (el) => {
+@@ -1057,7 +1058,7 @@ define('doc-calls', (el) => {
    const m = NW.parseCalls(srcOf(el)); errBox(el, m.errors, 'doc-calls');
    const cid = el.id || 'calls' + $$('doc-calls').indexOf(el);
    const templates = new Map(); $$(':scope > template[for]', el).forEach((t) => { const n = m.find(t.getAttribute('for')); if (n) templates.set(n, t); });
@@ -193,7 +193,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
    const excerptFor = (n) => n.loc && (excerpts[n.loc] || excerpts[n.file + ':' + n.line] || null);
    const hasCtx = (n) => templates.get(n) || excerptFor(n);
    $$(':scope > script', el).forEach((s) => s.remove()); [...el.childNodes].forEach((n) => { if (n.nodeType === 3) n.remove(); });
-@@ -1069,7 +1070,7 @@ define('doc-calls', (el) => {
+@@ -1072,7 +1073,7 @@ define('doc-calls', (el) => {
    // untouched file is "called into", not touched — that is the whole point of the tree.
    const touches = (n, touchedFiles) => n.file && !struck(n) && (n.mark === '~' || n.mark === '-' || (n.mark === '+' && (n.isNew || touchedFiles.has(n.file))));
    const fileRows = () => { const owned = new Set(); m.walk((n) => { if (n.file && !struck(n) && (n.mark === '~' || n.mark === '-' || (n.mark === '+' && n.isNew))) owned.add(n.file); });
@@ -202,7 +202,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
    const rows = h('div', { class: 'cl-rows' });
    const head = h('div', { class: 'cl-head' });
    const filesBox = el.hasAttribute('files') ? h('div', { class: 'cl-files' }) : null;
-@@ -1146,7 +1147,7 @@ define('doc-machine', (el) => {
+@@ -1149,7 +1150,7 @@ define('doc-machine', (el) => {
    const view = el.hasAttribute('blocks') ? 'blocks' : el.hasAttribute('graph') ? 'graph' : 'clean'; const simple = view === 'blocks'; m.short = view === 'clean';
    const screens = $$(':scope > [data-state]', el);
    // ── svg (built per direction; LR on wide frames, TB on phones) ──
@@ -211,7 +211,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
    const build = (dir) => {
      lay = NW.layoutMachine(m, dir); curDir = dir;
      root = svg('svg', { class: 'nw machine', xmlns: SVGNS, viewBox: `0 0 ${lay.W} ${lay.H}`, width: lay.W, height: lay.H, role: 'img' }); root.append(arrowDefs());
-@@ -1168,7 +1169,7 @@ define('doc-machine', (el) => {
+@@ -1171,7 +1172,7 @@ define('doc-machine', (el) => {
        const key = `machine:${name}:${e.from}-${e.ev}`; if (S.comments[key]) g.classList.add('has-comment'); if (!readOnly) g.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › ${title} › ${e.from} —${e.ev}→ ${e.to}`, anchor: g, onState: (on) => g.classList.toggle('has-comment', on) }));
        return g;
      });
@@ -220,7 +220,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
      m.order.forEach((id) => { const st = m.states[id]; const [x, y] = pos[id]; const g = svg('g', { class: 'st' + (st.final ? ' final' : '') + (st.mark ? ' ' + st.mark : ''), 'data-state': id, tabindex: 0 });
        g.append(svg('rect', { x, y, width: NWID, height: NH, rx: NH / 2 }), svg('text', { x: x + NWID / 2, y: y + NH / 2 }, st.label)); if (st.bind.say) g.append(svg('title', null, st.bind.say)); nodeG.append(g); nodeEls[id] = g;
        const key = `machine:${name}:${id}`; if (S.comments[key]) g.classList.add('has-comment'); g.addEventListener('click', () => { if (id === cur) return; const e = m.events.find((x) => x.from === cur && x.to === id && x.mark !== 'gone'); if (e) api.fire(e.ev); else api.goto(id); }); });
-@@ -1178,7 +1179,7 @@ define('doc-machine', (el) => {
+@@ -1181,7 +1182,7 @@ define('doc-machine', (el) => {
    const head = h('div', { class: 'mc-head' }, h('span', { class: 'mc-kind' }, 'state machine'), h('span', { class: 'mc-title' }, title), h('span', { class: 'mc-meta' }), h('span', { class: 'mc-sp' }));
    const resetBtn = h('button', { class: 'mc-btn', onclick: () => api.reset() }, 'start over'); head.append(resetBtn);
    const say = h('div', { class: 'mc-say' }); const frame = h('div', { class: 'mc-fig' });
@@ -229,7 +229,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
    evRow.append(h('span', { class: 'mc-hint' }, 'struck-out = not legal from here'));
    const logBox = h('div', { class: 'mc-path' }); const now = h('div', { class: 'mc-now' });
    const cap = el.getAttribute('caption') ? h('div', { class: 'fig-cap' }, el.getAttribute('caption')) : null;
-@@ -1297,7 +1298,7 @@ function mountPins(host, layer, keyBase, labelBase, getScale = () => 1, resolveR
+@@ -1300,7 +1301,7 @@ function mountPins(host, layer, keyBase, labelBase, getScale = () => 1, resolveR
  function mockZoomButton(stage, build) { const b = h('button', { class: 'fig-zoom', title: 'View full size', 'aria-label': 'View full size', onclick: (e) => { e.stopPropagation(); openSheet('Mockup', h('div', { style: 'overflow:auto;max-height:72vh' }, build())); } }, '⤢'); stage.append(b); return b; }
  define('doc-mock', (el) => {
    const frame = el.getAttribute('frame') || 'browser';
@@ -238,7 +238,7 @@ index 7c9fd302ebdaafaf6f345ac666a95707386d43a0..7b22bc45a746e53abfdd8745b41499f6
    const Hfix = +(el.getAttribute('h') || el.getAttribute('height') || 0);
    const tpl = el.querySelector(':scope > template:not([data-node])');
    const label = el.getAttribute('label'); const mid = el.id || $$('doc-mock').indexOf(el);
-@@ -1396,7 +1397,7 @@ define('doc-plan', (el) => {
+@@ -1399,7 +1400,7 @@ define('doc-plan', (el) => {
  define('doc-quote', (el) => {
    const via = el.getAttribute('via') || 'source'; const from = el.getAttribute('from'); const at = el.getAttribute('at'); const href = el.getAttribute('href'); const role = el.getAttribute('role');
    const body = h('div', { class: 'q-body' }); while (el.firstChild) body.append(el.firstChild);

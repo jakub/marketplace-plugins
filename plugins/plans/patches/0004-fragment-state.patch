@@ -12,10 +12,10 @@ index 98a78b00c94bf08479cc783bf90283a8cd604657..bef9ad0960026bc7355a6317234162c1
  /* ── TOC ──────────────────────────────────────────── */
  .nw-toc { font-size: 13px; line-height: 1.4; }
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940ebe2231f 100644
+index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..aca6d39f54230403245722621433cd335d5099fe 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
-@@ -420,6 +420,70 @@ NW.diffWords = function diffWords(a, b) {
+@@ -420,6 +420,73 @@ NW.diffWords = function diffWords(a, b) {
    return out;
  };
  
@@ -30,7 +30,10 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940
 +   throws. A payload that is malformed, of another version, over the bound or of the wrong shape restores nothing and keeps
 +   a valid anchor, one that would fit the bound as a bare #id. A bare #id over the bound names no anchor. A problem is a
 +   short phrase that never quotes the fragment. Each map decode returns has no prototype, so a lookup by a key the page or
-+   the payload controls, such as a control named toString, reads only what the payload holds. */
++   the payload controls, such as a control named toString, reads only what the payload holds. A map key named __proto__ is
++   an ordinary entry and survives a reload: JSON.parse makes it an own property, and a map with no prototype has no
++   __proto__ setter, so storing it sets nothing else. The payload root and each comment or strike entry admit only their
++   own field names, so __proto__ is refused there, and no restored value can reach a prototype. */
 +const FRAG_VERSION = 1, FRAG_LIMITS = { fragment: 32768, json: 24576 };
 +const FRAG_KEYS = ['answers', 'comments', 'drafts', 'strikes', 'seen'];
 +const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -74,9 +77,9 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940
 +  try { v = JSON.parse(text); } catch { return fail('not JSON'); }
 +  if (!isObj(v) || !hasOnly(v, FRAG_KEYS)) return fail('wrong shape');
 +  const state = {};
-+  for (const k of FRAG_KEYS) {   // a __proto__ key is refused, so nothing restored can reach a prototype
++  for (const k of FRAG_KEYS) {   // every key is the page's own name, __proto__ included, stored into a map with no prototype
 +    const map = Object.hasOwn(v, k) ? v[k] : {};
-+    if (!isObj(map) || Object.keys(map).some((n) => n === '__proto__' || !FRAG_ENTRY[k](map[n]))) return fail('wrong shape');
++    if (!isObj(map) || Object.keys(map).some((n) => !FRAG_ENTRY[k](map[n]))) return fail('wrong shape');
 +    state[k] = dict(); for (const n of Object.keys(map)) state[k][n] = map[n];
 +  }
 +  return { state, anchor, problem: null };
@@ -86,7 +89,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940
  globalThis.HtmlPlan = NW;
  if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
  
-@@ -437,15 +501,67 @@ const capHtml = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
+@@ -437,15 +504,67 @@ const capHtml = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
  function toast(msg) { const t = h('div', { class: 'nw-toast' }, msg); document.body.append(t); setTimeout(() => t.remove(), 1600); }
  function errBox(el, errors, what) { if (!errors.length) return; el.prepend(h('div', { class: 'nw-err' }, `${what}: \n` + errors.join('\n'))); console.warn(`[htmlplan] ${what}`, errors); }
  
@@ -159,7 +162,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940
  
  /* ── section context for labels ── */
  function sectionOf(el) { let n = el; while (n && n !== document.body) { let p = n; while (p) { if (p.matches?.('h2[data-sec]')) return p; let s = p.previousElementSibling; while (s) { if (s.matches('h2[data-sec]')) return s; const inner = s.querySelectorAll?.('h2[data-sec]'); if (inner?.length) return inner[inner.length - 1]; s = s.previousElementSibling; } p = null; } n = n.parentElement; } return null; }
-@@ -502,7 +618,7 @@ function controls() { return $$('doc-ask input[name], doc-ask textarea[name], do
+@@ -502,7 +621,7 @@ function controls() { return $$('doc-ask input[name], doc-ask textarea[name], do
  const lastPlay = {};   // ask-group → last trace played, so re-checking the same option doesn't replay
  const machines = {};   // name → { get state, fire, play, reset }  — machines publish their state like an ask publishes an answer
  function readAnswers() {
@@ -168,7 +171,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940
    controls().forEach((c) => {
      if (c.matches('ol.rank')) { out[c.dataset.name] = $$(':scope > li', c).map((li) => li.dataset.value || li.textContent.trim()); return; }
      const nm = c.name;
-@@ -515,8 +631,8 @@ function readAnswers() {
+@@ -515,8 +634,8 @@ function readAnswers() {
  function writeAnswers(ans) {
    if (!ans) return;   // machines always start at initial — a restored 'sent' with nothing reachable just looks broken
    controls().forEach((c) => {
@@ -179,7 +182,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940
      if (c.type === 'radio') c.checked = c.value === v;
      else if (c.type === 'checkbox') c.checked = Array.isArray(v) ? v.includes(c.value) : !!v;
      else c.value = v ?? '';
-@@ -627,7 +743,7 @@ function openResponse() {
+@@ -627,7 +746,7 @@ function openResponse() {
    const state = h('span', { class: 'nw-send-state' });
    const liveOn = false, send = null;
    const copy = h('button', { class: 'nw-btn' + (liveOn ? '' : ' primary'), onclick: async () => { try { await navigator.clipboard.writeText(r.md); toast('Copied — paste it back to Claude'); } catch { const ta = h('textarea'); ta.value = r.md; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Copied'); } } }, 'Copy response');
@@ -188,7 +191,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940
    openSheet('Your response', [list, h('p', { class: 'hint' }, liveOn ? 'This goes to Claude when you press Send.' : 'Copy this and paste it to Claude.'), pre], [reset, state, h('span', { class: 'sp' }), copy, send]);
  }
  function refreshChrome() {
-@@ -1269,11 +1385,15 @@ function boot() {
+@@ -1269,11 +1388,15 @@ function boot() {
    $$('doc-ask').forEach((a, i) => { if (!a.id) a.id = 'ask-n' + (i + 1); });
    $$('a[href^="#"]').forEach((a) => { if (a.closest('.nw-toc') || a.textContent.trim()) return; const t = document.getElementById(a.getAttribute('href').slice(1)); if (!t) { a.textContent = a.getAttribute('href'); return; } const sec = t.matches('h2[data-sec]') ? t : sectionOf(t); const own = t.matches('h2') ? '' : (t.getAttribute('label') || t.getAttribute('caption') || t.querySelector?.(':scope > p')?.textContent || t.textContent || '').trim(); a.textContent = (sec ? `§${sec.dataset.sec}${t === sec ? ' ' + sec.dataset.title : ''}` : '') + (t !== sec && own ? (sec ? ' › ' : '') + words(own, 6) : ''); });
    upgradeAll();
@@ -205,7 +208,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..50d7b55c8f08ff1b7e5410561832a940
    // block-level comment buttons
    $$('main h2, main h3, main > p, main > section > p, section > p, article > p, main li, doc-note, doc-quote, main > .cols > .card, .tldr').forEach((el, i) => {
      if (el.closest('doc-ask, doc-mock, template, .nw-sheet, doc-quote .q-body, nav') && !el.matches('doc-quote')) return;
-@@ -1292,8 +1412,9 @@ function boot() {
+@@ -1292,8 +1415,9 @@ function boot() {
      const io = new IntersectionObserver((ents) => ents.forEach((en) => { const a = en.target; clearTimeout(a._seenT); if (en.isIntersecting) a._seenT = setTimeout(() => markSeen(a), 900); }), { threshold: 0.4 });
      $$('doc-ask').forEach((a) => { io.observe(a); a.addEventListener('pointerdown', () => markSeen(a)); });
    }

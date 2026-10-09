@@ -1,8 +1,8 @@
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index db1bca77742d21a0693c9626702996bf84296801..a1ec19542c9d74f15b3d869260bac65b3f19c8c1 100644
+index 9035be31b76bdf2fdd17fa13c922abd7fab508f2..20a8d7890bcf6911fa7d2be07bf03799ae047ec3 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
-@@ -495,6 +495,15 @@ NW.changesView = function changesView({ new: add, changed, deleted, label = null
+@@ -498,6 +498,15 @@ NW.changesView = function changesView({ new: add, changed, deleted, label = null
    return { hidden: !total, label: label == null ? 'Proposed' : String(label), total, parts };
  };
  
@@ -18,7 +18,7 @@ index db1bca77742d21a0693c9626702996bf84296801..a1ec19542c9d74f15b3d869260bac65b
  globalThis.HtmlPlan = NW;
  if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
  
-@@ -1366,7 +1375,10 @@ define('doc-quote', (el) => {
+@@ -1369,7 +1378,10 @@ define('doc-quote', (el) => {
    const via = el.getAttribute('via') || 'source'; const from = el.getAttribute('from'); const at = el.getAttribute('at'); const href = el.getAttribute('href'); const role = el.getAttribute('role');
    const body = h('div', { class: 'q-body' }); while (el.firstChild) body.append(el.firstChild);
    const viaTxt = { prompt: 'prompt', slack: 'slack', github: 'github', pr: 'PR', transcript: role || 'transcript', doc: 'doc', tools: 'tools', email: 'email', meeting: 'meeting' }[via] || via;

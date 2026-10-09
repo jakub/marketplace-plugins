@@ -108,9 +108,8 @@ export default async function ({ ROOT, check }) {
     ['draft as number', `pl1.${json({ drafts: { d: 1 } })}`], ['strike drops of wrong type', `pl1.${json({ strikes: { k: { label: 'l', reason: '', t: 1, drops: [1] } } })}`],
     ['seen as true', `pl1.${json({ seen: { a: true } })}`], ['seen as list', `pl1.${json({ seen: ['a'] })}`],
     ['__proto__ at the root', `pl1.${json('{"__proto__":{"polluted":1}}')}`],
-    ['__proto__ as a map key', `pl1.${json('{"comments":{"__proto__":{"label":"l","text":"t","t":1}}}')}`],
-    ['__proto__ in an entry', `pl1.${json('{"comments":{"k":{"label":"l","text":"t","t":1,"__proto__":{"polluted":1}}}}')}`],
-    ['__proto__ as an answer name', `pl1.${json('{"answers":{"__proto__":"x"}}')}`],
+    ['__proto__ in a comment entry', `pl1.${json('{"comments":{"k":{"label":"l","text":"t","t":1,"__proto__":{"polluted":1}}}}')}`],
+    ['__proto__ in a strike entry', `pl1.${json('{"strikes":{"k":{"label":"l","reason":"","t":1,"__proto__":{"polluted":1}}}}')}`],
   ]
   for (const [name, frag] of MALFORMED) {
     const body = frag.slice(frag.indexOf('.') + 1)
@@ -127,6 +126,26 @@ export default async function ({ ROOT, check }) {
     }
   }
   check('decoding a __proto__ payload pollutes no prototype', ({}).polluted === undefined && Object.prototype.polluted === undefined)
+
+  // A map key is a name the page chooses (a control name, a doc-ask id, a doc-draft id), and __proto__ is one it may choose.
+  // It round-trips as an own entry of a map with no prototype, and nothing reaches Object.prototype on the way.
+  const PROTO = {
+    answers: '"x"', comments: '{"label":"l","text":"t","t":1}', drafts: '"edited"',
+    strikes: '{"label":"l","reason":"r","t":1,"drops":["a.ts"]}', seen: '1',
+  }
+  for (const [k, entry] of Object.entries(PROTO)) {
+    const raw = JSON.parse(`{"${k}":{"__proto__":${entry},"other":${entry}}}`)   // JSON.parse makes __proto__ an own key
+    const enc = F.encode(raw, 'ask-1')
+    const r = enc.hash === null ? null : F.decode(enc.hash)
+    const map = r?.state?.[k]
+    check(`__proto__ as a key of the ${k} map round-trips as an own entry`, !!map && r.problem === null && r.anchor === 'ask-1' && Object.getPrototypeOf(map) === null &&
+      Object.hasOwn(map, '__proto__') && isDeepStrictEqual(Object.keys(map), ['__proto__', 'other']) && JSON.stringify(map.__proto__) === JSON.stringify(JSON.parse(entry)),
+      JSON.stringify({ enc, r }).slice(0, 200))
+    const direct = F.decode(`#pl1.${json(`{"${k}":{"__proto__":${entry}}}`)}`)
+    check(`a payload naming __proto__ as a key of the ${k} map restores it`, direct.problem === null && Object.hasOwn(direct.state?.[k] ?? {}, '__proto__'), JSON.stringify(direct).slice(0, 160))
+  }
+  check('a __proto__ map key leaves Object.prototype unpolluted', ['label', 'text', 't', 'reason', 'drops', 'polluted'].every((n) => !(n in {}) && Object.prototype[n] === undefined) &&
+    Object.getPrototypeOf({}) === Object.prototype)
 
   // A decoded map has no prototype, so a key the page controls (a control named toString, an ask with id constructor) reads
   // only what the payload holds, and the runtime's lookups never see Object.prototype through a restored map.

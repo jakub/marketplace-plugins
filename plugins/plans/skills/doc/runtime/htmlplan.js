@@ -433,7 +433,10 @@ NW.diffWords = function diffWords(a, b) {
    throws. A payload that is malformed, of another version, over the bound or of the wrong shape restores nothing and keeps
    a valid anchor, one that would fit the bound as a bare #id. A bare #id over the bound names no anchor. A problem is a
    short phrase that never quotes the fragment. Each map decode returns has no prototype, so a lookup by a key the page or
-   the payload controls, such as a control named toString, reads only what the payload holds. */
+   the payload controls, such as a control named toString, reads only what the payload holds. A map key named __proto__ is
+   an ordinary entry and survives a reload: JSON.parse makes it an own property, and a map with no prototype has no
+   __proto__ setter, so storing it sets nothing else. The payload root and each comment or strike entry admit only their
+   own field names, so __proto__ is refused there, and no restored value can reach a prototype. */
 const FRAG_VERSION = 1, FRAG_LIMITS = { fragment: 32768, json: 24576 };
 const FRAG_KEYS = ['answers', 'comments', 'drafts', 'strikes', 'seen'];
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -476,9 +479,9 @@ function decodeFragment(hash) {
   try { v = JSON.parse(text); } catch { return fail('not JSON'); }
   if (!isObj(v) || !hasOnly(v, FRAG_KEYS)) return fail('wrong shape');
   const state = {};
-  for (const k of FRAG_KEYS) {   // a __proto__ key is refused, so nothing restored can reach a prototype
+  for (const k of FRAG_KEYS) {   // every key is the page's own name, __proto__ included, stored into a map with no prototype
     const map = Object.hasOwn(v, k) ? v[k] : {};
-    if (!isObj(map) || Object.keys(map).some((n) => n === '__proto__' || !FRAG_ENTRY[k](map[n]))) return fail('wrong shape');
+    if (!isObj(map) || Object.keys(map).some((n) => !FRAG_ENTRY[k](map[n]))) return fail('wrong shape');
     state[k] = dict(); for (const n of Object.keys(map)) state[k][n] = map[n];
   }
   return { state, anchor, problem: null };

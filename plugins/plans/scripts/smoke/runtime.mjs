@@ -126,6 +126,13 @@ export default async function ({ ROOT, check }) {
       write(restored) === 'toString=default x=changed constructor=default __proto__=default', write(restored))
     check('writeAnswers reads own properties only, whatever map it is handed', write({ x: 'changed' }) === 'toString=default x=changed constructor=default __proto__=default', write({ x: 'changed' }))
     check('a restored answer for a control named toString is written', write(NW.fragment.decode('#pl1.' + Buffer.from(JSON.stringify({ answers: { toString: 'mine' } }), 'utf8').toString('base64url')).state.answers) === 'toString=mine x=default constructor=default __proto__=default')
+    // A reload of a page whose control named __proto__ was changed: the persisted answers (a map with no prototype, as
+    // persisted() builds) go through encode into the URL, and decode hands them back to writeAnswers.
+    const answers = Object.create(null); answers.__proto__ = 'mine'
+    const saved = NW.fragment.encode({ answers }, null)
+    const reloaded = saved.hash === null ? null : NW.fragment.decode(saved.hash)
+    check('a changed control named __proto__ survives a reload', reloaded?.problem === null && write(reloaded.state.answers) === 'toString=default x=default constructor=default __proto__=mine' &&
+      Object.getPrototypeOf({}) === Object.prototype, JSON.stringify(reloaded))
   }
 
   // Maps keyed by a name a block's text chooses (patch 0013): a flow node, a sequence actor, a machine state, trace or grid
