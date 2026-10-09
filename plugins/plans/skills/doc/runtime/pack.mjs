@@ -75,9 +75,10 @@ const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe
 // replacement-character rules. Of the named ones, pack decodes the five the HTML spec has always had, in the forms the CLI's
 // table holds them, and leaves a reference before "=" literal as the CLI does. Any other &name or &name; comes back in `bad`:
 // pack carries no copy of the CLI's 2,231-entry table, so it cannot know whether the CLI decodes it, and an attribute value
-// that holds one is refused, on any tag, rather than read under the wrong value.
+// that holds one is refused, on any tag, rather than read under the wrong value. The table has no prototype and is read as
+// own properties, so &constructor is one more name pack does not decode, not Object.prototype.constructor.
 const WIN1252 = [0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178];
-const NAMED = { 'amp;': '&', 'AMP;': '&', amp: '&', AMP: '&', 'lt;': '<', 'LT;': '<', lt: '<', LT: '<', 'gt;': '>', 'GT;': '>', gt: '>', GT: '>', 'quot;': '"', 'QUOT;': '"', quot: '"', QUOT: '"', 'apos;': "'" };
+const NAMED = { __proto__: null, 'amp;': '&', 'AMP;': '&', amp: '&', AMP: '&', 'lt;': '<', 'LT;': '<', lt: '<', LT: '<', 'gt;': '>', 'GT;': '>', gt: '>', GT: '>', 'quot;': '"', 'QUOT;': '"', quot: '"', QUOT: '"', 'apos;': "'" };
 function decodeAttr(raw) {
   const s = raw.replace(/\r\n?/g, '\n').replace(/\0/g, '\uFFFD'); const bad = []; let out = '', i = 0;
   while (i < s.length) {
@@ -96,7 +97,7 @@ function decodeAttr(raw) {
     while (j < s.length && (ALPHA(s[j]) || (s[j] >= '0' && s[j] <= '9'))) j++;
     if (s[j] === ';') j++; const name = s.slice(i, j);
     if (!name.endsWith(';') && s[j] === '=') { out += '&'; continue; }
-    if (NAMED[name] !== undefined) { out += NAMED[name]; i = j; continue; }
+    if (Object.hasOwn(NAMED, name)) { out += NAMED[name]; i = j; continue; }
     bad.push('&' + name); out += '&';
   }
   return { value: out, bad };

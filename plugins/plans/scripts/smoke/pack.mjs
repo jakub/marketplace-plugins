@@ -163,6 +163,15 @@ const REFUSALS = [
   // The same rule holds for every attribute of every tag: &Tab; is whitespace to the CLI and to a browser, so this rel names a
   // stylesheet to both, and pack refuses the reference rather than read the tag under another value.
   { name: 'entity-in-rel', head: '<link rel="&Tab;stylesheet" href="https://example.com/x.css">\n', body: '<p>x</p>', why: /<link>: rel="&Tab;stylesheet" holds "&Tab;"/ },
+  // The entity table is read as own properties. To a plain object &constructor is Object.prototype.constructor, and pack once
+  // decoded it to the function's source and checked a file of that name, while the CLI uploads "&constructor.png". Each src
+  // fixture holds both files with different contents, so the row passes only on the refusal, with and without the ";" that
+  // makes the name one no object inherits. The same names in another attribute are refused by the any-attribute rule.
+  ...['constructor', 'toString', 'valueOf', 'hasOwnProperty'].flatMap((n) => ['', ';'].flatMap((semi) => [
+    { name: `entity-inherited-${n}${semi && '-semicolon'}`, setup: (d) => { writeFileSync(join(d, `&${n}${semi}.png`), 'the file the CLI would upload'); writeFileSync(join(d, `${String(Object.prototype[n])}${semi}.png`), 'the file pack once checked') },
+      body: `<img src="&${n}${semi}.png" alt="">`, why: new RegExp(`<img>: src="&${n}${semi}\\.png" holds "&${n}${semi}"`) },
+    { name: `entity-inherited-${n}${semi && '-semicolon'}-alt`, body: `<img src="shot.png" alt="&${n}${semi}">`, why: new RegExp(`<img>: alt="&${n}${semi}" holds "&${n}${semi}"`) },
+  ])),
   // A comment ends at --!> for the CLI. With the runtime linked before it, 65 media tags after it once passed pack unseen.
   { name: 'comment-bang-close', setup: (d) => { for (let i = 0; i < 65; i++) writeFileSync(join(d, `m${i}.png`), `png ${i}`) },
     html: () => '<!doctype html>\n<html lang="en">\n<meta charset="utf-8">\n<title>Fixture</title>\n<link rel="stylesheet" href="htmlplan.css">\n<script src="htmlplan.js" defer></script>\n' +
@@ -395,6 +404,8 @@ export default async function ({ ROOT, check }) {
       { name: 'symlink-out-and-back-absolute', src: 'link.png', files: ['sub/public.png'], setup: (d) => { symlinkSync(join(d, 'sub'), join(d, 'via')); symlinkSync('via/public.png', join(d, 'link.png')) }, why: /src="link\.png" goes through "link\.png", a symlink/ },
       { name: 'symlink-out-and-back-dotdot', src: 'sub/link.png', files: ['public.png'], setup: (d) => symlinkSync(`../../${basename(d)}/public.png`, join(d, 'sub/link.png')), why: /src="sub\/link\.png" goes through "sub\/link\.png", a symlink/ },
       { name: 'two-paths-one-file', body: '<img src="public.png" alt=""><img src="./public.png" alt=""><img src="sub/../public.png" alt="">', files: ['public.png'], lists: 'public.png' },
+      // An entity name is letters and digits to both tokenizers, so &__proto__ names no reference and the & stays literal.
+      { name: 'entity-proto-literal', body: '<img src="&__proto__.png" alt="&__proto__"><img src="&__proto__;.png" alt="&__proto__;">', files: ['&__proto__.png', '&__proto__;.png'], lists: '&__proto__.png, &__proto__;.png' },
     ]
     for (const c of PATHS) {
       const d = fixture(`path-${c.name}`, page(c.body ?? `<img src="${c.src}" alt="">`), (dd) => {

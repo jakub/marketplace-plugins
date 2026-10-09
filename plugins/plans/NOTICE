@@ -120,7 +120,8 @@ it, so a later patch's context is the text an earlier one wrote.
     at v0.58.0, so it sees every media src the CLI acts on, with the value the CLI decodes:
     numeric references and the five basic named ones decode exactly, and an attribute value
     holding any other character reference, on any tag, is refused, so a reference can neither
-    name another file nor make a tag a stylesheet. A src becomes the path the CLI opens by the CLI's
+    name another file nor make a tag a stylesheet; the entity table has no prototype and is read as
+    own properties, so &constructor is refused like any other name. A src becomes the path the CLI opens by the CLI's
     own three steps, Go's TrimSpace, net/url's Parse on the value cut at "#" and filepath's
     Clean, and pack checks, lists and counts that path: what the CLI refuses to parse, pack
     refuses, and a media path with a symlink in it, which the CLI follows only by rules pack

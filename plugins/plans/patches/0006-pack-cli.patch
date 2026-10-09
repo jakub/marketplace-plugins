@@ -19,7 +19,7 @@ index f90016565330a8255531436dbca55e1d02e7ee53..48e5ac6e04023804b840e892680a0663
 +- A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
  - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 65816ee370b131da30baf19fe3346484b35b3b70..518a2b127af8ac5a2a3370084241d7d780aec595 100644
+index 133c023273e61463c5f6d4eac48142409ee16f42..49b38cce1464c7586bda4ac4c61b1ca378bbd906 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,7 +1,7 @@
@@ -85,7 +85,7 @@ index 65816ee370b131da30baf19fe3346484b35b3b70..518a2b127af8ac5a2a3370084241d7d7
  
  /* ── tags, as the plans CLI reads them ── */
  // Copyright 2010 The Go Authors. All rights reserved.
-@@ -703,13 +725,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
+@@ -704,13 +726,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
      if (fd >= 0) { try { closeSync(fd); } catch {} }
      try { const s = lstatSync(tmp); if (own && s.dev === own.dev && s.ino === own.ino) unlinkSync(tmp); } catch {}
      console.log(`✗ could not write ${rel(outPath)}: ${why}`); process.exit(1); } }

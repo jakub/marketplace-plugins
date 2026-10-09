@@ -21,10 +21,10 @@ index 1a007cabe9d8016eabe91cc5aa808932aad5e552..836d5e51782e8210e3c5b65dd9b677ff
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI or holds a `var()`, `env()` or `attr()`, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 518a2b127af8ac5a2a3370084241d7d780aec595..286e5d2637c09ea701a09c8302767962aff9f48e 100644
+index 49b38cce1464c7586bda4ac4c61b1ca378bbd906..6c500b62a88e540089cd9fa8c683745dce94e02e 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
-@@ -255,6 +255,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
+@@ -256,6 +256,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
  const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
  const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) { if (!refused.has(ref + ':' + p)) { refused.add(ref + ':' + p); err(`ref="${ref}" with "${p}" — not a plain git ref and a path inside the repo; not running git`); } return null; }
    for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
@@ -34,7 +34,7 @@ index 518a2b127af8ac5a2a3370084241d7d780aec595..286e5d2637c09ea701a09c8302767962
  const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
  const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
  
-@@ -304,7 +307,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -305,7 +308,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        let added = 0, missing = 0, extra = '';
        const seen = new Set();
        for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
@@ -43,7 +43,7 @@ index 518a2b127af8ac5a2a3370084241d7d780aec595..286e5d2637c09ea701a09c8302767962
          if (text == null) { missing++; continue; }
          if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
          const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
-@@ -333,12 +336,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -334,12 +337,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        if (a.src && !hasScript) {
          let text, where;
          let sha = '';
