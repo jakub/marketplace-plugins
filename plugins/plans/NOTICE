@@ -135,6 +135,14 @@ it, so a later patch's context is the text an earlier one wrote.
     or doc-schema src and doc-calls rows. Upstream fell back to the working-tree file and
     stamped it with the ref it had failed to read. Blocks with no ref still read the working
     tree, and git's own message is still not echoed.
+0012-licence-in-packed-pages.patch
+    Puts the runtime's licence in every packed page, once, right after the doctype: a
+    comment that names Thariq Shihipar's html-plan, the upstream URL at the pin and the
+    local changes, then the full Apache-2.0 text, which pack reads from the marked section
+    at the end of this file, found from pack's own folder. pack refuses to write when that
+    text is missing or holds "--", which would end the comment early. Packing a packed page
+    again replaces the comment instead of adding a second, and the lint no longer reads the
+    runtime such a page already inlines, which upstream's lint refused.
 -----END PATCHES-----
 
 RE-SYNCING
@@ -175,7 +183,9 @@ the shipped tree, with no upstream checkout and no network.
 ---------------------------------------------------------------------------
 
 The full Apache License 2.0 follows, byte for byte as upstream's LICENSE, between the two
-marker lines, so a tool can read it out of this file.
+marker lines. runtime/pack.mjs reads that section into every page it packs (patch 0012), and
+refuses to write a page when the section is missing or holds "--". Keep both marker lines,
+keep them last in this file, and keep the text between them byte for byte.
 
 -----BEGIN APACHE-2.0-----
 

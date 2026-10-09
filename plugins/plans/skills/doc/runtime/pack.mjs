@@ -51,6 +51,9 @@ const pageDir = realpathSync(baseDir); const inName = basename(inPath);
 const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
 
 let html = readFileSync(inPath, 'utf8');
+// A packed page can be packed again. Its inlined runtime is pack's own text, not the author's, so the lint never reads it: the
+// tags stay empty here, and the runtime from this folder takes their place below.
+html = html.replace(/(<(script|style) data-htmlplan>)[\s\S]*?(<\/\2>)/g, '$1$3');
 const errors = [], warns = [], info = [];
 const err = (m) => errors.push(m), warn = (m) => warns.push(m);
 const lineOf = (idx) => html.slice(0, idx).split('\n').length;
@@ -418,6 +421,22 @@ if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's' 
 let packed = html;
 for (const [s, e, text] of edits.sort((x, y) => y[0] - x[0])) packed = packed.slice(0, s) + text + packed.slice(e);
 if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');
+// The licence travels with the runtime. Right after the doctype, every packed page carries one comment that names the upstream
+// work, its pin and the local changes, then the Apache-2.0 text from the marked section at the end of plugins/plans/NOTICE. pack
+// finds NOTICE from its own folder, never from the working directory. A packed page that is packed again loses its old comment
+// first, so the comment never doubles. A "--" in the text would end the comment early, so pack refuses it, like a missing text.
+{ let apache = null;
+  try { apache = readFileSync(resolve(here, '..', '..', '..', 'NOTICE'), 'utf8').match(/\n-----BEGIN APACHE-2\.0-----\n([\s\S]*)-----END APACHE-2\.0-----\n$/)?.[1] ?? null; } catch {}
+  if (!apache) err('the Apache-2.0 text is missing from plugins/plans/NOTICE — pack writes no page without the runtime\'s licence');
+  else if (apache.includes('--')) err('the Apache-2.0 text in plugins/plans/NOTICE contains "--", which would end its HTML comment early — pack writes no page with a cut licence');
+  else {
+    const note = '<!-- html-plan runtime by Thariq Shihipar, from Anthropic\'s community plugin repository:\n' +
+      'https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan\n' +
+      'Modified for the plans plugin (see plugins/plans/NOTICE): theme tokens, state in the URL fragment, literal media for the plans CLI, strict pack arguments, a plain-text changes label, same-frame http and https quote links, a confirmed copy-out, a reading mode, pinned git refs and this licence comment.\n' +
+      `Licensed under the Apache License, Version 2.0:\n${apache}-->`;
+    packed = packed.replace(/\n?<!-- html-plan runtime by Thariq Shihipar,[\s\S]*?-->/g, '');
+    const dt = packed.match(/^﻿?\s*<!doctype[^>]*>/i);
+    packed = dt ? packed.slice(0, dt[0].length) + '\n' + note + packed.slice(dt[0].length) : note + '\n' + packed; } }
 
 /* ── report ── */
 if (!quiet) {
