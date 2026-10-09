@@ -1,7 +1,7 @@
 <!-- Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE. -->
 # Blocks
 
-Every block's **source text goes in `<script type="text/plain">…</script>` as its first child**. Inside it `<`, `>` and generics are safe. Without it the first stray `<` cuts the block short, and pack reports an error. The one exception is `</script`, which ends the block early and turns the rest of the source into page markup, so pack refuses the page. In inline source, write it as `<\/script`. Or put the code in a file and use `src=`, and pack escapes it the same way. Either way the reader sees `<\/script`, because the runtime shows the source as written.
+Every block's **source text goes in `<script type="text/plain">…</script>` as its first child**. Inside it `<`, `>` and generics are safe. Without it the first stray `<` cuts the block short, and pack reports an error. The one exception is `</script`, which ends the block early and turns the rest of the source into page markup, so pack refuses the page. pack reads the page as the browser does, so the refusal does not depend on what the cut leaves: after its source block a block holds only the children this reference gives it, pins, templates or state screens, each closed before the block's own end tag, and no `<script>` but the source. In inline source, write it as `<\/script`. Or put the code in a file and use `src=`, and pack escapes it the same way. Either way the reader sees `<\/script`, because the runtime shows the source as written.
 
 One convention runs through the line-based blocks: start a line with **`+`** for added or proposed, **`-`** for removed, **`~`** for changed.
 

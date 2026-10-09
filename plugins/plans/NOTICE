@@ -200,6 +200,14 @@ it, so a later patch's context is the text an earlier one wrote.
     The scheduled-send example offers Send now on a scheduled message, but its claim said a
     message is sent only at its time and its machine had no transition from scheduled to
     sending for it. The claim allows Send now, and the machine gains that transition.
+0016-source-block-grammar.patch
+    A source that holds </script could also consume its block's own closing tag, with a
+    <script> it opened, a comment, a raw-text element, a tag or a bogus comment, and pass
+    0014's check. pack now reads the page as the browser does and holds it to the block
+    grammar: every </script closes a <script> that was opened, a block holds no <script> but an
+    inert one, after a block's source block only the grammar's children follow, each closed
+    before the block's own end tag, and a block's end tag closes an open block. blocks.md says
+    so.
 -----END PATCHES-----
 
 RE-SYNCING

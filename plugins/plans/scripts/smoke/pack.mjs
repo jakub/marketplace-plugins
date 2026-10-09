@@ -45,6 +45,33 @@ const REFUSALS = [
     why: /line 11: a <\/script> here closes no open <script>, so a block's source contains "<\/script".*write it as <\\\/script in inline source, or put the code in a file and use src=/ },
   { name: 'source-holds-script-end-in-a-string', body: '<doc-code lang="js" caption="c"><script type="text/plain">\nconst end = \'</script >\';\n</script></doc-code>',
     why: /closes no open <script>/ },
+  // A cut source can consume its block's own closing tag, so no end tag is left closing nothing (patch 0016). pack reads the
+  // page as the browser does: after a block's source block only the block grammar's children may follow, a block holds no
+  // <script> but an inert one, every </script must close a <script> the browser opened, and every block ends with its own end tag.
+  { name: 'source-breakout-balanced', body: '<doc-code lang="js" caption="c"><script type="text/plain">\nconst demo = "</script><script>globalThis.__x = true;//";\n</script></doc-code>',
+    why: /line 10: <script> after the source block of <doc-code> \(line 9\) — after its <script type="text\/plain"> a doc-code holds only <doc-pin> children; markup here means the source contains "<\/script", which ended the block early — write it as <\\\/script in inline source, or put the code in a file and use src=/ },
+  { name: 'source-breakout-hidden-in-style', body: '<doc-code lang="html" caption="c"><script type="text/plain">\n</script><b onclick="alert(1)">x</b><style>\n</script></doc-code>',
+    why: /line 10: <b> after the source block of <doc-code> \(line 9\)/ },
+  { name: 'source-breakout-hidden-in-comment', body: '<doc-code lang="html" caption="c"><script type="text/plain">\n</script><b onclick="alert(1)">x</b><!--\n</script></doc-code>',
+    why: /line 10: <b> after the source block of <doc-code>/ },
+  { name: 'source-breakout-hidden-in-attribute', body: '<doc-code lang="html" caption="c"><script type="text/plain">\n</script><doc-pin title="\n</script></doc-code>',
+    why: /line 11: a <\/script> here is hidden inside a comment, a tag or another element's text, as the browser reads the page, so a block's source contains "<\/script"/ },
+  { name: 'source-breakout-hidden-in-bogus-comment', body: '<doc-code lang="html" caption="c"><script type="text/plain">\n</script><doc-pin line="1">x</doc-pin><!\n</script></doc-code>',
+    why: /line 11: a <\/script> here is hidden inside a comment, a tag or another element's text/ },
+  { name: 'source-breakout-calls-excerpt', body: '<doc-calls caption="c"><script type="text/plain">\n+ f() @ a.txt:1\n</script><template for="f"><b onclick="alert(1)">x</b></template><script type="text/plain" data-excerpt="a.txt:1" data-start="1">\n</script></doc-calls>',
+    why: /line 11: <script> after the source block of <doc-calls> \(line 9\) — after its <script type="text\/plain"> a doc-calls holds only <template for="…"> children/ },
+  { name: 'source-breakout-calls-nested-block', body: '<doc-calls caption="c"><script type="text/plain">\n+ f() @ a.txt:1\n</script><template for="f"><b onclick="alert(1)">x</b><doc-code><script type="text/plain">\n</script></doc-calls>',
+    why: /line 12: <\/doc-calls> ends <doc-calls> \(line 9\) while its <template> \(line 11\) is still open/ },
+  { name: 'source-breakout-premature-close', body: '<doc-code lang="js" caption="c"><script type="text/plain">\n</script></doc-code><script>globalThis.__x = true;//\n</script></doc-code>',
+    why: /line 11: <\/doc-code> closes no open <doc-code>/ },
+  { name: 'source-breakout-script-in-pin', body: '<doc-code lang="js" caption="c"><script type="text/plain">\n</script><doc-pin line="1"><script>globalThis.__x = true;//</doc-pin>\n</script></doc-code>',
+    why: /line 10: a <script> inside <doc-pin> \(line 10\) — a block holds no script but its source, <script type="text\/plain">/ },
+  { name: 'source-breakout-flow', body: '<doc-flow caption="c"><script type="text/plain">\na -> b\n</script><b>x</b></doc-flow>',
+    why: /line 11: <b> after the source block of <doc-flow> \(line 9\) — after its <script type="text\/plain"> a doc-flow holds nothing/ },
+  { name: 'source-breakout-machine', body: '<doc-machine name="m" caption="c"><script type="text/plain">\nmachine m initial a\nstate a final\n</script><div class="x"></div></doc-machine>',
+    why: /line 12: <div> after the source block of <doc-machine> \(line 9\) — after its <script type="text\/plain"> a doc-machine holds only its \[data-state\] screens/ },
+  { name: 'source-block-never-closed', body: '<doc-code lang="js" caption="c"><script type="text/plain">\n</script>',
+    why: /<doc-code> \(line 9\) has no end tag of its own, as the browser reads the page/ },
   { name: 'remote-source', body: '<video><source src="https://example.com/x.mp4" type="video/mp4"></video>', why: /<source>: .*is remote/ },
   { name: 'doc-shot-remote', body: '<doc-shot src="https://example.com/x.png"></doc-shot>', why: /<doc-shot>: .*is remote/ },
   { name: 'html-src', setup: (d) => writeFileSync(join(d, 'other.html'), '<p>x</p>\n'), body: '<img src="other.html" alt="">', why: /is an HTML file/ },
@@ -334,6 +361,19 @@ export default async function ({ ROOT, check }) {
     const rx = run(escaped, 'page.html')
     check('a block source that writes <\\/script packs, and keeps it as written', rx.status === 0 && !/closes no open/.test(rx.stdout + rx.stderr) &&
       readFileSync(join(escaped, 'page.packed.html'), 'utf8').includes('<script src="x.js"><\\/script>'), out(rx))
+
+    // The block grammar's own children after a source block pack: pins, a template that hangs a block with its own source off
+    // a row, state screens with a comment between them, and a page-level script, which is the page's own.
+    const grammar = fixture('source-grammar-children', page([
+      '<doc-code lang="ts" caption="c"><script type="text/plain">\nconst a = 1\n</script><doc-pin line="1" title="t">The <code>a</code>.</doc-pin>\n<!-- a note --></doc-code>',
+      '<doc-schema lang="ts" caption="c"><script type="text/plain">\ntype A = { a: 1 }\n</script><doc-pin line="1" title="t">A.</doc-pin></doc-schema>',
+      '<doc-calls caption="c"><script type="text/plain">\n+ f() @ a.txt:1\n</script><template for="f"><p>x</p><doc-code lang="ts"><script type="text/plain">\nconst b = 2\n</script></doc-code></template></doc-calls>',
+      '<doc-machine name="m" caption="c"><script type="text/plain">\nmachine m initial a\nstate a\nstate b final\na -go-> b\n</script>\n<div data-state="a"><doc-mock frame="none" w="300"><template><div class="ui"><b>A</b></div></template></doc-mock></div>   <!-- the screen while in a -->\n<div data-state="b"><p>B</p></div></doc-machine>',
+      '<doc-flow caption="c"><script type="text/plain">\na -> b\n</script><!-- nothing else --></doc-flow>',
+      '<script>document.documentElement.dataset.fixture = "2"</script>',
+    ].join('\n')))
+    const rg = run(grammar, 'page.html')
+    check('pins, templates, state screens and comments after a source block pack, as does the page\'s own script', rg.status === 0 && !/after the source block|closes no open|hidden inside|no end tag/.test(rg.stdout + rg.stderr), out(rg))
 
     const src = fixture('src-name', page('<p>x</p>')); writeFileSync(join(src, 'doc.src.html'), page('<p>x</p>'))
     const rs = run(src, 'doc.src.html')
