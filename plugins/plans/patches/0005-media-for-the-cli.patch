@@ -60,7 +60,7 @@ index 43ec8f22dad131edee11438048aaf8fe07879320..f98bccb51fc2c137407158234cb6c504
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..57a7f86f23aef207b06487825df1151a757c2abe 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd91548086 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -295,7 +295,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..57a7f86f23aef207b06487825df1151a
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +438,97 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +438,105 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -367,6 +367,9 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..57a7f86f23aef207b06487825df1151a
 +  js: `<script data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.js'), 'utf8').replace(/<\/script/gi, '<\\/script')}\n</script>`,
 +};
 +const fileName = (v) => basename((v || '').replace(/[?#].*$/s, '').trim());
++// every media src a page holds, decoded as the CLI reads it, doc-shot's included: what pack checks, and what its output must hold
++const mediaSrcs = (src) => scanTags(src).flatMap((t) => MEDIA_TAGS.includes(t.name) || t.name === 'doc-shot' ? t.attrs.filter((a) => a.name === 'src').map((a) => a.value) : []).sort();
++const checked = mediaSrcs(html);
 +const edits = []; let nCss = 0, nJs = 0;   // edits are [start, end, text] on html, none overlapping
 +for (const t of scanTags(html)) {
 +  const at = `line ${lineOf(t.start)} <${t.name}>`; const get = (n) => t.attrs.find((a) => a.name === n); const val = (n) => get(n)?.value;
@@ -401,13 +404,18 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..57a7f86f23aef207b06487825df1151a
 +let packed = html;
 +for (const [s, e, text] of edits.sort((x, y) => y[0] - x[0])) packed = packed.slice(0, s) + text + packed.slice(e);
 +if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');
++// The page the CLI reads is the one pack writes, so pack reads its output once more with the same tokenizer and writes it only
++// when the media references in it are the ones it checked, value for value and in number. Each edit above replaces or moves a
++// whole tag and never splices one, and this is the check that none did, whatever the input.
++{ const got = mediaSrcs(packed);
++  if (got.join('\n') !== checked.join('\n')) err(`the packed page holds ${got.length} media reference${got.length === 1 ? '' : 's'} where ${checked.length} ${checked.length === 1 ? 'was' : 'were'} checked — pack writes no page whose media it did not check`); }
  
  /* ── report ── */
 -const rel = (p) => relative(process.cwd(), p) || p;
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +537,10 @@ if (!quiet) {
+@@ -288,7 +545,10 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -419,7 +427,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..57a7f86f23aef207b06487825df1151a
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +550,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +558,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }

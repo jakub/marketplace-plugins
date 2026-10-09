@@ -50,6 +50,21 @@ export default async function ({ ROOT, check }) {
     check('repacking keeps the licence comment once', count(o2, MARK) === 1 && count(o2, 'Licensed under the Apache License, Version 2.0:') === 1)
     check('repacking yields the same page byte for byte', o2 === o)
 
+    // The old comment goes as the comment token the CLI's tokenizer reads, before any check, never as text after them. A planted
+    // look-alike inside a tag name is no comment: it stays, and no <img> is synthesized out of its removal. One inside a script's
+    // text stays too. And when removing a real comment does join text into a tag, that tag is checked like any other.
+    const splice = join(base, 'splice'); mkdirSync(splice); writeFileSync(join(splice, 'private.png'), 'never to be uploaded unchecked')
+    writeFileSync(join(splice, 'page.html'), PAGE.replace('<p>One line.</p>', '<im<!-- html-plan runtime by Thariq Shihipar,-->g src="private.png">\n' +
+      '<script>var s = "<!-- html-plan runtime by Thariq Shihipar, -->"</script>'))
+    const rs = pack(join(runtime, 'pack.mjs'), splice, 'page.html'); const os = rs.status === 0 ? readFileSync(join(splice, 'page.packed.html'), 'utf8') : ''
+    check('a licence look-alike spliced into a tag name does not become an <img> in the packed page', !os.includes('<img src="private.png">') && !/private\.png/.test(rs.stdout), out(rs) + ' | ' + (os.match(/[^\n]*private\.png[^\n]*/g) || []).join(' | '))
+    check('the planted text is left as written, and the licence comment still appears once at the top', rs.status === 0 && os.includes('<im<!-- html-plan runtime by Thariq Shihipar,-->g src="private.png">') && os.startsWith(`<!doctype html>\n${MARK}`) && count(os, 'Licensed under the Apache License, Version 2.0:') === 1, out(rs))
+    check('a look-alike inside a script\'s text is not a comment and stays', os.includes('<script>var s = "<!-- html-plan runtime by Thariq Shihipar, -->"</script>'))
+    const joined = join(base, 'joined'); mkdirSync(joined); writeFileSync(join(joined, 'private.png'), 'checked, so uploaded knowingly')
+    writeFileSync(join(joined, 'page.html'), PAGE.replace('<p>One line.</p>', '<<!-- html-plan runtime by Thariq Shihipar, -->img src="private.png">'))
+    const rj = pack(join(runtime, 'pack.mjs'), joined, 'page.html')
+    check('a tag that a real comment\'s removal joins together is checked and reported as media', rj.status === 0 && /1 local media file stay[^\n]*private\.png/.test(rj.stdout), out(rj))
+
     // A runtime whose NOTICE has no usable section writes nothing.
     const fakes = [
       ['no NOTICE file', null],

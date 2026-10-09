@@ -19,7 +19,7 @@ index 296f3ee14dc9bfeac7e579112aa7524f2aab9d86..a8e2b0f70f58641b53bc363e5f254ae2
 +- A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
  - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 57a7f86f23aef207b06487825df1151a757c2abe..f7788e49b7b7b7bd35c5d553f29b78c67e9b94e0 100644
+index 2748cc8aa64e6f327cc62555f4a97dfd91548086..e7bc69bbedf48dac5dc55f7ca605276c423aea1b 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,7 +1,7 @@
@@ -84,7 +84,7 @@ index 57a7f86f23aef207b06487825df1151a757c2abe..f7788e49b7b7b7bd35c5d553f29b78c6
  
  /* ── tags, as the plans CLI reads them ── */
  // The plans CLI finds the media it uploads with golang.org/x/net/html's tokenizer, at v0.58.0 as its go.mod pins it, so pack reads
-@@ -541,13 +563,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
+@@ -549,13 +571,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
    const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let made = false;
    try { writeFileSync(tmp, packed, { flag: 'wx' }); made = true; renameSync(tmp, outPath); }
    catch (e) { if (made) { try { unlinkSync(tmp); } catch {} } console.log(`✗ could not write ${rel(outPath)}: ${e.code || e.message}`); process.exit(1); } }

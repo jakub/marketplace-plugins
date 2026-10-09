@@ -217,8 +217,12 @@ const scanTags = (src) => tokenize(src).filter((t) => t.type === 'tag');
 
 let html = readFileSync(inPath, 'utf8');
 // A packed page can be packed again. Its inlined runtime is pack's own text, not the author's, so the lint never reads it: the
-// tags stay empty here, and the runtime from this folder takes their place below.
+// tags stay empty here, and the runtime from this folder takes their place below. Its licence comment is pack's text too, and it
+// leaves here, before any check, as the comment token the CLI's tokenizer reads, never as text: a look-alike inside a tag or a
+// script is no comment and stays as written, and what its removal leaves is what every check below reads.
 html = html.replace(/(<(script|style) data-htmlplan>)[\s\S]*?(<\/\2>)/g, '$1$3');
+const LICENCE_MARK = ' html-plan runtime by Thariq Shihipar,';
+for (const c of tokenize(html).filter((t) => t.type === 'comment' && t.data.startsWith(LICENCE_MARK)).reverse()) html = html.slice(0, html[c.start - 1] === '\n' ? c.start - 1 : c.start) + html.slice(c.end);
 const errors = [], warns = [], info = [];
 const err = (m) => errors.push(m), warn = (m) => warns.push(m);
 const lineOf = (idx) => html.slice(0, idx).split('\n').length;
@@ -519,6 +523,9 @@ const RUNTIME = {   // always this folder's runtime, never a copy beside the pag
   js: `<script data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.js'), 'utf8').replace(/<\/script/gi, '<\\/script')}\n</script>`,
 };
 const fileName = (v) => basename((v || '').replace(/[?#].*$/s, '').trim());
+// every media src a page holds, decoded as the CLI reads it, doc-shot's included: what pack checks, and what its output must hold
+const mediaSrcs = (src) => scanTags(src).flatMap((t) => MEDIA_TAGS.includes(t.name) || t.name === 'doc-shot' ? t.attrs.filter((a) => a.name === 'src').map((a) => a.value) : []).sort();
+const checked = mediaSrcs(html);
 const edits = []; let nCss = 0, nJs = 0;   // edits are [start, end, text] on html, none overlapping
 for (const t of scanTags(html)) {
   const at = `line ${lineOf(t.start)} <${t.name}>`; const get = (n) => t.attrs.find((a) => a.name === n); const val = (n) => get(n)?.value;
@@ -555,20 +562,25 @@ for (const [s, e, text] of edits.sort((x, y) => y[0] - x[0])) packed = packed.sl
 if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');
 // The licence travels with the runtime. Right after the doctype, every packed page carries one comment that names the upstream
 // work, its pin and the local changes, then the Apache-2.0 text from the marked section at the end of plugins/plans/NOTICE. pack
-// finds NOTICE from its own folder, never from the working directory. A packed page that is packed again loses its old comment
-// first, so the comment never doubles. A "--" in the text would end the comment early, so pack refuses it, like a missing text.
+// finds NOTICE from its own folder, never from the working directory. A packed page that is packed again lost its old comment
+// before the lint, as a token, so the comment never doubles. A "--" in the text would end the comment early, so pack refuses
+// it, like a missing text.
 { let apache = null;
   try { apache = readFileSync(resolve(here, '..', '..', '..', 'NOTICE'), 'utf8').match(/\n-----BEGIN APACHE-2\.0-----\n([\s\S]*)-----END APACHE-2\.0-----\n$/)?.[1] ?? null; } catch {}
   if (!apache) err('the Apache-2.0 text is missing from plugins/plans/NOTICE — pack writes no page without the runtime\'s licence');
   else if (apache.includes('--')) err('the Apache-2.0 text in plugins/plans/NOTICE contains "--", which would end its HTML comment early — pack writes no page with a cut licence');
   else {
-    const note = '<!-- html-plan runtime by Thariq Shihipar, from Anthropic\'s community plugin repository:\n' +
+    const note = `<!--${LICENCE_MARK} from Anthropic's community plugin repository:\n` +
       'https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan\n' +
       'Modified for the plans plugin (see plugins/plans/NOTICE): theme tokens, state in the URL fragment, literal media for the plans CLI, strict pack arguments, a plain-text changes label, same-frame http and https quote links, a confirmed copy-out, a reading mode, pinned git refs and this licence comment.\n' +
       `Licensed under the Apache License, Version 2.0:\n${apache}-->`;
-    packed = packed.replace(/\n?<!-- html-plan runtime by Thariq Shihipar,[\s\S]*?-->/g, '');
     const dt = packed.match(/^﻿?\s*<!doctype[^>]*>/i);
     packed = dt ? packed.slice(0, dt[0].length) + '\n' + note + packed.slice(dt[0].length) : note + '\n' + packed; } }
+// The page the CLI reads is the one pack writes, so pack reads its output once more with the same tokenizer and writes it only
+// when the media references in it are the ones it checked, value for value and in number. Each edit above replaces or moves a
+// whole tag and never splices one, and this is the check that none did, whatever the input.
+{ const got = mediaSrcs(packed);
+  if (got.join('\n') !== checked.join('\n')) err(`the packed page holds ${got.length} media reference${got.length === 1 ? '' : 's'} where ${checked.length} ${checked.length === 1 ? 'was' : 'were'} checked — pack writes no page whose media it did not check`); }
 
 /* ── report ── */
 if (!quiet) {

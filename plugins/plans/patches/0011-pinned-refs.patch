@@ -21,7 +21,7 @@ index 5c616dbf4004817209070842696e66e2c208410e..7b2f50d8303f12708d583bbf23102d62
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index f7788e49b7b7b7bd35c5d553f29b78c67e9b94e0..f44072b1a47a04da0fd48276fcde3cfff99402cb 100644
+index e7bc69bbedf48dac5dc55f7ca605276c423aea1b..64e7546057a5276c936a69881ec347ef2b485b54 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -250,6 +250,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
