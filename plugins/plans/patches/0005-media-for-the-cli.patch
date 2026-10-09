@@ -1,0 +1,590 @@
+diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
+index e96a76f46a5a5f5500f2cc360acb773637b82bd4..f90016565330a8255531436dbca55e1d02e7ee53 100644
+--- a/plugins/plans/skills/doc/references/blocks.md
++++ b/plugins/plans/skills/doc/references/blocks.md
+@@ -48,7 +48,7 @@ Put it in the `<header>`, after the `h1`. It shows “Proposed · 10 files · +5
+ - The terminal frame is a dark mono surface with helpers: `<b>`, `.dim .g .r .y .b .m .o .inv .box`. Keep it to `w` ≤ 480, about 55 columns.
+ - `data-ref="name"` makes an element a comment target. `<doc-pin ref="name" title="…">` puts a numbered pin on its corner (`anchor="tr|tl|br|bl|r|l|c"`, `offset="dx,dy"`). `at="x%,y%"` places a pin with no element. A pin is a description only: the reader taps the number and reads the title and one sentence. Keep it to what the reader must notice. The reader comments on the mockup, not on a pin. The `title` is the point, in a few words; the body is optional. Give two pins on neighbours different anchors.
+ - **A behaviour whose output is text** (a CLI, a log, a generated file) is a `frame="terminal"` mock, or a `doc-code` of the output.
+-- `doc-shot src="before.png"` is the same for a screenshot. Use screenshots for UI that exists and mocks for UI that does not.
++- `doc-shot src="before.png"` is the same for a screenshot. Use screenshots for UI that exists and mocks for UI that does not. Keep the image in the page's folder: pack moves `src` onto a literal `<img>` child, so the plans CLI uploads the file with the page.
+ 
+ ## `doc-machine` — a lifecycle, with the screen for each state
+ 
+@@ -223,6 +223,8 @@ node runtime/pack.mjs plan.html [--root <repo>]… [-o out.html] [--lint-only] [
+ 
+ - Lints every block with the same parsers the browser uses, and the shape of the tree.
+ - Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
+-- Inlines the runtime and local images. Writes `plan.packed.html`.
++- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, reached through no symlink, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
++- Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI or holds a `var()`, `env()` or `attr()`, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
++- Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
+ - `--artifact` also writes `plan.artifact.html`, the page without its own `<html>` and `<body>`, for a host that adds them.
+ - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.
+diff --git a/plugins/plans/skills/doc/references/plan.md b/plugins/plans/skills/doc/references/plan.md
+index 289df0691e7c84663adc79f7bbc7f2779b1ef9b0..2204be6d27d39e27cfa7a190b3751c983d3e3957 100644
+--- a/plugins/plans/skills/doc/references/plan.md
++++ b/plugins/plans/skills/doc/references/plan.md
+@@ -7,7 +7,7 @@ You write **one HTML file by hand**. It holds a tree of claims. A small runtime
+ ```
+ <this file's directory>/
+   ../runtime/htmlplan.css  htmlplan.js   ← link both from the page; pack inlines them
+-  ../runtime/pack.mjs                    ← lint + inline → one portable file (needs only node)
++  ../runtime/pack.mjs                    ← lint + inline the runtime → one page, media beside it (needs only node)
+   blocks.md                              ← every block, with syntax. Read it before you write.
+   ../examples/scheduled-send.html        ← a full plan. Copy its shape.
+ ```
+@@ -121,7 +121,7 @@ These are not STE and stay as they are: the words of the user in a `doc-quote`,
+ 1. **Read first.** Find the entrypoints, records and screens the change touches. Note exact paths, lines and the user's words.
+ 2. **Write the level-1 claims** and read them aloud. Fix them before anything else.
+ 3. **Add the how and where claims, then the exhibits, then the decisions.** Read `blocks.md` beside this file for syntax. Save the page where the doc skill says.
+-4. **Pack** with the helper path the doc skill gives: `node <doc skill dir>/runtime/pack.mjs plan.html --root <repo>`. It reports errors and warnings by line or claim number. Fix them. It writes `plan.packed.html`, one file that works offline.
++4. **Pack** with the helper path the doc skill gives: `node <doc skill dir>/runtime/pack.mjs plan.html --root <repo>`. It reports errors and warnings by line or claim number. Fix them. It writes `plan.packed.html` beside the page. Media files stay beside it as files, and the plans CLI uploads them with the page.
+ 5. **Look at it** in a browser if you can: closed, with each claim open, and at each decision (the “to answer” button goes to them). Check that mockups are not clipped and arrows do not cross labels.
+ 6. **Hand it over** (next section) with one line: “Four decisions. The defaults are what I would build.”
+ 7. **Act on the response.** Apply changed decisions, schema edits, struck calls and each comment. Refer to claims by number. If the answers change the shape of the plan, update the page and send it again. Then build.
+diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
+index aca6d39f54230403245722621433cd335d5099fe..564d9b6c82a48bf96409ef01b76ed78c380dadb2 100644
+--- a/plugins/plans/skills/doc/runtime/htmlplan.js
++++ b/plugins/plans/skills/doc/runtime/htmlplan.js
+@@ -1290,7 +1290,10 @@ define('doc-mock', (el) => {
+ define('doc-shot', (el) => {
+   const src = el.getAttribute('src'); const label = el.getAttribute('label'); const sid = el.id || $$('doc-shot').indexOf(el);
+   const frame = el.getAttribute('frame');
+-  const img = h('img', { src, alt: label || el.getAttribute('caption') || 'screenshot', style: 'display:block;width:100%;height:auto' });
++  // pack writes the screenshot as a literal <img> child, so the plans CLI uploads it; an unpacked preview builds one from src
++  const img = el.querySelector(':scope > img') || h('img', { src });
++  if (!img.hasAttribute('alt')) img.alt = label || el.getAttribute('caption') || 'screenshot';
++  img.style.cssText = 'display:block;width:100%;height:auto';
+   const inner = frame ? h('div', { class: 'mk-frame ' + frame }, frame === 'browser' ? h('div', { class: 'mk-bar' }, h('i'), h('i'), h('i'), h('span', { class: 'url' }, el.getAttribute('url') || '')) : null, img) : h('div', { style: 'border:1px solid var(--plans-line);border-radius:var(--plans-r);overflow:hidden;background:var(--plans-card)' }, img);
+   const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
+   el.style.display = 'block'; el.style.margin ||= '0 0 20px';
+diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..133c023273e61463c5f6d4eac48142409ee16f42 100644
+--- a/plugins/plans/skills/doc/runtime/pack.mjs
++++ b/plugins/plans/skills/doc/runtime/pack.mjs
+@@ -1,12 +1,13 @@
+ #!/usr/bin/env node
+ // Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE.
+-// pack.mjs — lint an artifact and inline everything into one portable .html
++// pack.mjs — lint an artifact and pack it into one page for the plans CLI
+ //   node pack.mjs page.html [-o out.html] [--root dir] [--lint-only] [--quiet] [--artifact]
+ // Lint runs the same parsers the browser uses (from htmlplan.js), fills <doc-code src>
+-// from disk, inlines htmlplan.css/js and local images, and refuses to write on errors.
+-import { readFileSync, writeFileSync, existsSync, statSync, realpathSync } from 'node:fs';
++// from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
++// beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
++import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
+ import { execFileSync } from 'node:child_process';
+-import { resolve, dirname, extname, basename, relative, sep } from 'node:path';
++import { resolve, dirname, basename, relative, join, sep } from 'node:path';
+ import { fileURLToPath } from 'node:url';
+ import { createRequire } from 'node:module';
+ 
+@@ -22,7 +23,181 @@ const opt = (n, d) => { const i = argv.findIndex((a) => a === n); return i >= 0
+ const lintOnly = argv.includes('--lint-only'); const quiet = argv.includes('--quiet');
+ const inPath = resolve(input); const baseDir = dirname(inPath);
+ const roots = argv.flatMap((a, i) => a === '--root' ? [resolve(argv[i + 1].replace(/^~(?=\/)/, process.env.HOME))] : []); if (!roots.length) roots.push(baseDir); const root = roots[0];
+-const outPath = resolve(opt('-o', opt('--out', inPath.replace(/(\.src)?\.html?$/, '') + (inPath.includes('.src.') ? '.html' : '.packed.html'))));
++// The output goes beside the input, in the same resolved folder, so the plans CLI finds the page's media where pack checked it.
++// A relative -o is relative to that folder.
++const pageDir = realpathSync(baseDir); const inName = basename(inPath);
++const pageDirId = lstatSync(pageDir);   // the folder's identity now, by device and inode, which the write at the end checks it still has
++const outPath = resolve(pageDir, opt('-o', opt('--out', inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html'))));
++
++/* ── tags, as the plans CLI reads them ── */
++// Copyright 2010 The Go Authors. All rights reserved.
++// The tokenizer below is a port from golang.org/x/net/html v0.58.0 (html/token.go, and the attribute decoding of html/escape.go),
++// whose files carry the notice above, under the BSD-3-Clause licence in the module's LICENSE, "Copyright 2009 The Go Authors.",
++// which plugins/plans/NOTICE reproduces in full under GO TOKENIZER PORT.
++// The plans CLI finds the media it uploads with golang.org/x/net/html's tokenizer, at v0.58.0 as its go.mod pins it, so pack reads
++// tags with a port of that tokenizer's Next, readTag, readRawOrRCDATA, readScript, readComment and readMarkupDeclaration, on
++// UTF-16 code units in place of bytes: every delimiter is ASCII, and an ASCII byte is one code unit in the same place. So a
++// comment ends at -->, at --!>, or at a > right after <!-- or <!---; <!x>, <?x>, </ x> and <!doctype x> end at the first >; an
++// end tag reads its attributes, so a quoted > does not end it; the text of script, style, textarea, title, xmp, iframe, noembed,
++// noframes and noscript holds no tag, script with the escape states of the HTML spec (<!-- … <script> … </script> … -->), and
++// plaintext runs to the end of the file; a tag the end of the file cuts is no tag, and nothing follows it. Names and attribute
++// keys lowercase A-Z only, the first of a repeated key wins, NUL reads as U+FFFD, and each attribute keeps its offsets and its
++// raw text, so an edit never guesses. Text is not returned, nor a comment, except a <!-- comment with its data, so a comment
++// pack itself wrote can be found as the token the CLI reads, never as text.
++const WS = (c) => c === ' ' || c === '\n' || c === '\r' || c === '\t' || c === '\f';
++const ALPHA = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
++const lower = (s) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) | 32)).replace(/\0/g, '\uFFFD');
++const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext']);
++// An attribute value as the CLI's TagAttr returns it: CR and CRLF become LF, NUL becomes U+FFFD, then each character reference is
++// consumed as its unescapeEntity consumes one in an attribute. A numeric reference decodes exactly, with the Windows-1252 and
++// replacement-character rules. Of the named ones, pack decodes the five the HTML spec has always had, in the forms the CLI's
++// table holds them, and leaves a reference before "=" literal as the CLI does. Any other &name or &name; comes back in `bad`:
++// pack carries no copy of the CLI's 2,231-entry table, so it cannot know whether the CLI decodes it, and an attribute value
++// that holds one is refused, on any tag, rather than read under the wrong value. The table has no prototype and is read as
++// own properties, so &constructor is one more name pack does not decode, not Object.prototype.constructor.
++const WIN1252 = [0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178];
++const NAMED = { __proto__: null, 'amp;': '&', 'AMP;': '&', amp: '&', AMP: '&', 'lt;': '<', 'LT;': '<', lt: '<', LT: '<', 'gt;': '>', 'GT;': '>', gt: '>', GT: '>', 'quot;': '"', 'QUOT;': '"', quot: '"', QUOT: '"', 'apos;': "'" };
++function decodeAttr(raw) {
++  const s = raw.replace(/\r\n?/g, '\n').replace(/\0/g, '\uFFFD'); const bad = []; let out = '', i = 0;
++  while (i < s.length) {
++    const amp = s.indexOf('&', i); if (amp < 0) { out += s.slice(i); break; }
++    out += s.slice(i, amp); i = amp + 1; let j = i;
++    if (s[i] === '#') {
++      j++; const hex = s[j] === 'x' || s[j] === 'X'; if (hex) j++;
++      let x = 0, digits = 0;
++      for (; j < s.length; j++, digits++) { const c = s.charCodeAt(j); let d; if (c >= 48 && c <= 57) d = c - 48; else if (hex && c >= 97 && c <= 102) d = c - 87; else if (hex && c >= 65 && c <= 70) d = c - 55; else break; if (x <= 0x10ffff) x = x * (hex ? 16 : 10) + d; }
++      if (!digits) { out += '&'; continue; }
++      if (s[j] === ';') j++;
++      if (x >= 0x80 && x <= 0x9f) x = WIN1252[x - 0x80]; else if (x === 0 || (x >= 0xd800 && x <= 0xdfff) || x > 0x10ffff) x = 0xfffd;
++      out += String.fromCodePoint(x); i = j; continue;
++    }
++    if (!ALPHA(s[i])) { out += '&'; continue; }   // no entity name starts otherwise, so the CLI reads a lone &
++    while (j < s.length && (ALPHA(s[j]) || (s[j] >= '0' && s[j] <= '9'))) j++;
++    if (s[j] === ';') j++; const name = s.slice(i, j);
++    if (!name.endsWith(';') && s[j] === '=') { out += '&'; continue; }
++    if (Object.hasOwn(NAMED, name)) { out += NAMED[name]; i = j; continue; }
++    bad.push('&' + name); out += '&';
++  }
++  return { value: out, bad };
++}
++function tokenize(src) {
++  const n = src.length, out = []; let i = 0;
++  // readRawEndTag: right after "</" at `from`, does `tag` follow, then whitespace, "/" or ">"? If so the end tag starts at `hit`,
++  // else scanning goes on at `next`, which is the end of the file when the file ends first.
++  const rawEnd = (from, tag) => { let k = from; for (let j = 0; j < tag.length; j++, k++) { if (k >= n) return { next: n }; const c = src[k]; if (c !== tag[j] && c !== tag[j].toUpperCase()) return { next: k }; } if (k >= n) return { next: n }; const c = src[k]; return WS(c) || c === '/' || c === '>' ? { hit: from - 2 } : { next: k }; };
++  const rawText = (from, tag) => { let p = from; for (;;) { const lt = src.indexOf('<', p); if (lt < 0 || lt + 1 >= n) return n; if (src[lt + 1] !== '/') { p = lt + 1; continue; } const r = rawEnd(lt + 2, tag); if (r.hit !== undefined) return r.hit; p = r.next; if (p >= n) return n; } };
++  const script = (from) => {   // readScript: 0 data, 1 escaped, 2 escaped dash, 3 escaped dash dash, 4 double escaped, 5 its dash, 6 its dash dash
++    let p = from, st = 0;
++    const end = (fallback) => { const r = rawEnd(p, 'script'); if (r.hit !== undefined) return r.hit; p = r.next; st = fallback; return -1; };
++    while (p < n) {
++      const c = src[p++];
++      if (st === 0) {
++        if (c !== '<' || p >= n) continue;
++        const d = src[p++];
++        if (d === '/') { const e = end(0); if (e >= 0) return e; }
++        else if (d === '!') { if (src[p] === '-' && src[p + 1] === '-') { p += 2; st = 3; } }
++        else p--;
++      } else if (st <= 3) {
++        if (c === '-') st = st === 1 ? 2 : 3;
++        else if (c === '>' && st === 3) st = 0;
++        else if (c === '<') {
++          if (p >= n) return n;
++          const d = src[p++];
++          if (d === '/') { const e = end(1); if (e >= 0) return e; }
++          else if (ALPHA(d)) {
++            p--; let same = true;
++            for (let j = 0; j < 6; j++, p++) { if (p >= n) return n; const e = src[p]; if (e !== 'script'[j] && e !== 'SCRIPT'[j]) { same = false; break; } }
++            if (!same) { st = 1; continue; }
++            if (p >= n) return n; const e = src[p]; if (WS(e) || e === '/' || e === '>') { p++; st = 4; } else st = 1;
++          }
++          else { p--; st = 0; }
++        } else st = 1;
++      } else {
++        if (c === '-') st = st === 4 ? 5 : 6;
++        else if (c === '>' && st === 6) st = 0;
++        else if (c === '<') {
++          if (p >= n) return n;
++          const d = src[p++];
++          if (d === '/') { const r = rawEnd(p, 'script'); if (r.hit !== undefined) { p = r.hit + 9; st = 1; } else { p = r.next; st = 4; } }
++          else { p--; st = 4; }
++        } else st = 4;
++      }
++    }
++    return n;
++  };
++  const comment = (from) => {   // readComment, right after "<!--"
++    let p = from, dash = 0, beginning = true;
++    const abrupt = () => { const raw = src.slice(from); const cut = raw.endsWith('--!') ? 3 : raw.endsWith('--') ? 2 : raw.endsWith('-') ? 1 : 0; return { end: n, data: raw.slice(0, raw.length - cut) }; };
++    for (;;) {
++      if (p >= n) return abrupt();
++      const c = src[p++];
++      if (c === '-') { dash++; continue; }
++      if (c === '>' && (dash >= 2 || beginning)) return { end: p, data: src.slice(from, Math.max(from, p - 3)) };
++      if (c === '!' && dash >= 2) {
++        if (p >= n) return abrupt();
++        const d = src[p++];
++        if (d === '>') return { end: p, data: src.slice(from, Math.max(from, p - 4)) };
++        if (d === '-') { dash = 1; beginning = false; continue; }
++      }
++      dash = 0; beginning = false;
++    }
++  };
++  const readTag = (ns, save) => {   // readTag, with the letter at `ns` right after "<" or "</"; null when the file ends inside the tag
++    let k = ns + 1, ne;
++    for (;;) { if (k >= n) return null; const c = src[k]; if (WS(c)) { ne = k++; break; } if (c === '/' || c === '>') { ne = k; break; } k++; }
++    const t = { type: 'tag', name: lower(src.slice(ns, ne)), attrs: [] }; const seen = new Set();
++    while (k < n && WS(src[k])) k++;
++    for (;;) {
++      if (k >= n) return null;
++      if (src[k] === '>') { t.end = k + 1; return t; }
++      const a = { from: k, q: '' };
++      for (;;) { if (k >= n) return null; const c = src[k]; if (c === '=' && k > a.from) break; if (c !== '=' && (WS(c) || c === '/' || c === '>')) break; k++; }
++      const ke = k; a.name = lower(src.slice(a.from, ke)); a.vs = a.ve = a.to = ke;
++      while (k < n && WS(src[k])) k++; if (k >= n) return null;
++      const c = src[k++];
++      if (c === '/') { /* the value stays empty and the solidus is consumed */ }
++      else if (c !== '=') k--;
++      else {
++        while (k < n && WS(src[k])) k++; if (k >= n) return null;
++        const q = src[k++];
++        if (q === '>') { k--; a.vs = a.ve = a.to = k; }
++        else if (q === '"' || q === "'") { a.q = q; a.vs = k; for (;;) { if (k >= n) return null; if (src[k++] === q) break; } a.ve = k - 1; a.to = k; }
++        else { a.vs = k - 1; for (;;) { if (k >= n) return null; const d = src[k]; if (WS(d)) { a.ve = a.to = k++; break; } if (d === '>') { a.ve = a.to = k; break; } k++; } }
++      }
++      a.raw = src.slice(a.vs, a.ve); const dec = decodeAttr(a.raw); a.value = dec.value; a.bad = dec.bad;
++      if (save && ke > a.from && !seen.has(a.name)) { seen.add(a.name); t.attrs.push(a); }
++      while (k < n && WS(src[k])) k++;
++    }
++  };
++  while (i < n) {
++    const lt = src.indexOf('<', i); if (lt < 0 || lt + 1 >= n) break;
++    const c = src[lt + 1];
++    if (ALPHA(c)) {
++      const t = readTag(lt + 1, true); if (!t) break;
++      t.start = lt; out.push(t); i = t.end;
++      if (RAW_TEXT.has(t.name)) {
++        const e = t.name === 'plaintext' ? n : t.name === 'script' ? script(i) : rawText(i, t.name);
++        t.text = src.slice(i, e);
++        if (e >= n) { t.close = n; break; }
++        const et = readTag(e + 2, false); if (!et) { t.close = n; break; }
++        t.close = et.end; i = et.end;
++      }
++    } else if (c === '/') {
++      if (lt + 2 >= n) break;
++      const d = src[lt + 2];
++      if (d === '>') i = lt + 3;
++      else if (ALPHA(d)) { const t = readTag(lt + 2, false); if (!t) break; i = t.end; }
++      else { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
++    } else if (c === '!') {
++      if (lt + 4 > n) break;
++      if (src[lt + 2] === '-' && src[lt + 3] === '-') { const cm = comment(lt + 4); out.push({ type: 'comment', start: lt, end: cm.end, data: cm.data }); i = cm.end; }
++      else { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
++    } else if (c === '?') { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
++    else i = lt + 1;
++  }
++  return out;
++}
++const scanTags = (src) => tokenize(src).filter((t) => t.type === 'tag');
+ 
+ let html = readFileSync(inPath, 'utf8');
+ const errors = [], warns = [], info = [];
+@@ -34,6 +209,7 @@ const blockSrc = (inner) => { const m = inner.match(/<script\s+type=["']?text\/(
+ // Everything pack reads ends up inside a page that may be published, so reads are fenced: a file must really live (symlinks resolved)
+ // under a --root, the page's own folder, or the runtime's folder, and must not be a well-known secret file. Anything else is an error.
+ const real = (p) => { try { return realpathSync(p); } catch { return null; } };
++const rel = (p) => relative(process.cwd(), p) || p;
+ const FENCE = [...new Set([...roots, baseDir, here])].map(real).filter(Boolean);
+ const inside = (f) => FENCE.some((d) => f === d || f.startsWith(d.endsWith(sep) ? d : d + sep));
+ const SECRET_NAME = new RegExp([
+@@ -61,12 +237,17 @@ const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p
+ const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
+ const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
+ 
++/* ── the output: a file beside the input, never the input itself under another name ── */
++{ const o = (() => { try { return lstatSync(outPath); } catch { return null; } })(); const i = statSync(inPath);
++  if (real(dirname(outPath)) !== pageDir) err(`-o ${rel(outPath)} is outside the page's folder — pack writes beside its input, in ${rel(pageDir)}, where the plans CLI looks for the page's media`);
++  else if (o?.isSymbolicLink()) err(`-o ${rel(outPath)} is a symlink — pack does not write through one; remove it or name another file`);
++  else if (o && !o.isFile()) err(`-o ${rel(outPath)} is not a file`);
++  else if (o && (real(outPath) === real(inPath) || (o.dev === i.dev && o.ino === i.ino))) err(`-o ${rel(outPath)} is the input itself — name another file`); }
++
+ /* ── document-level checks ── */
+ if (!/<title>[^<]+<\/title>/i.test(html)) err('missing <title> — it names the artifact in tabs and share sheets');
+ if (!/<h1[\s>]/i.test(html)) warn('no <h1> — the response header uses it');
+ if (!/<meta[^>]+charset/i.test(html)) warn('missing <meta charset="utf-8">');
+-if (!/htmlplan\.css/.test(html) && !/<style[^>]*data-htmlplan/.test(html)) err('htmlplan.css is not linked — add <link rel="stylesheet" href="…/htmlplan.css">');
+-if (!/htmlplan\.js/.test(html) && !/<script[^>]*data-htmlplan/.test(html)) err('htmlplan.js is not included — add <script src="…/htmlplan.js" defer></script>');
+ const KNOWN = new Set(['doc-code', 'doc-pin', 'doc-flow', 'doc-seq', 'doc-schema', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-mock', 'doc-shot', 'doc-quote', 'doc-ask', 'doc-note', 'doc-draft', 'doc-plan', 'doc-claim', 'doc-changes']);
+ for (const m of html.matchAll(/<(doc-[a-z]+)\b/g)) if (!KNOWN.has(m[1])) err(`line ${lineOf(m.index)}: unknown element <${m[1]}> — known: ${[...KNOWN].join(' ')}`);
+ const ids = {}; for (const m of html.matchAll(/\sid=["']([^"']+)["']/g)) { if (ids[m[1]]) err(`duplicate id="${m[1]}" (lines ${ids[m[1]]} and ${lineOf(m.index)})`); ids[m[1]] = lineOf(m.index); }
+@@ -174,7 +355,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+       if ((a.frame === 'terminal') && w > 520 && !('thumbnail' in a)) warn(`${at}: terminal mock w=${w} — on a phone that's ~${Math.round(390 / w * 13)}px text; ≤480 (≈55 cols) stays readable, or add thumbnail to accept`);
+       else if (w >= 800 && !('thumbnail' in a)) warn(`${at}: ${a.frame || 'browser'} mock w=${w} renders at ~${Math.round(350 / w * 100)}% on a phone — fine as an overview (add thumbnail to say so), but pair it with a narrow crop (w≤480 frame=none) of the part that matters${inCols ? '; and it is inside .cols, which halves it again on desktop' : ''}`);
+       else if (inCols && w > 600) warn(`${at}: w=${w} mock inside .cols — .cols is for mocks ≤600 wide; stack them or use .storyboard`); }
+-    else if (tag === 'doc-shot') { if (!a.src) err(`${at}: needs src=""`); else if (!/^(data:|https?:)/.test(a.src) && !findFile(a.src)) err(`${at}: src="${a.src}" not found`); }
++    else if (tag === 'doc-shot') { const own = /<img\b/i.test(inner); if (a.src && own) err(`${at}: has both src="" and an <img> child — keep one`); else if (!a.src && !own) err(`${at}: needs src=""`); }   // its file is checked with the page's media, below
+     else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
+     else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
+       if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
+@@ -263,23 +444,233 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+   let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
+   if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
+ 
+-/* ── inline assets ── */
+-let packed = html; let inlined = 0;
+-if (!lintOnly) {
+-  packed = packed.replace(/<link\b[^>]*href=["']([^"']*htmlplan\.css)["'][^>]*>/i, (m, href) => { const f = findFile(href) || resolve(here, 'htmlplan.css'); inlined++; return `<style data-htmlplan>\n${readFileSync(f, 'utf8')}\n</style>`; });
+-  packed = packed.replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*href=["']([^"':]+\.css)["'][^>]*>/gi, (m, href) => { const f = findFile(href); if (!f) { warn(`stylesheet ${href} not found — left as a link`); return m; } inlined++; return `<style>/* ${basename(href)} */\n${readFileSync(f, 'utf8')}\n</style>`; });  // any other local stylesheet
+-  packed = packed.replace(/<script\b[^>]*src=["']([^"']*htmlplan\.js)["'][^>]*>\s*<\/script>/i, (m, src) => { const f = findFile(src) || resolve(here, 'htmlplan.js'); inlined++; return `<script data-htmlplan>\n${readFileSync(f, 'utf8').replace(/<\/script/gi, '<\\/script')}\n</script>`; });
+-  const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.webm': 'video/webm' };
+-  packed = packed.replace(/(<(?:img|doc-shot|video|source)\b[^>]*?\ssrc=["'])([^"']+)(["'])/gi, (m, pre, src, post) => {
+-    if (/^(data:|https?:|#)/.test(src)) return m; const f = findFile(src); if (!f) { warn(`asset ${src} not found — left as-is`); return m; }
+-    const size = statSync(f).size; if (size > 6e6) { warn(`${src} is ${(size / 1e6).toFixed(1)} MB — not inlining; the packed file will need it alongside`); return m; }
+-    inlined++; return `${pre}data:${MIME[extname(f).toLowerCase()] || 'application/octet-stream'};base64,${readFileSync(f).toString('base64')}${post}`;
+-  });
+-  if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');
++/* ── pack: the runtime inlined once, media left as literal files, nothing the viewer refuses ── */
++// The plans CLI uploads each file that a relative src names on img, video, audio and source, then puts the file's capability URL
++// in place of the path (plans:publish, "Embedded local media"). So pack inlines no media. It checks each reference the CLI will
++// follow, and refuses what the CLI or the viewer's CSP would refuse or let through broken. Media resolves only inside the page's
++// own folder, through no symlink, and never under --root, which bounds code excerpts only. MEDIA_EXT is the extension table of
++// plans:publish without .html and .htm, and the plans smoke holds the two together. Every check here runs under --lint-only too.
++const MEDIA_EXT = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.webm'];
++const MEDIA_MAX = 64;
++/* ── a media reference, as the plans CLI reads it ── */
++// The plans CLI turns a src value into the file it uploads in three steps, and pack takes the same three before it looks at the
++// disk: strings.TrimSpace on the value, net/url's Parse on the value cut at its first "#", and path/filepath's Clean on the parsed
++// path, which is also the key the CLI counts distinct uploads by (localRefPath and openLocalRefs in the CLI's internal/cli). So
++// the whitespace trimmed is Go's, where U+0085 and U+00A0 are space and U+FEFF is not. A value that trims to nothing, or to "#…"
++// or "/…", or that opens with a scheme or "//", the CLI leaves as written. A control character before the fragment, a ":" in the
++// first segment, or a "%" short of two hex digits stops the CLI with an error. The query goes, each %XX decodes to one byte, and
++// Clean folds "." and "a/.." away and drops a trailing "/". What follows the first "#" is never read. pack refuses a path that
++// still climbs out, and one holding U+FFFD, which may stand for a byte pack could not read as UTF-8 and the CLI reads as itself.
++// The differential harness in the issue's scratch holds mediaPath to the CLI's localRefPath on every case the plans smoke pins.
++const GO_SPACE = /[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/;   // unicode.IsSpace
++const goTrimSpace = (s) => { let a = 0, b = s.length; while (a < b && GO_SPACE.test(s[a])) a++; while (b > a && GO_SPACE.test(s[b - 1])) b--; return s.slice(a, b); };
++const goExt = (p) => { for (let i = p.length - 1; i >= 0 && p[i] !== '/'; i--) if (p[i] === '.') return p.slice(i); return ''; };   // filepath.Ext
++const goClean = (p) => { const out = []; for (const seg of p.split('/')) { if (seg === '' || seg === '.') continue; if (seg === '..' && out.length && out[out.length - 1] !== '..') out.pop(); else out.push(seg); } return out.join('/') || '.'; };   // filepath.Clean, on a relative slash path
++const isRemote = (v) => /^[a-z][a-z0-9+.-]*:/i.test(v) || v.startsWith('//');   // the CLI's hasURLScheme, or protocol-relative
++const HEX2 = /^[0-9a-fA-F]{2}$/;
++// a src value → { p }, the slash path the CLI opens and counts by; { skip } when the CLI leaves the value as written and the
++// viewer shows it as it is; or { why } when the CLI or pack refuses it
++function mediaPath(value) {
++  const v = goTrimSpace(value);
++  if (!v || v.startsWith('#') || /^data:/i.test(v)) return { skip: true };
++  if (/^file:/i.test(v)) return { why: 'is a file: URL — use a path relative to the page' };
++  if (isRemote(v)) return { why: 'is remote, and the viewer\'s CSP blocks it — save the file beside the page' };
++  if (v.startsWith('/')) return { why: 'is an absolute path — use a path relative to the page' };
++  const u = v.replace(/#[\s\S]*$/, '');   // the fragment goes first, unread
++  for (let i = 0; i < u.length; i++) { const c = u.charCodeAt(i); if (c < 0x20 || c === 0x7f) return { why: `holds a control character (U+${c.toString(16).toUpperCase().padStart(4, '0')}) before its fragment, which the plans CLI does not parse` }; }
++  const r = u.replace(/\?[\s\S]*$/, '');   // then the query
++  if (r.split('/')[0].includes(':')) return { why: 'has ":" in its first segment, which the plans CLI does not parse as a path' };
++  const raw = Buffer.from(r, 'utf8'); const bytes = [];   // %XX decodes to a byte, as net/url's unescape does, so the check is on bytes
++  for (let i = 0; i < raw.length; i++) {
++    if (raw[i] !== 0x25) { bytes.push(raw[i]); continue; }
++    const hex = raw.toString('latin1', i + 1, i + 3); if (i + 2 >= raw.length || !HEX2.test(hex)) return { why: 'has a "%" that two hex digits do not follow, which the plans CLI does not parse' };
++    bytes.push(parseInt(hex, 16)); i += 2;
++  }
++  const p = Buffer.from(bytes).toString('utf8');
++  if (!p) return { why: 'names no file beside the page — the plans CLI leaves it as written, and the viewer finds nothing there' };
++  if (p.startsWith('/')) return { why: 'is an absolute path — use a path relative to the page' };
++  if (p.includes('\uFFFD')) return { why: 'holds U+FFFD, which may stand for a byte pack cannot read as the plans CLI does' };
++  const c = goClean(p);
++  if (c === '..' || c.startsWith('../')) return { why: 'climbs out of the page\'s folder with ..' };
++  if (c === '.') return { why: 'names the page\'s folder, not a file in it' };
++  return { p: c };
++}
++// a cleaned relative path → the real file inside the page's folder, or why there is none. The CLI opens it through os.Root, which
++// follows some symlinks and refuses others by rules pack does not repeat: pack follows none. Each component of the path, folder
++// or file, is lstat'ed from the page's folder, the first symlink refuses the path by name, and what is left must still resolve
++// inside the folder. So a file pack accepts is the file the CLI opens.
++function pageFile(p) {
++  let d = pageDir, walked = '';
++  for (const seg of p.split('/')) {
++    d = join(d, seg); walked += (walked ? '/' : '') + seg;
++    let s; try { s = lstatSync(d); } catch { s = null; }
++    if (!s) { const r = roots.find((x) => real(x) !== pageDir && existsSync(resolve(x, p))); return { why: r ? `exists only under --root ${rel(r)}, which bounds code excerpts only — put the file in the page's folder` : 'is not in the page\'s folder' }; }
++    if (s.isSymbolicLink()) return { why: `goes through "${walked}", a symlink — pack follows none, so put the file itself in the page's folder` };
++  }
++  const f = real(d);
++  if (!f || !f.startsWith(pageDir + sep)) return { why: 'resolves outside the page\'s folder' };
++  if (!statSync(f).isFile()) return { why: 'is not a file' };
++  return { f };
+ }
++const MEDIA_TAGS = ['img', 'video', 'audio', 'source'];   // the elements whose src the CLI uploads; doc-shot's moves onto an img below
++const media = new Map();   // each distinct path the CLI opens, as it counts uploads → the reference as first written, trimmed as the CLI trims it
++function checkMedia(at, a) {
++  const value = a.value; const l = mediaPath(value); if (l.skip) return;
++  if (l.why) return err(`${at}: src="${value}" ${l.why}`);
++  const ext = goExt(l.p).toLowerCase();
++  if (ext === '.html' || ext === '.htm') return err(`${at}: src="${value}" is an HTML file, which no media element renders`);
++  if (!MEDIA_EXT.includes(ext)) return err(`${at}: src="${value}" — ${ext ? `"${ext}"` : 'a name with no extension'} is not a media type plans publishes (${MEDIA_EXT.join(' ')})`);
++  const g = pageFile(l.p); if (g.why) return err(`${at}: src="${value}" ${g.why}`);
++  if (!media.has(l.p)) media.set(l.p, goTrimSpace(value));
++}
++// srcset, poster, CSS url() and the CSS image functions are never uploaded, so each may only hold a data: URI (or, in CSS, a
++// #fragment). The whitespace trimmed before the check is the syntax's own, which is what the URL parser strips too: HTML's ASCII
++// whitespace around an attribute value or a srcset candidate, and CSS's, which after its preprocessing is LF, TAB and SPACE,
++// around a url() or a string. JavaScript's trim() and \s would also strip U+FEFF, U+00A0 and the other Unicode spaces, which the
++// URL parser keeps, so a value they read as data: is a path beside the page to the browser, and the viewer requests it.
++const CSS_WS = (c) => c === ' ' || c === '\t' || c === '\n';
++const trimIf = (s, ws) => { let a = 0, b = s.length; while (a < b && ws(s[a])) a++; while (b > a && ws(s[b - 1])) b--; return s.slice(a, b); };
++function onlyData(at, what, value, css = false) {
++  const v = trimIf(value, css ? CSS_WS : WS); if (!v || /^data:/i.test(v) || (css && v.startsWith('#'))) return;
++  err(`${at}: ${what} "${v.length > 60 ? v.slice(0, 60) + '…' : v}" — ${isRemote(v) ? 'remote, and the viewer\'s CSP blocks it' : 'the plans CLI uploads only a literal src, so this path would break'}; use ${css ? 'an <img>' : 'src'} for a local file, or a data: URI`);
++}
++// the candidate URLs of a srcset, split as HTML's srcset parser splits them: ASCII whitespace and commas are skipped, a URL runs to
++// ASCII whitespace with its trailing commas dropped, and the descriptors after it run to the next comma. A comma inside parentheses
++// is part of a descriptor to the browser and ends a candidate here, so pack reads every URL the browser reads, and at times one more.
++const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { while (i < s.length && (WS(s[i]) || s[i] === ',')) i++; let j = i; while (j < s.length && !WS(s[j])) j++; if (j > i) { const u = s.slice(i, j); out.push(u.replace(/,+$/, '')); if (!u.endsWith(',')) while (j < s.length && s[j] !== ',') j++; } i = j; } return out; };
++// CSS first preprocesses its input (CSS Syntax §3.3): CRLF, a lone CR and FF each become one LF, and NUL becomes U+FFFD. So a
++// string ends at any of those newlines, and a backslash before any of them continues the string. pack reads the same text, in
++// a <style>, a style="" and the page's own stylesheet, so a url() or @import after a CR or FF is found and an escaped CRLF is
++// not refused. CSS reads a backslash escape inside an identifier, so u\72l( is url( and @\69mport is @import. pack decodes
++// none: it refuses an escape in the name of a function or an at-rule. Comments and strings are blanked first, in CSS's own
++// order, where a comment opens only outside a string, a string only outside a comment, and an escape outside a string is one
++// token, so a fake string hides no name and a comment opened inside a string hides no url(). Blanking keeps every offset, so a
++// url( found in the text with its strings is checked only where it starts outside one.
++const cssPreprocess = (css) => css.replace(/\r\n?|\f/g, '\n').replace(/\0/g, '\uFFFD');
++function cssLex(css) {   // the css with its comments blanked (kept), with its strings blanked too (code), and each string's [start, end)
++  let kept = '', code = '', i = 0; const n = css.length, strings = [];
++  while (i < n) {
++    const c = css[i];
++    if (c === '/' && css[i + 1] === '*') { const e = css.indexOf('*/', i + 2); const j = e < 0 ? n : e + 2; const b = ' '.repeat(j - i); kept += b; code += b; i = j; continue; }
++    if (c === '"' || c === "'") { let j = i + 1; while (j < n && css[j] !== c && css[j] !== '\n') j += css[j] === '\\' ? 2 : 1; if (j < n && css[j] === c) j++; strings.push([i, j]); kept += css.slice(i, j); code += ' '.repeat(j - i); i = j; continue; }
++    if (c === '\\') { const e = css.slice(i, i + 2); kept += e; code += e; i += 2; continue; }
++    kept += c; code += c; i++;
++  }
++  return { kept, code, strings };
++}
++// CSS loads an image through more than url(). image-set() and -webkit-image-set() take a quoted string, image(), cross-fade() and
++// -webkit-cross-fade() take strings or url()s, src() is url() under another name, and element() and -moz-element() paint an
++// element of the page, which pack cannot check. pack finds each name in the blanked text, with no identifier character before it
++// and its "(" right after it, and reads its arguments to the ")" that closes it, where a "(", "[" or "{" opens a block that its own
++// closer ends and the end of the text closes everything, as CSS does. Every string in those arguments must be a data: URI, but
++// one inside type(), which names a MIME type; a url() in them is checked as every url() is, and names its string first. The
++// innermost function names a string, once. A var() in those arguments is substituted after pack reads the sheet, so the string
++// it stands for can be any file, and env() and attr() are read as late: pack refuses each, at any depth, anywhere between an
++// image function's "(" and its ")". A url() takes no var(): its unquoted form is one token that a "(" ends, and its quoted form
++// names its string here. The same escaped-name rule as url()'s stands: an escape in a name is refused above.
++const CSS_IMAGE_FN = /(?<![-\w\u0080-\uffff\\])(-webkit-image-set|image-set|image|-webkit-cross-fade|cross-fade|src|-moz-element|element)\(/gi;
++const CSS_TYPE_FN = /(?<![-\w\u0080-\uffff\\])type\(/gi;
++const CSS_SUBST_FN = /(?<![-\w\u0080-\uffff\\])(var|env|attr)\(/gi;
++function cssArgsEnd(code, from) {   // the index of the ")" that closes the function whose "(" ends at from, or the end of the text
++  const closer = { '(': ')', '[': ']', '{': '}' }; const stack = [')'];
++  for (let i = from; i < code.length; i++) {
++    const c = code[i];
++    if (c === '\\') i++;
++    else if (closer[c]) stack.push(closer[c]);
++    else if (c === stack[stack.length - 1]) { stack.pop(); if (!stack.length) return i; }
++  }
++  return code.length;
++}
++const CSS_ESC = /\\(?:[0-9a-fA-F]{1,6}(?:\r\n|[ \t\n\f\r])?|[^\n\r\f0-9a-fA-F])/y, CSS_IDENT = /[-\w\u0080-\uffff]/;
++function cssEscapedName(code) {   // the first function or at-rule name in blanked css that holds an escape, with its "(" or "@", or null
++  let i = 0; const n = code.length;
++  while (i < n) {
++    if (code[i] !== '\\' && !CSS_IDENT.test(code[i])) { i++; continue; }
++    const s = i; let esc = false;
++    while (i < n) { if (code[i] === '\\') { CSS_ESC.lastIndex = i; if (!CSS_ESC.exec(code)) { i++; break; } i = CSS_ESC.lastIndex; esc = true; } else if (CSS_IDENT.test(code[i])) i++; else break; }
++    if (esc && code[i] === '(') return code.slice(s, i + 1);
++    if (esc && code[s - 1] === '@') return code.slice(s - 1, i);
++  }
++  return null;
++}
++function checkCss(at, text) {
++  const css = cssPreprocess(text); const { kept, code, strings } = cssLex(css);
++  const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
++  // A url() ends at the ")" that closes it or at the end of the text, as CSS reads it: an unquoted url is one token that runs
++  // to either, and a quoted one is a function the end of the text closes, after its string or a string the end cuts short.
++  const CSS_URL = /url\([ \t\n]*(?:"([^"]*)"[ \t\n]*\)|'([^']*)'[ \t\n]*\)|([^)]*)\)|"([^"\n]*)(?:"[ \t\n]*)?$|'([^'\n]*)(?:'[ \t\n]*)?$|([^)]*)$)/gi;
++  const named = new Set();   // the start of each string a url() or an image function has named
++  for (const m of kept.matchAll(CSS_URL)) if (code[m.index] !== ' ') {
++    onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? m[6], true);
++    for (const [s] of strings) if (s >= m.index && s < m.index + m[0].length) named.add(s);
++  }
++  const mime = [...code.matchAll(CSS_TYPE_FN)].map((m) => [m.index + m[0].length, cssArgsEnd(code, m.index + m[0].length)]);
++  const held = new Set();   // the start of each var(), env() or attr() an image function has refused, so a nested function reports it once
++  for (const m of [...code.matchAll(CSS_IMAGE_FN)].reverse()) {
++    const fn = m[1], from = m.index + m[0].length, to = cssArgsEnd(code, from);
++    if (/element/i.test(fn)) { err(`${at}: CSS ${fn}() — it paints an element of the page, which pack cannot check; use an <img> for a local file, or a data: URI`); continue; }
++    CSS_SUBST_FN.lastIndex = from;
++    for (let v; (v = CSS_SUBST_FN.exec(code)) && v.index < to;) { if (held.has(v.index)) continue; held.add(v.index); err(`${at}: CSS ${fn}() holds ${v[1]}(), which the browser substitutes after pack has read the sheet, so pack cannot see what it names; write the data: URI itself`); }
++    for (const [s, e] of strings) {
++      if (s < from || s >= to || named.has(s) || mime.some(([a, b]) => s >= a && s < b)) continue;
++      named.add(s); onlyData(at, `CSS ${fn}()`, css.slice(s + 1, e - (e - s >= 2 && css[e - 1] === css[s] ? 1 : 0)), true);
++    }
++  }
++  if (/@import\b/i.test(code)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);
++}
++const RUNTIME = {   // always this folder's runtime, never a copy beside the page
++  css: `<style data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.css'), 'utf8')}\n</style>`,
++  js: `<script data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.js'), 'utf8').replace(/<\/script/gi, '<\\/script')}\n</script>`,
++};
++const fileName = (v) => basename((v || '').replace(/[?#].*$/s, '').trim());
++// every media src a page holds, decoded as the CLI reads it, doc-shot's included: what pack checks, and what its output must hold
++const mediaSrcs = (src) => scanTags(src).flatMap((t) => MEDIA_TAGS.includes(t.name) || t.name === 'doc-shot' ? t.attrs.filter((a) => a.name === 'src').map((a) => a.value) : []).sort();
++const checked = mediaSrcs(html);
++const edits = []; let nCss = 0, nJs = 0;   // edits are [start, end, text] on html, none overlapping
++for (const t of scanTags(html)) {
++  const at = `line ${lineOf(t.start)} <${t.name}>`; const get = (n) => t.attrs.find((a) => a.name === n); const val = (n) => get(n)?.value;
++  // A value pack cannot decode as the CLI does is not read at all. The reference may be whitespace or a slash to the CLI, so the
++  // tag may be a stylesheet to the CLI, or its src another file, where pack read neither; so a tag with one in any attribute is refused.
++  { const a = t.attrs.find((x) => x.bad.length);
++    if (a) { err(`${at}: ${a.name}="${a.raw}" holds ${a.bad.map((b) => `"${b}"`).join(', ')}, a character reference pack does not decode as the plans CLI would, so it cannot read the value the CLI reads — write the character itself, or its numeric reference`); continue; } }
++  if (MEDIA_TAGS.includes(t.name) && get('src')) checkMedia(at, get('src'));
++  if (t.name === 'doc-shot' && get('src')) {   // the screenshot moves onto a literal <img> child, which the CLI sees and the runtime adopts
++    const a = get('src'); checkMedia(at, a); let ws = a.from; while (WS(html[ws - 1])) ws--;
++    edits.push([ws, a.to, ''], [t.end, t.end, `<img src=${a.q}${a.raw}${a.q}>`]);
++  }
++  if (get('srcset')) srcsetUrls(val('srcset')).forEach((u) => onlyData(at, 'srcset', u));
++  if (get('poster')) onlyData(at, 'poster', val('poster'));
++  if (get('style')) checkCss(`${at} style=""`, val('style'));
++  if (t.name === 'meta' && val('http-equiv')?.trim().toLowerCase() === 'content-security-policy') err(`${at}: a <meta> Content-Security-Policy — the viewer sends its own; remove this one`);
++  if ((t.name === 'link' && fileName(val('href')) === 'htmlplan.css') || (t.name === 'style' && get('data-htmlplan'))) { nCss++; edits.push([t.start, t.close ?? t.end, RUNTIME.css]); continue; }
++  if (t.name === 'script' && (fileName(val('src')) === 'htmlplan.js' || get('data-htmlplan'))) { nJs++; edits.push([t.start, t.close, RUNTIME.js]); continue; }
++  if (t.name === 'style') checkCss(at, t.text);
++  if (t.name === 'link' && /(^|\s)stylesheet(\s|$)/i.test(val('rel') || '')) {   // the page's own stylesheet, inlined from the page's folder
++    const href = goTrimSpace(val('href') || ''); const l = href ? mediaPath(href) : { why: 'has no href' }; if (l.skip) l.why = 'names no file';
++    const g = l.why ? l : goExt(l.p).toLowerCase() !== '.css' ? { why: 'is not a .css file' } : pageFile(l.p);
++    if (g.why) { err(`${at}: stylesheet "${href}" ${g.why}; inline it in a <style>`); continue; }
++    if (SECRET_NAME.test(g.f)) { err(`${at}: "${href}" looks like a secrets file — not reading it`); continue; }
++    const text = readFileSync(g.f, 'utf8');
++    if (SECRET_TEXT.test(text)) { err(`${at}: ${href} looks like it holds a secret — not packaging it`); continue; }
++    if (/<\/style/i.test(text)) { err(`${at}: ${href} contains "</style", which would end its <style> early`); continue; }
++    checkCss(`${at} ${href}`, text); reads.add(href); edits.push([t.start, t.end, `<style>/* ${basename(href)} */\n${text}\n</style>`]); continue;
++  }
++  if (t.name === 'script' && get('src')) err(`${at}: <script src="${val('src')}"> — the viewer runs inline scripts only; inline it or remove it`);
++}
++if (nCss !== 1) err(nCss ? `htmlplan.css appears ${nCss} times — link it once` : 'htmlplan.css is not linked — add <link rel="stylesheet" href="htmlplan.css">');
++if (nJs !== 1) err(nJs ? `htmlplan.js appears ${nJs} times — include it once` : 'htmlplan.js is not included — add <script src="htmlplan.js" defer></script>');
++if (media.size > MEDIA_MAX) err(`${media.size} distinct local media files — a page holds at most ${MEDIA_MAX}; drop some, or publish them on their own`);
++if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's' : ''} stay beside the page for the plans CLI to upload: ${[...media.values()].join(', ')}`);
++let packed = html;
++for (const [s, e, text] of edits.sort((x, y) => y[0] - x[0])) packed = packed.slice(0, s) + text + packed.slice(e);
++if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');
++// The page the CLI reads is the one pack writes, so pack reads its output once more with the same tokenizer and writes it only
++// when the media references in it are the ones it checked, value for value and in number. Each edit above replaces or moves a
++// whole tag and never splices one, and this is the check that none did, whatever the input.
++{ const got = mediaSrcs(packed);
++  if (got.join('\n') !== checked.join('\n')) err(`the packed page holds ${got.length} media reference${got.length === 1 ? '' : 's'} where ${checked.length} ${checked.length === 1 ? 'was' : 'were'} checked — pack writes no page whose media it did not check`); }
+ 
+ /* ── report ── */
+-const rel = (p) => relative(process.cwd(), p) || p;
+ if (!quiet) {
+   console.log(`\n${basename(inPath)}`);
+   info.forEach((m) => console.log('  · ' + m));
+@@ -288,7 +679,31 @@ if (!quiet) {
+ }
+ if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
+ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
+-writeFileSync(outPath, packed);
++{ // write a new file in the page's folder, then rename it over the output, so a failed write leaves an old output whole.
++  // pageDir was resolved before the lint, which can run long, so the folder is checked again right before the temp file is made
++  // and right before the rename: the input's folder must still resolve to pageDir, that path must still be the same directory by
++  // device and inode, and the output's folder must still resolve there; after the write, the temp file's lstat must be the file
++  // pack made, by the fstat its descriptor gave right after the exclusive open, at that path. That identity is taken before the
++  // write, so a write that fails part way, say with EFBIG, still ends with the temp file removed, and only while it is still
++  // pack's own. Node has no openat or renameat to pin the folder, so between the last check and each of the two syscalls a swap
++  // can still redirect that one call; a swap at any other moment is caught and nothing is written over the output. A process of
++  // the same user that can rename the page's folder can already write every file in it, so a swap timed into one of those two
++  // windows is out of scope here: the checks catch a folder that moved by accident, or around the lint, which can run long.
++  const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let fd = -1, own = null, why = null;
++  const sameDir = () => { try { const s = lstatSync(pageDir); return realpathSync(baseDir) === pageDir && s.isDirectory() && s.dev === pageDirId.dev && s.ino === pageDirId.ino && realpathSync(dirname(outPath)) === pageDir; } catch { return false; } };
++  try {
++    if (!sameDir()) why = `the page's folder ${rel(pageDir)} changed during the run — nothing was written; run pack again`;
++    else {
++      fd = openSync(tmp, 'wx'); own = fstatSync(fd); writeFileSync(fd, packed); closeSync(fd); fd = -1;
++      const l = lstatSync(tmp);
++      if (!sameDir() || !l.isFile() || l.dev !== own.dev || l.ino !== own.ino || realpathSync(tmp) !== join(pageDir, basename(tmp))) why = `the page's folder ${rel(pageDir)} changed during the write — ${rel(outPath)} was not written; a ${basename(tmp)} left where the old path leads is pack's`;
++      else renameSync(tmp, outPath);
++    }
++  } catch (e) { why = e.code || e.message; }
++  if (why) {
++    if (fd >= 0) { try { closeSync(fd); } catch {} }
++    try { const s = lstatSync(tmp); if (own && s.dev === own.dev && s.ino === own.ino) unlinkSync(tmp); } catch {}
++    console.log(`✗ could not write ${rel(outPath)}: ${why}`); process.exit(1); } }
+ if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
+ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
+   const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
+@@ -298,4 +713,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+   const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
+   console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
+ }
+-console.log(`✓ ${rel(outPath)}  ${(Buffer.byteLength(packed) / 1024).toFixed(0)} KB · ${inlined} asset(s) inlined${warns.length ? ` · ${warns.length} warning(s)` : ''}`);
++console.log(`✓ ${rel(outPath)}  ${(Buffer.byteLength(packed) / 1024).toFixed(0)} KB · runtime inlined · ${media.size} media file${media.size === 1 ? '' : 's'} beside it for the plans CLI${warns.length ? ` · ${warns.length} warning(s)` : ''}`);

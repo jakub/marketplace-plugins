@@ -20,6 +20,37 @@ Use the installed `plans` CLI as the supported client for a self-hosted Plans se
 4. The token comes from `$PLANS_TOKEN`, then `--token-file` (which defaults to `$PLANS_TOKEN_FILE`), then `$XDG_CONFIG_HOME/plans/token` or `~/.config/plans/token`. Rely on this resolution unless the user requests an override.
 5. Never print, inspect, copy, or return the raw bearer token. Do not regenerate or replace it without explicit authorization.
 
+## Delivery policy
+
+This section is the one statement of when to publish, how long to keep an artifact, and where its URL may go. `plans:show` and `plans:doc` follow it and do not repeat it.
+
+### Authorization
+
+- An explicit user request to publish, upload, host, or share through Plans authorizes a publish.
+- The standing charter instruction for private publication also authorizes one, when it covers the task.
+- A skill that the model loaded on its own grants nothing.
+- A public publish always needs an explicit request for that artifact. This applies to a `--public` flag or any other way to make an artifact reachable outside the private viewer. The client in the reference below has no such flag.
+- If neither an explicit request nor applicable standing authorization covers publication, as when the request only asks to create or preview HTML, prepare and validate the file, then ask before you publish.
+
+### Retention
+
+- Use the default of seven days when the user only says to publish or share.
+- Use `--keep` when the user explicitly asks for permanence, or when the artifact is PR evidence.
+- Use `--ttl 12h` for a Document that replaces an Inline render the host could not show.
+- When the user names a lifetime, pass it as `--ttl <duration>`. For example, three days is `--ttl 3d`. A duration uses hours, whole days, or whole weeks, and cannot exceed 365 days.
+- Never combine `--ttl` and `--keep`.
+
+Attachments inherit the plan's retention, so `--keep` on a plan makes its media permanent too.
+
+### Where a capability URL may go
+
+Each viewer URL is a read capability. Anyone who has it can open the artifact.
+
+- Return it to the requesting user. This is always allowed.
+- Put it in the body or the comments of the PR that the work belongs to, only on a repository the user owns. Label it tailnet-only.
+- On a PR in a repository the user does not own, commit screenshots at a pinned SHA instead of the URL.
+- Never put a URL in a commit, a commit message, a log, or another repository.
+
 ## Choose the artifact type
 
 Each upload is one file, and the CLI infers its media type from the extension. Anything outside this table fails before the network is touched, and the server rejects an unlisted type with `415`:
@@ -65,22 +96,11 @@ Write plans that use this rather than embedding large media as base64:
 
 Each attachment is an ordinary artifact with its own key and the plan's TTL, but the plan bundles it: they share the plan's lifetime settings, and deleting the plan deletes them. Human output lists the attachments on stderr (capability URL first, then the reference as written) while stdout stays the single plan URL. `--json` lists them under `attachments`, each entry a full artifact response plus the `path` as written in the document.
 
-If an attachment upload, the splice, or the plan upload fails, the CLI deletes what it already published and names anything it could not delete. Run `plans delete` on those keys.
-
-## Choose retention
-
-Select retention from the user's intent:
-
-- Use the default seven days when the user merely says to publish or share.
-- Use `--ttl 12h`, `--ttl 7d`, or `--ttl 2w` when a lifetime is specified. Durations may use hours, whole days, or whole weeks and cannot exceed 365 days.
-- Use `--keep` only when the user explicitly requests permanence or the artifact is clearly durable documentation intended to remain available.
-- Never combine `--ttl` and `--keep`.
-
-Attachments inherit the plan's retention, so `--keep` on a plan makes its media permanent too.
+If an attachment upload, the splice, or the plan upload fails, the CLI deletes what it already published and names anything it could not delete. That rollback belongs to the CLI. Report each key it names as unresolved, and run `plans delete` on one only when the user asks you to.
 
 ## Publish
 
-Publishing is authorized when the user explicitly asks to publish, upload, host, or share through Plans. If the request only asks to create or preview HTML, prepare and validate the file but ask before publishing.
+Publish only under the authorization in the delivery policy.
 
 Prefer JSON output so the result can be checked precisely:
 
@@ -104,9 +124,25 @@ After publishing, verify the live artifact unless the user explicitly asks for u
 3. Check that `Cache-Control` includes `no-store` and that a sandboxed `Content-Security-Policy` is present.
 4. When a local source file exists, compare its SHA-256 and size with the publish response or downloaded bytes. For a plan whose media was spliced, the published bytes differ from the local file by design — compare the attachments instead, and confirm the plan body contains the returned capability URLs.
 5. For video, confirm `Accept-Ranges: bytes` and that a `Range` request returns `206` — seeking depends on it. A `HEAD` is enough to check headers without pulling the whole file.
-6. For a visually important page, render the live page at desktop and phone dimensions when browser tooling is available, and confirm embedded media actually loads from its capability URL.
+6. For an HTML artifact, run the render check below.
 
-Use a temporary file for downloaded verification bytes. Do not commit capability URLs, put them in logs, or post them to broader channels. Returning the URL directly to the requesting user is expected.
+Use a temporary file for downloaded verification bytes. Send the URL only where the delivery policy allows.
+
+## Render check
+
+The render check loads the live page in a real browser and looks for the faults that the headers cannot show. Run it on every HTML artifact unless the user asked for upload only.
+
+1. Start to capture console messages, page errors, and failed requests before you navigate. A fault that occurs during the first load is lost if capture starts late.
+2. Load the live URL at 390×844 and at 1440×900. At each size, load it in light and in dark through emulated `prefers-color-scheme`.
+3. For a runtime document, which is a page that `plans:doc` packed, check each of the four views again with every claim open. If the page takes feedback, check the four views again with the Respond sheet open. A page in reading mode, such as a walkthrough or report page with `<body data-feedback="off">`, has no Respond sheet. For that page, check instead that it shows no Respond, comment, strike, or edit control.
+4. Fail the check on any of these faults, and report each one separately:
+   - horizontal overflow on the root element
+   - an element clipped outside a scroller the reader can reach
+   - a CSP console message that starts with "Refused to"
+   - an uncaught error
+   - media that fails to load or decode. A `206` response is healthy, because the browser requests media in ranges.
+5. If the browser tooling is unavailable, record the render check as unknown. Unknown is never a pass.
+6. If the check fails, keep the publish result and its attachment keys, and report them. Fix the source and republish under the same authorization. Name the replacement URL as the one that replaces the failed artifact. Ask before you delete anything, and never delete automatically.
 
 ## Report the result
 
@@ -115,7 +151,7 @@ Lead with the clickable viewer URL. Then state:
 - Retention or expiration
 - Source file path, if one exists
 - Attachment URLs when a plan auto-published media, with the note that deleting the plan deletes them too
-- Verification performed
+- Verification performed, with the render check result: pass, each failure, or unknown
 - Any material sandbox limitation
 
 Do not include the bearer token, its digest, or internal artifact storage paths.

@@ -5,7 +5,9 @@
 // `gh api --paginate --slurp` prints an outer array with one element per page (a check-runs page
 // is an object carrying check_runs, a statuses page is the array itself), paged at the 100 the
 // executor asks for, so a 101st check really is on a second page. The fake records every call and
-// every merge. Every case reads the one JSON line and the exit; each refusal asserts that nothing
+// every merge. `gh pr view` answers with exactly the --json fields asked for, so a gate that stops
+// asking for a field it needs reads null rather than a value the fake volunteered, and the commit
+// headlines come only from the paged commits query, 100 to a page like GitHub's. Every case reads the one JSON line and the exit; each refusal asserts that nothing
 // merged, and each unproven outcome asserts that it does not read as a refusal. One case runs the
 // real gh runner against a fake gh binary to prove that GH_REPO and GH_HOST never reach gh, and
 // two prove that a gh or git planted behind a relative PATH entry never runs.
@@ -33,6 +35,10 @@ const HEAD = 'b'.repeat(40)
 const BRANCH = 'feat/issue-6-merge-gate'
 const PR_URL = `https://github.com/${SLUG}/pull/${PR}`
 const ARGS = [String(PR), HEAD]
+const TITLE = 'feat(flow): gate the merge'
+const HEADLINES = ['feat(flow): read the gate once', 'fix(flow): re-read before the merge']
+const CAPABILITY_URL = 'https://plans.example.ts.net/p/AbCdEf0123456789'
+const PR_BODY = `Evidence: ${CAPABILITY_URL}\n\nAlso see https://github.com/${SLUG}/pull/${PR}#issuecomment-1`
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-land-merge-')))
 const repoWith = (name, origin) => {
   const dir = join(tmp, name)
@@ -54,15 +60,23 @@ const thread = (id, resolved = true) => ({ id, isResolved: resolved, isOutdated:
 const pagesOf = (list) => { const pages = []; for (let i = 0; i < list.length; i += 100) pages.push(list.slice(i, i + 100)); return pages.length ? pages : [[]] }
 
 // `fail` names one read that answers HTTP 500, and `malformed` one that answers in the wrong shape.
+// `commits` is the pull request's commit list; commitTotal overrides the totalCount every commit
+// page reports, commitPageFails names a page (0-based) whose read fails, and commitsNoCursor drops
+// the cursor that leads past the first page.
+const commit = (messageHeadline, i) => ({ oid: String(i % 10).repeat(40), messageHeadline, messageBody: `see ${CAPABILITY_URL}` })
 const freshState = (over = {}) => ({
   defaultBranch: 'main', mergeExit: 0, landsNothing: false, confirmFails: false, queue: null, queueFails: false, recheck: {}, after: {},
   queueAfter: undefined, queueAfterFails: false, merged: false, fail: null, malformed: null, behindBy: 0, baseTip: 'f'.repeat(40), tipAtMerge: null, suiteCount: null,
   suites: [{ id: 501, status: 'completed', conclusion: 'success' }, { id: 502, status: 'completed', conclusion: 'success' }],
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')], totalCount: null, statuses: [],
+  commits: HEADLINES.map(commit), commitTotal: null, commitPageFails: null, commitsNoCursor: false,
   threadPages: [[thread('T1')]], threadsNoCursor: false, baseFlakes: null, headFlakes: null, flakesHttp: null, flakesEncoding: 'base64',
   calls: [], merges: [], ...over,
-  pr: { headRefOid: HEAD, headRefName: BRANCH, state: 'OPEN', isDraft: false, baseRefName: 'main', url: PR_URL, autoMergeRequest: null, ...(over.pr || {}) },
+  pr: { headRefOid: HEAD, headRefName: BRANCH, state: 'OPEN', isDraft: false, baseRefName: 'main', url: PR_URL, autoMergeRequest: null,
+    title: TITLE, body: PR_BODY, ...(over.pr || {}) },
 })
+// What `gh pr view --json <fields>` prints: every field asked for, null when the pull request has none, and nothing else.
+const project = (value, fields) => Object.fromEntries(fields.split(',').map((key) => [key, value[key] ?? null]))
 const field = (args, key) => { const hit = args.find((a) => String(a).startsWith(`${key}=`)); return hit === undefined ? null : String(hit).slice(key.length + 1) }
 const makeRunGh = (st) => (args) => {
   st.calls.push(args)
@@ -78,13 +92,22 @@ const makeRunGh = (st) => (args) => {
     const fields = args[args.indexOf('--json') + 1]
     if (fields.startsWith('state,')) {
       if (st.confirmFails) return fail('fake gh: view failed\n')
-      return ok({ ...st.pr, state: st.merged ? 'MERGED' : st.pr.state, autoMergeRequest: null, ...st.after })
+      return ok(project({ ...st.pr, state: st.merged ? 'MERGED' : st.pr.state, autoMergeRequest: null, ...st.after }, fields))
     }
-    if (again('pr')) return st.fail === 'recheck' || st.failLater === 'pr' ? serverError() : ok({ ...st.pr, ...st.recheck, ...st.later?.pr })
-    return st.fail === 'view' ? serverError() : ok(st.pr)
+    if (again('pr')) return st.fail === 'recheck' || st.failLater === 'pr' ? serverError() : ok(project({ ...st.pr, ...st.recheck, ...st.later?.pr }, fields))
+    return st.fail === 'view' ? serverError() : ok(project(st.pr, fields))
   }
   if (args[0] === 'repo' && args[1] === 'view') return st.fail === 'repo' ? serverError() : ok({ defaultBranchRef: { name: st.defaultBranch } })
   if (args[0] === 'api' && args[1] === 'graphql') {
+    if ((field(args, 'query') ?? '').includes('commits(')) {
+      const pages = pagesOf(st.commits)
+      const index = field(args, 'cursor') === null ? 0 : Number(field(args, 'cursor').slice(1))
+      if (st.commitPageFails === index) return fail('fake gh: graphql failed\n')
+      const more = index < pages.length - 1
+      const nodes = pages[index].map((c) => ({ commit: { oid: c.oid, messageHeadline: c.messageHeadline, messageBody: c.messageBody } }))
+      return ok({ data: { repository: { pullRequest: { commits: { totalCount: st.commitTotal ?? st.commits.length,
+        pageInfo: { hasNextPage: more, endCursor: more && !st.commitsNoCursor ? `k${index + 1}` : null }, nodes } } } } })
+    }
     if ((field(args, 'query') ?? '').includes('reviewThreads')) {
       if (st.fail === 'threads') return fail("gh: Field 'reviewThreads' doesn't exist\n")
       if (field(args, 'cursor') === null) st.threadRead = again('threads') ? 'later' : 'first'
@@ -173,7 +196,87 @@ console.log('the executor merges once, pinned to the gated head')
   check('exit 0, and the JSON line says what it merged', merged(r) && r.json.repo === IDENTITY && r.json.pr === PR && r.json.head === HEAD &&
     r.json.detail.includes(`merged #${PR} as a squash of ${HEAD.slice(0, 12)}`), shown(r))
   check('exactly one merge: --repo, --squash, --match-head-commit at the caller\'s head', r.st.merges.length === 1 &&
-    JSON.stringify(r.st.merges[0]) === JSON.stringify(['pr', 'merge', String(PR), '--repo', IDENTITY, '--squash', '--match-head-commit', HEAD]), JSON.stringify(r.st.merges))
+    JSON.stringify(r.st.merges[0].slice(0, 8)) === JSON.stringify(['pr', 'merge', String(PR), '--repo', IDENTITY, '--squash', '--match-head-commit', HEAD]), JSON.stringify(r.st.merges))
+  check('and the exact argument array carries the title with (#N) as --subject and one headline line per commit as --body', JSON.stringify(r.st.merges[0]) === JSON.stringify([
+    'pr', 'merge', String(PR), '--repo', IDENTITY, '--squash', '--match-head-commit', HEAD,
+    '--subject', `${TITLE} (#${PR})`, '--body', HEADLINES.map((h) => `- ${h}`).join('\n')]), JSON.stringify(r.st.merges))
+  check('no merge argument carries the description\'s capability URL, any URL from the description, or a commit body', r.st.merges[0].every((a) =>
+    !String(a).includes(CAPABILITY_URL) && !(PR_BODY.match(/https?:\/\/[^\s)]+/g) ?? []).some((u) => String(a).includes(u)) && !String(a).includes('see ')), JSON.stringify(r.st.merges))
+  check('a URL in the title or in a commit headline is replaced by <link removed> and reaches no merge argument', (() => {
+    const titleUrl = `evidence ${CAPABILITY_URL} done`
+    const headlineUrl = 'http://plans.example.ts.net/p/ZzYy9876543210'
+    const leaky = run(ARGS, { st: freshState({ pr: { title: titleUrl }, commits: [`docs: see ${headlineUrl}, then stop`, 'fix: plain headline'].map(commit) }) })
+    const args = leaky.st.merges[0] ?? []
+    return merged(leaky) && args.every((a) => !/https?:\/\//.test(String(a)) && !String(a).includes('plans.example.ts.net')) &&
+      args[args.indexOf('--subject') + 1] === `evidence <link removed> done (#${PR})` &&
+      args[args.indexOf('--body') + 1] === '- docs: see <link removed> then stop\n- fix: plain headline'
+  })(), 'a URL in the title or a headline reached the squash message')
+  // A plans capability is the bare 22-character base64url key, so it is redacted wherever it sits,
+  // whatever URL spelling carries it. The gate reads the same calls whether or not a key was there.
+  const KEY = 'AbCdEf0123456789_-xYzA'
+  const SHA40 = 'a1b2c3d4e5'.repeat(4)
+  const leakCase = (name, { title = TITLE, headline = null, key = KEY }, subject, body) => {
+    const r = run(ARGS, { st: freshState({ pr: { title }, commits: [commit(headline ?? 'fix: plain headline', 1)] }) })
+    const args = r.st.merges[0] ?? []
+    const subjectGot = args[args.indexOf('--subject') + 1]
+    const bodyGot = args[args.indexOf('--body') + 1]
+    const gateCalls = (x) => JSON.stringify(x.st.calls.filter((a) => !(a[0] === 'pr' && a[1] === 'merge')))
+    check(name, merged(r) && args.every((a) => !String(a).includes(key)) && subjectGot === subject && bodyGot === body &&
+      gateCalls(r) === gateCalls(run()), JSON.stringify({ subjectGot, bodyGot, merges: r.st.merges }))
+  }
+  const LR = '<link removed>'
+  leakCase('a bare capability key in the title is replaced by <link removed>', { title: `ship ${KEY} now` }, `ship ${LR} now (#${PR})`, '- fix: plain headline')
+  leakCase('a bare key in a headline is replaced', { headline: `see ${KEY}.` }, `${TITLE} (#${PR})`, `- see ${LR}.`)
+  leakCase('a scheme-relative //host/key in a headline is replaced', { headline: `see //plans.example/${KEY} ok` }, `${TITLE} (#${PR})`, `- see ${LR} ok`)
+  leakCase('a host/key with no scheme keeps the host and loses the key', { headline: `see plans.example/${KEY} ok` }, `${TITLE} (#${PR})`, `- see plans.example/${LR} ok`)
+  leakCase('an angle-bracket URL in a headline is replaced', { headline: `see <https://plans.example/${KEY}> ok` }, `${TITLE} (#${PR})`, `- see <${LR} ok`)
+  leakCase('a markdown link in a headline loses the key', { headline: `see [doc](https://plans.example/${KEY}) ok` }, `${TITLE} (#${PR})`, `- see [doc](${LR} ok`)
+  leakCase('a URL folded across a newline loses both halves', { headline: `see https://plans.example/\n${KEY}` }, `${TITLE} (#${PR})`, `- see ${LR} ${LR}`)
+  leakCase('an uppercase scheme is replaced', { headline: `see HTTPS://PLANS.EXAMPLE/${KEY} ok` }, `${TITLE} (#${PR})`, `- see ${LR} ok`)
+  // The canonical key is base64url of 16 bytes: 22 characters, the last always one of A, Q, g, w.
+  // So an all-lowercase key is still a capability and goes, whatever letters it holds.
+  const LOWER = 'abcdefghijklmnopqrstug'
+  leakCase('an all-lowercase capability key bare in the title is replaced', { title: `ship ${LOWER} now`, key: LOWER }, `ship ${LR} now (#${PR})`, '- fix: plain headline')
+  leakCase('an all-lowercase key after plans.internal/ keeps the host and loses the key', { headline: `see plans.internal/${LOWER} ok`, key: LOWER }, `${TITLE} (#${PR})`, `- see plans.internal/${LR} ok`)
+  leakCase('an all-lowercase key folded after https://plans.internal/ across a newline loses both halves', { headline: `see https://plans.internal/\n${LOWER}`, key: LOWER }, `${TITLE} (#${PR})`, `- see ${LR} ${LR}`)
+  for (const last of ['A', 'Q', 'g', 'w']) {
+    const key = `abcdefghijklmnopqrstu${last}`
+    leakCase(`a lowercase-bodied capability key ending in ${last} is replaced`, { headline: `see ${key} ok`, key }, `${TITLE} (#${PR})`, `- see ${LR} ok`)
+  }
+  for (const [what, token] of [['a lowercase kebab word of 22 characters', 'smoke-plugin-manifests'], ['a 40-character commit SHA', SHA40],
+    ['a 21-character mixed token', KEY.slice(0, 21)], ['a 23-character mixed token', `Z${KEY.slice(1)}B`],
+    ['a 22-character mixed-case token whose last character cannot end a key (a deliberate false negative)', `${KEY.slice(0, 21)}B`]]) {
+    leakCase(`${what} survives unchanged`, { headline: `fix: ${token} again` }, `${TITLE} (#${PR})`, `- fix: ${token} again`)
+  }
+  check('the title and commits are not in the gate snapshot: a title edit between the reads still lands, with the newer title', (() => {
+    const edited = run(ARGS, { st: freshState({ recheck: { title: 'feat(flow): gate the merge, reworded' } }) })
+    return merged(edited) && edited.st.merges[0].includes(`feat(flow): gate the merge, reworded (#${PR})`)
+  })())
+  check('an unreadable title or a commit list with no headline refuses read-failed and nothing merges', (() => {
+    const noTitle = run(ARGS, { st: freshState({ pr: { title: '' } }) })
+    const noCommits = run(ARGS, { st: freshState({ commits: [] }) })
+    return refusedWith(noTitle, 'read-failed', 'title') && refusedWith(noCommits, 'read-failed', 'commit headlines')
+  })())
+  check('gh pr view is never asked for commits, which it serves only the first 100 of', r.st.calls.filter((a) => a[0] === 'pr' && a[1] === 'view')
+    .every((a) => !a[a.indexOf('--json') + 1].split(',').includes('commits')), JSON.stringify(r.st.calls.filter((a) => a[0] === 'pr')))
+  // GitHub pages the commits connection at 100, and the body has to list every commit, not the first page.
+  const longHeadlines = Array.from({ length: 150 }, (unused, i) => `fix: step ${i + 1}`)
+  const long = run(ARGS, { st: freshState({ commits: longHeadlines.map(commit) }) })
+  const longBody = long.st.merges[0]?.[long.st.merges[0].indexOf('--body') + 1]
+  check('150 commits across two pages all reach the squash body, in order', merged(long) && longBody === longHeadlines.map((h) => `- ${h}`).join('\n') &&
+    long.st.calls.filter((a) => a[1] === 'graphql' && (field(a, 'query') ?? '').includes('commits(') && field(a, 'cursor') === 'k1').length === 2, shown(long))
+  for (const [name, over, text] of [
+    ['a failed second commit page', { commits: longHeadlines.map(commit), commitPageFails: 1 }, 'failed on page 2'],
+    ['another commit page with no cursor', { commits: longHeadlines.map(commit), commitsNoCursor: true }, 'no cursor'],
+    ['a commit count short of totalCount', { commitTotal: 3 }, 'collected 2 commit(s) and reported totalCount 3'],
+    ['one commit with an empty headline among readable ones', { commits: ['fix: one', '', 'fix: three'].map(commit) }, '1 of 3 commit(s) have no readable headline'],
+    ['one commit with no headline at all', { commits: [commit('fix: one', 1), { oid: '2'.repeat(40) }] }, '1 of 2 commit(s) have no readable headline'],
+  ]) {
+    const r = run(ARGS, { st: freshState(over) })
+    check(`${name} refuses read-failed and nothing merges`, refusedWith(r, 'read-failed', text), shown(r))
+  }
+  const endlessCommits = run(ARGS, { st: freshState({ commits: Array.from({ length: 2001 }, (unused, i) => commit(`fix: ${i}`, i)) }) })
+  check('a commit read still paging after 20 pages refuses read-failed', refusedWith(endlessCommits, 'read-failed', '20 pages'), shown(endlessCommits))
   check('every gh call names origin\'s repository', r.st.calls.every(pinnedTo(IDENTITY, 'github.com')), JSON.stringify(r.st.calls.filter((a) => !pinnedTo(IDENTITY, 'github.com')(a))))
 }
 

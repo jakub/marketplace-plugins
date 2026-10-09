@@ -1,0 +1,63 @@
+diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
+index 1a007cabe9d8016eabe91cc5aa808932aad5e552..4ca93a80a57274a2d617b4db44dba5429518b7ad 100644
+--- a/plugins/plans/skills/doc/references/blocks.md
++++ b/plugins/plans/skills/doc/references/blocks.md
+@@ -149,7 +149,7 @@ export async function assertUnderLimit(userId: string) {
+ </doc-code>
+ ```
+ 
+-- **Code that exists:** `src` + `lines="a-b"` (`lines="40"` is one line). Pack reads the file under `--root`, and stamps the commit if that is a git checkout. `ref="<sha|branch>"` reads it from git.
++- **Code that exists:** `src` + `lines="a-b"` (`lines="40"` is one line). Pack reads the file under `--root`, and stamps the commit if that is a git checkout. `ref="<sha|branch>"` reads it from git. If git cannot read the file at that ref, pack stops with an error and never uses the working-tree file in its place.
+ - **Code that does not exist:** paste a sketch and say “sketch” in `title`. `lang` sets the highlighting. `start="38"` sets the first line number.
+ - **A change to code that exists:** add `diff` and `file="path"`, and paste unified-diff lines. `start="N"` or an `@@ -a,b +c,d @@` header numbers the gutter. One file per block. Never cut lines out of the middle of a hunk. A diff is a proposal already, so it needs no “sketch”.
+ - `doc-pin line="N"` uses the number shown in the gutter (`old="N"` for a removed line). `tone="info|warn|risk|ok"`. A pin says what the line is, in a clause.
+@@ -228,7 +228,7 @@ node runtime/pack.mjs [--root <repo>]… [-o out.html] [--lint-only] [--quiet] [
+ ```
+ 
+ - Lints every block with the same parsers the browser uses, and the shape of the tree.
+-- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
++- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error, unless only `+` rows name it: a file the change adds opens nothing, as without `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
+ - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, reached through no symlink, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
+ - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI or holds a `var()`, `env()` or `attr()`, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
+ - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
+diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
+index 49b38cce1464c7586bda4ac4c61b1ca378bbd906..9c8b5e5db2011559ed1d0ed9af1e73d91382c061 100644
+--- a/plugins/plans/skills/doc/runtime/pack.mjs
++++ b/plugins/plans/skills/doc/runtime/pack.mjs
+@@ -256,6 +256,11 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
+ const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
+ const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) { if (!refused.has(ref + ':' + p)) { refused.add(ref + ':' + p); err(`ref="${ref}" with "${p}" — not a plain git ref and a path inside the repo; not running git`); } return null; }
+   for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
++// A pinned ref names the bytes a page cites. When git cannot read the file at that ref, the working-tree copy would show other
++// bytes under the ref's name, so both call sites stop with an error instead. git's own message is not echoed. A call-row file
++// that only + rows name is one the change adds, which has no bytes at the ref: doc-calls skips it as a missing file, as it
++// does with no ref, and never reads the working tree for it.
++const atRef = (at, ref, p) => { const g = gitShow(ref, p); if (g) return g; const k = ref + ':' + p; if (!refused.has(k)) { refused.add(k); err(`${at}: ref="${ref}" — git cannot read ${p} at that ref in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')}; a pinned ref never falls back to the working tree`); } return null; };
+ const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
+ const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
+ 
+@@ -305,7 +310,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+       let added = 0, missing = 0, extra = '';
+       const seen = new Set();
+       for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
+-        let text = null, sha = ''; const g = a.ref ? gitShow(a.ref, nd.file) : null; if (g) { text = g.text; sha = a.ref; } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
++        let text = null, sha = ''; if (a.ref) { const added = m.nodes.every((o) => o.file !== nd.file || o.mark === '+'); const g = added ? gitShow(a.ref, nd.file) : atRef(at, a.ref, nd.file); if (!g && !added) continue; if (g) { text = g.text; sha = a.ref; } } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
+         if (text == null) { missing++; continue; }
+         if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
+         const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
+@@ -334,12 +339,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+       if (a.src && !hasScript) {
+         let text, where;
+         let sha = '';
+-        const g = a.ref ? gitShow(a.ref, a.src) : null;
+-        if (g) { text = g.text; where = g.where; sha = a.ref; }
+-        else { if (a.ref) { const f0 = findFile(a.src); if (!f0) { err(`${at}: src="${a.src}" ref="${a.ref}" — git show failed in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')} and no plain file by that path either (is --root a checkout with that ref, or a snapshot dir containing the file?)`); return whole; } info.push(`${a.src}: no git ref ${a.ref} under the roots — using the plain file (assuming it is a snapshot at that ref)`); sha = a.ref; }
+-          const all = roots.map((r) => resolve(r, a.src)).filter((c) => existsSync(c)); if (all.length > 1) warn(`${at}: src="${a.src}" exists under ${all.length} roots (${all.map((x) => relative(process.cwd(), x)).join(', ')}) — using the first; reorder --root or make the path more specific`);
++        if (a.ref) { const g = atRef(at, a.ref, a.src); if (!g) return whole; text = g.text; where = g.where; sha = a.ref; }
++        else { const all = roots.map((r) => resolve(r, a.src)).filter((c) => existsSync(c)); if (all.length > 1) warn(`${at}: src="${a.src}" exists under ${all.length} roots (${all.map((x) => relative(process.cwd(), x)).join(', ')}) — using the first; reorder --root or make the path more specific`);
+           const f = findFile(a.src); if (!f) { err(`${at}: src="${a.src}" not found (looked under ${roots.concat([baseDir]).map((r) => relative(process.cwd(), r) || '.').join(', ')})`); return whole; } text = readFileSync(f, 'utf8'); where = relative(process.cwd(), f); if (!roots.some((r) => f.startsWith(r))) warn(`${at}: src="${a.src}" resolved OUTSIDE --root, at ${where} — check it's the file you mean`);
+-          if (!sha) sha = stamp(f, true); }
++          sha = stamp(f, true); }
+         if (SECRET_TEXT.test(text)) { err(`${at}: ${a.src} looks like it holds a secret somewhere in the file — not packaging any of it`); return whole; }
+         const total = text.split('\n').length; let start = 1;
+         if (a.lines) { const mm = a.lines.match(/^(\d+)(?:-(\d+))?$/); if (!mm) err(`${at}: lines="${a.lines}" should look like 40-72`); else { start = +mm[1]; const end = +(mm[2] || mm[1]);   /* lines="40" is that one line */ if (end > total || start < 1 || start > end) err(`${at}: lines="${a.lines}" but ${a.src} has ${total} lines at ${where} — is --root (or ref=) at the commit you're citing?`); text = text.split('\n').slice(start - 1, end).join('\n'); } }

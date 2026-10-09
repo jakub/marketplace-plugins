@@ -15,7 +15,7 @@
 // page fails green: check runs and commit statuses on the argument head over `gh api --paginate
 // --slurp`, with the check runs collected equal to the total_count GitHub reported and the head
 // carrying fewer than the 1000 check suites the check-runs endpoint serves from, and review
-// threads over paged GraphQL, 20 pages at most. A check run is pending until it is completed; a
+// threads and the pull request's commits over paged GraphQL, 20 pages at most each. A check run is pending until it is completed; a
 // commit status counts only as the newest of its context; a nameless entry, a conclusion outside
 // the known sets and no checks at all are each unknown, which is how a pull request looks in the
 // seconds after a push.
@@ -30,8 +30,21 @@
 // With no stop, it reads the whole gate again, which has to read exactly as it did for the verdict,
 // then the default branch's tip, which has to be the one the compare was made against: a land
 // elsewhere during the reads above moves that tip, and the merge pins only the head. Then it
-// runs `gh pr merge --squash --match-head-commit <head>` so GitHub re-checks the head itself, and
-// proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
+// runs `gh pr merge --squash --match-head-commit <head> --subject "<title> (#<pr>)" --body "<one
+// '- <headline>' line per commit>"` so GitHub re-checks the head itself. The message is built here
+// from the title and the commit headlines of the last gate read, never from the pull request
+// description, which can hold capability URLs that GitHub would otherwise copy into permanent
+// history. A URL or a `//` token in the title or a headline, through to the next whitespace, and any
+// 22-character capability key wherever it sits, becomes `<link removed>` for the same reason. That
+// redaction targets an accidental paste of a capability URL or key; a deliberately encoded form (a
+// backslash scheme, a percent-encoded key character) is out of scope, because the author could
+// equally commit the key directly. Title and commits are read with the gate but kept out of its
+// snapshot, so editing the title between the reads does not stop a land. The headlines come from
+// their own paged query rather than `gh pr view --json commits`, which serves the first 100 commits
+// and no more. A title that cannot be read, a commit read that is not whole (a failed page, a page
+// with no cursor, the page cap, a count other than totalCount) and any commit with no readable
+// headline each stop the land, so the body never lists only part of the pull request.
+// It proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
 // code. It prints one JSON line: exit 0 `merged`, exit 1 `refused` with every stop found (nothing
 // merged), exit 4 `unknown`, which a human looks at before anything is retried. stderr carries one
 // human line. A cooperative guardrail at one uid: a retarget or a land elsewhere between the last
@@ -48,9 +61,10 @@ const SHA = /^[0-9a-f]{40}$/
 // The check-runs endpoint serves from at most this many of a ref's most recent check suites.
 const MAX_CHECK_SUITES = 1000
 const MAX_THREAD_PAGES = 20
+const MAX_COMMIT_PAGES = 20
 const FLAKES_PATH = '.github/known-flakes.txt'
 const HTTP_404 = /\(HTTP 404\)|\bNot Found\b/
-const PR_FIELDS = 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest'
+const PR_FIELDS = 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest,title'
 const USAGE_LINE = 'usage: land-merge.mjs <pull-request-number> <expected-head-sha> [--accept-flake <check-name>:<test_name>]...'
 const USAGE = `${USAGE_LINE}
 
@@ -67,6 +81,12 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $pr: Int!, $cursor
     nodes { id isResolved comments(last: 20) { nodes { author { login } body path url } } }
   } } }
 }`
+const COMMITS_QUERY = `query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $pr) { commits(first: 100, after: $cursor) {
+    totalCount pageInfo { hasNextPage endCursor }
+    nodes { commit { messageHeadline } }
+  } } }
+}`
 
 // REST serves conclusions lowercase; anything outside both sets (stale among them) is unknown.
 const RUN_SUCCESS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
@@ -77,6 +97,19 @@ const nonEmpty = (value) => (typeof value === 'string' && value.trim() !== '' ? 
 const upper = (value) => (typeof value === 'string' ? value.trim().toUpperCase() : '')
 const truncate = (text, limit) => { const s = String(text ?? ''); return s.length <= limit ? s : `${s.slice(0, limit)}...` }
 const oneLine = (text) => String(text).replace(/\s*\n\s*/g, ' ').trim()
+// A plans capability is a bare key that grants access on its own, and a squash message is permanent
+// history. The key is base64url (no padding) of 16 random bytes, so it is exactly 22 characters of
+// [A-Za-z0-9_-] and its last character is always one of A, Q, g, w (the last 4 bits are zero
+// padding). So an http(s) URL or a scheme-relative `//` token, through to the next whitespace, and
+// every maximal [A-Za-z0-9_-] run of exactly 22 characters ending in one of those four, wherever it
+// sits and whatever case it holds, each become a fixed placeholder. A 22-character run ending
+// elsewhere cannot be a key and survives. Run it on a line already folded by oneLine.
+const LINK_REMOVED = '<link removed>'
+const CAPABILITY_KEY = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{21}[AQgw](?![A-Za-z0-9_-])/g
+const stripLinks = (text) => String(text)
+  .replace(/https?:\/\/\S*/gi, LINK_REMOVED)
+  .replace(/(?<!:)\/\/\S+/g, LINK_REMOVED)
+  .replace(CAPABILITY_KEY, LINK_REMOVED)
 const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
 
 const bucketOf = (entry) => {
@@ -185,7 +218,8 @@ export function landMerge({ argv, env, cwd, runGh }) {
   // only the ones some reviewer thought of. It returns the stops in order; the read failures among
   // them as problems, which leave the read unknown; an early refusal that ends the read; and a
   // snapshot of every fact a stop reads, null unless the read is whole. Adding a stop means adding
-  // the fact it reads to the snapshot, or a change in that fact goes unseen before the merge.
+  // the fact it reads to the snapshot, or a change in that fact goes unseen before the merge. The
+  // squash message is no stop's fact: it rides along as `message` and stays out of the snapshot.
   const readGate = () => {
     const stops = []
     const problems = []
@@ -198,6 +232,46 @@ export function landMerge({ argv, env, cwd, runGh }) {
     if (prUrlMismatch(pull.url, id, pr) !== null) {
       return { early: { code: 'redirected', detail: `the pull request GitHub returned (${JSON.stringify(scrubUserinfo(pull.url ?? '') || null)}) is not #${pr} of ${id.full}, so the read was redirected` } }
     }
+
+    // The commit headlines, paged to the end like the review threads in step 12. Every page has to
+    // report the same totalCount, and the commits collected have to match it.
+    const title = nonEmpty(pull.title)
+    if (title === null) unreadable('read-failed', `the title of #${pr} could not be read, so the squash subject cannot be built`)
+    const readHeadlines = () => {
+      const headlines = []
+      let total = null
+      let missing = 0
+      let cursor = null
+      for (let page = 0; page < MAX_COMMIT_PAGES; page += 1) {
+        const r = graphql(COMMITS_QUERY, { owner: id.owner, name: id.repo, pr, ...(cursor === null ? {} : { cursor }) })
+        const commitPage = (r.code === 0 ? parseObject(r.stdout) : null)?.data?.repository?.pullRequest?.commits
+        if (!Array.isArray(commitPage?.nodes)) return `the commit query failed on page ${page + 1} (${r.code === 0 ? 'no commits in the answer' : said(r)})`
+        const count = commitPage.totalCount
+        if (!Number.isSafeInteger(count) || count < 0 || (total !== null && count !== total)) {
+          return `the commit query reported totalCount ${JSON.stringify(count ?? null)} on page ${page + 1}${total === null ? '' : ` after ${total}`}`
+        }
+        total = count
+        for (const node of commitPage.nodes) {
+          const headline = nonEmpty(node?.commit?.messageHeadline)
+          if (headline === null) missing += 1
+          else headlines.push(headline)
+        }
+        if (commitPage.pageInfo?.hasNextPage !== true) {
+          const seen = headlines.length + missing
+          if (seen !== total) return `the commit query collected ${seen} commit(s) and reported totalCount ${total}`
+          if (missing > 0) return `${missing} of ${total} commit(s) have no readable headline`
+          if (total === 0) return 'the commit query returned no commits'
+          return headlines
+        }
+        cursor = nonEmpty(commitPage.pageInfo?.endCursor)
+        if (cursor === null) return 'the commit query reported another page and no cursor'
+      }
+      return `the commit query was still paging after ${MAX_COMMIT_PAGES} pages`
+    }
+    const headlines = readHeadlines()
+    if (!Array.isArray(headlines)) unreadable('read-failed', `the commit headlines of #${pr} could not be read whole: ${headlines}, so the squash body cannot be built`)
+    const message = title === null || !Array.isArray(headlines) ? null
+      : { subject: `${stripLinks(oneLine(title))} (#${pr})`, body: headlines.map((h) => `- ${stripLinks(oneLine(h))}`).join('\n') }
 
     // ---- 5 to 7: state, head, base, arming. From here every stop is collected.
     const state = nonEmpty(pull.state)
@@ -422,7 +496,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
       'auto-merge': pull.autoMergeRequest != null, 'merge queue': queued, compare: [behind, baseTip], ci: ci.snapshot, flakes: flakeText,
       threads: threadFacts.map((fact) => JSON.stringify(fact)).sort(),
     }
-    return { early: null, stops, problems, snapshot, checks, threads, base, defaultBranch, baseTip }
+    return { early: null, stops, problems, snapshot, checks, threads, base, defaultBranch, baseTip, message }
   }
   const verdict = readGate()
   if (verdict.early) return refuseNow(verdict.early.code, verdict.early.detail)
@@ -457,7 +531,8 @@ export function landMerge({ argv, env, cwd, runGh }) {
   if (stops.length > 0) return refused()
 
   // ---- 15: the merge, proven by a re-read
-  const merge = gh(['pr', 'merge', String(pr), '--repo', id.full, '--squash', '--match-head-commit', head], 120_000)
+  const merge = gh(['pr', 'merge', String(pr), '--repo', id.full, '--squash', '--match-head-commit', head,
+    '--subject', again.message.subject, '--body', again.message.body], 120_000)
   const failure = merge.code === 0 ? null : said(merge)
   const saidMerge = failure === null ? '' : ` (gh pr merge said: ${failure})`
 

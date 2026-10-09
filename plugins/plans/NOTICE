@@ -1,0 +1,513 @@
+This plugin vendors the html-plan runtime and its references, written by Thariq Shihipar
+and published in Anthropic's community plugin repo:
+
+    https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan
+
+Upstream commit:
+
+    f60f0454df3045f724c43c6346ec80bdcc3472b2
+
+Upstream `html-plan/.claude-plugin/plugin.json` says `"license": "MIT"`, but the repository
+carries one licence file, `LICENSE`, and it is the Apache License 2.0. This plugin treats the
+vendored files as Apache-2.0 and reproduces that licence in full at the end of this file.
+
+Upstream LICENSE SHA-256:
+
+    cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+
+Only skills/doc/ is vendored, and inside it only runtime/, references/ and examples/. The
+skill's own SKILL.md is first-party: upstream's SKILL.md becomes references/plan.md through
+patch 0002, which the doc skill loads for the plan kind. The upstream plugin manifest and
+README are deliberately not carried.
+
+PATH MAP
+--------
+
+Each line is `upstream -> pristine -> shipped`. Upstream paths are relative to the upstream
+repository root; local paths are relative to this repository's root. A file lands at its
+pristine path, the patches below run, and it ships at its shipped path.
+
+-----BEGIN PATH MAP-----
+html-plan/skills/html-plan/SKILL.md -> plugins/plans/skills/doc/SKILL.md -> plugins/plans/skills/doc/references/plan.md
+html-plan/skills/html-plan/runtime/htmlplan.css -> plugins/plans/skills/doc/runtime/htmlplan.css -> plugins/plans/skills/doc/runtime/htmlplan.css
+html-plan/skills/html-plan/runtime/htmlplan.js -> plugins/plans/skills/doc/runtime/htmlplan.js -> plugins/plans/skills/doc/runtime/htmlplan.js
+html-plan/skills/html-plan/runtime/pack.mjs -> plugins/plans/skills/doc/runtime/pack.mjs -> plugins/plans/skills/doc/runtime/pack.mjs
+html-plan/skills/html-plan/references/blocks.md -> plugins/plans/skills/doc/references/blocks.md -> plugins/plans/skills/doc/references/blocks.md
+html-plan/skills/html-plan/examples/scheduled-send.html -> plugins/plans/skills/doc/examples/scheduled-send.html -> plugins/plans/skills/doc/examples/scheduled-send.html
+-----END PATH MAP-----
+
+PRISTINE SHA-256
+----------------
+
+The upstream bytes at the pin, keyed by pristine path, in `sha256sum` format. From the root of
+a scratch tree laid out by the path map, `sha256sum -c` on these lines checks it.
+
+-----BEGIN PRISTINE SHA-256-----
+ac5dd7da4f7f5233b732c5519e690a272893c6a03f71ca7a3e5c8a3070be4d85  plugins/plans/skills/doc/SKILL.md
+f16d2c6aa08e5f275bceee96e38ec38f05dd0add91c4bb6636e8a0a8a4836a9e  plugins/plans/skills/doc/runtime/htmlplan.css
+4b5bcb3d7160c6170bc82c6f1809089d0faa890d2c7f7e8c9100ff6330478d42  plugins/plans/skills/doc/runtime/htmlplan.js
+88ca711cfc4a3c37c9155357487763f75aa8a9cf1ebc789dfefe1542a38944df  plugins/plans/skills/doc/runtime/pack.mjs
+dfdfd2c79b6c049c788be73076c27b3bfbd8b1e220ef75e4c0413ffe872de8ca  plugins/plans/skills/doc/references/blocks.md
+472f1a9180d4384a6499eb9991641368d8dfde1083b393d62b64ee81609c138a  plugins/plans/skills/doc/examples/scheduled-send.html
+-----END PRISTINE SHA-256-----
+
+LOCAL MODIFICATIONS
+-------------------
+
+The vendored files are NOT verbatim. Every file a patch
+changes carries this line, in its own comment syntax, from patch 0001 on:
+
+    Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE.
+
+The patches below apply on top of upstream, in this order. Each one assumes the ones before
+it, so a later patch's context is the text an earlier one wrote.
+
+-----BEGIN PATCHES-----
+0001-modification-notices.patch
+    Adds the modification notice above to every vendored file that a patch in this list
+    changes: after the shebang in pack.mjs, at the top of htmlplan.js, htmlplan.css and
+    blocks.md, and after the frontmatter of SKILL.md.
+0002-plan-reference.patch
+    Renames SKILL.md to references/plan.md, a reference the first-party doc skill loads for
+    the plan kind. Strips the frontmatter, the $ARGUMENTS line and the Artifact-tool
+    hand-over, makes its paths relative to the new location, and points the hand-over at
+    the "Delivery policy" section of plans:publish.
+0003-theme-tokens.patch
+    Renames every runtime-owned custom property to --plans-*, including --d, --tr-depth and
+    --top that htmlplan.js generates, and maps them onto T3's theme variables with the
+    upstream colours as fixed fallbacks, so a page follows the host's theme. ink-3 reads
+    --muted-foreground and sunk reads --muted; ink-2 and line-2 mix two host colours and
+    purple stays fallback-only, since T3 has no match. Soft colours use T3's *-surface
+    variables where they exist, else a 12% color-mix, with the upstream pairs under
+    @supports. Text on a solid accent reads --primary-foreground. Mockup content keeps
+    its own palette. The token block is shared byte for byte with skills/show/tokens.css.
+0004-fragment-state.patch
+    Moves the reader's state out of localStorage, which throws in the viewer's opaque-origin
+    sandbox, into the URL fragment: #pl1.<base64url(UTF-8 JSON)>, then an optional
+    ~<percent-encoded anchor>, written only by history.replaceState. Each change is written
+    at once, from a budget of 10 writes refilled at 4 a second, far under the browsers' own
+    history limits, and a change made with the budget spent gets one trailing write. In-page
+    links scroll and rewrite only the anchor, reset keeps only the anchor, leaving the page
+    flushes a pending write, and a link pasted into an open page reloads it to restore that
+    link's state. A fragment over 32 KiB or JSON over 24 KiB is not written, and a
+    persistent note asks the reader to copy their response, as it does when the browser
+    drops a write. A malformed payload restores nothing. The pure codec is exported as
+    HtmlPlan.fragment for the smoke. Every state map the runtime keeps or restores has no
+    prototype, and writeAnswers reads an own property or nothing, so a control the payload
+    does not name keeps its default whatever its name. After a burst of more than 10 edits, an edit made within
+    250 ms before an immediate reload can be lost, because browsers cap replaceState
+    (Chromium drops calls past 200 per 10 s, WebKit throws past 100) and the fragment is the
+    only store.
+0005-media-for-the-cli.patch
+    Stops pack base64-inlining media. Local media stays a literal src to a file beside the
+    page, which the plans CLI uploads at publish time. Each doc-shot gets a literal <img>
+    child in place of its own src, so the CLI sees the screenshot, and the runtime adopts
+    that child. Media resolves only inside the page's own folder, never under --root. pack
+    refuses an escape, a missing or root-only file, remote media, a local .html src, a type
+    outside plans:publish's table, more than 64 files, local paths in srcset, poster, CSS
+    url() or style, a string that is not a data: URI in image-set(), -webkit-image-set(),
+    image(), cross-fade(), -webkit-cross-fade() or src(), a var(), env() or attr() anywhere in
+    those functions' arguments (substituted after pack reads the sheet), element() and
+    -moz-element() in any form, a backslash escape in the name of a CSS function or at-rule (u\72l( is url( to a
+    browser), leftover external scripts or stylesheets, and a meta CSP, under --lint-only
+    too. Before a srcset, poster, url() or image-function value is read as data:, the
+    whitespace trimmed is the syntax's own, HTML's ASCII set or CSS's LF, TAB and SPACE,
+    never JavaScript's, which also strips U+FEFF and U+00A0 that the URL parser keeps. CSS
+    is read after CSS's own input preprocessing, where CRLF, CR and FF are one LF, and with
+    its comments and strings blanked in CSS's own order, so neither hides a url(), and a
+    url() or image function that the end of the text closes is read like a closed one. pack
+    reads tags with a port of the CLI's tokenizer, golang.org/x/net/html
+    at v0.58.0, so it sees every media src the CLI acts on, with the value the CLI decodes:
+    numeric references and the five basic named ones decode exactly, and an attribute value
+    holding any other character reference, on any tag, is refused, so a reference can neither
+    name another file nor make a tag a stylesheet; the entity table has no prototype and is read as
+    own properties, so &constructor is refused like any other name. A src becomes the path the CLI opens by the CLI's
+    own three steps, Go's TrimSpace, net/url's Parse on the value cut at "#" and filepath's
+    Clean, and pack checks, lists and counts that path: what the CLI refuses to parse, pack
+    refuses, and a media path with a symlink in it, which the CLI follows only by rules pack
+    does not repeat, pack refuses outright. Before it writes, pack reads its output with the same
+    tokenizer and refuses unless the media references in it are the ones it checked. The
+    runtime is inlined once from pack's own folder, and the output goes beside the input and
+    never over it, through a temp file and a rename, each made only after the page's folder is
+    found to be the same folder it was, by path, device and inode. The temp file's identity is
+    taken at its exclusive open, so a write that fails part way still ends with it removed. A
+    process of the same user that can rename the page's folder between a check and the
+    syscall after it is out of scope: it can already write every file in that folder.
+0006-pack-cli.patch
+    Parses pack's arguments with node:util parseArgs in strict mode: --root (repeatable),
+    -o/--out, --lint-only, --quiet, --help, -- and exactly one input. A syntax error exits
+    2 and a validation error exits 1, and neither writes anything. Removes --artifact and
+    its second output, for the claude.ai Artifact tool. There is one target, so there is
+    no --target flag either.
+0007-changes-label.patch
+    Gives doc-changes a plain-text label attribute. With no label it reads "Proposed", an
+    empty label draws none, and any other value is set as a text node, never as markup, so
+    a walkthrough can say "Landed". Zero counts still hide the element. The pure view is
+    exported as HtmlPlan.changesView for the smoke.
+0008-quote-links.patch
+    Opens a doc-quote's link in the same frame, with rel="noopener noreferrer" and no
+    target, after writing the state to the URL, so Back returns to it. The viewer's sandbox
+    allows no popup and no top-level navigation, so upstream's target="_blank" was a dead
+    click. Only http and https links render, by the URL parser's reading of the scheme;
+    anything else is plain text. The check is exported as HtmlPlan.safeHref for the smoke.
+0009-copy-out.patch
+    Shows the response in the Respond sheet in a readonly, selectable textarea. "Copied"
+    appears only after navigator.clipboard.writeText resolves or execCommand('copy')
+    returns true; upstream said "Copied" whatever execCommand returned. Otherwise the
+    textarea is focused and selected, with instructions to copy by hand. The sheet and the
+    comment box name no host, and the unused Send path goes.
+0010-reading-mode.patch
+    Makes data-feedback="off" a reading mode for the walkthrough and report kinds. Upstream
+    hid the Respond bar only after every comment control existed. Now the runtime decides
+    the mode before it builds any block, and the page draws no comment, strike, draft-edit
+    or schema-edit control and no Respond, marks nothing seen, restores no payload and
+    writes only a plain #id to the URL. Claims, code, pins, zoom, machine demos and a
+    diagram node's detail still work.
+0011-pinned-refs.patch
+    Makes a requested git ref that git cannot read an error at both call sites, doc-code
+    or doc-schema src and doc-calls rows. Upstream fell back to the working-tree file and
+    stamped it with the ref it had failed to read. A doc-calls file that only + rows name is
+    one the change adds, so at a ref it opens nothing, as it would with no ref. Blocks with no
+    ref still read the working tree, and git's own message is still not echoed.
+0012-licence-in-packed-pages.patch
+    Puts the runtime's licence in every packed page, once, right after the doctype: a
+    comment that names Thariq Shihipar's html-plan, the upstream URL at the pin and the
+    local changes, then the full Apache-2.0 text, which pack reads from the marked section
+    at the end of this file, found from pack's own folder. pack refuses to write when that
+    text is missing or holds "--", which would end the comment early. Packing a packed page
+    again replaces the comment instead of adding a second: the old one leaves before the lint,
+    as the comment token the CLI's tokenizer reads and never as text, so a look-alike inside a
+    tag or a script stays as written and nothing is spliced after the checks. The lint no longer
+    reads the runtime such a page already inlines, which upstream's lint refused.
+0013-own-property-lookups.patch
+    Gives every map keyed by a name the page chooses no prototype, in the runtime and in pack: a flow node, a
+    sequence actor, a machine state, trace or grid cell, the layouts' per-id tables, the language alias and
+    keyword tables, the mock frame and quote via tables, a flow's node templates, a schema's cards, a call
+    tree's excerpts and touched files, a machine's node and event elements, the played traces, the machines
+    by name, and pack's id table and frame table. A plain object read by such a name found Object.prototype:
+    a flow node or machine state named __proto__ wrote its label onto Object.prototype, a state or node named
+    constructor was never created, a data-play naming a trace the machine lacks passed pack's check, an
+    id="constructor" was a false duplicate, and frame="constructor" or via="constructor" drew NaN or the
+    function's source.
+0014-source-and-quote-text.patch
+    Says in blocks.md that a block's source must not hold </script, which ends its
+    <script type="text/plain"> early and turns the rest of the source into page markup, and
+    how to write it instead. pack refuses that page: the ported tokenizer returns end tags,
+    and a </script> that closes no open script is the trace the cut leaves. blocks.md also
+    says to escape &, < and > in quoted text, so a quoted source's markup never becomes page
+    markup.
+0015-send-now.patch
+    The scheduled-send example offers Send now on a scheduled message, but its claim said a
+    message is sent only at its time and its machine had no transition from scheduled to
+    sending for it. The claim allows Send now, and the machine gains that transition.
+0016-source-block-grammar.patch
+    A source that holds </script could also consume its block's own closing tag, with a
+    <script> it opened, a comment, a raw-text element, a tag or a bogus comment, and pass
+    0014's check. pack now reads the page as the browser does and holds it to the block
+    grammar: every </script closes a <script> that was opened, a block holds no <script> but an
+    inert one, after a block's source block only the grammar's children follow, each closed
+    before the block's own end tag, and a block's end tag closes an open block. blocks.md says
+    so.
+0017-ref-resolved-first.patch
+    The + row exemption of 0011 read every null from gitShow as a file absent at the ref, so a
+    ref git cannot resolve, or a file git holds but pack cannot read whole, packed with a
+    warning when only + rows named the file. A doc-calls block now resolves its ref as a tree
+    first, once per block, and an unresolvable ref is an error whatever the rows; a + row's
+    file is skipped only when ls-tree confirms it absent at the ref, and every other failure is
+    the hard error. blocks.md says so.
+-----END PATCHES-----
+
+RE-SYNCING
+----------
+
+    1. Check out the upstream repository at the new commit in a scratch directory.
+    2. In a fresh, empty scratch tree R, copy each upstream file to its pristine path
+       from the path map.
+    3. Update the commit SHA, the URL and the PRISTINE SHA-256 lines above from R
+       (`sha256sum` on each pristine path), and the upstream LICENSE SHA-256 and the
+       Apache-2.0 text below from upstream's LICENSE.
+    4. From R, `git apply` each patch in the list above, in order. Regenerate any patch
+       that stops applying: rebuild the state it applies to, redo the change on top of it,
+       and `git diff --full-index -M` the two states with `a/plugins/plans/...` paths.
+       Never hand-edit a patch.
+    5. Copy R's plugins/plans/skills/doc/ over this plugin's skills/doc/, leaving the
+       first-party skills/doc/SKILL.md alone, and delete any vendored file R does not hold.
+    6. Run `node plugins/plans/scripts/smoke-plans.mjs`.
+
+VERIFYING
+---------
+
+The patches are ordinary `git diff` output with `a/plugins/plans/...` paths, so apply them
+from the root of a repository-shaped tree. Run git apply with GIT_CEILING_DIRECTORIES set to
+the tree's parent, so git never adopts an enclosing repository, and with no --3way, -C,
+--unidiff-zero or whitespace option, so nothing is fuzzed.
+
+    Forward: lay out a fresh upstream copy by the path map in R, `sha256sum -c` the ledger,
+    `git apply` the patches in order, then `diff -r` R/plugins/plans/skills/doc against
+    plugins/plans/skills/doc with -x SKILL.md. They must be byte-identical, else it is wrong.
+
+    Reverse: copy the shipped vendored files into R, `git apply -R` the patches in
+    descending order, and `sha256sum -c` the ledger. The file set must equal the ledger.
+
+`node plugins/plans/scripts/smoke-plans.mjs` runs the reverse and then the forward pass on
+the shipped tree, with no upstream checkout and no network.
+
+GO TOKENIZER PORT
+-----------------
+
+runtime/pack.mjs reads tags with a port of the HTML tokenizer the plans CLI reads a page with,
+golang.org/x/net/html at v0.58.0, the version the CLI's go.mod pins (patch 0005): Next,
+readTag, readRawOrRCDATA, readScript, readComment and readMarkupDeclaration from
+html/token.go, and the attribute-value decoding of unescapeEntity from html/escape.go. Both
+files carry the notice "Copyright 2010 The Go Authors. All rights reserved." and are licensed
+under the BSD-3-Clause terms in the module's LICENSE file, which opens "Copyright 2009 The Go
+Authors.". The port's header comment in pack.mjs carries the files' notice and names the
+LICENSE and this file. The text between the two marker lines below is that LICENSE byte for
+byte, and the plans smoke holds it to this hash, so a re-sync of the port updates both
+together.
+
+golang.org/x/net LICENSE SHA-256 at v0.58.0:
+
+    911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+
+-----BEGIN BSD-3-CLAUSE-----
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+-----END BSD-3-CLAUSE-----
+
+---------------------------------------------------------------------------
+
+The full Apache License 2.0 follows, byte for byte as upstream's LICENSE, between the two
+marker lines. runtime/pack.mjs reads that section into every page it packs (patch 0012), and
+refuses to write a page when the section is missing or holds "--". Keep both marker lines,
+keep them last in this file, and keep the text between them byte for byte.
+
+-----BEGIN APACHE-2.0-----
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-----END APACHE-2.0-----

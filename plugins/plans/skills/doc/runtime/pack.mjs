@@ -1,0 +1,818 @@
+#!/usr/bin/env node
+// Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE.
+// pack.mjs — lint an artifact and pack it into one page for the plans CLI
+//   node pack.mjs [--root DIR]... [-o|--out FILE] [--lint-only] [--quiet] [--help] [--] INPUT
+// Lint runs the same parsers the browser uses (from htmlplan.js), fills <doc-code src>
+// from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
+// beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
+import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { resolve, dirname, basename, relative, join, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { parseArgs } from 'node:util';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+require('./htmlplan.js'); // registers globalThis.HtmlPlan (no DOM → parsers only)
+const NW = globalThis.HtmlPlan;
+
+// The arguments are strict. An unknown flag, a missing value, or anything but one input is a syntax error, exit 2. An input that
+// is not a file, or an output pack may not write, is a validation error, exit 1. Neither writes anything.
+const USAGE = 'usage: node pack.mjs [--root DIR]... [-o|--out FILE] [--lint-only] [--quiet] [--help] [--] INPUT';
+const HELP = `${USAGE}
+
+Lint a Document and pack it into one page beside INPUT, for plans:publish.
+
+  --root DIR       a checkout to read code excerpts (src="…", @ file:line) from; repeat for more. Never media.
+  -o, --out FILE   the packed page, in INPUT's folder; a relative name is relative to that folder.
+                   Default: NAME.packed.html, or NAME.html for NAME.src.html.
+  --lint-only      run every check and write nothing
+  --quiet          print only the result line
+  --help           print this and exit
+  --               end of options, so INPUT may start with "-"
+
+Exit 0: packed, or lint clean. 1: a check failed. 2: bad arguments. On 1 or 2 nothing is written.`;
+let cli;
+try {
+  cli = parseArgs({ args: process.argv.slice(2), strict: true, allowPositionals: true, options: {
+    root: { type: 'string', multiple: true }, out: { type: 'string', short: 'o' }, 'lint-only': { type: 'boolean' }, quiet: { type: 'boolean' }, help: { type: 'boolean' } } });
+} catch (e) { console.error(`pack: ${e.message}\n${USAGE}`); process.exit(2); }
+if (cli.values.help) { console.log(HELP); process.exit(0); }
+{ const n = cli.positionals.length; const why = n !== 1 ? (n ? `one INPUT, not ${n}` : 'an INPUT page') : [cli.values.out, ...(cli.values.root || [])].includes('') ? 'a value for each -o and --root' : null;
+  if (why) { console.error(`pack: needs ${why}\n${USAGE}`); process.exit(2); } }
+const input = cli.positionals[0]; const lintOnly = !!cli.values['lint-only']; const quiet = !!cli.values.quiet;
+const inPath = resolve(input); const baseDir = dirname(inPath);
+{ let s = null; try { s = statSync(inPath); } catch {} if (!s?.isFile()) { console.error(`pack: ${input} is not a file`); process.exit(1); } }
+const roots = (cli.values.root || []).map((r) => resolve(r.replace(/^~(?=\/)/, process.env.HOME))); if (!roots.length) roots.push(baseDir); const root = roots[0];
+// The output goes beside the input, in the same resolved folder, so the plans CLI finds the page's media where pack checked it.
+// A relative -o is relative to that folder.
+const pageDir = realpathSync(baseDir); const inName = basename(inPath);
+const pageDirId = lstatSync(pageDir);   // the folder's identity now, by device and inode, which the write at the end checks it still has
+const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
+
+/* ── tags, as the plans CLI reads them ── */
+// Copyright 2010 The Go Authors. All rights reserved.
+// The tokenizer below is a port from golang.org/x/net/html v0.58.0 (html/token.go, and the attribute decoding of html/escape.go),
+// whose files carry the notice above, under the BSD-3-Clause licence in the module's LICENSE, "Copyright 2009 The Go Authors.",
+// which plugins/plans/NOTICE reproduces in full under GO TOKENIZER PORT.
+// The plans CLI finds the media it uploads with golang.org/x/net/html's tokenizer, at v0.58.0 as its go.mod pins it, so pack reads
+// tags with a port of that tokenizer's Next, readTag, readRawOrRCDATA, readScript, readComment and readMarkupDeclaration, on
+// UTF-16 code units in place of bytes: every delimiter is ASCII, and an ASCII byte is one code unit in the same place. So a
+// comment ends at -->, at --!>, or at a > right after <!-- or <!---; <!x>, <?x>, </ x> and <!doctype x> end at the first >; an
+// end tag reads its attributes, so a quoted > does not end it; the text of script, style, textarea, title, xmp, iframe, noembed,
+// noframes and noscript holds no tag, script with the escape states of the HTML spec (<!-- … <script> … </script> … -->), and
+// plaintext runs to the end of the file; a tag the end of the file cuts is no tag, and nothing follows it. Names and attribute
+// keys lowercase A-Z only, the first of a repeated key wins, NUL reads as U+FFFD, and each attribute keeps its offsets and its
+// raw text, so an edit never guesses. Text is not returned, nor a comment, except a <!-- comment with its data, so a comment
+// pack itself wrote can be found as the token the CLI reads, never as text. An end tag comes back as an end token with its name
+// and offsets, except the one that closes a raw-text element, which that element's closeAt and close hold.
+const WS = (c) => c === ' ' || c === '\n' || c === '\r' || c === '\t' || c === '\f';
+const ALPHA = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+const lower = (s) => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) | 32)).replace(/\0/g, '\uFFFD');
+const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext']);
+// An attribute value as the CLI's TagAttr returns it: CR and CRLF become LF, NUL becomes U+FFFD, then each character reference is
+// consumed as its unescapeEntity consumes one in an attribute. A numeric reference decodes exactly, with the Windows-1252 and
+// replacement-character rules. Of the named ones, pack decodes the five the HTML spec has always had, in the forms the CLI's
+// table holds them, and leaves a reference before "=" literal as the CLI does. Any other &name or &name; comes back in `bad`:
+// pack carries no copy of the CLI's 2,231-entry table, so it cannot know whether the CLI decodes it, and an attribute value
+// that holds one is refused, on any tag, rather than read under the wrong value. The table has no prototype and is read as
+// own properties, so &constructor is one more name pack does not decode, not Object.prototype.constructor.
+const WIN1252 = [0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178];
+const NAMED = { __proto__: null, 'amp;': '&', 'AMP;': '&', amp: '&', AMP: '&', 'lt;': '<', 'LT;': '<', lt: '<', LT: '<', 'gt;': '>', 'GT;': '>', gt: '>', GT: '>', 'quot;': '"', 'QUOT;': '"', quot: '"', QUOT: '"', 'apos;': "'" };
+function decodeAttr(raw) {
+  const s = raw.replace(/\r\n?/g, '\n').replace(/\0/g, '\uFFFD'); const bad = []; let out = '', i = 0;
+  while (i < s.length) {
+    const amp = s.indexOf('&', i); if (amp < 0) { out += s.slice(i); break; }
+    out += s.slice(i, amp); i = amp + 1; let j = i;
+    if (s[i] === '#') {
+      j++; const hex = s[j] === 'x' || s[j] === 'X'; if (hex) j++;
+      let x = 0, digits = 0;
+      for (; j < s.length; j++, digits++) { const c = s.charCodeAt(j); let d; if (c >= 48 && c <= 57) d = c - 48; else if (hex && c >= 97 && c <= 102) d = c - 87; else if (hex && c >= 65 && c <= 70) d = c - 55; else break; if (x <= 0x10ffff) x = x * (hex ? 16 : 10) + d; }
+      if (!digits) { out += '&'; continue; }
+      if (s[j] === ';') j++;
+      if (x >= 0x80 && x <= 0x9f) x = WIN1252[x - 0x80]; else if (x === 0 || (x >= 0xd800 && x <= 0xdfff) || x > 0x10ffff) x = 0xfffd;
+      out += String.fromCodePoint(x); i = j; continue;
+    }
+    if (!ALPHA(s[i])) { out += '&'; continue; }   // no entity name starts otherwise, so the CLI reads a lone &
+    while (j < s.length && (ALPHA(s[j]) || (s[j] >= '0' && s[j] <= '9'))) j++;
+    if (s[j] === ';') j++; const name = s.slice(i, j);
+    if (!name.endsWith(';') && s[j] === '=') { out += '&'; continue; }
+    if (Object.hasOwn(NAMED, name)) { out += NAMED[name]; i = j; continue; }
+    bad.push('&' + name); out += '&';
+  }
+  return { value: out, bad };
+}
+function tokenize(src) {
+  const n = src.length, out = []; let i = 0;
+  // readRawEndTag: right after "</" at `from`, does `tag` follow, then whitespace, "/" or ">"? If so the end tag starts at `hit`,
+  // else scanning goes on at `next`, which is the end of the file when the file ends first.
+  const rawEnd = (from, tag) => { let k = from; for (let j = 0; j < tag.length; j++, k++) { if (k >= n) return { next: n }; const c = src[k]; if (c !== tag[j] && c !== tag[j].toUpperCase()) return { next: k }; } if (k >= n) return { next: n }; const c = src[k]; return WS(c) || c === '/' || c === '>' ? { hit: from - 2 } : { next: k }; };
+  const rawText = (from, tag) => { let p = from; for (;;) { const lt = src.indexOf('<', p); if (lt < 0 || lt + 1 >= n) return n; if (src[lt + 1] !== '/') { p = lt + 1; continue; } const r = rawEnd(lt + 2, tag); if (r.hit !== undefined) return r.hit; p = r.next; if (p >= n) return n; } };
+  const script = (from) => {   // readScript: 0 data, 1 escaped, 2 escaped dash, 3 escaped dash dash, 4 double escaped, 5 its dash, 6 its dash dash
+    let p = from, st = 0;
+    const end = (fallback) => { const r = rawEnd(p, 'script'); if (r.hit !== undefined) return r.hit; p = r.next; st = fallback; return -1; };
+    while (p < n) {
+      const c = src[p++];
+      if (st === 0) {
+        if (c !== '<' || p >= n) continue;
+        const d = src[p++];
+        if (d === '/') { const e = end(0); if (e >= 0) return e; }
+        else if (d === '!') { if (src[p] === '-' && src[p + 1] === '-') { p += 2; st = 3; } }
+        else p--;
+      } else if (st <= 3) {
+        if (c === '-') st = st === 1 ? 2 : 3;
+        else if (c === '>' && st === 3) st = 0;
+        else if (c === '<') {
+          if (p >= n) return n;
+          const d = src[p++];
+          if (d === '/') { const e = end(1); if (e >= 0) return e; }
+          else if (ALPHA(d)) {
+            p--; let same = true;
+            for (let j = 0; j < 6; j++, p++) { if (p >= n) return n; const e = src[p]; if (e !== 'script'[j] && e !== 'SCRIPT'[j]) { same = false; break; } }
+            if (!same) { st = 1; continue; }
+            if (p >= n) return n; const e = src[p]; if (WS(e) || e === '/' || e === '>') { p++; st = 4; } else st = 1;
+          }
+          else { p--; st = 0; }
+        } else st = 1;
+      } else {
+        if (c === '-') st = st === 4 ? 5 : 6;
+        else if (c === '>' && st === 6) st = 0;
+        else if (c === '<') {
+          if (p >= n) return n;
+          const d = src[p++];
+          if (d === '/') { const r = rawEnd(p, 'script'); if (r.hit !== undefined) { p = r.hit + 9; st = 1; } else { p = r.next; st = 4; } }
+          else { p--; st = 4; }
+        } else st = 4;
+      }
+    }
+    return n;
+  };
+  const comment = (from) => {   // readComment, right after "<!--"
+    let p = from, dash = 0, beginning = true;
+    const abrupt = () => { const raw = src.slice(from); const cut = raw.endsWith('--!') ? 3 : raw.endsWith('--') ? 2 : raw.endsWith('-') ? 1 : 0; return { end: n, data: raw.slice(0, raw.length - cut) }; };
+    for (;;) {
+      if (p >= n) return abrupt();
+      const c = src[p++];
+      if (c === '-') { dash++; continue; }
+      if (c === '>' && (dash >= 2 || beginning)) return { end: p, data: src.slice(from, Math.max(from, p - 3)) };
+      if (c === '!' && dash >= 2) {
+        if (p >= n) return abrupt();
+        const d = src[p++];
+        if (d === '>') return { end: p, data: src.slice(from, Math.max(from, p - 4)) };
+        if (d === '-') { dash = 1; beginning = false; continue; }
+      }
+      dash = 0; beginning = false;
+    }
+  };
+  const readTag = (ns, save) => {   // readTag, with the letter at `ns` right after "<" or "</"; null when the file ends inside the tag
+    let k = ns + 1, ne;
+    for (;;) { if (k >= n) return null; const c = src[k]; if (WS(c)) { ne = k++; break; } if (c === '/' || c === '>') { ne = k; break; } k++; }
+    const t = { type: 'tag', name: lower(src.slice(ns, ne)), attrs: [] }; const seen = new Set();
+    while (k < n && WS(src[k])) k++;
+    for (;;) {
+      if (k >= n) return null;
+      if (src[k] === '>') { t.end = k + 1; return t; }
+      const a = { from: k, q: '' };
+      for (;;) { if (k >= n) return null; const c = src[k]; if (c === '=' && k > a.from) break; if (c !== '=' && (WS(c) || c === '/' || c === '>')) break; k++; }
+      const ke = k; a.name = lower(src.slice(a.from, ke)); a.vs = a.ve = a.to = ke;
+      while (k < n && WS(src[k])) k++; if (k >= n) return null;
+      const c = src[k++];
+      if (c === '/') { /* the value stays empty and the solidus is consumed */ }
+      else if (c !== '=') k--;
+      else {
+        while (k < n && WS(src[k])) k++; if (k >= n) return null;
+        const q = src[k++];
+        if (q === '>') { k--; a.vs = a.ve = a.to = k; }
+        else if (q === '"' || q === "'") { a.q = q; a.vs = k; for (;;) { if (k >= n) return null; if (src[k++] === q) break; } a.ve = k - 1; a.to = k; }
+        else { a.vs = k - 1; for (;;) { if (k >= n) return null; const d = src[k]; if (WS(d)) { a.ve = a.to = k++; break; } if (d === '>') { a.ve = a.to = k; break; } k++; } }
+      }
+      a.raw = src.slice(a.vs, a.ve); const dec = decodeAttr(a.raw); a.value = dec.value; a.bad = dec.bad;
+      if (save && ke > a.from && !seen.has(a.name)) { seen.add(a.name); t.attrs.push(a); }
+      while (k < n && WS(src[k])) k++;
+    }
+  };
+  while (i < n) {
+    const lt = src.indexOf('<', i); if (lt < 0 || lt + 1 >= n) break;
+    const c = src[lt + 1];
+    if (ALPHA(c)) {
+      const t = readTag(lt + 1, true); if (!t) break;
+      t.start = lt; out.push(t); i = t.end;
+      if (RAW_TEXT.has(t.name)) {
+        const e = t.name === 'plaintext' ? n : t.name === 'script' ? script(i) : rawText(i, t.name);
+        t.text = src.slice(i, e);
+        if (e >= n) { t.close = n; break; }
+        const et = readTag(e + 2, false); if (!et) { t.close = n; break; }
+        t.close = et.end; t.closeAt = e; i = et.end;
+      }
+    } else if (c === '/') {
+      if (lt + 2 >= n) break;
+      const d = src[lt + 2];
+      if (d === '>') i = lt + 3;
+      else if (ALPHA(d)) { const t = readTag(lt + 2, false); if (!t) break; out.push({ type: 'end', name: t.name, start: lt, end: t.end }); i = t.end; }
+      else { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
+    } else if (c === '!') {
+      if (lt + 4 > n) break;
+      if (src[lt + 2] === '-' && src[lt + 3] === '-') { const cm = comment(lt + 4); out.push({ type: 'comment', start: lt, end: cm.end, data: cm.data }); i = cm.end; }
+      else { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
+    } else if (c === '?') { const e = src.indexOf('>', lt + 2); i = e < 0 ? n : e + 1; }
+    else i = lt + 1;
+  }
+  return out;
+}
+const scanTags = (src) => tokenize(src).filter((t) => t.type === 'tag');
+
+let html = readFileSync(inPath, 'utf8');
+// A packed page can be packed again, unless a doc-calls in it holds the excerpts pack embedded, which the block grammar below
+// refuses as it would a source that wrote them. Its inlined runtime is pack's own text, not the author's, so the lint never reads it: the
+// tags stay empty here, and the runtime from this folder takes their place below. Its licence comment is pack's text too, and it
+// leaves here, before any check, as the comment token the CLI's tokenizer reads, never as text: a look-alike inside a tag or a
+// script is no comment and stays as written, and what its removal leaves is what every check below reads.
+html = html.replace(/(<(script|style) data-htmlplan>)[\s\S]*?(<\/\2>)/g, '$1$3');
+const LICENCE_MARK = ' html-plan runtime by Thariq Shihipar,';
+for (const c of tokenize(html).filter((t) => t.type === 'comment' && t.data.startsWith(LICENCE_MARK)).reverse()) html = html.slice(0, html[c.start - 1] === '\n' ? c.start - 1 : c.start) + html.slice(c.end);
+const errors = [], warns = [], info = [];
+const err = (m) => errors.push(m), warn = (m) => warns.push(m);
+const lineOf = (idx) => html.slice(0, idx).split('\n').length;
+// A block's source text sits in <script type="text/plain">, which runs to the first </script>. A source that holds </script ends
+// its block there and the rest of the source becomes page markup, whatever then becomes of the block's own closing tag: an end
+// tag that closes no script, or one swallowed by a comment, a tag, a raw-text element or a <script> the source opened. So pack
+// reads the page as the CLI's tokenizer and the browser do and holds it to the block grammar, here and below KNOWN: every
+// </script must close a <script> that was opened; a block holds no <script> but an inert one; after a block's source block only
+// the grammar's children may follow, each closed before the block's own end tag, which every block with a source block must
+// have; and a block's end tag closes an open block. A source that cuts its block then leaves a trace, whatever closes it.
+const FIX = 'write it as <\\/script in inline source, or put the code in a file and use src=';
+const CUT = `so a block's source contains "</script", which ended its <script type="text/plain"> early and made the rest of it page markup — ${FIX}`;
+{ const closes = new Set(), orphans = new Set();
+  for (const t of tokenize(html)) { if (t.type === 'tag' && t.name === 'script' && t.closeAt != null) closes.add(t.closeAt); else if (t.type === 'end' && t.name === 'script') orphans.add(t.start); }
+  for (const m of html.matchAll(/<\/script(?=[\s\/>])/gi)) { if (closes.has(m.index)) continue;
+    err(orphans.has(m.index) ? `line ${lineOf(m.index)}: a </script> here closes no open <script>, ${CUT}` : `line ${lineOf(m.index)}: a </script> here is hidden inside a comment, a tag or another element's text, as the browser reads the page, ${CUT}`); } }
+const attrs = (s) => { const o = {}; s.replace(/([\w:.-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g, (m, k, a, b, c) => { o[k.toLowerCase()] = a ?? b ?? c ?? ''; return ''; }); return o; };
+const unent = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+const blockSrc = (inner) => { const m = inner.match(/<script\s+type=["']?text\/(?:plain|source)["']?\s*>([\s\S]*?)<\/script>/i); return NW.util.dedent(m ? m[1] : unent(inner.replace(/<doc-pin[\s\S]*?<\/doc-pin>|<template[\s\S]*?<\/template>|<[^>]+>/g, ''))); };
+// Everything pack reads ends up inside a page that may be published, so reads are fenced: a file must really live (symlinks resolved)
+// under a --root, the page's own folder, or the runtime's folder, and must not be a well-known secret file. Anything else is an error.
+const real = (p) => { try { return realpathSync(p); } catch { return null; } };
+const rel = (p) => relative(process.cwd(), p) || p;
+const FENCE = [...new Set([...roots, baseDir, here])].map(real).filter(Boolean);
+const inside = (f) => FENCE.some((d) => f === d || f.startsWith(d.endsWith(sep) ? d : d + sep));
+const SECRET_NAME = new RegExp([
+  String.raw`(^|[\\/])\.(git|ssh|aws|azure|gnupg|kube|docker|password-store)([\\/]|$)`,                        // whole folders
+  String.raw`(^|[\\/])(\.env(\.[^\\/]*)?|\.netrc|\.npmrc|\.yarnrc(\.yml)?|\.pypirc|\.pgpass|\.my\.cnf|\.git-credentials|\.htpasswd)$`,
+  String.raw`(^|[\\/])(id_(rsa|dsa|ecdsa|ed25519)[^\\/]*|credentials[^\\/]*|secrets?(\.[^\\/]*)?|[^\\/]*_history|[^\\/]*\.local\.json)$`,
+  String.raw`\.(pem|key|p12|pfx|keystore|jks|tfvars|tfstate(\.backup)?|sqlite3?|db|kdbx|ovpn)$`,
+].join('|'), 'i');
+const SECRET_TEXT = /sk-ant-|sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abeprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.|(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["'][^"'\s$<{]{12,}["']/i;
+const reads = new Set();   // every file whose text ends up in the page
+const refused = new Set();
+const findFile = (p) => { for (const cand of [...roots.map((r) => resolve(r, p)), resolve(baseDir, p)]) { if (!existsSync(cand) || !statSync(cand).isFile()) continue; const f = real(cand);
+    if (!f || !inside(f)) { if (!refused.has(p)) { refused.add(p); err(`"${p}" is outside --root and the page's folder — not reading it. Pass --root <dir> for the checkout it lives in`); } continue; }
+    if (SECRET_NAME.test(f)) { if (!refused.has(p)) { refused.add(p); err(`"${p}" looks like a secrets file — not reading it`); } continue; }
+    return f; } return null; };
+/** read a file at a git ref: tries `git show ref:path` in each --root that is a git checkout */
+// Only three plumbing commands are ever run: `rev-parse`, `cat-file blob` and `ls-tree`. None touches the work tree, so no filter, hook,
+// fsmonitor, pager, diff or credential program named in a repo's config can be started. (`status`, `diff` and `show` can start one, so they are not used.)
+const git = (r, cmd, ...args) => { if (cmd !== 'rev-parse' && cmd !== 'cat-file' && cmd !== 'ls-tree') throw new Error('git ' + cmd + ' is not allowed'); return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', r, cmd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64e6, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat' } }); };
+/** short sha of the --root checkout a file sits in (+wt when the file has uncommitted changes); '' when it is not under a root or not in git */
+const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr || !(f === rr || f.startsWith(rr + sep))) continue; try { const top = git(rr, 'rev-parse', '--short', 'HEAD').trim(); let same = true; if (wt) { try { same = git(rr, 'cat-file', 'blob', `HEAD:${relative(rr, f).split(sep).join('/')}`) === readFileSync(f, 'utf8'); } catch { same = false; } } return top + (same ? '' : '+wt'); } catch {} } return ''; };
+const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
+const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) { if (!refused.has(ref + ':' + p)) { refused.add(ref + ':' + p); err(`ref="${ref}" with "${p}" — not a plain git ref and a path inside the repo; not running git`); } return null; }
+  for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
+// A pinned ref names the bytes a page cites. When git cannot read the file at that ref, the working-tree copy would show other
+// bytes under the ref's name, so both call sites stop with an error instead. git's own message is not echoed. A call-row file
+// that only + rows name is one the change adds, which has no bytes at the ref: when git confirms that, doc-calls skips it as a
+// missing file, as it does with no ref, and never reads the working tree for it.
+const atRef = (at, ref, p) => { const g = gitShow(ref, p); if (g) return g; const k = ref + ':' + p; if (!refused.has(k)) { refused.add(k); err(`${at}: ref="${ref}" — git cannot read ${p} at that ref in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')}; a pinned ref never falls back to the working tree`); } return null; };
+// A doc-calls block first resolves its ref as a tree in every --root, once: a plain ref that no root resolves is an error for the
+// block, whatever its rows hold, and a ref that is not plain is left to gitShow to refuse by name. A file that only + rows name is
+// then skipped only when git confirms it absent, with `ls-tree` naming no entry at the ref in each root that resolves it. Any
+// other answer, a file git holds but pack cannot read whole among them, goes to atRef and its hard error. gitShow returns null
+// for every failure alike, so absence is never read from it.
+const refTrees = new Map();   // ref → the roots that resolve it as a tree; [] for a ref that is not plain; null when no root resolves it
+const refRoots = (at, ref) => {
+  if (!refTrees.has(ref)) { const rs = REF_OK.test(ref) ? roots.filter((r) => { try { git(r, 'rev-parse', '--verify', '--quiet', `${ref}^{tree}`); return true; } catch { return false; } }) : [];
+    refTrees.set(ref, REF_OK.test(ref) && !rs.length ? null : rs);
+    if (refTrees.get(ref) === null) err(`${at}: ref="${ref}" — git cannot resolve that ref in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')}; no row can be read at it, and a pinned ref never falls back to the working tree`); }
+  return refTrees.get(ref); };
+const gitAbsent = (rs, ref, p) => rs.length > 0 && !(/(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) && rs.every((r) => { try { return git(r, 'ls-tree', ref, '--', p) === ''; } catch { return false; } });
+const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
+const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
+
+/* ── the output: a file beside the input, never the input itself under another name ── */
+{ const o = (() => { try { return lstatSync(outPath); } catch { return null; } })(); const i = statSync(inPath);
+  if (real(dirname(outPath)) !== pageDir) err(`-o ${rel(outPath)} is outside the page's folder — pack writes beside its input, in ${rel(pageDir)}, where the plans CLI looks for the page's media`);
+  else if (o?.isSymbolicLink()) err(`-o ${rel(outPath)} is a symlink — pack does not write through one; remove it or name another file`);
+  else if (o && !o.isFile()) err(`-o ${rel(outPath)} is not a file`);
+  else if (o && (real(outPath) === real(inPath) || (o.dev === i.dev && o.ino === i.ino))) err(`-o ${rel(outPath)} is the input itself — name another file`); }
+
+/* ── document-level checks ── */
+if (!/<title>[^<]+<\/title>/i.test(html)) err('missing <title> — it names the artifact in tabs and share sheets');
+if (!/<h1[\s>]/i.test(html)) warn('no <h1> — the response header uses it');
+if (!/<meta[^>]+charset/i.test(html)) warn('missing <meta charset="utf-8">');
+const KNOWN = new Set(['doc-code', 'doc-pin', 'doc-flow', 'doc-seq', 'doc-schema', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-mock', 'doc-shot', 'doc-quote', 'doc-ask', 'doc-note', 'doc-draft', 'doc-plan', 'doc-claim', 'doc-changes']);
+for (const m of html.matchAll(/<(doc-[a-z]+)\b/g)) if (!KNOWN.has(m[1])) err(`line ${lineOf(m.index)}: unknown element <${m[1]}> — known: ${[...KNOWN].join(' ')}`);
+// The block grammar, as the browser reads the page. The children a block may hold after its source block are the ones the
+// runtime reads off it: <doc-pin> in doc-code and doc-schema, <template data-node> or <template for> in doc-flow, <template>
+// in doc-calls, a [data-state] screen in doc-machine, and comments anywhere. An inert
+// script is type="text/plain" or "text/source", which the browser never runs. pack's own excerpt scripts are not children:
+// an input that holds them is refused, since one a source wrote looks the same, so a packed page whose doc-calls hold excerpts
+// does not pack again. A block nested in a child, as a template hangs one off a row, is read by the same rules.
+{ const SOURCED = new Set(['doc-code', 'doc-schema', 'doc-flow', 'doc-seq', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-draft']);
+  const AFTER = { __proto__: null, 'doc-code': [(t) => t.name === 'doc-pin', 'only <doc-pin> children'], 'doc-schema': [(t) => t.name === 'doc-pin', 'only <doc-pin> children'],
+    'doc-flow': [(t) => t.name === 'template' && t.attrs.some((a) => a.name === 'data-node' || a.name === 'for'), 'only <template data-node="…"> or <template for="…"> children'],
+    'doc-calls': [(t) => t.name === 'template', 'only <template for="…"> children'], 'doc-machine': [(t) => t.attrs.some((a) => a.name === 'data-state'), 'only its [data-state] screens'] };
+  const inert = (t) => t.attrs.some((a) => a.name === 'type' && /^text\/(plain|source)$/i.test(a.value.trim()));
+  const what = (t) => t.type === 'comment' ? 'a comment' : `<${t.type === 'end' ? '/' : ''}${t.name}>`;
+  const frames = [];   // the open doc-* elements, innermost last: name and line, whether its source block has been read, the grammar child open after it, and whether a token after the source has been reported
+  for (const t of tokenize(html)) {
+    const top = frames[frames.length - 1];
+    if (t.type === 'end' && t.name === 'script') continue;   // reported above
+    const live = t.type === 'tag' && t.name === 'script' && !inert(t);   // a script the browser runs
+    const noScript = () => err(`line ${lineOf(t.start)}: a <script> inside <${top.name}> (line ${top.line}) — a block holds no script but its source, <script type="text/plain">`);
+    if (t.type === 'end' && KNOWN.has(t.name)) {
+      let k = frames.length - 1; while (k >= 0 && frames[k].name !== t.name) k--;
+      if (k < 0) { err(`line ${lineOf(t.start)}: </${t.name}> closes no open <${t.name}>`); continue; }
+      for (let j = frames.length - 1; j >= k; j--) { const f = frames[j];
+        if (f.child) err(`line ${lineOf(t.start)}: </${t.name}> ends <${f.name}> (line ${f.line}) while its <${f.child.name}> (line ${f.child.line}) is still open, ${CUT}`);
+        else if (j > k && f.src) err(`line ${lineOf(t.start)}: </${t.name}> ends <${f.name}> (line ${f.line}), which has no end tag of its own, ${CUT}`); }
+      frames.length = k; continue; }
+    if (!top) { /* outside every block */ }
+    else if (top.child) { if (live) noScript(); else if (t.type === 'tag' && t.name === top.child.name) top.child.depth++; else if (t.type === 'end' && t.name === top.child.name && --top.child.depth === 0) top.child = null; }
+    else if (!top.src) { if (live) noScript(); else if (t.type === 'tag' && t.name === 'script' && SOURCED.has(top.name)) top.src = true; }
+    else if (t.type === 'comment') { /* a comment may follow the source */ }
+    else if (t.type === 'tag' && AFTER[top.name]?.[0](t)) { if (!KNOWN.has(t.name)) top.child = { name: t.name, line: lineOf(t.start), depth: 1 }; }
+    else if (!top.said) { top.said = true; err(`line ${lineOf(t.start)}: ${what(t)} after the source block of <${top.name}> (line ${top.line}) — after its <script type="text/plain"> a ${top.name} holds ${AFTER[top.name]?.[1] ?? 'nothing'}; markup here means the source contains "</script", which ended the block early — ${FIX}`); }
+    if (t.type === 'tag' && KNOWN.has(t.name)) frames.push({ name: t.name, line: lineOf(t.start), src: false, child: null, said: false });
+  }
+  for (const f of frames) if (f.src || f.child) err(`<${f.name}> (line ${f.line}) has no end tag of its own, as the browser reads the page${f.child ? `, and its <${f.child.name}> (line ${f.child.line}) is still open` : ''}, ${CUT}`); }
+// A map keyed by a name the page chooses has no prototype, so an id or a frame named constructor is read as written.
+const ids = Object.create(null); for (const m of html.matchAll(/\sid=["']([^"']+)["']/g)) { if (ids[m[1]]) err(`duplicate id="${m[1]}" (lines ${ids[m[1]]} and ${lineOf(m.index)})`); ids[m[1]] = lineOf(m.index); }
+for (const m of html.matchAll(/href=["']#([^"']+)["']/g)) if (!ids[m[1]] && !/^s\d+/.test(m[1])) warn(`line ${lineOf(m.index)}: href="#${m[1]}" points at no id`);
+
+{ const t = html.match(/<div class="tldr">([\s\S]*?)<\/div>/i); if (t && wc(stripTags(t[1])) > 50) warn(`.tldr is ${wc(stripTags(t[1]))} words — ≤ 40: what changes, and what you need from the reader`); }
+{ const ti = (html.match(/<title>([^<]*)<\/title>/i) || [])[1] || '', h1 = stripTags((html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) || [])[1] || ''); const nums = (x) => (x.match(/\d[\d,.]*/g) || []).join(' '); if (ti && h1 && nums(ti) && nums(h1) && nums(ti) !== nums(h1)) warn(`<title> "${ti.trim()}" and <h1> "${h1.trim()}" disagree on a number — the title is what the response is filed under`); }
+
+/* ── per-block checks (and <doc-code src> fill) ── */
+const names = new Set(); const quoteSeen = new Map(); let lastAskEnd = -1;
+html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g, (whole, tag, rawAttrs, inner, idx) => {
+  const a = attrs(rawAttrs); const at = `line ${lineOf(idx)} <${tag}${a.id ? '#' + a.id : ''}>`;
+  try {
+    for (const k of ['caption', 'label', 'title']) if (/[<>]/.test(a[k] || '')) err(`${at}: ${k}="…" contains < or > — use &lt; / &gt; (or ‹ ›) inside attributes`);
+    if (/^doc-(flow|seq|schema|tree|calls|machine)$/.test(tag) && !/<script\s+type=["']?text\/(plain|source)/i.test(inner)) { const bare = inner.replace(/<template[\s\S]*?<\/template>|<doc-pin[\s\S]*?<\/doc-pin>/g, ''); const mm = bare.match(/<(?!!--)[^\s>]*/); if (mm) err(`${at}: source contains "${mm[0]}" — the browser will eat it as a tag. Wrap the block's text in <script type="text/plain">…</script> (then < > and <-> are safe)`); }
+    if (tag === 'doc-flow') { const m = NW.parseFlow(blockSrc(inner)); m.errors.forEach((e) => err(`${at}: ${e}`)); const n = m.order.length; if (!n) err(`${at}: no nodes`); if (n > 16) warn(`${at}: ${n} nodes — diagrams past ~12 stop being readable; split it or cut nodes`); Object.values(m.nodes).forEach((nd) => nd.label.split(/\s+/).forEach((w) => { if (w.length > 24) warn(`${at}: node "${nd.id}" has a ${w.length}-char word ("${w.slice(0, 20)}…") — it will force wide boxes; shorten or add a space`); })); if (!a.caption) warn(`${at}: no caption="" — say what the reader should notice`);
+      Object.values(m.nodes).forEach((nd) => { if ((nd.sub || '').length > 48) warn(`${at}: node "${nd.id}" sublabel is ${nd.sub.length} chars — it wraps to two lines max (~24 each); move the rest to indented detail`); });
+      m.edges.forEach((e) => { if ((e.label || '').length > 44) warn(`${at}: edge ${e.from}->${e.to} label is ${e.label.length} chars (two lines of ~22 max) — shorten or explain in the caption`); });
+      if (m.edges.some((e) => e.dash) && !a.dashed) warn(`${at}: uses --> but no dashed="…" — the legend will say "async / optional"; set dashed="what dashed means here"`);
+      const cols = Math.max(0, ...m.grid.map((r) => r.length)); if (cols >= 4) warn(`${at}: ${cols}-column grid — on a phone this scales to ~50% and pans; ≤3 columns (tall not wide) reads without zooming`);
+      else { const L = NW.layoutFlow(m); const scale = Math.min(1, 348 / L.W); if (scale < 0.72) { const widest = Object.values(m.nodes).flatMap((nd) => [...(nd.lines || []), ...(nd.subLines || [])]).sort((x, y) => y.length - x.length)[0] || ''; warn(`${at}: ≈${L.W}px wide → ${Math.round(scale * 100)}% on a phone. Node width is set by the longest label line, here "${widest}" (${widest.length}ch) — shorten it / move to indented detail, or drop a column`); } } }
+    else if (tag === 'doc-seq') { const m = NW.parseSeq(blockSrc(inner)); m.errors.forEach((e) => err(`${at}: ${e}`)); if (!a.caption) warn(`${at}: no caption="" — say what the reader should notice`); if (m.actors.length >= 5) warn(`${at}: ${m.actors.length} participants — a phone shows ~3 lanes without panning; split at a --- divider or fold a minor participant into a note`); if (!m.steps.length) err(`${at}: no messages`);
+      m.steps.forEach((st) => { if (st.kind === 'msg' && (st.text || '').length > 60) warn(`${at}: message "${st.text.slice(0, 30)}…" is ${st.text.length} chars — arrows carry a call, not a sentence; move detail to a note or prose`); });
+      m.actors.forEach((ac) => { if (ac.label.length > 28) warn(`${at}: participant "${ac.label}" is long — ≤18 chars keeps lanes narrow`); });
+      { const longestA = Math.max(...m.actors.map((ac) => Math.min(ac.label.length, ac.label.length > 18 ? Math.ceil(ac.label.length / 2) + 2 : 99))); const COL = Math.min(240, Math.max(112, Math.ceil(longestA * 7.4 + 44))); const W = 48 + m.actors.length * COL; const scale = Math.min(1, 348 / W); if (scale < 0.7 && m.actors.length < 5) warn(`${at}: ${m.actors.length} lanes × ${COL}px ≈ ${W}px → ${Math.round(scale * 100)}% on a phone — shorter participant names (longest sets every lane) or one fewer lane`);
+        const once = m.actors.filter((ac) => m.steps.filter((st) => st.kind === 'msg' && (st.from === ac.id || st.to === ac.id)).length === 1); if (m.actors.length >= 4 && once.length) warn(`${at}: ${once.map((x) => x.label).join(', ')} appear${once.length === 1 ? 's' : ''} in exactly one message — fold into a "note over" and drop the lane`); } }
+    else if (tag === 'doc-schema' && !(a.lang || a.src)) { warn(`${at}: no lang= — write the schema as text in the language that states it best (lang="ts", "sql", "proto"…); the field-table form is kept only for old pages`); const m = NW.parseSchema(blockSrc(inner)); m.errors.forEach((e) => err(`${at}: ${e}`)); if (!a.caption) warn(`${at}: no caption=""`); if (!m.entities.length) err(`${at}: no entities`); m.entities.forEach((e) => { if (!e.fields.length) warn(`${at}: entity ${e.name} has no fields (indent fields under it)`); }); }
+    else if (tag === 'doc-calls') { const m = NW.parseCalls(blockSrc(inner)); m.errors.forEach((e) => err(`${at}: ${e}`)); const n = m.nodes.length; if (n > 60) warn(`${at}: ${n} rows — past ~40 the tree stops being scannable; split by entrypoint or use compact`); if (!m.nodes.some((x) => x.mark !== ' ')) warn(`${at}: no + − ~ rows — a call tree with no diff is a doc-tree of functions; mark what changes`); if (!a.caption) warn(`${at}: no caption="" — say what the reader should notice`);
+      const noLoc = m.nodes.filter((x) => x.mark !== ' ' && !x.gap && !x.loc).length; if (noLoc > 2) warn(`${at}: ${noLoc} changed calls have no file — end the line with  @ path/file.ts:line  so the files list can be derived and the row can open its code`);
+      for (const t of inner.matchAll(/<template\s+for=["']([^"']+)["']/g)) { if (!m.find(t[1])) err(`${at}: <template for="${t[1]}"> matches no call — use the call's symbol (the **bold** name, the <Component>, or the function before the parenthesis) or n<index>`); }
+      // context excerpts: for every row with @ file:line that resolves on disk (or via ref= + git show), embed ±CTX lines so clicking the row shows the code
+      const CTX = +(a.context || 6); const have = new Set([...inner.matchAll(/data-excerpt=["']([^"']+)["']/g)].map((x) => x[1]));
+      let added = 0, missing = 0, extra = '';
+      const seen = new Set();
+      for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
+        let text = null, sha = ''; if (a.ref) { const rs = refRoots(at, a.ref); if (rs === null) continue; const added = m.nodes.every((o) => o.file !== nd.file || o.mark === '+'); if (added && gitAbsent(rs, a.ref, nd.file)) { missing++; continue; } const g = atRef(at, a.ref, nd.file); if (!g) continue; text = g.text; sha = a.ref; } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
+        if (text == null) { missing++; continue; }
+        if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
+        const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
+        
+        const s0 = Math.max(1, ln - CTX), s1 = Math.min(L.length, ln + CTX); const slice = L.slice(s0 - 1, s1).join('\n').replace(/<\/script/gi, '<\\/script');
+        if (SECRET_TEXT.test(slice)) { warn(`${at}: ${key} looks like it holds a secret — no excerpt`); continue; } reads.add(nd.file);
+        extra += `\n<script type="text/plain" data-excerpt="${key}" data-start="${s0}"${sha ? ` data-sha="${sha}"` : ''}>\n${slice}\n</script>`; added++; }
+      if (added) info.push(`doc-calls${a.id ? '#' + a.id : ''}: embedded ${added} code excerpt${added > 1 ? 's' : ''} (click a row → its code)`);
+      if (missing && !added) warn(`${at}: ${missing} rows point at files not found under ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')} — pass --root <checkout> (and ref="<sha>" for a merged PR) so rows can open their code`);
+      else if (missing) warn(`${at}: ${missing} rows point at files not found — those rows will not open code`);
+      if (extra) return `<${tag}${rawAttrs}>${inner}${extra}</${tag}>`; }
+    else if (tag === 'doc-machine') { const m = NW.parseMachine(blockSrc(inner)); m.errors.forEach((e) => err(`${at}: ${e}`)); if (!m.order.length) err(`${at}: no states`);
+      if (m.order.length > 10) warn(`${at}: ${m.order.length} states — past ~8 the diagram needs panning; split by concern`);
+      if (!m.grid.length && !('blocks' in a) && m.events.some((e) => m.events.some((o) => o !== e && o.to === e.to && o.from !== e.from)) && m.order.length > 4) warn(`${at}: ${m.order.length} states with arrows that meet — add a grid (| a | b | rows) so labels do not overlap`);
+      Object.values(m.states).forEach((st) => { const b = st.bind; (b.shows || []).forEach((sel) => { const id = sel.replace(/^#/, ''); if (!ids[id] && !new RegExp(`id=["']${id}["']`).test(html)) err(`${at}: state ${st.id} shows "${sel}" — no element with that id`); });
+        [].concat(b.code || []).forEach((spec) => { const [f, l] = spec.split(':'); if (!l || !/^\d+$/.test(l)) err(`${at}: state ${st.id} code "${spec}" should be file:line`); else if (!new RegExp(`<doc-code[^>]*(file|title|id)=["'][^"']*${f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`).test(html)) warn(`${at}: state ${st.id} code "${spec}" — no <doc-code file=…${f}> on the page`); });
+        (b.set || []).forEach((kv) => { const k = kv.split('=')[0]; if (!new RegExp(`data-field=["']${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`).test(html)) warn(`${at}: state ${st.id} set "${k}" — nothing on the page has data-field="${k}"`); });
+        if (b.node != null && !/<doc-flow/.test(html)) warn(`${at}: state ${st.id} binds node "${b.node}" but there is no <doc-flow>`);
+        if (b.seq != null && !/<doc-seq/.test(html)) warn(`${at}: state ${st.id} binds seq ${b.seq} but there is no <doc-seq>`); });
+      const stateEls = [...html.matchAll(/data-state=["']([^"']+)["']/g)].map((x) => x[1]).filter((v) => !/^[\w-]+$/.test(v) || true); stateEls.forEach((v) => v.split(/[\s,]+/).forEach((id) => { if (id && !m.states[id]) warn(`${at}: something has data-state="${id}" but the machine has no state "${id}"`); }));
+      const mname = a.name || m.name; if (mname) names.add(mname); [...html.matchAll(/data-play=["']([^"']+)["']/g)].forEach((x) => { const [mn, tn] = x[1].split(/[.:\/]/); if ((mn === mname || !tn) && !m.traces[tn || mn]) err(`${at}: data-play="${x[1]}" — machine has no trace "${tn || mn}" (traces: ${Object.keys(m.traces).join(', ') || 'none'})`); });
+      if (!a.caption) warn(`${at}: no caption="" — say what the reader should try`); }
+    else if (tag === 'doc-tree') { const m = NW.parseTree(blockSrc(inner)); if (!m.rows.length) err(`${at}: empty tree`); const longN = m.rows.filter((r) => r.note.length > 60); if (longN.length) warn(`${at}: ${longN.length} comment(s) over 60 chars (${longN.slice(0, 3).map((r) => r.name).join(', ')}…) — tree comments are one short clause; they truncate on phones. Explain below the tree`); m.rows.forEach((r) => { if (/\s[+~-]\s/.test(r.name)) warn(`${at}: row "${r.name.slice(0, 30)}" seems to hold several entries — one path per line`); }); }
+    else if (tag === 'doc-code' || tag === 'doc-schema') {
+      const hasScript = /<script\s+type=["']?text\/(plain|source)/i.test(inner);
+      if (a.src && !hasScript) {
+        let text, where;
+        let sha = '';
+        if (a.ref) { const g = atRef(at, a.ref, a.src); if (!g) return whole; text = g.text; where = g.where; sha = a.ref; }
+        else { const all = roots.map((r) => resolve(r, a.src)).filter((c) => existsSync(c)); if (all.length > 1) warn(`${at}: src="${a.src}" exists under ${all.length} roots (${all.map((x) => relative(process.cwd(), x)).join(', ')}) — using the first; reorder --root or make the path more specific`);
+          const f = findFile(a.src); if (!f) { err(`${at}: src="${a.src}" not found (looked under ${roots.concat([baseDir]).map((r) => relative(process.cwd(), r) || '.').join(', ')})`); return whole; } text = readFileSync(f, 'utf8'); where = relative(process.cwd(), f); if (!roots.some((r) => f.startsWith(r))) warn(`${at}: src="${a.src}" resolved OUTSIDE --root, at ${where} — check it's the file you mean`);
+          sha = stamp(f, true); }
+        if (SECRET_TEXT.test(text)) { err(`${at}: ${a.src} looks like it holds a secret somewhere in the file — not packaging any of it`); return whole; }
+        const total = text.split('\n').length; let start = 1;
+        if (a.lines) { const mm = a.lines.match(/^(\d+)(?:-(\d+))?$/); if (!mm) err(`${at}: lines="${a.lines}" should look like 40-72`); else { start = +mm[1]; const end = +(mm[2] || mm[1]);   /* lines="40" is that one line */ if (end > total || start < 1 || start > end) err(`${at}: lines="${a.lines}" but ${a.src} has ${total} lines at ${where} — is --root (or ref=) at the commit you're citing?`); text = text.split('\n').slice(start - 1, end).join('\n'); } }
+        if (SECRET_TEXT.test(text)) { err(`${at}: ${a.src} looks like it holds a secret — not packaging it`); return whole; } reads.add(a.src);
+        const nl = text.split('\n').length; if (nl > 120) warn(`${at}: ${nl} lines of code — readers skim past long listings; slice with lines="a-b"`); else if (nl > 40 && !('collapsed' in a)) warn(`${at}: ${nl}-line slice — over ~40 lines either trim to the part that carries the point or add collapsed`);
+        const extra = (a.file ? '' : ` file="${a.src}"`) + (a.start || !a.lines ? '' : ` start="${start}"`) + (sha && !a.sha ? ` sha="${String(sha).slice(0, 12)}"` : '');
+        info.push(`filled <${tag} src="${a.src}"${a.lines ? ` lines=${a.lines}` : ''}> from ${where}`);
+        return `<${tag}${rawAttrs}${extra}><script type="text/plain">${text.replace(/<\/script/gi, '<\\/script')}</script>${inner}</${tag}>`;
+      }
+      if (!hasScript && /<(?!\/?doc-pin\b)[a-z]/i.test(inner)) err(`${at}: code contains "<" but isn't wrapped — put the source inside <script type="text/plain">…</script>`);
+      if (!hasScript && !inner.trim() && !a.src) err(`${at}: empty`);
+      const n = blockSrc(inner).split('\n').length; if (n > 120) warn(`${at}: ${n} lines — slice to the part that carries the point`); else if (n > 40 && !('collapsed' in a) && hasScript) warn(`${at}: ${n}-line block — over ~40 lines trim or add collapsed`);
+      if ('collapsed' in a && !/<doc-pin/.test(inner) && !a.caption) warn(`${at}: collapsed, no pins, no caption — if nothing in it is worth pointing at, cite file:lines inline instead`);
+      if (a.file && / · |, /.test(a.file)) warn(`${at}: file="${a.file}" names two files — one block per file`);
+      if (a.file && !a.lines && !a.start && !a.src && !('diff' in a) && n > 6) warn(`${at}: file= without lines=/start= — cite the range, or start="1" if this really is the whole file, or drop file= for a sketch`);
+      if (('diff' in a || /^(diff|patch)$/.test(a.lang || '')) && hasScript) { const body = blockSrc(inner);
+        if (tag === 'doc-code' && !/^@@ .*[-+]\d/m.test(body) && !a.start && !a.lines) warn(`${at}: diff without a real "@@ -a,b +c,d @@" header (or start=) — gutter will be unnumbered; paste the hunk header from gh pr diff`);
+        let hdr = null, cntNew = 0, cntOld = 0, hl = 0; const check = () => { if (hdr && ((hdr.d != null && cntNew !== hdr.d) || (hdr.b != null && cntOld !== hdr.b))) (cntNew > hdr.d || cntOld > hdr.b ? err : warn)(`${at}: hunk "@@ -${hdr.a},${hdr.b ?? '?'} +${hdr.c},${hdr.d ?? '?'} @@" (block line ${hl}) is followed by ${cntOld}/${cntNew} old/new lines, header says ${hdr.b}/${hdr.d} — fine if you only cut the tail; if you removed LEADING or middle lines every gutter number after the cut is wrong (bump +${hdr.c} by the lines you dropped, or split into two @@ hunks)`); };
+        body.split('\n').forEach((l, i) => { const mm = l.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/); if (l.startsWith('@@')) { check(); hdr = mm ? { a: +mm[1], b: mm[2] != null ? +mm[2] : null, c: +mm[3], d: mm[4] != null ? +mm[4] : null } : null; cntNew = cntOld = 0; hl = i + 1; if (mm && mm[5] && !/^\s/.test(mm[5])) warn(`${at}: hunk header at block line ${i + 1} has text jammed after "@@" ("${mm[5].slice(0, 20)}") — leftover from an edit?`); return; }
+          if (/^\s*(…|\.\.\.)\s*$/.test(l)) { err(`${at}: "…" elision at block line ${i + 1} inside a diff hunk — the gutter can't know how many lines you cut; split into two hunks`); return; }
+          if (l[0] === '+') cntNew++; else if (l[0] === '-') cntOld++; else { cntNew++; cntOld++; } }); check(); }
+      if (!a.src && hasScript && !('wrap' in a)) { const longL = blockSrc(inner).split('\n').filter((l) => l.length > 90).length; if (longL >= 3) warn(`${at}: ${longL} lines over 90 chars in code you pasted/wrote — a phone shows ~44 mono columns; reflow the sketch (or add wrap for prose-like text)`); }
+      { // pins must address a line number that the gutter will actually show
+        const body = blockSrc(a.src && !hasScript ? '' : inner); const isDiff = 'diff' in a || /^(diff|patch)$/.test(a.lang || ''); const st = +(a.start || (a.lines || '').match(/^\d+/)?.[0] || 1);
+        const valid = new Set(), validOld = new Set(); let A = st, B = +(a['old-start'] || st);
+        body.split('\n').forEach((l, i) => { if (!isDiff) { valid.add(st + i); return; } if (l.startsWith('@@')) { const ma = l.match(/\+(\d+)/), mb = l.match(/-(\d+)/); if (ma) A = +ma[1]; if (mb) B = +mb[1]; } else if (l[0] === '+') valid.add(A++); else if (l[0] === '-') validOld.add(B++); else { valid.add(A++); B++; } });
+        for (const p of inner.matchAll(/<doc-pin\b([^>]*)>([\s\S]*?)<\/doc-pin>/g)) { const pa = attrs(p[1]); if (wc(stripTags(p[2])) > 20) warn(`${at}: pin at line ${pa.line || pa.old} is ${wc(stripTags(p[2]))} words — pins locate (a clause or two); the argument goes in prose or a numbered risk it links to`);
+          if (!pa.line && !pa.old) err(`${at}: <doc-pin> inside doc-code needs line="" (file line number as shown in the gutter${isDiff ? '; old="N" for a removed line' : ''})`);
+          else if (pa.line && body && !valid.has(+pa.line)) err(`${at}: <doc-pin line="${pa.line}"> — no such line in this block (gutter shows ${[...valid][0]}–${[...valid].pop()}${isDiff ? ', new-side numbers; use old="N" to pin a removed line' : ''})`);
+          else if (pa.old && !validOld.has(+pa.old)) err(`${at}: <doc-pin old="${pa.old}"> — no removed line with that old-side number in this block`); } }
+    }
+    else if (tag === 'doc-mock') { if (!/<template[\s>]/i.test(inner)) err(`${at}: needs a <template>…</template> child holding the mock's HTML`); for (const p of inner.matchAll(/<doc-pin\b([^>]*)>/g)) { const pa = attrs(p[1]); if (pa.ref) { if (!new RegExp(`data-ref=["']${pa.ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`).test(inner)) err(`${at}: <doc-pin ref="${pa.ref}"> — no element with data-ref="${pa.ref}" inside this mock's <template>`); } else if (!/^\d+(\.\d+)?%?\s*,\s*\d+(\.\d+)?%?$/.test(pa.at || '')) err(`${at}: <doc-pin> inside doc-mock needs ref="data-ref-name" (preferred) or at="x%,y%"`); }
+      const w = +(a.w || a.width || { __proto__: null, phone: 390, browser: 1024, terminal: 640, desktop: 900, none: 600 }[a.frame || 'browser'] || 800);
+      const ctx2k = html.slice(Math.max(0, idx - 400), idx); const inCols = /<div class="[^"]*\bcols\b[^"]*">(?:(?!<\/div>)[\s\S])*$/.test(ctx2k);
+      if ((a.frame === 'terminal') && w > 520 && !('thumbnail' in a)) warn(`${at}: terminal mock w=${w} — on a phone that's ~${Math.round(390 / w * 13)}px text; ≤480 (≈55 cols) stays readable, or add thumbnail to accept`);
+      else if (w >= 800 && !('thumbnail' in a)) warn(`${at}: ${a.frame || 'browser'} mock w=${w} renders at ~${Math.round(350 / w * 100)}% on a phone — fine as an overview (add thumbnail to say so), but pair it with a narrow crop (w≤480 frame=none) of the part that matters${inCols ? '; and it is inside .cols, which halves it again on desktop' : ''}`);
+      else if (inCols && w > 600) warn(`${at}: w=${w} mock inside .cols — .cols is for mocks ≤600 wide; stack them or use .storyboard`); }
+    else if (tag === 'doc-shot') { const own = /<img\b/i.test(inner); if (a.src && own) err(`${at}: has both src="" and an <img> child — keep one`); else if (!a.src && !own) err(`${at}: needs src=""`); }   // its file is checked with the page's media, below
+    else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
+    else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
+      if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
+      if (/\(|:\d+\b/.test(a.from || '')) warn(`${at}: from="${a.from}" — from is the bare name/handle; role, file:line or context go in where=`);
+      const body = stripTags(inner).replace(/\s+/g, ' ').trim(); if (body.length > 40) { if (quoteSeen.has(body)) warn(`${at}: same quote text already appears at line ${quoteSeen.get(body)} — quote it once, reference it after`); else quoteSeen.set(body, lineOf(idx)); } }
+    else if (tag === 'doc-ask') {
+      if (!a.id) warn(`${at}: add an id — it anchors the TOC entry and the response`);
+      if (!/<(p|h3|h4)[\s>]/i.test(inner) && !a.q) err(`${at}: needs a question — first <p> child (or q="")`);
+      const ctrls = [...inner.matchAll(/<(input|textarea|select|ol)\b([^>]*)>/gi)].map((m) => ({ tag: m[1].toLowerCase(), ...attrs(m[2]) }));
+      const named = ctrls.filter((c) => c.name || (c.tag === 'ol' && c['data-name']));
+      if (!named.length) err(`${at}: no named controls — use <label><input type=radio name=… value=…> …</label>, checkboxes, <textarea name>, <input type=range name>, or <ol class=rank data-name>`);
+      const radios = named.filter((c) => c.type === 'radio'); const groups = [...new Set(radios.map((r) => r.name))];
+      groups.forEach((g) => { const rs = radios.filter((r) => r.name === g); if (!rs.some((r) => 'checked' in r)) warn(`${at}: radio group "${g}" has no checked option — pre-select your recommendation so "no change" is an answer`); if (rs.some((r) => !r.value)) err(`${at}: every radio in "${g}" needs a value`); if (names.has(g)) err(`${at}: control name "${g}" is used by an earlier doc-ask`); });
+      named.forEach((c) => names.add(c.name || c['data-name']));
+      if (ctrls.some((c) => c.tag === 'input' && !c.type)) warn(`${at}: <input> without type`);
+      for (const sm of inner.matchAll(/<small>([\s\S]*?)<\/small>/g)) if (wc(stripTags(sm[1])) > 16) { warn(`${at}: an option's <small> is ${wc(stripTags(sm[1]))} words — ≤ ~12; the trade-off is argued once in the section, the option just names it`); break; }
+      const q = inner.match(/<(p|h3|h4)[^>]*>([\s\S]*?)<\/\1>/i); if (q && wc(stripTags(q[2])) > 25) warn(`${at}: the question is ${wc(stripTags(q[2]))} words — keep the first <p> to the question (≤ ~15 words) and put context in a second <p>`);
+      if (lastAskEnd >= 0 && !html.slice(lastAskEnd, idx).replace(/<[^>]+>/g, '').trim()) warn(`${at}: directly follows another doc-ask with nothing between — asks belong where their consequence is discussed, not stacked`);
+      lastAskEnd = idx + whole.length;
+    }
+    else if (tag === 'doc-pin' && !/doc-(code|mock|shot)/.test(html.slice(Math.max(0, idx - 3000), idx).split('</doc-').pop() ? '' : '')) { /* checked inside parents */ }
+  } catch (e) { err(`${at}: ${e.message}`); }
+  return whole;
+});
+for (const m of html.matchAll(/data-if=["']([^"']+)["']/g)) m[1].split(/\s*&&\s*/).forEach((c) => { const n = c.replace(/^!/, '').split(/[=!~]/)[0].trim(); if (!names.has(n)) err(`line ${lineOf(m.index)}: data-if="${m[1]}" — no control named "${n}"`); });
+if (/<doc-pin\b/.test(html.replace(/<doc-(code|mock|shot|schema)\b[\s\S]*?<\/doc-\1>/g, ''))) err('a <doc-pin> sits outside any doc-code / doc-mock / doc-shot');
+
+/* ── doc-plan: the shape of the tree ── */
+if (/<doc-plan\b/.test(html)) {
+  const flat = html.replace(/<!--[\s\S]*?-->/g, '').replace(/<(script|template|style)\b[\s\S]*?<\/\1>/gi, '').replace(/(<doc-(machine|ask|calls|mock|note)\b[^>]*>)[\s\S]*?(<\/doc-\2>)/gi, '$1$3');
+  const root = { no: '', kids: [], ex: [], l: 0 }; const stack = [root]; let inPlan = 0;
+  for (const t of flat.matchAll(/<(\/?)(doc-plan|doc-claim)\b([^>]*)>|<(doc-(?:mock|shot|machine|calls|schema|code|flow|seq|tree|quote))\b|<(doc-ask)\b|<p\b[^>]*>([\s\S]*?)<\/p>/g)) {
+    const top = stack[stack.length - 1];
+    if (t[2] === 'doc-plan') { inPlan += t[1] ? -1 : 1; continue; }
+    if (t[2] === 'doc-claim') { if (t[1]) { if (stack.length > 1) stack.pop(); else err('a </doc-claim> closes nothing'); continue; }
+      if (!inPlan) err('a <doc-claim> sits outside any <doc-plan>');
+      const a = attrs(t[3]); const n = { a, kids: [], ex: [], asks: 0, claim: null, l: top.l + 1 }; n.no = a.aux ? a.aux : (top.no && !top.a?.aux ? top.no + '.' : '') + (top.kids.filter((k) => !k.a.aux).length + 1); top.kids.push(n); stack.push(n); continue; }
+    if (stack.length === 1) continue;
+    if (t[4]) top.ex.push(t[4]); else if (t[5]) top.asks++; else if (t[6] != null && top.claim == null && !top.ex.length && !top.kids.length) top.claim = stripTags(t[6]).replace(/\s+/g, ' ').trim();
+  }
+  if (stack.length > 1) err(`${stack.length - 1} <doc-claim> left open — every claim needs its </doc-claim>`);
+  const walk = (n) => { const at = `claim ${n.no}`;
+    if (n.claim == null && !n.a.at) err(`${at}: no claim — the first child must be a <p> with one sentence (or give it at="path:line")`);
+    if (n.claim && wc(n.claim) > 16) warn(`${at}: the claim is ${wc(n.claim)} words — one short sentence (≤ ~12) that can be true or false`);
+    if (n.claim && n.l <= 2 && !n.a.aux && !/[.?!]$/.test(n.claim)) warn(`${at}: "${n.claim.slice(0, 40)}" — write a full sentence with a verb, not a heading`);
+    if (n.ex.length > 1) warn(`${at}: ${n.ex.length} exhibits (${n.ex.join(', ')}) — one per claim; give the others their own child claims`);
+    if (!n.ex.length && !n.kids.length && n.a.aux !== 'scope') warn(`${at}: nothing under it — add the exhibit that proves it`);
+    if (n.kids.length > 5) warn(`${at}: ${n.kids.length} child claims — 5 at most; group them`);
+    if (n.l > 3) warn(`${at}: level ${n.l} — three levels at most (what › how › where)`);
+    n.kids.forEach(walk); };
+  const tops = root.kids.filter((k) => !k.a.aux); if (tops.length > 5) warn(`doc-plan: ${tops.length} top-level claims — 5 at most, plus aux="shared" and aux="scope"`);
+  if (root.kids.length && !root.kids.some((k) => k.a.aux === 'scope')) warn('doc-plan: no <doc-claim aux="scope"> — end with what is not changing');
+  const i = root.kids.findIndex((k) => k.a.aux); if (i >= 0 && root.kids.slice(i).some((k) => !k.a.aux)) warn('doc-plan: aux claims go last');
+  root.kids.forEach(walk);
+  const nAsk = (flat.match(/<doc-ask\b/g) || []).length; if (nAsk > 6) warn(`doc-plan: ${nAsk} decisions — 2 to 5; ask only about forks that change what you build, and default the rest`);
+}
+
+for (const m of html.matchAll(/<doc-changes\b([^>]*)>/g)) { const a = attrs(m[1]); if (!['new', 'changed', 'deleted'].some((k) => parseInt(a[k], 10) > 0)) warn(`line ${lineOf(m.index)} <doc-changes>: give new="N", changed="N" or deleted="N" (files) — with none it draws nothing`); }
+
+if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label line or a goal sentence
+  const k = html.match(/<p\s+class=["']?kicker\b/i); if (k) warn(`line ${lineOf(k.index)}: a plan has no label line above its title — remove <p class="kicker">; the page hides it`);
+  const m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i); const t = m ? stripTags(m[1]).replace(/\s+/g, ' ').trim() : '';
+  if (t && (wc(t) > 8 || /[.!?](\s|$)/.test(t))) warn(`line ${lineOf(m.index)}: the <h1> of a plan is a title, not a sentence — name the change and the place in 3 to 7 words ("Scheduling Sent Messages in PostBox"); the level-1 claims say what changes`);
+}
+
+/* ── words: the blocks are the document; prose only joins them ── */
+{ const main = (html.match(/<main[\s\S]*<\/main>/i) || [html])[0];
+  const blocks = (main.match(/<doc-(code|flow|seq|schema|tree|calls|machine|mock|shot|ask|draft)\b/g) || []).length;
+  const bare = main.replace(/<(script|style|template)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<(doc-(?:code|flow|seq|schema|tree|calls|machine|mock|shot|ask|draft|quote))\b[\s\S]*?<\/\1>/gi, ' ');
+  let total = 0, long = 0, longest = 0, slow = 0;
+  for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) { const t = stripTags(m[2]).replace(/\s+/g, ' ').trim(); const n = wc(t); total += n; if (n > 40) { long++; longest = Math.max(longest, n); } t.split(/(?<=[.!?])\s+/).forEach((sn) => { if (wc(sn) > 25) slow++; }); }
+  if (long) warn(`${long} paragraph${long > 1 ? 's' : ''} over 40 words (longest ${longest}) — two short sentences, then a block; move the rest into a caption, a pin or a table`);
+  if (slow) warn(`${slow} sentence${slow > 1 ? 's' : ''} over 25 words — split them; one idea per sentence`);
+  if (total > 350 || (blocks && total / blocks > 45)) warn(`${total} words of prose for ${blocks} block${blocks === 1 ? '' : 's'} — aim for ≤ 350 words and ≤ ~30 per block; cut, or show it as a block`);
+  // ASD-STE100 (Simplified Technical English). This is a partial check: it knows a few common unapproved words and the countable writing rules, not the full dictionary.
+  const STE = { utilize: 'use', utilizes: 'uses', leverage: 'use', leverages: 'uses', facilitate: 'help', facilitates: 'helps', 'in order to': 'to', subsequently: 'then', aforementioned: 'this', 'prior to': 'before', additionally: 'also', furthermore: 'also', however: 'but', comprehensive: 'full', robust: 'strong', seamless: 'smooth', seamlessly: 'smoothly', numerous: 'many', commence: 'start', commences: 'starts', begin: 'start', begins: 'starts', terminate: 'stop', terminates: 'stops', demonstrate: 'show', demonstrates: 'shows', indicate: 'show', indicates: 'shows', ensure: 'make sure', ensures: 'makes sure', verify: 'make sure', verifies: 'makes sure', perform: 'do', performs: 'does', 'carry out': 'do', 'carries out': 'does', obtain: 'get', obtains: 'gets', provide: 'give', provides: 'gives', should: 'must', shall: 'must', might: 'can', 'with respect to': 'about', 'due to the fact that': 'because' };
+  const prose = stripTags(bare.replace(/<(code|kbd|pre)\b[\s\S]*?<\/\1>/gi, ' ')); const text = prose.toLowerCase();
+  const hits = Object.keys(STE).filter((w) => new RegExp(`\\b${w}\\b`).test(text)); if (/[a-z,] may\b/.test(prose)) { hits.push('may'); STE.may = 'can'; }
+  if (hits.length) warn(`ASD-STE100 words: ${hits.slice(0, 8).map((w) => `"${w}" → "${STE[w]}"`).join(', ')}${hits.length > 8 ? ` … ${hits.length - 8} more` : ''}`);
+  const contr = [...new Set(text.match(/\b(?:\w+n['’]t|(?:it|that|there|here|what|let|who)['’]s|\w+['’](?:re|ve|ll))\b/g) || [])];
+  if (contr.length) warn(`ASD-STE100: no contractions — ${contr.slice(0, 6).join(', ')}`);
+  const perfect = [...new Set(text.match(/\b(?:has|have|had) (?:been|already|not|never|just) \w+|\b(?:has|have|had) \w+ed\b/g) || [])];
+  if (perfect.length) warn(`ASD-STE100: use simple tenses, not "has/have + verb" — ${perfect.slice(0, 4).map((x) => `"${x}"`).join(', ')}`);
+  const passive = [...new Set(text.match(/\b(?:is|are|was|were|be|been|being) (?:\w+ed|written|sent|made|done|shown|taken|given|kept|held|read|run|set|put|built|chosen) by\b/g) || [])];
+  if (passive.length) warn(`ASD-STE100: use the active voice — ${passive.slice(0, 4).map((x) => `"${x}"`).join(', ')} (say who does it first)`);
+  let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
+  if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
+
+/* ── pack: the runtime inlined once, media left as literal files, nothing the viewer refuses ── */
+// The plans CLI uploads each file that a relative src names on img, video, audio and source, then puts the file's capability URL
+// in place of the path (plans:publish, "Embedded local media"). So pack inlines no media. It checks each reference the CLI will
+// follow, and refuses what the CLI or the viewer's CSP would refuse or let through broken. Media resolves only inside the page's
+// own folder, through no symlink, and never under --root, which bounds code excerpts only. MEDIA_EXT is the extension table of
+// plans:publish without .html and .htm, and the plans smoke holds the two together. Every check here runs under --lint-only too.
+const MEDIA_EXT = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.webm'];
+const MEDIA_MAX = 64;
+/* ── a media reference, as the plans CLI reads it ── */
+// The plans CLI turns a src value into the file it uploads in three steps, and pack takes the same three before it looks at the
+// disk: strings.TrimSpace on the value, net/url's Parse on the value cut at its first "#", and path/filepath's Clean on the parsed
+// path, which is also the key the CLI counts distinct uploads by (localRefPath and openLocalRefs in the CLI's internal/cli). So
+// the whitespace trimmed is Go's, where U+0085 and U+00A0 are space and U+FEFF is not. A value that trims to nothing, or to "#…"
+// or "/…", or that opens with a scheme or "//", the CLI leaves as written. A control character before the fragment, a ":" in the
+// first segment, or a "%" short of two hex digits stops the CLI with an error. The query goes, each %XX decodes to one byte, and
+// Clean folds "." and "a/.." away and drops a trailing "/". What follows the first "#" is never read. pack refuses a path that
+// still climbs out, and one holding U+FFFD, which may stand for a byte pack could not read as UTF-8 and the CLI reads as itself.
+// The differential harness in the issue's scratch holds mediaPath to the CLI's localRefPath on every case the plans smoke pins.
+const GO_SPACE = /[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/;   // unicode.IsSpace
+const goTrimSpace = (s) => { let a = 0, b = s.length; while (a < b && GO_SPACE.test(s[a])) a++; while (b > a && GO_SPACE.test(s[b - 1])) b--; return s.slice(a, b); };
+const goExt = (p) => { for (let i = p.length - 1; i >= 0 && p[i] !== '/'; i--) if (p[i] === '.') return p.slice(i); return ''; };   // filepath.Ext
+const goClean = (p) => { const out = []; for (const seg of p.split('/')) { if (seg === '' || seg === '.') continue; if (seg === '..' && out.length && out[out.length - 1] !== '..') out.pop(); else out.push(seg); } return out.join('/') || '.'; };   // filepath.Clean, on a relative slash path
+const isRemote = (v) => /^[a-z][a-z0-9+.-]*:/i.test(v) || v.startsWith('//');   // the CLI's hasURLScheme, or protocol-relative
+const HEX2 = /^[0-9a-fA-F]{2}$/;
+// a src value → { p }, the slash path the CLI opens and counts by; { skip } when the CLI leaves the value as written and the
+// viewer shows it as it is; or { why } when the CLI or pack refuses it
+function mediaPath(value) {
+  const v = goTrimSpace(value);
+  if (!v || v.startsWith('#') || /^data:/i.test(v)) return { skip: true };
+  if (/^file:/i.test(v)) return { why: 'is a file: URL — use a path relative to the page' };
+  if (isRemote(v)) return { why: 'is remote, and the viewer\'s CSP blocks it — save the file beside the page' };
+  if (v.startsWith('/')) return { why: 'is an absolute path — use a path relative to the page' };
+  const u = v.replace(/#[\s\S]*$/, '');   // the fragment goes first, unread
+  for (let i = 0; i < u.length; i++) { const c = u.charCodeAt(i); if (c < 0x20 || c === 0x7f) return { why: `holds a control character (U+${c.toString(16).toUpperCase().padStart(4, '0')}) before its fragment, which the plans CLI does not parse` }; }
+  const r = u.replace(/\?[\s\S]*$/, '');   // then the query
+  if (r.split('/')[0].includes(':')) return { why: 'has ":" in its first segment, which the plans CLI does not parse as a path' };
+  const raw = Buffer.from(r, 'utf8'); const bytes = [];   // %XX decodes to a byte, as net/url's unescape does, so the check is on bytes
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== 0x25) { bytes.push(raw[i]); continue; }
+    const hex = raw.toString('latin1', i + 1, i + 3); if (i + 2 >= raw.length || !HEX2.test(hex)) return { why: 'has a "%" that two hex digits do not follow, which the plans CLI does not parse' };
+    bytes.push(parseInt(hex, 16)); i += 2;
+  }
+  const p = Buffer.from(bytes).toString('utf8');
+  if (!p) return { why: 'names no file beside the page — the plans CLI leaves it as written, and the viewer finds nothing there' };
+  if (p.startsWith('/')) return { why: 'is an absolute path — use a path relative to the page' };
+  if (p.includes('\uFFFD')) return { why: 'holds U+FFFD, which may stand for a byte pack cannot read as the plans CLI does' };
+  const c = goClean(p);
+  if (c === '..' || c.startsWith('../')) return { why: 'climbs out of the page\'s folder with ..' };
+  if (c === '.') return { why: 'names the page\'s folder, not a file in it' };
+  return { p: c };
+}
+// a cleaned relative path → the real file inside the page's folder, or why there is none. The CLI opens it through os.Root, which
+// follows some symlinks and refuses others by rules pack does not repeat: pack follows none. Each component of the path, folder
+// or file, is lstat'ed from the page's folder, the first symlink refuses the path by name, and what is left must still resolve
+// inside the folder. So a file pack accepts is the file the CLI opens.
+function pageFile(p) {
+  let d = pageDir, walked = '';
+  for (const seg of p.split('/')) {
+    d = join(d, seg); walked += (walked ? '/' : '') + seg;
+    let s; try { s = lstatSync(d); } catch { s = null; }
+    if (!s) { const r = roots.find((x) => real(x) !== pageDir && existsSync(resolve(x, p))); return { why: r ? `exists only under --root ${rel(r)}, which bounds code excerpts only — put the file in the page's folder` : 'is not in the page\'s folder' }; }
+    if (s.isSymbolicLink()) return { why: `goes through "${walked}", a symlink — pack follows none, so put the file itself in the page's folder` };
+  }
+  const f = real(d);
+  if (!f || !f.startsWith(pageDir + sep)) return { why: 'resolves outside the page\'s folder' };
+  if (!statSync(f).isFile()) return { why: 'is not a file' };
+  return { f };
+}
+const MEDIA_TAGS = ['img', 'video', 'audio', 'source'];   // the elements whose src the CLI uploads; doc-shot's moves onto an img below
+const media = new Map();   // each distinct path the CLI opens, as it counts uploads → the reference as first written, trimmed as the CLI trims it
+function checkMedia(at, a) {
+  const value = a.value; const l = mediaPath(value); if (l.skip) return;
+  if (l.why) return err(`${at}: src="${value}" ${l.why}`);
+  const ext = goExt(l.p).toLowerCase();
+  if (ext === '.html' || ext === '.htm') return err(`${at}: src="${value}" is an HTML file, which no media element renders`);
+  if (!MEDIA_EXT.includes(ext)) return err(`${at}: src="${value}" — ${ext ? `"${ext}"` : 'a name with no extension'} is not a media type plans publishes (${MEDIA_EXT.join(' ')})`);
+  const g = pageFile(l.p); if (g.why) return err(`${at}: src="${value}" ${g.why}`);
+  if (!media.has(l.p)) media.set(l.p, goTrimSpace(value));
+}
+// srcset, poster, CSS url() and the CSS image functions are never uploaded, so each may only hold a data: URI (or, in CSS, a
+// #fragment). The whitespace trimmed before the check is the syntax's own, which is what the URL parser strips too: HTML's ASCII
+// whitespace around an attribute value or a srcset candidate, and CSS's, which after its preprocessing is LF, TAB and SPACE,
+// around a url() or a string. JavaScript's trim() and \s would also strip U+FEFF, U+00A0 and the other Unicode spaces, which the
+// URL parser keeps, so a value they read as data: is a path beside the page to the browser, and the viewer requests it.
+const CSS_WS = (c) => c === ' ' || c === '\t' || c === '\n';
+const trimIf = (s, ws) => { let a = 0, b = s.length; while (a < b && ws(s[a])) a++; while (b > a && ws(s[b - 1])) b--; return s.slice(a, b); };
+function onlyData(at, what, value, css = false) {
+  const v = trimIf(value, css ? CSS_WS : WS); if (!v || /^data:/i.test(v) || (css && v.startsWith('#'))) return;
+  err(`${at}: ${what} "${v.length > 60 ? v.slice(0, 60) + '…' : v}" — ${isRemote(v) ? 'remote, and the viewer\'s CSP blocks it' : 'the plans CLI uploads only a literal src, so this path would break'}; use ${css ? 'an <img>' : 'src'} for a local file, or a data: URI`);
+}
+// the candidate URLs of a srcset, split as HTML's srcset parser splits them: ASCII whitespace and commas are skipped, a URL runs to
+// ASCII whitespace with its trailing commas dropped, and the descriptors after it run to the next comma. A comma inside parentheses
+// is part of a descriptor to the browser and ends a candidate here, so pack reads every URL the browser reads, and at times one more.
+const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { while (i < s.length && (WS(s[i]) || s[i] === ',')) i++; let j = i; while (j < s.length && !WS(s[j])) j++; if (j > i) { const u = s.slice(i, j); out.push(u.replace(/,+$/, '')); if (!u.endsWith(',')) while (j < s.length && s[j] !== ',') j++; } i = j; } return out; };
+// CSS first preprocesses its input (CSS Syntax §3.3): CRLF, a lone CR and FF each become one LF, and NUL becomes U+FFFD. So a
+// string ends at any of those newlines, and a backslash before any of them continues the string. pack reads the same text, in
+// a <style>, a style="" and the page's own stylesheet, so a url() or @import after a CR or FF is found and an escaped CRLF is
+// not refused. CSS reads a backslash escape inside an identifier, so u\72l( is url( and @\69mport is @import. pack decodes
+// none: it refuses an escape in the name of a function or an at-rule. Comments and strings are blanked first, in CSS's own
+// order, where a comment opens only outside a string, a string only outside a comment, and an escape outside a string is one
+// token, so a fake string hides no name and a comment opened inside a string hides no url(). Blanking keeps every offset, so a
+// url( found in the text with its strings is checked only where it starts outside one.
+const cssPreprocess = (css) => css.replace(/\r\n?|\f/g, '\n').replace(/\0/g, '\uFFFD');
+function cssLex(css) {   // the css with its comments blanked (kept), with its strings blanked too (code), and each string's [start, end)
+  let kept = '', code = '', i = 0; const n = css.length, strings = [];
+  while (i < n) {
+    const c = css[i];
+    if (c === '/' && css[i + 1] === '*') { const e = css.indexOf('*/', i + 2); const j = e < 0 ? n : e + 2; const b = ' '.repeat(j - i); kept += b; code += b; i = j; continue; }
+    if (c === '"' || c === "'") { let j = i + 1; while (j < n && css[j] !== c && css[j] !== '\n') j += css[j] === '\\' ? 2 : 1; if (j < n && css[j] === c) j++; strings.push([i, j]); kept += css.slice(i, j); code += ' '.repeat(j - i); i = j; continue; }
+    if (c === '\\') { const e = css.slice(i, i + 2); kept += e; code += e; i += 2; continue; }
+    kept += c; code += c; i++;
+  }
+  return { kept, code, strings };
+}
+// CSS loads an image through more than url(). image-set() and -webkit-image-set() take a quoted string, image(), cross-fade() and
+// -webkit-cross-fade() take strings or url()s, src() is url() under another name, and element() and -moz-element() paint an
+// element of the page, which pack cannot check. pack finds each name in the blanked text, with no identifier character before it
+// and its "(" right after it, and reads its arguments to the ")" that closes it, where a "(", "[" or "{" opens a block that its own
+// closer ends and the end of the text closes everything, as CSS does. Every string in those arguments must be a data: URI, but
+// one inside type(), which names a MIME type; a url() in them is checked as every url() is, and names its string first. The
+// innermost function names a string, once. A var() in those arguments is substituted after pack reads the sheet, so the string
+// it stands for can be any file, and env() and attr() are read as late: pack refuses each, at any depth, anywhere between an
+// image function's "(" and its ")". A url() takes no var(): its unquoted form is one token that a "(" ends, and its quoted form
+// names its string here. The same escaped-name rule as url()'s stands: an escape in a name is refused above.
+const CSS_IMAGE_FN = /(?<![-\w\u0080-\uffff\\])(-webkit-image-set|image-set|image|-webkit-cross-fade|cross-fade|src|-moz-element|element)\(/gi;
+const CSS_TYPE_FN = /(?<![-\w\u0080-\uffff\\])type\(/gi;
+const CSS_SUBST_FN = /(?<![-\w\u0080-\uffff\\])(var|env|attr)\(/gi;
+function cssArgsEnd(code, from) {   // the index of the ")" that closes the function whose "(" ends at from, or the end of the text
+  const closer = { '(': ')', '[': ']', '{': '}' }; const stack = [')'];
+  for (let i = from; i < code.length; i++) {
+    const c = code[i];
+    if (c === '\\') i++;
+    else if (closer[c]) stack.push(closer[c]);
+    else if (c === stack[stack.length - 1]) { stack.pop(); if (!stack.length) return i; }
+  }
+  return code.length;
+}
+const CSS_ESC = /\\(?:[0-9a-fA-F]{1,6}(?:\r\n|[ \t\n\f\r])?|[^\n\r\f0-9a-fA-F])/y, CSS_IDENT = /[-\w\u0080-\uffff]/;
+function cssEscapedName(code) {   // the first function or at-rule name in blanked css that holds an escape, with its "(" or "@", or null
+  let i = 0; const n = code.length;
+  while (i < n) {
+    if (code[i] !== '\\' && !CSS_IDENT.test(code[i])) { i++; continue; }
+    const s = i; let esc = false;
+    while (i < n) { if (code[i] === '\\') { CSS_ESC.lastIndex = i; if (!CSS_ESC.exec(code)) { i++; break; } i = CSS_ESC.lastIndex; esc = true; } else if (CSS_IDENT.test(code[i])) i++; else break; }
+    if (esc && code[i] === '(') return code.slice(s, i + 1);
+    if (esc && code[s - 1] === '@') return code.slice(s - 1, i);
+  }
+  return null;
+}
+function checkCss(at, text) {
+  const css = cssPreprocess(text); const { kept, code, strings } = cssLex(css);
+  const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
+  // A url() ends at the ")" that closes it or at the end of the text, as CSS reads it: an unquoted url is one token that runs
+  // to either, and a quoted one is a function the end of the text closes, after its string or a string the end cuts short.
+  const CSS_URL = /url\([ \t\n]*(?:"([^"]*)"[ \t\n]*\)|'([^']*)'[ \t\n]*\)|([^)]*)\)|"([^"\n]*)(?:"[ \t\n]*)?$|'([^'\n]*)(?:'[ \t\n]*)?$|([^)]*)$)/gi;
+  const named = new Set();   // the start of each string a url() or an image function has named
+  for (const m of kept.matchAll(CSS_URL)) if (code[m.index] !== ' ') {
+    onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? m[6], true);
+    for (const [s] of strings) if (s >= m.index && s < m.index + m[0].length) named.add(s);
+  }
+  const mime = [...code.matchAll(CSS_TYPE_FN)].map((m) => [m.index + m[0].length, cssArgsEnd(code, m.index + m[0].length)]);
+  const held = new Set();   // the start of each var(), env() or attr() an image function has refused, so a nested function reports it once
+  for (const m of [...code.matchAll(CSS_IMAGE_FN)].reverse()) {
+    const fn = m[1], from = m.index + m[0].length, to = cssArgsEnd(code, from);
+    if (/element/i.test(fn)) { err(`${at}: CSS ${fn}() — it paints an element of the page, which pack cannot check; use an <img> for a local file, or a data: URI`); continue; }
+    CSS_SUBST_FN.lastIndex = from;
+    for (let v; (v = CSS_SUBST_FN.exec(code)) && v.index < to;) { if (held.has(v.index)) continue; held.add(v.index); err(`${at}: CSS ${fn}() holds ${v[1]}(), which the browser substitutes after pack has read the sheet, so pack cannot see what it names; write the data: URI itself`); }
+    for (const [s, e] of strings) {
+      if (s < from || s >= to || named.has(s) || mime.some(([a, b]) => s >= a && s < b)) continue;
+      named.add(s); onlyData(at, `CSS ${fn}()`, css.slice(s + 1, e - (e - s >= 2 && css[e - 1] === css[s] ? 1 : 0)), true);
+    }
+  }
+  if (/@import\b/i.test(code)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);
+}
+const RUNTIME = {   // always this folder's runtime, never a copy beside the page
+  css: `<style data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.css'), 'utf8')}\n</style>`,
+  js: `<script data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.js'), 'utf8').replace(/<\/script/gi, '<\\/script')}\n</script>`,
+};
+const fileName = (v) => basename((v || '').replace(/[?#].*$/s, '').trim());
+// every media src a page holds, decoded as the CLI reads it, doc-shot's included: what pack checks, and what its output must hold
+const mediaSrcs = (src) => scanTags(src).flatMap((t) => MEDIA_TAGS.includes(t.name) || t.name === 'doc-shot' ? t.attrs.filter((a) => a.name === 'src').map((a) => a.value) : []).sort();
+const checked = mediaSrcs(html);
+const edits = []; let nCss = 0, nJs = 0;   // edits are [start, end, text] on html, none overlapping
+for (const t of scanTags(html)) {
+  const at = `line ${lineOf(t.start)} <${t.name}>`; const get = (n) => t.attrs.find((a) => a.name === n); const val = (n) => get(n)?.value;
+  // A value pack cannot decode as the CLI does is not read at all. The reference may be whitespace or a slash to the CLI, so the
+  // tag may be a stylesheet to the CLI, or its src another file, where pack read neither; so a tag with one in any attribute is refused.
+  { const a = t.attrs.find((x) => x.bad.length);
+    if (a) { err(`${at}: ${a.name}="${a.raw}" holds ${a.bad.map((b) => `"${b}"`).join(', ')}, a character reference pack does not decode as the plans CLI would, so it cannot read the value the CLI reads — write the character itself, or its numeric reference`); continue; } }
+  if (MEDIA_TAGS.includes(t.name) && get('src')) checkMedia(at, get('src'));
+  if (t.name === 'doc-shot' && get('src')) {   // the screenshot moves onto a literal <img> child, which the CLI sees and the runtime adopts
+    const a = get('src'); checkMedia(at, a); let ws = a.from; while (WS(html[ws - 1])) ws--;
+    edits.push([ws, a.to, ''], [t.end, t.end, `<img src=${a.q}${a.raw}${a.q}>`]);
+  }
+  if (get('srcset')) srcsetUrls(val('srcset')).forEach((u) => onlyData(at, 'srcset', u));
+  if (get('poster')) onlyData(at, 'poster', val('poster'));
+  if (get('style')) checkCss(`${at} style=""`, val('style'));
+  if (t.name === 'meta' && val('http-equiv')?.trim().toLowerCase() === 'content-security-policy') err(`${at}: a <meta> Content-Security-Policy — the viewer sends its own; remove this one`);
+  if ((t.name === 'link' && fileName(val('href')) === 'htmlplan.css') || (t.name === 'style' && get('data-htmlplan'))) { nCss++; edits.push([t.start, t.close ?? t.end, RUNTIME.css]); continue; }
+  if (t.name === 'script' && (fileName(val('src')) === 'htmlplan.js' || get('data-htmlplan'))) { nJs++; edits.push([t.start, t.close, RUNTIME.js]); continue; }
+  if (t.name === 'style') checkCss(at, t.text);
+  if (t.name === 'link' && /(^|\s)stylesheet(\s|$)/i.test(val('rel') || '')) {   // the page's own stylesheet, inlined from the page's folder
+    const href = goTrimSpace(val('href') || ''); const l = href ? mediaPath(href) : { why: 'has no href' }; if (l.skip) l.why = 'names no file';
+    const g = l.why ? l : goExt(l.p).toLowerCase() !== '.css' ? { why: 'is not a .css file' } : pageFile(l.p);
+    if (g.why) { err(`${at}: stylesheet "${href}" ${g.why}; inline it in a <style>`); continue; }
+    if (SECRET_NAME.test(g.f)) { err(`${at}: "${href}" looks like a secrets file — not reading it`); continue; }
+    const text = readFileSync(g.f, 'utf8');
+    if (SECRET_TEXT.test(text)) { err(`${at}: ${href} looks like it holds a secret — not packaging it`); continue; }
+    if (/<\/style/i.test(text)) { err(`${at}: ${href} contains "</style", which would end its <style> early`); continue; }
+    checkCss(`${at} ${href}`, text); reads.add(href); edits.push([t.start, t.end, `<style>/* ${basename(href)} */\n${text}\n</style>`]); continue;
+  }
+  if (t.name === 'script' && get('src')) err(`${at}: <script src="${val('src')}"> — the viewer runs inline scripts only; inline it or remove it`);
+}
+if (nCss !== 1) err(nCss ? `htmlplan.css appears ${nCss} times — link it once` : 'htmlplan.css is not linked — add <link rel="stylesheet" href="htmlplan.css">');
+if (nJs !== 1) err(nJs ? `htmlplan.js appears ${nJs} times — include it once` : 'htmlplan.js is not included — add <script src="htmlplan.js" defer></script>');
+if (media.size > MEDIA_MAX) err(`${media.size} distinct local media files — a page holds at most ${MEDIA_MAX}; drop some, or publish them on their own`);
+if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's' : ''} stay beside the page for the plans CLI to upload: ${[...media.values()].join(', ')}`);
+let packed = html;
+for (const [s, e, text] of edits.sort((x, y) => y[0] - x[0])) packed = packed.slice(0, s) + text + packed.slice(e);
+if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');
+// The licence travels with the runtime. Right after the doctype, every packed page carries one comment that names the upstream
+// work, its pin and the local changes, then the Apache-2.0 text from the marked section at the end of plugins/plans/NOTICE. pack
+// finds NOTICE from its own folder, never from the working directory. A packed page that is packed again lost its old comment
+// before the lint, as a token, so the comment never doubles. A "--" in the text would end the comment early, so pack refuses
+// it, like a missing text.
+{ let apache = null;
+  try { apache = readFileSync(resolve(here, '..', '..', '..', 'NOTICE'), 'utf8').match(/\n-----BEGIN APACHE-2\.0-----\n([\s\S]*)-----END APACHE-2\.0-----\n$/)?.[1] ?? null; } catch {}
+  if (!apache) err('the Apache-2.0 text is missing from plugins/plans/NOTICE — pack writes no page without the runtime\'s licence');
+  else if (apache.includes('--')) err('the Apache-2.0 text in plugins/plans/NOTICE contains "--", which would end its HTML comment early — pack writes no page with a cut licence');
+  else {
+    const note = `<!--${LICENCE_MARK} from Anthropic's community plugin repository:\n` +
+      'https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan\n' +
+      'Modified for the plans plugin (see plugins/plans/NOTICE): theme tokens, state in the URL fragment, literal media for the plans CLI, strict pack arguments, a plain-text changes label, same-frame http and https quote links, a confirmed copy-out, a reading mode, pinned git refs and this licence comment.\n' +
+      `Licensed under the Apache License, Version 2.0:\n${apache}-->`;
+    const dt = packed.match(/^﻿?\s*<!doctype[^>]*>/i);
+    packed = dt ? packed.slice(0, dt[0].length) + '\n' + note + packed.slice(dt[0].length) : note + '\n' + packed; } }
+// The page the CLI reads is the one pack writes, so pack reads its output once more with the same tokenizer and writes it only
+// when the media references in it are the ones it checked, value for value and in number. Each edit above replaces or moves a
+// whole tag and never splices one, and this is the check that none did, whatever the input.
+{ const got = mediaSrcs(packed);
+  if (got.join('\n') !== checked.join('\n')) err(`the packed page holds ${got.length} media reference${got.length === 1 ? '' : 's'} where ${checked.length} ${checked.length === 1 ? 'was' : 'were'} checked — pack writes no page whose media it did not check`); }
+
+/* ── report ── */
+if (!quiet) {
+  console.log(`\n${basename(inPath)}`);
+  info.forEach((m) => console.log('  · ' + m));
+  warns.forEach((m) => console.log('  ⚠ ' + m));
+  errors.forEach((m) => console.log('  ✗ ' + m));
+}
+if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
+if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
+{ // write a new file in the page's folder, then rename it over the output, so a failed write leaves an old output whole.
+  // pageDir was resolved before the lint, which can run long, so the folder is checked again right before the temp file is made
+  // and right before the rename: the input's folder must still resolve to pageDir, that path must still be the same directory by
+  // device and inode, and the output's folder must still resolve there; after the write, the temp file's lstat must be the file
+  // pack made, by the fstat its descriptor gave right after the exclusive open, at that path. That identity is taken before the
+  // write, so a write that fails part way, say with EFBIG, still ends with the temp file removed, and only while it is still
+  // pack's own. Node has no openat or renameat to pin the folder, so between the last check and each of the two syscalls a swap
+  // can still redirect that one call; a swap at any other moment is caught and nothing is written over the output. A process of
+  // the same user that can rename the page's folder can already write every file in it, so a swap timed into one of those two
+  // windows is out of scope here: the checks catch a folder that moved by accident, or around the lint, which can run long.
+  const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let fd = -1, own = null, why = null;
+  const sameDir = () => { try { const s = lstatSync(pageDir); return realpathSync(baseDir) === pageDir && s.isDirectory() && s.dev === pageDirId.dev && s.ino === pageDirId.ino && realpathSync(dirname(outPath)) === pageDir; } catch { return false; } };
+  try {
+    if (!sameDir()) why = `the page's folder ${rel(pageDir)} changed during the run — nothing was written; run pack again`;
+    else {
+      fd = openSync(tmp, 'wx'); own = fstatSync(fd); writeFileSync(fd, packed); closeSync(fd); fd = -1;
+      const l = lstatSync(tmp);
+      if (!sameDir() || !l.isFile() || l.dev !== own.dev || l.ino !== own.ino || realpathSync(tmp) !== join(pageDir, basename(tmp))) why = `the page's folder ${rel(pageDir)} changed during the write — ${rel(outPath)} was not written; a ${basename(tmp)} left where the old path leads is pack's`;
+      else renameSync(tmp, outPath);
+    }
+  } catch (e) { why = e.code || e.message; }
+  if (why) {
+    if (fd >= 0) { try { closeSync(fd); } catch {} }
+    try { const s = lstatSync(tmp); if (own && s.dev === own.dev && s.ino === own.ino) unlinkSync(tmp); } catch {}
+    console.log(`✗ could not write ${rel(outPath)}: ${why}`); process.exit(1); } }
+if (reads.size) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
+console.log(`✓ ${rel(outPath)}  ${(Buffer.byteLength(packed) / 1024).toFixed(0)} KB · runtime inlined · ${media.size} media file${media.size === 1 ? '' : 's'} beside it for the plans CLI${warns.length ? ` · ${warns.length} warning(s)` : ''}`);
