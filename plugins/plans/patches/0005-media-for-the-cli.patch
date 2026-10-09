@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index e96a76f46a5a5f5500f2cc360acb773637b82bd4..296f3ee14dc9bfeac7e579112aa7524f2aab9d86 100644
+index e96a76f46a5a5f5500f2cc360acb773637b82bd4..29303949c292c43e8884c5a1124601160d256be0 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -48,7 +48,7 @@ Put it in the `<header>`, after the `h1`. It shows “Proposed · 10 files · +5
@@ -16,7 +16,7 @@ index e96a76f46a5a5f5500f2cc360acb773637b82bd4..296f3ee14dc9bfeac7e579112aa7524f
  - Lints every block with the same parsers the browser uses, and the shape of the tree.
  - Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
 -- Inlines the runtime and local images. Writes `plan.packed.html`.
-+- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads a `src` as the CLI does: `&amp;` and numeric references decode, and any other `&name;` is refused, so write the character itself. `data:` URIs pass.
++- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
 +- Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
 +- Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
  - `--artifact` also writes `plan.artifact.html`, the page without its own `<html>` and `<body>`, for a host that adds them.
@@ -60,7 +60,7 @@ index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf9942
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..0ed809e953bb0d2390fdc4e2671a3d0d931b5b3f 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..90203970ed5d9967e5532f965ab3a20d22b77c1e 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -114,8 +114,8 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..0ed809e953bb0d2390fdc4e2671a3d0d
 +// consumed as its unescapeEntity consumes one in an attribute. A numeric reference decodes exactly, with the Windows-1252 and
 +// replacement-character rules. Of the named ones, pack decodes the five the HTML spec has always had, in the forms the CLI's
 +// table holds them, and leaves a reference before "=" literal as the CLI does. Any other &name or &name; comes back in `bad`:
-+// pack carries no copy of the CLI's 2,231-entry table, so it cannot know whether the CLI decodes it, and a media src that holds
-+// one is refused rather than checked under the wrong name.
++// pack carries no copy of the CLI's 2,231-entry table, so it cannot know whether the CLI decodes it, and an attribute value
++// that holds one is refused, on any tag, rather than read under the wrong value.
 +const WIN1252 = [0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178];
 +const NAMED = { 'amp;': '&', 'AMP;': '&', amp: '&', AMP: '&', 'lt;': '<', 'LT;': '<', lt: '<', LT: '<', 'gt;': '>', 'GT;': '>', gt: '>', GT: '>', 'quot;': '"', 'QUOT;': '"', quot: '"', QUOT: '"', 'apos;': "'" };
 +function decodeAttr(raw) {
@@ -299,7 +299,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..0ed809e953bb0d2390fdc4e2671a3d0d
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +442,176 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +442,179 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -384,7 +384,6 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..0ed809e953bb0d2390fdc4e2671a3d0d
 +const MEDIA_TAGS = ['img', 'video', 'audio', 'source'];   // the elements whose src the CLI uploads; doc-shot's moves onto an img below
 +const media = new Map();   // each distinct path the CLI opens, as it counts uploads → the reference as first written, trimmed as the CLI trims it
 +function checkMedia(at, a) {
-+  if (a.bad.length) return err(`${at}: src="${a.raw}" holds ${a.bad.map((b) => `"${b}"`).join(', ')}, a character reference pack does not decode as the plans CLI would, so it cannot check the file the CLI would upload — write the character itself, or a numeric reference such as &#47;`);
 +  const value = a.value; const l = mediaPath(value); if (l.skip) return;
 +  if (l.why) return err(`${at}: src="${value}" ${l.why}`);
 +  const ext = goExt(l.p).toLowerCase();
@@ -448,6 +447,10 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..0ed809e953bb0d2390fdc4e2671a3d0d
 +const edits = []; let nCss = 0, nJs = 0;   // edits are [start, end, text] on html, none overlapping
 +for (const t of scanTags(html)) {
 +  const at = `line ${lineOf(t.start)} <${t.name}>`; const get = (n) => t.attrs.find((a) => a.name === n); const val = (n) => get(n)?.value;
++  // A value pack cannot decode as the CLI does is not read at all. The reference may be whitespace or a slash to the CLI, so the
++  // tag may be a stylesheet to the CLI, or its src another file, where pack read neither; so a tag with one in any attribute is refused.
++  { const a = t.attrs.find((x) => x.bad.length);
++    if (a) { err(`${at}: ${a.name}="${a.raw}" holds ${a.bad.map((b) => `"${b}"`).join(', ')}, a character reference pack does not decode as the plans CLI would, so it cannot read the value the CLI reads — write the character itself, or its numeric reference`); continue; } }
 +  if (MEDIA_TAGS.includes(t.name) && get('src')) checkMedia(at, get('src'));
 +  if (t.name === 'doc-shot' && get('src')) {   // the screenshot moves onto a literal <img> child, which the CLI sees and the runtime adopts
 +    const a = get('src'); checkMedia(at, a); let ws = a.from; while (WS(html[ws - 1])) ws--;
@@ -490,7 +493,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..0ed809e953bb0d2390fdc4e2671a3d0d
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +620,31 @@ if (!quiet) {
+@@ -288,7 +623,31 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -523,7 +526,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..0ed809e953bb0d2390fdc4e2671a3d0d
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +654,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +657,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }

@@ -73,8 +73,8 @@ const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe
 // consumed as its unescapeEntity consumes one in an attribute. A numeric reference decodes exactly, with the Windows-1252 and
 // replacement-character rules. Of the named ones, pack decodes the five the HTML spec has always had, in the forms the CLI's
 // table holds them, and leaves a reference before "=" literal as the CLI does. Any other &name or &name; comes back in `bad`:
-// pack carries no copy of the CLI's 2,231-entry table, so it cannot know whether the CLI decodes it, and a media src that holds
-// one is refused rather than checked under the wrong name.
+// pack carries no copy of the CLI's 2,231-entry table, so it cannot know whether the CLI decodes it, and an attribute value
+// that holds one is refused, on any tag, rather than read under the wrong value.
 const WIN1252 = [0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178];
 const NAMED = { 'amp;': '&', 'AMP;': '&', amp: '&', AMP: '&', 'lt;': '<', 'LT;': '<', lt: '<', LT: '<', 'gt;': '>', 'GT;': '>', gt: '>', GT: '>', 'quot;': '"', 'QUOT;': '"', quot: '"', QUOT: '"', 'apos;': "'" };
 function decodeAttr(raw) {
@@ -540,7 +540,6 @@ function pageFile(p) {
 const MEDIA_TAGS = ['img', 'video', 'audio', 'source'];   // the elements whose src the CLI uploads; doc-shot's moves onto an img below
 const media = new Map();   // each distinct path the CLI opens, as it counts uploads → the reference as first written, trimmed as the CLI trims it
 function checkMedia(at, a) {
-  if (a.bad.length) return err(`${at}: src="${a.raw}" holds ${a.bad.map((b) => `"${b}"`).join(', ')}, a character reference pack does not decode as the plans CLI would, so it cannot check the file the CLI would upload — write the character itself, or a numeric reference such as &#47;`);
   const value = a.value; const l = mediaPath(value); if (l.skip) return;
   if (l.why) return err(`${at}: src="${value}" ${l.why}`);
   const ext = goExt(l.p).toLowerCase();
@@ -604,6 +603,10 @@ const checked = mediaSrcs(html);
 const edits = []; let nCss = 0, nJs = 0;   // edits are [start, end, text] on html, none overlapping
 for (const t of scanTags(html)) {
   const at = `line ${lineOf(t.start)} <${t.name}>`; const get = (n) => t.attrs.find((a) => a.name === n); const val = (n) => get(n)?.value;
+  // A value pack cannot decode as the CLI does is not read at all. The reference may be whitespace or a slash to the CLI, so the
+  // tag may be a stylesheet to the CLI, or its src another file, where pack read neither; so a tag with one in any attribute is refused.
+  { const a = t.attrs.find((x) => x.bad.length);
+    if (a) { err(`${at}: ${a.name}="${a.raw}" holds ${a.bad.map((b) => `"${b}"`).join(', ')}, a character reference pack does not decode as the plans CLI would, so it cannot read the value the CLI reads — write the character itself, or its numeric reference`); continue; } }
   if (MEDIA_TAGS.includes(t.name) && get('src')) checkMedia(at, get('src'));
   if (t.name === 'doc-shot' && get('src')) {   // the screenshot moves onto a literal <img> child, which the CLI sees and the runtime adopts
     const a = get('src'); checkMedia(at, a); let ws = a.from; while (WS(html[ws - 1])) ws--;

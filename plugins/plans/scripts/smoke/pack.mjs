@@ -84,6 +84,9 @@ const REFUSALS = [
     body: '<img src="public&sol;private.png" alt="">', why: /src="public&sol;private\.png" holds "&sol;"/ },
   { name: 'unquoted-nbsp', setup: (d) => { writeFileSync(join(d, 'a.png'), 'png'); writeFileSync(join(d, 'a.png b'), 'the file the CLI would read') },
     body: '<img src=a.png b alt="">', why: /src="a\.png b" — "\.png b" is not a media type/ },
+  // The same rule holds for every attribute of every tag: &Tab; is whitespace to the CLI and to a browser, so this rel names a
+  // stylesheet to both, and pack refuses the reference rather than read the tag under another value.
+  { name: 'entity-in-rel', head: '<link rel="&Tab;stylesheet" href="https://example.com/x.css">\n', body: '<p>x</p>', why: /<link>: rel="&Tab;stylesheet" holds "&Tab;"/ },
   // A comment ends at --!> for the CLI. With the runtime linked before it, 65 media tags after it once passed pack unseen.
   { name: 'comment-bang-close', setup: (d) => { for (let i = 0; i < 65; i++) writeFileSync(join(d, `m${i}.png`), `png ${i}`) },
     html: () => '<!doctype html>\n<html lang="en">\n<meta charset="utf-8">\n<title>Fixture</title>\n<link rel="stylesheet" href="htmlplan.css">\n<script src="htmlplan.js" defer></script>\n' +
@@ -181,6 +184,11 @@ export default async function ({ ROOT, check }) {
       '<style>.a::before{content:"b\\\r\nurl(shot.png)"} .b::before{content:"c\\\nurl(shot.png)"} .c::before{content:"d\\\rurl(shot.png)"} .d::before{content:"e\\\furl(shot.png)"}</style>\n'))
     const rc = run(continued, 'page.html')
     check('a url() after an escaped LF, CRLF, CR or FF inside a CSS string is accepted', rc.status === 0, out(rc))
+
+    // A named reference in text is not an attribute value, so pack leaves it to the browser.
+    const text = fixture('entity-in-text', page('<p>a tab &Tab; a space &nbsp; an ellipsis &hellip; and a copy sign &copy; in text</p>'))
+    const rt = run(text, 'page.html')
+    check('a named character reference in text content is accepted', rt.status === 0, out(rt))
 
     const src = fixture('src-name', page('<p>x</p>')); writeFileSync(join(src, 'doc.src.html'), page('<p>x</p>'))
     const rs = run(src, 'doc.src.html')
