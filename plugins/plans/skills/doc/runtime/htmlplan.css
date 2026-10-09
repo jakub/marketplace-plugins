@@ -493,6 +493,7 @@ doc-ask > :last-child { margin-bottom: 2px; }
 
 h2 .anchor, h3 .anchor { color: var(--plans-ink-3); text-decoration: none; margin-left: 8px; font-weight: 430; opacity: 0; font-size: .8em; } h2:hover .anchor, h3:hover .anchor { opacity: 1; }
 [hidden] { display: none !important; }
+.nw-read .c-body td.ln, .nw-read svg.nw .node:not(.has-detail), .nw-read svg.nw .msg, .nw-read .sc-ent td, .nw-read .tr-row, .nw-read svg.machine .tr { cursor: auto; }   /* reading mode: a click opens no comment */
 .nw-err { font: 12px var(--plans-mono); color: var(--plans-red); background: var(--plans-red-soft); padding: 8px 12px; border-radius: var(--plans-r-sm); white-space: pre-wrap; margin: 0 0 12px; }
 
 @media print { .nw-bar, .nw-cbtn, .nw-toc.rail { display: none !important; } body { padding: 0; } doc-code, doc-ask, .card { break-inside: avoid; } }

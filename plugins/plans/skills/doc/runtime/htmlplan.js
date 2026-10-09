@@ -525,6 +525,11 @@ if (S.loaded?.strikes) S.strikes = S.loaded.strikes;
 if (S.loaded?.seen) S.seen = S.loaded.seen;
 let urlAnchor = fromUrl.anchor;   // the in-page target the fragment names; links set it, reset keeps it
 let saveT, lastWrite = 0, stale = null, written = location.hash;   // written: the fragment this page last loaded or wrote
+/** Reading mode, for the walkthrough and report kinds: <body data-feedback="off">, or <meta name="htmlplan" content="readonly">.
+    The page takes no feedback. It draws no comment, strike or edit control and no Respond, marks nothing seen, restores no
+    payload, and its URL carries only a plain #id. Claims, code, pins, zoom and machine demos work as usual. boot() sets it
+    before it builds any block. */
+let readOnly = false;
 /** A lone change is written at once. A burst, such as typing, is coalesced into one write at most 250 ms after its last
     change, so the history API is never flooded. A reload requests the URL it started from, so it can miss only a burst's
     last 250 ms; leaving for another page runs beforeunload, which flushes. */
@@ -536,7 +541,7 @@ function save() { clearTimeout(saveT); const wait = lastWrite + 250 - Date.now()
     followFragment, so a reload never saves the old state over a pasted link. */
 function flushState() {
   clearTimeout(saveT); if (location.hash !== written) return;
-  const r = NW.fragment.encode(persisted(), urlAnchor); let ok = !r.oversize;
+  const r = NW.fragment.encode(readOnly ? null : persisted(), urlAnchor); let ok = !r.oversize;
   if (ok && r.hash !== location.hash) { try { history.replaceState(history.state, '', location.href.split('#')[0] + r.hash); written = location.hash; lastWrite = Date.now(); } catch { ok = false; } }   // absolute, so a <base> can't redirect it
   if (ok) { stale?.remove(); stale = null; }
   else if (!stale) { stale = h('div', { class: 'nw-stale', role: 'status' }, h('span', null, 'The link to this page no longer holds your latest edits. Copy your response before you leave.'), h('button', { class: 'nw-btn', onclick: openResponse }, 'Respond')); document.body.append(stale); }
@@ -559,9 +564,10 @@ function followLink(e) {
   flushState();
 }
 /** A fragment the page did not write (the address bar, Back or Forward across entries). A payload belongs to that entry, so
-    the page reloads to restore it; a bare #id moves the anchor, and the state in memory follows it. */
+    the page reloads to restore it; a bare #id moves the anchor, and the state in memory follows it. In reading mode a
+    payload restores nothing: only its anchor counts, and the write below drops the payload from the URL. */
 function followFragment() {
-  const d = NW.fragment.decode(location.hash); if (d.state || d.problem) { location.reload(); return; }
+  const d = NW.fragment.decode(location.hash); if (!readOnly && (d.state || d.problem)) { location.reload(); return; }
   written = location.hash; const t = d.anchor && document.getElementById(d.anchor); urlAnchor = t ? d.anchor : null; if (t) goTo(t);
   flushState();
 }
@@ -579,6 +585,7 @@ document.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.tar
 
 /** Open the comment popover for a target. key = stable id; label = human ref; anchor = element to position under; extra = optional node to show above the textarea */
 function openComment({ key, label, anchor, extra, onState }) {
+  if (readOnly) return;
   closePop();
   const cur = S.comments[key]?.text || '';
   const ta = h('textarea', { placeholder: 'Comment…' }); ta.value = cur;
@@ -595,10 +602,10 @@ function openComment({ key, label, anchor, extra, onState }) {
   setTimeout(() => ta.focus({ preventScroll: true }), 10);
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) pop.querySelector('.primary').click(); });
 }
-/** A read-only popover: what a pin on a mockup or screenshot points at. */
-function openNote({ anchor, num, title, html }) {
+/** A read-only popover: what a pin on a mockup or screenshot points at, or, in reading mode, a diagram node's detail. */
+function openNote({ anchor, num, title, html, body }) {
   closePop();
-  pop = h('div', { class: 'nw-pop note', role: 'tooltip' }, h('span', { class: 'k' }, String(num)), h('div', { class: 'b' }, title ? h('b', null, title) : null, h('div', { html })));
+  pop = h('div', { class: 'nw-pop note', role: 'tooltip' }, num != null ? h('span', { class: 'k' }, String(num)) : null, h('div', { class: 'b' }, title ? h('b', null, title) : null, body || h('div', { html })));
   document.body.append(pop);
   const r = anchor.getBoundingClientRect(); const pw = pop.offsetWidth;
   pop.style.left = clamp(r.left + window.scrollX - 12, window.scrollX + 8, window.scrollX + document.documentElement.clientWidth - pw - 8) + 'px';
@@ -607,6 +614,7 @@ function openNote({ anchor, num, title, html }) {
 }
 /** Make an element a comment target. */
 function commentable(el, key, label, { button = true, anchor, extra } = {}) {
+  if (readOnly) return () => {};
   el.dataset.nwT = key;
   const set = (on) => el.classList.toggle('has-comment', on);
   set(!!S.comments[key]);
@@ -668,7 +676,7 @@ function askPick(ask, ans) {                                                   /
     if (c.type === 'range' || c.matches('select')) return String(v); }
   return '';
 }
-function markSeen(ask) { if (!ask.id || S.seen[ask.id]) return; S.seen[ask.id] = 1; save(); }
+function markSeen(ask) { if (readOnly || !ask.id || S.seen[ask.id]) return; S.seen[ask.id] = 1; save(); }
 function goToAsk(ask) {
   closeSheet(); for (let d = ask.closest('details'); d; d = d.parentElement?.closest('details')) d.open = true;
   ask.closest('doc-plan')?._reveal?.(ask);
@@ -743,6 +751,7 @@ async function copyText(text, ta) {
   try { ta.focus({ preventScroll: true }); ta.select(); return document.execCommand('copy') === true; } catch { return false; }
 }
 function openResponse() {
+  if (readOnly) return;   // no Respond in reading mode, not even from the stale-link note
   const r = buildResponse();
   // The response always sits in a readonly, selectable textarea, so the reader can copy it by hand when the browser will not.
   const out = h('textarea', { class: 'nw-out', readonly: true, spellcheck: 'false', 'aria-label': 'Your response' }); out.value = r.md;
@@ -823,7 +832,7 @@ define('doc-code', (el) => {
     const lineNo = isDiff ? (cls === 'rem' || cls === 'hunk' ? null : lnA - 1) : start + i;
     const tr = h('tr', { class: cls }, h('td', { class: 'ln', 'data-ln': lineNo ?? (oldNo != null ? 'old' + oldNo : '') }, gutter), h('td', { class: 'src', html: codeHtml || ' ' }));
     rows.push(tr);
-    if (cls !== 'hunk') { const ref = lineNo != null ? `L${lineNo}` : `old L${oldNo} (removed)`; const key = `code:${file || el.id || 'snippet'}:${ref}`; const label = () => `${secLabel(el)} › ${file || el.getAttribute('title') || 'code'}:${ref}`; const tdLn = tr.firstChild; tr.dataset.nwT = key; if (S.comments[key]) tr.classList.add('has-comment'); tdLn.title = 'Comment on this line'; tdLn.addEventListener('click', () => openComment({ key, label: label(), anchor: tr, onState: (on) => tr.classList.toggle('has-comment', on) })); }
+    if (cls !== 'hunk' && !readOnly) { const ref = lineNo != null ? `L${lineNo}` : `old L${oldNo} (removed)`; const key = `code:${file || el.id || 'snippet'}:${ref}`; const label = () => `${secLabel(el)} › ${file || el.getAttribute('title') || 'code'}:${ref}`; const tdLn = tr.firstChild; tr.dataset.nwT = key; if (S.comments[key]) tr.classList.add('has-comment'); tdLn.title = 'Comment on this line'; tdLn.addEventListener('click', () => openComment({ key, label: label(), anchor: tr, onState: (on) => tr.classList.toggle('has-comment', on) })); }
     if (lineNo != null && pins[lineNo]) { pins[lineNo].forEach((p) => { rows.push(pinRow(p)); p.remove(); }); delete pins[lineNo]; }
     if (cls === 'rem' && oldPins[oldNo]) { oldPins[oldNo].forEach((p) => { rows.push(pinRow(p)); p.remove(); }); delete oldPins[oldNo]; }
   });
@@ -850,9 +859,9 @@ define('doc-draft', (el) => {
     else { const html = cur === orig ? esc(cur) : (NW.diffWords(orig, cur) ?? esc(cur)); body.append(h('div', { class: 'c-body', style: 'padding:10px 14px;white-space:pre-wrap;font:13px/1.6 var(--plans-mono)', html })); }
   };
   btnEdit.onclick = () => { editing = !editing; render(); }; btnRevert.onclick = () => { cur = orig; delete S.drafts[id]; editing = false; render(); save(); };
-  body.addEventListener('dblclick', () => { if (!editing) { editing = true; render(); } });
+  if (!readOnly) body.addEventListener('dblclick', () => { if (!editing) { editing = true; render(); } });
   el.classList.add('doc-code'); el.style.cssText += 'display:block;border:1px solid var(--plans-line);border-radius:var(--plans-r);background:var(--plans-card);overflow:hidden;margin:0 0 20px';
-  el.append(h('div', { class: 'c-head' }, h('span', { class: 'c-file' }, label), flag, btnEdit, btnRevert), body);
+  el.append(h('div', { class: 'c-head' }, h('span', { class: 'c-file' }, label), flag, readOnly ? null : btnEdit, readOnly ? null : btnRevert), body);
   el._diff = () => cur !== orig ? { label, diff: NW.unifiedDiff(orig, cur, label) } : null;
   el._reset = () => { cur = orig; editing = false; render(); };
   render();
@@ -911,10 +920,11 @@ define('doc-flow', (el) => {
         n.detail.length ? h('div', { style: 'color:var(--plans-ink-2);white-space:pre-wrap' }, n.detail.join('\n')) : null,
         templates[n.id] ? h('div', { style: 'margin-top:8px' }, templates[n.id].content.cloneNode(true)) : null,
         n.href ? h('a', { href: n.href, style: 'display:inline-block;margin-top:6px;font-size:13px', onclick: () => closePop() }, 'Jump to ' + n.href + ' →') : null);
+      if (readOnly) { openNote({ anchor: g, body: extra }); requestAnimationFrame(() => { if (pop) upgradeWithin(pop); }); return; }   // reading mode: the detail, without a comment box
       openComment({ key, label: `${secLabel(el)} › diagram${el.getAttribute('caption') ? ' “' + words(el.getAttribute('caption'), 5) + '”' : ''} › node “${n.label.replace(/\n/g, ' ')}”`, anchor: g, extra, onState: (on) => g.classList.toggle('has-comment', on) });
       requestAnimationFrame(() => { if (pop) { upgradeWithin(pop); } });
     };
-    g.addEventListener('click', open); g.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+    if (!readOnly || n.detail.length || templates[n.id] || n.href) { g.addEventListener('click', open); g.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); }); }
   });
   $$(':scope > script', el).forEach((s) => s.remove()); [...el.childNodes].forEach((n) => { if (n.nodeType === 3) n.remove(); });
   const frame = h('div', { class: 'fig-frame' }); frame.append(root);
@@ -951,7 +961,7 @@ define('doc-seq', (el) => {
     g.append(svg('rect', { x: Math.min(x1, x2) - 4, y: y - 8, width: Math.abs(x2 - x1) + 8 || 60, height: textH + 30, fill: 'transparent', stroke: 'none' }));
     g.dataset.step = String(m.steps.slice(0, i + 1).filter((x) => x.kind === 'msg').length); root.append(g);
     const key = `seq:${el.id || $$('doc-seq').indexOf(el)}:${i}`; if (S.comments[key]) g.classList.add('has-comment');
-    g.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › sequence › ${s.from} → ${s.to}${s.text ? ': ' + words(s.text, 6) : ''}`, anchor: g, onState: (on) => g.classList.toggle('has-comment', on) }));
+    if (!readOnly) g.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › sequence › ${s.from} → ${s.to}${s.text ? ': ' + words(s.text, 6) : ''}`, anchor: g, onState: (on) => g.classList.toggle('has-comment', on) }));
     y += textH + (self ? 34 : 20);
   });
   const H = y + 16; W = Math.max(W, Math.ceil(maxRight + 16)); $$('.sdiv line', root).forEach((l) => l.setAttribute('x2', W - PAD + 10));
@@ -989,7 +999,7 @@ function textSchema(el) {
     else { ['file', 'lines', 'start', 'sha', 'hl'].forEach((k) => { if (el.hasAttribute(k)) c.setAttribute(k, el.getAttribute(k)); }); if (!file) c.setAttribute('title', label); if (isDiff) c.setAttribute('diff', ''); }
     c.append(h('script', { type: 'text/plain' }, changed ? NW.diffLines(base, cur).map((x) => x.t + x.s).join('\n') : raw)); if (!changed) c.append(...pins.map((p) => p.cloneNode(true)));
     code(c);
-    c.querySelector('.c-head').append(changed ? h('span', { class: 'c-edited' }, '✎ edited') : '', btn('Edit', () => { editing = true; render(); }), changed ? revert() : '');
+    c.querySelector('.c-head').append(changed ? h('span', { class: 'c-edited' }, '✎ edited') : '', readOnly ? '' : btn('Edit', () => { editing = true; render(); }), changed ? revert() : '');
     el.replaceChildren(c);
   };
   el._diff = () => (cur !== base ? { label, diff: NW.unifiedDiff(base, cur, label) } : null);
@@ -1011,7 +1021,7 @@ define('doc-schema', (el) => {
       rows.push(tr);
       if (f.note) rows.push(h('tr', { class: 'note' }, h('td', { colspan: 3, html: capHtml(f.note) })));
       const key = `schema:${sid}:${e.name}.${f.name}`; if (S.comments[key]) tr.classList.add('has-comment');
-      tr.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › schema › ${e.name}.${f.name}`, anchor: tr, onState: (on) => tr.classList.toggle('has-comment', on) }));
+      if (!readOnly) tr.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › schema › ${e.name}.${f.name}`, anchor: tr, onState: (on) => tr.classList.toggle('has-comment', on) }));
     });
     const card = h('div', { class: 'sc-ent ' + (e.mark || ''), 'data-entity': e.name }, h('h5', null, e.name, e.note ? h('small', null, e.note) : null), h('table', null, h('tbody', null, rows)));
     cards[e.name] = card; grid.append(card);
@@ -1070,7 +1080,7 @@ define('doc-calls', (el) => {
         const doStrike = (ev) => { ev?.stopPropagation(); if (self) { delete S.strikes[strikeKey(n)]; save(); render(); return; } const before = fileRows(); const reason = '';   /* no dialog: the artifact viewer blocks prompt(); the reader gives a reason with the row's comment */ S.strikes[strikeKey(n)] = { label: `${path(n)}${n.loc ? ' · ' + n.loc : ''}`, reason: reason.trim(), t: Date.now() }; const after = fileRows(); S.strikes[strikeKey(n)].drops = Object.keys(before).filter((f) => !after[f]); save(); render(); };
         acts.append(h('button', { onclick: doComment }, '✎ comment'));
         if (n.mark !== ' ' && !n.gap) acts.append(h('button', { class: 'x', onclick: doStrike }, self ? 'restore' : '⊘ strike'));
-        row.append(acts);
+        if (!readOnly) row.append(acts);   // comment and strike; reading mode takes neither
         if (!n.gap) row.addEventListener('click', (ev) => { if (ev.target.closest('.cl-acts')) return; if (tpl || exc) { open = open === n ? null : n; render(); } else { row.classList.add('cl-flash'); setTimeout(() => row.classList.remove('cl-flash'), 500); } $$('.cl-row.sel', rows).forEach((r) => r.classList.remove('sel')); rows.querySelector(`.cl-row[data-id="${n.id}"]`)?.classList.add('sel'); });   // a tapped row keeps its actions showing: touch screens have no hover
         rows.append(row);
         if (open === n && (tpl || exc)) {
@@ -1138,7 +1148,7 @@ define('doc-machine', (el) => {
       const mk = e.mark === 'new' ? 'nw-arr-new' : e.mark === 'gone' ? 'nw-arr-gone' : 'nw-arr';
       const tw = txt.length * 6.4 + 10; g.append(svg('path', { d, 'marker-end': `url(#${mk})` }), svg('rect', { class: 'lbl', x: anchor === 'start' ? lx - 4 : anchor === 'end' ? lx - tw + 4 : lx - tw / 2, y: ly - 8, width: tw, height: 15, rx: 3 }), svg('text', { x: lx, y: ly, style: `text-anchor:${anchor}` }, txt));
       g.setAttribute('tabindex', '0'); edgeG.append(g);
-      const key = `machine:${name}:${e.from}-${e.ev}`; if (S.comments[key]) g.classList.add('has-comment'); g.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › ${title} › ${e.from} —${e.ev}→ ${e.to}`, anchor: g, onState: (on) => g.classList.toggle('has-comment', on) }));
+      const key = `machine:${name}:${e.from}-${e.ev}`; if (S.comments[key]) g.classList.add('has-comment'); if (!readOnly) g.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › ${title} › ${e.from} —${e.ev}→ ${e.to}`, anchor: g, onState: (on) => g.classList.toggle('has-comment', on) }));
       return g;
     });
     nodeEls = {};
@@ -1235,7 +1245,7 @@ define('doc-tree', (el) => {
     const full = path.filter(Boolean).join('/').replace(/\/+/g, '/');
     const row = h('div', { style: `--plans-tr-depth:${r.depth}`, class: ['tr-row', r.dir && 'dir', r.mark === 'new' && 'add', r.mark === 'gone' && 'rem', r.mark === 'mod' && 'mod', r.mark === 'hl' && 'hl'].filter(Boolean).join(' ') }, h('span', null, h('span', { class: 'tr-guide' }, guide), h('span', { class: 'tr-name' }, r.name)), r.note ? h('span', { class: 'tr-note', title: r.note, html: capHtml(r.note) }) : null);
     const key = `tree:${tid}:${full}`; if (S.comments[key]) row.classList.add('has-comment');
-    row.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › tree › ${full}`, anchor: row, onState: (on) => row.classList.toggle('has-comment', on) }));
+    if (!readOnly) row.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › tree › ${full}`, anchor: row, onState: (on) => row.classList.toggle('has-comment', on) }));
     el.append(row);
   });
   if (el.getAttribute('caption')) el.append(h('div', { class: 'fig-cap tr-cap', html: capHtml(el.getAttribute('caption')) }));
@@ -1294,8 +1304,8 @@ define('doc-mock', (el) => {
   const zoomBtn = mockZoomButton(stage, () => { const host2 = h('div'); const sh2 = host2.attachShadow({ mode: 'open' }); const rd = h('div', { class: 'nw-root ' + frame }); rd.append(...[...rootDiv.childNodes].map((n) => n.cloneNode(true))); sh2.append(h('style', null, MOCK_BASE)); if (shared) { const d = document.createElement('div'); d.innerHTML = shared; sh2.append(...d.childNodes); } sh2.append(rd); return h('div', { class: 'mk-frame ' + frame, style: `width:${W}px` }, bar ? bar.cloneNode(true) : null, host2); });
   new ResizeObserver(fit).observe(stage); new ResizeObserver(fit).observe(fr); requestAnimationFrame(fit); fit();
   // data-ref targets inside the mock
-  sh.addEventListener('click', (ev) => { const t = ev.composedPath().find((n) => n.dataset?.ref); if (!t) return; ev.preventDefault(); ev.stopPropagation(); const ref = t.dataset.ref; const key = `mock:${mid}:${ref}`; openComment({ key, label: `${secLabel(el)} › mockup${label ? ' “' + label + '”' : ''} › ${ref}`, anchor: t, onState: (on) => t.classList.toggle('nw-on', on) }); });
-  $$('[data-ref]', rootDiv).forEach((t) => { if (S.comments[`mock:${mid}:${t.dataset.ref}`]) t.classList.add('nw-on'); t.title = t.dataset.ref; });
+  if (!readOnly) sh.addEventListener('click', (ev) => { const t = ev.composedPath().find((n) => n.dataset?.ref); if (!t) return; ev.preventDefault(); ev.stopPropagation(); const ref = t.dataset.ref; const key = `mock:${mid}:${ref}`; openComment({ key, label: `${secLabel(el)} › mockup${label ? ' “' + label + '”' : ''} › ${ref}`, anchor: t, onState: (on) => t.classList.toggle('nw-on', on) }); });
+  $$('[data-ref]', rootDiv).forEach((t) => { if (S.comments[`mock:${mid}:${t.dataset.ref}`]) t.classList.add('nw-on'); if (!readOnly) t.title = t.dataset.ref; });
   sh.addEventListener('submit', (e) => e.preventDefault());
   commentable(el, `mock:${mid}`, () => `${secLabel(el)} › mockup${label ? ' “' + label + '”' : ''}`);
 });
@@ -1399,6 +1409,8 @@ function upgradeWithin(root) { $$('doc-code, doc-flow, doc-seq, doc-schema, doc-
 
 /* ───────────────────────── boot ───────────────────────── */
 function boot() {
+  readOnly = document.body.dataset.feedback === 'off' || !!$('meta[name="htmlplan"][content~="readonly"]');   // before any block is built
+  if (readOnly) { document.body.classList.add('nw-read'); S.loaded = null; S.comments = {}; S.drafts = {}; S.strikes = {}; S.seen = {}; }   // a pasted payload restores nothing
   if (!$('meta[name=viewport]')) document.head.append(h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }));
   $$('body table').forEach((t) => { if (!t.closest('.table-wrap, doc-code, .sc-ent, doc-mock, template, .nw-sheet, doc-ask')) { const w = h('div', { class: 'table-wrap' }); t.replaceWith(w); w.append(t); } });
   prepPlans();
@@ -1423,13 +1435,12 @@ function boot() {
     const label = () => { const s = secLabel(el); if (el.matches('h2')) return s || el.textContent.trim(); if (el.matches('h3')) return `${s} › ${el.textContent.replace(/#$/, '').trim()}`; if (el.matches('doc-quote')) return `${s} › quote from ${el.getAttribute('from') || el.getAttribute('via') || 'source'}`; if (el.matches('doc-note')) return `${s} › note “${words(el.textContent, 6)}”`; return `${s} › “${words((el.querySelector('h3,h4,strong')?.textContent || el.textContent).replace(/^\+/, ''), 8)}”`; };
     commentable(el, key, label);
   });
-  const feedbackOff = document.body.dataset.feedback === 'off' || $('meta[name="htmlplan"][content~="readonly"]');
-  if (!feedbackOff) {
+  if (!readOnly) {
     bar = h('div', { class: 'nw-bar' }, tocMk ? h('button', { class: 'nw-toc-btn', title: 'Contents', onclick: () => openSheet('Contents', tocMk()) }) : null, h('button', { class: 'nw-next', hidden: '', title: 'Go to the next decision', onclick: nextAsk }), h('button', { class: 'nw-respond', onclick: openResponse }, 'Respond'));
     if (tocMk) bar.firstChild.textContent = '☰';
     document.body.append(bar);
   } else if (tocMk) { bar = null; document.body.append(h('div', { class: 'nw-bar' }, h('button', { class: 'nw-toc-btn', style: 'display:block', onclick: () => openSheet('Contents', tocMk()) }, '☰'))); }
-  if (!feedbackOff && 'IntersectionObserver' in window) {   // a decision counts as opened once most of it has been on screen for a moment, or the reader touches it
+  if (!readOnly && 'IntersectionObserver' in window) {   // a decision counts as opened once most of it has been on screen for a moment, or the reader touches it
     const io = new IntersectionObserver((ents) => ents.forEach((en) => { const a = en.target; clearTimeout(a._seenT); if (en.isIntersecting) a._seenT = setTimeout(() => markSeen(a), 900); }), { threshold: 0.4 });
     $$('doc-ask').forEach((a) => { io.observe(a); a.addEventListener('pointerdown', () => markSeen(a)); });
   }

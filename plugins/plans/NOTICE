@@ -123,6 +123,13 @@ it, so a later patch's context is the text an earlier one wrote.
     returns true; upstream said "Copied" whatever execCommand returned. Otherwise the
     textarea is focused and selected, with instructions to copy by hand. The sheet and the
     comment box name no host, and the unused Send path goes.
+0010-reading-mode.patch
+    Makes data-feedback="off" a reading mode for the walkthrough and report kinds. Upstream
+    hid the Respond bar only after every comment control existed. Now the runtime decides
+    the mode before it builds any block, and the page draws no comment, strike, draft-edit
+    or schema-edit control and no Respond, marks nothing seen, restores no payload and
+    writes only a plain #id to the URL. Claims, code, pins, zoom, machine demos and a
+    diagram node's detail still work.
 -----END PATCHES-----
 
 RE-SYNCING

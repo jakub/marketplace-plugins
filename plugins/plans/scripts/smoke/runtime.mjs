@@ -83,4 +83,24 @@ export default async function ({ ROOT, check }) {
   check('a failed copy focuses and selects the textarea and says how to copy by hand',
     /return; \}\n\s*out\.focus\(\{ preventScroll: true \}\); out\.select\(\);[^\n]*\n\s*hint\.textContent = 'The page could not copy\./.test(respond))
   check('the dead Send path is gone', !/liveOn|\bsend\b = null/.test(source))
+
+  // Reading mode (patch 0010), held to the source: the browser check shows the page.
+  const fn = (name) => source.match(new RegExp(`\\nfunction ${name}\\([^)]*\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`))?.[1] ?? ''
+  const boot = fn('boot')
+  const decide = boot.indexOf("readOnly = document.body.dataset.feedback === 'off'")
+  check('boot decides reading mode first, before any block is built', decide >= 0 && boot.slice(0, decide).trim() === '' && decide < boot.indexOf('upgradeAll();'))
+  check('reading mode drops every restored map', /if \(readOnly\) \{ document\.body\.classList\.add\('nw-read'\); S\.loaded = null; S\.comments = \{\}; S\.drafts = \{\}; S\.strikes = \{\}; S\.seen = \{\}; \}/.test(boot))
+  check('the Respond bar and the seen marks are drawn only outside reading mode', /\n {2}if \(!readOnly\) \{\n {4}bar = h\('div', \{ class: 'nw-bar' \}/.test(boot) && /if \(!readOnly && 'IntersectionObserver' in window\)/.test(boot) && !/feedbackOff/.test(source))
+  check('flushState writes no payload in reading mode', /NW\.fragment\.encode\(readOnly \? null : persisted\(\), urlAnchor\)/.test(fn('flushState')))
+  check('a pasted payload does not reload a reading-mode page', /if \(!readOnly && \(d\.state \|\| d\.problem\)\) \{ location\.reload\(\); return; \}/.test(fn('followFragment')))
+  for (const [name, first] of [['openComment', 'if (readOnly) return;'], ['commentable', 'if (readOnly) return () => {};'], ['openResponse', 'if (readOnly) return;']]) {
+    check(`${name} does nothing in reading mode`, fn(name).trimStart().startsWith(first), fn(name).slice(0, 80))
+  }
+  check('markSeen does nothing in reading mode', /function markSeen\(ask\) \{ if \(readOnly \|\|/.test(source))
+  check('strikes, call-row comments and draft and schema edits are not drawn in reading mode',
+    /if \(!readOnly\) row\.append\(acts\);/.test(source) && /readOnly \? null : btnEdit, readOnly \? null : btnRevert/.test(source) &&
+    /if \(!readOnly\) body\.addEventListener\('dblclick'/.test(source) && /readOnly \? '' : btn\('Edit'/.test(source))
+  const sites = [...source.matchAll(/^.*openComment\(\{.*$/gm)].map((m) => m[0]).filter((l) => !/^function openComment/.test(l))
+  check('every other direct openComment call site is gated or reached only through a gated control',
+    sites.length === 9 &&sites.every((l) => /readOnly/.test(l) || /const (open|doComment) = /.test(l) || /^ {6}openComment\(\{ key, label: `\$\{secLabel\(el\)\} › diagram/.test(l)), sites.join('\n'))
 }

@@ -7,6 +7,10 @@ One convention runs through the line-based blocks: start a line with **`+`** for
 
 Everything the reader can see is a comment target: claims, code lines, call rows, arrows, `data-ref` elements in mockups, quotes, notes, list items. You write nothing for that.
 
+## Reading mode
+
+`<body data-feedback="off">` puts the page in reading mode, for the walkthrough and report kinds. The page then takes no feedback: it shows no comment, strike or edit control and no **Respond**, and its link holds no saved state, only a plain `#id`. Claims still open, call rows still open their code, pins, zoom and state machines still work, and a tap on a diagram node with detail still shows that detail.
+
 ## `doc-plan` and `doc-claim`
 
 | Attribute | On | Does |
