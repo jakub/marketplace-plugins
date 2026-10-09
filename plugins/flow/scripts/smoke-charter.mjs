@@ -37,6 +37,40 @@ try {
   assert.equal(charter.split('\n').filter((line) => line.trimEnd() === SEAT_MARKER).length, 1)
   ok('the charter carries exactly one seat marker')
 
+  // The issue's routing lines. Each routing check reports why a text fails, so the controls below
+  // can prove that reverting either line, or the whole file to its pre-plans form, is caught.
+  const SHOW_LINE = 'When structure or visuals beat prose, pick a tier with `plans:show` if installed, else sketch.'
+  const KEEP_TAIL = 'Publish HTML, video and large image sets with `plans:publish --keep`, because a PR outlives any TTL, and say the link is tailnet-only.'
+  const routingFailures = (text) => {
+    const lines = text.split('\n').map((line) => line.trimEnd())
+    return [
+      !lines.includes(SHOW_LINE) && 'the plans:show sentence is missing',
+      !lines.some((line) => line.endsWith(KEEP_TAIL)) && 'the plans:publish --keep line is missing',
+      text.includes('the artifact publisher') && 'the artifact publisher still appears',
+    ].filter(Boolean)
+  }
+  assert.deepEqual(routingFailures(charter), [], 'the charter lost a plans routing line')
+  ok('the charter routes visuals through plans:show and keeps through plans:publish --keep, and never names the artifact publisher')
+
+  const reverted = {
+    'the show line': charter.replace(SHOW_LINE, 'When structure or visuals beat prose, publish HTML through the artifact publisher and hand back the URL.'),
+    'the keep line': charter.replace(KEEP_TAIL, "Publish HTML, video and large image sets with the artifact publisher's `--keep`, because a PR outlives any TTL, and say the link is tailnet-only."),
+  }
+  for (const [name, text] of Object.entries(reverted)) {
+    assert.notEqual(text, charter, `the control for ${name} changed nothing`)
+    assert.notDeepEqual(routingFailures(text), [], `reverting ${name} still passed the routing checks`)
+  }
+  ok('reverting either routing line, in memory, fails the routing checks')
+
+  // The base blob is read from git at run time, so a tree without history skips only this control.
+  const base = spawnSync('git', ['-C', ROOT, 'show', 'bfd53e8:./charter/charter.md'], { encoding: 'utf8' })
+  if (base.status === 0 && base.stdout.includes(SEAT_MARKER)) {
+    assert.notDeepEqual(routingFailures(base.stdout), [], 'the bfd53e8 charter passed the routing checks')
+    ok('the pre-plans charter at bfd53e8 fails the routing checks')
+  } else {
+    console.log('  skip: the bfd53e8 negative control needs that commit in git history, and this tree has none')
+  }
+
   for (const host of ['claude', 'codex']) {
     const { stdout } = inject(['session', host])
     assert.equal(stdout, charter, `the ${host} session payload is not the charter verbatim`)
