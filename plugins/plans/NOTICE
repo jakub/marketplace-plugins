@@ -84,12 +84,15 @@ it, so a later patch's context is the text an earlier one wrote.
 0004-fragment-state.patch
     Moves the reader's state out of localStorage, which throws in the viewer's opaque-origin
     sandbox, into the URL fragment: #pl1.<base64url(UTF-8 JSON)>, then an optional
-    ~<percent-encoded anchor>, written only by history.replaceState. In-page links scroll
-    and rewrite only the anchor, reset keeps only the anchor, leaving the page flushes a
-    pending save, and a link pasted into an open page reloads it to restore that link's
-    state. A fragment over 32 KiB or JSON over 24 KiB is not written, and a persistent note
-    asks the reader to copy their response. A malformed payload restores nothing. The pure
-    codec is exported as HtmlPlan.fragment for the smoke.
+    ~<percent-encoded anchor>, written only by history.replaceState. Each change is written
+    at once, from a budget of 10 writes refilled at 4 a second, far under the browsers' own
+    history limits, and a change made with the budget spent gets one trailing write. In-page
+    links scroll and rewrite only the anchor, reset keeps only the anchor, leaving the page
+    flushes a pending write, and a link pasted into an open page reloads it to restore that
+    link's state. A fragment over 32 KiB or JSON over 24 KiB is not written, and a
+    persistent note asks the reader to copy their response, as it does when the browser
+    drops a write. A malformed payload restores nothing. The pure codec is exported as
+    HtmlPlan.fragment for the smoke.
 0005-media-for-the-cli.patch
     Stops pack base64-inlining media. Local media stays a literal src to a file beside the
     page, which the plans CLI uploads at publish time. Each doc-shot gets a literal <img>

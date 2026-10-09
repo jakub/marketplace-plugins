@@ -44,10 +44,10 @@ index 289df0691e7c84663adc79f7bbc7f2779b1ef9b0..2204be6d27d39e27cfa7a190b3751c98
  6. **Hand it over** (next section) with one line: “Four decisions. The defaults are what I would build.”
  7. **Act on the response.** Apply changed decisions, schema edits, struck calls and each comment. Refer to claims by number. If the answers change the shape of the plan, update the page and send it again. Then build.
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index 69ca5ca72e5d03e59b0b7fcb41acbcb70f2bd1d0..1b4255a047eb709e81054e22f17412a59fa669fa 100644
+index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf99426df0f726 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
-@@ -1275,7 +1275,10 @@ define('doc-mock', (el) => {
+@@ -1285,7 +1285,10 @@ define('doc-mock', (el) => {
  define('doc-shot', (el) => {
    const src = el.getAttribute('src'); const label = el.getAttribute('label'); const sid = el.id || $$('doc-shot').indexOf(el);
    const frame = el.getAttribute('frame');

@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index adfe203f787ea9dfce9a5287ac326a6601cf966e..99dd9901798b750007370ea467aa4f1c2022f435 100644
+index 99bcca2b1e6020558734480163debc70fdc029fe..f11ca15516bfd53b522da6518b706e6406e042cd 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
 @@ -493,6 +493,15 @@ NW.changesView = function changesView({ new: add, changed, deleted, label = null
@@ -18,7 +18,7 @@ index adfe203f787ea9dfce9a5287ac326a6601cf966e..99dd9901798b750007370ea467aa4f1c
  globalThis.HtmlPlan = NW;
  if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
  
-@@ -1354,7 +1363,10 @@ define('doc-quote', (el) => {
+@@ -1364,7 +1373,10 @@ define('doc-quote', (el) => {
    const via = el.getAttribute('via') || 'source'; const from = el.getAttribute('from'); const at = el.getAttribute('at'); const href = el.getAttribute('href'); const role = el.getAttribute('role');
    const body = h('div', { class: 'q-body' }); while (el.firstChild) body.append(el.firstChild);
    const viaTxt = { prompt: 'prompt', slack: 'slack', github: 'github', pr: 'PR', transcript: role || 'transcript', doc: 'doc', tools: 'tools', email: 'email', meeting: 'meeting' }[via] || via;

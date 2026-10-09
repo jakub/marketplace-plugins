@@ -12,7 +12,7 @@ index 98a78b00c94bf08479cc783bf90283a8cd604657..bef9ad0960026bc7355a6317234162c1
  /* ── TOC ──────────────────────────────────────────── */
  .nw-toc { font-size: 13px; line-height: 1.4; }
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..69ca5ca72e5d03e59b0b7fcb41acbcb70f2bd1d0 100644
+index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..751283e6dba155e468117521d164f87246a330c8 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
 @@ -420,6 +420,68 @@ NW.diffWords = function diffWords(a, b) {
@@ -84,7 +84,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..69ca5ca72e5d03e59b0b7fcb41acbcb7
  globalThis.HtmlPlan = NW;
  if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
  
-@@ -437,15 +499,57 @@ const capHtml = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
+@@ -437,15 +499,67 @@ const capHtml = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
  function toast(msg) { const t = h('div', { class: 'nw-toast' }, msg); document.body.append(t); setTimeout(() => t.remove(), 1600); }
  function errBox(el, errors, what) { if (!errors.length) return; el.prepend(h('div', { class: 'nw-err' }, `${what}: \n` + errors.join('\n'))); console.warn(`[htmlplan] ${what}`, errors); }
  
@@ -103,19 +103,29 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..69ca5ca72e5d03e59b0b7fcb41acbcb7
 -let saveT; function save() { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify({ answers: readAnswers(), comments: S.comments, drafts: S.drafts, strikes: S.strikes, seen: S.seen })); } catch {} }, 250); refreshChrome(); }
 +let urlAnchor = fromUrl.anchor;   // the in-page target the fragment names; links set it, reset keeps it
 +let saveT, lastWrite = 0, stale = null, written = location.hash;   // written: the fragment this page last loaded or wrote
-+/** A lone change is written at once. A burst, such as typing, is coalesced into one write at most 250 ms after its last
-+    change, so the history API is never flooded. A reload requests the URL it started from, so it can miss only a burst's
-+    last 250 ms; leaving for another page runs beforeunload, which flushes. */
-+function save() { clearTimeout(saveT); const wait = lastWrite + 250 - Date.now(); if (wait > 0) saveT = setTimeout(flushState, wait); else flushState(); refreshChrome(); }
++/** Each change is written to the fragment at once while the write budget lasts, because a reload requests the URL as it
++    stands before beforeunload can run. Browsers cap history writes: Chromium drops replaceState calls past 200 in 10 s in
++    a frame, and WebKit throws past 100 in 10 s for the whole page. The budget stays far under both: SAVE_BURST writes in
++    hand, refilled at SAVE_RATE a millisecond, so saves make at most 50 writes in any 10 s. A change made with the budget
++    spent gets one trailing write when the budget allows, 250 ms later at most unless a link or reset overdrew it, and only
++    a reload inside that wait can miss it. Leaving for another page runs beforeunload, which flushes. */
++const SAVE_BURST = 10, SAVE_RATE = 4 / 1000;
++let budget = SAVE_BURST;   // writes in hand just after the write at lastWrite, a performance.now() time
++const inHand = (now) => Math.min(SAVE_BURST, budget + (now - lastWrite) * SAVE_RATE);
++function save() { clearTimeout(saveT); const wait = Math.ceil((1 - inHand(performance.now())) / SAVE_RATE); if (wait > 0) saveT = setTimeout(flushState, wait); else flushState(); refreshChrome(); }
 +/** Writes the state into the fragment now, cancelling a pending save. The one place that decides what the URL holds and
 +    the only URL writer: save(), in-page links, reset and leaving the page come here, and code that navigates away
-+    calls it first. When the state does not fit, or the host refuses the write, the edits stay in memory, the URL keeps the
-+    last fragment that fit, and a note stays up until a write succeeds. A fragment that changed under the page is left for
-+    followFragment, so a reload never saves the old state over a pasted link. */
++    calls it first. Every write spends from save()'s budget, and one that cannot wait may overdraw it. When the state does
++    not fit, or the browser refuses or drops the write, the edits stay in memory, the URL keeps the last fragment that fit,
++    and a note stays up until a write succeeds. A fragment that changed under the page is left for followFragment, so a
++    reload never saves the old state over a pasted link. */
 +function flushState() {
 +  clearTimeout(saveT); if (location.hash !== written) return;
 +  const r = NW.fragment.encode(persisted(), urlAnchor); let ok = !r.oversize;
-+  if (ok && r.hash !== location.hash) { try { history.replaceState(history.state, '', location.href.split('#')[0] + r.hash); written = location.hash; lastWrite = Date.now(); } catch { ok = false; } }   // absolute, so a <base> can't redirect it
++  if (ok && r.hash !== location.hash) {   // the URL is absolute, so a <base> can't redirect it
++    try { history.replaceState(history.state, '', location.href.split('#')[0] + r.hash); } catch {}
++    const now = performance.now(); budget = inHand(now) - 1; lastWrite = now; written = location.hash; ok = written === r.hash;   // a refused or dropped write leaves the hash as it was
++  }
 +  if (ok) { stale?.remove(); stale = null; }
 +  else if (!stale) { stale = h('div', { class: 'nw-stale', role: 'status' }, h('span', null, 'The link to this page no longer holds your latest edits. Copy your response before you leave.'), h('button', { class: 'nw-btn', onclick: openResponse }, 'Respond')); document.body.append(stale); }
 +}
@@ -146,7 +156,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..69ca5ca72e5d03e59b0b7fcb41acbcb7
  
  /* ── section context for labels ── */
  function sectionOf(el) { let n = el; while (n && n !== document.body) { let p = n; while (p) { if (p.matches?.('h2[data-sec]')) return p; let s = p.previousElementSibling; while (s) { if (s.matches('h2[data-sec]')) return s; const inner = s.querySelectorAll?.('h2[data-sec]'); if (inner?.length) return inner[inner.length - 1]; s = s.previousElementSibling; } p = null; } n = n.parentElement; } return null; }
-@@ -627,7 +731,7 @@ function openResponse() {
+@@ -627,7 +741,7 @@ function openResponse() {
    const state = h('span', { class: 'nw-send-state' });
    const liveOn = false, send = null;
    const copy = h('button', { class: 'nw-btn' + (liveOn ? '' : ' primary'), onclick: async () => { try { await navigator.clipboard.writeText(r.md); toast('Copied — paste it back to Claude'); } catch { const ta = h('textarea'); ta.value = r.md; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Copied'); } } }, 'Copy response');
@@ -155,7 +165,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..69ca5ca72e5d03e59b0b7fcb41acbcb7
    openSheet('Your response', [list, h('p', { class: 'hint' }, liveOn ? 'This goes to Claude when you press Send.' : 'Copy this and paste it to Claude.'), pre], [reset, state, h('span', { class: 'sp' }), copy, send]);
  }
  function refreshChrome() {
-@@ -1269,11 +1373,15 @@ function boot() {
+@@ -1269,11 +1383,15 @@ function boot() {
    $$('doc-ask').forEach((a, i) => { if (!a.id) a.id = 'ask-n' + (i + 1); });
    $$('a[href^="#"]').forEach((a) => { if (a.closest('.nw-toc') || a.textContent.trim()) return; const t = document.getElementById(a.getAttribute('href').slice(1)); if (!t) { a.textContent = a.getAttribute('href'); return; } const sec = t.matches('h2[data-sec]') ? t : sectionOf(t); const own = t.matches('h2') ? '' : (t.getAttribute('label') || t.getAttribute('caption') || t.querySelector?.(':scope > p')?.textContent || t.textContent || '').trim(); a.textContent = (sec ? `§${sec.dataset.sec}${t === sec ? ' ' + sec.dataset.title : ''}` : '') + (t !== sec && own ? (sec ? ' › ' : '') + words(own, 6) : ''); });
    upgradeAll();
@@ -172,7 +182,7 @@ index 1e0dbff28f2bfc209ad1bfe0e17f15dc28040843..69ca5ca72e5d03e59b0b7fcb41acbcb7
    // block-level comment buttons
    $$('main h2, main h3, main > p, main > section > p, section > p, article > p, main li, doc-note, doc-quote, main > .cols > .card, .tldr').forEach((el, i) => {
      if (el.closest('doc-ask, doc-mock, template, .nw-sheet, doc-quote .q-body, nav') && !el.matches('doc-quote')) return;
-@@ -1292,8 +1400,9 @@ function boot() {
+@@ -1292,8 +1410,9 @@ function boot() {
      const io = new IntersectionObserver((ents) => ents.forEach((en) => { const a = en.target; clearTimeout(a._seenT); if (en.isIntersecting) a._seenT = setTimeout(() => markSeen(a), 900); }), { threshold: 0.4 });
      $$('doc-ask').forEach((a) => { io.observe(a); a.addEventListener('pointerdown', () => markSeen(a)); });
    }

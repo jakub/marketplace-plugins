@@ -535,19 +535,29 @@ let saveT, lastWrite = 0, stale = null, written = location.hash;   // written: t
     payload, and its URL carries only a plain #id. Claims, code, pins, zoom and machine demos work as usual. boot() sets it
     before it builds any block. */
 let readOnly = false;
-/** A lone change is written at once. A burst, such as typing, is coalesced into one write at most 250 ms after its last
-    change, so the history API is never flooded. A reload requests the URL it started from, so it can miss only a burst's
-    last 250 ms; leaving for another page runs beforeunload, which flushes. */
-function save() { clearTimeout(saveT); const wait = lastWrite + 250 - Date.now(); if (wait > 0) saveT = setTimeout(flushState, wait); else flushState(); refreshChrome(); }
+/** Each change is written to the fragment at once while the write budget lasts, because a reload requests the URL as it
+    stands before beforeunload can run. Browsers cap history writes: Chromium drops replaceState calls past 200 in 10 s in
+    a frame, and WebKit throws past 100 in 10 s for the whole page. The budget stays far under both: SAVE_BURST writes in
+    hand, refilled at SAVE_RATE a millisecond, so saves make at most 50 writes in any 10 s. A change made with the budget
+    spent gets one trailing write when the budget allows, 250 ms later at most unless a link or reset overdrew it, and only
+    a reload inside that wait can miss it. Leaving for another page runs beforeunload, which flushes. */
+const SAVE_BURST = 10, SAVE_RATE = 4 / 1000;
+let budget = SAVE_BURST;   // writes in hand just after the write at lastWrite, a performance.now() time
+const inHand = (now) => Math.min(SAVE_BURST, budget + (now - lastWrite) * SAVE_RATE);
+function save() { clearTimeout(saveT); const wait = Math.ceil((1 - inHand(performance.now())) / SAVE_RATE); if (wait > 0) saveT = setTimeout(flushState, wait); else flushState(); refreshChrome(); }
 /** Writes the state into the fragment now, cancelling a pending save. The one place that decides what the URL holds and
     the only URL writer: save(), in-page links, reset and leaving the page come here, and code that navigates away
-    calls it first. When the state does not fit, or the host refuses the write, the edits stay in memory, the URL keeps the
-    last fragment that fit, and a note stays up until a write succeeds. A fragment that changed under the page is left for
-    followFragment, so a reload never saves the old state over a pasted link. */
+    calls it first. Every write spends from save()'s budget, and one that cannot wait may overdraw it. When the state does
+    not fit, or the browser refuses or drops the write, the edits stay in memory, the URL keeps the last fragment that fit,
+    and a note stays up until a write succeeds. A fragment that changed under the page is left for followFragment, so a
+    reload never saves the old state over a pasted link. */
 function flushState() {
   clearTimeout(saveT); if (location.hash !== written) return;
   const r = NW.fragment.encode(readOnly ? null : persisted(), urlAnchor); let ok = !r.oversize;
-  if (ok && r.hash !== location.hash) { try { history.replaceState(history.state, '', location.href.split('#')[0] + r.hash); written = location.hash; lastWrite = Date.now(); } catch { ok = false; } }   // absolute, so a <base> can't redirect it
+  if (ok && r.hash !== location.hash) {   // the URL is absolute, so a <base> can't redirect it
+    try { history.replaceState(history.state, '', location.href.split('#')[0] + r.hash); } catch {}
+    const now = performance.now(); budget = inHand(now) - 1; lastWrite = now; written = location.hash; ok = written === r.hash;   // a refused or dropped write leaves the hash as it was
+  }
   if (ok) { stale?.remove(); stale = null; }
   else if (!stale) { stale = h('div', { class: 'nw-stale', role: 'status' }, h('span', null, 'The link to this page no longer holds your latest edits. Copy your response before you leave.'), h('button', { class: 'nw-btn', onclick: openResponse }, 'Respond')); document.body.append(stale); }
 }

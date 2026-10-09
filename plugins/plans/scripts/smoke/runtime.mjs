@@ -3,12 +3,15 @@
 // value stays plain text, and zero counts hide the element. Quote links (patch 0008): HtmlPlan.safeHref passes http and https
 // only, by the URL parser's reading of the scheme, and the link it feeds opens in the same frame after a state flush. The shipped
 // vendored set holds no _blank and no claude.ai hand-over wording. Copy-out (patch 0009): the Respond sheet says "Copied" only
-// after the browser confirms the copy, and otherwise selects the response for a copy by hand.
+// after the browser confirms the copy, and otherwise selects the response for a copy by hand. Fragment writes (patch 0004):
+// save() writes each change at once while a budget of history writes lasts, then leaves one trailing write, and the
+// budget holds writes far under the browsers' own limits.
 
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { createContext, runInContext } from 'node:vm'
 
 const RUNTIME = 'plugins/plans/skills/doc/runtime'
 
@@ -103,4 +106,68 @@ export default async function ({ ROOT, check }) {
   const sites = [...source.matchAll(/^.*openComment\(\{.*$/gm)].map((m) => m[0]).filter((l) => !/^function openComment/.test(l))
   check('every other direct openComment call site is gated or reached only through a gated control',
     sites.length === 9 &&sites.every((l) => /readOnly/.test(l) || /const (open|doComment) = /.test(l) || /^ {6}openComment\(\{ key, label: `\$\{secLabel\(el\)\} › diagram/.test(l)), sites.join('\n'))
+
+  // Fragment writes (patch 0004). The shipped save() and flushState() run here as cut from the source, on a fake clock,
+  // timers, location and history, with persisted() reduced to one textarea answer. The browser check shows the same in Chromium.
+  const block = source.match(/\nlet saveT, lastWrite[^\n]*\n[\s\S]*?\n(?=\/\*\* What the fragment carries)/)?.[0] ?? ''
+  check('the save and flushState code can be cut from the runtime', /\nfunction save\(\)/.test(block) && /\nfunction flushState\(\)/.test(block), block.slice(0, 80))
+  const page = () => {
+    const env = { now: 1000, timers: [], seq: 0, writes: [], drop: false, answer: '', notes: 0 }
+    const location = { hash: '', get href() { return 'https://plans.example/p/x' + this.hash } }
+    const ctx = createContext({
+      NW, location, urlAnchor: null, performance: { now: () => env.now }, Date: { now: () => env.now },
+      setTimeout: (fn, ms) => { env.timers.push({ id: ++env.seq, at: env.now + Math.max(0, ms), fn }); return env.seq },
+      clearTimeout: (id) => { env.timers = env.timers.filter((t) => t.id !== id) },
+      history: { state: null, replaceState: (s, t, url) => { env.writes.push(env.now); if (!env.drop) location.hash = url.includes('#') ? '#' + url.split('#')[1] : '' } },
+      persisted: () => ({ answers: env.answer ? { note: env.answer } : {} }), refreshChrome: () => {}, openResponse: () => {},
+      h: () => ({ remove: () => { env.notes-- } }), document: { body: { append: () => { env.notes++ } } },
+    })
+    const api = runInContext(block + ';({ save, flushState })', ctx)
+    const advance = (ms) => {
+      const end = env.now + ms
+      for (let t; (t = env.timers.filter((x) => x.at <= end).sort((a, b) => a.at - b.at || a.id - b.id)[0]);) { env.timers = env.timers.filter((x) => x !== t); env.now = t.at; t.fn() }
+      env.now = end
+    }
+    return { env, advance, change: (v) => { env.answer = v; api.save() }, flush: api.flushState, inUrl: () => NW.fragment.decode(location.hash).state?.answers?.note ?? null }
+  }
+  if (/\nfunction save\(\)/.test(block)) {
+    let p = page(); p.change('older'); p.change('newer')
+    check('two changes in the same instant are both written at once', p.inUrl() === 'newer' && p.env.writes.length === 2 && p.env.timers.length === 0, JSON.stringify({ inUrl: p.inUrl(), writes: p.env.writes.length }))
+
+    p = page(); for (let i = 1; i <= 10; i++) p.change('a' + i)
+    const burst = { written: p.env.writes.length, inUrl: p.inUrl() }
+    for (let i = 11; i <= 15; i++) p.change('a' + i)
+    const spent = { written: p.env.writes.length, inUrl: p.inUrl(), timers: p.env.timers.length, wait: p.env.timers[0]?.at - p.env.now }
+    p.advance(250)
+    check('ten changes are written at once, and with the budget spent the rest wait for one trailing write within 250 ms',
+      burst.written === 10 && burst.inUrl === 'a10' && spent.written === 10 && spent.inUrl === 'a10' && spent.timers === 1 && spent.wait > 0 && spent.wait <= 250 &&
+      p.env.writes.length === 11 && p.inUrl() === 'a15' && p.env.timers.length === 0, JSON.stringify({ burst, spent, after: { written: p.env.writes.length, inUrl: p.inUrl() } }))
+    p.advance(10000); for (let i = 1; i <= 11; i++) p.change('b' + i)
+    check('ten idle seconds refill the budget to ten writes and no more', p.env.writes.length === 21 && p.inUrl() === 'b10' && p.env.timers.length === 1, String(p.env.writes.length))
+
+    // A change every 5 ms for 30 s: never more than 50 writes in any 10 s, the URL never more than 250 ms behind (the age of
+    // the oldest change it does not hold yet), and the last change written.
+    p = page(); const made = []; let worstLag = 0
+    for (let i = 1; i <= 6000; i++) {
+      made[i] = p.env.now; p.change('c' + i)
+      const k = Number(p.inUrl()?.slice(1) ?? 0); if (k < i) worstLag = Math.max(worstLag, p.env.now - made[k + 1])
+      p.advance(5)
+    }
+    p.advance(250)
+    const w = p.env.writes, peak = w.reduce((m, t) => Math.max(m, w.filter((u) => u >= t && u < t + 10000).length), 0)
+    check('a change every 5 ms for 30 s makes at most 50 writes in any 10 s, lags at most 250 ms, and ends with the last change written',
+      peak <= 50 && worstLag <= 250 && p.inUrl() === 'c6000' && p.env.timers.length === 0, JSON.stringify({ writes: w.length, peak, worstLag, inUrl: p.inUrl() }))
+
+    p = page(); for (let i = 1; i <= 12; i++) p.change('d' + i)
+    const pending = p.env.timers.length; p.env.answer = ''; p.flush(); const atFlush = { hash: p.env.writes.length }
+    p.advance(2000)
+    check('flushState writes at once over a spent budget and cancels the pending trailing write, as reset needs',
+      pending === 1 && p.inUrl() === null && p.env.timers.length === 0 && p.env.writes.length === atFlush.hash && p.env.writes.length === 11, JSON.stringify({ pending, writes: p.env.writes.length }))
+
+    p = page(); p.env.drop = true; p.change('dropped')
+    const dropped = { inUrl: p.inUrl(), notes: p.env.notes, writes: p.env.writes.length }
+    p.env.drop = false; p.change('landed')
+    check('a write the browser drops raises the note, and the next write that lands clears it',
+      dropped.inUrl === null && dropped.notes === 1 && dropped.writes === 1 && p.inUrl() === 'landed' && p.env.notes === 0, JSON.stringify({ dropped, after: { inUrl: p.inUrl(), notes: p.env.notes } }))
+  }
 }
