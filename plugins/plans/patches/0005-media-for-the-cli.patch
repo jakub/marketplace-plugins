@@ -60,7 +60,7 @@ index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf9942
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..1020a7c92b7d0774485c1763f6f71e21207844a2 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..b4b7b53b0859873bc5e7f815e445169279085253 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -299,7 +299,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..1020a7c92b7d0774485c1763f6f71e21
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +442,230 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +442,233 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -468,9 +468,12 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..1020a7c92b7d0774485c1763f6f71e21
 +function checkCss(at, text) {
 +  const css = cssPreprocess(text); const { kept, code, strings } = cssLex(css);
 +  const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
++  // A url() ends at the ")" that closes it or at the end of the text, as CSS reads it: an unquoted url is one token that runs
++  // to either, and a quoted one is a function the end of the text closes, after its string or a string the end cuts short.
++  const CSS_URL = /url\([ \t\n]*(?:"([^"]*)"[ \t\n]*\)|'([^']*)'[ \t\n]*\)|([^)]*)\)|"([^"\n]*)(?:"[ \t\n]*)?$|'([^'\n]*)(?:'[ \t\n]*)?$|([^)]*)$)/gi;
 +  const named = new Set();   // the start of each string a url() or an image function has named
-+  for (const m of kept.matchAll(/url\([ \t\n]*(?:"([^"]*)"[ \t\n]*|'([^']*)'[ \t\n]*|([^)]*))\)/gi)) if (code[m.index] !== ' ') {
-+    onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
++  for (const m of kept.matchAll(CSS_URL)) if (code[m.index] !== ' ') {
++    onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? m[6], true);
 +    for (const [s] of strings) if (s >= m.index && s < m.index + m[0].length) named.add(s);
 +  }
 +  const mime = [...code.matchAll(CSS_TYPE_FN)].map((m) => [m.index + m[0].length, cssArgsEnd(code, m.index + m[0].length)]);
@@ -544,7 +547,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..1020a7c92b7d0774485c1763f6f71e21
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +674,31 @@ if (!quiet) {
+@@ -288,7 +677,31 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -577,7 +580,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..1020a7c92b7d0774485c1763f6f71e21
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +708,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +711,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }

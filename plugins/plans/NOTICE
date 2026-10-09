@@ -112,7 +112,8 @@ it, so a later patch's context is the text an earlier one wrote.
     whitespace trimmed is the syntax's own, HTML's ASCII set or CSS's LF, TAB and SPACE,
     never JavaScript's, which also strips U+FEFF and U+00A0 that the URL parser keeps. CSS
     is read after CSS's own input preprocessing, where CRLF, CR and FF are one LF, and with
-    its comments and strings blanked in CSS's own order, so neither hides a url(). pack
+    its comments and strings blanked in CSS's own order, so neither hides a url(), and a
+    url() or image function that the end of the text closes is read like a closed one. pack
     reads tags with a port of the CLI's tokenizer, golang.org/x/net/html
     at v0.58.0, so it sees every media src the CLI acts on, with the value the CLI decodes:
     numeric references and the five basic named ones decode exactly, and an attribute value

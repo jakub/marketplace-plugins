@@ -125,6 +125,21 @@ const REFUSALS = [
   { name: 'css-image-attr-linked', setup: (d) => writeFileSync(join(d, 'local.css'), '.x{background:image(attr(data-src url))}\n'),
     head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: CSS image\(\) holds attr\(\)/ },
   { name: 'css-image-set-var-escaped-name', head: '<style>.x{background:image-set(v\\61r(--i) 1x)}</style>\n', body: '<p class="x">x</p>', why: /"v\\61r\(" holds a backslash escape/ },
+  // The end of the text closes a url() as it closes an image function: an unquoted url runs to ")" or the end, and a quoted one
+  // is a function the end closes, with or without its closing quote. The browser fetches each, so pack checks each, in a
+  // <style>, a style="" and the page's own stylesheet. The closed forms above are the controls.
+  { name: 'css-url-eof-attribute', body: '<div style="background:url(shot.png">x</div>', why: /style="": CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-attribute-quoted', body: '<div style="background:url(&quot;shot.png&quot;">x</div>', why: /style="": CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-style', head: '<style>.x{background:url(shot.png</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-style-newline', head: '<style>.x{background:url(shot.png\n</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-style-quoted', head: '<style>.x{background:url("shot.png"</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-style-quoted-space', head: "<style>.x{background:url( 'shot.png' </style>\n", body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-style-unclosed-string', head: '<style>.x{background:url("shot.png</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-linked', setup: (d) => writeFileSync(join(d, 'local.css'), ".x{background:url('shot.png'"),
+    head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-linked-unquoted', setup: (d) => writeFileSync(join(d, 'local.css'), '.x{background:url(shot.png'),
+    head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-eof-upper', head: '<style>.x{background:URL(shot.png</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
   // JavaScript's trim() and \s take U+FEFF, U+00A0 and the other Unicode spaces as whitespace. HTML's attribute and srcset rules
   // know ASCII whitespace alone, and CSS, after its preprocessing, LF, TAB and SPACE; the URL parser keeps the rest, so a value
   // that is data: only once a Unicode space is trimmed is a path beside the page to the browser.
@@ -257,6 +272,12 @@ export default async function ({ ROOT, check }) {
       `<style>:root{--plans-x:"shot.png"} .a{color:var(--plans-ink)} .b{padding:env(safe-area-inset-bottom, 0px)} .c::before{content:attr(title)} .d{width:calc(var(--w) * 2)} .e{background:var(--bg, red)} .f{background:image-set("${D}" 1x)} .g{background:my-var(x) x-env(y) --attr(z)} .h::after{content:"image-set(var(--i))"}</style>\n`))
     const rv = run(subst, 'page.html')
     check('var(), env() and attr() outside the image functions are accepted', rv.status === 0, out(rv))
+
+    // A url() the end of the text closes is read like a closed one, so a data: URI there passes.
+    const eof = fixture('css-url-eof-data', page(`<div style="background:url(&quot;${D}&quot;">x</div>`,
+      `<link rel="stylesheet" href="local.css">\n<style>.a{background:url(${D}</style>\n`), (d) => writeFileSync(join(d, 'local.css'), `.b{background:url('${D}' `))
+    const re = run(eof, 'page.html')
+    check('a data: URI in a url() the end of the text closes is accepted, unquoted, quoted and in the page\'s own stylesheet', re.status === 0, out(re))
 
     // ASCII whitespace around a data: URI is what the browser strips, so it is trimmed before the check.
     const padded = fixture('data-ascii-padding', page([

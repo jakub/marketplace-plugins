@@ -624,9 +624,12 @@ function cssEscapedName(code) {   // the first function or at-rule name in blank
 function checkCss(at, text) {
   const css = cssPreprocess(text); const { kept, code, strings } = cssLex(css);
   const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
+  // A url() ends at the ")" that closes it or at the end of the text, as CSS reads it: an unquoted url is one token that runs
+  // to either, and a quoted one is a function the end of the text closes, after its string or a string the end cuts short.
+  const CSS_URL = /url\([ \t\n]*(?:"([^"]*)"[ \t\n]*\)|'([^']*)'[ \t\n]*\)|([^)]*)\)|"([^"\n]*)(?:"[ \t\n]*)?$|'([^'\n]*)(?:'[ \t\n]*)?$|([^)]*)$)/gi;
   const named = new Set();   // the start of each string a url() or an image function has named
-  for (const m of kept.matchAll(/url\([ \t\n]*(?:"([^"]*)"[ \t\n]*|'([^']*)'[ \t\n]*|([^)]*))\)/gi)) if (code[m.index] !== ' ') {
-    onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
+  for (const m of kept.matchAll(CSS_URL)) if (code[m.index] !== ' ') {
+    onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? m[6], true);
     for (const [s] of strings) if (s >= m.index && s < m.index + m[0].length) named.add(s);
   }
   const mime = [...code.matchAll(CSS_TYPE_FN)].map((m) => [m.index + m[0].length, cssArgsEnd(code, m.index + m[0].length)]);
