@@ -552,10 +552,39 @@ function onlyData(at, what, value, css = false) {
   err(`${at}: ${what} "${v.length > 60 ? v.slice(0, 60) + '…' : v}" — ${isRemote(v) ? 'remote, and the viewer\'s CSP blocks it' : 'the plans CLI uploads only a literal src, so this path would break'}; use ${css ? 'an <img>' : 'src'} for a local file, or a data: URI`);
 }
 const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { while (i < s.length && /[\s,]/.test(s[i])) i++; let j = i; while (j < s.length && !/\s/.test(s[j])) j++; if (j > i) { const u = s.slice(i, j); out.push(u.replace(/,+$/, '')); if (!u.endsWith(',')) while (j < s.length && s[j] !== ',') j++; } i = j; } return out; };
+// CSS reads a backslash escape inside an identifier, so u\72l( is url( and @\69mport is @import. pack decodes none: it refuses an
+// escape in the name of a function or an at-rule, in a <style>, a style="" and the page's own stylesheet. Comments and strings
+// are blanked first, in CSS's own order, where a comment opens only outside a string, a string only outside a comment, and an
+// escape outside a string is one token, so a fake string hides no name and a comment opened inside a string hides no url().
+// Blanking keeps every offset, so a url( found in the text with its strings is checked only where it starts outside one.
+function cssBlank(css, strings) {   // css with its comments blanked, and its strings too unless `strings` keeps them
+  let out = '', i = 0; const n = css.length;
+  while (i < n) {
+    const c = css[i];
+    if (c === '/' && css[i + 1] === '*') { const e = css.indexOf('*/', i + 2); const j = e < 0 ? n : e + 2; out += ' '.repeat(j - i); i = j; continue; }
+    if (c === '"' || c === "'") { let j = i + 1; while (j < n && css[j] !== c && css[j] !== '\n') j += css[j] === '\\' ? 2 : 1; if (j < n && css[j] === c) j++; out += strings ? css.slice(i, j) : ' '.repeat(j - i); i = j; continue; }
+    if (c === '\\') { out += css.slice(i, i + 2); i += 2; continue; }
+    out += c; i++;
+  }
+  return out;
+}
+const CSS_ESC = /\\(?:[0-9a-fA-F]{1,6}(?:\r\n|[ \t\n\f\r])?|[^\n\r\f0-9a-fA-F])/y, CSS_IDENT = /[-\w\u0080-\uffff]/;
+function cssEscapedName(code) {   // the first function or at-rule name in blanked css that holds an escape, with its "(" or "@", or null
+  let i = 0; const n = code.length;
+  while (i < n) {
+    if (code[i] !== '\\' && !CSS_IDENT.test(code[i])) { i++; continue; }
+    const s = i; let esc = false;
+    while (i < n) { if (code[i] === '\\') { CSS_ESC.lastIndex = i; if (!CSS_ESC.exec(code)) { i++; break; } i = CSS_ESC.lastIndex; esc = true; } else if (CSS_IDENT.test(code[i])) i++; else break; }
+    if (esc && code[i] === '(') return code.slice(s, i + 1);
+    if (esc && code[s - 1] === '@') return code.slice(s - 1, i);
+  }
+  return null;
+}
 function checkCss(at, css) {
-  const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  for (const m of bare.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
-  if (/@import\b/i.test(bare)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);
+  const kept = cssBlank(css, true), code = cssBlank(css, false);
+  const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
+  for (const m of kept.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) if (code[m.index] !== ' ') onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
+  if (/@import\b/i.test(code)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);
 }
 const RUNTIME = {   // always this folder's runtime, never a copy beside the page
   css: `<style data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.css'), 'utf8')}\n</style>`,

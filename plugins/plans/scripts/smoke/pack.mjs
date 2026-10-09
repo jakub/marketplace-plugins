@@ -54,6 +54,20 @@ const REFUSALS = [
   { name: 'missing-stylesheet', head: '<link rel="stylesheet" href="gone.css">\n', body: '<p>x</p>', why: /stylesheet "gone\.css" is not in the page's folder/ },
   { name: 'meta-csp', head: '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">\n', body: '<p>x</p>', why: /<meta> Content-Security-Policy/ },
   { name: 'runtime-twice', head: '<link rel="stylesheet" href="../runtime/htmlplan.css">\n', body: '<p>x</p>', why: /htmlplan\.css appears 2 times/ },
+  // CSS reads a backslash escape in an identifier, so u\72l( is url( and @\69mport is @import. pack decodes none and refuses an
+  // escape in the name of a function or an at-rule, in a <style>, a style="" and the page's own stylesheet; comments and strings
+  // are blanked in CSS's own order first, so neither a fake string nor a comment opened inside a string hides a reference.
+  { name: 'css-escaped-url', head: '<style>.x{background:u\\72l(shot.png)}</style>\n', body: '<p class="x">x</p>', why: /<style>: "u\\72l\(" holds a backslash escape in the name of a CSS function or at-rule/ },
+  { name: 'css-escaped-url-hex-space', head: '<style>.x{background:u\\72 l(shot.png)}</style>\n', body: '<p class="x">x</p>', why: /"u\\72 l\(" holds a backslash escape/ },
+  { name: 'css-escaped-url-upper', head: '<style>.x{background:U\\52L("shot.png")}</style>\n', body: '<p class="x">x</p>', why: /"U\\52L\(" holds a backslash escape/ },
+  { name: 'css-escaped-import', head: '<style>@\\69mport "more.css";</style>\n', body: '<p>x</p>', why: /"@\\69mport" holds a backslash escape/ },
+  { name: 'css-escaped-import-inside', head: '<style>@im\\70 ort url(more.css);</style>\n', body: '<p>x</p>', why: /"@im\\70 ort" holds a backslash escape/ },
+  { name: 'css-escaped-url-attribute', body: '<div style="background:u\\72l(shot.png)">x</div>', why: /style="": "u\\72l\(" holds a backslash escape/ },
+  { name: 'css-escaped-url-linked', setup: (d) => writeFileSync(join(d, 'local.css'), ".x{background:u\\72l('shot.png')}\n"),
+    head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: "u\\72l\(" holds a backslash escape/ },
+  { name: 'css-escape-after-fake-string', head: '<style>a{b:\\"x u\\72l(shot.png)"}</style>\n', body: '<p>x</p>', why: /"u\\72l\(" holds a backslash escape/ },
+  { name: 'css-url-after-comment-in-string', head: '<style>a{content:"/*"} .x{background:url(shot.png)} i{content:"*/"}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  { name: 'css-url-after-escaped-quote', head: '<style>a{content:\\" } .x{background:url(shot.png)} i{content:"}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
   // pack reads a src as the CLI's tokenizer (golang.org/x/net/html) does, or refuses. &sol; names public/private.png to the CLI; pack
   // holds no entity table, so it refuses the reference instead of checking the literal file. An unquoted value ends at HTML
   // whitespace only, so U+00A0 is part of the name the CLI reads.
@@ -145,6 +159,12 @@ export default async function ({ ROOT, check }) {
     })
     const before = listing(lintDir); const rl = run(lintDir, '--lint-only', 'page.html')
     check('--lint-only passes the positive fixture and writes nothing', rl.status === 0 && listing(lintDir) === before, out(rl))
+
+    // Escapes outside a function or at-rule name, and anything inside a string or a comment, are not refused.
+    const benign = fixture('css-escapes-benign', page('<div style="font-family:\\41 rial">x</div>',
+      '<style>.md\\:flex{display:flex} .\\31 0{color:red} .a::before{content:"\\201C u\\72l(x) @\\69mport"} /* u\\72l(y) */ .b{fill:url(#g)}</style>\n'))
+    const rb = run(benign, 'page.html')
+    check('CSS escapes in selectors, property values, strings and comments are accepted', rb.status === 0, out(rb))
 
     const src = fixture('src-name', page('<p>x</p>')); writeFileSync(join(src, 'doc.src.html'), page('<p>x</p>'))
     const rs = run(src, 'doc.src.html')

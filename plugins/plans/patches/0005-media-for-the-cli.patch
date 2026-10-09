@@ -60,7 +60,7 @@ index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf9942
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..3ffd43f271b7434cc5f29be810f24360cf052033 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391c3619a9c 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -296,7 +296,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..3ffd43f271b7434cc5f29be810f24360
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +439,143 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +439,172 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -363,7 +363,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..3ffd43f271b7434cc5f29be810f24360
 +  if (c === '..' || c.startsWith('../')) return { why: 'climbs out of the page\'s folder with ..' };
 +  if (c === '.') return { why: 'names the page\'s folder, not a file in it' };
 +  return { p: c };
-+}
+ }
 +// a cleaned relative path → the real file inside the page's folder, or why there is none. The CLI opens it through os.Root, which
 +// follows a symlink only to a relative target and through at most 8 links, so pack refuses what that root would.
 +function pageFile(p) {
@@ -396,11 +396,40 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..3ffd43f271b7434cc5f29be810f24360
 +  err(`${at}: ${what} "${v.length > 60 ? v.slice(0, 60) + '…' : v}" — ${isRemote(v) ? 'remote, and the viewer\'s CSP blocks it' : 'the plans CLI uploads only a literal src, so this path would break'}; use ${css ? 'an <img>' : 'src'} for a local file, or a data: URI`);
 +}
 +const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { while (i < s.length && /[\s,]/.test(s[i])) i++; let j = i; while (j < s.length && !/\s/.test(s[j])) j++; if (j > i) { const u = s.slice(i, j); out.push(u.replace(/,+$/, '')); if (!u.endsWith(',')) while (j < s.length && s[j] !== ',') j++; } i = j; } return out; };
++// CSS reads a backslash escape inside an identifier, so u\72l( is url( and @\69mport is @import. pack decodes none: it refuses an
++// escape in the name of a function or an at-rule, in a <style>, a style="" and the page's own stylesheet. Comments and strings
++// are blanked first, in CSS's own order, where a comment opens only outside a string, a string only outside a comment, and an
++// escape outside a string is one token, so a fake string hides no name and a comment opened inside a string hides no url().
++// Blanking keeps every offset, so a url( found in the text with its strings is checked only where it starts outside one.
++function cssBlank(css, strings) {   // css with its comments blanked, and its strings too unless `strings` keeps them
++  let out = '', i = 0; const n = css.length;
++  while (i < n) {
++    const c = css[i];
++    if (c === '/' && css[i + 1] === '*') { const e = css.indexOf('*/', i + 2); const j = e < 0 ? n : e + 2; out += ' '.repeat(j - i); i = j; continue; }
++    if (c === '"' || c === "'") { let j = i + 1; while (j < n && css[j] !== c && css[j] !== '\n') j += css[j] === '\\' ? 2 : 1; if (j < n && css[j] === c) j++; out += strings ? css.slice(i, j) : ' '.repeat(j - i); i = j; continue; }
++    if (c === '\\') { out += css.slice(i, i + 2); i += 2; continue; }
++    out += c; i++;
++  }
++  return out;
++}
++const CSS_ESC = /\\(?:[0-9a-fA-F]{1,6}(?:\r\n|[ \t\n\f\r])?|[^\n\r\f0-9a-fA-F])/y, CSS_IDENT = /[-\w\u0080-\uffff]/;
++function cssEscapedName(code) {   // the first function or at-rule name in blanked css that holds an escape, with its "(" or "@", or null
++  let i = 0; const n = code.length;
++  while (i < n) {
++    if (code[i] !== '\\' && !CSS_IDENT.test(code[i])) { i++; continue; }
++    const s = i; let esc = false;
++    while (i < n) { if (code[i] === '\\') { CSS_ESC.lastIndex = i; if (!CSS_ESC.exec(code)) { i++; break; } i = CSS_ESC.lastIndex; esc = true; } else if (CSS_IDENT.test(code[i])) i++; else break; }
++    if (esc && code[i] === '(') return code.slice(s, i + 1);
++    if (esc && code[s - 1] === '@') return code.slice(s - 1, i);
++  }
++  return null;
++}
 +function checkCss(at, css) {
-+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
-+  for (const m of bare.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
-+  if (/@import\b/i.test(bare)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);
- }
++  const kept = cssBlank(css, true), code = cssBlank(css, false);
++  const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
++  for (const m of kept.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) if (code[m.index] !== ' ') onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
++  if (/@import\b/i.test(code)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);
++}
 +const RUNTIME = {   // always this folder's runtime, never a copy beside the page
 +  css: `<style data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.css'), 'utf8')}\n</style>`,
 +  js: `<script data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.js'), 'utf8').replace(/<\/script/gi, '<\\/script')}\n</script>`,
@@ -454,7 +483,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..3ffd43f271b7434cc5f29be810f24360
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +584,28 @@ if (!quiet) {
+@@ -288,7 +613,28 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -484,7 +513,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..3ffd43f271b7434cc5f29be810f24360
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +615,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +644,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }
