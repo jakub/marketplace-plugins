@@ -178,6 +178,16 @@ it, so a later patch's context is the text an earlier one wrote.
     as the comment token the CLI's tokenizer reads and never as text, so a look-alike inside a
     tag or a script stays as written and nothing is spliced after the checks. The lint no longer
     reads the runtime such a page already inlines, which upstream's lint refused.
+0013-own-property-lookups.patch
+    Gives every map keyed by a name the page chooses no prototype, in the runtime and in pack: a flow node, a
+    sequence actor, a machine state, trace or grid cell, the layouts' per-id tables, the language alias and
+    keyword tables, the mock frame and quote via tables, a flow's node templates, a schema's cards, a call
+    tree's excerpts and touched files, a machine's node and event elements, the played traces, the machines
+    by name, and pack's id table and frame table. A plain object read by such a name found Object.prototype:
+    a flow node or machine state named __proto__ wrote its label onto Object.prototype, a state or node named
+    constructor was never created, a data-play naming a trace the machine lacks passed pack's check, an
+    id="constructor" was a false duplicate, and frame="constructor" or via="constructor" drew NaN or the
+    function's source.
 -----END PATCHES-----
 
 RE-SYNCING

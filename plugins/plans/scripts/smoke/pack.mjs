@@ -172,6 +172,12 @@ const REFUSALS = [
       body: `<img src="&${n}${semi}.png" alt="">`, why: new RegExp(`<img>: src="&${n}${semi}\\.png" holds "&${n}${semi}"`) },
     { name: `entity-inherited-${n}${semi && '-semicolon'}-alt`, body: `<img src="shot.png" alt="&${n}${semi}">`, why: new RegExp(`<img>: alt="&${n}${semi}" holds "&${n}${semi}"`) },
   ])),
+  // A map keyed by a name the page chooses has no prototype (patch 0013), so an inherited name is an ordinary key: a second
+  // id="constructor" is a duplicate on two numbered lines, and a data-play that names a trace the machine lacks is refused
+  // whatever the name.
+  { name: 'id-inherited-duplicate', body: '<p id="constructor">x</p><p id="constructor">y</p>', why: /duplicate id="constructor" \(lines \d+ and \d+\)/ },
+  { name: 'machine-trace-inherited-missing', body: '<doc-machine name="m" caption="c"><script type="text/plain">machine m initial a\nstate a final</script></doc-machine><doc-ask id="q"><p>Q?</p><label><input type="radio" name="pick" value="x" data-play="m.constructor" checked> x</label></doc-ask>',
+    why: /data-play="m\.constructor" — machine has no trace "constructor" \(traces: none\)/ },
   // A comment ends at --!> for the CLI. With the runtime linked before it, 65 media tags after it once passed pack unseen.
   { name: 'comment-bang-close', setup: (d) => { for (let i = 0; i < 65; i++) writeFileSync(join(d, `m${i}.png`), `png ${i}`) },
     html: () => '<!doctype html>\n<html lang="en">\n<meta charset="utf-8">\n<title>Fixture</title>\n<link rel="stylesheet" href="htmlplan.css">\n<script src="htmlplan.js" defer></script>\n' +
@@ -301,6 +307,22 @@ export default async function ({ ROOT, check }) {
     const text = fixture('entity-in-text', page('<p>a tab &Tab; a space &nbsp; an ellipsis &hellip; and a copy sign &copy; in text</p>'))
     const rt = run(text, 'page.html')
     check('a named character reference in text content is accepted', rt.status === 0, out(rt))
+
+    // Maps keyed by a name the page chooses have no prototype (patch 0013), in pack and in the parsers it shares with the
+    // runtime, so constructor and __proto__ are ordinary ids, node, actor, state and trace names, and frame="constructor" is an
+    // unknown frame with the default width, not Object.prototype.constructor.
+    const inherited = fixture('inherited-names', page([
+      '<p id="constructor">x</p><p id="__proto__">y</p><a href="#constructor">z</a><a href="#toString">w</a>',
+      '<doc-mock frame="constructor"><template><p>x</p></template></doc-mock>',
+      '<doc-flow caption="c"><script type="text/plain">constructor -> toString\n__proto__ = Label [pill]</script></doc-flow>',
+      '<doc-seq caption="c"><script type="text/plain">participants: constructor "C"\nconstructor -> toString : hi</script></doc-seq>',
+      '<doc-machine name="m" caption="c"><script type="text/plain">machine m initial __proto__\nstate __proto__\nstate constructor final\n__proto__ -go-> constructor\ntrace constructor: go</script></doc-machine>',
+      '<doc-ask id="q"><p>Q?</p><label><input type="radio" name="pick" value="x" data-play="m.constructor" checked> x</label></doc-ask>',
+    ].join('\n')))
+    const rn = run(inherited, 'page.html')
+    check('ids, flow nodes, sequence actors, machine states and traces named constructor or __proto__ are ordinary names to pack', rn.status === 0 && !/duplicate id/.test(rn.stdout), out(rn))
+    check('an href to an id the page lacks is warned about whatever the name', /href="#toString" points at no id/.test(rn.stdout), rn.stdout.slice(-600))
+    check('a mock frame named constructor gets the default width and its width warning', /constructor mock w=800 renders/.test(rn.stdout), rn.stdout.slice(-600))
 
     const src = fixture('src-name', page('<p>x</p>')); writeFileSync(join(src, 'doc.src.html'), page('<p>x</p>'))
     const rs = run(src, 'doc.src.html')
@@ -433,6 +455,9 @@ export default async function ({ ROOT, check }) {
     const decl = readFileSync(pack, 'utf8').match(/^const MEDIA_EXT = \[([^\]\n]*)\];$/m)
     const have = decl ? [...decl[1].matchAll(/'(\.[a-z0-9]+)'/g)].map((m) => m[1]).sort() : []
     check('pack declares MEDIA_EXT on one line', !!decl)
+    const packSrc = readFileSync(pack, 'utf8')
+    check('pack keeps its id table with no prototype and its frame table under a null prototype',
+      /\nconst ids = Object\.create\(null\);/.test(packSrc) && /\{ __proto__: null, phone: 390, browser: 1024, terminal: 640, desktop: 900, none: 600 \}\[a\.frame \|\| 'browser'\]/.test(packSrc))
     check('MEDIA_EXT equals the publish table without .html and .htm', want.length > 0 && want.join(' ') === have.join(' ') && new Set(have).size === have.length,
       `publish: ${want.join(' ')}; pack: ${have.join(' ')}`)
     for (const ext of want) {

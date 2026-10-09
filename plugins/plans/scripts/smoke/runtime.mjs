@@ -128,6 +128,40 @@ export default async function ({ ROOT, check }) {
     check('a restored answer for a control named toString is written', write(NW.fragment.decode('#pl1.' + Buffer.from(JSON.stringify({ answers: { toString: 'mine' } }), 'utf8').toString('base64url')).state.answers) === 'toString=mine x=default constructor=default __proto__=default')
   }
 
+  // Maps keyed by a name a block's text chooses (patch 0013): a flow node, a sequence actor, a machine state, trace or grid
+  // cell, the layouts' per-id tables and the language tables have no prototype, so constructor or __proto__ is an ordinary name
+  // and nothing a block says reaches Object.prototype. The DOM-side maps are held to the source.
+  const fl = NW.parseFlow('constructor -> toString\n__proto__ = Label [pill]\n  detail line')
+  check('a flow names nodes constructor, toString and __proto__ with no error', fl.errors.length === 0 && isDeepStrictEqual(fl.order, ['constructor', 'toString', '__proto__']), JSON.stringify({ errors: fl.errors, order: fl.order }))
+  check('the flow node map has no prototype and the __proto__ node is its own entry', Object.getPrototypeOf(fl.nodes) === null && fl.nodes.__proto__?.shape === 'pill' && isDeepStrictEqual(fl.nodes.__proto__?.detail, ['detail line']))
+  check('a node named __proto__ writes nothing onto Object.prototype', ({}).label === undefined && ({}).shape === undefined && ({}).detail === undefined && ({}).sub === undefined)
+  const lf = NW.layoutFlow(fl)
+  check('the flow layout places every node and routes the edge', Object.getPrototypeOf(lf.boxes) === null && fl.order.every((id) => Number.isFinite(lf.boxes[id]?.x) && Number.isFinite(lf.boxes[id]?.y)) && lf.routes.length === 1, JSON.stringify(Object.keys(lf.boxes)))
+  check('a flow grid cell named constructor is one cell', NW.parseFlow('| constructor | __proto__ |\nconstructor -> __proto__').errors.length === 0)
+  check('a port key that spells an inherited name (constructo + r) routes its edge', NW.layoutFlow(NW.parseFlow('dir LR\nconstructo -> valueO')).routes.length === 1)
+  const sq = NW.parseSeq('participants: constructor "C"\nconstructor -> toString : hi\n__proto__ -> valueOf')
+  check('a sequence names actors constructor, toString, __proto__ and valueOf once each', sq.errors.length === 0 && isDeepStrictEqual(sq.actors.map((a) => a.id), ['constructor', 'toString', '__proto__', 'valueOf']) && sq.actors[0].label === 'C', JSON.stringify(sq))
+  const mc = NW.parseMachine('machine m initial __proto__\nstate __proto__\nstate constructor final\n__proto__ -go-> constructor\ntrace constructor: go')
+  check('a machine names states __proto__ and constructor and a trace constructor with no error', mc.errors.length === 0 && isDeepStrictEqual(mc.order, ['__proto__', 'constructor']) && isDeepStrictEqual(Object.keys(mc.traces), ['constructor']), JSON.stringify({ errors: mc.errors, order: mc.order, traces: mc.traces }))
+  check('the machine state and trace maps have no prototype, and a state named __proto__ writes nothing onto Object.prototype', Object.getPrototypeOf(mc.states) === null && Object.getPrototypeOf(mc.traces) === null && ({}).final === undefined && ({}).bind === undefined)
+  for (const dir of ['LR', 'TB']) { const lm = NW.layoutMachine(mc, dir); check(`the ${dir} machine layout places both states`, Object.getPrototypeOf(lm.pos) === null && mc.order.every((id) => lm.pos[id]?.every(Number.isFinite)), JSON.stringify(lm.pos)) }
+  const mg = NW.parseMachine('machine m initial __proto__\n| __proto__ | constructor |\n__proto__ -go-> constructor\nstate constructor final')
+  check('a machine grid cell named __proto__ is one cell, placed by the grid layout', mg.errors.length === 0 && mg.order.every((id) => NW.layoutMachine(mg).pos[id]?.every(Number.isFinite)), JSON.stringify(mg.errors))
+  check('langOf returns the name it was given for an inherited name, and an alias still resolves', NW.langOf('constructor') === 'constructor' && NW.langOf('toString') === 'tostring' && NW.langOf('ts') === 'js')
+  check('highlight treats lang="constructor" as an unknown language', NW.highlight('x = 1', 'constructor') === NW.highlight('x = 1', 'nope') && typeof NW.highlight('x', 'hasOwnProperty') === 'string')
+  check('dict is defined with the utilities, before the parsers that use it', source.indexOf('\nconst dict = () => Object.create(null);') > 0 && source.indexOf('\nconst dict = ') < source.indexOf('NW.parseFlow = '))
+  for (const [what, re] of [
+    ['the keyword and alias tables', /\nconst KW = \{\n  __proto__: null,\n  js: /, /\nconst LANG_ALIAS = \{ __proto__: null, ts: 'js'/],
+    ['the played traces and the machines by name', /\nconst lastPlay = dict\(\);/, /\nconst machines = dict\(\);/],
+    ['a flow\'s node templates', /const templates = dict\(\); \$\$\(':scope > template\[data-node\]/],
+    ['a schema\'s entity cards', /const cards = dict\(\);\n/],
+    ['a call tree\'s excerpts and touched files', /const excerpts = dict\(\); \$\$\(':scope > script\[data-excerpt\]'/, /const f = dict\(\); m\.walk\(/],
+    ['a machine\'s node and event elements', /nodeEls = dict\(\), curDir = null;/, /\n    nodeEls = dict\(\);\n/, /const evBtns = dict\(\); evNames\.forEach/],
+    ['the mock frame table', /\{ __proto__: null, phone: 390, browser: 1024, terminal: 640, desktop: 900, none: 600 \}\[frame\] \|\| 800\)/],
+    ['the quote via table', /const viaTxt = \{ __proto__: null, prompt: 'prompt'/],
+  ]) check(`${what} ${re.length ? 'have' : 'has'} no prototype`, (Array.isArray(re) ? re : [re]).every((r) => r.test(source)))
+  check('no map keyed by a page-chosen name is a plain object literal', !/const (idx|cards|excerpts|templates|lastPlay|machines|evBtns|under|prevPos|portList) = \{\}/.test(source) && !/(nodeEls|cells|boxes|layer|pos|depth|seen) = \{\}/.test(source) && /const state = dict\(\); const back = new Set\(\);/.test(source) && !/states: \{\}|nodes: \{\}|traces: \{\}/.test(source), (source.match(/[^\n]*(const (idx|cards|excerpts|templates|lastPlay|machines|evBtns|under|prevPos|portList) = \{\}|states: \{\}|nodes: \{\}|traces: \{\})[^\n]*/g) || []).map((l) => l.trim().slice(0, 90)).join(' | '))
+
   // Fragment writes (patch 0004). The shipped save() and flushState() run here as cut from the source, on a fake clock,
   // timers, location and history, with persisted() reduced to one textarea answer. The browser check shows the same in Chromium.
   const block = source.match(/\nlet saveT, lastWrite[^\n]*\n[\s\S]*?\n(?=\/\*\* What the fragment carries)/)?.[0] ?? ''

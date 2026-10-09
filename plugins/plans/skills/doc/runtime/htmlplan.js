@@ -11,6 +11,7 @@ const HAS_DOM = typeof document !== 'undefined';
 /* ───────────────────────── utils ───────────────────────── */
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const dict = () => Object.create(null);   // a map with no prototype: every map keyed by a name the page, a block's text or a payload chooses is one, so a key every object inherits, such as constructor or __proto__, holds only what was put there
 const words = (s, n) => { const w = String(s).trim().split(/\s+/); return w.slice(0, n).join(' ') + (w.length > n ? '…' : ''); };
 function dedent(text) {
   const lines = String(text).replace(/\t/g, '  ').split('\n');
@@ -35,7 +36,7 @@ const EDGE_RE = /^(\S+)\s+(<?)(-->|->|=>|==>|-x->|\.\.>)\s*(\S+?)(?:\s*:\s*(.*))
 
 /** Flow DSL → { nodes:{id:{id,label,sub,shape,tone,mark,href,detail}}, edges:[], grid:[[id|null]], groups:[], dir, errors:[] } */
 NW.parseFlow = function parseFlow(text) {
-  const m = { nodes: {}, order: [], edges: [], grid: [], groups: [], dir: 'TB', errors: [] };
+  const m = { nodes: dict(), order: [], edges: [], grid: [], groups: [], dir: 'TB', errors: [] };
   const node = (id, ln) => { if (!/^[\w.-]+$/.test(id)) m.errors.push(`line ${ln}: bad node id "${id}"`); if (!m.nodes[id]) { m.nodes[id] = { id, label: id, sub: '', shape: 'box', tone: '', mark: null, href: '', detail: [] }; m.order.push(id); } return m.nodes[id]; };
   let last = null;
   text.split('\n').forEach((raw, i) => {
@@ -69,14 +70,14 @@ NW.parseFlow = function parseFlow(text) {
     m.errors.push(`line ${ln}: couldn't parse "${line}" — expected  id = Label [attrs]  |  a -> b : label  |  | a | b |  |  group Name: a b`);
   });
   // grid sanity
-  const seen = {}; m.grid.forEach((row, r) => row.forEach((id, c) => { if (!id) return; if (seen[id]) m.errors.push(`grid: "${id}" appears twice (${seen[id]} and ${r},${c})`); seen[id] = `${r},${c}`; }));
+  const seen = dict(); m.grid.forEach((row, r) => row.forEach((id, c) => { if (!id) return; if (seen[id]) m.errors.push(`grid: "${id}" appears twice (${seen[id]} and ${r},${c})`); seen[id] = `${r},${c}`; }));
   if (m.grid.length) m.order.forEach((id) => { if (!seen[id]) m.errors.push(`grid: node "${id}" is used but has no cell — add it to a | row |`); });
   return m;
 };
 
 /** Sequence DSL → { actors:[{id,label}], steps:[{kind:'msg'|'note'|'div', ...}], errors } */
 NW.parseSeq = function parseSeq(text) {
-  const m = { actors: [], steps: [], errors: [] }; const idx = {};
+  const m = { actors: [], steps: [], errors: [] }; const idx = dict();
   const actor = (id, label) => { if (!(id in idx)) { idx[id] = m.actors.length; m.actors.push({ id, label: label || id }); } else if (label) m.actors[idx[id]].label = label; };
   text.split('\n').forEach((raw, i) => {
     const ln = i + 1; let line = raw.trim(); if (!line || line.startsWith('//')) return;
@@ -182,7 +183,7 @@ NW.parseCalls = function parseCalls(text) {
  *  trace happy: review send ok
  */
 NW.parseMachine = function parseMachine(text) {
-  const m = { name: '', initial: '', states: {}, order: [], events: [], traces: {}, grid: [], errors: [] };
+  const m = { name: '', initial: '', states: dict(), order: [], events: [], traces: dict(), grid: [], errors: [] };
   const state = (id, ln) => { if (!/^[\w.-]+$/.test(id)) m.errors.push(`line ${ln}: bad state id "${id}"`); if (!m.states[id]) { m.states[id] = { id, label: id.replace(/[_-]+/g, ' '), final: false, mark: null, bind: {}, ln }; m.order.push(id); } return m.states[id]; };
   text.split('\n').forEach((raw, i) => {
     const ln = i + 1; let line = raw.trim(); if (!line || line.startsWith('//')) return;
@@ -205,7 +206,7 @@ NW.parseMachine = function parseMachine(text) {
     if ((mm = line.match(/^([\w.-]+)\s*->\s*([\w.-]+)\s*:\s*([\w.-]+)\s*(?:\((.*)\))?$/))) { state(mm[1], ln); state(mm[2], ln); m.events.push({ from: mm[1], ev: mm[3], to: mm[2], label: (mm[4] || '').trim(), mark, ln }); return; }
     m.errors.push(`line ${ln}: couldn't parse "${line}" — expected  state id [shows #id] [code f:l] [set A.b=v] [seq n] [node id] [final]  |  a -event-> b : label  |  trace name: ev ev  |  machine name initial id`);
   });
-  if (m.grid.length) { const seen = {}; m.grid.forEach((row) => row.forEach((id) => { if (!id) return; if (seen[id]) m.errors.push(`grid: "${id}" appears twice`); seen[id] = 1; })); m.order.forEach((id) => { if (!seen[id]) m.errors.push(`grid: state "${id}" has no cell — add it to a | row |`); }); }
+  if (m.grid.length) { const seen = dict(); m.grid.forEach((row) => row.forEach((id) => { if (!id) return; if (seen[id]) m.errors.push(`grid: "${id}" appears twice`); seen[id] = 1; })); m.order.forEach((id) => { if (!seen[id]) m.errors.push(`grid: state "${id}" has no cell — add it to a | row |`); }); }
   if (!m.initial && m.order.length) m.initial = m.order[0];
   if (m.initial && !m.states[m.initial]) m.errors.push(`initial state "${m.initial}" is not defined`);
   const legal = (from, ev) => m.events.find((e) => e.from === from && e.ev === ev);
@@ -218,28 +219,28 @@ NW.parseMachine = function parseMachine(text) {
 
 /** Layer states left→right by BFS distance from initial; branches stack vertically. Returns { W, H, pos:{id:[x,y]}, NW: width, NH } */
 NW.layoutMachine = function layoutMachine(m, dir = 'LR') {
-  const ids = m.order; if (!ids.length) return { W: 0, H: 0, pos: {} };
+  const ids = m.order; if (!ids.length) return { W: 0, H: 0, pos: dict() };
   const longest = Math.max(...ids.map((id) => m.states[id].label.length));
   const NWID = clamp(Math.ceil(longest * 7.6 + 30), 90, 180), NH = 36;
   const evLen = Math.max(0, ...m.events.map((e) => (m.short ? (e.label || e.ev) : e.ev + (e.label ? ' · ' + e.label : '')).length));
   const GX = clamp(Math.ceil(evLen * 6.6 + 30), 70, 200), GY = 60, PAD = 20;
-  if (m.grid?.length) { const pos = {}; let W = 0, H = 0; m.grid.forEach((row, r) => row.forEach((id, c) => { if (!id) return; const x = PAD + c * (NWID + GX), y = PAD + r * (NH + GY); pos[id] = [x, y]; W = Math.max(W, x + NWID + PAD); H = Math.max(H, y + NH + PAD); })); return { W, H: H + 8, pos, NW: NWID, NH, GX, GY, dir: 'LR', grid: true }; }
-  const depth = { [m.initial]: 0 }; const q = [m.initial]; while (q.length) { const u = q.shift(); m.events.forEach((e) => { if (e.from === u && depth[e.to] == null) { depth[e.to] = depth[u] + 1; q.push(e.to); } }); }
+  if (m.grid?.length) { const pos = dict(); let W = 0, H = 0; m.grid.forEach((row, r) => row.forEach((id, c) => { if (!id) return; const x = PAD + c * (NWID + GX), y = PAD + r * (NH + GY); pos[id] = [x, y]; W = Math.max(W, x + NWID + PAD); H = Math.max(H, y + NH + PAD); })); return { W, H: H + 8, pos, NW: NWID, NH, GX, GY, dir: 'LR', grid: true }; }
+  const depth = dict(); depth[m.initial] = 0; const q = [m.initial]; while (q.length) { const u = q.shift(); m.events.forEach((e) => { if (e.from === u && depth[e.to] == null) { depth[e.to] = depth[u] + 1; q.push(e.to); } }); }
   ids.forEach((id) => { if (depth[id] == null) depth[id] = 0; });
   // detours: a state that only bounces back to the state it came from (sending ⇄ failed) sits under its source, not in the next column
-  const under = {}; ids.forEach((id) => { const outs = m.events.filter((e) => e.from === id && e.to !== id), ins = m.events.filter((e) => e.to === id && e.from !== id); const srcs = [...new Set(ins.map((e) => e.from))]; if (srcs.length === 1 && outs.length && outs.every((e) => e.to === srcs[0]) && id !== m.initial) { under[id] = srcs[0]; depth[id] = depth[srcs[0]]; } });
+  const under = dict(); ids.forEach((id) => { const outs = m.events.filter((e) => e.from === id && e.to !== id), ins = m.events.filter((e) => e.to === id && e.from !== id); const srcs = [...new Set(ins.map((e) => e.from))]; if (srcs.length === 1 && outs.length && outs.every((e) => e.to === srcs[0]) && id !== m.initial) { under[id] = srcs[0]; depth[id] = depth[srcs[0]]; } });
   const layers = []; ids.forEach((id) => { if (!under[id]) (layers[depth[id]] ||= []).push(id); });
   Object.entries(under).forEach(([id, src]) => { const l = layers[depth[src]]; const k = l.indexOf(src); l.splice(k + 1, 0, id); });
   // order within a layer: keep the "trunk" (first event's target) on top; finals sink to the bottom-most row after their sources
-  for (let li = 1; li < layers.length; li++) { const prevPos = {}; layers[li - 1].forEach((id, k) => (prevPos[id] = k)); layers[li].sort((a, b) => { const pa = m.events.filter((e) => e.to === a && prevPos[e.from] != null).map((e) => prevPos[e.from]); const pb = m.events.filter((e) => e.to === b && prevPos[e.from] != null).map((e) => prevPos[e.from]); const ba = pa.length ? Math.min(...pa) : 99, bb = pb.length ? Math.min(...pb) : 99; const ia = m.events.findIndex((e) => e.to === a && prevPos[e.from] != null), ib = m.events.findIndex((e) => e.to === b && prevPos[e.from] != null); return ba - bb || ia - ib; }); Object.entries(under).forEach(([id, src]) => { const l = layers[li]; if (l.includes(id)) { l.splice(l.indexOf(id), 1); l.splice(l.indexOf(src) + 1, 0, id); } }); }
-  const pos = {}; let W = 0, H = 0;
+  for (let li = 1; li < layers.length; li++) { const prevPos = dict(); layers[li - 1].forEach((id, k) => (prevPos[id] = k)); layers[li].sort((a, b) => { const pa = m.events.filter((e) => e.to === a && prevPos[e.from] != null).map((e) => prevPos[e.from]); const pb = m.events.filter((e) => e.to === b && prevPos[e.from] != null).map((e) => prevPos[e.from]); const ba = pa.length ? Math.min(...pa) : 99, bb = pb.length ? Math.min(...pb) : 99; const ia = m.events.findIndex((e) => e.to === a && prevPos[e.from] != null), ib = m.events.findIndex((e) => e.to === b && prevPos[e.from] != null); return ba - bb || ia - ib; }); Object.entries(under).forEach(([id, src]) => { const l = layers[li]; if (l.includes(id)) { l.splice(l.indexOf(id), 1); l.splice(l.indexOf(src) + 1, 0, id); } }); }
+  const pos = dict(); let W = 0, H = 0;
   if (dir === 'TB') { const GXt = clamp(Math.ceil(evLen * 3.4 + 24), 40, 120), GYt = clamp(Math.ceil(evLen * 0 + 56), 56, 80); layers.forEach((l, li) => l.forEach((id, k) => { const x = PAD + k * (NWID + GXt), y = PAD + li * (NH + GYt); pos[id] = [x, y]; W = Math.max(W, x + NWID + PAD); H = Math.max(H, y + NH + PAD); })); return { W, H, pos, NW: NWID, NH, GX: GXt, GY: GYt, dir }; }
   layers.forEach((l, li) => l.forEach((id, k) => { const x = PAD + li * (NWID + GX), y = PAD + k * (NH + GY); pos[id] = [x, y]; W = Math.max(W, x + NWID + PAD); H = Math.max(H, y + NH + PAD); }));
   return { W, H, pos, NW: NWID, NH, GX, GY, dir };
 };
 
 NW.layoutFlow = function layoutFlow(m, opt = {}) {
-  const ids = m.order; if (!ids.length) return { W: 0, H: 0, boxes: {}, routes: [], groups: [] };
+  const ids = m.order; if (!ids.length) return { W: 0, H: 0, boxes: dict(), routes: [], groups: [] };
   const wrapAt = 18;
   // wrap labels at ~18 chars; long identifiers soft-break at camelCase / punctuation without inserting spaces
   const soft = (w) => w.length > wrapAt ? w.replace(/([a-z0-9])([A-Z])/g, '$1\u200b$2').replace(/([._/:-])(?=\w)/g, '$1\u200b').split('\u200b').map((t, i) => ({ t, sp: i === 0 })) : [{ t: w, sp: true }];
@@ -252,24 +253,24 @@ NW.layoutFlow = function layoutFlow(m, opt = {}) {
   m.edges.forEach((e) => { e.lines = splitLbl(e.label); e.tw = e.lines.length ? Math.max(24, Math.max(...e.lines.map((l) => l.length)) * 6.4 + 12) : 0; e.th = e.lines.length > 1 ? 30 : 18; });
   const maxLbl = Math.max(0, ...m.edges.map((e) => e.tw ? e.tw + 4 : 0));
   const NWID = opt.nodeW || clamp(Math.ceil(longest + 30), 120, 240), NH = Math.max(50, Math.ceil(20 + maxLines * 16)), GX = clamp(Math.ceil(maxLbl + 22), 56, 92), GY = m.edges.some((e) => e.th > 18) ? 62 : maxLbl > 0 ? 54 : 44, PAD = 28;
-  let cells = {}; // id -> {c, r} possibly fractional c for auto layout
+  let cells = dict(); // id -> {c, r} possibly fractional c for auto layout
   if (m.grid.length) { m.grid.forEach((row, r) => row.forEach((id, c) => { if (id) cells[id] = { c, r }; })); }
   else {
     // longest-path layering over a DAG (back edges ignored via DFS)
-    const out = {}, inn = {}; ids.forEach((id) => { out[id] = []; inn[id] = []; });
-    const state = {}; const back = new Set();
+    const out = dict(), inn = dict(); ids.forEach((id) => { out[id] = []; inn[id] = []; });
+    const state = dict(); const back = new Set();
     m.edges.forEach((e, i) => { if (e.from !== e.to) { out[e.from].push([e.to, i]); inn[e.to].push([e.from, i]); } });
     const dfs = (u) => { state[u] = 1; out[u].forEach(([v, i]) => { if (state[v] === 1) back.add(i); else if (!state[v]) dfs(v); }); state[u] = 2; };
     ids.forEach((id) => { if (!state[id]) dfs(id); });
-    const layer = {}; const L = (u) => { if (layer[u] != null) return layer[u]; layer[u] = -1; let best = 0; inn[u].forEach(([p, i]) => { if (!back.has(i)) best = Math.max(best, L(p) + 1); }); return (layer[u] = best); };
+    const layer = dict(); const L = (u) => { if (layer[u] != null) return layer[u]; layer[u] = -1; let best = 0; inn[u].forEach(([p, i]) => { if (!back.has(i)) best = Math.max(best, L(p) + 1); }); return (layer[u] = best); };
     ids.forEach((id) => L(id));
     const layers = []; ids.forEach((id) => { (layers[layer[id]] ||= []).push(id); });
     // barycenter ordering, two down-sweeps
-    for (let pass = 0; pass < 2; pass++) for (let i = 1; i < layers.length; i++) { const pos = {}; layers[i - 1].forEach((id, k) => { pos[id] = k; }); layers[i].sort((a, b) => { const pa = inn[a].map(([p]) => pos[p]).filter((x) => x != null), pb = inn[b].map(([p]) => pos[p]).filter((x) => x != null); const ba = pa.length ? pa.reduce((s, x) => s + x, 0) / pa.length : 1e9, bb = pb.length ? pb.reduce((s, x) => s + x, 0) / pb.length : 1e9; return ba - bb; }); }
+    for (let pass = 0; pass < 2; pass++) for (let i = 1; i < layers.length; i++) { const pos = dict(); layers[i - 1].forEach((id, k) => { pos[id] = k; }); layers[i].sort((a, b) => { const pa = inn[a].map(([p]) => pos[p]).filter((x) => x != null), pb = inn[b].map(([p]) => pos[p]).filter((x) => x != null); const ba = pa.length ? pa.reduce((s, x) => s + x, 0) / pa.length : 1e9, bb = pb.length ? pb.reduce((s, x) => s + x, 0) / pb.length : 1e9; return ba - bb; }); }
     const maxN = Math.max(...layers.map((l) => l.length));
     layers.forEach((l, li) => l.forEach((id, k) => { const off = (maxN - l.length) / 2; cells[id] = m.dir === 'LR' ? { c: li, r: k + off } : { c: k + off, r: li }; }));
   }
-  const boxes = {}; let W = 0, H = 0;
+  const boxes = dict(); let W = 0, H = 0;
   ids.forEach((id) => { const cell = cells[id]; if (!cell) return; const n = m.nodes[id]; const x = PAD + cell.c * (NWID + GX), y = PAD + cell.r * (NH + GY); boxes[id] = { id, x, y, w: NWID, h: NH, cx: x + NWID / 2, cy: y + NH / 2, c: cell.c, r: cell.r, n }; W = Math.max(W, x + NWID + PAD); H = Math.max(H, y + NH + PAD); });
   // groups
   const groups = m.groups.map((g) => { const bs = g.ids.map((id) => boxes[id]).filter(Boolean); if (!bs.length) return null; const x0 = Math.min(...bs.map((b) => b.x)) - 14, y0 = Math.min(...bs.map((b) => b.y)) - 22, x1 = Math.max(...bs.map((b) => b.x + b.w)) + 14, y1 = Math.max(...bs.map((b) => b.y + b.h)) + 14; W = Math.max(W, x1 + 8); H = Math.max(H, y1 + 8); return { label: g.label, x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; }).filter(Boolean);
@@ -297,7 +298,7 @@ NW.layoutFlow = function layoutFlow(m, opt = {}) {
     return { e, a, b, skip, dx, dy, sameRow, sameCol, orient, sideA, sideB };
   }).filter(Boolean);
   // 2) spread ports: several edges on one side of a node get distinct attachment points
-  const portList = {}; plans.forEach((p) => { (portList[p.a.id + p.sideA] ||= []).push([p, 'A']); (portList[p.b.id + p.sideB] ||= []).push([p, 'B']); });
+  const portList = dict(); plans.forEach((p) => { (portList[p.a.id + p.sideA] ||= []).push([p, 'A']); (portList[p.b.id + p.sideB] ||= []).push([p, 'B']); });
   Object.values(portList).forEach((list) => {
     const side = list[0][1] === 'A' ? list[0][0].sideA : list[0][0].sideB; const horizSide = side === 't' || side === 'b';
     list.sort((u, v) => { const ou = u[1] === 'A' ? u[0].b : u[0].a, ov = v[1] === 'A' ? v[0].b : v[0].a; return horizSide ? ou.cx - ov.cx : ou.cy - ov.cy; });
@@ -345,6 +346,7 @@ NW.layoutFlow = function layoutFlow(m, opt = {}) {
 
 /* ───────────────────────── syntax highlight (tiny, generic) ───────────────────────── */
 const KW = {
+  __proto__: null,
   js: 'abstract as async await break case catch class const continue debugger default delete do else enum export extends finally for from function get if implements import in instanceof interface let new of package private protected public readonly return set static super switch this throw try type typeof var void while with yield declare namespace keyof satisfies infer is',
   py: 'and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case self',
   go: 'break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var',
@@ -355,7 +357,7 @@ const KW = {
   sql: 'select from where and or not insert into values update set delete create table index view drop alter add column primary key foreign references join inner left right outer on group by order having limit offset as distinct union all null is like in exists between case when then else end default unique constraint returning with',
   rb: 'def end if elsif else unless while until for in do begin rescue ensure class module return yield self nil true false and or not then require include attr_accessor',
 };
-const LANG_ALIAS = { ts: 'js', tsx: 'js', jsx: 'js', mjs: 'js', cjs: 'js', javascript: 'js', typescript: 'js', python: 'py', golang: 'go', rust: 'rs', cpp: 'c', 'c++': 'c', h: 'c', hpp: 'c', cc: 'c', cs: 'java', kt: 'java', kotlin: 'java', swift: 'java', scala: 'java', bash: 'sh', zsh: 'sh', shell: 'sh', console: 'sh', ruby: 'rb', yml: 'yaml', htm: 'html', xml: 'html', svg: 'html', vue: 'html', svelte: 'html', jsonc: 'json', json5: 'json' };
+const LANG_ALIAS = { __proto__: null, ts: 'js', tsx: 'js', jsx: 'js', mjs: 'js', cjs: 'js', javascript: 'js', typescript: 'js', python: 'py', golang: 'go', rust: 'rs', cpp: 'c', 'c++': 'c', h: 'c', hpp: 'c', cc: 'c', cs: 'java', kt: 'java', kotlin: 'java', swift: 'java', scala: 'java', bash: 'sh', zsh: 'sh', shell: 'sh', console: 'sh', ruby: 'rb', yml: 'yaml', htm: 'html', xml: 'html', svg: 'html', vue: 'html', svelte: 'html', jsonc: 'json', json5: 'json' };
 const LITS = new Set('true false null undefined None True False nil NULL'.split(' '));
 NW.langOf = (l) => { l = String(l || '').toLowerCase(); return LANG_ALIAS[l] || l; };
 NW.highlight = function highlight(code, lang) {
@@ -437,7 +439,6 @@ const FRAG_KEYS = ['answers', 'comments', 'drafts', 'strikes', 'seen'];
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isStr = (v) => typeof v === 'string';
 const isStrs = (v) => Array.isArray(v) && v.every(isStr);
-const dict = () => Object.create(null);   // a map with no prototype: every state map the runtime keeps or restores is one
 const hasOnly = (o, keys) => Object.keys(o).every((k) => keys.includes(k));
 const FRAG_ENTRY = {   // what one entry of each map may hold
   answers: (v) => v === null || isStr(v) || typeof v === 'boolean' || isStrs(v),
@@ -643,8 +644,8 @@ function commentable(el, key, label, { button = true, anchor, extra } = {}) {
 
 /* ───────────────────────── answers (forms inside doc-ask) ───────────────────────── */
 function controls() { return $$('doc-ask input[name], doc-ask textarea[name], doc-ask select[name], doc-ask ol.rank[data-name]'); }
-const lastPlay = {};   // ask-group → last trace played, so re-checking the same option doesn't replay
-const machines = {};   // name → { get state, fire, play, reset }  — machines publish their state like an ask publishes an answer
+const lastPlay = dict();   // ask-group → last trace played, so re-checking the same option doesn't replay
+const machines = dict();   // name → { get state, fire, play, reset }  — machines publish their state like an ask publishes an answer
 function readAnswers() {
   const out = dict(); Object.values(machines).forEach((mc) => { out[mc.name] = mc.state; });
   controls().forEach((c) => {
@@ -922,7 +923,7 @@ define('doc-flow', (el) => {
     if (e.label) { const { tw, th, lines } = e; g.append(svg('rect', { class: 'lbl', x: lx - tw / 2, y: ly - th / 2, width: tw, height: th, rx: 4 })); lines.forEach((ln, i) => g.append(svg('text', { x: lx, y: ly + (i - (lines.length - 1) / 2) * 13 + 0.5 }, ln))); }
     root.append(g);
   });
-  const templates = {}; $$(':scope > template[data-node], :scope > template[for]', el).forEach((t) => { templates[t.dataset.node || t.getAttribute('for')] = t; });
+  const templates = dict(); $$(':scope > template[data-node], :scope > template[for]', el).forEach((t) => { templates[t.dataset.node || t.getAttribute('for')] = t; });
   Object.values(lay.boxes).forEach((b) => {
     const n = b.n; const cls = ['node', n.tone && 't-' + n.tone, n.mark, (n.detail.length || templates[n.id] || n.href) && 'has-detail'].filter(Boolean).join(' ');
     const g = svg('g', { class: cls, 'data-node': n.id, tabindex: 0 }); g.append(shapePath(n.shape, b.x, b.y, b.w, b.h));
@@ -1028,7 +1029,7 @@ define('doc-schema', (el) => {
   // no lang=: the old field-table DSL, kept so earlier artifacts still render
   const m = NW.parseSchema(srcOf(el)); errBox(el, m.errors, 'doc-schema');
   const sid = el.id || $$('doc-schema').indexOf(el);
-  const grid = h('div', { class: 'sc-grid' }); const cards = {};
+  const grid = h('div', { class: 'sc-grid' }); const cards = dict();
   m.entities.forEach((e) => {
     const rows = [];
     e.fields.forEach((f) => {
@@ -1054,7 +1055,7 @@ define('doc-calls', (el) => {
   const m = NW.parseCalls(srcOf(el)); errBox(el, m.errors, 'doc-calls');
   const cid = el.id || 'calls' + $$('doc-calls').indexOf(el);
   const templates = new Map(); $$(':scope > template[for]', el).forEach((t) => { const n = m.find(t.getAttribute('for')); if (n) templates.set(n, t); });
-  const excerpts = {}; $$(':scope > script[data-excerpt]', el).forEach((sc) => { excerpts[sc.dataset.excerpt] = { text: NW.util.dedent ? sc.textContent.replace(/^\n/, '') : sc.textContent, start: +sc.dataset.start || 1, sha: sc.dataset.sha || '' }; sc.remove(); });
+  const excerpts = dict(); $$(':scope > script[data-excerpt]', el).forEach((sc) => { excerpts[sc.dataset.excerpt] = { text: NW.util.dedent ? sc.textContent.replace(/^\n/, '') : sc.textContent, start: +sc.dataset.start || 1, sha: sc.dataset.sha || '' }; sc.remove(); });
   const excerptFor = (n) => n.loc && (excerpts[n.loc] || excerpts[n.file + ':' + n.line] || null);
   const hasCtx = (n) => templates.get(n) || excerptFor(n);
   $$(':scope > script', el).forEach((s) => s.remove()); [...el.childNodes].forEach((n) => { if (n.nodeType === 3) n.remove(); });
@@ -1069,7 +1070,7 @@ define('doc-calls', (el) => {
   // untouched file is "called into", not touched — that is the whole point of the tree.
   const touches = (n, touchedFiles) => n.file && !struck(n) && (n.mark === '~' || n.mark === '-' || (n.mark === '+' && (n.isNew || touchedFiles.has(n.file))));
   const fileRows = () => { const owned = new Set(); m.walk((n) => { if (n.file && !struck(n) && (n.mark === '~' || n.mark === '-' || (n.mark === '+' && n.isNew))) owned.add(n.file); });
-    const f = {}; m.walk((n) => { if (touches(n, owned)) { (f[n.file] ||= { new: false, n: 0 }); f[n.file].n++; if (n.isNew && n.mark === '+' && !m.nodes.some((o) => o.file === n.file && (o.mark === '~' || o.mark === '-' || o.mark === ' '))) f[n.file].new = true; } }); return f; };
+    const f = dict(); m.walk((n) => { if (touches(n, owned)) { (f[n.file] ||= { new: false, n: 0 }); f[n.file].n++; if (n.isNew && n.mark === '+' && !m.nodes.some((o) => o.file === n.file && (o.mark === '~' || o.mark === '-' || o.mark === ' '))) f[n.file].new = true; } }); return f; };
   const rows = h('div', { class: 'cl-rows' });
   const head = h('div', { class: 'cl-head' });
   const filesBox = el.hasAttribute('files') ? h('div', { class: 'cl-files' }) : null;
@@ -1146,7 +1147,7 @@ define('doc-machine', (el) => {
   const view = el.hasAttribute('blocks') ? 'blocks' : el.hasAttribute('graph') ? 'graph' : 'clean'; const simple = view === 'blocks'; m.short = view === 'clean';
   const screens = $$(':scope > [data-state]', el);
   // ── svg (built per direction; LR on wide frames, TB on phones) ──
-  let lay, root, edgeEls = [], nodeEls = {}, curDir = null;
+  let lay, root, edgeEls = [], nodeEls = dict(), curDir = null;
   const build = (dir) => {
     lay = NW.layoutMachine(m, dir); curDir = dir;
     root = svg('svg', { class: 'nw machine', xmlns: SVGNS, viewBox: `0 0 ${lay.W} ${lay.H}`, width: lay.W, height: lay.H, role: 'img' }); root.append(arrowDefs());
@@ -1168,7 +1169,7 @@ define('doc-machine', (el) => {
       const key = `machine:${name}:${e.from}-${e.ev}`; if (S.comments[key]) g.classList.add('has-comment'); if (!readOnly) g.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › ${title} › ${e.from} —${e.ev}→ ${e.to}`, anchor: g, onState: (on) => g.classList.toggle('has-comment', on) }));
       return g;
     });
-    nodeEls = {};
+    nodeEls = dict();
     m.order.forEach((id) => { const st = m.states[id]; const [x, y] = pos[id]; const g = svg('g', { class: 'st' + (st.final ? ' final' : '') + (st.mark ? ' ' + st.mark : ''), 'data-state': id, tabindex: 0 });
       g.append(svg('rect', { x, y, width: NWID, height: NH, rx: NH / 2 }), svg('text', { x: x + NWID / 2, y: y + NH / 2 }, st.label)); if (st.bind.say) g.append(svg('title', null, st.bind.say)); nodeG.append(g); nodeEls[id] = g;
       const key = `machine:${name}:${id}`; if (S.comments[key]) g.classList.add('has-comment'); g.addEventListener('click', () => { if (id === cur) return; const e = m.events.find((x) => x.from === cur && x.to === id && x.mark !== 'gone'); if (e) api.fire(e.ev); else api.goto(id); }); });
@@ -1178,7 +1179,7 @@ define('doc-machine', (el) => {
   const head = h('div', { class: 'mc-head' }, h('span', { class: 'mc-kind' }, 'state machine'), h('span', { class: 'mc-title' }, title), h('span', { class: 'mc-meta' }), h('span', { class: 'mc-sp' }));
   const resetBtn = h('button', { class: 'mc-btn', onclick: () => api.reset() }, 'start over'); head.append(resetBtn);
   const say = h('div', { class: 'mc-say' }); const frame = h('div', { class: 'mc-fig' });
-  const evRow = h('div', { class: 'mc-events' }, h('span', { class: 'lbl' }, 'send event →')); const evBtns = {}; evNames.forEach((ev) => { const b = h('button', { class: 'mc-ev', onclick: () => api.fire(ev) }, ev); evBtns[ev] = b; evRow.append(b); });
+  const evRow = h('div', { class: 'mc-events' }, h('span', { class: 'lbl' }, 'send event →')); const evBtns = dict(); evNames.forEach((ev) => { const b = h('button', { class: 'mc-ev', onclick: () => api.fire(ev) }, ev); evBtns[ev] = b; evRow.append(b); });
   evRow.append(h('span', { class: 'mc-hint' }, 'struck-out = not legal from here'));
   const logBox = h('div', { class: 'mc-path' }); const now = h('div', { class: 'mc-now' });
   const cap = el.getAttribute('caption') ? h('div', { class: 'fig-cap' }, el.getAttribute('caption')) : null;
@@ -1297,7 +1298,7 @@ function mountPins(host, layer, keyBase, labelBase, getScale = () => 1, resolveR
 function mockZoomButton(stage, build) { const b = h('button', { class: 'fig-zoom', title: 'View full size', 'aria-label': 'View full size', onclick: (e) => { e.stopPropagation(); openSheet('Mockup', h('div', { style: 'overflow:auto;max-height:72vh' }, build())); } }, '⤢'); stage.append(b); return b; }
 define('doc-mock', (el) => {
   const frame = el.getAttribute('frame') || 'browser';
-  const W = +(el.getAttribute('w') || el.getAttribute('width') || { phone: 390, browser: 1024, terminal: 640, desktop: 900, none: 600 }[frame] || 800);
+  const W = +(el.getAttribute('w') || el.getAttribute('width') || { __proto__: null, phone: 390, browser: 1024, terminal: 640, desktop: 900, none: 600 }[frame] || 800);
   const Hfix = +(el.getAttribute('h') || el.getAttribute('height') || 0);
   const tpl = el.querySelector(':scope > template:not([data-node])');
   const label = el.getAttribute('label'); const mid = el.id || $$('doc-mock').indexOf(el);
@@ -1396,7 +1397,7 @@ define('doc-plan', (el) => {
 define('doc-quote', (el) => {
   const via = el.getAttribute('via') || 'source'; const from = el.getAttribute('from'); const at = el.getAttribute('at'); const href = el.getAttribute('href'); const role = el.getAttribute('role');
   const body = h('div', { class: 'q-body' }); while (el.firstChild) body.append(el.firstChild);
-  const viaTxt = { prompt: 'prompt', slack: 'slack', github: 'github', pr: 'PR', transcript: role || 'transcript', doc: 'doc', tools: 'tools', email: 'email', meeting: 'meeting' }[via] || via;
+  const viaTxt = { __proto__: null, prompt: 'prompt', slack: 'slack', github: 'github', pr: 'PR', transcript: role || 'transcript', doc: 'doc', tools: 'tools', email: 'email', meeting: 'meeting' }[via] || via;
   // The link opens in this frame: the viewer's sandbox allows no popup and no top-level navigation. The state is written to the
   // URL first, so Back returns to it. Any scheme but http and https renders as plain text.
   const link = href && NW.safeHref(href);

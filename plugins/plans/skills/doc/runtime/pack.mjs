@@ -282,7 +282,8 @@ if (!/<h1[\s>]/i.test(html)) warn('no <h1> — the response header uses it');
 if (!/<meta[^>]+charset/i.test(html)) warn('missing <meta charset="utf-8">');
 const KNOWN = new Set(['doc-code', 'doc-pin', 'doc-flow', 'doc-seq', 'doc-schema', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-mock', 'doc-shot', 'doc-quote', 'doc-ask', 'doc-note', 'doc-draft', 'doc-plan', 'doc-claim', 'doc-changes']);
 for (const m of html.matchAll(/<(doc-[a-z]+)\b/g)) if (!KNOWN.has(m[1])) err(`line ${lineOf(m.index)}: unknown element <${m[1]}> — known: ${[...KNOWN].join(' ')}`);
-const ids = {}; for (const m of html.matchAll(/\sid=["']([^"']+)["']/g)) { if (ids[m[1]]) err(`duplicate id="${m[1]}" (lines ${ids[m[1]]} and ${lineOf(m.index)})`); ids[m[1]] = lineOf(m.index); }
+// A map keyed by a name the page chooses has no prototype, so an id or a frame named constructor is read as written.
+const ids = Object.create(null); for (const m of html.matchAll(/\sid=["']([^"']+)["']/g)) { if (ids[m[1]]) err(`duplicate id="${m[1]}" (lines ${ids[m[1]]} and ${lineOf(m.index)})`); ids[m[1]] = lineOf(m.index); }
 for (const m of html.matchAll(/href=["']#([^"']+)["']/g)) if (!ids[m[1]] && !/^s\d+/.test(m[1])) warn(`line ${lineOf(m.index)}: href="#${m[1]}" points at no id`);
 
 { const t = html.match(/<div class="tldr">([\s\S]*?)<\/div>/i); if (t && wc(stripTags(t[1])) > 50) warn(`.tldr is ${wc(stripTags(t[1]))} words — ≤ 40: what changes, and what you need from the reader`); }
@@ -380,7 +381,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
           else if (pa.old && !validOld.has(+pa.old)) err(`${at}: <doc-pin old="${pa.old}"> — no removed line with that old-side number in this block`); } }
     }
     else if (tag === 'doc-mock') { if (!/<template[\s>]/i.test(inner)) err(`${at}: needs a <template>…</template> child holding the mock's HTML`); for (const p of inner.matchAll(/<doc-pin\b([^>]*)>/g)) { const pa = attrs(p[1]); if (pa.ref) { if (!new RegExp(`data-ref=["']${pa.ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`).test(inner)) err(`${at}: <doc-pin ref="${pa.ref}"> — no element with data-ref="${pa.ref}" inside this mock's <template>`); } else if (!/^\d+(\.\d+)?%?\s*,\s*\d+(\.\d+)?%?$/.test(pa.at || '')) err(`${at}: <doc-pin> inside doc-mock needs ref="data-ref-name" (preferred) or at="x%,y%"`); }
-      const w = +(a.w || a.width || { phone: 390, browser: 1024, terminal: 640, desktop: 900, none: 600 }[a.frame || 'browser'] || 800);
+      const w = +(a.w || a.width || { __proto__: null, phone: 390, browser: 1024, terminal: 640, desktop: 900, none: 600 }[a.frame || 'browser'] || 800);
       const ctx2k = html.slice(Math.max(0, idx - 400), idx); const inCols = /<div class="[^"]*\bcols\b[^"]*">(?:(?!<\/div>)[\s\S])*$/.test(ctx2k);
       if ((a.frame === 'terminal') && w > 520 && !('thumbnail' in a)) warn(`${at}: terminal mock w=${w} — on a phone that's ~${Math.round(390 / w * 13)}px text; ≤480 (≈55 cols) stays readable, or add thumbnail to accept`);
       else if (w >= 800 && !('thumbnail' in a)) warn(`${at}: ${a.frame || 'browser'} mock w=${w} renders at ~${Math.round(350 / w * 100)}% on a phone — fine as an overview (add thumbnail to say so), but pair it with a narrow crop (w≤480 frame=none) of the part that matters${inCols ? '; and it is inside .cols, which halves it again on desktop' : ''}`);
