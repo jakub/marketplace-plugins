@@ -12,7 +12,7 @@ index dd0f7673160e4fb629d9cc42c707f23c468847d9..3ff00e640323bb992cfad7589a7a8be4
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI or holds a `var()`, `env()` or `attr()`, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 20e794cf4360e5d3cdea3f4b5e57173c78d82231..6708251f2d1ceb962977ac36c3959c5e28860674 100644
+index 42083b7a9da533a153eca47e86ae1c8cc572cbd7..62f14c9e6291a44886ba5379e166bdcd93d3cc54 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -270,9 +270,9 @@ const findFile = (p) => { for (const cand of [...roots.map((r) => resolve(r, p))
@@ -52,7 +52,7 @@ index 20e794cf4360e5d3cdea3f4b5e57173c78d82231..6708251f2d1ceb962977ac36c3959c5e
  const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
  const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
  
-@@ -365,7 +377,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -367,7 +379,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        let added = 0, missing = 0, extra = '';
        const seen = new Set();
        for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);

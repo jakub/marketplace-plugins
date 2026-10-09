@@ -67,7 +67,13 @@ const REFUSALS = [
   { name: 'source-breakout-script-in-pin', body: '<doc-code lang="js" caption="c"><script type="text/plain">\n</script><doc-pin line="1"><script>globalThis.__x = true;//</doc-pin>\n</script></doc-code>',
     why: /line 10: a <script> inside <doc-pin> \(line 10\) — a block holds no script but its source, <script type="text\/plain">/ },
   { name: 'source-breakout-flow', body: '<doc-flow caption="c"><script type="text/plain">\na -> b\n</script><b>x</b></doc-flow>',
-    why: /line 11: <b> after the source block of <doc-flow> \(line 9\) — after its <script type="text\/plain"> a doc-flow holds nothing/ },
+    why: /line 11: <b> after the source block of <doc-flow> \(line 9\) — after its <script type="text\/plain"> a doc-flow holds only <template data-node="…"> or <template for="…"> children/ },
+  // The runtime reads :scope > template[data-node] and template[for] off a doc-flow (htmlplan.js), so those are its grammar children;
+  // a template with neither attribute is not read, and a script inside one is as live as anywhere else in a block.
+  { name: 'source-breakout-flow-bare-template', body: '<doc-flow caption="c"><script type="text/plain">\na -> b\n</script><template><p>x</p></template></doc-flow>',
+    why: /line 11: <template> after the source block of <doc-flow> \(line 9\)/ },
+  { name: 'source-breakout-flow-template-script', body: '<doc-flow caption="c"><script type="text/plain">\na -> b\n</script><template data-node="a"><script>globalThis.__x = true;</script></template></doc-flow>',
+    why: /line 11: a <script> inside <doc-flow> \(line 9\) — a block holds no script but its source/ },
   { name: 'source-breakout-machine', body: '<doc-machine name="m" caption="c"><script type="text/plain">\nmachine m initial a\nstate a final\n</script><div class="x"></div></doc-machine>',
     why: /line 12: <div> after the source block of <doc-machine> \(line 9\) — after its <script type="text\/plain"> a doc-machine holds only its \[data-state\] screens/ },
   { name: 'source-block-never-closed', body: '<doc-code lang="js" caption="c"><script type="text/plain">\n</script>',
@@ -374,6 +380,13 @@ export default async function ({ ROOT, check }) {
     ].join('\n')))
     const rg = run(grammar, 'page.html')
     check('pins, templates, state screens and comments after a source block pack, as does the page\'s own script', rg.status === 0 && !/after the source block|closes no open|hidden inside|no end tag/.test(rg.stdout + rg.stderr), out(rg))
+
+    // A doc-flow holds the node templates the runtime reads: template[data-node] and template[for], with a comment between.
+    const flowNodes = fixture('source-grammar-flow-templates', page([
+      '<doc-flow caption="c"><script type="text/plain">\na -> b\n</script><template data-node="a"><p>detail</p></template>\n<!-- b --><template for="b"><p>more</p><doc-code lang="ts"><script type="text/plain">\nconst c = 3\n</script></doc-code></template></doc-flow>',
+    ].join('\n')))
+    const rfn = run(flowNodes, 'page.html')
+    check('a doc-flow packs with template[data-node] and template[for] after its source', rfn.status === 0 && !/after the source block|closes no open|hidden inside|no end tag/.test(rfn.stdout + rfn.stderr), out(rfn))
 
     const src = fixture('src-name', page('<p>x</p>')); writeFileSync(join(src, 'doc.src.html'), page('<p>x</p>'))
     const rs = run(src, 'doc.src.html')

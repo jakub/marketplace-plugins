@@ -311,13 +311,15 @@ if (!/<h1[\s>]/i.test(html)) warn('no <h1> — the response header uses it');
 if (!/<meta[^>]+charset/i.test(html)) warn('missing <meta charset="utf-8">');
 const KNOWN = new Set(['doc-code', 'doc-pin', 'doc-flow', 'doc-seq', 'doc-schema', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-mock', 'doc-shot', 'doc-quote', 'doc-ask', 'doc-note', 'doc-draft', 'doc-plan', 'doc-claim', 'doc-changes']);
 for (const m of html.matchAll(/<(doc-[a-z]+)\b/g)) if (!KNOWN.has(m[1])) err(`line ${lineOf(m.index)}: unknown element <${m[1]}> — known: ${[...KNOWN].join(' ')}`);
-// The block grammar, as the browser reads the page. The children a block may hold after its source block are <doc-pin> in
-// doc-code and doc-schema, <template> in doc-calls, a [data-state] screen in doc-machine, and comments anywhere. An inert
+// The block grammar, as the browser reads the page. The children a block may hold after its source block are the ones the
+// runtime reads off it: <doc-pin> in doc-code and doc-schema, <template data-node> or <template for> in doc-flow, <template>
+// in doc-calls, a [data-state] screen in doc-machine, and comments anywhere. An inert
 // script is type="text/plain" or "text/source", which the browser never runs. pack's own excerpt scripts are not children:
 // an input that holds them is refused, since one a source wrote looks the same, so a packed page whose doc-calls hold excerpts
 // does not pack again. A block nested in a child, as a template hangs one off a row, is read by the same rules.
 { const SOURCED = new Set(['doc-code', 'doc-schema', 'doc-flow', 'doc-seq', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-draft']);
   const AFTER = { __proto__: null, 'doc-code': [(t) => t.name === 'doc-pin', 'only <doc-pin> children'], 'doc-schema': [(t) => t.name === 'doc-pin', 'only <doc-pin> children'],
+    'doc-flow': [(t) => t.name === 'template' && t.attrs.some((a) => a.name === 'data-node' || a.name === 'for'), 'only <template data-node="…"> or <template for="…"> children'],
     'doc-calls': [(t) => t.name === 'template', 'only <template for="…"> children'], 'doc-machine': [(t) => t.attrs.some((a) => a.name === 'data-state'), 'only its [data-state] screens'] };
   const inert = (t) => t.attrs.some((a) => a.name === 'type' && /^text\/(plain|source)$/i.test(a.value.trim()));
   const what = (t) => t.type === 'comment' ? 'a comment' : `<${t.type === 'end' ? '/' : ''}${t.name}>`;
