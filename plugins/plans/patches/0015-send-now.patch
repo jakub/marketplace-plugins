@@ -1,0 +1,27 @@
+diff --git a/plugins/plans/skills/doc/examples/scheduled-send.html b/plugins/plans/skills/doc/examples/scheduled-send.html
+index b05fddaa0f13b512c519cc9d2891cc8eb67011e3..c722597703ec26821e74d1fb3ca592eb55947990 100644
+--- a/plugins/plans/skills/doc/examples/scheduled-send.html
++++ b/plugins/plans/skills/doc/examples/scheduled-send.html
+@@ -1,4 +1,5 @@
+ <!doctype html>
++<!-- Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE. -->
+ <html lang="en">
+ <meta charset="utf-8">
+ <title>Scheduled Send Plan</title>
+@@ -151,7 +152,7 @@ export async function assertUnderLimit(userId: string) {
+ 
+ <!-- ═════ 3 ═════ -->
+ <doc-claim>
+-  <p>A message is sent only at its time. A failed send is kept.</p>
++  <p>A message is sent at its time or on Send now. A failed send is kept.</p>
+   <doc-machine name="msg" caption="Dashed green is proposed.">
+ <script type="text/plain">
+ machine msg initial scheduled
+@@ -165,6 +166,7 @@ state cancelled final   # Back in Drafts.
+ | cancelled | failed  | .    |
+ 
+ scheduled -due->    sending   : at send_at
++scheduled -now->    sending   : Send now
+ sending   -ok->     sent      : 250
+ sending   -fail->   failed    : error
+ scheduled -cancel-> cancelled : Cancel

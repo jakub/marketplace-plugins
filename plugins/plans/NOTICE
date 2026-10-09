@@ -54,7 +54,7 @@ dfdfd2c79b6c049c788be73076c27b3bfbd8b1e220ef75e4c0413ffe872de8ca  plugins/plans/
 LOCAL MODIFICATIONS
 -------------------
 
-The vendored files are NOT verbatim, except examples/scheduled-send.html. Every file a patch
+The vendored files are NOT verbatim. Every file a patch
 changes carries this line, in its own comment syntax, from patch 0001 on:
 
     Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE.
@@ -196,6 +196,10 @@ it, so a later patch's context is the text an earlier one wrote.
     and a </script> that closes no open script is the trace the cut leaves. blocks.md also
     says to escape &, < and > in quoted text, so a quoted source's markup never becomes page
     markup.
+0015-send-now.patch
+    The scheduled-send example offers Send now on a scheduled message, but its claim said a
+    message is sent only at its time and its machine had no transition from scheduled to
+    sending for it. The claim allows Send now, and the machine gains that transition.
 -----END PATCHES-----
 
 RE-SYNCING
