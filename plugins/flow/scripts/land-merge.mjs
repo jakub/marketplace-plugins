@@ -35,8 +35,11 @@
 // from the title and the commit headlines of the last gate read, never from the pull request
 // description, which can hold capability URLs that GitHub would otherwise copy into permanent
 // history. A URL or a `//` token in the title or a headline, through to the next whitespace, and any
-// 22-character capability key wherever it sits, becomes `<link removed>` for the same reason. Title and commits are read with the gate but kept out of its snapshot, so editing the
-// title between the reads does not stop a land; a title or commit list that cannot be read does.
+// 22-character capability key wherever it sits, becomes `<link removed>` for the same reason. That
+// redaction targets an accidental paste of a capability URL or key; a deliberately encoded form (a
+// backslash scheme, a percent-encoded key character) is out of scope, because the author could
+// equally commit the key directly. Title and commits are read with the gate but kept out of its
+// snapshot, so editing the title between the reads does not stop a land; a title or commit list that cannot be read does.
 // It proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
 // code. It prints one JSON line: exit 0 `merged`, exit 1 `refused` with every stop found (nothing
 // merged), exit 4 `unknown`, which a human looks at before anything is retried. stderr carries one
