@@ -184,6 +184,15 @@ export default async function ({ ROOT, check }) {
       }
     }
 
+    // A write that fails part way: under a 1 KiB file-size limit the temp file's write stops with EFBIG after one block. pack
+    // must exit 1 and say so, leave the old output as it was, and remove the temp file, whose identity it took at the exclusive
+    // open and not after a write that never completed.
+    const fails = fixture('write-fails', page('<p>x</p>')); writeFileSync(join(fails, 'page.packed.html'), SENTINEL)
+    const snapF = listing(fails)
+    const rf = spawnSync('bash', ['-c', 'ulimit -f 1 && exec "$0" "$@"', process.execPath, pack, 'page.html'], { cwd: fails, encoding: 'utf8' })
+    check('a write cut short by a file-size limit exits 1 and names EFBIG', rf.status === 1 && /could not write page\.packed\.html: EFBIG/.test(rf.stdout + rf.stderr), out(rf))
+    check('after the failed write the old output is untouched and no temp file remains', listing(fails) === snapF && readFileSync(join(fails, 'page.packed.html'), 'utf8') === SENTINEL, readdirSync(fails).join(' '))
+
     // The page's folder swapped between the lint and the write. pack runs git through PATH for a pinned ref, so a fake git, the
     // only git this run can find, moves the page's folder away and puts a symlink to another folder in its place while pack
     // waits for it. pack must then refuse to write, and that other folder must stay as it was.

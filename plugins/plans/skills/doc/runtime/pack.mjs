@@ -666,15 +666,18 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
   // pageDir was resolved before the lint, which can run long, so the folder is checked again right before the temp file is made
   // and right before the rename: the input's folder must still resolve to pageDir, that path must still be the same directory by
   // device and inode, and the output's folder must still resolve there; after the write, the temp file's lstat must be the file
-  // pack wrote, by its descriptor's fstat, at that path. Node has no openat or renameat to pin the folder, so between the last
-  // check and each of the two syscalls a swap can still redirect that one call; a swap at any other moment is caught, nothing is
-  // written over the output, and the temp file is removed only while it is still pack's own.
+  // pack made, by the fstat its descriptor gave right after the exclusive open, at that path. That identity is taken before the
+  // write, so a write that fails part way, say with EFBIG, still ends with the temp file removed, and only while it is still
+  // pack's own. Node has no openat or renameat to pin the folder, so between the last check and each of the two syscalls a swap
+  // can still redirect that one call; a swap at any other moment is caught and nothing is written over the output. A process of
+  // the same user that can rename the page's folder can already write every file in it, so a swap timed into one of those two
+  // windows is out of scope here: the checks catch a folder that moved by accident, or around the lint, which can run long.
   const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let fd = -1, own = null, why = null;
   const sameDir = () => { try { const s = lstatSync(pageDir); return realpathSync(baseDir) === pageDir && s.isDirectory() && s.dev === pageDirId.dev && s.ino === pageDirId.ino && realpathSync(dirname(outPath)) === pageDir; } catch { return false; } };
   try {
     if (!sameDir()) why = `the page's folder ${rel(pageDir)} changed during the run — nothing was written; run pack again`;
     else {
-      fd = openSync(tmp, 'wx'); writeFileSync(fd, packed); own = fstatSync(fd); closeSync(fd); fd = -1;
+      fd = openSync(tmp, 'wx'); own = fstatSync(fd); writeFileSync(fd, packed); closeSync(fd); fd = -1;
       const l = lstatSync(tmp);
       if (!sameDir() || !l.isFile() || l.dev !== own.dev || l.ino !== own.ino || realpathSync(tmp) !== join(pageDir, basename(tmp))) why = `the page's folder ${rel(pageDir)} changed during the write — ${rel(outPath)} was not written; a ${basename(tmp)} left where the old path leads is pack's`;
       else renameSync(tmp, outPath);

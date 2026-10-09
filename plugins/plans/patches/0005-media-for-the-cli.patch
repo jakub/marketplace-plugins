@@ -60,7 +60,7 @@ index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf9942
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..4813015311f960bf8abaf27ab9a5a1c7d9a7b810 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..6ba2fdac7f60a5f572f73cb09afcf2f96e2fd620 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -486,7 +486,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..4813015311f960bf8abaf27ab9a5a1c7
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +616,28 @@ if (!quiet) {
+@@ -288,7 +616,31 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -495,15 +495,18 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..4813015311f960bf8abaf27ab9a5a1c7
 +  // pageDir was resolved before the lint, which can run long, so the folder is checked again right before the temp file is made
 +  // and right before the rename: the input's folder must still resolve to pageDir, that path must still be the same directory by
 +  // device and inode, and the output's folder must still resolve there; after the write, the temp file's lstat must be the file
-+  // pack wrote, by its descriptor's fstat, at that path. Node has no openat or renameat to pin the folder, so between the last
-+  // check and each of the two syscalls a swap can still redirect that one call; a swap at any other moment is caught, nothing is
-+  // written over the output, and the temp file is removed only while it is still pack's own.
++  // pack made, by the fstat its descriptor gave right after the exclusive open, at that path. That identity is taken before the
++  // write, so a write that fails part way, say with EFBIG, still ends with the temp file removed, and only while it is still
++  // pack's own. Node has no openat or renameat to pin the folder, so between the last check and each of the two syscalls a swap
++  // can still redirect that one call; a swap at any other moment is caught and nothing is written over the output. A process of
++  // the same user that can rename the page's folder can already write every file in it, so a swap timed into one of those two
++  // windows is out of scope here: the checks catch a folder that moved by accident, or around the lint, which can run long.
 +  const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let fd = -1, own = null, why = null;
 +  const sameDir = () => { try { const s = lstatSync(pageDir); return realpathSync(baseDir) === pageDir && s.isDirectory() && s.dev === pageDirId.dev && s.ino === pageDirId.ino && realpathSync(dirname(outPath)) === pageDir; } catch { return false; } };
 +  try {
 +    if (!sameDir()) why = `the page's folder ${rel(pageDir)} changed during the run — nothing was written; run pack again`;
 +    else {
-+      fd = openSync(tmp, 'wx'); writeFileSync(fd, packed); own = fstatSync(fd); closeSync(fd); fd = -1;
++      fd = openSync(tmp, 'wx'); own = fstatSync(fd); writeFileSync(fd, packed); closeSync(fd); fd = -1;
 +      const l = lstatSync(tmp);
 +      if (!sameDir() || !l.isFile() || l.dev !== own.dev || l.ino !== own.ino || realpathSync(tmp) !== join(pageDir, basename(tmp))) why = `the page's folder ${rel(pageDir)} changed during the write — ${rel(outPath)} was not written; a ${basename(tmp)} left where the old path leads is pack's`;
 +      else renameSync(tmp, outPath);
@@ -516,7 +519,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..4813015311f960bf8abaf27ab9a5a1c7
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +647,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +650,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }

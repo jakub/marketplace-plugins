@@ -114,7 +114,10 @@ it, so a later patch's context is the text an earlier one wrote.
     tokenizer and refuses unless the media references in it are the ones it checked. The
     runtime is inlined once from pack's own folder, and the output goes beside the input and
     never over it, through a temp file and a rename, each made only after the page's folder is
-    found to be the same folder it was, by path, device and inode.
+    found to be the same folder it was, by path, device and inode. The temp file's identity is
+    taken at its exclusive open, so a write that fails part way still ends with it removed. A
+    process of the same user that can rename the page's folder between a check and the
+    syscall after it is out of scope: it can already write every file in that folder.
 0006-pack-cli.patch
     Parses pack's arguments with node:util parseArgs in strict mode: --root (repeatable),
     -o/--out, --lint-only, --quiet, --help, -- and exactly one input. A syntax error exits

@@ -12,7 +12,7 @@ index 7b2f50d8303f12708d583bbf23102d62a9bbcab5..11168565cdc73439a942d8013cbd01e0
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
  - A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index decf6998bb4656b5ddf66d4ca862c9825f32bfd1..f204653db7d20e3645d61036bb8ee0e473eaa84e 100644
+index 72c74571984c651783750174e5bb6e7e5be694f3..af28d5c016b209fa99fa2cde20ab8a5222bb29fe 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -220,6 +220,13 @@ function tokenize(src) {
