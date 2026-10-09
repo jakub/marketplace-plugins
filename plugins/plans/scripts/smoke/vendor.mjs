@@ -28,6 +28,24 @@ function section(text, name) {
   const m = text.match(new RegExp(`(?:^|\\n)-----BEGIN ${name}-----\\n([\\s\\S]*?)-----END ${name}-----(?:\\n|$)`))
   return m ? m[1] : null
 }
+// The text from a heading line (a word, then a dashed underline) to the next such heading or to a
+// rule of dashes, or null when the heading is missing.
+function heading(text, name) {
+  const m = text.match(new RegExp(`(?:^|\\n)${name}\\n-+\\n([\\s\\S]*?)(?=\\n[A-Z][A-Z -]*\\n-+\\n|\\n-{20,}\\n|$)`))
+  return m ? m[1] : null
+}
+// What each maintenance section of NOTICE must still say, by its key commands.
+const RECIPES = {
+  'RE-SYNCING': ['Check out the upstream repository', '`sha256sum`', '`git apply` each patch', 'Never hand-edit a patch.',
+    '`git diff --full-index -M`', 'leaving the\n       first-party skills/doc/SKILL.md alone', 'node plugins/plans/scripts/smoke-plans.mjs'],
+  'VERIFYING': ['GIT_CEILING_DIRECTORIES', 'no --3way, -C,', 'Forward:', '`sha256sum -c` the ledger', '`diff -r`', 'byte-identical',
+    'Reverse:', '`git apply -R` the patches in\n    descending order', 'with no upstream checkout and no network'],
+}
+const recipeGaps = (text) => Object.entries(RECIPES).flatMap(([name, needles]) => {
+  const body = heading(text, name)
+  return body === null ? [`${name} (heading)`] : needles.filter((n) => !body.includes(n)).map((n) => `${name}: ${n}`)
+})
+
 // Lines of a section without the trailing newline's empty element.
 const lines = (body) => (body ?? '').split('\n').filter((l) => l !== '')
 
@@ -48,6 +66,16 @@ export default async function ({ ROOT, check }) {
   check('the Apache-2.0 section closes NOTICE and is the upstream LICENSE byte for byte',
     !!apache && sha256(Buffer.from(apache, 'utf8')) === licenceSha && apache.includes('Apache License\n                           Version 2.0, January 2004'),
     apache ? `sha256 ${sha256(Buffer.from(apache, 'utf8'))}` : 'section missing')
+
+  // The maintenance recipes: a re-sync and the forward and reverse verification.
+  const gaps = recipeGaps(notice)
+  check('NOTICE keeps its RE-SYNCING steps and its VERIFYING forward and reverse recipes', gaps.length === 0, gaps.join('; '))
+  for (const name of Object.keys(RECIPES)) {
+    const cut = notice.replace(new RegExp(`\\n${name}\\n-+\\n[\\s\\S]*?(?=\\n[A-Z][A-Z -]*\\n-+\\n|\\n-{20,}\\n)`), '\n')
+    check(`deleting the ${name} section from NOTICE fails the recipe check`, cut !== notice && recipeGaps(cut).some((g) => g.startsWith(name)))
+  }
+  const noReverse = notice.replace(/\n {4}Reverse:[^\n]*\n[^\n]*\n/, '\n')
+  check('deleting the reverse verification recipe from NOTICE fails the recipe check', noReverse !== notice && recipeGaps(noReverse).length > 0)
 
   // The path map, the ledger and the patch list.
   const map = lines(section(notice, 'PATH MAP')).map((l) => l.split(' -> '))
