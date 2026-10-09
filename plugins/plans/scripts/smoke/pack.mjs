@@ -135,7 +135,7 @@ export default async function ({ ROOT, check }) {
       o.includes(`<style data-htmlplan>\n${css}\n</style>`) && o.includes(`<script data-htmlplan>\n${js}\n</script>`) && !o.includes('DECOY-RUNTIME'))
     check('the page\'s own stylesheet is inlined from its folder', o.includes('<style>/* page.css */\n.p { color: blue }\n\n</style>') && !/rel="stylesheet"/.test(o),
       o.match(/[^\n]{0,80}(page\.css|rel="stylesheet")[^\n]{0,80}/g)?.join(' | '))
-    check('pack reports the five distinct media files it left for the CLI', /5 local media files stay beside the page/.test(r.stdout) && /5 media files beside it/.test(r.stdout), r.stdout.slice(-400))
+    check('pack reports the six distinct paths it left for the CLI, the symlink among them, as the CLI counts uploads', /6 local media files stay beside the page/.test(r.stdout) && /6 media files beside it/.test(r.stdout), r.stdout.slice(-400))
     check('the three spellings of a&b.png are one file to pack, listed once by the name the CLI reads', /: [^\n]*\ba&b\.png/.test(r.stdout) && !/a&amp;b|a&#38;b|a&#x26;b/.test(r.stdout), r.stdout.match(/[^\n]*a&[^\n]*/g)?.join(' | '))
     check('commented-out and text/plain markup is never scanned', !/commented-out|not-a-tag/.test(r.stdout))
 
@@ -177,6 +177,81 @@ export default async function ({ ROOT, check }) {
     check('the fake git ran during the lint and swapped the page\'s folder for a symlink', statSync(join(swap, 'done'), { throwIfNoEntry: false }) !== undefined && lstatSync(pageD).isSymbolicLink(), out(rw))
     check('a page folder swapped during the run is refused, with the reason', rw.status === 1 && /folder [^\n]* changed during the (run|write)/.test(rw.stdout + rw.stderr), out(rw))
     check('nothing landed in the folder the symlink points at, and no temp file remains', listing(victim) === quiet && readdirSync(moved).join(' ') === 'page.html', `victim: ${readdirSync(victim).join(' ')}; moved: ${readdirSync(moved).join(' ')}`)
+
+    // The path the CLI opens. The plans CLI reads a src with Go's strings.TrimSpace, net/url's Parse on the value cut at "#",
+    // and filepath's Clean, then counts uploads by that cleaned path, so pack must check, list and count that file and no other.
+    // Each case writes `files` beside the page (a Buffer names a file whose name is not UTF-8); a positive case names in `lists`
+    // the reference the media line must show, as the CLI trims it, and a refusal names its reason. JavaScript's trim() strips
+    // U+FEFF and keeps U+0085, Go's does the reverse, and neither of url.Parse's refusals is JavaScript's, so each row pins one
+    // rule of the CLI's.
+    const cp = String.fromCharCode; const BOM = cp(0xfeff), NEL = cp(0x85), NBSP = cp(0xa0), LSEP = cp(0x2028), ZWSP = cp(0x200b), RC = cp(0xfffd), E_ACUTE = cp(0xe9)
+    const PATHS = [
+      { name: 'nel-leading', src: `${NEL}public.png`, files: ['public.png', `${NEL}public.png`], lists: 'public.png' },
+      { name: 'nel-leading-missing', src: `${NEL}nope.png`, files: [`${NEL}nope.png`], why: /src="\u0085nope\.png" is not in the page's folder/ },
+      { name: 'bom-leading', src: `${BOM}public.png`, files: ['public.png', `${BOM}public.png`], lists: `${BOM}public.png` },
+      { name: 'bom-leading-missing', src: `${BOM}nope.png`, files: ['nope.png'], why: new RegExp('src="' + BOM + 'nope[.]png" is not in the page.s folder') },
+      { name: 'bom-sixty-five', body: Array.from({ length: 65 }, (_, i) => `<img src="${BOM.repeat(i + 1)}public.png" alt="">`).join('\n'),
+        files: ['public.png', ...Array.from({ length: 65 }, (_, i) => `${BOM.repeat(i + 1)}public.png`)], why: /65 distinct local media files/ },
+      { name: 'nbsp-leading', src: NBSP + 'public.png', files: ['public.png', NBSP + 'public.png'], lists: 'public.png' },
+      { name: 'line-separator-leading', src: LSEP + 'public.png', files: ['public.png', LSEP + 'public.png'], lists: 'public.png' },
+      { name: 'vertical-tab-leading', src: '\u000bpublic.png', files: ['public.png'], lists: 'public.png' },
+      { name: 'zero-width-space-leading', src: ZWSP + 'public.png', files: ['public.png', ZWSP + 'public.png'], lists: ZWSP + 'public.png' },
+      { name: 'nel-inside', src: `pub${NEL}lic.png`, files: ['public.png', `pub${NEL}lic.png`], lists: `pub${NEL}lic.png` },
+      { name: 'nbsp-inside', src: 'pub' + NBSP + 'lic.png', files: ['pub' + NBSP + 'lic.png'], lists: 'pub' + NBSP + 'lic.png' },
+      { name: 'trailing-space', src: 'public.png ', files: ['public.png', 'public.png '], lists: 'public.png' },
+      { name: 'percent-space-leading', src: '%20public.png', files: ['public.png', ' public.png'], lists: '%20public.png' },
+      { name: 'percent-space-trailing', src: 'public.png%20', files: ['public.png', 'public.png '], why: /src="public\.png%20" — "\.png " is not a media type/ },
+      { name: 'percent-tab', src: '%09public.png', files: ['public.png', '\tpublic.png'], lists: '%09public.png' },
+      { name: 'percent-newline', src: '%0Apublic.png', files: ['\npublic.png'], lists: '%0Apublic.png' },
+      { name: 'percent-nel', src: '%C2%85public.png', files: ['public.png', `${NEL}public.png`], lists: '%C2%85public.png' },
+      { name: 'percent-bom', src: '%EF%BB%BFpublic.png', files: ['public.png', `${BOM}public.png`], lists: '%EF%BB%BFpublic.png' },
+      { name: 'tab-inside', src: 'pub\tlic.png', files: ['pub\tlic.png'], why: /src="pub\tlic\.png" holds a control character \(U\+0009\)/ },
+      { name: 'tab-in-query', src: 'public.png?a\tb', files: ['public.png'], why: /holds a control character \(U\+0009\)/ },
+      { name: 'tab-in-fragment', src: 'public.png#a\tb', files: ['public.png'], lists: 'public.png#a\tb' },
+      { name: 'delete-inside', src: 'pub\u007flic.png', files: ['pub\u007flic.png'], why: /holds a control character \(U\+007F\)/ },
+      { name: 'colon-first-segment', src: '1:public.png', files: ['1:public.png'], why: /src="1:public\.png" has ":" in its first segment/ },
+      { name: 'colon-leading', src: ':public.png', files: [':public.png'], why: /has ":" in its first segment/ },
+      { name: 'colon-later-segment', src: 'sub/a:b.png', files: ['sub/a:b.png'], lists: 'sub/a:b.png' },
+      { name: 'colon-after-query', src: 'public.png?a:b', files: ['public.png'], lists: 'public.png?a:b' },
+      { name: 'percent-short', src: 'public.png%4', files: ['public.png', 'public.png%4'], why: /src="public\.png%4" has a "%" that two hex digits do not follow/ },
+      { name: 'percent-not-hex', src: 'pu%4Gblic.png', files: ['pu%4Gblic.png'], why: /has a "%" that two hex digits do not follow/ },
+      { name: 'percent-invalid-utf8', src: '%FFpublic.png', files: [Buffer.concat([Buffer.from([0xff]), Buffer.from('public.png')]), RC + 'public.png'], why: /src="%FFpublic\.png" holds U\+FFFD/ },
+      { name: 'replacement-char', src: RC + 'public.png', files: [RC + 'public.png'], why: /holds U\+FFFD/ },
+      { name: 'percent-utf8', src: 'caf%C3%A9.png', files: ['caf' + E_ACUTE + '.png'], lists: 'caf%C3%A9.png' },
+      { name: 'dot-segment', src: './public.png', files: ['public.png'], lists: './public.png' },
+      { name: 'dotdot-inside', src: 'sub/../public.png', files: ['public.png'], lists: 'sub/../public.png' },
+      { name: 'dotdot-percent', src: '%2e%2e/outside.png', files: [], why: /src="%2e%2e\/outside\.png" climbs out of the page's folder/ },
+      { name: 'dotdot-through-missing', src: 'nowhere/../public.png', files: ['public.png'], lists: 'nowhere/../public.png' },
+      { name: 'folder-itself', src: 'sub/..', files: [], why: /src="sub\/\.\." names the page's folder/ },
+      { name: 'percent-slash', src: 'sub%2Fclip.mp4', files: ['sub/clip.mp4'], lists: 'sub%2Fclip.mp4' },
+      { name: 'percent-absolute', src: '%2Fetc/passwd.png', files: [], why: /is an absolute path/ },
+      { name: 'double-slash-inside', src: 'sub//clip.mp4', files: ['sub/clip.mp4'], lists: 'sub//clip.mp4' },
+      { name: 'trailing-slash', src: 'sub/', files: [], why: /src="sub\/" — a name with no extension/ },
+      { name: 'query-only', src: '?x', files: [], why: /src="\?x" names no file beside the page/ },
+      { name: 'dot-only-name', src: '.png', files: ['.png'], lists: '.png' },
+      { name: 'upper-extension', src: 'PUBLIC.PNG', files: ['PUBLIC.PNG'], lists: 'PUBLIC.PNG' },
+      { name: 'symlink-absolute', src: 'abs.png', files: ['public.png'], setup: (d) => symlinkSync(join(d, 'public.png'), join(d, 'abs.png')), why: /src="abs\.png" goes through a symlink to an absolute path/ },
+      { name: 'symlink-absolute-folder', src: 'via/public.png', files: ['sub/public.png'], setup: (d) => symlinkSync(join(d, 'sub'), join(d, 'via')), why: /goes through a symlink to an absolute path/ },
+      { name: 'symlink-chain-of-eight', src: 'l8.png', files: ['public.png'], setup: (d) => { for (let i = 1; i <= 8; i++) symlinkSync(i === 1 ? 'public.png' : `l${i - 1}.png`, join(d, `l${i}.png`)) }, lists: 'l8.png' },
+      { name: 'symlink-chain-of-nine', src: 'l9.png', files: ['public.png'], setup: (d) => { for (let i = 1; i <= 9; i++) symlinkSync(i === 1 ? 'public.png' : `l${i - 1}.png`, join(d, `l${i}.png`)) }, why: /src="l9\.png" goes through more than 8 symlinks/ },
+      { name: 'two-paths-one-file', body: '<img src="public.png" alt=""><img src="./public.png" alt=""><img src="sub/../public.png" alt="">', files: ['public.png'], lists: 'public.png' },
+      { name: 'symlink-counts-as-its-own-upload', body: '<img src="public.png" alt=""><img src="twin.png" alt="">', files: ['public.png'], setup: (d) => symlinkSync('public.png', join(d, 'twin.png')), lists: 'public.png, twin.png' },
+    ]
+    for (const c of PATHS) {
+      const d = fixture(`path-${c.name}`, page(c.body ?? `<img src="${c.src}" alt="">`), (dd) => {
+        for (const f of c.files) writeFileSync(Buffer.isBuffer(f) ? Buffer.concat([Buffer.from(dd + '/'), f]) : join(dd, f), 'the file')
+        c.setup?.(dd)
+      })
+      writeFileSync(join(d, 'page.packed.html'), SENTINEL)
+      const snap = listing(d); const rr = run(d, 'page.html'); const said = rr.stdout + rr.stderr
+      if (c.why) {
+        check(`path-${c.name}: refused with exit 1, for the right reason`, rr.status === 1 && c.why.test(said), out(rr))
+        check(`path-${c.name}: nothing written, the existing output untouched`, listing(d) === snap && readFileSync(join(d, 'page.packed.html'), 'utf8') === SENTINEL)
+      } else {
+        const line = said.match(/\d+ local media files? stay beside the page for the plans CLI to upload: (.*)/)?.[1]
+        check(`path-${c.name}: packed, listing the file the CLI uploads and no other`, rr.status === 0 && line === c.lists, `${out(rr)} | listed ${JSON.stringify(line)}, wanted ${JSON.stringify(c.lists)}`)
+      }
+    }
 
     // Drift guard: MEDIA_EXT is the publish table without .html and .htm.
     const table = readFileSync(join(ROOT, 'plugins/plans/skills/publish/SKILL.md'), 'utf8').split('\n')

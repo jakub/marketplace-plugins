@@ -60,7 +60,7 @@ index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf9942
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..a4e298f912399839c1c6301edd5ed2b5e6bd3396 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..3ffd43f271b7434cc5f29be810f24360cf052033 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -74,10 +74,10 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..a4e298f912399839c1c6301edd5ed2b5
 -import { readFileSync, writeFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 +// from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
 +// beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
-+import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
++import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, readlinkSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
  import { execFileSync } from 'node:child_process';
 -import { resolve, dirname, extname, basename, relative, sep } from 'node:path';
-+import { resolve, dirname, extname, basename, relative, join, sep } from 'node:path';
++import { resolve, dirname, basename, relative, join, sep } from 'node:path';
  import { fileURLToPath } from 'node:url';
  import { createRequire } from 'node:module';
  
@@ -296,7 +296,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..a4e298f912399839c1c6301edd5ed2b5
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +439,105 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +439,143 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -321,36 +321,74 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..a4e298f912399839c1c6301edd5ed2b5
 +// plans:publish without .html and .htm, and the plans smoke holds the two together. Every check here runs under --lint-only too.
 +const MEDIA_EXT = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.webm'];
 +const MEDIA_MAX = 64;
-+const isRemote = (v) => /^[a-z][a-z0-9+.-]*:/i.test(v) || v.startsWith('//');
-+// a reference as written → the relative path it names, or why it names none. The CLI's rules: drop the #fragment and the ?query,
-+// then percent-decode.
-+function localPath(v) {
++/* ── a media reference, as the plans CLI reads it ── */
++// The plans CLI turns a src value into the file it uploads in three steps, and pack takes the same three before it looks at the
++// disk: strings.TrimSpace on the value, net/url's Parse on the value cut at its first "#", and path/filepath's Clean on the parsed
++// path, which is also the key the CLI counts distinct uploads by (localRefPath and openLocalRefs in the CLI's internal/cli). So
++// the whitespace trimmed is Go's, where U+0085 and U+00A0 are space and U+FEFF is not. A value that trims to nothing, or to "#…"
++// or "/…", or that opens with a scheme or "//", the CLI leaves as written. A control character before the fragment, a ":" in the
++// first segment, or a "%" short of two hex digits stops the CLI with an error. The query goes, each %XX decodes to one byte, and
++// Clean folds "." and "a/.." away and drops a trailing "/". What follows the first "#" is never read. pack refuses a path that
++// still climbs out, and one holding U+FFFD, which may stand for a byte pack could not read as UTF-8 and the CLI reads as itself.
++// The differential harness in the issue's scratch holds mediaPath to the CLI's localRefPath on every case the plans smoke pins.
++const GO_SPACE = /[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/;   // unicode.IsSpace
++const goTrimSpace = (s) => { let a = 0, b = s.length; while (a < b && GO_SPACE.test(s[a])) a++; while (b > a && GO_SPACE.test(s[b - 1])) b--; return s.slice(a, b); };
++const goExt = (p) => { for (let i = p.length - 1; i >= 0 && p[i] !== '/'; i--) if (p[i] === '.') return p.slice(i); return ''; };   // filepath.Ext
++const goClean = (p) => { const out = []; for (const seg of p.split('/')) { if (seg === '' || seg === '.') continue; if (seg === '..' && out.length && out[out.length - 1] !== '..') out.pop(); else out.push(seg); } return out.join('/') || '.'; };   // filepath.Clean, on a relative slash path
++const isRemote = (v) => /^[a-z][a-z0-9+.-]*:/i.test(v) || v.startsWith('//');   // the CLI's hasURLScheme, or protocol-relative
++const HEX2 = /^[0-9a-fA-F]{2}$/;
++// a src value → { p }, the slash path the CLI opens and counts by; { skip } when the CLI leaves the value as written and the
++// viewer shows it as it is; or { why } when the CLI or pack refuses it
++function mediaPath(value) {
++  const v = goTrimSpace(value);
++  if (!v || v.startsWith('#') || /^data:/i.test(v)) return { skip: true };
 +  if (/^file:/i.test(v)) return { why: 'is a file: URL — use a path relative to the page' };
 +  if (isRemote(v)) return { why: 'is remote, and the viewer\'s CSP blocks it — save the file beside the page' };
-+  let p; try { p = decodeURIComponent(v.replace(/#.*$/s, '').replace(/\?.*$/s, '')); } catch { return { why: 'has a broken %-escape' }; }
-+  if (!p || p.startsWith('/')) return { why: 'is an absolute path — use a path relative to the page' };
-+  if (p.split('/').includes('..')) return { why: 'climbs out of the page\'s folder with ..' };
-+  return { p };
++  if (v.startsWith('/')) return { why: 'is an absolute path — use a path relative to the page' };
++  const u = v.replace(/#[\s\S]*$/, '');   // the fragment goes first, unread
++  for (let i = 0; i < u.length; i++) { const c = u.charCodeAt(i); if (c < 0x20 || c === 0x7f) return { why: `holds a control character (U+${c.toString(16).toUpperCase().padStart(4, '0')}) before its fragment, which the plans CLI does not parse` }; }
++  const r = u.replace(/\?[\s\S]*$/, '');   // then the query
++  if (r.split('/')[0].includes(':')) return { why: 'has ":" in its first segment, which the plans CLI does not parse as a path' };
++  const raw = Buffer.from(r, 'utf8'); const bytes = [];   // %XX decodes to a byte, as net/url's unescape does, so the check is on bytes
++  for (let i = 0; i < raw.length; i++) {
++    if (raw[i] !== 0x25) { bytes.push(raw[i]); continue; }
++    const hex = raw.toString('latin1', i + 1, i + 3); if (i + 2 >= raw.length || !HEX2.test(hex)) return { why: 'has a "%" that two hex digits do not follow, which the plans CLI does not parse' };
++    bytes.push(parseInt(hex, 16)); i += 2;
++  }
++  const p = Buffer.from(bytes).toString('utf8');
++  if (!p) return { why: 'names no file beside the page — the plans CLI leaves it as written, and the viewer finds nothing there' };
++  if (p.startsWith('/')) return { why: 'is an absolute path — use a path relative to the page' };
++  if (p.includes('\uFFFD')) return { why: 'holds U+FFFD, which may stand for a byte pack cannot read as the plans CLI does' };
++  const c = goClean(p);
++  if (c === '..' || c.startsWith('../')) return { why: 'climbs out of the page\'s folder with ..' };
++  if (c === '.') return { why: 'names the page\'s folder, not a file in it' };
++  return { p: c };
 +}
-+// a relative path → the real file inside the page's folder, or why there is none
++// a cleaned relative path → the real file inside the page's folder, or why there is none. The CLI opens it through os.Root, which
++// follows a symlink only to a relative target and through at most 8 links, so pack refuses what that root would.
 +function pageFile(p) {
 +  const f = real(resolve(pageDir, p));
 +  if (!f) { const r = roots.find((d) => real(d) !== pageDir && existsSync(resolve(d, p))); return { why: r ? `exists only under --root ${rel(r)}, which bounds code excerpts only — put the file in the page's folder` : 'is not in the page\'s folder' }; }
 +  if (!f.startsWith(pageDir + sep)) return { why: 'is a symlink out of the page\'s folder' };
 +  if (!statSync(f).isFile()) return { why: 'is not a file' };
++  let d = pageDir, hops = 0;
++  for (const seg of p.split('/')) {
++    d = join(d, seg);
++    for (;;) { let s; try { s = lstatSync(d); } catch { s = null; } if (!s?.isSymbolicLink()) break; const t = readlinkSync(d); if (t.startsWith('/')) return { why: 'goes through a symlink to an absolute path, which the plans CLI does not follow' }; if (++hops > 8) return { why: 'goes through more than 8 symlinks, which the plans CLI does not follow' }; d = join(dirname(d), t); }
++  }
 +  return { f };
 +}
 +const MEDIA_TAGS = ['img', 'video', 'audio', 'source'];   // the elements whose src the CLI uploads; doc-shot's moves onto an img below
-+const media = new Map();   // the real path of each distinct local media file → the reference as first written, decoded as the CLI reads it
++const media = new Map();   // each distinct path the CLI opens, as it counts uploads → the reference as first written, trimmed as the CLI trims it
 +function checkMedia(at, a) {
 +  if (a.bad.length) return err(`${at}: src="${a.raw}" holds ${a.bad.map((b) => `"${b}"`).join(', ')}, a character reference pack does not decode as the plans CLI would, so it cannot check the file the CLI would upload — write the character itself, or a numeric reference such as &#47;`);
-+  const value = a.value, v = value.trim(); if (!v || v.startsWith('#') || /^data:/i.test(v)) return;   // what the CLI leaves alone
-+  const l = localPath(v); if (l.why) return err(`${at}: src="${value}" ${l.why}`);
-+  const ext = extname(l.p).toLowerCase();
++  const value = a.value; const l = mediaPath(value); if (l.skip) return;
++  if (l.why) return err(`${at}: src="${value}" ${l.why}`);
++  const ext = goExt(l.p).toLowerCase();
 +  if (ext === '.html' || ext === '.htm') return err(`${at}: src="${value}" is an HTML file, which no media element renders`);
 +  if (!MEDIA_EXT.includes(ext)) return err(`${at}: src="${value}" — ${ext ? `"${ext}"` : 'a name with no extension'} is not a media type plans publishes (${MEDIA_EXT.join(' ')})`);
 +  const g = pageFile(l.p); if (g.why) return err(`${at}: src="${value}" ${g.why}`);
-+  if (!media.has(g.f)) media.set(g.f, v);
++  if (!media.has(l.p)) media.set(l.p, goTrimSpace(value));
 +}
 +// srcset, poster and CSS url() are never uploaded, so each may only hold a data: URI (or, in CSS, a #fragment)
 +function onlyData(at, what, value, css = false) {
@@ -387,8 +425,8 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..a4e298f912399839c1c6301edd5ed2b5
 +  if (t.name === 'script' && (fileName(val('src')) === 'htmlplan.js' || get('data-htmlplan'))) { nJs++; edits.push([t.start, t.close, RUNTIME.js]); continue; }
 +  if (t.name === 'style') checkCss(at, t.text);
 +  if (t.name === 'link' && /(^|\s)stylesheet(\s|$)/i.test(val('rel') || '')) {   // the page's own stylesheet, inlined from the page's folder
-+    const href = (val('href') || '').trim(); const l = href ? localPath(href) : { why: 'has no href' };
-+    const g = l.why ? l : extname(l.p).toLowerCase() !== '.css' ? { why: 'is not a .css file' } : pageFile(l.p);
++    const href = goTrimSpace(val('href') || ''); const l = href ? mediaPath(href) : { why: 'has no href' }; if (l.skip) l.why = 'names no file';
++    const g = l.why ? l : goExt(l.p).toLowerCase() !== '.css' ? { why: 'is not a .css file' } : pageFile(l.p);
 +    if (g.why) { err(`${at}: stylesheet "${href}" ${g.why}; inline it in a <style>`); continue; }
 +    if (SECRET_NAME.test(g.f)) { err(`${at}: "${href}" looks like a secrets file — not reading it`); continue; }
 +    const text = readFileSync(g.f, 'utf8');
@@ -416,7 +454,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..a4e298f912399839c1c6301edd5ed2b5
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +546,28 @@ if (!quiet) {
+@@ -288,7 +584,28 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -446,7 +484,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..a4e298f912399839c1c6301edd5ed2b5
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +577,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +615,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }
