@@ -5,7 +5,7 @@
 // on a fixture folder under the system temp directory, which the section removes at the end.
 
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 
@@ -163,6 +163,20 @@ export default async function ({ ROOT, check }) {
           listing(d) === snap && readFileSync(join(d, 'page.packed.html'), 'utf8') === SENTINEL)
       }
     }
+
+    // The page's folder swapped between the lint and the write. pack runs git through PATH for a pinned ref, so a fake git, the
+    // only git this run can find, moves the page's folder away and puts a symlink to another folder in its place while pack
+    // waits for it. pack must then refuse to write, and that other folder must stay as it was.
+    const swap = join(base, 'swap'); const victim = join(swap, 'victim'), pageD = join(swap, 'page'), moved = join(swap, 'moved'), bin = join(swap, 'bin'), rootD = join(swap, 'root')
+    for (const d of [victim, pageD, bin, rootD]) mkdirSync(d, { recursive: true })
+    writeFileSync(join(pageD, 'page.html'), page('<doc-code src="f.txt" ref="HEAD"></doc-code>'))
+    writeFileSync(join(bin, 'git'), ['#!/bin/sh', 'if [ ! -e "$SWAP_DONE" ]; then mv "$SWAP_PAGE" "$SWAP_MOVED" && ln -s "$SWAP_VICTIM" "$SWAP_PAGE" && : > "$SWAP_DONE"; fi', "printf 'one\\ntwo\\nthree\\n'", ''].join('\n'), { mode: 0o755 })
+    const quiet = listing(victim)
+    const rw = spawnSync(process.execPath, [pack, '--root', rootD, 'page/page.html'], { cwd: swap, encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SWAP_PAGE: pageD, SWAP_MOVED: moved, SWAP_VICTIM: victim, SWAP_DONE: join(swap, 'done') } })
+    check('the fake git ran during the lint and swapped the page\'s folder for a symlink', statSync(join(swap, 'done'), { throwIfNoEntry: false }) !== undefined && lstatSync(pageD).isSymbolicLink(), out(rw))
+    check('a page folder swapped during the run is refused, with the reason', rw.status === 1 && /folder [^\n]* changed during the (run|write)/.test(rw.stdout + rw.stderr), out(rw))
+    check('nothing landed in the folder the symlink points at, and no temp file remains', listing(victim) === quiet && readdirSync(moved).join(' ') === 'page.html', `victim: ${readdirSync(victim).join(' ')}; moved: ${readdirSync(moved).join(' ')}`)
 
     // Drift guard: MEDIA_EXT is the publish table without .html and .htm.
     const table = readFileSync(join(ROOT, 'plugins/plans/skills/publish/SKILL.md'), 'utf8').split('\n')

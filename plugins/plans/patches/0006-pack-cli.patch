@@ -19,7 +19,7 @@ index 296f3ee14dc9bfeac7e579112aa7524f2aab9d86..a8e2b0f70f58641b53bc363e5f254ae2
 +- A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
  - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 2748cc8aa64e6f327cc62555f4a97dfd91548086..e7bc69bbedf48dac5dc55f7ca605276c423aea1b 100644
+index a4e298f912399839c1c6301edd5ed2b5e6bd3396..b985ea481a5bc51bab84a9fc9c706334263fa385 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,7 +1,7 @@
@@ -31,7 +31,7 @@ index 2748cc8aa64e6f327cc62555f4a97dfd91548086..e7bc69bbedf48dac5dc55f7ca605276c
  // Lint runs the same parsers the browser uses (from htmlplan.js), fills <doc-code src>
  // from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
  // beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
-@@ -10,23 +10,45 @@ import { execFileSync } from 'node:child_process';
+@@ -10,24 +10,46 @@ import { execFileSync } from 'node:child_process';
  import { resolve, dirname, extname, basename, relative, join, sep } from 'node:path';
  import { fileURLToPath } from 'node:url';
  import { createRequire } from 'node:module';
@@ -79,15 +79,16 @@ index 2748cc8aa64e6f327cc62555f4a97dfd91548086..e7bc69bbedf48dac5dc55f7ca605276c
  // The output goes beside the input, in the same resolved folder, so the plans CLI finds the page's media where pack checked it.
  // A relative -o is relative to that folder.
  const pageDir = realpathSync(baseDir); const inName = basename(inPath);
+ const pageDirId = lstatSync(pageDir);   // the folder's identity now, by device and inode, which the write at the end checks it still has
 -const outPath = resolve(pageDir, opt('-o', opt('--out', inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html'))));
 +const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
  
  /* ── tags, as the plans CLI reads them ── */
  // The plans CLI finds the media it uploads with golang.org/x/net/html's tokenizer, at v0.58.0 as its go.mod pins it, so pack reads
-@@ -549,13 +571,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
-   const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let made = false;
-   try { writeFileSync(tmp, packed, { flag: 'wx' }); made = true; renameSync(tmp, outPath); }
-   catch (e) { if (made) { try { unlinkSync(tmp); } catch {} } console.log(`✗ could not write ${rel(outPath)}: ${e.code || e.message}`); process.exit(1); } }
+@@ -568,13 +590,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
+     if (fd >= 0) { try { closeSync(fd); } catch {} }
+     try { const s = lstatSync(tmp); if (own && s.dev === own.dev && s.ino === own.ino) unlinkSync(tmp); } catch {}
+     console.log(`✗ could not write ${rel(outPath)}: ${why}`); process.exit(1); } }
 -if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
 -if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
 -  const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));

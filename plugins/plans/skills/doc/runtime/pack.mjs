@@ -5,7 +5,7 @@
 // Lint runs the same parsers the browser uses (from htmlplan.js), fills <doc-code src>
 // from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
 // beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
-import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, realpathSync, renameSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve, dirname, extname, basename, relative, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +48,7 @@ const roots = (cli.values.root || []).map((r) => resolve(r.replace(/^~(?=\/)/, p
 // The output goes beside the input, in the same resolved folder, so the plans CLI finds the page's media where pack checked it.
 // A relative -o is relative to that folder.
 const pageDir = realpathSync(baseDir); const inName = basename(inPath);
+const pageDirId = lstatSync(pageDir);   // the folder's identity now, by device and inode, which the write at the end checks it still has
 const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
 
 /* ── tags, as the plans CLI reads them ── */
@@ -591,9 +592,27 @@ if (!quiet) {
 }
 if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
 if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
-{ // write a new file in the page's folder, then rename it over the output, so a failed write leaves an old output whole
-  const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let made = false;
-  try { writeFileSync(tmp, packed, { flag: 'wx' }); made = true; renameSync(tmp, outPath); }
-  catch (e) { if (made) { try { unlinkSync(tmp); } catch {} } console.log(`✗ could not write ${rel(outPath)}: ${e.code || e.message}`); process.exit(1); } }
+{ // write a new file in the page's folder, then rename it over the output, so a failed write leaves an old output whole.
+  // pageDir was resolved before the lint, which can run long, so the folder is checked again right before the temp file is made
+  // and right before the rename: the input's folder must still resolve to pageDir, that path must still be the same directory by
+  // device and inode, and the output's folder must still resolve there; after the write, the temp file's lstat must be the file
+  // pack wrote, by its descriptor's fstat, at that path. Node has no openat or renameat to pin the folder, so between the last
+  // check and each of the two syscalls a swap can still redirect that one call; a swap at any other moment is caught, nothing is
+  // written over the output, and the temp file is removed only while it is still pack's own.
+  const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let fd = -1, own = null, why = null;
+  const sameDir = () => { try { const s = lstatSync(pageDir); return realpathSync(baseDir) === pageDir && s.isDirectory() && s.dev === pageDirId.dev && s.ino === pageDirId.ino && realpathSync(dirname(outPath)) === pageDir; } catch { return false; } };
+  try {
+    if (!sameDir()) why = `the page's folder ${rel(pageDir)} changed during the run — nothing was written; run pack again`;
+    else {
+      fd = openSync(tmp, 'wx'); writeFileSync(fd, packed); own = fstatSync(fd); closeSync(fd); fd = -1;
+      const l = lstatSync(tmp);
+      if (!sameDir() || !l.isFile() || l.dev !== own.dev || l.ino !== own.ino || realpathSync(tmp) !== join(pageDir, basename(tmp))) why = `the page's folder ${rel(pageDir)} changed during the write — ${rel(outPath)} was not written; a ${basename(tmp)} left where the old path leads is pack's`;
+      else renameSync(tmp, outPath);
+    }
+  } catch (e) { why = e.code || e.message; }
+  if (why) {
+    if (fd >= 0) { try { closeSync(fd); } catch {} }
+    try { const s = lstatSync(tmp); if (own && s.dev === own.dev && s.ino === own.ino) unlinkSync(tmp); } catch {}
+    console.log(`✗ could not write ${rel(outPath)}: ${why}`); process.exit(1); } }
 if (reads.size) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
 console.log(`✓ ${rel(outPath)}  ${(Buffer.byteLength(packed) / 1024).toFixed(0)} KB · runtime inlined · ${media.size} media file${media.size === 1 ? '' : 's'} beside it for the plans CLI${warns.length ? ` · ${warns.length} warning(s)` : ''}`);

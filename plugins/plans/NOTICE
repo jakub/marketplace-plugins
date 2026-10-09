@@ -104,7 +104,8 @@ it, so a later patch's context is the text an earlier one wrote.
     other character reference is refused. Before it writes, pack reads its output with the same
     tokenizer and refuses unless the media references in it are the ones it checked. The
     runtime is inlined once from pack's own folder, and the output goes beside the input and
-    never over it.
+    never over it, through a temp file and a rename, each made only after the page's folder is
+    found to be the same folder it was, by path, device and inode.
 0006-pack-cli.patch
     Parses pack's arguments with node:util parseArgs in strict mode: --root (repeatable),
     -o/--out, --lint-only, --quiet, --help, -- and exactly one input. A syntax error exits

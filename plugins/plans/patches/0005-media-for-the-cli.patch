@@ -60,7 +60,7 @@ index 43ec8f22dad131edee11438048aaf8fe07879320..f98bccb51fc2c137407158234cb6c504
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd91548086 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..a4e298f912399839c1c6301edd5ed2b5e6bd3396 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -74,14 +74,14 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd
 -import { readFileSync, writeFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 +// from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
 +// beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
-+import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, realpathSync, renameSync, unlinkSync } from 'node:fs';
++import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
  import { execFileSync } from 'node:child_process';
 -import { resolve, dirname, extname, basename, relative, sep } from 'node:path';
 +import { resolve, dirname, extname, basename, relative, join, sep } from 'node:path';
  import { fileURLToPath } from 'node:url';
  import { createRequire } from 'node:module';
  
-@@ -22,7 +23,175 @@ const opt = (n, d) => { const i = argv.findIndex((a) => a === n); return i >= 0
+@@ -22,7 +23,176 @@ const opt = (n, d) => { const i = argv.findIndex((a) => a === n); return i >= 0
  const lintOnly = argv.includes('--lint-only'); const quiet = argv.includes('--quiet');
  const inPath = resolve(input); const baseDir = dirname(inPath);
  const roots = argv.flatMap((a, i) => a === '--root' ? [resolve(argv[i + 1].replace(/^~(?=\/)/, process.env.HOME))] : []); if (!roots.length) roots.push(baseDir); const root = roots[0];
@@ -89,6 +89,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd
 +// The output goes beside the input, in the same resolved folder, so the plans CLI finds the page's media where pack checked it.
 +// A relative -o is relative to that folder.
 +const pageDir = realpathSync(baseDir); const inName = basename(inPath);
++const pageDirId = lstatSync(pageDir);   // the folder's identity now, by device and inode, which the write at the end checks it still has
 +const outPath = resolve(pageDir, opt('-o', opt('--out', inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html'))));
 +
 +/* ── tags, as the plans CLI reads them ── */
@@ -258,7 +259,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd
  
  let html = readFileSync(inPath, 'utf8');
  const errors = [], warns = [], info = [];
-@@ -34,6 +203,7 @@ const blockSrc = (inner) => { const m = inner.match(/<script\s+type=["']?text\/(
+@@ -34,6 +204,7 @@ const blockSrc = (inner) => { const m = inner.match(/<script\s+type=["']?text\/(
  // Everything pack reads ends up inside a page that may be published, so reads are fenced: a file must really live (symlinks resolved)
  // under a --root, the page's own folder, or the runtime's folder, and must not be a well-known secret file. Anything else is an error.
  const real = (p) => { try { return realpathSync(p); } catch { return null; } };
@@ -266,7 +267,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd
  const FENCE = [...new Set([...roots, baseDir, here])].map(real).filter(Boolean);
  const inside = (f) => FENCE.some((d) => f === d || f.startsWith(d.endsWith(sep) ? d : d + sep));
  const SECRET_NAME = new RegExp([
-@@ -61,12 +231,17 @@ const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p
+@@ -61,12 +232,17 @@ const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p
  const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
  const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
  
@@ -286,7 +287,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd
  const KNOWN = new Set(['doc-code', 'doc-pin', 'doc-flow', 'doc-seq', 'doc-schema', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-mock', 'doc-shot', 'doc-quote', 'doc-ask', 'doc-note', 'doc-draft', 'doc-plan', 'doc-claim', 'doc-changes']);
  for (const m of html.matchAll(/<(doc-[a-z]+)\b/g)) if (!KNOWN.has(m[1])) err(`line ${lineOf(m.index)}: unknown element <${m[1]}> — known: ${[...KNOWN].join(' ')}`);
  const ids = {}; for (const m of html.matchAll(/\sid=["']([^"']+)["']/g)) { if (ids[m[1]]) err(`duplicate id="${m[1]}" (lines ${ids[m[1]]} and ${lineOf(m.index)})`); ids[m[1]] = lineOf(m.index); }
-@@ -174,7 +349,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -174,7 +350,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        if ((a.frame === 'terminal') && w > 520 && !('thumbnail' in a)) warn(`${at}: terminal mock w=${w} — on a phone that's ~${Math.round(390 / w * 13)}px text; ≤480 (≈55 cols) stays readable, or add thumbnail to accept`);
        else if (w >= 800 && !('thumbnail' in a)) warn(`${at}: ${a.frame || 'browser'} mock w=${w} renders at ~${Math.round(350 / w * 100)}% on a phone — fine as an overview (add thumbnail to say so), but pair it with a narrow crop (w≤480 frame=none) of the part that matters${inCols ? '; and it is inside .cols, which halves it again on desktop' : ''}`);
        else if (inCols && w > 600) warn(`${at}: w=${w} mock inside .cols — .cols is for mocks ≤600 wide; stack them or use .storyboard`); }
@@ -295,7 +296,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +438,105 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +439,105 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -355,13 +356,13 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd
 +function onlyData(at, what, value, css = false) {
 +  const v = value.trim(); if (!v || /^data:/i.test(v) || (css && v.startsWith('#'))) return;
 +  err(`${at}: ${what} "${v.length > 60 ? v.slice(0, 60) + '…' : v}" — ${isRemote(v) ? 'remote, and the viewer\'s CSP blocks it' : 'the plans CLI uploads only a literal src, so this path would break'}; use ${css ? 'an <img>' : 'src'} for a local file, or a data: URI`);
- }
++}
 +const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { while (i < s.length && /[\s,]/.test(s[i])) i++; let j = i; while (j < s.length && !/\s/.test(s[j])) j++; if (j > i) { const u = s.slice(i, j); out.push(u.replace(/,+$/, '')); if (!u.endsWith(',')) while (j < s.length && s[j] !== ',') j++; } i = j; } return out; };
 +function checkCss(at, css) {
 +  const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
 +  for (const m of bare.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
 +  if (/@import\b/i.test(bare)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);
-+}
+ }
 +const RUNTIME = {   // always this folder's runtime, never a copy beside the page
 +  css: `<style data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.css'), 'utf8')}\n</style>`,
 +  js: `<script data-htmlplan>\n${readFileSync(resolve(here, 'htmlplan.js'), 'utf8').replace(/<\/script/gi, '<\\/script')}\n</script>`,
@@ -415,19 +416,37 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..2748cc8aa64e6f327cc62555f4a97dfd
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +545,10 @@ if (!quiet) {
+@@ -288,7 +546,28 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
 -writeFileSync(outPath, packed);
-+{ // write a new file in the page's folder, then rename it over the output, so a failed write leaves an old output whole
-+  const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let made = false;
-+  try { writeFileSync(tmp, packed, { flag: 'wx' }); made = true; renameSync(tmp, outPath); }
-+  catch (e) { if (made) { try { unlinkSync(tmp); } catch {} } console.log(`✗ could not write ${rel(outPath)}: ${e.code || e.message}`); process.exit(1); } }
++{ // write a new file in the page's folder, then rename it over the output, so a failed write leaves an old output whole.
++  // pageDir was resolved before the lint, which can run long, so the folder is checked again right before the temp file is made
++  // and right before the rename: the input's folder must still resolve to pageDir, that path must still be the same directory by
++  // device and inode, and the output's folder must still resolve there; after the write, the temp file's lstat must be the file
++  // pack wrote, by its descriptor's fstat, at that path. Node has no openat or renameat to pin the folder, so between the last
++  // check and each of the two syscalls a swap can still redirect that one call; a swap at any other moment is caught, nothing is
++  // written over the output, and the temp file is removed only while it is still pack's own.
++  const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let fd = -1, own = null, why = null;
++  const sameDir = () => { try { const s = lstatSync(pageDir); return realpathSync(baseDir) === pageDir && s.isDirectory() && s.dev === pageDirId.dev && s.ino === pageDirId.ino && realpathSync(dirname(outPath)) === pageDir; } catch { return false; } };
++  try {
++    if (!sameDir()) why = `the page's folder ${rel(pageDir)} changed during the run — nothing was written; run pack again`;
++    else {
++      fd = openSync(tmp, 'wx'); writeFileSync(fd, packed); own = fstatSync(fd); closeSync(fd); fd = -1;
++      const l = lstatSync(tmp);
++      if (!sameDir() || !l.isFile() || l.dev !== own.dev || l.ino !== own.ino || realpathSync(tmp) !== join(pageDir, basename(tmp))) why = `the page's folder ${rel(pageDir)} changed during the write — ${rel(outPath)} was not written; a ${basename(tmp)} left where the old path leads is pack's`;
++      else renameSync(tmp, outPath);
++    }
++  } catch (e) { why = e.code || e.message; }
++  if (why) {
++    if (fd >= 0) { try { closeSync(fd); } catch {} }
++    try { const s = lstatSync(tmp); if (own && s.dev === own.dev && s.ino === own.ino) unlinkSync(tmp); } catch {}
++    console.log(`✗ could not write ${rel(outPath)}: ${why}`); process.exit(1); } }
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +558,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +577,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }
