@@ -104,9 +104,12 @@ it, so a later patch's context is the text an earlier one wrote.
     image(), cross-fade(), -webkit-cross-fade() or src(), element() and -moz-element() in any
     form, a backslash escape in the name of a CSS function or at-rule (u\72l( is url( to a
     browser), leftover external scripts or stylesheets, and a meta CSP, under --lint-only
-    too. CSS is read after CSS's own input preprocessing, where CRLF, CR and FF are
-    one LF, and with its comments and strings blanked in CSS's own order, so neither hides a
-    url(). pack reads tags with a port of the CLI's tokenizer, golang.org/x/net/html
+    too. Before a srcset, poster, url() or image-function value is read as data:, the
+    whitespace trimmed is the syntax's own, HTML's ASCII set or CSS's LF, TAB and SPACE,
+    never JavaScript's, which also strips U+FEFF and U+00A0 that the URL parser keeps. CSS
+    is read after CSS's own input preprocessing, where CRLF, CR and FF are one LF, and with
+    its comments and strings blanked in CSS's own order, so neither hides a url(). pack
+    reads tags with a port of the CLI's tokenizer, golang.org/x/net/html
     at v0.58.0, so it sees every media src the CLI acts on, with the value the CLI decodes:
     numeric references and the five basic named ones decode exactly, and an attribute value
     holding any other character reference, on any tag, is refused, so a reference can neither

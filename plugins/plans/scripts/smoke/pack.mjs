@@ -16,6 +16,7 @@ const page = (body, head = '') => '<!doctype html>\n<html lang="en">\n<meta char
   `<link rel="stylesheet" href="htmlplan.css">\n${head}<body>\n<main>\n<h1>Fixture</h1>\n${body}\n</main>\n` +
   '<script src="htmlplan.js" defer></script>\n</body>\n</html>\n'
 const count = (text, s) => text.split(s).length - 1
+const cp = String.fromCharCode; const BOM = cp(0xfeff), NBSP = cp(0xa0)
 // Every file under dir with its size and its mtime in nanoseconds, so any write shows.
 const listing = (dir) => readdirSync(dir, { recursive: true }).sort().map((f) => {
   const s = statSync(join(dir, f), { bigint: true, throwIfNoEntry: false })
@@ -106,6 +107,19 @@ const REFUSALS = [
   { name: 'css-src-function', head: '<style>.x{background:src("shot.png")}</style>\n', body: '<p class="x">x</p>', why: /CSS src\(\) "shot\.png"/ },
   { name: 'css-element', head: '<style>.x{background:element(#y)}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS element\(\)/ },
   { name: 'css-moz-element', body: '<div style="background:-moz-element(#y)">x</div>', why: /style="": CSS -moz-element\(\)/ },
+  // JavaScript's trim() and \s take U+FEFF, U+00A0 and the other Unicode spaces as whitespace. HTML's attribute and srcset rules
+  // know ASCII whitespace alone, and CSS, after its preprocessing, LF, TAB and SPACE; the URL parser keeps the rest, so a value
+  // that is data: only once a Unicode space is trimmed is a path beside the page to the browser.
+  { name: 'poster-bom', body: `<video src="clip.webm" poster="${BOM}data:image/png;base64,iVBORw0KGgo="></video>`, why: /poster "\uFEFFdata:/ },
+  { name: 'poster-nbsp', body: `<video src="clip.webm" poster="${NBSP}data:image/png;base64,iVBORw0KGgo="></video>`, why: /poster "\u00A0data:/ },
+  { name: 'srcset-bom', body: `<img src="shot.png" srcset="${BOM}data:image/png;base64,iVBORw0KGgo= 1x" alt="">`, why: /srcset "\uFEFFdata:/ },
+  { name: 'srcset-nbsp', body: `<img src="shot.png" srcset="data:image/png;base64,iVBORw0KGgo= 1x,${NBSP}data:image/png;base64,iVBORw0KGgo= 2x" alt="">`, why: /srcset "\u00A0data:/ },
+  { name: 'css-url-bom', head: `<style>.x{background:url(${BOM}data:image/png;base64,iVBORw0KGgo=)}</style>\n`, body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "\uFEFFdata:/ },
+  { name: 'css-url-quoted-nbsp', head: `<style>.x{background:url("${NBSP}data:image/png;base64,iVBORw0KGgo=")}</style>\n`, body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "\u00A0data:/ },
+  { name: 'css-url-bom-attribute', body: '<div style="background:url(&#xFEFF;data:image/png;base64,iVBORw0KGgo=)">x</div>', why: /style="": CSS url\(\) "\uFEFFdata:/ },
+  { name: 'css-url-bom-linked', setup: (d) => writeFileSync(join(d, 'local.css'), `.x{background:url('${BOM}data:image/png;base64,iVBORw0KGgo=')}\n`),
+    head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: CSS url\(\) "\uFEFFdata:/ },
+  { name: 'css-image-set-bom', head: `<style>.x{background:image-set("${BOM}data:image/png;base64,iVBORw0KGgo=" 1x)}</style>\n`, body: '<p class="x">x</p>', why: /CSS image-set\(\) "\uFEFFdata:/ },
   // pack reads a src as the CLI's tokenizer (golang.org/x/net/html) does, or refuses. &sol; names public/private.png to the CLI; pack
   // holds no entity table, so it refuses the reference instead of checking the literal file. An unquoted value ends at HTML
   // whitespace only, so U+00A0 is part of the name the CLI reads.
@@ -220,6 +234,15 @@ export default async function ({ ROOT, check }) {
     const ri = run(imageFns, 'page.html')
     check('image-set, cross-fade, src and image that hold only data: URIs are accepted, as are the names in a string, a comment or a longer identifier', ri.status === 0, out(ri))
 
+    // ASCII whitespace around a data: URI is what the browser strips, so it is trimmed before the check.
+    const padded = fixture('data-ascii-padding', page([
+      `<video src="clip.webm" poster="\t ${D} \n"></video>`,
+      `<img src="shot.png" srcset="\t ${D} 1x,\n ${D} 2x \f" alt="">`,
+      `<div style="background:url( \t ${D} \n )">x</div>`,
+    ].join('\n'), `<style>.a{background:url(\n\t"${D}"\n)} .b{background:image-set( "${D}" 1x )} .c{background:url( '${D}' )}</style>\n`))
+    const rp = run(padded, 'page.html')
+    check('a data: URI padded with ASCII whitespace in poster, srcset, a CSS url() or an image function is accepted', rp.status === 0, out(rp))
+
     // A named reference in text is not an attribute value, so pack leaves it to the browser.
     const text = fixture('entity-in-text', page('<p>a tab &Tab; a space &nbsp; an ellipsis &hellip; and a copy sign &copy; in text</p>'))
     const rt = run(text, 'page.html')
@@ -272,7 +295,7 @@ export default async function ({ ROOT, check }) {
     // the reference the media line must show, as the CLI trims it, and a refusal names its reason. JavaScript's trim() strips
     // U+FEFF and keeps U+0085, Go's does the reverse, and neither of url.Parse's refusals is JavaScript's, so each row pins one
     // rule of the CLI's.
-    const cp = String.fromCharCode; const BOM = cp(0xfeff), NEL = cp(0x85), NBSP = cp(0xa0), LSEP = cp(0x2028), ZWSP = cp(0x200b), RC = cp(0xfffd), E_ACUTE = cp(0xe9)
+    const NEL = cp(0x85), LSEP = cp(0x2028), ZWSP = cp(0x200b), RC = cp(0xfffd), E_ACUTE = cp(0xe9)
     const PATHS = [
       { name: 'nel-leading', src: `${NEL}public.png`, files: ['public.png', `${NEL}public.png`], lists: 'public.png' },
       { name: 'nel-leading-missing', src: `${NEL}nope.png`, files: [`${NEL}nope.png`], why: /src="\u0085nope\.png" is not in the page's folder/ },

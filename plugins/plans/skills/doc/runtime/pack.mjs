@@ -551,12 +551,21 @@ function checkMedia(at, a) {
   const g = pageFile(l.p); if (g.why) return err(`${at}: src="${value}" ${g.why}`);
   if (!media.has(l.p)) media.set(l.p, goTrimSpace(value));
 }
-// srcset, poster, CSS url() and the CSS image functions are never uploaded, so each may only hold a data: URI (or, in CSS, a #fragment)
+// srcset, poster, CSS url() and the CSS image functions are never uploaded, so each may only hold a data: URI (or, in CSS, a
+// #fragment). The whitespace trimmed before the check is the syntax's own, which is what the URL parser strips too: HTML's ASCII
+// whitespace around an attribute value or a srcset candidate, and CSS's, which after its preprocessing is LF, TAB and SPACE,
+// around a url() or a string. JavaScript's trim() and \s would also strip U+FEFF, U+00A0 and the other Unicode spaces, which the
+// URL parser keeps, so a value they read as data: is a path beside the page to the browser, and the viewer requests it.
+const CSS_WS = (c) => c === ' ' || c === '\t' || c === '\n';
+const trimIf = (s, ws) => { let a = 0, b = s.length; while (a < b && ws(s[a])) a++; while (b > a && ws(s[b - 1])) b--; return s.slice(a, b); };
 function onlyData(at, what, value, css = false) {
-  const v = value.trim(); if (!v || /^data:/i.test(v) || (css && v.startsWith('#'))) return;
+  const v = trimIf(value, css ? CSS_WS : WS); if (!v || /^data:/i.test(v) || (css && v.startsWith('#'))) return;
   err(`${at}: ${what} "${v.length > 60 ? v.slice(0, 60) + '…' : v}" — ${isRemote(v) ? 'remote, and the viewer\'s CSP blocks it' : 'the plans CLI uploads only a literal src, so this path would break'}; use ${css ? 'an <img>' : 'src'} for a local file, or a data: URI`);
 }
-const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { while (i < s.length && /[\s,]/.test(s[i])) i++; let j = i; while (j < s.length && !/\s/.test(s[j])) j++; if (j > i) { const u = s.slice(i, j); out.push(u.replace(/,+$/, '')); if (!u.endsWith(',')) while (j < s.length && s[j] !== ',') j++; } i = j; } return out; };
+// the candidate URLs of a srcset, split as HTML's srcset parser splits them: ASCII whitespace and commas are skipped, a URL runs to
+// ASCII whitespace with its trailing commas dropped, and the descriptors after it run to the next comma. A comma inside parentheses
+// is part of a descriptor to the browser and ends a candidate here, so pack reads every URL the browser reads, and at times one more.
+const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { while (i < s.length && (WS(s[i]) || s[i] === ',')) i++; let j = i; while (j < s.length && !WS(s[j])) j++; if (j > i) { const u = s.slice(i, j); out.push(u.replace(/,+$/, '')); if (!u.endsWith(',')) while (j < s.length && s[j] !== ',') j++; } i = j; } return out; };
 // CSS first preprocesses its input (CSS Syntax §3.3): CRLF, a lone CR and FF each become one LF, and NUL becomes U+FFFD. So a
 // string ends at any of those newlines, and a backslash before any of them continues the string. pack reads the same text, in
 // a <style>, a style="" and the page's own stylesheet, so a url() or @import after a CR or FF is found and an escaped CRLF is
@@ -612,7 +621,7 @@ function checkCss(at, text) {
   const css = cssPreprocess(text); const { kept, code, strings } = cssLex(css);
   const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
   const named = new Set();   // the start of each string a url() or an image function has named
-  for (const m of kept.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) if (code[m.index] !== ' ') {
+  for (const m of kept.matchAll(/url\([ \t\n]*(?:"([^"]*)"[ \t\n]*|'([^']*)'[ \t\n]*|([^)]*))\)/gi)) if (code[m.index] !== ' ') {
     onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
     for (const [s] of strings) if (s >= m.index && s < m.index + m[0].length) named.add(s);
   }
