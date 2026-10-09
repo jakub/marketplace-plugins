@@ -33,6 +33,10 @@ const HEAD = 'b'.repeat(40)
 const BRANCH = 'feat/issue-6-merge-gate'
 const PR_URL = `https://github.com/${SLUG}/pull/${PR}`
 const ARGS = [String(PR), HEAD]
+const TITLE = 'feat(flow): gate the merge'
+const HEADLINES = ['feat(flow): read the gate once', 'fix(flow): re-read before the merge']
+const CAPABILITY_URL = 'https://plans.example.ts.net/p/AbCdEf0123456789'
+const PR_BODY = `Evidence: ${CAPABILITY_URL}\n\nAlso see https://github.com/${SLUG}/pull/${PR}#issuecomment-1`
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-land-merge-')))
 const repoWith = (name, origin) => {
   const dir = join(tmp, name)
@@ -61,7 +65,8 @@ const freshState = (over = {}) => ({
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')], totalCount: null, statuses: [],
   threadPages: [[thread('T1')]], threadsNoCursor: false, baseFlakes: null, headFlakes: null, flakesHttp: null, flakesEncoding: 'base64',
   calls: [], merges: [], ...over,
-  pr: { headRefOid: HEAD, headRefName: BRANCH, state: 'OPEN', isDraft: false, baseRefName: 'main', url: PR_URL, autoMergeRequest: null, ...(over.pr || {}) },
+  pr: { headRefOid: HEAD, headRefName: BRANCH, state: 'OPEN', isDraft: false, baseRefName: 'main', url: PR_URL, autoMergeRequest: null,
+    title: TITLE, body: PR_BODY, commits: HEADLINES.map((messageHeadline, i) => ({ oid: String(i).repeat(40), messageHeadline, messageBody: `see ${CAPABILITY_URL}` })), ...(over.pr || {}) },
 })
 const field = (args, key) => { const hit = args.find((a) => String(a).startsWith(`${key}=`)); return hit === undefined ? null : String(hit).slice(key.length + 1) }
 const makeRunGh = (st) => (args) => {
@@ -173,7 +178,21 @@ console.log('the executor merges once, pinned to the gated head')
   check('exit 0, and the JSON line says what it merged', merged(r) && r.json.repo === IDENTITY && r.json.pr === PR && r.json.head === HEAD &&
     r.json.detail.includes(`merged #${PR} as a squash of ${HEAD.slice(0, 12)}`), shown(r))
   check('exactly one merge: --repo, --squash, --match-head-commit at the caller\'s head', r.st.merges.length === 1 &&
-    JSON.stringify(r.st.merges[0]) === JSON.stringify(['pr', 'merge', String(PR), '--repo', IDENTITY, '--squash', '--match-head-commit', HEAD]), JSON.stringify(r.st.merges))
+    JSON.stringify(r.st.merges[0].slice(0, 8)) === JSON.stringify(['pr', 'merge', String(PR), '--repo', IDENTITY, '--squash', '--match-head-commit', HEAD]), JSON.stringify(r.st.merges))
+  check('and the exact argument array carries the title with (#N) as --subject and one headline line per commit as --body', JSON.stringify(r.st.merges[0]) === JSON.stringify([
+    'pr', 'merge', String(PR), '--repo', IDENTITY, '--squash', '--match-head-commit', HEAD,
+    '--subject', `${TITLE} (#${PR})`, '--body', HEADLINES.map((h) => `- ${h}`).join('\n')]), JSON.stringify(r.st.merges))
+  check('no merge argument carries the description\'s capability URL, any URL from the description, or a commit body', r.st.merges[0].every((a) =>
+    !String(a).includes(CAPABILITY_URL) && !(PR_BODY.match(/https?:\/\/[^\s)]+/g) ?? []).some((u) => String(a).includes(u)) && !String(a).includes('see ')), JSON.stringify(r.st.merges))
+  check('the title and commits are not in the gate snapshot: a title edit between the reads still lands, with the newer title', (() => {
+    const edited = run(ARGS, { st: freshState({ recheck: { title: 'feat(flow): gate the merge, reworded' } }) })
+    return merged(edited) && edited.st.merges[0].includes(`feat(flow): gate the merge, reworded (#${PR})`)
+  })())
+  check('an unreadable title or a commit list with no headline refuses read-failed and nothing merges', (() => {
+    const noTitle = run(ARGS, { st: freshState({ pr: { title: '' } }) })
+    const noCommits = run(ARGS, { st: freshState({ pr: { commits: [] } }) })
+    return refusedWith(noTitle, 'read-failed', 'title') && refusedWith(noCommits, 'read-failed', 'commit headlines')
+  })())
   check('every gh call names origin\'s repository', r.st.calls.every(pinnedTo(IDENTITY, 'github.com')), JSON.stringify(r.st.calls.filter((a) => !pinnedTo(IDENTITY, 'github.com')(a))))
 }
 

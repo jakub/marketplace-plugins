@@ -30,8 +30,13 @@
 // With no stop, it reads the whole gate again, which has to read exactly as it did for the verdict,
 // then the default branch's tip, which has to be the one the compare was made against: a land
 // elsewhere during the reads above moves that tip, and the merge pins only the head. Then it
-// runs `gh pr merge --squash --match-head-commit <head>` so GitHub re-checks the head itself, and
-// proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
+// runs `gh pr merge --squash --match-head-commit <head> --subject "<title> (#<pr>)" --body "<one
+// '- <headline>' line per commit>"` so GitHub re-checks the head itself. The message is built here
+// from the title and the commit headlines of the last gate read, never from the pull request
+// description, which can hold capability URLs that GitHub would otherwise copy into permanent
+// history. Title and commits are read with the gate but kept out of its snapshot, so editing the
+// title between the reads does not stop a land; a title or commit list that cannot be read does.
+// It proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
 // code. It prints one JSON line: exit 0 `merged`, exit 1 `refused` with every stop found (nothing
 // merged), exit 4 `unknown`, which a human looks at before anything is retried. stderr carries one
 // human line. A cooperative guardrail at one uid: a retarget or a land elsewhere between the last
@@ -50,7 +55,7 @@ const MAX_CHECK_SUITES = 1000
 const MAX_THREAD_PAGES = 20
 const FLAKES_PATH = '.github/known-flakes.txt'
 const HTTP_404 = /\(HTTP 404\)|\bNot Found\b/
-const PR_FIELDS = 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest'
+const PR_FIELDS = 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest,title,commits'
 const USAGE_LINE = 'usage: land-merge.mjs <pull-request-number> <expected-head-sha> [--accept-flake <check-name>:<test_name>]...'
 const USAGE = `${USAGE_LINE}
 
@@ -185,7 +190,8 @@ export function landMerge({ argv, env, cwd, runGh }) {
   // only the ones some reviewer thought of. It returns the stops in order; the read failures among
   // them as problems, which leave the read unknown; an early refusal that ends the read; and a
   // snapshot of every fact a stop reads, null unless the read is whole. Adding a stop means adding
-  // the fact it reads to the snapshot, or a change in that fact goes unseen before the merge.
+  // the fact it reads to the snapshot, or a change in that fact goes unseen before the merge. The
+  // squash message is no stop's fact: it rides along as `message` and stays out of the snapshot.
   const readGate = () => {
     const stops = []
     const problems = []
@@ -198,6 +204,12 @@ export function landMerge({ argv, env, cwd, runGh }) {
     if (prUrlMismatch(pull.url, id, pr) !== null) {
       return { early: { code: 'redirected', detail: `the pull request GitHub returned (${JSON.stringify(scrubUserinfo(pull.url ?? '') || null)}) is not #${pr} of ${id.full}, so the read was redirected` } }
     }
+
+    const title = nonEmpty(pull.title)
+    const headlines = Array.isArray(pull.commits) ? pull.commits.map((c) => nonEmpty(c?.messageHeadline)).filter((h) => h !== null) : []
+    if (title === null) unreadable('read-failed', `the title of #${pr} could not be read, so the squash subject cannot be built`)
+    if (headlines.length === 0) unreadable('read-failed', `the commit headlines of #${pr} could not be read, so the squash body cannot be built`)
+    const message = title === null ? null : { subject: `${oneLine(title)} (#${pr})`, body: headlines.map((h) => `- ${oneLine(h)}`).join('\n') }
 
     // ---- 5 to 7: state, head, base, arming. From here every stop is collected.
     const state = nonEmpty(pull.state)
@@ -422,7 +434,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
       'auto-merge': pull.autoMergeRequest != null, 'merge queue': queued, compare: [behind, baseTip], ci: ci.snapshot, flakes: flakeText,
       threads: threadFacts.map((fact) => JSON.stringify(fact)).sort(),
     }
-    return { early: null, stops, problems, snapshot, checks, threads, base, defaultBranch, baseTip }
+    return { early: null, stops, problems, snapshot, checks, threads, base, defaultBranch, baseTip, message }
   }
   const verdict = readGate()
   if (verdict.early) return refuseNow(verdict.early.code, verdict.early.detail)
@@ -457,7 +469,8 @@ export function landMerge({ argv, env, cwd, runGh }) {
   if (stops.length > 0) return refused()
 
   // ---- 15: the merge, proven by a re-read
-  const merge = gh(['pr', 'merge', String(pr), '--repo', id.full, '--squash', '--match-head-commit', head], 120_000)
+  const merge = gh(['pr', 'merge', String(pr), '--repo', id.full, '--squash', '--match-head-commit', head,
+    '--subject', again.message.subject, '--body', again.message.body], 120_000)
   const failure = merge.code === 0 ? null : said(merge)
   const saidMerge = failure === null ? '' : ` (gh pr merge said: ${failure})`
 
