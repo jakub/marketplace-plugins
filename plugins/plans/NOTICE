@@ -102,8 +102,9 @@ it, so a later patch's context is the text an earlier one wrote.
     outside plans:publish's table, more than 64 files, local paths in srcset, poster, CSS
     url() or style, a backslash escape in the name of a CSS function or at-rule (u\72l( is
     url( to a browser), leftover external scripts or stylesheets, and a meta CSP, under
-    --lint-only too. CSS is read with its comments and strings blanked in CSS's own order,
-    so neither hides a url(). pack reads tags with a port of the CLI's tokenizer, golang.org/x/net/html
+    --lint-only too. CSS is read after CSS's own input preprocessing, where CRLF, CR and FF are
+    one LF, and with its comments and strings blanked in CSS's own order, so neither hides a
+    url(). pack reads tags with a port of the CLI's tokenizer, golang.org/x/net/html
     at v0.58.0, so it sees every media src the CLI acts on, with the value the CLI decodes:
     numeric references and the five basic named ones decode exactly, and a src holding any
     other character reference is refused. A src becomes the path the CLI opens by the CLI's

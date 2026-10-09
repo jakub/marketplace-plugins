@@ -555,11 +555,15 @@ function onlyData(at, what, value, css = false) {
   err(`${at}: ${what} "${v.length > 60 ? v.slice(0, 60) + '…' : v}" — ${isRemote(v) ? 'remote, and the viewer\'s CSP blocks it' : 'the plans CLI uploads only a literal src, so this path would break'}; use ${css ? 'an <img>' : 'src'} for a local file, or a data: URI`);
 }
 const srcsetUrls = (s) => { const out = []; let i = 0; while (i < s.length) { while (i < s.length && /[\s,]/.test(s[i])) i++; let j = i; while (j < s.length && !/\s/.test(s[j])) j++; if (j > i) { const u = s.slice(i, j); out.push(u.replace(/,+$/, '')); if (!u.endsWith(',')) while (j < s.length && s[j] !== ',') j++; } i = j; } return out; };
-// CSS reads a backslash escape inside an identifier, so u\72l( is url( and @\69mport is @import. pack decodes none: it refuses an
-// escape in the name of a function or an at-rule, in a <style>, a style="" and the page's own stylesheet. Comments and strings
-// are blanked first, in CSS's own order, where a comment opens only outside a string, a string only outside a comment, and an
-// escape outside a string is one token, so a fake string hides no name and a comment opened inside a string hides no url().
-// Blanking keeps every offset, so a url( found in the text with its strings is checked only where it starts outside one.
+// CSS first preprocesses its input (CSS Syntax §3.3): CRLF, a lone CR and FF each become one LF, and NUL becomes U+FFFD. So a
+// string ends at any of those newlines, and a backslash before any of them continues the string. pack reads the same text, in
+// a <style>, a style="" and the page's own stylesheet, so a url() or @import after a CR or FF is found and an escaped CRLF is
+// not refused. CSS reads a backslash escape inside an identifier, so u\72l( is url( and @\69mport is @import. pack decodes
+// none: it refuses an escape in the name of a function or an at-rule. Comments and strings are blanked first, in CSS's own
+// order, where a comment opens only outside a string, a string only outside a comment, and an escape outside a string is one
+// token, so a fake string hides no name and a comment opened inside a string hides no url(). Blanking keeps every offset, so a
+// url( found in the text with its strings is checked only where it starts outside one.
+const cssPreprocess = (css) => css.replace(/\r\n?|\f/g, '\n').replace(/\0/g, '\uFFFD');
 function cssBlank(css, strings) {   // css with its comments blanked, and its strings too unless `strings` keeps them
   let out = '', i = 0; const n = css.length;
   while (i < n) {
@@ -583,8 +587,8 @@ function cssEscapedName(code) {   // the first function or at-rule name in blank
   }
   return null;
 }
-function checkCss(at, css) {
-  const kept = cssBlank(css, true), code = cssBlank(css, false);
+function checkCss(at, text) {
+  const css = cssPreprocess(text); const kept = cssBlank(css, true), code = cssBlank(css, false);
   const name = cssEscapedName(code); if (name) err(`${at}: "${name}" holds a backslash escape in the name of a CSS function or at-rule, which pack does not decode — write the name plainly`);
   for (const m of kept.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\)/gi)) if (code[m.index] !== ' ') onlyData(at, 'CSS url()', m[1] ?? m[2] ?? m[3], true);
   if (/@import\b/i.test(code)) err(`${at}: CSS @import — the viewer loads no external stylesheet; inline it`);

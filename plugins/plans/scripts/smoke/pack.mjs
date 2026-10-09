@@ -68,6 +68,15 @@ const REFUSALS = [
   { name: 'css-escape-after-fake-string', head: '<style>a{b:\\"x u\\72l(shot.png)"}</style>\n', body: '<p>x</p>', why: /"u\\72l\(" holds a backslash escape/ },
   { name: 'css-url-after-comment-in-string', head: '<style>a{content:"/*"} .x{background:url(shot.png)} i{content:"*/"}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
   { name: 'css-url-after-escaped-quote', head: '<style>a{content:\\" } .x{background:url(shot.png)} i{content:"}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  // CSS Syntax §3.3 turns CRLF, CR and FF into LF before tokenizing, so a bad string ends at any of them, in a <style>, a style=""
+  // and the page's own stylesheet. pack preprocesses the text the same way before every CSS scan.
+  { name: 'css-cr-ends-string', head: '<style>.x{content:"bad\r;background:url(shot.png)}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  { name: 'css-ff-ends-string', head: '<style>.x{content:"bad\f;background:url(shot.png)}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS url\(\) "shot\.png"/ },
+  { name: 'css-cr-before-import', head: '<style>a{content:"bad\r}@import "more.css";</style>\n', body: '<p>x</p>', why: /CSS @import/ },
+  { name: 'css-cr-ends-string-linked', setup: (d) => writeFileSync(join(d, 'local.css'), '.x{content:"bad\r;background:url(shot.png)}\n'),
+    head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: CSS url\(\) "shot\.png"/ },
+  { name: 'css-cr-ends-string-attribute', body: '<div style="content:&quot;bad&#13;;background:url(shot.png)">x</div>', why: /style="": CSS url\(\) "shot\.png"/ },
+  { name: 'css-ff-ends-string-attribute', body: '<div style="content:&quot;bad&#12;;background:url(shot.png)">x</div>', why: /style="": CSS url\(\) "shot\.png"/ },
   // pack reads a src as the CLI's tokenizer (golang.org/x/net/html) does, or refuses. &sol; names public/private.png to the CLI; pack
   // holds no entity table, so it refuses the reference instead of checking the literal file. An unquoted value ends at HTML
   // whitespace only, so U+00A0 is part of the name the CLI reads.
@@ -165,6 +174,13 @@ export default async function ({ ROOT, check }) {
       '<style>.md\\:flex{display:flex} .\\31 0{color:red} .a::before{content:"\\201C u\\72l(x) @\\69mport"} /* u\\72l(y) */ .b{fill:url(#g)}</style>\n'))
     const rb = run(benign, 'page.html')
     check('CSS escapes in selectors, property values, strings and comments are accepted', rb.status === 0, out(rb))
+
+    // A backslash before a newline continues a CSS string, and CSS reads CRLF, a lone CR and FF as that newline too, so a url()
+    // after any of them is still inside the string. The LF form is the control.
+    const continued = fixture('css-newline-continuation', page('<div style="content:&quot;a\\&#13;&#10;url(shot.png)&quot;">x</div>',
+      '<style>.a::before{content:"b\\\r\nurl(shot.png)"} .b::before{content:"c\\\nurl(shot.png)"} .c::before{content:"d\\\rurl(shot.png)"} .d::before{content:"e\\\furl(shot.png)"}</style>\n'))
+    const rc = run(continued, 'page.html')
+    check('a url() after an escaped LF, CRLF, CR or FF inside a CSS string is accepted', rc.status === 0, out(rc))
 
     const src = fixture('src-name', page('<p>x</p>')); writeFileSync(join(src, 'doc.src.html'), page('<p>x</p>'))
     const rs = run(src, 'doc.src.html')

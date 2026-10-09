@@ -12,7 +12,7 @@ index 7b2f50d8303f12708d583bbf23102d62a9bbcab5..11168565cdc73439a942d8013cbd01e0
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
  - A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 72c74571984c651783750174e5bb6e7e5be694f3..af28d5c016b209fa99fa2cde20ab8a5222bb29fe 100644
+index 216220aa6de3c76a81875577f2100199b9041733..e047fde941e6368a6540bedb4df78aa17aa5795f 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -220,6 +220,13 @@ function tokenize(src) {
@@ -29,7 +29,7 @@ index 72c74571984c651783750174e5bb6e7e5be694f3..af28d5c016b209fa99fa2cde20ab8a52
  const errors = [], warns = [], info = [];
  const err = (m) => errors.push(m), warn = (m) => warns.push(m);
  const lineOf = (idx) => html.slice(0, idx).split('\n').length;
-@@ -624,6 +631,22 @@ if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's'
+@@ -628,6 +635,22 @@ if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's'
  let packed = html;
  for (const [s, e, text] of edits.sort((x, y) => y[0] - x[0])) packed = packed.slice(0, s) + text + packed.slice(e);
  if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');
