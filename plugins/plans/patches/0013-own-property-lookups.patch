@@ -248,10 +248,10 @@ index ebbc5a53756ddfa033ee369ad1899c3c2908a804..755c6534c1cedea170da08703b5135db
    // URL first, so Back returns to it. Any scheme but http and https renders as plain text.
    const link = href && NW.safeHref(href);
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index e555380368d4f4134a8f1e65fd5f3a6bb2b3349c..9ac3f9ed402fc1da628832b612b03303147162c9 100644
+index e3e488a39cf38b27827344c519b3cae4ced2506d..77fddc90756738810977103559c45d205eb94008 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
-@@ -282,7 +282,8 @@ if (!/<h1[\s>]/i.test(html)) warn('no <h1> — the response header uses it');
+@@ -284,7 +284,8 @@ if (!/<h1[\s>]/i.test(html)) warn('no <h1> — the response header uses it');
  if (!/<meta[^>]+charset/i.test(html)) warn('missing <meta charset="utf-8">');
  const KNOWN = new Set(['doc-code', 'doc-pin', 'doc-flow', 'doc-seq', 'doc-schema', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-mock', 'doc-shot', 'doc-quote', 'doc-ask', 'doc-note', 'doc-draft', 'doc-plan', 'doc-claim', 'doc-changes']);
  for (const m of html.matchAll(/<(doc-[a-z]+)\b/g)) if (!KNOWN.has(m[1])) err(`line ${lineOf(m.index)}: unknown element <${m[1]}> — known: ${[...KNOWN].join(' ')}`);
@@ -261,7 +261,7 @@ index e555380368d4f4134a8f1e65fd5f3a6bb2b3349c..9ac3f9ed402fc1da628832b612b03303
  for (const m of html.matchAll(/href=["']#([^"']+)["']/g)) if (!ids[m[1]] && !/^s\d+/.test(m[1])) warn(`line ${lineOf(m.index)}: href="#${m[1]}" points at no id`);
  
  { const t = html.match(/<div class="tldr">([\s\S]*?)<\/div>/i); if (t && wc(stripTags(t[1])) > 50) warn(`.tldr is ${wc(stripTags(t[1]))} words — ≤ 40: what changes, and what you need from the reader`); }
-@@ -380,7 +381,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -382,7 +383,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
            else if (pa.old && !validOld.has(+pa.old)) err(`${at}: <doc-pin old="${pa.old}"> — no removed line with that old-side number in this block`); } }
      }
      else if (tag === 'doc-mock') { if (!/<template[\s>]/i.test(inner)) err(`${at}: needs a <template>…</template> child holding the mock's HTML`); for (const p of inner.matchAll(/<doc-pin\b([^>]*)>/g)) { const pa = attrs(p[1]); if (pa.ref) { if (!new RegExp(`data-ref=["']${pa.ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`).test(inner)) err(`${at}: <doc-pin ref="${pa.ref}"> — no element with data-ref="${pa.ref}" inside this mock's <template>`); } else if (!/^\d+(\.\d+)?%?\s*,\s*\d+(\.\d+)?%?$/.test(pa.at || '')) err(`${at}: <doc-pin> inside doc-mock needs ref="data-ref-name" (preferred) or at="x%,y%"`); }

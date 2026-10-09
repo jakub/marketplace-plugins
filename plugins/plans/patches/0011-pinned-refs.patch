@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index 1a007cabe9d8016eabe91cc5aa808932aad5e552..836d5e51782e8210e3c5b65dd9b677ff1aff59f4 100644
+index 1a007cabe9d8016eabe91cc5aa808932aad5e552..4ca93a80a57274a2d617b4db44dba5429518b7ad 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -149,7 +149,7 @@ export async function assertUnderLimit(userId: string) {
@@ -16,34 +16,36 @@ index 1a007cabe9d8016eabe91cc5aa808932aad5e552..836d5e51782e8210e3c5b65dd9b677ff
  
  - Lints every block with the same parsers the browser uses, and the shape of the tree.
 -- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
-+- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
++- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error, unless only `+` rows name it: a file the change adds opens nothing, as without `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
  - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, reached through no symlink, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI or holds a `var()`, `env()` or `attr()`, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 49b38cce1464c7586bda4ac4c61b1ca378bbd906..6c500b62a88e540089cd9fa8c683745dce94e02e 100644
+index 49b38cce1464c7586bda4ac4c61b1ca378bbd906..9c8b5e5db2011559ed1d0ed9af1e73d91382c061 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
-@@ -256,6 +256,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
+@@ -256,6 +256,11 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
  const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
  const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) { if (!refused.has(ref + ':' + p)) { refused.add(ref + ':' + p); err(`ref="${ref}" with "${p}" — not a plain git ref and a path inside the repo; not running git`); } return null; }
    for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
 +// A pinned ref names the bytes a page cites. When git cannot read the file at that ref, the working-tree copy would show other
-+// bytes under the ref's name, so both call sites stop with an error instead. git's own message is not echoed.
++// bytes under the ref's name, so both call sites stop with an error instead. git's own message is not echoed. A call-row file
++// that only + rows name is one the change adds, which has no bytes at the ref: doc-calls skips it as a missing file, as it
++// does with no ref, and never reads the working tree for it.
 +const atRef = (at, ref, p) => { const g = gitShow(ref, p); if (g) return g; const k = ref + ':' + p; if (!refused.has(k)) { refused.add(k); err(`${at}: ref="${ref}" — git cannot read ${p} at that ref in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')}; a pinned ref never falls back to the working tree`); } return null; };
  const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
  const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
  
-@@ -305,7 +308,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -305,7 +310,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        let added = 0, missing = 0, extra = '';
        const seen = new Set();
        for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
 -        let text = null, sha = ''; const g = a.ref ? gitShow(a.ref, nd.file) : null; if (g) { text = g.text; sha = a.ref; } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
-+        let text = null, sha = ''; if (a.ref) { const g = atRef(at, a.ref, nd.file); if (!g) continue; text = g.text; sha = a.ref; } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
++        let text = null, sha = ''; if (a.ref) { const added = m.nodes.every((o) => o.file !== nd.file || o.mark === '+'); const g = added ? gitShow(a.ref, nd.file) : atRef(at, a.ref, nd.file); if (!g && !added) continue; if (g) { text = g.text; sha = a.ref; } } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
          if (text == null) { missing++; continue; }
          if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
          const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
-@@ -334,12 +337,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -334,12 +339,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        if (a.src && !hasScript) {
          let text, where;
          let sha = '';

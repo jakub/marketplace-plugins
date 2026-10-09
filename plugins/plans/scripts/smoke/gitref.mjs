@@ -1,6 +1,7 @@
 // Pinned refs (patch 0011): when a block asks for a git ref and git cannot read the file at it, pack exits 1 and writes nothing,
 // at both call sites, doc-code src and doc-calls rows, instead of stamping working-tree bytes with that ref. A ref git can
-// read packs the committed bytes, even when the working tree differs. pack runs on import, so each case spawns it against a
+// read packs the committed bytes, even when the working tree differs. A doc-calls file that only + rows name is one the change
+// adds, so at a ref it opens nothing and packs, while a file any other row names still refuses. pack runs on import, so each case spawns it against a
 // throwaway git repository under the system temp directory, which the section removes at the end.
 
 import { spawnSync } from 'node:child_process'
@@ -13,6 +14,7 @@ const page = (body) => '<!doctype html>\n<html lang="en">\n<meta charset="utf-8"
   '<script src="htmlplan.js" defer></script>\n</body>\n</html>\n'
 const code = (ref) => `<doc-code src="a.txt" lines="1-3"${ref ? ` ref="${ref}"` : ''}></doc-code>`
 const calls = (ref) => `<doc-calls${ref ? ` ref="${ref}"` : ''} caption="One changed call."><script type="text/plain">\n~ main() @ a.txt:2\n</script></doc-calls>`
+const rows = (ref, text) => `<doc-calls ref="${ref}" caption="Rows on files HEAD lacks."><script type="text/plain">\n${text}\n</script></doc-calls>`
 const listing = (dir) => readdirSync(dir).sort().map((f) => `${f} ${statSync(join(dir, f), { bigint: true }).mtimeNs}`).join('\n')
 // No user or system git config, so no hook, signing or template from this machine touches the fixture repository.
 const GITENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
@@ -59,6 +61,21 @@ export default async function ({ ROOT, check }) {
     if (headCalls.r.status === 0) {
       const o = headCalls.packed()
       check('its excerpt is the committed bytes, marked with the ref', /<script type="text\/plain" data-excerpt="a\.txt:2" data-start="1" data-sha="HEAD">\ncommitted one\ncommitted two/.test(o) && !o.includes('working two'))
+    }
+    // new.ts and old.ts are absent at HEAD but present in the working tree, so a fallback would show their working bytes.
+    writeFileSync(join(repo, 'new.ts'), 'working new\n'.repeat(12))
+    writeFileSync(join(repo, 'old.ts'), 'working old\n'.repeat(12))
+    const added = run(rows('HEAD', '~ main()          @ a.txt:2\n+   **newFn()**   @ new.ts:10'))
+    check('a + row on a file missing at the ref packs', added.r.status === 0 && !/git cannot read new\.ts/.test(added.r.stdout + added.r.stderr), out(added.r))
+    if (added.r.status === 0) {
+      const o = added.packed()
+      check('with no excerpt for the added file and none from the working tree, and the readable row\'s excerpt kept',
+        !o.includes('data-excerpt="new.ts:10"') && !o.includes('working new') && /data-excerpt="a\.txt:2" data-start="1" data-sha="HEAD">\ncommitted one/.test(o))
+    }
+    for (const [name, text] of [['a ~ row', '~ old()           @ old.ts:3'],
+      ['a context row on a file a + row also names', '~ main()          @ a.txt:2\n+   **newFn()**   @ old.ts:10\n    helper()      @ old.ts:4']]) {
+      const { r, same } = run(rows('HEAD', text))
+      check(`${name} on a file missing at the ref still exits 1 with nothing written`, r.status === 1 && same && /ref="HEAD" — git cannot read old\.ts at that ref/.test(r.stdout + r.stderr), out(r))
     }
     const plain = run(code(null))
     check('with no ref, doc-code reads the working tree and marks it +wt', plain.r.status === 0 && plain.packed().includes('working two') && /sha="[0-9a-f]+\+wt"/.test(plain.packed()), out(plain.r))

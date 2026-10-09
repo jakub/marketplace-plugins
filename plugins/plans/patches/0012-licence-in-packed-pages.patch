@@ -1,18 +1,18 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index 836d5e51782e8210e3c5b65dd9b677ff1aff59f4..f0e31da5b04e5f473fabd4155dc984067ae60f36 100644
+index 4ca93a80a57274a2d617b4db44dba5429518b7ad..ad344cf951b1ecf50e3a9fd30639f6998f94c501 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -229,7 +229,7 @@ node runtime/pack.mjs [--root <repo>]… [-o out.html] [--lint-only] [--quiet] [
  
  - Lints every block with the same parsers the browser uses, and the shape of the tree.
- - Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
+ - Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error, unless only `+` rows name it: a file the change adds opens nothing, as without `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
 -- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, reached through no symlink, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
 +- Inlines the runtime from its own folder, once, with its licence: right after the doctype, a comment that names the upstream work and the local changes and holds the Apache-2.0 text. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, reached through no symlink, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI or holds a `var()`, `env()` or `attr()`, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
  - A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 6c500b62a88e540089cd9fa8c683745dce94e02e..e555380368d4f4134a8f1e65fd5f3a6bb2b3349c 100644
+index 9c8b5e5db2011559ed1d0ed9af1e73d91382c061..e3e488a39cf38b27827344c519b3cae4ced2506d 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -222,6 +222,13 @@ function tokenize(src) {
@@ -29,7 +29,7 @@ index 6c500b62a88e540089cd9fa8c683745dce94e02e..e555380368d4f4134a8f1e65fd5f3a6b
  const errors = [], warns = [], info = [];
  const err = (m) => errors.push(m), warn = (m) => warns.push(m);
  const lineOf = (idx) => html.slice(0, idx).split('\n').length;
-@@ -687,6 +694,22 @@ if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's'
+@@ -689,6 +696,22 @@ if (media.size) info.push(`${media.size} local media file${media.size > 1 ? 's'
  let packed = html;
  for (const [s, e, text] of edits.sort((x, y) => y[0] - x[0])) packed = packed.slice(0, s) + text + packed.slice(e);
  if (!/data-htmlplan-packed/.test(packed)) packed = packed.replace(/<html\b/i, '<html data-htmlplan-packed');

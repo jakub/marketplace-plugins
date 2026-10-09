@@ -264,7 +264,9 @@ const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
 const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) { if (!refused.has(ref + ':' + p)) { refused.add(ref + ':' + p); err(`ref="${ref}" with "${p}" — not a plain git ref and a path inside the repo; not running git`); } return null; }
   for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
 // A pinned ref names the bytes a page cites. When git cannot read the file at that ref, the working-tree copy would show other
-// bytes under the ref's name, so both call sites stop with an error instead. git's own message is not echoed.
+// bytes under the ref's name, so both call sites stop with an error instead. git's own message is not echoed. A call-row file
+// that only + rows name is one the change adds, which has no bytes at the ref: doc-calls skips it as a missing file, as it
+// does with no ref, and never reads the working tree for it.
 const atRef = (at, ref, p) => { const g = gitShow(ref, p); if (g) return g; const k = ref + ':' + p; if (!refused.has(k)) { refused.add(k); err(`${at}: ref="${ref}" — git cannot read ${p} at that ref in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')}; a pinned ref never falls back to the working tree`); } return null; };
 const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
 const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
@@ -316,7 +318,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
       let added = 0, missing = 0, extra = '';
       const seen = new Set();
       for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
-        let text = null, sha = ''; if (a.ref) { const g = atRef(at, a.ref, nd.file); if (!g) continue; text = g.text; sha = a.ref; } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
+        let text = null, sha = ''; if (a.ref) { const added = m.nodes.every((o) => o.file !== nd.file || o.mark === '+'); const g = added ? gitShow(a.ref, nd.file) : atRef(at, a.ref, nd.file); if (!g && !added) continue; if (g) { text = g.text; sha = a.ref; } } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
         if (text == null) { missing++; continue; }
         if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
         const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
