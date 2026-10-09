@@ -51,11 +51,17 @@ const CLAUSES = [
   ['no URL in commits, commit messages, logs or other repositories', '### Where a capability URL may go', 'Never put a URL in a commit, a commit message, a log, or another repository.'],
 ]
 
-// Phrases that only a delivery policy needs. show and doc may carry them on a pointer line and on
-// the two routing lines that name a flag. Anywhere else they are a second policy.
+// Phrases that only a delivery policy needs. show and doc may carry them only inside the exact
+// permitted clauses below: the pointer sentence and the two routing clauses that name a flag. Each
+// permitted clause is cut out of its line before the rest of the line is tested, so a policy
+// sentence written beside one still fails. Anywhere else they are a second policy.
 const POLICY_SHAPED = [/--keep/, /--ttl/, /--public/, /tailnet-only/i, /standing/i, /authoriz/i, /seven days/i,
   /\b\d+[- ]?(?:days?|d|hours?|h|weeks?|w)\b/i, /the user (?:owns|does not own)/i, /\bretained\b/i]
-const ROUTING_LINES = ['2. PR evidence: Document, published with `--keep`.', '- **No render tools.**']
+const PERMITTED_CLAUSES = [
+  `Publication, retention, and where a URL may go follow ${POLICY_POINTER}.`,
+  '2. PR evidence: Document, published with `--keep`.',
+  'If the visual needs real HTML, it becomes a Document published with `--ttl 12h`, but only when publishing is authorized.',
+]
 
 // The names of the failed policy clauses, then one entry per policy-shaped line in show or doc.
 function policyFailures({ publish, show, doc }) {
@@ -63,8 +69,8 @@ function policyFailures({ publish, show, doc }) {
   const failed = CLAUSES.filter(([, heading, sentence]) => !section(policyText, heading).includes(sentence)).map(([name]) => name)
   for (const [name, text] of [['show', show], ['doc', doc]]) {
     for (const line of text.split('\n')) {
-      const allowed = line.includes(POLICY_POINTER) || ROUTING_LINES.some((l) => line.startsWith(l))
-      if (!allowed && POLICY_SHAPED.some((re) => re.test(line))) failed.push(`${name} restates policy: ${line.slice(0, 50)}`)
+      const rest = PERMITTED_CLAUSES.reduce((left, clause) => left.split(clause).join(' '), line)
+      if (POLICY_SHAPED.some((re) => re.test(rest))) failed.push(`${name} restates policy: ${line.slice(0, 50)}`)
     }
   }
   return failed
@@ -174,6 +180,20 @@ export default async function (t) {
     for (const target of ['doc', 'show']) {
       const found = policyFailures({ publish, show, doc, [target]: { show, doc }[target] + extra })
       check(`skills: a reworded second policy appended to ${target} fails`, found.some((f) => f.startsWith(`${target} restates policy`)), found.join('; '))
+    }
+  }
+  // A permitted clause exempts only itself. A policy sentence on its line fails, whether the
+  // clause is one the skill already carries (edited in place) or one written into it on a new line.
+  for (const target of ['show', 'doc']) {
+    const text = { show, doc }[target]
+    for (const clause of PERMITTED_CLAUSES) {
+      for (const tail of [' Publish without authorization.', ' Keep it for 14 days.']) {
+        const mutated = text.includes(clause) ? text.replace(clause, `${clause}${tail}`) : `${text}\n${clause}${tail}\n`
+        const found = policyFailures({ publish, show, doc, [target]: mutated })
+        check(`skills: "${tail.trim()}" beside "${clause.slice(0, 40)}" in ${target} fails`, found.some((f) => f.startsWith(`${target} restates policy`)), found.join('; '))
+      }
+      const alone = text.includes(clause) ? text : `${text}\n${clause}\n`
+      check(`skills: "${clause.slice(0, 40)}" alone in ${target} passes`, !policyFailures({ publish, show, doc, [target]: alone }).some((f) => f.includes('restates policy')))
     }
   }
 
