@@ -34,8 +34,8 @@
 // '- <headline>' line per commit>"` so GitHub re-checks the head itself. The message is built here
 // from the title and the commit headlines of the last gate read, never from the pull request
 // description, which can hold capability URLs that GitHub would otherwise copy into permanent
-// history. A URL in the title or a headline, through to the next whitespace, becomes
-// `<link removed>` for the same reason. Title and commits are read with the gate but kept out of its snapshot, so editing the
+// history. A URL or a `//` token in the title or a headline, through to the next whitespace, and any
+// 22-character capability key wherever it sits, becomes `<link removed>` for the same reason. Title and commits are read with the gate but kept out of its snapshot, so editing the
 // title between the reads does not stop a land; a title or commit list that cannot be read does.
 // It proves the outcome by re-reading the url, state, head and base rather than trusting gh's exit
 // code. It prints one JSON line: exit 0 `merged`, exit 1 `refused` with every stop found (nothing
@@ -83,9 +83,16 @@ const nonEmpty = (value) => (typeof value === 'string' && value.trim() !== '' ? 
 const upper = (value) => (typeof value === 'string' ? value.trim().toUpperCase() : '')
 const truncate = (text, limit) => { const s = String(text ?? ''); return s.length <= limit ? s : `${s.slice(0, limit)}...` }
 const oneLine = (text) => String(text).replace(/\s*\n\s*/g, ' ').trim()
-// A URL in the title or a headline could be a capability URL, and a squash message is permanent
-// history, so each one, through to the next whitespace, becomes a fixed placeholder.
-const stripLinks = (text) => String(text).replace(/https?:\/\/\S*/gi, '<link removed>')
+// A plans capability is a 22-character base64url key that grants access on its own, and a squash
+// message is permanent history. So an http(s) URL or a scheme-relative `//` token, through to the
+// next whitespace, and any 22-character [A-Za-z0-9_-] run holding an uppercase letter or a digit,
+// wherever it sits, each become a fixed placeholder. Run it on a line already folded by oneLine.
+const LINK_REMOVED = '<link removed>'
+const CAPABILITY_KEY = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/g
+const stripLinks = (text) => String(text)
+  .replace(/https?:\/\/\S*/gi, LINK_REMOVED)
+  .replace(/(?<!:)\/\/\S+/g, LINK_REMOVED)
+  .replace(CAPABILITY_KEY, (run) => (/[A-Z0-9]/.test(run) ? LINK_REMOVED : run))
 const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
 
 const bucketOf = (entry) => {

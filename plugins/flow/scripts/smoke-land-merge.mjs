@@ -196,6 +196,32 @@ console.log('the executor merges once, pinned to the gated head')
       args[args.indexOf('--subject') + 1] === `evidence <link removed> done (#${PR})` &&
       args[args.indexOf('--body') + 1] === '- docs: see <link removed> then stop\n- fix: plain headline'
   })(), 'a URL in the title or a headline reached the squash message')
+  // A plans capability is the bare 22-character base64url key, so it is redacted wherever it sits,
+  // whatever URL spelling carries it. The gate reads the same calls whether or not a key was there.
+  const KEY = 'AbCdEf0123456789_-xYzA'
+  const SHA40 = 'a1b2c3d4e5'.repeat(4)
+  const leakCase = (name, { title = TITLE, headline = null }, subject, body) => {
+    const r = run(ARGS, { st: freshState({ pr: { title, commits: [{ oid: '1'.repeat(40), messageHeadline: headline ?? 'fix: plain headline' }] } }) })
+    const args = r.st.merges[0] ?? []
+    const subjectGot = args[args.indexOf('--subject') + 1]
+    const bodyGot = args[args.indexOf('--body') + 1]
+    const gateCalls = (x) => JSON.stringify(x.st.calls.filter((a) => !(a[0] === 'pr' && a[1] === 'merge')))
+    check(name, merged(r) && args.every((a) => !String(a).includes(KEY)) && subjectGot === subject && bodyGot === body &&
+      gateCalls(r) === gateCalls(run()), JSON.stringify({ subjectGot, bodyGot, merges: r.st.merges }))
+  }
+  const LR = '<link removed>'
+  leakCase('a bare capability key in the title is replaced by <link removed>', { title: `ship ${KEY} now` }, `ship ${LR} now (#${PR})`, '- fix: plain headline')
+  leakCase('a bare key in a headline is replaced', { headline: `see ${KEY}.` }, `${TITLE} (#${PR})`, `- see ${LR}.`)
+  leakCase('a scheme-relative //host/key in a headline is replaced', { headline: `see //plans.example/${KEY} ok` }, `${TITLE} (#${PR})`, `- see ${LR} ok`)
+  leakCase('a host/key with no scheme keeps the host and loses the key', { headline: `see plans.example/${KEY} ok` }, `${TITLE} (#${PR})`, `- see plans.example/${LR} ok`)
+  leakCase('an angle-bracket URL in a headline is replaced', { headline: `see <https://plans.example/${KEY}> ok` }, `${TITLE} (#${PR})`, `- see <${LR} ok`)
+  leakCase('a markdown link in a headline loses the key', { headline: `see [doc](https://plans.example/${KEY}) ok` }, `${TITLE} (#${PR})`, `- see [doc](${LR} ok`)
+  leakCase('a URL folded across a newline loses both halves', { headline: `see https://plans.example/\n${KEY}` }, `${TITLE} (#${PR})`, `- see ${LR} ${LR}`)
+  leakCase('an uppercase scheme is replaced', { headline: `see HTTPS://PLANS.EXAMPLE/${KEY} ok` }, `${TITLE} (#${PR})`, `- see ${LR} ok`)
+  for (const [what, token] of [['a lowercase kebab word of 22 characters', 'smoke-plugin-manifests'], ['a 40-character commit SHA', SHA40],
+    ['a 21-character mixed token', KEY.slice(0, 21)], ['a 23-character mixed token', `Z${KEY.slice(1)}B`]]) {
+    leakCase(`${what} survives unchanged`, { headline: `fix: ${token} again` }, `${TITLE} (#${PR})`, `- fix: ${token} again`)
+  }
   check('the title and commits are not in the gate snapshot: a title edit between the reads still lands, with the newer title', (() => {
     const edited = run(ARGS, { st: freshState({ recheck: { title: 'feat(flow): gate the merge, reworded' } }) })
     return merged(edited) && edited.st.merges[0].includes(`feat(flow): gate the merge, reworded (#${PR})`)
