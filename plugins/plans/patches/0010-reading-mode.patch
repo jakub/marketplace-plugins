@@ -26,10 +26,10 @@ index 35bb282e7ec0427f5cb5c03ec6fb75a497b79470..baaad8846e92833b81f56e25ede134ca
  
  @media print { .nw-bar, .nw-cbtn, .nw-toc.rail { display: none !important; } body { padding: 0; } doc-code, doc-ask, .card { break-inside: avoid; } }
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030ff7ad154 100644
+index 6d89edc865a8a39b59810e24e24a6b87e73dfa6b..7c9fd302ebdaafaf6f345ac666a95707386d43a0 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
-@@ -530,6 +530,11 @@ if (S.loaded?.strikes) S.strikes = S.loaded.strikes;
+@@ -532,6 +532,11 @@ if (S.loaded?.strikes) S.strikes = S.loaded.strikes;
  if (S.loaded?.seen) S.seen = S.loaded.seen;
  let urlAnchor = fromUrl.anchor;   // the in-page target the fragment names; links set it, reset keeps it
  let saveT, lastWrite = 0, stale = null, written = location.hash;   // written: the fragment this page last loaded or wrote
@@ -41,7 +41,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
  /** Each change is written to the fragment at once while the write budget lasts, because a reload requests the URL as it
      stands before beforeunload can run. Browsers cap history writes: Chromium drops replaceState calls past 200 in 10 s in
      a frame, and WebKit throws past 100 in 10 s for the whole page. The budget stays far under both: SAVE_BURST writes in
-@@ -548,7 +553,7 @@ function save() { clearTimeout(saveT); const wait = Math.ceil((1 - inHand(perfor
+@@ -550,7 +555,7 @@ function save() { clearTimeout(saveT); const wait = Math.ceil((1 - inHand(perfor
      reload never saves the old state over a pasted link. */
  function flushState() {
    clearTimeout(saveT); if (location.hash !== written) return;
@@ -50,7 +50,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    if (ok && r.hash !== location.hash) {   // the URL is absolute, so a <base> can't redirect it
      try { history.replaceState(history.state, '', location.href.split('#')[0] + r.hash); } catch {}
      const now = performance.now(); budget = inHand(now) - 1; lastWrite = now; written = location.hash; ok = written === r.hash;   // a refused or dropped write leaves the hash as it was
-@@ -574,9 +579,10 @@ function followLink(e) {
+@@ -576,9 +581,10 @@ function followLink(e) {
    flushState();
  }
  /** A fragment the page did not write (the address bar, Back or Forward across entries). A payload belongs to that entry, so
@@ -63,7 +63,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    written = location.hash; const t = d.anchor && document.getElementById(d.anchor); urlAnchor = t ? d.anchor : null; if (t) goTo(t);
    flushState();
  }
-@@ -594,6 +600,7 @@ document.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.tar
+@@ -596,6 +602,7 @@ document.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.tar
  
  /** Open the comment popover for a target. key = stable id; label = human ref; anchor = element to position under; extra = optional node to show above the textarea */
  function openComment({ key, label, anchor, extra, onState }) {
@@ -71,7 +71,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    closePop();
    const cur = S.comments[key]?.text || '';
    const ta = h('textarea', { placeholder: 'Comment…' }); ta.value = cur;
-@@ -610,10 +617,10 @@ function openComment({ key, label, anchor, extra, onState }) {
+@@ -612,10 +619,10 @@ function openComment({ key, label, anchor, extra, onState }) {
    setTimeout(() => ta.focus({ preventScroll: true }), 10);
    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) pop.querySelector('.primary').click(); });
  }
@@ -85,7 +85,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    document.body.append(pop);
    const r = anchor.getBoundingClientRect(); const pw = pop.offsetWidth;
    pop.style.left = clamp(r.left + window.scrollX - 12, window.scrollX + 8, window.scrollX + document.documentElement.clientWidth - pw - 8) + 'px';
-@@ -622,6 +629,7 @@ function openNote({ anchor, num, title, html }) {
+@@ -624,6 +631,7 @@ function openNote({ anchor, num, title, html }) {
  }
  /** Make an element a comment target. */
  function commentable(el, key, label, { button = true, anchor, extra } = {}) {
@@ -93,7 +93,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    el.dataset.nwT = key;
    const set = (on) => el.classList.toggle('has-comment', on);
    set(!!S.comments[key]);
-@@ -683,7 +691,7 @@ function askPick(ask, ans) {                                                   /
+@@ -685,7 +693,7 @@ function askPick(ask, ans) {                                                   /
      if (c.type === 'range' || c.matches('select')) return String(v); }
    return '';
  }
@@ -102,7 +102,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
  function goToAsk(ask) {
    closeSheet(); for (let d = ask.closest('details'); d; d = d.parentElement?.closest('details')) d.open = true;
    ask.closest('doc-plan')?._reveal?.(ask);
-@@ -758,6 +766,7 @@ async function copyText(text, ta) {
+@@ -760,6 +768,7 @@ async function copyText(text, ta) {
    try { ta.focus({ preventScroll: true }); ta.select(); return document.execCommand('copy') === true; } catch { return false; }
  }
  function openResponse() {
@@ -110,7 +110,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    const r = buildResponse();
    // The response always sits in a readonly, selectable textarea, so the reader can copy it by hand when the browser will not.
    const out = h('textarea', { class: 'nw-out', readonly: true, spellcheck: 'false', 'aria-label': 'Your response' }); out.value = r.md;
-@@ -838,7 +847,7 @@ define('doc-code', (el) => {
+@@ -840,7 +849,7 @@ define('doc-code', (el) => {
      const lineNo = isDiff ? (cls === 'rem' || cls === 'hunk' ? null : lnA - 1) : start + i;
      const tr = h('tr', { class: cls }, h('td', { class: 'ln', 'data-ln': lineNo ?? (oldNo != null ? 'old' + oldNo : '') }, gutter), h('td', { class: 'src', html: codeHtml || ' ' }));
      rows.push(tr);
@@ -119,7 +119,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
      if (lineNo != null && pins[lineNo]) { pins[lineNo].forEach((p) => { rows.push(pinRow(p)); p.remove(); }); delete pins[lineNo]; }
      if (cls === 'rem' && oldPins[oldNo]) { oldPins[oldNo].forEach((p) => { rows.push(pinRow(p)); p.remove(); }); delete oldPins[oldNo]; }
    });
-@@ -865,9 +874,9 @@ define('doc-draft', (el) => {
+@@ -867,9 +876,9 @@ define('doc-draft', (el) => {
      else { const html = cur === orig ? esc(cur) : (NW.diffWords(orig, cur) ?? esc(cur)); body.append(h('div', { class: 'c-body', style: 'padding:10px 14px;white-space:pre-wrap;font:13px/1.6 var(--plans-mono)', html })); }
    };
    btnEdit.onclick = () => { editing = !editing; render(); }; btnRevert.onclick = () => { cur = orig; delete S.drafts[id]; editing = false; render(); save(); };
@@ -131,7 +131,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    el._diff = () => cur !== orig ? { label, diff: NW.unifiedDiff(orig, cur, label) } : null;
    el._reset = () => { cur = orig; editing = false; render(); };
    render();
-@@ -926,10 +935,11 @@ define('doc-flow', (el) => {
+@@ -928,10 +937,11 @@ define('doc-flow', (el) => {
          n.detail.length ? h('div', { style: 'color:var(--plans-ink-2);white-space:pre-wrap' }, n.detail.join('\n')) : null,
          templates[n.id] ? h('div', { style: 'margin-top:8px' }, templates[n.id].content.cloneNode(true)) : null,
          n.href ? h('a', { href: n.href, style: 'display:inline-block;margin-top:6px;font-size:13px', onclick: () => closePop() }, 'Jump to ' + n.href + ' →') : null);
@@ -144,7 +144,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    });
    $$(':scope > script', el).forEach((s) => s.remove()); [...el.childNodes].forEach((n) => { if (n.nodeType === 3) n.remove(); });
    const frame = h('div', { class: 'fig-frame' }); frame.append(root);
-@@ -966,7 +976,7 @@ define('doc-seq', (el) => {
+@@ -968,7 +978,7 @@ define('doc-seq', (el) => {
      g.append(svg('rect', { x: Math.min(x1, x2) - 4, y: y - 8, width: Math.abs(x2 - x1) + 8 || 60, height: textH + 30, fill: 'transparent', stroke: 'none' }));
      g.dataset.step = String(m.steps.slice(0, i + 1).filter((x) => x.kind === 'msg').length); root.append(g);
      const key = `seq:${el.id || $$('doc-seq').indexOf(el)}:${i}`; if (S.comments[key]) g.classList.add('has-comment');
@@ -153,7 +153,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
      y += textH + (self ? 34 : 20);
    });
    const H = y + 16; W = Math.max(W, Math.ceil(maxRight + 16)); $$('.sdiv line', root).forEach((l) => l.setAttribute('x2', W - PAD + 10));
-@@ -1004,7 +1014,7 @@ function textSchema(el) {
+@@ -1006,7 +1016,7 @@ function textSchema(el) {
      else { ['file', 'lines', 'start', 'sha', 'hl'].forEach((k) => { if (el.hasAttribute(k)) c.setAttribute(k, el.getAttribute(k)); }); if (!file) c.setAttribute('title', label); if (isDiff) c.setAttribute('diff', ''); }
      c.append(h('script', { type: 'text/plain' }, changed ? NW.diffLines(base, cur).map((x) => x.t + x.s).join('\n') : raw)); if (!changed) c.append(...pins.map((p) => p.cloneNode(true)));
      code(c);
@@ -162,7 +162,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
      el.replaceChildren(c);
    };
    el._diff = () => (cur !== base ? { label, diff: NW.unifiedDiff(base, cur, label) } : null);
-@@ -1026,7 +1036,7 @@ define('doc-schema', (el) => {
+@@ -1028,7 +1038,7 @@ define('doc-schema', (el) => {
        rows.push(tr);
        if (f.note) rows.push(h('tr', { class: 'note' }, h('td', { colspan: 3, html: capHtml(f.note) })));
        const key = `schema:${sid}:${e.name}.${f.name}`; if (S.comments[key]) tr.classList.add('has-comment');
@@ -171,7 +171,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
      });
      const card = h('div', { class: 'sc-ent ' + (e.mark || ''), 'data-entity': e.name }, h('h5', null, e.name, e.note ? h('small', null, e.note) : null), h('table', null, h('tbody', null, rows)));
      cards[e.name] = card; grid.append(card);
-@@ -1085,7 +1095,7 @@ define('doc-calls', (el) => {
+@@ -1087,7 +1097,7 @@ define('doc-calls', (el) => {
          const doStrike = (ev) => { ev?.stopPropagation(); if (self) { delete S.strikes[strikeKey(n)]; save(); render(); return; } const before = fileRows(); const reason = '';   /* no dialog: the artifact viewer blocks prompt(); the reader gives a reason with the row's comment */ S.strikes[strikeKey(n)] = { label: `${path(n)}${n.loc ? ' · ' + n.loc : ''}`, reason: reason.trim(), t: Date.now() }; const after = fileRows(); S.strikes[strikeKey(n)].drops = Object.keys(before).filter((f) => !after[f]); save(); render(); };
          acts.append(h('button', { onclick: doComment }, '✎ comment'));
          if (n.mark !== ' ' && !n.gap) acts.append(h('button', { class: 'x', onclick: doStrike }, self ? 'restore' : '⊘ strike'));
@@ -180,7 +180,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
          if (!n.gap) row.addEventListener('click', (ev) => { if (ev.target.closest('.cl-acts')) return; if (tpl || exc) { open = open === n ? null : n; render(); } else { row.classList.add('cl-flash'); setTimeout(() => row.classList.remove('cl-flash'), 500); } $$('.cl-row.sel', rows).forEach((r) => r.classList.remove('sel')); rows.querySelector(`.cl-row[data-id="${n.id}"]`)?.classList.add('sel'); });   // a tapped row keeps its actions showing: touch screens have no hover
          rows.append(row);
          if (open === n && (tpl || exc)) {
-@@ -1153,7 +1163,7 @@ define('doc-machine', (el) => {
+@@ -1155,7 +1165,7 @@ define('doc-machine', (el) => {
        const mk = e.mark === 'new' ? 'nw-arr-new' : e.mark === 'gone' ? 'nw-arr-gone' : 'nw-arr';
        const tw = txt.length * 6.4 + 10; g.append(svg('path', { d, 'marker-end': `url(#${mk})` }), svg('rect', { class: 'lbl', x: anchor === 'start' ? lx - 4 : anchor === 'end' ? lx - tw + 4 : lx - tw / 2, y: ly - 8, width: tw, height: 15, rx: 3 }), svg('text', { x: lx, y: ly, style: `text-anchor:${anchor}` }, txt));
        g.setAttribute('tabindex', '0'); edgeG.append(g);
@@ -189,7 +189,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
        return g;
      });
      nodeEls = {};
-@@ -1250,7 +1260,7 @@ define('doc-tree', (el) => {
+@@ -1252,7 +1262,7 @@ define('doc-tree', (el) => {
      const full = path.filter(Boolean).join('/').replace(/\/+/g, '/');
      const row = h('div', { style: `--plans-tr-depth:${r.depth}`, class: ['tr-row', r.dir && 'dir', r.mark === 'new' && 'add', r.mark === 'gone' && 'rem', r.mark === 'mod' && 'mod', r.mark === 'hl' && 'hl'].filter(Boolean).join(' ') }, h('span', null, h('span', { class: 'tr-guide' }, guide), h('span', { class: 'tr-name' }, r.name)), r.note ? h('span', { class: 'tr-note', title: r.note, html: capHtml(r.note) }) : null);
      const key = `tree:${tid}:${full}`; if (S.comments[key]) row.classList.add('has-comment');
@@ -198,7 +198,7 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
      el.append(row);
    });
    if (el.getAttribute('caption')) el.append(h('div', { class: 'fig-cap tr-cap', html: capHtml(el.getAttribute('caption')) }));
-@@ -1309,8 +1319,8 @@ define('doc-mock', (el) => {
+@@ -1311,8 +1321,8 @@ define('doc-mock', (el) => {
    const zoomBtn = mockZoomButton(stage, () => { const host2 = h('div'); const sh2 = host2.attachShadow({ mode: 'open' }); const rd = h('div', { class: 'nw-root ' + frame }); rd.append(...[...rootDiv.childNodes].map((n) => n.cloneNode(true))); sh2.append(h('style', null, MOCK_BASE)); if (shared) { const d = document.createElement('div'); d.innerHTML = shared; sh2.append(...d.childNodes); } sh2.append(rd); return h('div', { class: 'mk-frame ' + frame, style: `width:${W}px` }, bar ? bar.cloneNode(true) : null, host2); });
    new ResizeObserver(fit).observe(stage); new ResizeObserver(fit).observe(fr); requestAnimationFrame(fit); fit();
    // data-ref targets inside the mock
@@ -209,16 +209,16 @@ index 7a80ee99e2a0dda6552694f03340503efdf45eb9..582d175d246f0f2e5814d0a651256030
    sh.addEventListener('submit', (e) => e.preventDefault());
    commentable(el, `mock:${mid}`, () => `${secLabel(el)} › mockup${label ? ' “' + label + '”' : ''}`);
  });
-@@ -1414,6 +1424,8 @@ function upgradeWithin(root) { $$('doc-code, doc-flow, doc-seq, doc-schema, doc-
+@@ -1416,6 +1426,8 @@ function upgradeWithin(root) { $$('doc-code, doc-flow, doc-seq, doc-schema, doc-
  
  /* ───────────────────────── boot ───────────────────────── */
  function boot() {
 +  readOnly = document.body.dataset.feedback === 'off' || !!$('meta[name="htmlplan"][content~="readonly"]');   // before any block is built
-+  if (readOnly) { document.body.classList.add('nw-read'); S.loaded = null; S.comments = {}; S.drafts = {}; S.strikes = {}; S.seen = {}; }   // a pasted payload restores nothing
++  if (readOnly) { document.body.classList.add('nw-read'); S.loaded = null; S.comments = dict(); S.drafts = dict(); S.strikes = dict(); S.seen = dict(); }   // a pasted payload restores nothing
    if (!$('meta[name=viewport]')) document.head.append(h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }));
    $$('body table').forEach((t) => { if (!t.closest('.table-wrap, doc-code, .sc-ent, doc-mock, template, .nw-sheet, doc-ask')) { const w = h('div', { class: 'table-wrap' }); t.replaceWith(w); w.append(t); } });
    prepPlans();
-@@ -1438,13 +1450,12 @@ function boot() {
+@@ -1440,13 +1452,12 @@ function boot() {
      const label = () => { const s = secLabel(el); if (el.matches('h2')) return s || el.textContent.trim(); if (el.matches('h3')) return `${s} › ${el.textContent.replace(/#$/, '').trim()}`; if (el.matches('doc-quote')) return `${s} › quote from ${el.getAttribute('from') || el.getAttribute('via') || 'source'}`; if (el.matches('doc-note')) return `${s} › note “${words(el.textContent, 6)}”`; return `${s} › “${words((el.querySelector('h3,h4,strong')?.textContent || el.textContent).replace(/^\+/, ''), 8)}”`; };
      commentable(el, key, label);
    });

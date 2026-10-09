@@ -13,10 +13,10 @@ index bef9ad0960026bc7355a6317234162c1ccafc082..35bb282e7ec0427f5cb5c03ec6fb75a4
  .nw-sheet footer .sp { flex: 1; } .nw-send-state { align-self: center; font-size: 13px; color: var(--plans-ink-2); } .nw-btn[disabled] { opacity: .5; cursor: default; }
  .nw-toast { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); background: var(--plans-ink); color: var(--plans-bg); padding: 9px 14px; border-radius: 99px; font: 550 13px var(--plans-sans); z-index: 80; box-shadow: var(--plans-shadow); }
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index f11ca15516bfd53b522da6518b706e6406e042cd..7a80ee99e2a0dda6552694f03340503efdf45eb9 100644
+index a1ec19542c9d74f15b3d869260bac65b3f19c8c1..6d89edc865a8a39b59810e24e24a6b87e73dfa6b 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
-@@ -596,7 +596,7 @@ document.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.tar
+@@ -598,7 +598,7 @@ document.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.tar
  function openComment({ key, label, anchor, extra, onState }) {
    closePop();
    const cur = S.comments[key]?.text || '';
@@ -25,7 +25,7 @@ index f11ca15516bfd53b522da6518b706e6406e042cd..7a80ee99e2a0dda6552694f03340503e
    const del = h('button', { class: 'nw-btn danger', onclick: () => { delete S.comments[key]; onState?.(false); save(); closePop(); } }, 'Remove');
    pop = h('div', { class: 'nw-pop', role: 'dialog' },
      h('div', { class: 'ref' }, label), extra || null, ta,
-@@ -751,18 +751,30 @@ function openSheet(title, bodyNodes, footerNodes) {
+@@ -753,18 +753,30 @@ function openSheet(title, bodyNodes, footerNodes) {
        h('div', { class: 'body' }, bodyNodes), footerNodes ? h('footer', null, footerNodes) : null));
    document.body.append(sheetBg);
  }
@@ -54,7 +54,7 @@ index f11ca15516bfd53b522da6518b706e6406e042cd..7a80ee99e2a0dda6552694f03340503e
 +    if (await copyText(r.md, out)) { state.textContent = 'Copied'; toast('Copied'); return; }
 +    out.focus({ preventScroll: true }); out.select(); hint.classList.add('warn');
 +    hint.textContent = 'The page could not copy. Your response is selected below: copy it with Ctrl+C, ⌘C or your device\'s Copy command, then paste it into your chat with the agent.'; } }, 'Copy response');
-   const reset = h('button', { class: 'nw-btn danger', onclick: () => { if (reset.dataset.arm !== '1') { reset.dataset.arm = '1'; reset.textContent = 'Clear everything?'; setTimeout(() => { reset.dataset.arm = ''; reset.textContent = 'Reset'; }, 3000); return; } S.comments = {}; S.drafts = {}; S.strikes = {}; S.seen = {}; writeAnswers(S.defaults); $$('doc-calls').forEach((d) => d._reset?.()); $$('doc-draft, doc-schema').forEach((d) => d._reset?.()); $$('doc-ask').forEach((a) => clearTimeout(a._seenT)); $$('.has-comment').forEach((e) => e.classList.remove('has-comment')); onFormChange(); flushState(); closeSheet(); toast('Reset'); } }, 'Reset');
+   const reset = h('button', { class: 'nw-btn danger', onclick: () => { if (reset.dataset.arm !== '1') { reset.dataset.arm = '1'; reset.textContent = 'Clear everything?'; setTimeout(() => { reset.dataset.arm = ''; reset.textContent = 'Reset'; }, 3000); return; } S.comments = dict(); S.drafts = dict(); S.strikes = dict(); S.seen = dict(); writeAnswers(S.defaults); $$('doc-calls').forEach((d) => d._reset?.()); $$('doc-draft, doc-schema').forEach((d) => d._reset?.()); $$('doc-ask').forEach((a) => clearTimeout(a._seenT)); $$('.has-comment').forEach((e) => e.classList.remove('has-comment')); onFormChange(); flushState(); closeSheet(); toast('Reset'); } }, 'Reset');
 -  openSheet('Your response', [list, h('p', { class: 'hint' }, liveOn ? 'This goes to Claude when you press Send.' : 'Copy this and paste it to Claude.'), pre], [reset, state, h('span', { class: 'sp' }), copy, send]);
 +  openSheet('Your response', [list, hint, out], [reset, state, h('span', { class: 'sp' }), copy]);
 +  requestAnimationFrame(() => { out.style.height = out.scrollHeight + 2 + 'px'; });   // the sheet scrolls, so the textarea shows all of it

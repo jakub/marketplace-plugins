@@ -92,7 +92,9 @@ it, so a later patch's context is the text an earlier one wrote.
     link's state. A fragment over 32 KiB or JSON over 24 KiB is not written, and a
     persistent note asks the reader to copy their response, as it does when the browser
     drops a write. A malformed payload restores nothing. The pure codec is exported as
-    HtmlPlan.fragment for the smoke. After a burst of more than 10 edits, an edit made within
+    HtmlPlan.fragment for the smoke. Every state map the runtime keeps or restores has no
+    prototype, and writeAnswers reads an own property or nothing, so a control the payload
+    does not name keeps its default whatever its name. After a burst of more than 10 edits, an edit made within
     250 ms before an immediate reload can be lost, because browsers cap replaceState
     (Chromium drops calls past 200 per 10 s, WebKit throws past 100) and the fragment is the
     only store.

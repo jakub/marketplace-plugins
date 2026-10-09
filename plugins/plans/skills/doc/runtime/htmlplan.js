@@ -430,12 +430,14 @@ NW.diffWords = function diffWords(a, b) {
    LIMITS.json bytes; decode needs no JSON bound, since a payload inside the fragment bound decodes to less. decode never
    throws. A payload that is malformed, of another version, over the bound or of the wrong shape restores nothing and keeps
    a valid anchor, one that would fit the bound as a bare #id. A bare #id over the bound names no anchor. A problem is a
-   short phrase that never quotes the fragment. */
+   short phrase that never quotes the fragment. Each map decode returns has no prototype, so a lookup by a key the page or
+   the payload controls, such as a control named toString, reads only what the payload holds. */
 const FRAG_VERSION = 1, FRAG_LIMITS = { fragment: 32768, json: 24576 };
 const FRAG_KEYS = ['answers', 'comments', 'drafts', 'strikes', 'seen'];
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isStr = (v) => typeof v === 'string';
 const isStrs = (v) => Array.isArray(v) && v.every(isStr);
+const dict = () => Object.create(null);   // a map with no prototype: every state map the runtime keeps or restores is one
 const hasOnly = (o, keys) => Object.keys(o).every((k) => keys.includes(k));
 const FRAG_ENTRY = {   // what one entry of each map may hold
   answers: (v) => v === null || isStr(v) || typeof v === 'boolean' || isStrs(v),
@@ -476,7 +478,7 @@ function decodeFragment(hash) {
   for (const k of FRAG_KEYS) {   // a __proto__ key is refused, so nothing restored can reach a prototype
     const map = Object.hasOwn(v, k) ? v[k] : {};
     if (!isObj(map) || Object.keys(map).some((n) => n === '__proto__' || !FRAG_ENTRY[k](map[n]))) return fail('wrong shape');
-    state[k] = map;
+    state[k] = dict(); for (const n of Object.keys(map)) state[k][n] = map[n];
   }
   return { state, anchor, problem: null };
 }
@@ -520,7 +522,7 @@ function toast(msg) { const t = h('div', { class: 'nw-toast' }, msg); document.b
 function errBox(el, errors, what) { if (!errors.length) return; el.prepend(h('div', { class: 'nw-err' }, `${what}: \n` + errors.join('\n'))); console.warn(`[htmlplan] ${what}`, errors); }
 
 /* ── state: answers, comments, drafts — kept in the URL fragment (NW.fragment), read here before any block is built ── */
-const S = { defaults: {}, comments: {}, drafts: {}, strikes: {}, seen: {}, loaded: null };
+const S = { defaults: dict(), comments: dict(), drafts: dict(), strikes: dict(), seen: dict(), loaded: null };
 const fromUrl = NW.fragment.decode(location.hash);
 if (fromUrl.problem) console.warn(`[htmlplan] this link's saved state was not restored (${fromUrl.problem}), so the page starts fresh`);
 S.loaded = fromUrl.state;
@@ -564,7 +566,7 @@ function flushState() {
 /** What the fragment carries: each answer that differs from its default, and every comment, draft, strike and seen flag.
     Machines are left out: they always start at their initial state. */
 function persisted() {
-  const ans = readAnswers(), answers = {};
+  const ans = readAnswers(), answers = dict();
   controls().forEach((c) => { const nm = c.name || c.dataset.name; if (!same(ans[nm], S.defaults[nm])) answers[nm] = ans[nm]; });
   return { answers, comments: S.comments, drafts: S.drafts, strikes: S.strikes, seen: S.seen };
 }
@@ -644,7 +646,7 @@ function controls() { return $$('doc-ask input[name], doc-ask textarea[name], do
 const lastPlay = {};   // ask-group → last trace played, so re-checking the same option doesn't replay
 const machines = {};   // name → { get state, fire, play, reset }  — machines publish their state like an ask publishes an answer
 function readAnswers() {
-  const out = {}; Object.values(machines).forEach((mc) => { out[mc.name] = mc.state; });
+  const out = dict(); Object.values(machines).forEach((mc) => { out[mc.name] = mc.state; });
   controls().forEach((c) => {
     if (c.matches('ol.rank')) { out[c.dataset.name] = $$(':scope > li', c).map((li) => li.dataset.value || li.textContent.trim()); return; }
     const nm = c.name;
@@ -657,8 +659,8 @@ function readAnswers() {
 function writeAnswers(ans) {
   if (!ans) return;   // machines always start at initial — a restored 'sent' with nothing reachable just looks broken
   controls().forEach((c) => {
-    if (c.matches('ol.rank')) { const order = ans[c.dataset.name]; if (Array.isArray(order)) { const lis = $$(':scope > li', c); order.forEach((v) => { const li = lis.find((l) => (l.dataset.value || l.textContent.trim()) === v); if (li) c.append(li); }); } return; }
-    const v = ans[c.name]; if (v === undefined) return;
+    if (c.matches('ol.rank')) { const order = Object.hasOwn(ans, c.dataset.name) ? ans[c.dataset.name] : undefined; if (Array.isArray(order)) { const lis = $$(':scope > li', c); order.forEach((v) => { const li = lis.find((l) => (l.dataset.value || l.textContent.trim()) === v); if (li) c.append(li); }); } return; }
+    const v = Object.hasOwn(ans, c.name) ? ans[c.name] : undefined; if (v === undefined) return;
     if (c.type === 'radio') c.checked = c.value === v;
     else if (c.type === 'checkbox') c.checked = Array.isArray(v) ? v.includes(c.value) : !!v;
     else c.value = v ?? '';
@@ -781,7 +783,7 @@ function openResponse() {
     if (await copyText(r.md, out)) { state.textContent = 'Copied'; toast('Copied'); return; }
     out.focus({ preventScroll: true }); out.select(); hint.classList.add('warn');
     hint.textContent = 'The page could not copy. Your response is selected below: copy it with Ctrl+C, ⌘C or your device\'s Copy command, then paste it into your chat with the agent.'; } }, 'Copy response');
-  const reset = h('button', { class: 'nw-btn danger', onclick: () => { if (reset.dataset.arm !== '1') { reset.dataset.arm = '1'; reset.textContent = 'Clear everything?'; setTimeout(() => { reset.dataset.arm = ''; reset.textContent = 'Reset'; }, 3000); return; } S.comments = {}; S.drafts = {}; S.strikes = {}; S.seen = {}; writeAnswers(S.defaults); $$('doc-calls').forEach((d) => d._reset?.()); $$('doc-draft, doc-schema').forEach((d) => d._reset?.()); $$('doc-ask').forEach((a) => clearTimeout(a._seenT)); $$('.has-comment').forEach((e) => e.classList.remove('has-comment')); onFormChange(); flushState(); closeSheet(); toast('Reset'); } }, 'Reset');
+  const reset = h('button', { class: 'nw-btn danger', onclick: () => { if (reset.dataset.arm !== '1') { reset.dataset.arm = '1'; reset.textContent = 'Clear everything?'; setTimeout(() => { reset.dataset.arm = ''; reset.textContent = 'Reset'; }, 3000); return; } S.comments = dict(); S.drafts = dict(); S.strikes = dict(); S.seen = dict(); writeAnswers(S.defaults); $$('doc-calls').forEach((d) => d._reset?.()); $$('doc-draft, doc-schema').forEach((d) => d._reset?.()); $$('doc-ask').forEach((a) => clearTimeout(a._seenT)); $$('.has-comment').forEach((e) => e.classList.remove('has-comment')); onFormChange(); flushState(); closeSheet(); toast('Reset'); } }, 'Reset');
   openSheet('Your response', [list, hint, out], [reset, state, h('span', { class: 'sp' }), copy]);
   requestAnimationFrame(() => { out.style.height = out.scrollHeight + 2 + 'px'; });   // the sheet scrolls, so the textarea shows all of it
 }
@@ -1425,7 +1427,7 @@ function upgradeWithin(root) { $$('doc-code, doc-flow, doc-seq, doc-schema, doc-
 /* ───────────────────────── boot ───────────────────────── */
 function boot() {
   readOnly = document.body.dataset.feedback === 'off' || !!$('meta[name="htmlplan"][content~="readonly"]');   // before any block is built
-  if (readOnly) { document.body.classList.add('nw-read'); S.loaded = null; S.comments = {}; S.drafts = {}; S.strikes = {}; S.seen = {}; }   // a pasted payload restores nothing
+  if (readOnly) { document.body.classList.add('nw-read'); S.loaded = null; S.comments = dict(); S.drafts = dict(); S.strikes = dict(); S.seen = dict(); }   // a pasted payload restores nothing
   if (!$('meta[name=viewport]')) document.head.append(h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }));
   $$('body table').forEach((t) => { if (!t.closest('.table-wrap, doc-code, .sc-ent, doc-mock, template, .nw-sheet, doc-ask')) { const w = h('div', { class: 'table-wrap' }); t.replaceWith(w); w.append(t); } });
   prepPlans();

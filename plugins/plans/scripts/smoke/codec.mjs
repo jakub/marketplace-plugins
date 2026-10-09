@@ -13,6 +13,9 @@ const b64url = (bytes) => Buffer.from(bytes).toString('base64url')
 const json = (v) => b64url(Buffer.from(typeof v === 'string' ? v : JSON.stringify(v), 'utf8'))
 const bytes = (s) => Buffer.byteLength(s, 'utf8')
 const EMPTY = { answers: {}, comments: {}, drafts: {}, strikes: {}, seen: {} }
+// A decoded map has no prototype, which isDeepStrictEqual holds against a literal, so decoded state is compared through JSON.
+const plain = (v) => JSON.parse(JSON.stringify(v))
+const eq = (a, b) => isDeepStrictEqual(plain(a), plain(b))
 
 // Every persisted map, each holding text from several scripts.
 const UNICODE = 'emoji 👩🏽‍💻 🇺🇦 · CJK 漢字かな한글 · RTL שלום مرحبا · astral 𝒜𝓈𝓉𝓇𝒶𝓁 𓀀 · combining é Z̤͔ͧ̑ · zero-width ‍‏'
@@ -41,12 +44,12 @@ export default async function ({ ROOT, check }) {
     const { hash, oversize } = F.encode(STATE, anchor)
     check(`encode(state, ${JSON.stringify(anchor)}) writes an ASCII, URL-safe pl1 fragment`,
       oversize === null && /^#pl1\.[A-Za-z0-9_-]+(~[A-Za-z0-9\-_.!~*'()%]+)?$/.test(hash ?? ''), String(hash).slice(0, 80))
-    check(`state and anchor ${JSON.stringify(anchor)} round-trip`, isDeepStrictEqual(F.decode(hash), { state: STATE, anchor, problem: null }))
+    check(`state and anchor ${JSON.stringify(anchor)} round-trip`, eq(F.decode(hash), { state: STATE, anchor, problem: null }))
     check(`re-encoding the restored state with ${JSON.stringify(anchor)} writes the same fragment`, F.encode(F.decode(hash).state, anchor).hash === hash)
   }
   check('decode reads a fragment with or without its #', isDeepStrictEqual(F.decode(F.encode(STATE, 'x').hash.slice(1)), F.decode(F.encode(STATE, 'x').hash)))
   const one = { ...EMPTY, drafts: { d: '𓀀' } }
-  check('missing maps decode as empty maps', isDeepStrictEqual(F.decode(F.encode(one, null).hash).state, one))
+  check('missing maps decode as empty maps', eq(F.decode(F.encode(one, null).hash).state, one))
 
   // No state: the fragment is the bare anchor, or nothing.
   check('no state and no anchor encode to the empty fragment', F.encode(null, null).hash === '' && F.encode(EMPTY, null).hash === '' && F.encode({}, '').hash === '')
@@ -65,7 +68,7 @@ export default async function ({ ROOT, check }) {
   const atFrag = F.encode(sized(24570), 'ab'), overFrag = F.encode(sized(24570), 'abc')
   check('a fragment of exactly 32 KiB is written', atFrag.oversize === null && bytes(atFrag.hash) === 32768, atFrag.oversize ?? bytes(atFrag.hash))
   check('a fragment one byte over 32 KiB is refused, with no fragment', overFrag.oversize === 'fragment' && overFrag.hash === null)
-  check('a 32 KiB fragment decodes', isDeepStrictEqual(F.decode(atFrag.hash), { state: { ...EMPTY, ...sized(24570) }, anchor: 'ab', problem: null }))
+  check('a 32 KiB fragment decodes', eq(F.decode(atFrag.hash), { state: { ...EMPTY, ...sized(24570) }, anchor: 'ab', problem: null }))
   const tooBig = F.decode(atFrag.hash + 'c')
   check('a fragment one byte over 32 KiB restores nothing and keeps its anchor', tooBig.state === null && tooBig.anchor === 'abc' && !!tooBig.problem)
   const wide = '#pl1.' + json({ drafts: { d: 'x' } }) + '~' + 'é'.repeat(16380)
@@ -125,13 +128,23 @@ export default async function ({ ROOT, check }) {
   }
   check('decoding a __proto__ payload pollutes no prototype', ({}).polluted === undefined && Object.prototype.polluted === undefined)
 
+  // A decoded map has no prototype, so a key the page controls (a control named toString, an ask with id constructor) reads
+  // only what the payload holds, and the runtime's lookups never see Object.prototype through a restored map.
+  const INHERITED = ['toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__', '__defineGetter__']
+  const dm = F.decode('#pl1.' + json({ answers: { x: 'changed' }, seen: { s: 1 } }))
+  check('every decoded map has a null prototype', !!dm.state && Object.keys(EMPTY).every((k) => Object.getPrototypeOf(dm.state[k]) === null), JSON.stringify(dm).slice(0, 120))
+  check('a key the payload does not hold reads undefined from a decoded map, inherited names included',
+    !!dm.state && dm.state.answers.x === 'changed' && INHERITED.every((k) => dm.state.answers[k] === undefined && !(k in dm.state.answers) && dm.state.seen[k] === undefined && dm.state.comments[k] === undefined))
+  const dk = F.decode('#pl1.' + json({ answers: { toString: 'mine', constructor: ['a'] }, seen: { valueOf: 1 } }))
+  check('an inherited name used as a key is an own entry of a decoded map', !!dk.state && dk.state.answers.toString === 'mine' && isDeepStrictEqual(dk.state.answers.constructor, ['a']) && dk.state.seen.valueOf === 1 && Object.keys(dk.state.answers).join() === 'toString,constructor')
+
   // A wrong prefix is not a payload. It stays a plain #id, so nothing is restored and nothing is reported.
   for (const prefix of ['PL1.', 'pl.', 'p1.', 'pl1', 'xpl1.', 'pl1-']) {
     const r = F.decode(`#${prefix}${valid}`)
     check(`a fragment opening "${prefix}" is a plain anchor, not a payload`, r.state === null && r.problem === null && r.anchor === prefix + valid)
   }
   check('decode never throws on a non-string', [undefined, null, 42, {}, [], () => 1].every((h) => { try { return isDeepStrictEqual(F.decode(h), { state: null, anchor: null, problem: null }) } catch { return false } }))
-  check('a malformed anchor after a valid payload is dropped and the state kept', (() => { const r = F.decode('#pl1.' + valid + '~%E0%A4%A'); return r.anchor === null && isDeepStrictEqual(r.state?.seen, { a: 1 }) })())
+  check('a malformed anchor after a valid payload is dropped and the state kept', (() => { const r = F.decode('#pl1.' + valid + '~%E0%A4%A'); return r.anchor === null && eq(r.state?.seen, { a: 1 }) })())
 
   // The runtime keeps nothing in storage and writes the URL in one place.
   check('the shipped runtime does not use localStorage', !source.includes('localStorage'))

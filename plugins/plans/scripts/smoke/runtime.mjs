@@ -92,7 +92,7 @@ export default async function ({ ROOT, check }) {
   const boot = fn('boot')
   const decide = boot.indexOf("readOnly = document.body.dataset.feedback === 'off'")
   check('boot decides reading mode first, before any block is built', decide >= 0 && boot.slice(0, decide).trim() === '' && decide < boot.indexOf('upgradeAll();'))
-  check('reading mode drops every restored map', /if \(readOnly\) \{ document\.body\.classList\.add\('nw-read'\); S\.loaded = null; S\.comments = \{\}; S\.drafts = \{\}; S\.strikes = \{\}; S\.seen = \{\}; \}/.test(boot))
+  check('reading mode drops every restored map', /if \(readOnly\) \{ document\.body\.classList\.add\('nw-read'\); S\.loaded = null; S\.comments = dict\(\); S\.drafts = dict\(\); S\.strikes = dict\(\); S\.seen = dict\(\); \}/.test(boot))
   check('the Respond bar and the seen marks are drawn only outside reading mode', /\n {2}if \(!readOnly\) \{\n {4}bar = h\('div', \{ class: 'nw-bar' \}/.test(boot) && /if \(!readOnly && 'IntersectionObserver' in window\)/.test(boot) && !/feedbackOff/.test(source))
   check('flushState writes no payload in reading mode', /NW\.fragment\.encode\(readOnly \? null : persisted\(\), urlAnchor\)/.test(fn('flushState')))
   check('a pasted payload does not reload a reading-mode page', /if \(!readOnly && \(d\.state \|\| d\.problem\)\) \{ location\.reload\(\); return; \}/.test(fn('followFragment')))
@@ -106,6 +106,27 @@ export default async function ({ ROOT, check }) {
   const sites = [...source.matchAll(/^.*openComment\(\{.*$/gm)].map((m) => m[0]).filter((l) => !/^function openComment/.test(l))
   check('every other direct openComment call site is gated or reached only through a gated control',
     sites.length === 9 &&sites.every((l) => /readOnly/.test(l) || /const (open|doComment) = /.test(l) || /^ {6}openComment\(\{ key, label: `\$\{secLabel\(el\)\} › diagram/.test(l)), sites.join('\n'))
+
+  // State maps (patch 0004). Every map the runtime keeps or restores has no prototype, and writeAnswers reads own properties
+  // only, so a control named toString keeps its default under a payload that does not name it. The shipped writeAnswers runs
+  // here as cut from the source, on fake controls.
+  check('the state maps, the defaults, the persisted answers and the reading-mode reset are created with no prototype',
+    /\nconst dict = \(\) => Object\.create\(null\);/.test(source) && /\nconst S = \{ defaults: dict\(\), comments: dict\(\), drafts: dict\(\), strikes: dict\(\), seen: dict\(\), loaded: null \};/.test(source) &&
+    /\nfunction readAnswers\(\) \{\n  const out = dict\(\);/.test(source) && /const ans = readAnswers\(\), answers = dict\(\);/.test(source) &&
+    (source.match(/S\.comments = dict\(\); S\.drafts = dict\(\); S\.strikes = dict\(\); S\.seen = dict\(\);/g) || []).length === 2 && !/S\.(comments|drafts|strikes|seen) = \{\}/.test(source),
+    (source.match(/[^\n]*(S\.comments = |const out = |answers = )[^\n]*/g) || []).map((l) => l.trim().slice(0, 100)).join(' | '))
+  const wa = source.match(/\nfunction writeAnswers\(ans\) \{\n[\s\S]*?\n\}\n/)?.[0] ?? ''
+  check('writeAnswers can be cut from the runtime', wa.length > 0)
+  if (wa) {
+    const control = (name, value) => ({ name, type: 'text', value, dataset: {}, matches: () => false })
+    const write = (ans) => { const cs = [control('toString', 'default'), control('x', 'default'), control('constructor', 'default'), control('__proto__', 'default')]
+      runInContext(wa + ';writeAnswers(ans)', createContext({ ans, controls: () => cs, $$: () => [] })); return cs.map((c) => `${c.name}=${c.value}`).join(' ') }
+    const restored = NW.fragment.decode('#pl1.' + Buffer.from(JSON.stringify({ answers: { x: 'changed' } }), 'utf8').toString('base64url')).state.answers
+    check('a restored payload that names one control leaves a control named toString, constructor or __proto__ at its default',
+      write(restored) === 'toString=default x=changed constructor=default __proto__=default', write(restored))
+    check('writeAnswers reads own properties only, whatever map it is handed', write({ x: 'changed' }) === 'toString=default x=changed constructor=default __proto__=default', write({ x: 'changed' }))
+    check('a restored answer for a control named toString is written', write(NW.fragment.decode('#pl1.' + Buffer.from(JSON.stringify({ answers: { toString: 'mine' } }), 'utf8').toString('base64url')).state.answers) === 'toString=mine x=default constructor=default __proto__=default')
+  }
 
   // Fragment writes (patch 0004). The shipped save() and flushState() run here as cut from the source, on a fake clock,
   // timers, location and history, with persisted() reduced to one textarea answer. The browser check shows the same in Chromium.
