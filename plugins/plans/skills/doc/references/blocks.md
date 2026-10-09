@@ -218,7 +218,7 @@ For a few steps in order, use plain cards: `<div class="cols"><div class="card">
 ## pack.mjs
 
 ```
-node runtime/pack.mjs plan.html [--root <repo>]… [-o out.html] [--lint-only] [--artifact] [--quiet]
+node runtime/pack.mjs [--root <repo>]… [-o out.html] [--lint-only] [--quiet] [--help] [--] plan.html
 ```
 
 - Lints every block with the same parsers the browser uses, and the shape of the tree.
@@ -226,5 +226,5 @@ node runtime/pack.mjs plan.html [--root <repo>]… [-o out.html] [--lint-only] [
 - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. `data:` URIs pass.
 - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
 - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
-- `--artifact` also writes `plan.artifact.html`, the page without its own `<html>` and `<body>`, for a host that adds them.
+- A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
 - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.

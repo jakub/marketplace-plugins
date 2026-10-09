@@ -1,0 +1,101 @@
+diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
+index bdff20b21ddc74d73d006f83a363143c7bd7fb27..f3f316d1fc7938d52ff3776b6c45b4af35060e48 100644
+--- a/plugins/plans/skills/doc/references/blocks.md
++++ b/plugins/plans/skills/doc/references/blocks.md
+@@ -218,7 +218,7 @@ For a few steps in order, use plain cards: `<div class="cols"><div class="card">
+ ## pack.mjs
+ 
+ ```
+-node runtime/pack.mjs plan.html [--root <repo>]… [-o out.html] [--lint-only] [--artifact] [--quiet]
++node runtime/pack.mjs [--root <repo>]… [-o out.html] [--lint-only] [--quiet] [--help] [--] plan.html
+ ```
+ 
+ - Lints every block with the same parsers the browser uses, and the shape of the tree.
+@@ -226,5 +226,5 @@ node runtime/pack.mjs plan.html [--root <repo>]… [-o out.html] [--lint-only] [
+ - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. `data:` URIs pass.
+ - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
+ - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
+-- `--artifact` also writes `plan.artifact.html`, the page without its own `<html>` and `<body>`, for a host that adds them.
++- A bad argument exits 2, and a failed check exits 1. Neither writes anything. `--help` prints every option.
+ - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.
+diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
+index c392411bed70ffeeb8cec07913dd5667d0aca55e..b5cfb8210cc7449aac8b07106cd9d2eeb6fdd78a 100644
+--- a/plugins/plans/skills/doc/runtime/pack.mjs
++++ b/plugins/plans/skills/doc/runtime/pack.mjs
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env node
+ // Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE.
+ // pack.mjs — lint an artifact and pack it into one page for the plans CLI
+-//   node pack.mjs page.html [-o out.html] [--root dir] [--lint-only] [--quiet] [--artifact]
++//   node pack.mjs [--root DIR]... [-o|--out FILE] [--lint-only] [--quiet] [--help] [--] INPUT
+ // Lint runs the same parsers the browser uses (from htmlplan.js), fills <doc-code src>
+ // from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
+ // beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
+@@ -10,23 +10,45 @@ import { execFileSync } from 'node:child_process';
+ import { resolve, dirname, extname, basename, relative, join, sep } from 'node:path';
+ import { fileURLToPath } from 'node:url';
+ import { createRequire } from 'node:module';
++import { parseArgs } from 'node:util';
+ 
+ const here = dirname(fileURLToPath(import.meta.url));
+ const require = createRequire(import.meta.url);
+ require('./htmlplan.js'); // registers globalThis.HtmlPlan (no DOM → parsers only)
+ const NW = globalThis.HtmlPlan;
+ 
+-const argv = process.argv.slice(2);
+-const input = argv.find((a) => !a.startsWith('-') && (argv.indexOf(a) === 0 || !['-o', '--root', '--out'].includes(argv[argv.indexOf(a) - 1])));
+-if (!input) { console.error('usage: node pack.mjs page.html [-o out.html] [--root dir] [--lint-only]'); process.exit(2); }
+-const opt = (n, d) => { const i = argv.findIndex((a) => a === n); return i >= 0 ? argv[i + 1] : d; };
+-const lintOnly = argv.includes('--lint-only'); const quiet = argv.includes('--quiet');
++// The arguments are strict. An unknown flag, a missing value, or anything but one input is a syntax error, exit 2. An input that
++// is not a file, or an output pack may not write, is a validation error, exit 1. Neither writes anything.
++const USAGE = 'usage: node pack.mjs [--root DIR]... [-o|--out FILE] [--lint-only] [--quiet] [--help] [--] INPUT';
++const HELP = `${USAGE}
++
++Lint a Document and pack it into one page beside INPUT, for plans:publish.
++
++  --root DIR       a checkout to read code excerpts (src="…", @ file:line) from; repeat for more. Never media.
++  -o, --out FILE   the packed page, in INPUT's folder; a relative name is relative to that folder.
++                   Default: NAME.packed.html, or NAME.html for NAME.src.html.
++  --lint-only      run every check and write nothing
++  --quiet          print only the result line
++  --help           print this and exit
++  --               end of options, so INPUT may start with "-"
++
++Exit 0: packed, or lint clean. 1: a check failed. 2: bad arguments. On 1 or 2 nothing is written.`;
++let cli;
++try {
++  cli = parseArgs({ args: process.argv.slice(2), strict: true, allowPositionals: true, options: {
++    root: { type: 'string', multiple: true }, out: { type: 'string', short: 'o' }, 'lint-only': { type: 'boolean' }, quiet: { type: 'boolean' }, help: { type: 'boolean' } } });
++} catch (e) { console.error(`pack: ${e.message}\n${USAGE}`); process.exit(2); }
++if (cli.values.help) { console.log(HELP); process.exit(0); }
++{ const n = cli.positionals.length; const why = n !== 1 ? (n ? `one INPUT, not ${n}` : 'an INPUT page') : [cli.values.out, ...(cli.values.root || [])].includes('') ? 'a value for each -o and --root' : null;
++  if (why) { console.error(`pack: needs ${why}\n${USAGE}`); process.exit(2); } }
++const input = cli.positionals[0]; const lintOnly = !!cli.values['lint-only']; const quiet = !!cli.values.quiet;
+ const inPath = resolve(input); const baseDir = dirname(inPath);
+-const roots = argv.flatMap((a, i) => a === '--root' ? [resolve(argv[i + 1].replace(/^~(?=\/)/, process.env.HOME))] : []); if (!roots.length) roots.push(baseDir); const root = roots[0];
++{ let s = null; try { s = statSync(inPath); } catch {} if (!s?.isFile()) { console.error(`pack: ${input} is not a file`); process.exit(1); } }
++const roots = (cli.values.root || []).map((r) => resolve(r.replace(/^~(?=\/)/, process.env.HOME))); if (!roots.length) roots.push(baseDir); const root = roots[0];
+ // The output goes beside the input, in the same resolved folder, so the plans CLI finds the page's media where pack checked it.
+ // A relative -o is relative to that folder.
+ const pageDir = realpathSync(baseDir); const inName = basename(inPath);
+-const outPath = resolve(pageDir, opt('-o', opt('--out', inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html'))));
++const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
+ 
+ let html = readFileSync(inPath, 'utf8');
+ const errors = [], warns = [], info = [];
+@@ -409,13 +431,5 @@ if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} w
+   const tmp = join(pageDir, `.${basename(outPath)}.${process.pid}.tmp`); let made = false;
+   try { writeFileSync(tmp, packed, { flag: 'wx' }); made = true; renameSync(tmp, outPath); }
+   catch (e) { if (made) { try { unlinkSync(tmp); } catch {} } console.log(`✗ could not write ${rel(outPath)}: ${e.code || e.message}`); process.exit(1); } }
+-if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
+-if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
+-  const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
+-  let art = packed.replace(/<!doctype[^>]*>\s*/i, '').replace(/<\/?html\b[^>]*>\s*/gi, '').replace(/<meta\b[^>]*charset[^>]*>\s*/i, '').replace(/<\/?head\b[^>]*>\s*/gi, '').replace(/<\/?body\b[^>]*>\s*/gi, '');
+-  if (Object.keys(data).length) art = art.replace(/<script data-htmlplan>/, `<script>Object.assign(document.body.dataset, ${JSON.stringify(data)});</script>\n<script data-htmlplan>`);
+-  const ti = (art.match(/<title>([^<]*)<\/title>/i) || [])[1] || ''; if (/[:—–]|\s-\s/.test(ti) || wc(ti) > 5) console.log(`  ⚠ <title> "${ti.trim()}" — a published artifact is named like a document: 2–4 words, no "Plan:" prefix, no explainer after a dash`);
+-  const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
+-  console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
+-}
++if (reads.size) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
+ console.log(`✓ ${rel(outPath)}  ${(Buffer.byteLength(packed) / 1024).toFixed(0)} KB · runtime inlined · ${media.size} media file${media.size === 1 ? '' : 's'} beside it for the plans CLI${warns.length ? ` · ${warns.length} warning(s)` : ''}`);

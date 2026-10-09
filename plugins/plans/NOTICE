@@ -100,6 +100,12 @@ it, so a later patch's context is the text an earlier one wrote.
     url() or style, leftover external scripts or stylesheets, and a meta CSP, under
     --lint-only too. The runtime is inlined once from pack's own folder, and the output goes
     beside the input and never over it.
+0006-pack-cli.patch
+    Parses pack's arguments with node:util parseArgs in strict mode: --root (repeatable),
+    -o/--out, --lint-only, --quiet, --help, -- and exactly one input. A syntax error exits
+    2 and a validation error exits 1, and neither writes anything. Removes --artifact and
+    its second output, for the claude.ai Artifact tool. There is one target, so there is
+    no --target flag either.
 -----END PATCHES-----
 
 RE-SYNCING
