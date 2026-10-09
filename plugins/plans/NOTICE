@@ -90,6 +90,16 @@ it, so a later patch's context is the text an earlier one wrote.
     state. A fragment over 32 KiB or JSON over 24 KiB is not written, and a persistent note
     asks the reader to copy their response. A malformed payload restores nothing. The pure
     codec is exported as HtmlPlan.fragment for the smoke.
+0005-media-for-the-cli.patch
+    Stops pack base64-inlining media. Local media stays a literal src to a file beside the
+    page, which the plans CLI uploads at publish time. Each doc-shot gets a literal <img>
+    child in place of its own src, so the CLI sees the screenshot, and the runtime adopts
+    that child. Media resolves only inside the page's own folder, never under --root. pack
+    refuses an escape, a missing or root-only file, remote media, a local .html src, a type
+    outside plans:publish's table, more than 64 files, local paths in srcset, poster, CSS
+    url() or style, leftover external scripts or stylesheets, and a meta CSP, under
+    --lint-only too. The runtime is inlined once from pack's own folder, and the output goes
+    beside the input and never over it.
 -----END PATCHES-----
 
 RE-SYNCING

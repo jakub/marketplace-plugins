@@ -48,7 +48,7 @@ Put it in the `<header>`, after the `h1`. It shows “Proposed · 10 files · +5
 - The terminal frame is a dark mono surface with helpers: `<b>`, `.dim .g .r .y .b .m .o .inv .box`. Keep it to `w` ≤ 480, about 55 columns.
 - `data-ref="name"` makes an element a comment target. `<doc-pin ref="name" title="…">` puts a numbered pin on its corner (`anchor="tr|tl|br|bl|r|l|c"`, `offset="dx,dy"`). `at="x%,y%"` places a pin with no element. A pin is a description only: the reader taps the number and reads the title and one sentence. Keep it to what the reader must notice. The reader comments on the mockup, not on a pin. The `title` is the point, in a few words; the body is optional. Give two pins on neighbours different anchors.
 - **A behaviour whose output is text** (a CLI, a log, a generated file) is a `frame="terminal"` mock, or a `doc-code` of the output.
-- `doc-shot src="before.png"` is the same for a screenshot. Use screenshots for UI that exists and mocks for UI that does not.
+- `doc-shot src="before.png"` is the same for a screenshot. Use screenshots for UI that exists and mocks for UI that does not. Keep the image in the page's folder: pack moves `src` onto a literal `<img>` child, so the plans CLI uploads the file with the page.
 
 ## `doc-machine` — a lifecycle, with the screen for each state
 
@@ -223,6 +223,8 @@ node runtime/pack.mjs plan.html [--root <repo>]… [-o out.html] [--lint-only] [
 
 - Lints every block with the same parsers the browser uses, and the shape of the tree.
 - Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
-- Inlines the runtime and local images. Writes `plan.packed.html`.
+- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. `data:` URIs pass.
+- Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
+- Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 - `--artifact` also writes `plan.artifact.html`, the page without its own `<html>` and `<body>`, for a host that adds them.
 - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.

@@ -1270,7 +1270,10 @@ define('doc-mock', (el) => {
 define('doc-shot', (el) => {
   const src = el.getAttribute('src'); const label = el.getAttribute('label'); const sid = el.id || $$('doc-shot').indexOf(el);
   const frame = el.getAttribute('frame');
-  const img = h('img', { src, alt: label || el.getAttribute('caption') || 'screenshot', style: 'display:block;width:100%;height:auto' });
+  // pack writes the screenshot as a literal <img> child, so the plans CLI uploads it; an unpacked preview builds one from src
+  const img = el.querySelector(':scope > img') || h('img', { src });
+  if (!img.hasAttribute('alt')) img.alt = label || el.getAttribute('caption') || 'screenshot';
+  img.style.cssText = 'display:block;width:100%;height:auto';
   const inner = frame ? h('div', { class: 'mk-frame ' + frame }, frame === 'browser' ? h('div', { class: 'mk-bar' }, h('i'), h('i'), h('i'), h('span', { class: 'url' }, el.getAttribute('url') || '')) : null, img) : h('div', { style: 'border:1px solid var(--plans-line);border-radius:var(--plans-r);overflow:hidden;background:var(--plans-card)' }, img);
   const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
   el.style.display = 'block'; el.style.margin ||= '0 0 20px';

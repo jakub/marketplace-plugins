@@ -7,7 +7,7 @@ You write **one HTML file by hand**. It holds a tree of claims. A small runtime 
 ```
 <this file's directory>/
   ../runtime/htmlplan.css  htmlplan.js   ← link both from the page; pack inlines them
-  ../runtime/pack.mjs                    ← lint + inline → one portable file (needs only node)
+  ../runtime/pack.mjs                    ← lint + inline the runtime → one page, media beside it (needs only node)
   blocks.md                              ← every block, with syntax. Read it before you write.
   ../examples/scheduled-send.html        ← a full plan. Copy its shape.
 ```
@@ -121,7 +121,7 @@ These are not STE and stay as they are: the words of the user in a `doc-quote`, 
 1. **Read first.** Find the entrypoints, records and screens the change touches. Note exact paths, lines and the user's words.
 2. **Write the level-1 claims** and read them aloud. Fix them before anything else.
 3. **Add the how and where claims, then the exhibits, then the decisions.** Read `blocks.md` beside this file for syntax. Save the page where the doc skill says.
-4. **Pack** with the helper path the doc skill gives: `node <doc skill dir>/runtime/pack.mjs plan.html --root <repo>`. It reports errors and warnings by line or claim number. Fix them. It writes `plan.packed.html`, one file that works offline.
+4. **Pack** with the helper path the doc skill gives: `node <doc skill dir>/runtime/pack.mjs plan.html --root <repo>`. It reports errors and warnings by line or claim number. Fix them. It writes `plan.packed.html` beside the page. Media files stay beside it as files, and the plans CLI uploads them with the page.
 5. **Look at it** in a browser if you can: closed, with each claim open, and at each decision (the “to answer” button goes to them). Check that mockups are not clipped and arrows do not cross labels.
 6. **Hand it over** (next section) with one line: “Four decisions. The defaults are what I would build.”
 7. **Act on the response.** Apply changed decisions, schema edits, struck calls and each comment. Refer to claims by number. If the answers change the shape of the plan, update the page and send it again. Then build.
