@@ -34,6 +34,49 @@ function section(text, heading) {
   return lines.slice(start, end).join('\n')
 }
 
+// Every clause of the delivery policy, as the sentence publish must keep under its subheading.
+const CLAUSES = [
+  ['an explicit request suffices', '### Authorization', 'An explicit user request to publish, upload, host, or share through Plans authorizes a publish.'],
+  ['standing charter instruction covers private publication', '### Authorization', 'The standing charter instruction for private publication also authorizes one, when it covers the task.'],
+  ['a model-loaded skill grants nothing', '### Authorization', AUTHORIZATION],
+  ['--public needs an explicit request for that artifact', '### Authorization', 'A public publish always needs an explicit request for that artifact.'],
+  ['the ask applies only when nothing authorizes publication', '### Authorization', 'If neither an explicit request nor applicable standing authorization covers publication'],
+  ['seven days is the default', '### Retention', 'Use the default of seven days when the user only says to publish or share.'],
+  ['--keep for permanence or PR evidence', '### Retention', 'Use `--keep` when the user explicitly asks for permanence, or when the artifact is PR evidence.'],
+  ['--ttl 12h for a Document that replaces an Inline render', '### Retention', 'Use `--ttl 12h` for a Document that replaces an Inline render the host could not show.'],
+  ['the URL goes to the requesting user', '### Where a capability URL may go', 'Return it to the requesting user.'],
+  ['the work\'s own PR on an owned repository, labelled tailnet-only', '### Where a capability URL may go',
+    'Put it in the body or the comments of the PR that the work belongs to, only on a repository the user owns. Label it tailnet-only.'],
+  ['a foreign repository gets SHA-pinned screenshots', '### Where a capability URL may go', 'On a PR in a repository the user does not own, commit screenshots at a pinned SHA instead of the URL.'],
+  ['no URL in commits, commit messages, logs or other repositories', '### Where a capability URL may go', 'Never put a URL in a commit, a commit message, a log, or another repository.'],
+]
+
+// Phrases that only a delivery policy needs. show and doc may carry them on a pointer line and on
+// the two routing lines that name a flag. Anywhere else they are a second policy.
+const POLICY_SHAPED = [/--keep/, /--ttl/, /--public/, /tailnet-only/i, /standing/i, /authoriz/i, /seven days/i,
+  /\b\d+[- ]?(?:days?|d|hours?|h|weeks?|w)\b/i, /the user (?:owns|does not own)/i, /\bretained\b/i]
+const ROUTING_LINES = ['2. PR evidence: Document, published with `--keep`.', '- **No render tools.**']
+
+// The names of the failed policy clauses, then one entry per policy-shaped line in show or doc.
+function policyFailures({ publish, show, doc }) {
+  const policyText = section(publish, '## Delivery policy')
+  const failed = CLAUSES.filter(([, heading, sentence]) => !section(policyText, heading).includes(sentence)).map(([name]) => name)
+  for (const [name, text] of [['show', show], ['doc', doc]]) {
+    for (const line of text.split('\n')) {
+      const allowed = line.includes(POLICY_POINTER) || ROUTING_LINES.some((l) => line.startsWith(l))
+      if (!allowed && POLICY_SHAPED.some((re) => re.test(line))) failed.push(`${name} restates policy: ${line.slice(0, 50)}`)
+    }
+  }
+  return failed
+}
+
+// The sentences show's one-screen budget must keep. The interaction-state bullet is the one a
+// reader skips when a tab or an open row is taller than the first view.
+const BUDGET = ['640 CSS px', '728', '360', '500,000 UTF-8 bytes', 'after fonts and media settle',
+  'Measure every interaction state the reader needs, such as an open row or a selected tab. Each state must fit inside the budget.',
+  'Collapsed content does not hide length', 'If you cannot measure eligibility, use a Sketch']
+const budgetFailures = (show) => BUDGET.filter((needle) => !section(show, '## Measure one screen').includes(needle))
+
 function count(text, needle) {
   return text.split(needle).length - 1
 }
@@ -70,10 +113,10 @@ export default async function (t) {
   check('skills: show asks a single choice in chat', show.includes('Ask a single choice in chat.'))
 
   const budget = section(show, '## Measure one screen')
-  for (const needle of ['640 CSS px', '728', '360', '500,000 UTF-8 bytes', 'after fonts and media settle',
-    'Collapsed content does not hide length', 'If you cannot measure eligibility, use a Sketch']) {
-    check(`skills: show budget names ${needle}`, budget.includes(needle))
-  }
+  for (const needle of BUDGET) check(`skills: show budget names ${needle}`, budget.includes(needle))
+  const noInteractionState = show.replace(/^- Measure every interaction state[^\n]*\n/m, '')
+  check('skills: deleting the interaction-state bullet fails the budget check',
+    noInteractionState !== show && budgetFailures(noInteractionState).some((n) => n.startsWith('Measure every interaction state')))
 
   for (const tool of ['html_render', 'html_preview']) {
     for (const prefix of ['mcp__t3-code__', 'mcp__t3_code__']) {
@@ -111,13 +154,26 @@ export default async function (t) {
     check(`skills: publish policy has ${heading}`, policy.includes(`\n${heading}\n`))
   }
   check('skills: the authorization sentence sits in the policy', policy.includes(AUTHORIZATION))
-  check('skills: publish policy gives --public an explicit request', policy.includes('`--public`') && policy.includes('explicit request for that artifact'))
-  check('skills: publish policy keeps PR evidence', policy.includes('Use `--keep` when the user explicitly asks for permanence, or when the artifact is PR evidence.'))
-  check('skills: publish policy limits URLs', policy.includes('Never put a URL in a commit, a commit message, a log, or another repository.'))
+  const failed = policyFailures({ publish, show, doc })
+  for (const [name] of CLAUSES) check(`skills: publish policy says ${name}`, !failed.includes(name))
+  check('skills: show and doc state no delivery policy of their own', !failed.some((f) => f.includes('restates policy')), failed.join('; '))
   for (const [name, text] of [['show', show], ['doc', doc]]) {
     check(`skills: ${name} points at the publish delivery policy`, text.includes(POLICY_POINTER))
-    for (const restated of ['### Authorization', 'Where a capability URL may go', 'tailnet-only', 'charter instruction']) {
-      check(`skills: ${name} does not restate "${restated}"`, !text.includes(restated))
+  }
+
+  // Negative fixtures on in-memory copies: a dropped clause and a reworded second policy must fail.
+  for (const [name, , sentence] of CLAUSES) {
+    const mutated = publish.replace(sentence, '')
+    check(`skills: removing "${name}" from publish fails`, mutated !== publish && policyFailures({ publish: mutated, show, doc }).includes(name))
+  }
+  const seconds = [
+    '\n## Publishing\n\nWhen you share a Document, keep it for 14 days, and paste the viewer link into the PR description.\n',
+    '\n## Publishing\n\nPublish without asking when the repository is yours. Mark the link tailnet-only.\n',
+  ]
+  for (const extra of seconds) {
+    for (const target of ['doc', 'show']) {
+      const found = policyFailures({ publish, show, doc, [target]: { show, doc }[target] + extra })
+      check(`skills: a reworded second policy appended to ${target} fails`, found.some((f) => f.startsWith(`${target} restates policy`)), found.join('; '))
     }
   }
 

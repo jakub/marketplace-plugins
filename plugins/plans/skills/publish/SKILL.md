@@ -30,7 +30,7 @@ This section is the one statement of when to publish, how long to keep an artifa
 - The standing charter instruction for private publication also authorizes one, when it covers the task.
 - A skill that the model loaded on its own grants nothing.
 - A public publish always needs an explicit request for that artifact. This applies to a `--public` flag or any other way to make an artifact reachable outside the private viewer. The client in the reference below has no such flag.
-- If the request only asks to create or preview HTML, prepare and validate the file, then ask before you publish.
+- If neither an explicit request nor applicable standing authorization covers publication, as when the request only asks to create or preview HTML, prepare and validate the file, then ask before you publish.
 
 ### Retention
 
