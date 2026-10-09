@@ -1,10 +1,12 @@
 // The licence in packed pages (patch 0012): every packed page carries, once and right after the doctype, a comment that names
 // the upstream work and holds the Apache-2.0 text byte for byte as NOTICE's marked section. Packing a packed page keeps one
 // comment. pack finds NOTICE from its own folder, whatever the working directory, and refuses to write when the section is
-// missing or holds "--". pack runs on import, so each case spawns it; the fixtures sit under the system temp directory, which
+// missing or holds "--". The Go tokenizer port in pack.mjs keeps the Go Authors' copyright and BSD-3-Clause licence, which
+// NOTICE carries byte for byte with its SHA-256. pack runs on import, so each case spawns it; the fixtures sit under the system temp directory, which
 // the section removes at the end.
 
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -16,6 +18,7 @@ const PAGE = '<!doctype html>\n<html lang="en">\n<meta charset="utf-8">\n<title>
   '<body>\n<main>\n<h1>Fixture</h1>\n<p>One line.</p>\n</main>\n<script src="htmlplan.js" defer></script>\n</body>\n</html>\n'
 const SECTION = /\n-----BEGIN APACHE-2\.0-----\n([\s\S]*)-----END APACHE-2\.0-----\n$/
 const count = (text, s) => text.split(s).length - 1
+const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex')
 const listing = (dir) => readdirSync(dir).sort().map((f) => `${f} ${statSync(join(dir, f), { bigint: true }).mtimeNs}`).join('\n')
 
 export default async function ({ ROOT, check }) {
@@ -24,6 +27,25 @@ export default async function ({ ROOT, check }) {
   const apache = notice.match(SECTION)?.[1]
   check('NOTICE ends with the marked Apache-2.0 section', !!apache)
   check('the Apache-2.0 text holds no "--", so it fits in one HTML comment', !!apache && !apache.includes('--'))
+  // The tokenizer port: pack.mjs carries golang.org/x/net/html's copyright line, its version and a pointer to NOTICE, and NOTICE
+  // holds the module's BSD-3-Clause LICENSE byte for byte between its own markers, checked here against the SHA-256 NOTICE
+  // records, so the check needs no Go module cache.
+  const packText = readFileSync(join(runtime, 'pack.mjs'), 'utf8')
+  const portHead = packText.slice(packText.indexOf('/* ── tags, as the plans CLI reads them ── */'), packText.indexOf('\nconst WS = '))
+  check('pack.mjs names the Go tokenizer port\'s module, version and copyright line, and points at NOTICE',
+    portHead.includes('golang.org/x/net/html v0.58.0') && portHead.includes('Copyright 2009 The Go Authors.') && portHead.includes('plugins/plans/NOTICE'), portHead.slice(0, 200))
+  const goSection = notice.match(/\nGO TOKENIZER PORT\n-+\n([\s\S]*?)(?=\n[A-Z][A-Z -]*\n-+\n|\n-{20,}\n)/)?.[1] ?? ''
+  check('NOTICE has a GO TOKENIZER PORT section naming the module, its version, the files ported and the copyright line',
+    ['golang.org/x/net', 'v0.58.0', 'html/token.go', 'html/escape.go', 'Copyright 2009 The Go Authors.'].every((s) => goSection.includes(s)))
+  const bsdSha = goSection.match(/golang\.org\/x\/net LICENSE SHA-256 at v0\.58\.0:\n\n {4}([0-9a-f]{64})\n/)?.[1]
+  const bsd = notice.match(/\n-----BEGIN BSD-3-CLAUSE-----\n([\s\S]*?)-----END BSD-3-CLAUSE-----\n/)?.[1]
+  check('NOTICE records the module LICENSE\'s SHA-256 and carries the BSD-3-Clause text that hashes to it',
+    !!bsdSha && !!bsd && sha256(bsd) === bsdSha && bsd.startsWith('Copyright 2009 The Go Authors.\n') && bsd.includes('Redistributions of source code must retain the above copyright'),
+    bsd ? `sha256 ${sha256(bsd)}, recorded ${bsdSha}` : 'section missing')
+  check('the BSD-3-Clause section sits before the Apache-2.0 section, which stays last', notice.includes('-----END BSD-3-CLAUSE-----') && notice.indexOf('-----END BSD-3-CLAUSE-----') < notice.indexOf('-----BEGIN APACHE-2.0-----'))
+  check('the version pack.mjs names is the version NOTICE records',
+    !!(portHead.match(/golang\.org\/x\/net\/html (v[\d.]+)/) || [])[1] && (portHead.match(/golang\.org\/x\/net\/html (v[\d.]+)/) || [])[1] === (goSection.match(/golang\.org\/x\/net LICENSE SHA-256 at (v[\d.]+):/) || [])[1])
+
   const base = mkdtempSync(join(tmpdir(), 'plans-licence-'))
   const out = (r) => `exit ${r.status}: ${(r.stdout + r.stderr).trim().split('\n').slice(-4).join(' | ')}`
   const pack = (packMjs, dir, ...args) => spawnSync(process.execPath, [packMjs, ...args], { cwd: dir, encoding: 'utf8' })

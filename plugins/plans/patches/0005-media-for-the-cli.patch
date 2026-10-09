@@ -60,7 +60,7 @@ index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf9942
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391c3619a9c 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..4813015311f960bf8abaf27ab9a5a1c7d9a7b810 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -81,7 +81,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391
  import { fileURLToPath } from 'node:url';
  import { createRequire } from 'node:module';
  
-@@ -22,7 +23,176 @@ const opt = (n, d) => { const i = argv.findIndex((a) => a === n); return i >= 0
+@@ -22,7 +23,179 @@ const opt = (n, d) => { const i = argv.findIndex((a) => a === n); return i >= 0
  const lintOnly = argv.includes('--lint-only'); const quiet = argv.includes('--quiet');
  const inPath = resolve(input); const baseDir = dirname(inPath);
  const roots = argv.flatMap((a, i) => a === '--root' ? [resolve(argv[i + 1].replace(/^~(?=\/)/, process.env.HOME))] : []); if (!roots.length) roots.push(baseDir); const root = roots[0];
@@ -93,6 +93,9 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391
 +const outPath = resolve(pageDir, opt('-o', opt('--out', inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html'))));
 +
 +/* ── tags, as the plans CLI reads them ── */
++// Copyright 2009 The Go Authors. The tokenizer below is a port from golang.org/x/net/html v0.58.0 (html/token.go, and the
++// attribute decoding of html/escape.go), under the BSD-3-Clause licence that plugins/plans/NOTICE reproduces in full, under
++// GO TOKENIZER PORT.
 +// The plans CLI finds the media it uploads with golang.org/x/net/html's tokenizer, at v0.58.0 as its go.mod pins it, so pack reads
 +// tags with a port of that tokenizer's Next, readTag, readRawOrRCDATA, readScript, readComment and readMarkupDeclaration, on
 +// UTF-16 code units in place of bytes: every delimiter is ASCII, and an ASCII byte is one code unit in the same place. So a
@@ -259,7 +262,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391
  
  let html = readFileSync(inPath, 'utf8');
  const errors = [], warns = [], info = [];
-@@ -34,6 +204,7 @@ const blockSrc = (inner) => { const m = inner.match(/<script\s+type=["']?text\/(
+@@ -34,6 +207,7 @@ const blockSrc = (inner) => { const m = inner.match(/<script\s+type=["']?text\/(
  // Everything pack reads ends up inside a page that may be published, so reads are fenced: a file must really live (symlinks resolved)
  // under a --root, the page's own folder, or the runtime's folder, and must not be a well-known secret file. Anything else is an error.
  const real = (p) => { try { return realpathSync(p); } catch { return null; } };
@@ -267,7 +270,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391
  const FENCE = [...new Set([...roots, baseDir, here])].map(real).filter(Boolean);
  const inside = (f) => FENCE.some((d) => f === d || f.startsWith(d.endsWith(sep) ? d : d + sep));
  const SECRET_NAME = new RegExp([
-@@ -61,12 +232,17 @@ const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p
+@@ -61,12 +235,17 @@ const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p
  const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
  const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
  
@@ -287,7 +290,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391
  const KNOWN = new Set(['doc-code', 'doc-pin', 'doc-flow', 'doc-seq', 'doc-schema', 'doc-tree', 'doc-calls', 'doc-machine', 'doc-mock', 'doc-shot', 'doc-quote', 'doc-ask', 'doc-note', 'doc-draft', 'doc-plan', 'doc-claim', 'doc-changes']);
  for (const m of html.matchAll(/<(doc-[a-z]+)\b/g)) if (!KNOWN.has(m[1])) err(`line ${lineOf(m.index)}: unknown element <${m[1]}> — known: ${[...KNOWN].join(' ')}`);
  const ids = {}; for (const m of html.matchAll(/\sid=["']([^"']+)["']/g)) { if (ids[m[1]]) err(`duplicate id="${m[1]}" (lines ${ids[m[1]]} and ${lineOf(m.index)})`); ids[m[1]] = lineOf(m.index); }
-@@ -174,7 +350,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -174,7 +353,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        if ((a.frame === 'terminal') && w > 520 && !('thumbnail' in a)) warn(`${at}: terminal mock w=${w} — on a phone that's ~${Math.round(390 / w * 13)}px text; ≤480 (≈55 cols) stays readable, or add thumbnail to accept`);
        else if (w >= 800 && !('thumbnail' in a)) warn(`${at}: ${a.frame || 'browser'} mock w=${w} renders at ~${Math.round(350 / w * 100)}% on a phone — fine as an overview (add thumbnail to say so), but pair it with a narrow crop (w≤480 frame=none) of the part that matters${inCols ? '; and it is inside .cols, which halves it again on desktop' : ''}`);
        else if (inCols && w > 600) warn(`${at}: w=${w} mock inside .cols — .cols is for mocks ≤600 wide; stack them or use .storyboard`); }
@@ -296,7 +299,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +439,172 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +442,172 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -483,7 +486,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +613,28 @@ if (!quiet) {
+@@ -288,7 +616,28 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -513,7 +516,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..42798c461122981b59bb8a8c92780391
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +644,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +647,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }

@@ -21,10 +21,10 @@ index 5c616dbf4004817209070842696e66e2c208410e..7b2f50d8303f12708d583bbf23102d62
  - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index 440a23ccdf328ca1a7f78421508f1ef21630ea64..e8e3e3b30491b4f60eb82d50db55e8da84a6dc7b 100644
+index 8d8ad15dc7e7707a6d948e27d56b76f0aa6ccfaa..decf6998bb4656b5ddf66d4ca862c9825f32bfd1 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
-@@ -251,6 +251,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
+@@ -254,6 +254,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr
  const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
  const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) { if (!refused.has(ref + ':' + p)) { refused.add(ref + ':' + p); err(`ref="${ref}" with "${p}" — not a plain git ref and a path inside the repo; not running git`); } return null; }
    for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
@@ -34,7 +34,7 @@ index 440a23ccdf328ca1a7f78421508f1ef21630ea64..e8e3e3b30491b4f60eb82d50db55e8da
  const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
  const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
  
-@@ -300,7 +303,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -303,7 +306,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        let added = 0, missing = 0, extra = '';
        const seen = new Set();
        for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
@@ -43,7 +43,7 @@ index 440a23ccdf328ca1a7f78421508f1ef21630ea64..e8e3e3b30491b4f60eb82d50db55e8da
          if (text == null) { missing++; continue; }
          if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
          const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
-@@ -329,12 +332,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
+@@ -332,12 +335,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
        if (a.src && !hasScript) {
          let text, where;
          let sha = '';
