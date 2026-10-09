@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index e96a76f46a5a5f5500f2cc360acb773637b82bd4..cc42875c3afc8d283839ad3b1413bde9855948ca 100644
+index e96a76f46a5a5f5500f2cc360acb773637b82bd4..f90016565330a8255531436dbca55e1d02e7ee53 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -48,7 +48,7 @@ Put it in the `<header>`, after the `h1`. It shows “Proposed · 10 files · +5
@@ -17,7 +17,7 @@ index e96a76f46a5a5f5500f2cc360acb773637b82bd4..cc42875c3afc8d283839ad3b1413bde9
  - Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
 -- Inlines the runtime and local images. Writes `plan.packed.html`.
 +- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, reached through no symlink, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
-+- Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
++- Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI or holds a `var()`, `env()` or `attr()`, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
 +- Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
  - `--artifact` also writes `plan.artifact.html`, the page without its own `<html>` and `<body>`, for a host that adds them.
  - Errors stop the write. Warnings are budgets for words and phone width: fix them or accept them knowingly.
@@ -60,7 +60,7 @@ index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf9942
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..e6fab44168679bb3f62b13f287f09e8e7a63b0a0 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..1020a7c92b7d0774485c1763f6f71e21207844a2 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -299,7 +299,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..e6fab44168679bb3f62b13f287f09e8e
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +442,223 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +442,230 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -436,9 +436,13 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..e6fab44168679bb3f62b13f287f09e8e
 +// and its "(" right after it, and reads its arguments to the ")" that closes it, where a "(", "[" or "{" opens a block that its own
 +// closer ends and the end of the text closes everything, as CSS does. Every string in those arguments must be a data: URI, but
 +// one inside type(), which names a MIME type; a url() in them is checked as every url() is, and names its string first. The
-+// innermost function names a string, once. The same escaped-name rule as url()'s stands: an escape in a name is refused above.
++// innermost function names a string, once. A var() in those arguments is substituted after pack reads the sheet, so the string
++// it stands for can be any file, and env() and attr() are read as late: pack refuses each, at any depth, anywhere between an
++// image function's "(" and its ")". A url() takes no var(): its unquoted form is one token that a "(" ends, and its quoted form
++// names its string here. The same escaped-name rule as url()'s stands: an escape in a name is refused above.
 +const CSS_IMAGE_FN = /(?<![-\w\u0080-\uffff\\])(-webkit-image-set|image-set|image|-webkit-cross-fade|cross-fade|src|-moz-element|element)\(/gi;
 +const CSS_TYPE_FN = /(?<![-\w\u0080-\uffff\\])type\(/gi;
++const CSS_SUBST_FN = /(?<![-\w\u0080-\uffff\\])(var|env|attr)\(/gi;
 +function cssArgsEnd(code, from) {   // the index of the ")" that closes the function whose "(" ends at from, or the end of the text
 +  const closer = { '(': ')', '[': ']', '{': '}' }; const stack = [')'];
 +  for (let i = from; i < code.length; i++) {
@@ -470,9 +474,12 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..e6fab44168679bb3f62b13f287f09e8e
 +    for (const [s] of strings) if (s >= m.index && s < m.index + m[0].length) named.add(s);
 +  }
 +  const mime = [...code.matchAll(CSS_TYPE_FN)].map((m) => [m.index + m[0].length, cssArgsEnd(code, m.index + m[0].length)]);
++  const held = new Set();   // the start of each var(), env() or attr() an image function has refused, so a nested function reports it once
 +  for (const m of [...code.matchAll(CSS_IMAGE_FN)].reverse()) {
 +    const fn = m[1], from = m.index + m[0].length, to = cssArgsEnd(code, from);
 +    if (/element/i.test(fn)) { err(`${at}: CSS ${fn}() — it paints an element of the page, which pack cannot check; use an <img> for a local file, or a data: URI`); continue; }
++    CSS_SUBST_FN.lastIndex = from;
++    for (let v; (v = CSS_SUBST_FN.exec(code)) && v.index < to;) { if (held.has(v.index)) continue; held.add(v.index); err(`${at}: CSS ${fn}() holds ${v[1]}(), which the browser substitutes after pack has read the sheet, so pack cannot see what it names; write the data: URI itself`); }
 +    for (const [s, e] of strings) {
 +      if (s < from || s >= to || named.has(s) || mime.some(([a, b]) => s >= a && s < b)) continue;
 +      named.add(s); onlyData(at, `CSS ${fn}()`, css.slice(s + 1, e - (e - s >= 2 && css[e - 1] === css[s] ? 1 : 0)), true);
@@ -537,7 +544,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..e6fab44168679bb3f62b13f287f09e8e
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +667,31 @@ if (!quiet) {
+@@ -288,7 +674,31 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -570,7 +577,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..e6fab44168679bb3f62b13f287f09e8e
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +701,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +708,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }

@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index a3713fc41997105270fe4e93be6463cf5b805dd5..d535819585ee0af605489267ecacdee736411198 100644
+index 1a007cabe9d8016eabe91cc5aa808932aad5e552..836d5e51782e8210e3c5b65dd9b677ff1aff59f4 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -149,7 +149,7 @@ export async function assertUnderLimit(userId: string) {
@@ -18,10 +18,10 @@ index a3713fc41997105270fe4e93be6463cf5b805dd5..d535819585ee0af605489267ecacdee7
 -- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
 +- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
  - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, reached through no symlink, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
- - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
+ - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, a CSS `image-set()`, `image()`, `cross-fade()` or `src()` that names anything but a `data:` URI or holds a `var()`, `env()` or `attr()`, a CSS `element()`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
  - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index be78347ff97ab5adb7dd7979aa922dfb670ebfb8..1160bae6e26567d31adf2eae19ff7b8200d6dd17 100644
+index 8c718f1dca2a52b4b517ec1361a48e852fc006d9..be0126eab61b2997bda65f949a77d17a815b224a 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -254,6 +254,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr

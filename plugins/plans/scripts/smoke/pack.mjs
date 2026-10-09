@@ -107,6 +107,24 @@ const REFUSALS = [
   { name: 'css-src-function', head: '<style>.x{background:src("shot.png")}</style>\n', body: '<p class="x">x</p>', why: /CSS src\(\) "shot\.png"/ },
   { name: 'css-element', head: '<style>.x{background:element(#y)}</style>\n', body: '<p class="x">x</p>', why: /<style>: CSS element\(\)/ },
   { name: 'css-moz-element', body: '<div style="background:-moz-element(#y)">x</div>', why: /style="": CSS -moz-element\(\)/ },
+  // A custom property is substituted after pack reads the sheet, so var() inside an image function can name any file, and env()
+  // and attr() are read as late. pack refuses each anywhere in the arguments of image-set(), -webkit-image-set(), image(),
+  // cross-fade(), -webkit-cross-fade() and src(), in a <style>, a style="" and the page's own stylesheet, and accepts them
+  // everywhere else. An escape in the name is refused by the escaped-name rule.
+  { name: 'css-image-set-var', head: '<style>:root{--r11-image:"secret.png"}#p{background-image:image-set(var(--r11-image) 1x)}</style>\n', body: '<p id="p">x</p>', why: /<style>: CSS image-set\(\) holds var\(\)/ },
+  { name: 'css-image-set-var-attribute', body: '<div style="background-image:image-set(var(--r11-image) 1x)">x</div>', why: /style="": CSS image-set\(\) holds var\(\)/ },
+  { name: 'css-image-set-var-linked', setup: (d) => writeFileSync(join(d, 'local.css'), ':root{--r11-image:"secret.png"}#p{background-image:image-set(var(--r11-image) 1x)}\n'),
+    head: '<link rel="stylesheet" href="local.css">\n', body: '<p id="p">x</p>', why: /local\.css: CSS image-set\(\) holds var\(\)/ },
+  { name: 'css-image-set-var-upper', head: '<style>.x{background:IMAGE-SET(VAR(--i) 1x)}</style>\n', body: '<p class="x">x</p>', why: /CSS IMAGE-SET\(\) holds VAR\(\)/ },
+  { name: 'css-image-set-var-after-data', head: '<style>.x{background:image-set("data:image/png;base64,iVBORw0KGgo=" var(--res))}</style>\n', body: '<p class="x">x</p>', why: /CSS image-set\(\) holds var\(\)/ },
+  { name: 'css-image-set-var-nested', head: '<style>.x{background:image-set(image(var(--i)) 1x)}</style>\n', body: '<p class="x">x</p>', why: /CSS image\(\) holds var\(\)/ },
+  { name: 'css-image-set-var-unclosed', head: '<style>.x{background:image-set(var(--i) 1x</style>\n', body: '<p class="x">x</p>', why: /CSS image-set\(\) holds var\(\)/ },
+  { name: 'css-cross-fade-env', head: '<style>.x{background:cross-fade(url("data:image/png;base64,iVBORw0KGgo="), env(--i), 50%)}</style>\n', body: '<p class="x">x</p>', why: /CSS cross-fade\(\) holds env\(\)/ },
+  { name: 'css-webkit-image-set-env', body: '<div style="background:-webkit-image-set(env(safe-area-inset-top) 1x)">x</div>', why: /style="": CSS -webkit-image-set\(\) holds env\(\)/ },
+  { name: 'css-src-attr', head: '<style>.x{background:src(attr(data-src))}</style>\n', body: '<p class="x">x</p>', why: /CSS src\(\) holds attr\(\)/ },
+  { name: 'css-image-attr-linked', setup: (d) => writeFileSync(join(d, 'local.css'), '.x{background:image(attr(data-src url))}\n'),
+    head: '<link rel="stylesheet" href="local.css">\n', body: '<p class="x">x</p>', why: /local\.css: CSS image\(\) holds attr\(\)/ },
+  { name: 'css-image-set-var-escaped-name', head: '<style>.x{background:image-set(v\\61r(--i) 1x)}</style>\n', body: '<p class="x">x</p>', why: /"v\\61r\(" holds a backslash escape/ },
   // JavaScript's trim() and \s take U+FEFF, U+00A0 and the other Unicode spaces as whitespace. HTML's attribute and srcset rules
   // know ASCII whitespace alone, and CSS, after its preprocessing, LF, TAB and SPACE; the URL parser keeps the rest, so a value
   // that is data: only once a Unicode space is trimmed is a path beside the page to the browser.
@@ -233,6 +251,12 @@ export default async function ({ ROOT, check }) {
       `<style>.a{background:image-set("${D}" 1x, url(${D}) 2x type("image/png"))} .b{background:-webkit-image-set('${D}' 1x)} .c{background:cross-fade(url("${D}"), url(${D}), 50%)} .d{background:src("${D}")} .e{background:image(rtl "${D}", red)} .f::before{content:"image-set('shot.png' 1x) element(#y)"} /* image-set("shot.png") */ .my-image-set{background:my-image(x) x-element(#y)}</style>\n`))
     const ri = run(imageFns, 'page.html')
     check('image-set, cross-fade, src and image that hold only data: URIs are accepted, as are the names in a string, a comment or a longer identifier', ri.status === 0, out(ri))
+
+    // var(), env() and attr() outside the image functions, in other functions, and as parts of longer names are not refused.
+    const subst = fixture('css-substitution-outside-image-functions', page('<div style="color:var(--plans-ink);margin-top:env(safe-area-inset-top)">x</div>',
+      `<style>:root{--plans-x:"shot.png"} .a{color:var(--plans-ink)} .b{padding:env(safe-area-inset-bottom, 0px)} .c::before{content:attr(title)} .d{width:calc(var(--w) * 2)} .e{background:var(--bg, red)} .f{background:image-set("${D}" 1x)} .g{background:my-var(x) x-env(y) --attr(z)} .h::after{content:"image-set(var(--i))"}</style>\n`))
+    const rv = run(subst, 'page.html')
+    check('var(), env() and attr() outside the image functions are accepted', rv.status === 0, out(rv))
 
     // ASCII whitespace around a data: URI is what the browser strips, so it is trimmed before the check.
     const padded = fixture('data-ascii-padding', page([

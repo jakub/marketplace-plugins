@@ -592,9 +592,13 @@ function cssLex(css) {   // the css with its comments blanked (kept), with its s
 // and its "(" right after it, and reads its arguments to the ")" that closes it, where a "(", "[" or "{" opens a block that its own
 // closer ends and the end of the text closes everything, as CSS does. Every string in those arguments must be a data: URI, but
 // one inside type(), which names a MIME type; a url() in them is checked as every url() is, and names its string first. The
-// innermost function names a string, once. The same escaped-name rule as url()'s stands: an escape in a name is refused above.
+// innermost function names a string, once. A var() in those arguments is substituted after pack reads the sheet, so the string
+// it stands for can be any file, and env() and attr() are read as late: pack refuses each, at any depth, anywhere between an
+// image function's "(" and its ")". A url() takes no var(): its unquoted form is one token that a "(" ends, and its quoted form
+// names its string here. The same escaped-name rule as url()'s stands: an escape in a name is refused above.
 const CSS_IMAGE_FN = /(?<![-\w\u0080-\uffff\\])(-webkit-image-set|image-set|image|-webkit-cross-fade|cross-fade|src|-moz-element|element)\(/gi;
 const CSS_TYPE_FN = /(?<![-\w\u0080-\uffff\\])type\(/gi;
+const CSS_SUBST_FN = /(?<![-\w\u0080-\uffff\\])(var|env|attr)\(/gi;
 function cssArgsEnd(code, from) {   // the index of the ")" that closes the function whose "(" ends at from, or the end of the text
   const closer = { '(': ')', '[': ']', '{': '}' }; const stack = [')'];
   for (let i = from; i < code.length; i++) {
@@ -626,9 +630,12 @@ function checkCss(at, text) {
     for (const [s] of strings) if (s >= m.index && s < m.index + m[0].length) named.add(s);
   }
   const mime = [...code.matchAll(CSS_TYPE_FN)].map((m) => [m.index + m[0].length, cssArgsEnd(code, m.index + m[0].length)]);
+  const held = new Set();   // the start of each var(), env() or attr() an image function has refused, so a nested function reports it once
   for (const m of [...code.matchAll(CSS_IMAGE_FN)].reverse()) {
     const fn = m[1], from = m.index + m[0].length, to = cssArgsEnd(code, from);
     if (/element/i.test(fn)) { err(`${at}: CSS ${fn}() — it paints an element of the page, which pack cannot check; use an <img> for a local file, or a data: URI`); continue; }
+    CSS_SUBST_FN.lastIndex = from;
+    for (let v; (v = CSS_SUBST_FN.exec(code)) && v.index < to;) { if (held.has(v.index)) continue; held.add(v.index); err(`${at}: CSS ${fn}() holds ${v[1]}(), which the browser substitutes after pack has read the sheet, so pack cannot see what it names; write the data: URI itself`); }
     for (const [s, e] of strings) {
       if (s < from || s >= to || named.has(s) || mime.some(([a, b]) => s >= a && s < b)) continue;
       named.add(s); onlyData(at, `CSS ${fn}()`, css.slice(s + 1, e - (e - s >= 2 && css[e - 1] === css[s] ? 1 : 0)), true);

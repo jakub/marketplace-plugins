@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index c8048c0b3ca6e609f579fa006bb18907ce88a1d5..5ceafc46f13b9ec338700a8d00958d8861bf70c1 100644
+index 48e5ac6e04023804b840e892680a0663aff4901b..428df4df13c691b464f0b2be775278399f56187f 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -28,6 +28,8 @@ The reader gets: numbered claims; a tap on a claim opens it and every claim unde

@@ -104,8 +104,9 @@ it, so a later patch's context is the text an earlier one wrote.
     refuses an escape, a missing or root-only file, remote media, a local .html src, a type
     outside plans:publish's table, more than 64 files, local paths in srcset, poster, CSS
     url() or style, a string that is not a data: URI in image-set(), -webkit-image-set(),
-    image(), cross-fade(), -webkit-cross-fade() or src(), element() and -moz-element() in any
-    form, a backslash escape in the name of a CSS function or at-rule (u\72l( is url( to a
+    image(), cross-fade(), -webkit-cross-fade() or src(), a var(), env() or attr() anywhere in
+    those functions' arguments (substituted after pack reads the sheet), element() and
+    -moz-element() in any form, a backslash escape in the name of a CSS function or at-rule (u\72l( is url( to a
     browser), leftover external scripts or stylesheets, and a meta CSP, under --lint-only
     too. Before a srcset, poster, url() or image-function value is read as data:, the
     whitespace trimmed is the syntax's own, HTML's ASCII set or CSS's LF, TAB and SPACE,
