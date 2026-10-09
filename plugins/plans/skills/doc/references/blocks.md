@@ -28,6 +28,8 @@ The reader gets: numbered claims; a tap on a claim opens it and every claim unde
 
 Put it in the `<header>`, after the `h1`. It shows “Proposed · 10 files · +5 new · ~4 changed · −1 deleted”, like a diff stat. Count files only. Leave out an attribute that is zero. Do not write the number of decisions here; the page counts them.
 
+`label="…"` replaces “Proposed” with plain text that says what state the changes are in, such as `label="Landed"` in a walkthrough. `label=""` draws no label. With every count at zero, the page draws nothing.
+
 ## `doc-mock` — real HTML in a frame, scaled to fit
 
 ```html

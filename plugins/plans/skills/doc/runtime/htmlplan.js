@@ -477,6 +477,17 @@ function decodeFragment(hash) {
 }
 NW.fragment = { VERSION: FRAG_VERSION, LIMITS: FRAG_LIMITS, encode: encodeFragment, decode: decodeFragment };
 
+/* ───────────────────────── doc-changes view (pure) ───────────────────────── */
+/** doc-changes attributes, each as getAttribute returns it → { hidden, label, total, parts: [[class, count, sign, word]] }. An
+    absent label (null) reads "Proposed", an empty one draws no label, and any other value is plain text, which the element sets
+    as a text node. A zero count is left out, and with every count at zero the element is hidden. */
+NW.changesView = function changesView({ new: add, changed, deleted, label = null } = {}) {
+  const n = (v) => Math.max(0, parseInt(v, 10) || 0);
+  const parts = [['add', n(add), '+', 'new'], ['mod', n(changed), '~', 'changed'], ['del', n(deleted), '−', 'deleted']].filter((x) => x[1]);
+  const total = parts.reduce((a, x) => a + x[1], 0);
+  return { hidden: !total, label: label == null ? 'Proposed' : String(label), total, parts };
+};
+
 globalThis.HtmlPlan = NW;
 if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
 
@@ -1344,9 +1355,9 @@ define('doc-quote', (el) => {
 
 /* ── doc-changes: the size of the proposed change, drawn like a diff stat ── */
 define('doc-changes', (el) => {
-  const n = (k) => Math.max(0, parseInt(el.getAttribute(k), 10) || 0); const parts = [['add', n('new'), '+', 'new'], ['mod', n('changed'), '~', 'changed'], ['del', n('deleted'), '−', 'deleted']].filter((x) => x[1]);
-  const total = parts.reduce((a, x) => a + x[1], 0); if (!total) { el.hidden = true; return; }
-  el.replaceChildren(h('span', { class: 'ch-tag' }, 'Proposed'), h('b', null, `${total} file${total > 1 ? 's' : ''}`), ...parts.map((x) => h('span', { class: 'ch-n ' + x[0] }, h('b', null, x[2] + x[1]), ' ' + x[3])));
+  const v = NW.changesView({ new: el.getAttribute('new'), changed: el.getAttribute('changed'), deleted: el.getAttribute('deleted'), label: el.getAttribute('label') });
+  if (v.hidden) { el.hidden = true; return; }
+  el.replaceChildren(...(v.label ? [h('span', { class: 'ch-tag' }, v.label)] : []), h('b', null, `${v.total} file${v.total > 1 ? 's' : ''}`), ...v.parts.map((x) => h('span', { class: 'ch-n ' + x[0] }, h('b', null, x[2] + x[1]), ' ' + x[3])));   // h() adds the label as a text node, never as markup
 });
 
 /* ── doc-ask ──────────────────────────────────────── */

@@ -1,0 +1,48 @@
+diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
+index f3f316d1fc7938d52ff3776b6c45b4af35060e48..d5d3d82ba348aaf878c1334f6074ee73dc0a7a6f 100644
+--- a/plugins/plans/skills/doc/references/blocks.md
++++ b/plugins/plans/skills/doc/references/blocks.md
+@@ -28,6 +28,8 @@ The reader gets: numbered claims; a tap on a claim opens it and every claim unde
+ 
+ Put it in the `<header>`, after the `h1`. It shows “Proposed · 10 files · +5 new · ~4 changed · −1 deleted”, like a diff stat. Count files only. Leave out an attribute that is zero. Do not write the number of decisions here; the page counts them.
+ 
++`label="…"` replaces “Proposed” with plain text that says what state the changes are in, such as `label="Landed"` in a walkthrough. `label=""` draws no label. With every count at zero, the page draws nothing.
++
+ ## `doc-mock` — real HTML in a frame, scaled to fit
+ 
+ ```html
+diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
+index f98bccb51fc2c137407158234cb6c5048a69be84..909ec077fa404bdea8cde6250cfb65962d0a9f8c 100644
+--- a/plugins/plans/skills/doc/runtime/htmlplan.js
++++ b/plugins/plans/skills/doc/runtime/htmlplan.js
+@@ -477,6 +477,17 @@ function decodeFragment(hash) {
+ }
+ NW.fragment = { VERSION: FRAG_VERSION, LIMITS: FRAG_LIMITS, encode: encodeFragment, decode: decodeFragment };
+ 
++/* ───────────────────────── doc-changes view (pure) ───────────────────────── */
++/** doc-changes attributes, each as getAttribute returns it → { hidden, label, total, parts: [[class, count, sign, word]] }. An
++    absent label (null) reads "Proposed", an empty one draws no label, and any other value is plain text, which the element sets
++    as a text node. A zero count is left out, and with every count at zero the element is hidden. */
++NW.changesView = function changesView({ new: add, changed, deleted, label = null } = {}) {
++  const n = (v) => Math.max(0, parseInt(v, 10) || 0);
++  const parts = [['add', n(add), '+', 'new'], ['mod', n(changed), '~', 'changed'], ['del', n(deleted), '−', 'deleted']].filter((x) => x[1]);
++  const total = parts.reduce((a, x) => a + x[1], 0);
++  return { hidden: !total, label: label == null ? 'Proposed' : String(label), total, parts };
++};
++
+ globalThis.HtmlPlan = NW;
+ if (!HAS_DOM) { if (typeof module !== 'undefined') module.exports = NW; return; }
+ 
+@@ -1344,9 +1355,9 @@ define('doc-quote', (el) => {
+ 
+ /* ── doc-changes: the size of the proposed change, drawn like a diff stat ── */
+ define('doc-changes', (el) => {
+-  const n = (k) => Math.max(0, parseInt(el.getAttribute(k), 10) || 0); const parts = [['add', n('new'), '+', 'new'], ['mod', n('changed'), '~', 'changed'], ['del', n('deleted'), '−', 'deleted']].filter((x) => x[1]);
+-  const total = parts.reduce((a, x) => a + x[1], 0); if (!total) { el.hidden = true; return; }
+-  el.replaceChildren(h('span', { class: 'ch-tag' }, 'Proposed'), h('b', null, `${total} file${total > 1 ? 's' : ''}`), ...parts.map((x) => h('span', { class: 'ch-n ' + x[0] }, h('b', null, x[2] + x[1]), ' ' + x[3])));
++  const v = NW.changesView({ new: el.getAttribute('new'), changed: el.getAttribute('changed'), deleted: el.getAttribute('deleted'), label: el.getAttribute('label') });
++  if (v.hidden) { el.hidden = true; return; }
++  el.replaceChildren(...(v.label ? [h('span', { class: 'ch-tag' }, v.label)] : []), h('b', null, `${v.total} file${v.total > 1 ? 's' : ''}`), ...v.parts.map((x) => h('span', { class: 'ch-n ' + x[0] }, h('b', null, x[2] + x[1]), ' ' + x[3])));   // h() adds the label as a text node, never as markup
+ });
+ 
+ /* ── doc-ask ──────────────────────────────────────── */
