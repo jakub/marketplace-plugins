@@ -117,6 +117,12 @@ it, so a later patch's context is the text an earlier one wrote.
     allows no popup and no top-level navigation, so upstream's target="_blank" was a dead
     click. Only http and https links render, by the URL parser's reading of the scheme;
     anything else is plain text. The check is exported as HtmlPlan.safeHref for the smoke.
+0009-copy-out.patch
+    Shows the response in the Respond sheet in a readonly, selectable textarea. "Copied"
+    appears only after navigator.clipboard.writeText resolves or execCommand('copy')
+    returns true; upstream said "Copied" whatever execCommand returned. Otherwise the
+    textarea is focused and selected, with instructions to copy by hand. The sheet and the
+    comment box name no host, and the unused Send path goes.
 -----END PATCHES-----
 
 RE-SYNCING

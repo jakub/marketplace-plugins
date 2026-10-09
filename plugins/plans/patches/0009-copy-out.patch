@@ -1,0 +1,63 @@
+diff --git a/plugins/plans/skills/doc/runtime/htmlplan.css b/plugins/plans/skills/doc/runtime/htmlplan.css
+index bef9ad0960026bc7355a6317234162c1ccafc082..35bb282e7ec0427f5cb5c03ec6fb75a497b79470 100644
+--- a/plugins/plans/skills/doc/runtime/htmlplan.css
++++ b/plugins/plans/skills/doc/runtime/htmlplan.css
+@@ -469,6 +469,9 @@ doc-ask > :last-child { margin-bottom: 2px; }
+ .nw-sheet .body { overflow: auto; padding: 14px 18px; flex: 1; }
+ .nw-sheet .body pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 0; max-height: none; }
+ .nw-sheet .hint { font-size: 13px; color: var(--plans-ink-2); margin: 0 0 10px; }
++.nw-sheet .hint.warn { color: var(--plans-ink); border-left: 3px solid var(--plans-amber); padding-left: 9px; }
++.nw-sheet .nw-out { display: block; box-sizing: border-box; width: 100%; min-height: 12em; margin: 0; padding: 8px 10px; font: 12px/1.5 var(--plans-mono); white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--plans-line); border-radius: var(--plans-r-sm); background: var(--plans-bg); color: var(--plans-ink); resize: vertical; }
++.nw-sheet .nw-out:focus { outline: 2px solid var(--plans-accent); outline-offset: -1px; }
+ .nw-sheet footer { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--plans-line-2); max-width: none; margin: 0; flex-wrap: wrap; }
+ .nw-sheet footer .sp { flex: 1; } .nw-send-state { align-self: center; font-size: 13px; color: var(--plans-ink-2); } .nw-btn[disabled] { opacity: .5; cursor: default; }
+ .nw-toast { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); background: var(--plans-ink); color: var(--plans-bg); padding: 9px 14px; border-radius: 99px; font: 550 13px var(--plans-sans); z-index: 80; box-shadow: var(--plans-shadow); }
+diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
+index ddb3b3cb3172bfb9bcad09ecc6bb69af09af211b..294b947d27882d4102a84662b45b0412d91ae68e 100644
+--- a/plugins/plans/skills/doc/runtime/htmlplan.js
++++ b/plugins/plans/skills/doc/runtime/htmlplan.js
+@@ -581,7 +581,7 @@ document.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.tar
+ function openComment({ key, label, anchor, extra, onState }) {
+   closePop();
+   const cur = S.comments[key]?.text || '';
+-  const ta = h('textarea', { placeholder: 'Comment for Claude…' }); ta.value = cur;
++  const ta = h('textarea', { placeholder: 'Comment…' }); ta.value = cur;
+   const del = h('button', { class: 'nw-btn danger', onclick: () => { delete S.comments[key]; onState?.(false); save(); closePop(); } }, 'Remove');
+   pop = h('div', { class: 'nw-pop', role: 'dialog' },
+     h('div', { class: 'ref' }, label), extra || null, ta,
+@@ -736,18 +736,30 @@ function openSheet(title, bodyNodes, footerNodes) {
+       h('div', { class: 'body' }, bodyNodes), footerNodes ? h('footer', null, footerNodes) : null));
+   document.body.append(sheetBg);
+ }
++/** Copies text, and resolves true only when the browser confirmed it: navigator.clipboard.writeText resolved, or
++    execCommand('copy') returned true. The viewer's sandbox can refuse both, so false is an ordinary answer. */
++async function copyText(text, ta) {
++  try { await navigator.clipboard.writeText(text); return true; } catch {}
++  try { ta.focus({ preventScroll: true }); ta.select(); return document.execCommand('copy') === true; } catch { return false; }
++}
+ function openResponse() {
+   const r = buildResponse();
+-  const pre = h('pre', null, r.md);
++  // The response always sits in a readonly, selectable textarea, so the reader can copy it by hand when the browser will not.
++  const out = h('textarea', { class: 'nw-out', readonly: true, spellcheck: 'false', 'aria-label': 'Your response' }); out.value = r.md;
+   const ans = readAnswers(); const asks = $$('doc-ask'); const nTodo = asks.filter((a) => askTodo(a, ans)).length;
+   const list = asks.length ? h('div', { class: 'nw-asks' }, h('div', { class: 'ttl' }, 'Decisions', h('b', { class: nTodo ? 'todo' : '' }, nTodo ? `${nTodo} to answer` : 'all answered')),
+     asks.map((a, i) => { const st = askChanged(a, ans) ? 'changed' : S.seen[a.id] ? 'kept' : 'todo'; const no = a.closest('doc-claim')?.dataset.no;
+       return h('button', { class: 'nw-askrow ' + st, onclick: () => goToAsk(a) }, h('span', { class: 'k' }, String(i + 1)), h('span', { class: 'q' }, askQ(a, i), h('small', null, [no ? `claim ${no}` : '', words(askPick(a, ans), 9)].filter(Boolean).join(' · '))), h('span', { class: 's' }, st === 'todo' ? 'to answer' : st === 'kept' ? 'as proposed' : 'changed')); })) : null;
+-  const state = h('span', { class: 'nw-send-state' });
+-  const liveOn = false, send = null;
+-  const copy = h('button', { class: 'nw-btn' + (liveOn ? '' : ' primary'), onclick: async () => { try { await navigator.clipboard.writeText(r.md); toast('Copied — paste it back to Claude'); } catch { const ta = h('textarea'); ta.value = r.md; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Copied'); } } }, 'Copy response');
++  const state = h('span', { class: 'nw-send-state', role: 'status' });
++  const hint = h('p', { class: 'hint' }, 'Copy this and paste it into your chat with the agent.');
++  // "Copied" only after the browser confirms the copy. Otherwise the response is selected for the reader to copy by hand.
++  const copy = h('button', { class: 'nw-btn primary', onclick: async () => { state.textContent = '';
++    if (await copyText(r.md, out)) { state.textContent = 'Copied'; toast('Copied'); return; }
++    out.focus({ preventScroll: true }); out.select(); hint.classList.add('warn');
++    hint.textContent = 'The page could not copy. Your response is selected below: copy it with Ctrl+C, ⌘C or your device\'s Copy command, then paste it into your chat with the agent.'; } }, 'Copy response');
+   const reset = h('button', { class: 'nw-btn danger', onclick: () => { if (reset.dataset.arm !== '1') { reset.dataset.arm = '1'; reset.textContent = 'Clear everything?'; setTimeout(() => { reset.dataset.arm = ''; reset.textContent = 'Reset'; }, 3000); return; } S.comments = {}; S.drafts = {}; S.strikes = {}; S.seen = {}; writeAnswers(S.defaults); $$('doc-calls').forEach((d) => d._reset?.()); $$('doc-draft, doc-schema').forEach((d) => d._reset?.()); $$('doc-ask').forEach((a) => clearTimeout(a._seenT)); $$('.has-comment').forEach((e) => e.classList.remove('has-comment')); onFormChange(); flushState(); closeSheet(); toast('Reset'); } }, 'Reset');
+-  openSheet('Your response', [list, h('p', { class: 'hint' }, liveOn ? 'This goes to Claude when you press Send.' : 'Copy this and paste it to Claude.'), pre], [reset, state, h('span', { class: 'sp' }), copy, send]);
++  openSheet('Your response', [list, hint, out], [reset, state, h('span', { class: 'sp' }), copy]);
++  requestAnimationFrame(() => { out.style.height = out.scrollHeight + 2 + 'px'; });   // the sheet scrolls, so the textarea shows all of it
+ }
+ function refreshChrome() {
+   if (!bar) return;

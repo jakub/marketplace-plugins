@@ -469,6 +469,9 @@ doc-ask > :last-child { margin-bottom: 2px; }
 .nw-sheet .body { overflow: auto; padding: 14px 18px; flex: 1; }
 .nw-sheet .body pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 0; max-height: none; }
 .nw-sheet .hint { font-size: 13px; color: var(--plans-ink-2); margin: 0 0 10px; }
+.nw-sheet .hint.warn { color: var(--plans-ink); border-left: 3px solid var(--plans-amber); padding-left: 9px; }
+.nw-sheet .nw-out { display: block; box-sizing: border-box; width: 100%; min-height: 12em; margin: 0; padding: 8px 10px; font: 12px/1.5 var(--plans-mono); white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--plans-line); border-radius: var(--plans-r-sm); background: var(--plans-bg); color: var(--plans-ink); resize: vertical; }
+.nw-sheet .nw-out:focus { outline: 2px solid var(--plans-accent); outline-offset: -1px; }
 .nw-sheet footer { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--plans-line-2); max-width: none; margin: 0; flex-wrap: wrap; }
 .nw-sheet footer .sp { flex: 1; } .nw-send-state { align-self: center; font-size: 13px; color: var(--plans-ink-2); } .nw-btn[disabled] { opacity: .5; cursor: default; }
 .nw-toast { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); background: var(--plans-ink); color: var(--plans-bg); padding: 9px 14px; border-radius: 99px; font: 550 13px var(--plans-sans); z-index: 80; box-shadow: var(--plans-shadow); }

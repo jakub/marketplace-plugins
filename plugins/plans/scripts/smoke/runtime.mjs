@@ -2,7 +2,8 @@
 // doc-changes attributes as getAttribute returns them, so an absent label reads "Proposed", an empty one draws none, any other
 // value stays plain text, and zero counts hide the element. Quote links (patch 0008): HtmlPlan.safeHref passes http and https
 // only, by the URL parser's reading of the scheme, and the link it feeds opens in the same frame after a state flush. The shipped
-// vendored set holds no _blank and no claude.ai hand-over wording.
+// vendored set holds no _blank and no claude.ai hand-over wording. Copy-out (patch 0009): the Respond sheet says "Copied" only
+// after the browser confirms the copy, and otherwise selects the response for a copy by hand.
 
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -65,7 +66,21 @@ export default async function ({ ROOT, check }) {
   const vendored = readdirSync(doc, { recursive: true }).filter((f) => f !== 'SKILL.md' && statSync(join(doc, f)).isFile()).sort()
   check('the vendored set is the six ledger files', vendored.length === 6, vendored.join(' '))
   const hits = (re) => vendored.flatMap((f) => readFileSync(join(doc, f), 'utf8').split('\n').map((l, i) => re.test(l) ? `${f}:${i + 1}` : null).filter(Boolean))
-  for (const [name, re] of [['_blank', /_blank/], ['"Artifact tool"', /Artifact tool/], ['"--artifact"', /--artifact/]]) {
+  // Claude is matched case-sensitively, as a word, so the lowercase upstream URL (claude-plugins-community) stays allowed.
+  for (const [name, re] of [['_blank', /_blank/], ['"Artifact tool"', /Artifact tool/], ['"--artifact"', /--artifact/], ['Claude', /\bClaude\b/]]) {
     const h = hits(re); check(`the vendored set never says ${name}`, h.length === 0, h.join(' '))
   }
+
+  // Copy-out (patch 0009). No DOM runs here, so these hold the source to the contract; the browser check shows it working.
+  const copyText = source.match(/\nasync function copyText\(text, ta\) \{\n([\s\S]*?)\n\}\n/)?.[1] ?? ''
+  check('copyText is true only when writeText resolves or execCommand(\'copy\') returns true inside a try',
+    /try \{ await navigator\.clipboard\.writeText\(text\); return true; \} catch \{\}/.test(copyText) &&
+    /try \{[^\n]*return document\.execCommand\('copy'\) === true; \} catch \{ return false; \}/.test(copyText), copyText)
+  const respond = source.match(/\nfunction openResponse\(\) \{\n([\s\S]*?)\n\}\n/)?.[1] ?? ''
+  check('the Respond sheet shows the response in a readonly textarea', /h\('textarea', \{ class: 'nw-out', readonly: true[^}]*\}\); out\.value = r\.md;/.test(respond) && /openSheet\('Your response', \[list, hint, out\]/.test(respond))
+  check('"Copied" appears only on the confirmed branch', (source.match(/'Copied/g) || []).length === 2 &&
+    /if \(await copyText\(r\.md, out\)\) \{ state\.textContent = 'Copied'; toast\('Copied'\); return; \}/.test(respond))
+  check('a failed copy focuses and selects the textarea and says how to copy by hand',
+    /return; \}\n\s*out\.focus\(\{ preventScroll: true \}\); out\.select\(\);[^\n]*\n\s*hint\.textContent = 'The page could not copy\./.test(respond))
+  check('the dead Send path is gone', !/liveOn|\bsend\b = null/.test(source))
 }
