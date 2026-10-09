@@ -52,9 +52,10 @@ const pageDirId = lstatSync(pageDir);   // the folder's identity now, by device 
 const outPath = resolve(pageDir, cli.values.out ?? (inName.replace(/(\.src)?\.html?$/, '') + (inName.includes('.src.') ? '.html' : '.packed.html')));
 
 /* ── tags, as the plans CLI reads them ── */
-// Copyright 2009 The Go Authors. The tokenizer below is a port from golang.org/x/net/html v0.58.0 (html/token.go, and the
-// attribute decoding of html/escape.go), under the BSD-3-Clause licence that plugins/plans/NOTICE reproduces in full, under
-// GO TOKENIZER PORT.
+// Copyright 2010 The Go Authors. All rights reserved.
+// The tokenizer below is a port from golang.org/x/net/html v0.58.0 (html/token.go, and the attribute decoding of html/escape.go),
+// whose files carry the notice above, under the BSD-3-Clause licence in the module's LICENSE, "Copyright 2009 The Go Authors.",
+// which plugins/plans/NOTICE reproduces in full under GO TOKENIZER PORT.
 // The plans CLI finds the media it uploads with golang.org/x/net/html's tokenizer, at v0.58.0 as its go.mod pins it, so pack reads
 // tags with a port of that tokenizer's Next, readTag, readRawOrRCDATA, readScript, readComment and readMarkupDeclaration, on
 // UTF-16 code units in place of bytes: every delimiter is ASCII, and an ASCII byte is one code unit in the same place. So a

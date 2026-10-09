@@ -220,11 +220,13 @@ GO TOKENIZER PORT
 runtime/pack.mjs reads tags with a port of the HTML tokenizer the plans CLI reads a page with,
 golang.org/x/net/html at v0.58.0, the version the CLI's go.mod pins (patch 0005): Next,
 readTag, readRawOrRCDATA, readScript, readComment and readMarkupDeclaration from
-html/token.go, and the attribute-value decoding of unescapeEntity from html/escape.go. That
-code is "Copyright 2009 The Go Authors." and licensed under the BSD-3-Clause terms in the
-module's LICENSE file, which the port's header comment in pack.mjs names with this file.
-The text between the two marker lines below is that LICENSE byte for byte, and the plans
-smoke holds it to this hash, so a re-sync of the port updates both together.
+html/token.go, and the attribute-value decoding of unescapeEntity from html/escape.go. Both
+files carry the notice "Copyright 2010 The Go Authors. All rights reserved." and are licensed
+under the BSD-3-Clause terms in the module's LICENSE file, which opens "Copyright 2009 The Go
+Authors.". The port's header comment in pack.mjs carries the files' notice and names the
+LICENSE and this file. The text between the two marker lines below is that LICENSE byte for
+byte, and the plans smoke holds it to this hash, so a re-sync of the port updates both
+together.
 
 golang.org/x/net LICENSE SHA-256 at v0.58.0:
 

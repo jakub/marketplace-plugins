@@ -27,16 +27,18 @@ export default async function ({ ROOT, check }) {
   const apache = notice.match(SECTION)?.[1]
   check('NOTICE ends with the marked Apache-2.0 section', !!apache)
   check('the Apache-2.0 text holds no "--", so it fits in one HTML comment', !!apache && !apache.includes('--'))
-  // The tokenizer port: pack.mjs carries golang.org/x/net/html's copyright line, its version and a pointer to NOTICE, and NOTICE
-  // holds the module's BSD-3-Clause LICENSE byte for byte between its own markers, checked here against the SHA-256 NOTICE
-  // records, so the check needs no Go module cache.
+  // The tokenizer port: pack.mjs carries the ported files' own notice (html/token.go and html/escape.go open "Copyright 2010
+  // The Go Authors. All rights reserved."), the module LICENSE's "Copyright 2009 The Go Authors." line, the version and a
+  // pointer to NOTICE, and NOTICE names both and holds the module's BSD-3-Clause LICENSE byte for byte between its own markers,
+  // checked here against the SHA-256 NOTICE records, so the check needs no Go module cache.
+  const FILE_NOTICE = 'Copyright 2010 The Go Authors. All rights reserved.', LICENCE_LINE = 'Copyright 2009 The Go Authors.'
   const packText = readFileSync(join(runtime, 'pack.mjs'), 'utf8')
   const portHead = packText.slice(packText.indexOf('/* ── tags, as the plans CLI reads them ── */'), packText.indexOf('\nconst WS = '))
-  check('pack.mjs names the Go tokenizer port\'s module, version and copyright line, and points at NOTICE',
-    portHead.includes('golang.org/x/net/html v0.58.0') && portHead.includes('Copyright 2009 The Go Authors.') && portHead.includes('plugins/plans/NOTICE'), portHead.slice(0, 200))
+  check('pack.mjs names the Go tokenizer port\'s module and version, carries the ported files\' notice and the LICENSE\'s copyright line, and points at NOTICE',
+    portHead.includes('golang.org/x/net/html v0.58.0') && portHead.includes(FILE_NOTICE) && portHead.includes(LICENCE_LINE) && portHead.includes('plugins/plans/NOTICE'), portHead.slice(0, 300))
   const goSection = notice.match(/\nGO TOKENIZER PORT\n-+\n([\s\S]*?)(?=\n[A-Z][A-Z -]*\n-+\n|\n-{20,}\n)/)?.[1] ?? ''
-  check('NOTICE has a GO TOKENIZER PORT section naming the module, its version, the files ported and the copyright line',
-    ['golang.org/x/net', 'v0.58.0', 'html/token.go', 'html/escape.go', 'Copyright 2009 The Go Authors.'].every((s) => goSection.includes(s)))
+  check('NOTICE has a GO TOKENIZER PORT section naming the module, its version, the files ported, their notice and the LICENSE\'s copyright line',
+    ['golang.org/x/net', 'v0.58.0', 'html/token.go', 'html/escape.go', FILE_NOTICE, LICENCE_LINE].every((s) => goSection.includes(s)))
   const bsdSha = goSection.match(/golang\.org\/x\/net LICENSE SHA-256 at v0\.58\.0:\n\n {4}([0-9a-f]{64})\n/)?.[1]
   const bsd = notice.match(/\n-----BEGIN BSD-3-CLAUSE-----\n([\s\S]*?)-----END BSD-3-CLAUSE-----\n/)?.[1]
   check('NOTICE records the module LICENSE\'s SHA-256 and carries the BSD-3-Clause text that hashes to it',
