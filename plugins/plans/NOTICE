@@ -72,6 +72,15 @@ it, so a later patch's context is the text an earlier one wrote.
     the plan kind. Strips the frontmatter, the $ARGUMENTS line and the Artifact-tool
     hand-over, makes its paths relative to the new location, and points the hand-over at
     the "Delivery policy" section of plans:publish.
+0003-theme-tokens.patch
+    Renames every runtime-owned custom property to --plans-*, including --d, --tr-depth and
+    --top that htmlplan.js generates, and maps them onto T3's theme variables with the
+    upstream colours as fixed fallbacks, so a page follows the host's theme. ink-3 reads
+    --muted-foreground and sunk reads --muted; ink-2 and line-2 mix two host colours and
+    purple stays fallback-only, since T3 has no match. Soft colours use T3's *-surface
+    variables where they exist, else a 12% color-mix, with the upstream pairs under
+    @supports. Text on a solid accent reads --primary-foreground. Mockup content keeps
+    its own palette. The token block is shared byte for byte with skills/show/tokens.css.
 -----END PATCHES-----
 
 RE-SYNCING

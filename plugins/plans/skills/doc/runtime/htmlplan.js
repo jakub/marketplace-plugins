@@ -716,11 +716,11 @@ define('doc-draft', (el) => {
   const render = () => {
     body.innerHTML = ''; flag.textContent = cur !== orig ? '✎ edited — diff goes in your response' : ''; btnRevert.hidden = cur === orig; btnEdit.textContent = editing ? 'Done' : 'Edit';
     if (editing) { const ta = h('textarea', { class: 'c-edit', spellcheck: 'false' }); ta.value = cur; const fit = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 4, window.innerHeight * .7) + 'px'; }; ta.addEventListener('input', () => { cur = ta.value; S.drafts[id] = cur; if (cur === orig) delete S.drafts[id]; flag.textContent = cur !== orig ? '✎ edited' : ''; btnRevert.hidden = cur === orig; fit(); save(); }); body.append(ta); requestAnimationFrame(fit); setTimeout(() => ta.focus(), 0); }
-    else { const html = cur === orig ? esc(cur) : (NW.diffWords(orig, cur) ?? esc(cur)); body.append(h('div', { class: 'c-body', style: 'padding:10px 14px;white-space:pre-wrap;font:13px/1.6 var(--mono)', html })); }
+    else { const html = cur === orig ? esc(cur) : (NW.diffWords(orig, cur) ?? esc(cur)); body.append(h('div', { class: 'c-body', style: 'padding:10px 14px;white-space:pre-wrap;font:13px/1.6 var(--plans-mono)', html })); }
   };
   btnEdit.onclick = () => { editing = !editing; render(); }; btnRevert.onclick = () => { cur = orig; delete S.drafts[id]; editing = false; render(); save(); };
   body.addEventListener('dblclick', () => { if (!editing) { editing = true; render(); } });
-  el.classList.add('doc-code'); el.style.cssText += 'display:block;border:1px solid var(--line);border-radius:var(--r);background:var(--card);overflow:hidden;margin:0 0 20px';
+  el.classList.add('doc-code'); el.style.cssText += 'display:block;border:1px solid var(--plans-line);border-radius:var(--plans-r);background:var(--plans-card);overflow:hidden;margin:0 0 20px';
   el.append(h('div', { class: 'c-head' }, h('span', { class: 'c-file' }, label), flag, btnEdit, btnRevert), body);
   el._diff = () => cur !== orig ? { label, diff: NW.unifiedDiff(orig, cur, label) } : null;
   el._reset = () => { cur = orig; editing = false; render(); };
@@ -776,8 +776,8 @@ define('doc-flow', (el) => {
     const key = `flow:${el.id || $$('doc-flow').indexOf(el)}:${n.id}`;
     if (S.comments[key]) g.classList.add('has-comment');
     const open = () => {
-      const extra = h('div', { style: 'margin:0 0 8px;font-size:14px' }, h('div', { style: 'font-weight:650;margin-bottom:4px' }, n.label.replace(/\n/g, ' '), n.sub ? h('small', { style: 'margin-left:6px;font-family:var(--mono)' }, n.sub) : null),
-        n.detail.length ? h('div', { style: 'color:var(--ink-2);white-space:pre-wrap' }, n.detail.join('\n')) : null,
+      const extra = h('div', { style: 'margin:0 0 8px;font-size:14px' }, h('div', { style: 'font-weight:650;margin-bottom:4px' }, n.label.replace(/\n/g, ' '), n.sub ? h('small', { style: 'margin-left:6px;font-family:var(--plans-mono)' }, n.sub) : null),
+        n.detail.length ? h('div', { style: 'color:var(--plans-ink-2);white-space:pre-wrap' }, n.detail.join('\n')) : null,
         templates[n.id] ? h('div', { style: 'margin-top:8px' }, templates[n.id].content.cloneNode(true)) : null,
         n.href ? h('a', { href: n.href, style: 'display:inline-block;margin-top:6px;font-size:13px', onclick: () => closePop() }, 'Jump to ' + n.href + ' →') : null);
       openComment({ key, label: `${secLabel(el)} › diagram${el.getAttribute('caption') ? ' “' + words(el.getAttribute('caption'), 5) + '”' : ''} › node “${n.label.replace(/\n/g, ' ')}”`, anchor: g, extra, onState: (on) => g.classList.toggle('has-comment', on) });
@@ -816,7 +816,7 @@ define('doc-seq', (el) => {
     const ay = y + textH + 3;
     if (self) { const d = left ? -1 : 1; g.append(svg('path', { d: `M${x1},${ay} L${x1 + 30 * d},${ay} L${x1 + 30 * d},${ay + 18} L${x1 + 2 * d},${ay + 18}`, 'marker-end': `url(#${mk})` })); }
     else g.append(svg('path', { d: `M${x1},${ay} L${x2 + (x2 > x1 ? -2 : 2)},${ay}`, 'marker-end': `url(#${mk})` }));
-    if (s.lost) g.append(svg('text', { x: x2, y: ay + 1, style: 'fill:var(--red);font-weight:700' }, '✕'));
+    if (s.lost) g.append(svg('text', { x: x2, y: ay + 1, style: 'fill:var(--plans-red);font-weight:700' }, '✕'));
     g.append(svg('rect', { x: Math.min(x1, x2) - 4, y: y - 8, width: Math.abs(x2 - x1) + 8 || 60, height: textH + 30, fill: 'transparent', stroke: 'none' }));
     g.dataset.step = String(m.steps.slice(0, i + 1).filter((x) => x.kind === 'msg').length); root.append(g);
     const key = `seq:${el.id || $$('doc-seq').indexOf(el)}:${i}`; if (S.comments[key]) g.classList.add('has-comment');
@@ -943,7 +943,7 @@ define('doc-calls', (el) => {
         if (!n.gap) row.addEventListener('click', (ev) => { if (ev.target.closest('.cl-acts')) return; if (tpl || exc) { open = open === n ? null : n; render(); } else { row.classList.add('cl-flash'); setTimeout(() => row.classList.remove('cl-flash'), 500); } $$('.cl-row.sel', rows).forEach((r) => r.classList.remove('sel')); rows.querySelector(`.cl-row[data-id="${n.id}"]`)?.classList.add('sel'); });   // a tapped row keeps its actions showing: touch screens have no hover
         rows.append(row);
         if (open === n && (tpl || exc)) {
-          const det = h('div', { class: 'cl-det', style: `--d:${n.depth}` });
+          const det = h('div', { class: 'cl-det', style: `--plans-d:${n.depth}` });
           if (exc) {
             // code excerpt: file · line header, ±N lines, target line highlighted
             const lines = exc.text.replace(/\n$/, '').split('\n'); const target = +n.line;
@@ -1102,7 +1102,7 @@ define('doc-tree', (el) => {
     path.length = r.depth; path[r.depth] = r.name.replace(/\/$/, '');
     let guide = ''; for (let d = 1; d <= r.depth; d++) guide += d === r.depth ? (r.last[d] ? '└─ ' : '├─ ') : (r.last[d] ? '   ' : '│  ');
     const full = path.filter(Boolean).join('/').replace(/\/+/g, '/');
-    const row = h('div', { style: `--tr-depth:${r.depth}`, class: ['tr-row', r.dir && 'dir', r.mark === 'new' && 'add', r.mark === 'gone' && 'rem', r.mark === 'mod' && 'mod', r.mark === 'hl' && 'hl'].filter(Boolean).join(' ') }, h('span', null, h('span', { class: 'tr-guide' }, guide), h('span', { class: 'tr-name' }, r.name)), r.note ? h('span', { class: 'tr-note', title: r.note, html: capHtml(r.note) }) : null);
+    const row = h('div', { style: `--plans-tr-depth:${r.depth}`, class: ['tr-row', r.dir && 'dir', r.mark === 'new' && 'add', r.mark === 'gone' && 'rem', r.mark === 'mod' && 'mod', r.mark === 'hl' && 'hl'].filter(Boolean).join(' ') }, h('span', null, h('span', { class: 'tr-guide' }, guide), h('span', { class: 'tr-name' }, r.name)), r.note ? h('span', { class: 'tr-note', title: r.note, html: capHtml(r.note) }) : null);
     const key = `tree:${tid}:${full}`; if (S.comments[key]) row.classList.add('has-comment');
     row.addEventListener('click', () => openComment({ key, label: `${secLabel(el)} › tree › ${full}`, anchor: row, onState: (on) => row.classList.toggle('has-comment', on) }));
     el.append(row);
@@ -1172,7 +1172,7 @@ define('doc-shot', (el) => {
   const src = el.getAttribute('src'); const label = el.getAttribute('label'); const sid = el.id || $$('doc-shot').indexOf(el);
   const frame = el.getAttribute('frame');
   const img = h('img', { src, alt: label || el.getAttribute('caption') || 'screenshot', style: 'display:block;width:100%;height:auto' });
-  const inner = frame ? h('div', { class: 'mk-frame ' + frame }, frame === 'browser' ? h('div', { class: 'mk-bar' }, h('i'), h('i'), h('i'), h('span', { class: 'url' }, el.getAttribute('url') || '')) : null, img) : h('div', { style: 'border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--card)' }, img);
+  const inner = frame ? h('div', { class: 'mk-frame ' + frame }, frame === 'browser' ? h('div', { class: 'mk-bar' }, h('i'), h('i'), h('i'), h('span', { class: 'url' }, el.getAttribute('url') || '')) : null, img) : h('div', { style: 'border:1px solid var(--plans-line);border-radius:var(--plans-r);overflow:hidden;background:var(--plans-card)' }, img);
   const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
   el.style.display = 'block'; el.style.margin ||= '0 0 20px';
   el.prepend(label ? h('div', { class: 'mk-label' }, label) : '', stage, el.getAttribute('caption') ? h('div', { class: 'mk-cap' }, el.getAttribute('caption')) : '');
@@ -1217,7 +1217,7 @@ define('doc-plan', (el) => {
   const setDepth = (d) => { st.depth = d; st.needs = false; all.forEach((c) => setOpen(c, +c.dataset.l <= d)); paint(); };
   const needsYou = () => { st.needs = true; st.depth = null; all.forEach((c) => setOpen(c, false)); all.filter(ownAsk).forEach(openPath); paint(); };
   const nAsk = $$('doc-ask', el).length;
-  const sticky = () => { const walk = (c, top) => { const row = c.querySelector(':scope > .pl-row'); row.style.setProperty('--top', top + 'px'); if (c.classList.contains('open')) claimKids(c).forEach((k) => walk(k, top + row.offsetHeight)); }; claimKids(el).forEach((c) => walk(c, 0)); };
+  const sticky = () => { const walk = (c, top) => { const row = c.querySelector(':scope > .pl-row'); row.style.setProperty('--plans-top', top + 'px'); if (c.classList.contains('open')) claimKids(c).forEach((k) => walk(k, top + row.offsetHeight)); }; claimKids(el).forEach((c) => walk(c, 0)); };
   function paint() {
     all.forEach((c) => { const meta = c.querySelector(':scope > .pl-row > .pl-meta'); meta.querySelector('.pl-bdg')?.remove(); const n = $$('doc-ask', c).length; if (n) meta.append(h('span', { class: 'pl-bdg' + (ownAsk(c) ? '' : ' deep'), title: ownAsk(c) ? '' : 'inside this claim' }, `${n} decision${n > 1 ? 's' : ''}`)); });
     sticky();
@@ -1237,7 +1237,7 @@ define('doc-quote', (el) => {
   const body = h('div', { class: 'q-body' }); while (el.firstChild) body.append(el.firstChild);
   const viaTxt = { prompt: 'prompt', slack: 'slack', github: 'github', pr: 'PR', transcript: role || 'transcript', doc: 'doc', tools: 'tools', email: 'email', meeting: 'meeting' }[via] || via;
   el.append(h('div', { class: 'q-head' }, h('span', { class: 'q-via' }, viaTxt), from ? h('span', { class: 'q-from' }, from) : null, el.getAttribute('where') ? h('span', null, el.getAttribute('where')) : null, h('span', { class: 'q-at' }, href ? h('a', { href, target: '_blank', rel: 'noopener' }, at || 'link ↗') : (at || ''))), body);
-  if (via === 'tools') { body.style.cssText = 'font:12.5px var(--mono);color:var(--ink-2);padding:7px 14px'; }
+  if (via === 'tools') { body.style.cssText = 'font:12.5px var(--plans-mono);color:var(--plans-ink-2);padding:7px 14px'; }
 });
 
 /* ── doc-changes: the size of the proposed change, drawn like a diff stat ── */
