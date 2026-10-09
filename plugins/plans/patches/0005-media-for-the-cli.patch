@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index e96a76f46a5a5f5500f2cc360acb773637b82bd4..29303949c292c43e8884c5a1124601160d256be0 100644
+index e96a76f46a5a5f5500f2cc360acb773637b82bd4..f78aaab6c417ff31bbd48c00d7923279dbfc7058 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -48,7 +48,7 @@ Put it in the `<header>`, after the `h1`. It shows “Proposed · 10 files · +5
@@ -16,7 +16,7 @@ index e96a76f46a5a5f5500f2cc360acb773637b82bd4..29303949c292c43e8884c5a112460116
  - Lints every block with the same parsers the browser uses, and the shape of the tree.
  - Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
 -- Inlines the runtime and local images. Writes `plan.packed.html`.
-+- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
++- Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, reached through no symlink, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. pack reads every attribute as the CLI does: `&amp;` and numeric references decode, and any other `&name;` in an attribute value, on any tag, is refused, so write the character itself. `data:` URIs pass.
 +- Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
 +- Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.
  - `--artifact` also writes `plan.artifact.html`, the page without its own `<html>` and `<body>`, for a host that adds them.
@@ -60,7 +60,7 @@ index 751283e6dba155e468117521d164f87246a330c8..29335c91649581e561659148c6cf9942
    const stage = h('div', { class: 'mk-stage', style: el.getAttribute('w') ? `max-width:${el.getAttribute('w')}px` : '' }, inner);
    el.style.display = 'block'; el.style.margin ||= '0 0 20px';
 diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
-index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..90203970ed5d9967e5532f965ab3a20d22b77c1e 100644
+index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..53702da17654b3aaf700a43cf370866fc540fdb5 100644
 --- a/plugins/plans/skills/doc/runtime/pack.mjs
 +++ b/plugins/plans/skills/doc/runtime/pack.mjs
 @@ -1,12 +1,13 @@
@@ -74,7 +74,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..90203970ed5d9967e5532f965ab3a20d
 -import { readFileSync, writeFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 +// from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
 +// beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
-+import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, readlinkSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
++import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
  import { execFileSync } from 'node:child_process';
 -import { resolve, dirname, extname, basename, relative, sep } from 'node:path';
 +import { resolve, dirname, basename, relative, join, sep } from 'node:path';
@@ -299,7 +299,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..90203970ed5d9967e5532f965ab3a20d
      else if (tag === 'doc-draft') { if (!blockSrc(inner).trim()) err(`${at}: empty — put the editable text inside <script type="text/plain">`); if (!a.id) warn(`${at}: give it an id so edits survive a reload`); }
      else if (tag === 'doc-quote') { if (!a.via) warn(`${at}: add via="prompt|slack|github|transcript|doc|tools|…"`); if (!inner.trim()) err(`${at}: empty quote`); if (/[{}]/.test(a.from || '')) warn(`${at}: from="${a.from}" contains braces — from= is the literal name/handle the source shows; put role/agent context in where=`);
        if (a.via === 'slack' && a.href && /\/archives\/[A-Z0-9]+\/?$/.test(a.href)) warn(`${at}: href links the channel, not the message — use the permalink (…/p<ts>)`);
-@@ -263,23 +442,179 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
+@@ -263,23 +442,182 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
    let six = 0; for (const m of bare.matchAll(/<(p|li|dd|doc-note)\b[^>]*>([\s\S]*?)<\/\1>/gi)) if (stripTags(m[2]).split(/(?<=[.!?])\s+/).filter((x) => x.trim()).length > 6) six++;
    if (six) warn(`ASD-STE100: ${six} paragraph${six > 1 ? 's' : ''} with more than 6 sentences — split`); }
  
@@ -320,7 +320,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..90203970ed5d9967e5532f965ab3a20d
 +// The plans CLI uploads each file that a relative src names on img, video, audio and source, then puts the file's capability URL
 +// in place of the path (plans:publish, "Embedded local media"). So pack inlines no media. It checks each reference the CLI will
 +// follow, and refuses what the CLI or the viewer's CSP would refuse or let through broken. Media resolves only inside the page's
-+// own folder, symlinks resolved, and never under --root, which bounds code excerpts only. MEDIA_EXT is the extension table of
++// own folder, through no symlink, and never under --root, which bounds code excerpts only. MEDIA_EXT is the extension table of
 +// plans:publish without .html and .htm, and the plans smoke holds the two together. Every check here runs under --lint-only too.
 +const MEDIA_EXT = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.webm'];
 +const MEDIA_MAX = 64;
@@ -368,17 +368,20 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..90203970ed5d9967e5532f965ab3a20d
 +  return { p: c };
  }
 +// a cleaned relative path → the real file inside the page's folder, or why there is none. The CLI opens it through os.Root, which
-+// follows a symlink only to a relative target and through at most 8 links, so pack refuses what that root would.
++// follows some symlinks and refuses others by rules pack does not repeat: pack follows none. Each component of the path, folder
++// or file, is lstat'ed from the page's folder, the first symlink refuses the path by name, and what is left must still resolve
++// inside the folder. So a file pack accepts is the file the CLI opens.
 +function pageFile(p) {
-+  const f = real(resolve(pageDir, p));
-+  if (!f) { const r = roots.find((d) => real(d) !== pageDir && existsSync(resolve(d, p))); return { why: r ? `exists only under --root ${rel(r)}, which bounds code excerpts only — put the file in the page's folder` : 'is not in the page\'s folder' }; }
-+  if (!f.startsWith(pageDir + sep)) return { why: 'is a symlink out of the page\'s folder' };
-+  if (!statSync(f).isFile()) return { why: 'is not a file' };
-+  let d = pageDir, hops = 0;
++  let d = pageDir, walked = '';
 +  for (const seg of p.split('/')) {
-+    d = join(d, seg);
-+    for (;;) { let s; try { s = lstatSync(d); } catch { s = null; } if (!s?.isSymbolicLink()) break; const t = readlinkSync(d); if (t.startsWith('/')) return { why: 'goes through a symlink to an absolute path, which the plans CLI does not follow' }; if (++hops > 8) return { why: 'goes through more than 8 symlinks, which the plans CLI does not follow' }; d = join(dirname(d), t); }
++    d = join(d, seg); walked += (walked ? '/' : '') + seg;
++    let s; try { s = lstatSync(d); } catch { s = null; }
++    if (!s) { const r = roots.find((x) => real(x) !== pageDir && existsSync(resolve(x, p))); return { why: r ? `exists only under --root ${rel(r)}, which bounds code excerpts only — put the file in the page's folder` : 'is not in the page\'s folder' }; }
++    if (s.isSymbolicLink()) return { why: `goes through "${walked}", a symlink — pack follows none, so put the file itself in the page's folder` };
 +  }
++  const f = real(d);
++  if (!f || !f.startsWith(pageDir + sep)) return { why: 'resolves outside the page\'s folder' };
++  if (!statSync(f).isFile()) return { why: 'is not a file' };
 +  return { f };
 +}
 +const MEDIA_TAGS = ['img', 'video', 'audio', 'source'];   // the elements whose src the CLI uploads; doc-shot's moves onto an img below
@@ -493,7 +496,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..90203970ed5d9967e5532f965ab3a20d
  if (!quiet) {
    console.log(`\n${basename(inPath)}`);
    info.forEach((m) => console.log('  · ' + m));
-@@ -288,7 +623,31 @@ if (!quiet) {
+@@ -288,7 +626,31 @@ if (!quiet) {
  }
  if (errors.length) { console.log(`\n✗ ${errors.length} error(s), ${warns.length} warning(s) — fix and re-run.`); process.exit(1); }
  if (lintOnly) { console.log(`✓ lint clean${warns.length ? ` (${warns.length} warning${warns.length > 1 ? 's' : ''})` : ''}`); process.exit(0); }
@@ -526,7 +529,7 @@ index ab9229f7bbe3d06f92ce1df7a23c129edda0682b..90203970ed5d9967e5532f965ab3a20d
  if (reads.size && (!quiet || argv.includes('--artifact'))) console.log(`  code from ${reads.size} file${reads.size > 1 ? 's' : ''} is now inside the page: ${[...reads].sort().join(', ')}`);
  if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its own <html><head><body>: publish content only
    const bodyAttrs = attrs((packed.match(/<body\b([^>]*)>/i) || [])[1] || ''); const data = Object.fromEntries(Object.entries(bodyAttrs).filter(([k]) => k.startsWith('data-')).map(([k, v]) => [k.slice(5).replace(/-(\w)/g, (m, c) => c.toUpperCase()), v]));
-@@ -298,4 +657,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
+@@ -298,4 +660,4 @@ if (argv.includes('--artifact')) {   // the Artifact tool wraps the page in its
    const artPath = outPath.replace(/(\.packed)?\.html?$/, '.artifact.html'); writeFileSync(artPath, art);
    console.log(`✓ ${rel(artPath)}  publish this one with the Artifact tool`);
  }

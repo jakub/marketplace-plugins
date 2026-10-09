@@ -5,7 +5,7 @@
 // Lint runs the same parsers the browser uses (from htmlplan.js), fills <doc-code src>
 // from disk, and inlines htmlplan.css/js from this folder. Local media stays as literal files
 // beside the page, which the plans CLI uploads when it publishes the page. Errors stop the write.
-import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, readlinkSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, fstatSync, realpathSync, openSync, closeSync, renameSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve, dirname, basename, relative, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -476,7 +476,7 @@ if (/<doc-plan\b/.test(html)) {   // a plan starts with a title, not a label lin
 // The plans CLI uploads each file that a relative src names on img, video, audio and source, then puts the file's capability URL
 // in place of the path (plans:publish, "Embedded local media"). So pack inlines no media. It checks each reference the CLI will
 // follow, and refuses what the CLI or the viewer's CSP would refuse or let through broken. Media resolves only inside the page's
-// own folder, symlinks resolved, and never under --root, which bounds code excerpts only. MEDIA_EXT is the extension table of
+// own folder, through no symlink, and never under --root, which bounds code excerpts only. MEDIA_EXT is the extension table of
 // plans:publish without .html and .htm, and the plans smoke holds the two together. Every check here runs under --lint-only too.
 const MEDIA_EXT = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.webm'];
 const MEDIA_MAX = 64;
@@ -524,17 +524,20 @@ function mediaPath(value) {
   return { p: c };
 }
 // a cleaned relative path → the real file inside the page's folder, or why there is none. The CLI opens it through os.Root, which
-// follows a symlink only to a relative target and through at most 8 links, so pack refuses what that root would.
+// follows some symlinks and refuses others by rules pack does not repeat: pack follows none. Each component of the path, folder
+// or file, is lstat'ed from the page's folder, the first symlink refuses the path by name, and what is left must still resolve
+// inside the folder. So a file pack accepts is the file the CLI opens.
 function pageFile(p) {
-  const f = real(resolve(pageDir, p));
-  if (!f) { const r = roots.find((d) => real(d) !== pageDir && existsSync(resolve(d, p))); return { why: r ? `exists only under --root ${rel(r)}, which bounds code excerpts only — put the file in the page's folder` : 'is not in the page\'s folder' }; }
-  if (!f.startsWith(pageDir + sep)) return { why: 'is a symlink out of the page\'s folder' };
-  if (!statSync(f).isFile()) return { why: 'is not a file' };
-  let d = pageDir, hops = 0;
+  let d = pageDir, walked = '';
   for (const seg of p.split('/')) {
-    d = join(d, seg);
-    for (;;) { let s; try { s = lstatSync(d); } catch { s = null; } if (!s?.isSymbolicLink()) break; const t = readlinkSync(d); if (t.startsWith('/')) return { why: 'goes through a symlink to an absolute path, which the plans CLI does not follow' }; if (++hops > 8) return { why: 'goes through more than 8 symlinks, which the plans CLI does not follow' }; d = join(dirname(d), t); }
+    d = join(d, seg); walked += (walked ? '/' : '') + seg;
+    let s; try { s = lstatSync(d); } catch { s = null; }
+    if (!s) { const r = roots.find((x) => real(x) !== pageDir && existsSync(resolve(x, p))); return { why: r ? `exists only under --root ${rel(r)}, which bounds code excerpts only — put the file in the page's folder` : 'is not in the page\'s folder' }; }
+    if (s.isSymbolicLink()) return { why: `goes through "${walked}", a symlink — pack follows none, so put the file itself in the page's folder` };
   }
+  const f = real(d);
+  if (!f || !f.startsWith(pageDir + sep)) return { why: 'resolves outside the page\'s folder' };
+  if (!statSync(f).isFile()) return { why: 'is not a file' };
   return { f };
 }
 const MEDIA_TAGS = ['img', 'video', 'audio', 'source'];   // the elements whose src the CLI uploads; doc-shot's moves onto an img below

@@ -1,5 +1,5 @@
 diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
-index 09ab30b0298978ba753ab4cbfc37eaf41a36668d..afadee4260824753223770fc53e03bf658fab6fb 100644
+index db1335d2db5734d75f6b08542253ca98b4359171..ea39983ad30552f97fe312c9517785294d7d6799 100644
 --- a/plugins/plans/skills/doc/references/blocks.md
 +++ b/plugins/plans/skills/doc/references/blocks.md
 @@ -7,6 +7,10 @@ One convention runs through the line-based blocks: start a line with **`+`** for

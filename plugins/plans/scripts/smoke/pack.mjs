@@ -7,7 +7,7 @@
 import { spawnSync } from 'node:child_process'
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { basename, join, relative } from 'node:path'
 
 const RUNTIME = 'plugins/plans/skills/doc/runtime'
 const SENTINEL = 'an existing output, which a refused pack must leave alone\n'
@@ -28,7 +28,12 @@ const REFUSALS = [
   { name: 'dotdot', body: '<img src="../outside.png" alt="">', why: /climbs out of the page's folder/ },
   { name: 'absolute', body: (d) => `<img src="${d}/shot.png" alt="">`, why: /absolute path/ },
   { name: 'file-url', body: (d) => `<img src="file://${d}/shot.png" alt="">`, why: /file: URL/ },
-  { name: 'symlink-out', setup: (d) => symlinkSync('../outside.png', join(d, 'link.png')), body: '<img src="link.png" alt="">', why: /symlink out of the page's folder/ },
+  // The plans CLI opens media through os.Root, which follows some symlinks and refuses others. pack follows none: a symlink
+  // anywhere in a media path, a folder or the file, is refused by name, wherever it points, and so is a symlinked stylesheet.
+  { name: 'symlink-out', setup: (d) => symlinkSync('../outside.png', join(d, 'link.png')), body: '<img src="link.png" alt="">', why: /src="link\.png" goes through "link\.png", a symlink/ },
+  { name: 'symlink-to-file-inside', setup: (d) => symlinkSync('shot.png', join(d, 'link.png')), body: '<img src="link.png" alt="">', why: /src="link\.png" goes through "link\.png", a symlink/ },
+  { name: 'symlink-directory', setup: (d) => { writeFileSync(join(d, 'sub/clip.mp4'), 'mp4'); symlinkSync('sub', join(d, 'via')) }, body: '<video src="via/clip.mp4"></video>', why: /src="via\/clip\.mp4" goes through "via", a symlink/ },
+  { name: 'symlink-stylesheet', setup: (d) => { writeFileSync(join(d, 'local.css'), '.p{color:blue}\n'); symlinkSync('local.css', join(d, 'link.css')) }, head: '<link rel="stylesheet" href="link.css">\n', body: '<p>x</p>', why: /stylesheet "link\.css" goes through "link\.css", a symlink/ },
   { name: 'root-only', root: true, body: '<img src="only-root.png" alt="">', why: /exists only under --root/ },
   { name: 'missing', body: '<img src="nope.png" alt="">', why: /"nope\.png" is not in the page's folder/ },
   { name: 'doc-shot-missing', body: '<doc-shot src="nope.png"></doc-shot>', why: /<doc-shot>: src="nope\.png" is not in the page's folder/ },
@@ -106,7 +111,6 @@ const GOOD = page([
   '<doc-shot data-src="keep.png" src="shot.png" label="Shot"><doc-pin at="10%,10%" title="Here">The button.</doc-pin></doc-shot>',
   "<doc-shot src='my%20shot.png'></doc-shot>",
   '<img src="shot.png" alt="again">',
-  '<img src="inside-link.png" alt="a symlink that stays in the folder">',
   '<video controls src="clip.webm"></video>',
   '<video controls poster="data:image/png;base64,iVBORw0KGgo="><source src="sub/clip.mp4" type="video/mp4"></video>',
   '<img src="data:image/png;base64,iVBORw0KGgo=" srcset="data:image/png;base64,iVBORw0KGgo= 2x" alt="data">',
@@ -138,7 +142,6 @@ export default async function ({ ROOT, check }) {
     // Positive: literal media, one runtime from pack's own folder, the output beside the input.
     const good = fixture('good', GOOD, (d) => {
       writeFileSync(join(d, 'my shot.png'), 'png'); writeFileSync(join(d, 'sub/clip.mp4'), 'mp4'); writeFileSync(join(d, 'a&b.png'), 'png')
-      symlinkSync('shot.png', join(d, 'inside-link.png'))
       writeFileSync(join(d, 'page.css'), '.p { color: blue }\n')
       // decoys beside the page: pack must take the runtime from its own folder, never these
       writeFileSync(join(d, 'htmlplan.css'), '/* DECOY-RUNTIME */\n'); writeFileSync(join(d, 'htmlplan.js'), '/* DECOY-RUNTIME */\n')
@@ -152,7 +155,7 @@ export default async function ({ ROOT, check }) {
     check('each doc-shot gets one literal <img> child, quoted as written',
       o.includes('<doc-shot data-src="keep.png" label="Shot"><img src="shot.png"><doc-pin') && o.includes("<doc-shot><img src='my%20shot.png'></doc-shot>"))
     check('img, video and source keep their literal src',
-      ['<img src="shot.png" alt="again">', '<img src="inside-link.png"', '<video controls src="clip.webm">', '<source src="sub/clip.mp4"',
+      ['<img src="shot.png" alt="again">', '<video controls src="clip.webm">', '<source src="sub/clip.mp4"',
         '<img src="shot.png?v=2#top"', '<img src="shot.png?x=1&copy=2"', '<img src="a&amp;b.png"', '<img src="a&#38;b.png"', '<img src="a&#x26;b.png"',
         '<template><img src="shot.png" alt="in a mock">'].every((s) => o.includes(s)))
     check('nothing is base64-inlined beyond the authored data: URIs', count(o, ';base64,') === count(GOOD, ';base64,') && !o.includes('data:video') && !o.includes('png bytes'))
@@ -161,13 +164,13 @@ export default async function ({ ROOT, check }) {
       o.includes(`<style data-htmlplan>\n${css}\n</style>`) && o.includes(`<script data-htmlplan>\n${js}\n</script>`) && !o.includes('DECOY-RUNTIME'))
     check('the page\'s own stylesheet is inlined from its folder', o.includes('<style>/* page.css */\n.p { color: blue }\n\n</style>') && !/rel="stylesheet"/.test(o),
       o.match(/[^\n]{0,80}(page\.css|rel="stylesheet")[^\n]{0,80}/g)?.join(' | '))
-    check('pack reports the six distinct paths it left for the CLI, the symlink among them, as the CLI counts uploads', /6 local media files stay beside the page/.test(r.stdout) && /6 media files beside it/.test(r.stdout), r.stdout.slice(-400))
+    check('pack reports the five distinct paths it left for the CLI, as the CLI counts uploads', /5 local media files stay beside the page/.test(r.stdout) && /5 media files beside it/.test(r.stdout), r.stdout.slice(-400))
     check('the three spellings of a&b.png are one file to pack, listed once by the name the CLI reads', /: [^\n]*\ba&b\.png/.test(r.stdout) && !/a&amp;b|a&#38;b|a&#x26;b/.test(r.stdout), r.stdout.match(/[^\n]*a&[^\n]*/g)?.join(' | '))
     check('commented-out and text/plain markup is never scanned', !/commented-out|not-a-tag/.test(r.stdout))
 
     const lintDir = fixture('good-lint', GOOD, (d) => {
       writeFileSync(join(d, 'my shot.png'), 'png'); writeFileSync(join(d, 'sub/clip.mp4'), 'mp4'); writeFileSync(join(d, 'a&b.png'), 'png')
-      symlinkSync('shot.png', join(d, 'inside-link.png')); writeFileSync(join(d, 'page.css'), '.p { color: blue }\n')
+      writeFileSync(join(d, 'page.css'), '.p { color: blue }\n')
     })
     const before = listing(lintDir); const rl = run(lintDir, '--lint-only', 'page.html')
     check('--lint-only passes the positive fixture and writes nothing', rl.status === 0 && listing(lintDir) === before, out(rl))
@@ -283,12 +286,15 @@ export default async function ({ ROOT, check }) {
       { name: 'query-only', src: '?x', files: [], why: /src="\?x" names no file beside the page/ },
       { name: 'dot-only-name', src: '.png', files: ['.png'], lists: '.png' },
       { name: 'upper-extension', src: 'PUBLIC.PNG', files: ['PUBLIC.PNG'], lists: 'PUBLIC.PNG' },
-      { name: 'symlink-absolute', src: 'abs.png', files: ['public.png'], setup: (d) => symlinkSync(join(d, 'public.png'), join(d, 'abs.png')), why: /src="abs\.png" goes through a symlink to an absolute path/ },
-      { name: 'symlink-absolute-folder', src: 'via/public.png', files: ['sub/public.png'], setup: (d) => symlinkSync(join(d, 'sub'), join(d, 'via')), why: /goes through a symlink to an absolute path/ },
-      { name: 'symlink-chain-of-eight', src: 'l8.png', files: ['public.png'], setup: (d) => { for (let i = 1; i <= 8; i++) symlinkSync(i === 1 ? 'public.png' : `l${i - 1}.png`, join(d, `l${i}.png`)) }, lists: 'l8.png' },
-      { name: 'symlink-chain-of-nine', src: 'l9.png', files: ['public.png'], setup: (d) => { for (let i = 1; i <= 9; i++) symlinkSync(i === 1 ? 'public.png' : `l${i - 1}.png`, join(d, `l${i}.png`)) }, why: /src="l9\.png" goes through more than 8 symlinks/ },
+      // Every symlink is refused, wherever it points: to an absolute path, to a folder, along a chain, beside its target, and the
+      // two that leave the page's folder and come back, which realpath alone would pass and os.Root refuses.
+      { name: 'symlink-absolute', src: 'abs.png', files: ['public.png'], setup: (d) => symlinkSync(join(d, 'public.png'), join(d, 'abs.png')), why: /src="abs\.png" goes through "abs\.png", a symlink/ },
+      { name: 'symlink-absolute-folder', src: 'via/public.png', files: ['sub/public.png'], setup: (d) => symlinkSync(join(d, 'sub'), join(d, 'via')), why: /src="via\/public\.png" goes through "via", a symlink/ },
+      { name: 'symlink-chain', src: 'l3.png', files: ['public.png'], setup: (d) => { for (let i = 1; i <= 3; i++) symlinkSync(i === 1 ? 'public.png' : `l${i - 1}.png`, join(d, `l${i}.png`)) }, why: /src="l3\.png" goes through "l3\.png", a symlink/ },
+      { name: 'symlink-twin', body: '<img src="public.png" alt=""><img src="twin.png" alt="">', files: ['public.png'], setup: (d) => symlinkSync('public.png', join(d, 'twin.png')), why: /src="twin\.png" goes through "twin\.png", a symlink/ },
+      { name: 'symlink-out-and-back-absolute', src: 'link.png', files: ['sub/public.png'], setup: (d) => { symlinkSync(join(d, 'sub'), join(d, 'via')); symlinkSync('via/public.png', join(d, 'link.png')) }, why: /src="link\.png" goes through "link\.png", a symlink/ },
+      { name: 'symlink-out-and-back-dotdot', src: 'sub/link.png', files: ['public.png'], setup: (d) => symlinkSync(`../../${basename(d)}/public.png`, join(d, 'sub/link.png')), why: /src="sub\/link\.png" goes through "sub\/link\.png", a symlink/ },
       { name: 'two-paths-one-file', body: '<img src="public.png" alt=""><img src="./public.png" alt=""><img src="sub/../public.png" alt="">', files: ['public.png'], lists: 'public.png' },
-      { name: 'symlink-counts-as-its-own-upload', body: '<img src="public.png" alt=""><img src="twin.png" alt="">', files: ['public.png'], setup: (d) => symlinkSync('public.png', join(d, 'twin.png')), lists: 'public.png, twin.png' },
     ]
     for (const c of PATHS) {
       const d = fixture(`path-${c.name}`, page(c.body ?? `<img src="${c.src}" alt="">`), (dd) => {

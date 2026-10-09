@@ -111,8 +111,8 @@ it, so a later patch's context is the text an earlier one wrote.
     name another file nor make a tag a stylesheet. A src becomes the path the CLI opens by the CLI's
     own three steps, Go's TrimSpace, net/url's Parse on the value cut at "#" and filepath's
     Clean, and pack checks, lists and counts that path: what the CLI refuses to parse, pack
-    refuses, and what the CLI would reach through an absolute symlink or more than 8 links,
-    pack refuses too. Before it writes, pack reads its output with the same
+    refuses, and a media path with a symlink in it, which the CLI follows only by rules pack
+    does not repeat, pack refuses outright. Before it writes, pack reads its output with the same
     tokenizer and refuses unless the media references in it are the ones it checked. The
     runtime is inlined once from pack's own folder, and the output goes beside the input and
     never over it, through a temp file and a rename, each made only after the page's folder is
