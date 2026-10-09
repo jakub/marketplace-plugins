@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Issue 28 Acceptance</title>
+<link rel="stylesheet" href="../../plugins/plans/skills/doc/runtime/htmlplan.css">
+<script src="../../plugins/plans/skills/doc/runtime/htmlplan.js" defer></script>
+<body>
+
+<header>
+  <h1>HTML Documents in the Plans Plugin</h1>
+  <doc-changes new="36" changed="6"></doc-changes>
+  <details class="thread"><summary>Why · 2 sources</summary>
+    <doc-quote via="github" from="issue #28">Agents write HTML with no shared rules. … nothing checks a page against the plans viewer's CSP before it goes live. No document collects an answer, so decisions come back through chat and get copied by hand.</doc-quote>
+    <doc-quote id="q-upstream" via="github" from="html-plan upstream" at="f60f045" href="https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan">You write one HTML file by hand. It holds a tree of claims. A small runtime draws the tree and lets the reader open it level by level, answer decisions, edit schemas, comment on anything, and copy one response back to you.</doc-quote>
+  </details>
+</header>
+
+<main>
+<doc-plan>
+
+<!-- ═════ 1 ═════ -->
+<doc-claim>
+  <p>An agent picks one of three tiers for each visual.</p>
+  <doc-code title="show/SKILL.md" lang="md" start="18" hl="21,24" wrap caption="The first rule that matches wins.">
+<script type="text/plain">
+Apply these rules in order. The first rule that matches wins.
+
+1. An explicit user constraint on format or delivery: do what the user said.
+2. PR evidence: Document, published with `--keep`.
+3. Requested sharing or retention: Document.
+4. Two or more choices the reader must answer before you act: Document. Decisions that are already made and only recorded do not count. Ask a single choice in chat.
+5. Longer than one screen: Document.
+6. Fits one screen, and the render tools are in the tool list: Inline.
+7. Otherwise: Sketch.
+</script>
+    <doc-pin line="21" title="Rule 2 sends this page here"></doc-pin>
+  </doc-code>
+</doc-claim>
+
+<!-- ═════ 2 ═════ -->
+<doc-claim>
+  <p>A reader answers a plan in the page and copies one response.</p>
+  <video controls muted playsinline loop src="runtime-clip.webm" width="960" height="540" title="The shipped example: closed, a claim open, a decision changed, Respond"></video>
+
+  <doc-claim>
+    <p>Each closed claim shows the decisions under it.</p>
+    <doc-shot src="example-shot.png" w="1280" label="The shipped example, packed" caption="Each closed claim shows its count of open decisions.">
+      <doc-pin at="89%,29%" title="Decisions under claim 1">The count goes away when the reader answers.</doc-pin>
+      <doc-pin at="99%,89%" title="Respond">It opens one markdown response.</doc-pin>
+    </doc-shot>
+  </doc-claim>
+
+  <doc-claim>
+    <p>The page keeps the state of the reader in the URL fragment.</p>
+    <doc-schema id="payload" lang="ts" title="Fragment payload, version 1" caption="Edit a line to propose another shape.">
+<script type="text/plain">
+// #pl1.<base64url(UTF-8 JSON)>~<percent-encoded anchor>
+type Payload = {
+  answers?:  Record<string, string | boolean | string[] | null>;  // by control name
+  comments?: Record<string, { label: string; text: string; t: number }>;
+  drafts?:   Record<string, string>;          // schema and draft edits, by block id
+  strikes?:  Record<string, { label: string; reason: string; t: number; drops?: string[] }>;
+  seen?:     Record<string, 1>;               // decisions the reader opened
+};
+// fragment ≤ 32768 UTF-8 bytes · JSON ≤ 24576 bytes · no localStorage
+</script>
+    </doc-schema>
+  </doc-claim>
+
+  <doc-claim>
+    <p>The page shows “Copied” only after the browser copies the text.</p>
+    <doc-code title="doc/runtime/htmlplan.js" lang="js" start="765" wrap>
+<script type="text/plain">
+/** Copies text, and resolves true only when the browser confirmed it: navigator.clipboard.writeText resolved, or
+    execCommand('copy') returned true. The viewer's sandbox can refuse both, so false is an ordinary answer. */
+async function copyText(text, ta) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  try { ta.focus({ preventScroll: true }); ta.select(); return document.execCommand('copy') === true; } catch { return false; }
+}
+</script>
+      <doc-pin line="769" tone="ok" title="Only a true result counts"></doc-pin>
+    </doc-code>
+  </doc-claim>
+
+</doc-claim>
+
+<!-- ═════ 3 ═════ -->
+<doc-claim>
+  <p>pack writes one page and keeps the media as files.</p>
+  <doc-mock frame="terminal" title="pack.mjs" w="470" caption="This page, packed. The two media files stay beside it."><template><span class="dim">$</span> node pack.mjs issue-28-acceptance.src.html
+issue-28-acceptance.src.html
+  <span class="dim">·</span> 2 local media files stay beside the page for the
+    plans CLI to upload: runtime-clip.webm, example-shot.png
+<span class="g">✓</span> issue-28-acceptance.html  <b>249 KB</b> · runtime inlined
+  · 2 media files beside it for the plans CLI</template></doc-mock>
+
+  <doc-claim>
+    <p>pack accepts only the media types in the publish table.</p>
+    <doc-code title="publish/SKILL.md" lang="md" start="58">
+<script type="text/plain">
+| Extension | Content type |
+|---|---|
+| `.html`, `.htm` | `text/html` |
+| `.png` | `image/png` |
+| `.jpg`, `.jpeg` | `image/jpeg` |
+| `.webp` | `image/webp` |
+| `.gif` | `image/gif` |
+| `.svg` | `image/svg+xml` |
+| `.mp4` | `video/mp4` |
+| `.webm` | `video/webm` |
+</script>
+    </doc-code>
+    <doc-ask id="audio">
+      <p>Do we add audio types to the plans CLI later?</p>
+      <label><input type="radio" name="audio" value="no" checked> No. Keep the eight types. <small>pack refuses an audio file today</small></label>
+      <label><input type="radio" name="audio" value="issue"> Yes. Open a follow-up issue. <small>the CLI, plansd, this table and pack change together</small></label>
+    </doc-ask>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 4 ═════ -->
+<doc-claim>
+  <p>Publish loads the live page in a browser and looks for faults.</p>
+  <doc-code title="publish/SKILL.md" lang="md" start="135" wrap>
+<script type="text/plain">
+1. Start to capture console messages, page errors, and failed requests before you navigate. A fault that occurs during the first load is lost if capture starts late.
+2. Load the live URL at 390×844 and at 1440×900. At each size, load it in light and in dark through emulated `prefers-color-scheme`.
+3. For a runtime document, which is a page that `plans:doc` packed, check each of the four views again with every claim open, and again with the Respond sheet open.
+4. Fail the check on any of these faults, and report each one separately:
+   - horizontal overflow on the root element
+   - an element clipped outside a scroller the reader can reach
+   - a CSP console message that starts with "Refused to"
+   - an uncaught error
+   - media that fails to load or decode. A `206` response is healthy, because the browser requests media in ranges.
+5. If the browser tooling is unavailable, record the render check as unknown. Unknown is never a pass.
+</script>
+    <doc-pin line="144" tone="warn" title="Unknown is not a pass"></doc-pin>
+  </doc-code>
+</doc-claim>
+
+<!-- ═════ 5 ═════ -->
+<doc-claim>
+  <p>The squash commit on main holds no capability URL.</p>
+  <doc-code title="flow/scripts/land-merge.mjs" lang="js" start="225" hl="229" wrap>
+<script type="text/plain">
+    const title = nonEmpty(pull.title)
+    const headlines = Array.isArray(pull.commits) ? pull.commits.map((c) => nonEmpty(c?.messageHeadline)).filter((h) => h !== null) : []
+    if (title === null) unreadable('read-failed', `the title of #${pr} could not be read, so the squash subject cannot be built`)
+    if (headlines.length === 0) unreadable('read-failed', `the commit headlines of #${pr} could not be read, so the squash body cannot be built`)
+    const message = title === null ? null : { subject: `${stripLinks(oneLine(title))} (#${pr})`, body: headlines.map((h) => `- ${stripLinks(oneLine(h))}`).join('\n') }
+</script>
+    <doc-pin line="229" tone="ok" title="The PR body never reaches main"></doc-pin>
+  </doc-code>
+  <doc-ask id="land">
+    <p>When land-merge removes a link or key from the squash message, what should it do?</p>
+    <label><input type="radio" name="land" value="redact" checked> Redact and merge <small>today: the placeholder replaces it and the land goes on</small></label>
+    <label><input type="radio" name="land" value="stop"> Redact, then stop the land <small>a human fixes the title or commit first</small></label>
+  </doc-ask>
+</doc-claim>
+
+<!-- ═════ shared · not changing ═════ -->
+<doc-claim aux="shared">
+  <p>Shared: the viewer CSP that every Document must pass.</p>
+  <doc-code title="plansd · server.go" lang="text" start="31" wrap caption="script-src has no 'self', so pack inlines the runtime.">
+<script type="text/plain">
+sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src data:; media-src 'self' data: blob:; worker-src blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+</script>
+  </doc-code>
+</doc-claim>
+
+<doc-claim aux="scope">
+  <p>Not changing: the plans CLI, plansd and the plugin version.</p>
+  <ul>
+    <li>The <code>plans</code> CLI uploads media as it does today.</li>
+    <li>The plans plugin stays at version 0.1.0, with no Codex manifest.</li>
+    <li>No audio type joins the publish table in this PR.</li>
+  </ul>
+</doc-claim>
+
+</doc-plan>
+</main>
+</body>
+</html>

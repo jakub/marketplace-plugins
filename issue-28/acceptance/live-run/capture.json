@@ -1,0 +1,776 @@
+{
+ "url": "https://plans.<tailnet-host>/5lKo…redacted",
+ "startedAt": "2026-10-09T18:18:19.062Z",
+ "steps": {
+  "1": {
+   "name": "an answer survives a reload",
+   "decision": {
+    "id": "audio",
+    "name": "audio",
+    "def": "no",
+    "other": "issue"
+   },
+   "fragmentBefore": "#pl1.eyJhbnN3ZXJzIjp7ImF1ZGlvIjoiaXNzdWUifSwic2VlbiI6eyJhdWRpbyI6MX19",
+   "decodedBefore": {
+    "answers": {
+     "audio": "issue"
+    },
+    "anchor": null,
+    "problem": null
+   },
+   "afterReload": {
+    "checked": "issue",
+    "hash": "#pl1.eyJhbnN3ZXJzIjp7ImF1ZGlvIjoiaXNzdWUifSwic2VlbiI6eyJhdWRpbyI6MX19"
+   },
+   "status": "pass"
+  },
+  "2": {
+   "name": "an in-page anchor click keeps the state",
+   "before": "#pl1.eyJhbnN3ZXJzIjp7ImF1ZGlvIjoiaXNzdWUifSwic2VlbiI6eyJhdWRpbyI6MX19",
+   "after": "#pl1.eyJhbnN3ZXJzIjp7ImF1ZGlvIjoiaXNzdWUifSwic2VlbiI6eyJhdWRpbyI6MX19~land",
+   "samePayload": true,
+   "anchor": "land",
+   "historyLength": [
+    2,
+    2
+   ],
+   "answerKept": true,
+   "targetInView": true,
+   "via": "contents rail",
+   "status": "pass"
+  },
+  "3": {
+   "name": "Back after the quote link restores the state",
+   "link": {
+    "href": "https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan",
+    "target": null,
+    "rel": "noopener noreferrer"
+   },
+   "before": "#pl1.eyJhbnN3ZXJzIjp7ImF1ZGlvIjoiaXNzdWUifSwic2VlbiI6eyJhdWRpbyI6MSwibGFuZCI6MX19~land",
+   "away": {
+    "url": "https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan",
+    "sameFrame": true,
+    "newPages": 0,
+    "stubbed": false
+   },
+   "after": "#pl1.eyJhbnN3ZXJzIjp7ImF1ZGlvIjoiaXNzdWUifSwic2VlbiI6eyJhdWRpbyI6MSwibGFuZCI6MX19~land",
+   "samePayload": true,
+   "answer": "issue",
+   "anchor": "land",
+   "pageUrlBase": true,
+   "status": "pass"
+  },
+  "4": {
+   "name": "reset keeps only the anchor",
+   "hashAtReset": "#land",
+   "hashLater": "#land",
+   "anchorBefore": "land",
+   "afterReload": {
+    "hash": "#pl1.eyJzZWVuIjp7ImxhbmQiOjF9fQ~land",
+    "checked": "no",
+    "state": {
+     "answers": 0,
+     "comments": 0,
+     "drafts": 0,
+     "strikes": 0,
+     "seen": [
+      "land"
+     ]
+    }
+   },
+   "status": "pass"
+  },
+  "5": {
+   "name": "a successful copy, with the clipboard read back",
+   "state": "Copied",
+   "copyPath": [
+    "writeText resolved"
+   ],
+   "readonly": true,
+   "responseLength": 334,
+   "clipboard": {
+    "ok": true,
+    "text": "# Re: HTML Documents in the Plans Plugin\n\n## Decisions\n1. [3.1] Do we add audio types to the plans CLI later?  _(not opened; default kept)_\n   → **No. Keep the eight types.** `no`\n2. [5] When land-merge removes a link or key from the squash message, what should it do?  _(not opened; default kept)_\n   → **Redact and merge** `redact`\n"
+   },
+   "clipboardEqualsResponse": true,
+   "errors": [],
+   "status": "pass"
+  },
+  "6": {
+   "name": "a forced copy failure falls back to selection",
+   "state": "",
+   "copiedShown": false,
+   "focused": true,
+   "selection": [
+    0,
+    334,
+    334
+   ],
+   "hint": "The page could not copy. Your response is selected below: copy it with Ctrl+C, ⌘C or your device's Copy command, then paste it into your chat with the agent.",
+   "errors": [],
+   "status": "pass"
+  },
+  "7": {
+   "name": "the exact response headers, CSP in particular",
+   "request": "GET /5lKo…redacted",
+   "httpStatus": 200,
+   "headers": [
+    "Accept-Ranges: bytes",
+    "Cache-Control: private, no-store",
+    "Content-Disposition: inline",
+    "Content-Length: 255248",
+    "Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src data:; media-src 'self' data: blob:; worker-src blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "Content-Type: text/html; charset=utf-8",
+    "Date: Fri, 09 Oct 2026 18:18:19 GMT",
+    "Etag: \"82d7a3d42116acae91b5507380e6ecf4b10001da2f89591916166cae661e6efb\"",
+    "Last-Modified: Fri, 09 Oct 2026 18:16:57 GMT",
+    "Permissions-Policy: camera=(), geolocation=(), microphone=()",
+    "Referrer-Policy: no-referrer",
+    "X-Content-Type-Options: nosniff",
+    "X-Robots-Tag: noindex, nofollow, noarchive"
+   ],
+   "contentType": "text/html; charset=utf-8",
+   "cacheControl": "private, no-store",
+   "csp": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src data:; media-src 'self' data: blob:; worker-src blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+   "cspEqualsPlansdSource": true,
+   "cspEqualsIssueText": false,
+   "sandboxed": true,
+   "sameOriginAllowed": false,
+   "status": "pass"
+  },
+  "8": {
+   "name": "the attachments rewritten to capability URLs",
+   "attachments": [
+    {
+     "tag": "video",
+     "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+     "literalRelativePath": false,
+     "resolved": "https://plans.<tailnet-host>/Gm_X…redacted",
+     "capability": true,
+     "head": {
+      "status": 200,
+      "contentType": "video/webm",
+      "acceptRanges": "bytes",
+      "csp": true,
+      "error": null
+     },
+     "range": {
+      "status": 206,
+      "contentRange": "bytes 0-1/97460"
+     }
+    },
+    {
+     "tag": "img",
+     "src": "https://plans.<tailnet-host>/UVTL…redacted",
+     "literalRelativePath": false,
+     "resolved": "https://plans.<tailnet-host>/UVTL…redacted",
+     "capability": true,
+     "head": {
+      "status": 200,
+      "contentType": "image/png",
+      "acceptRanges": "bytes",
+      "csp": true,
+      "error": null
+     }
+    }
+   ],
+   "status": "pass"
+  },
+  "9": {
+   "name": "the render-check matrix of plans:publish",
+   "cells": [
+    {
+     "viewport": "390x844",
+     "scheme": "light",
+     "view": "load",
+     "rootOverflow": false,
+     "scrollWidth": 390,
+     "clientWidth": 390,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-390x844-light-load.png"
+    },
+    {
+     "viewport": "390x844",
+     "scheme": "light",
+     "view": "claims-open",
+     "rootOverflow": false,
+     "scrollWidth": 390,
+     "clientWidth": 390,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-390x844-light-claims-open.png"
+    },
+    {
+     "viewport": "390x844",
+     "scheme": "light",
+     "view": "respond-open",
+     "rootOverflow": false,
+     "scrollWidth": 390,
+     "clientWidth": 390,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-390x844-light-respond-open.png"
+    },
+    {
+     "viewport": "390x844",
+     "scheme": "dark",
+     "view": "load",
+     "rootOverflow": false,
+     "scrollWidth": 390,
+     "clientWidth": 390,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-390x844-dark-load.png"
+    },
+    {
+     "viewport": "390x844",
+     "scheme": "dark",
+     "view": "claims-open",
+     "rootOverflow": false,
+     "scrollWidth": 390,
+     "clientWidth": 390,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-390x844-dark-claims-open.png"
+    },
+    {
+     "viewport": "390x844",
+     "scheme": "dark",
+     "view": "respond-open",
+     "rootOverflow": false,
+     "scrollWidth": 390,
+     "clientWidth": 390,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-390x844-dark-respond-open.png"
+    },
+    {
+     "viewport": "1440x900",
+     "scheme": "light",
+     "view": "load",
+     "rootOverflow": false,
+     "scrollWidth": 1440,
+     "clientWidth": 1440,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-1440x900-light-load.png"
+    },
+    {
+     "viewport": "1440x900",
+     "scheme": "light",
+     "view": "claims-open",
+     "rootOverflow": false,
+     "scrollWidth": 1440,
+     "clientWidth": 1440,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-1440x900-light-claims-open.png"
+    },
+    {
+     "viewport": "1440x900",
+     "scheme": "light",
+     "view": "respond-open",
+     "rootOverflow": false,
+     "scrollWidth": 1440,
+     "clientWidth": 1440,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "200 https://plans.<tailnet-host>/UVTL…redacted",
+      "206 https://plans.<tailnet-host>/Gm_X…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-1440x900-light-respond-open.png"
+    },
+    {
+     "viewport": "1440x900",
+     "scheme": "dark",
+     "view": "load",
+     "rootOverflow": false,
+     "scrollWidth": 1440,
+     "clientWidth": 1440,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "206 https://plans.<tailnet-host>/Gm_X…redacted",
+      "200 https://plans.<tailnet-host>/UVTL…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-1440x900-dark-load.png"
+    },
+    {
+     "viewport": "1440x900",
+     "scheme": "dark",
+     "view": "claims-open",
+     "rootOverflow": false,
+     "scrollWidth": 1440,
+     "clientWidth": 1440,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "206 https://plans.<tailnet-host>/Gm_X…redacted",
+      "200 https://plans.<tailnet-host>/UVTL…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-1440x900-dark-claims-open.png"
+    },
+    {
+     "viewport": "1440x900",
+     "scheme": "dark",
+     "view": "respond-open",
+     "rootOverflow": false,
+     "scrollWidth": 1440,
+     "clientWidth": 1440,
+     "clipped": [],
+     "truncatedWithEllipsis": [],
+     "refusedTo": [],
+     "uncaughtErrors": [],
+     "consoleErrors": [],
+     "mediaFailures": [],
+     "media": [
+      {
+       "tag": "img",
+       "src": "https://plans.<tailnet-host>/UVTL…redacted",
+       "ok": true,
+       "settled": true,
+       "natural": [
+        1280,
+        720
+       ]
+      },
+      {
+       "tag": "video",
+       "src": "https://plans.<tailnet-host>/Gm_X…redacted",
+       "ok": true,
+       "settled": true,
+       "readyState": 4,
+       "error": null
+      }
+     ],
+     "mediaResponses": [
+      "206 https://plans.<tailnet-host>/Gm_X…redacted",
+      "200 https://plans.<tailnet-host>/UVTL…redacted"
+     ],
+     "failedRequests": [],
+     "newSinceLastView": {
+      "console": 0,
+      "pageErrors": 0,
+      "failedRequests": 0
+     },
+     "pass": true,
+     "screenshot": "9-1440x900-dark-respond-open.png"
+    }
+   ],
+   "status": "pass"
+  }
+ },
+ "walkthroughConsole": {
+  "errorsOnThePage": [],
+  "errorsOnTheQuoteTarget": [
+   {
+    "type": "error",
+    "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "page": "https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan",
+    "source": "https://collector.github.com/github/collect"
+   },
+   {
+    "type": "error",
+    "text": "Failed to load resource: the server responded with a status of 404 ()",
+    "page": "https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan",
+    "source": "https://github.com/_global-navigation/payloads.json?can_toggle_site_admin_and_employee_status=0&is_admin_mode_on=0&is_ui_opted_out=0&show_ui_opt_out=0&v=6"
+   },
+   {
+    "type": "error",
+    "text": "Failed to load resource: net::ERR_CONNECTION_REFUSED",
+    "page": "https://github.com/anthropics/claude-plugins-community/tree/f60f0454df3045f724c43c6346ec80bdcc3472b2/html-plan",
+    "source": "https://collector.github.com/github/collect"
+   }
+  ],
+  "pageErrors": [],
+  "refused": []
+ },
+ "finishedAt": "2026-10-09T18:18:42.551Z",
+ "chromium": "/usr/bin/chromium",
+ "summary": {
+  "pass": 9,
+  "fail": 0,
+  "pending": 0,
+  "missing": []
+ },
+ "redaction": {
+  "keysSeen": 3,
+  "filesScanned": 27,
+  "leaks": []
+ }
+}

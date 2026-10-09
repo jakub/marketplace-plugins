@@ -1,0 +1,23 @@
+**1) plans: skills available to me**
+
+plans:doc
+plans:publish
+plans:show
+
+**2) plans:doc helper**
+
+resolved absolute path:
+`/home/jakub/code/marketplace-plugins/.flow-worktrees/marketplace-plugins-issue-28-feat-plans-plans-show-routing-and-plans/plugins/plans/skills/doc/runtime/pack.mjs`
+
+first 8 lines of `node <that path> --help`, verbatim:
+
+```
+usage: node pack.mjs [--root DIR]... [-o|--out FILE] [--lint-only] [--quiet] [--help] [--] INPUT
+
+Lint a Document and pack it into one page beside INPUT, for plans:publish.
+
+  --root DIR       a checkout to read code excerpts (src="…", @ file:line) from; repeat for more. Never media.
+  -o, --out FILE   the packed page, in INPUT's folder; a relative name is relative to that folder.
+                   Default: NAME.packed.html, or NAME.html for NAME.src.html.
+  --lint-only      run every check and write nothing
+```
