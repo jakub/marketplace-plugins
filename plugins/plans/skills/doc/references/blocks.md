@@ -149,7 +149,7 @@ export async function assertUnderLimit(userId: string) {
 </doc-code>
 ```
 
-- **Code that exists:** `src` + `lines="a-b"` (`lines="40"` is one line). Pack reads the file under `--root`, and stamps the commit if that is a git checkout. `ref="<sha|branch>"` reads it from git.
+- **Code that exists:** `src` + `lines="a-b"` (`lines="40"` is one line). Pack reads the file under `--root`, and stamps the commit if that is a git checkout. `ref="<sha|branch>"` reads it from git. If git cannot read the file at that ref, pack stops with an error and never uses the working-tree file in its place.
 - **Code that does not exist:** paste a sketch and say “sketch” in `title`. `lang` sets the highlighting. `start="38"` sets the first line number.
 - **A change to code that exists:** add `diff` and `file="path"`, and paste unified-diff lines. `start="N"` or an `@@ -a,b +c,d @@` header numbers the gutter. One file per block. Never cut lines out of the middle of a hunk. A diff is a proposal already, so it needs no “sketch”.
 - `doc-pin line="N"` uses the number shown in the gutter (`old="N"` for a removed line). `tone="info|warn|risk|ok"`. A pin says what the line is, in a clause.
@@ -228,7 +228,7 @@ node runtime/pack.mjs [--root <repo>]… [-o out.html] [--lint-only] [--quiet] [
 ```
 
 - Lints every block with the same parsers the browser uses, and the shape of the tree.
-- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
+- Fills `src=` blocks and call-row excerpts from `--root` (or from git with `ref=`, where a file git cannot read at that ref is an error). With several `--root`s it looks in each in order, then beside the page. It reads nothing outside those folders, refuses files that look like they hold a secret, and ends by listing every file whose code is now inside the page. Check that list before you publish or share.
 - Inlines the runtime from its own folder, once. It never inlines media: each local `src` on `img`, `video`, `audio`, `source` or `doc-shot` stays a literal path, and the plans CLI uploads the file when it publishes the page. That file must sit in the page's own folder, never only under `--root`, and be an image or video type in the `plans:publish` table. A page holds at most 64 such files. `data:` URIs pass.
 - Refuses remote media, local paths in `srcset`, `poster`, CSS `url()` and `style`, external scripts and stylesheets it cannot inline, and a `<meta>` CSP. The viewer would block or break each of them.
 - Writes `plan.packed.html` beside the page. `-o` names another file in the same folder, relative to it.

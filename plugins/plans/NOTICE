@@ -130,6 +130,11 @@ it, so a later patch's context is the text an earlier one wrote.
     or schema-edit control and no Respond, marks nothing seen, restores no payload and
     writes only a plain #id to the URL. Claims, code, pins, zoom, machine demos and a
     diagram node's detail still work.
+0011-pinned-refs.patch
+    Makes a requested git ref that git cannot read an error at both call sites, doc-code
+    or doc-schema src and doc-calls rows. Upstream fell back to the working-tree file and
+    stamped it with the ref it had failed to read. Blocks with no ref still read the working
+    tree, and git's own message is still not echoed.
 -----END PATCHES-----
 
 RE-SYNCING

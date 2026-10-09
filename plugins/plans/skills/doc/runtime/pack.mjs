@@ -85,6 +85,9 @@ const stamp = (f, wt) => { for (const r of roots) { const rr = real(r); if (!rr 
 const REF_OK = /^[A-Za-z0-9][\w.\/^~@{}-]*$/;
 const gitShow = (ref, p) => { if (!REF_OK.test(ref) || /(^|\/)\.\.(\/|$)/.test(p) || p.startsWith('/') || p.startsWith('-') || SECRET_NAME.test(p)) { if (!refused.has(ref + ':' + p)) { refused.add(ref + ':' + p); err(`ref="${ref}" with "${p}" — not a plain git ref and a path inside the repo; not running git`); } return null; }
   for (const r of roots) { try { return { text: git(r, 'cat-file', 'blob', `${ref}:${p}`), where: `${r}@${ref}` }; } catch {} } return null; };
+// A pinned ref names the bytes a page cites. When git cannot read the file at that ref, the working-tree copy would show other
+// bytes under the ref's name, so both call sites stop with an error instead. git's own message is not echoed.
+const atRef = (at, ref, p) => { const g = gitShow(ref, p); if (g) return g; const k = ref + ':' + p; if (!refused.has(k)) { refused.add(k); err(`${at}: ref="${ref}" — git cannot read ${p} at that ref in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')}; a pinned ref never falls back to the working tree`); } return null; };
 const wc = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
 const stripTags = (t) => t.replace(/<[^>]+>/g, ' ');
 
@@ -134,7 +137,7 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
       let added = 0, missing = 0, extra = '';
       const seen = new Set();
       for (const nd of m.nodes) { if (!nd.file || !nd.line || nd.gap) continue; const key = `${nd.file}:${nd.line}`; if (have.has(key) || seen.has(key)) continue; seen.add(key);
-        let text = null, sha = ''; const g = a.ref ? gitShow(a.ref, nd.file) : null; if (g) { text = g.text; sha = a.ref; } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
+        let text = null, sha = ''; if (a.ref) { const g = atRef(at, a.ref, nd.file); if (!g) continue; text = g.text; sha = a.ref; } else { const f = findFile(nd.file); if (f) { text = readFileSync(f, 'utf8'); sha = stamp(f, false); } }
         if (text == null) { missing++; continue; }
         if (SECRET_TEXT.test(text)) { warn(`${at}: ${nd.file} looks like it holds a secret somewhere — no excerpt from it`); continue; }
         const L = text.split('\n'); const ln = +String(nd.line).split('-')[0]; if (ln < 1 || ln > L.length) { warn(`${at}: ${key} — file has ${L.length} lines`); continue; }
@@ -163,12 +166,10 @@ html = html.replace(/<(doc-(?!plan\b|claim\b)[a-z]+)\b([^>]*)>([\s\S]*?)<\/\1>/g
       if (a.src && !hasScript) {
         let text, where;
         let sha = '';
-        const g = a.ref ? gitShow(a.ref, a.src) : null;
-        if (g) { text = g.text; where = g.where; sha = a.ref; }
-        else { if (a.ref) { const f0 = findFile(a.src); if (!f0) { err(`${at}: src="${a.src}" ref="${a.ref}" — git show failed in ${roots.map((r) => relative(process.cwd(), r) || '.').join(', ')} and no plain file by that path either (is --root a checkout with that ref, or a snapshot dir containing the file?)`); return whole; } info.push(`${a.src}: no git ref ${a.ref} under the roots — using the plain file (assuming it is a snapshot at that ref)`); sha = a.ref; }
-          const all = roots.map((r) => resolve(r, a.src)).filter((c) => existsSync(c)); if (all.length > 1) warn(`${at}: src="${a.src}" exists under ${all.length} roots (${all.map((x) => relative(process.cwd(), x)).join(', ')}) — using the first; reorder --root or make the path more specific`);
+        if (a.ref) { const g = atRef(at, a.ref, a.src); if (!g) return whole; text = g.text; where = g.where; sha = a.ref; }
+        else { const all = roots.map((r) => resolve(r, a.src)).filter((c) => existsSync(c)); if (all.length > 1) warn(`${at}: src="${a.src}" exists under ${all.length} roots (${all.map((x) => relative(process.cwd(), x)).join(', ')}) — using the first; reorder --root or make the path more specific`);
           const f = findFile(a.src); if (!f) { err(`${at}: src="${a.src}" not found (looked under ${roots.concat([baseDir]).map((r) => relative(process.cwd(), r) || '.').join(', ')})`); return whole; } text = readFileSync(f, 'utf8'); where = relative(process.cwd(), f); if (!roots.some((r) => f.startsWith(r))) warn(`${at}: src="${a.src}" resolved OUTSIDE --root, at ${where} — check it's the file you mean`);
-          if (!sha) sha = stamp(f, true); }
+          sha = stamp(f, true); }
         if (SECRET_TEXT.test(text)) { err(`${at}: ${a.src} looks like it holds a secret somewhere in the file — not packaging any of it`); return whole; }
         const total = text.split('\n').length; let start = 1;
         if (a.lines) { const mm = a.lines.match(/^(\d+)(?:-(\d+))?$/); if (!mm) err(`${at}: lines="${a.lines}" should look like 40-72`); else { start = +mm[1]; const end = +(mm[2] || mm[1]);   /* lines="40" is that one line */ if (end > total || start < 1 || start > end) err(`${at}: lines="${a.lines}" but ${a.src} has ${total} lines at ${where} — is --root (or ref=) at the commit you're citing?`); text = text.split('\n').slice(start - 1, end).join('\n'); } }
