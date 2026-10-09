@@ -425,10 +425,12 @@ NW.diffWords = function diffWords(a, b) {
    sandbox gives the page an opaque origin, where web storage throws. The form is  #pl1.<base64url(UTF-8 JSON)>, then an
    optional  ~<percent-encoded anchor>, split at the first '~' (base64url has none). A fragment that does not start with
    pl<digits>. is a plain #id and stays navigation, so an element id of that shape can't be the target of a bare link.
-   The whole fragment, '#' included, is at most LIMITS.fragment UTF-8 bytes, and encode refuses JSON over LIMITS.json
-   bytes; decode needs no JSON bound, since a payload inside the fragment bound decodes to less. decode never throws. A
-   payload that is malformed, of another version, over the bound or of the wrong shape restores nothing and keeps a valid
-   anchor, and its problem is a short phrase that never quotes it. */
+   The whole fragment, '#' included, is at most LIMITS.fragment UTF-8 bytes, a bare #id as much as a payload: encode
+   refuses a fragment over it, and decode checks it before it reads the fragment as either. encode also refuses JSON over
+   LIMITS.json bytes; decode needs no JSON bound, since a payload inside the fragment bound decodes to less. decode never
+   throws. A payload that is malformed, of another version, over the bound or of the wrong shape restores nothing and keeps
+   a valid anchor, one that would fit the bound as a bare #id. A bare #id over the bound names no anchor. A problem is a
+   short phrase that never quotes the fragment. */
 const FRAG_VERSION = 1, FRAG_LIMITS = { fragment: 32768, json: 24576 };
 const FRAG_KEYS = ['answers', 'comments', 'drafts', 'strikes', 'seen'];
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -448,18 +450,21 @@ const decodeAnchor = (s) => { if (!s) return null; try { return decodeURICompone
 function encodeFragment(state, anchor) {
   const tail = anchor ? encodeURIComponent(anchor) : '';
   const kept = {}; FRAG_KEYS.forEach((k) => { if (state?.[k] && Object.keys(state[k]).length) kept[k] = state[k]; });
-  if (!Object.keys(kept).length) return { hash: tail && '#' + tail, oversize: null };
-  const json = utf8(JSON.stringify(kept)); if (json.length > FRAG_LIMITS.json) return { hash: null, oversize: 'json' };
-  const hash = `#pl${FRAG_VERSION}.` + btoa(String.fromCharCode(...json)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + (tail && '~' + tail);
+  let hash = tail && '#' + tail;
+  if (Object.keys(kept).length) {
+    const json = utf8(JSON.stringify(kept)); if (json.length > FRAG_LIMITS.json) return { hash: null, oversize: 'json' };
+    hash = `#pl${FRAG_VERSION}.` + btoa(String.fromCharCode(...json)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') + (tail && '~' + tail);
+  }
   return utf8(hash).length > FRAG_LIMITS.fragment ? { hash: null, oversize: 'fragment' } : { hash, oversize: null };
 }
 /** location.hash → { state: { answers, comments, drafts, strikes, seen } | null, anchor: string | null, problem: string | null } */
 function decodeFragment(hash) {
-  const raw = isStr(hash) ? hash.replace(/^#/, '') : ''; const m = raw.match(/^pl(\d+)\./);
-  if (!m) return { state: null, anchor: decodeAnchor(raw), problem: null };
-  const cut = raw.indexOf('~'); const anchor = cut < 0 ? null : decodeAnchor(raw.slice(cut + 1));
+  const raw = isStr(hash) ? hash.replace(/^#/, '') : ''; const fits = (s) => utf8('#' + s).length <= FRAG_LIMITS.fragment;
+  const big = !fits(raw), m = raw.match(/^pl(\d+)\./);
+  if (!m) return big ? { state: null, anchor: null, problem: 'too large' } : { state: null, anchor: decodeAnchor(raw), problem: null };
+  const cut = raw.indexOf('~'), tail = cut < 0 ? '' : raw.slice(cut + 1); const anchor = fits(tail) ? decodeAnchor(tail) : null;
   const body = raw.slice(m[0].length, cut < 0 ? undefined : cut); const fail = (problem) => ({ state: null, anchor, problem });
-  if (utf8('#' + raw).length > FRAG_LIMITS.fragment) return fail('too large');
+  if (big) return fail('too large');
   if (m[1] !== String(FRAG_VERSION)) return fail('unknown version');
   if (!/^[A-Za-z0-9_-]*$/.test(body) || body.length % 4 === 1) return fail('not base64url');
   let bytes, text, v;

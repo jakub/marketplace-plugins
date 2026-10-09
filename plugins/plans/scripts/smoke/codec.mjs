@@ -70,6 +70,20 @@ export default async function ({ ROOT, check }) {
   check('a fragment one byte over 32 KiB restores nothing and keeps its anchor', tooBig.state === null && tooBig.anchor === 'abc' && !!tooBig.problem)
   const wide = '#pl1.' + json({ drafts: { d: 'x' } }) + '~' + 'é'.repeat(16380)
   check('the fragment bound counts UTF-8 bytes, not characters', wide.length <= 32768 && bytes(wide) > 32768 && F.decode(wide).state === null)
+  // The bound covers the whole fragment before decode or encode tells a payload from a plain anchor.
+  const TOO_LARGE = { state: null, anchor: null, problem: 'too large' }
+  const atBare = F.encode(EMPTY, 'x'.repeat(32767)), overBare = F.encode(EMPTY, 'x'.repeat(32768))
+  check('a bare anchor fragment of exactly 32 KiB is written', atBare.oversize === null && bytes(atBare.hash ?? '') === 32768, atBare.oversize ?? bytes(atBare.hash ?? ''))
+  check('a bare anchor fragment one byte over 32 KiB is refused, with no fragment', overBare.oversize === 'fragment' && overBare.hash === null, JSON.stringify(overBare).slice(0, 80))
+  const wideBare = F.encode(null, 'é'.repeat(5462))   // each é is %C3%A9, six bytes: 32773 with the '#'
+  check('a bare anchor is bounded by its percent-encoded UTF-8 bytes', wideBare.oversize === 'fragment' && wideBare.hash === null, JSON.stringify(wideBare).slice(0, 80))
+  check('a bare #id of exactly 32 KiB decodes to its anchor', isDeepStrictEqual(F.decode('#' + 'x'.repeat(32767)), { state: null, anchor: 'x'.repeat(32767), problem: null }))
+  for (const [name, frag] of [['a bare #id one byte over 32 KiB', '#' + 'x'.repeat(32768)], ['a 40,000-character bare #id', '#' + 'x'.repeat(40000)],
+    ['a bare #id over 32 KiB in UTF-8 bytes', '#' + 'é'.repeat(16384)], ['a percent-encoded bare #id over 32 KiB', '#' + '%C3%A9'.repeat(5462)],
+    ['a payload whose anchor alone is over 32 KiB', `#pl1.${json({ seen: { a: 1 } })}~${'x'.repeat(40000)}`]]) {
+    const r = F.decode(frag)
+    check(`${name} restores nothing, names no anchor and is too large`, isDeepStrictEqual(r, TOO_LARGE), JSON.stringify(r).slice(0, 120))
+  }
 
   // Malformed payloads: nothing restored, nothing thrown, the anchor kept, the payload never quoted.
   const valid = json({ seen: { a: 1 } })

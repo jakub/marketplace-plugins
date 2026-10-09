@@ -13,10 +13,10 @@ index bef9ad0960026bc7355a6317234162c1ccafc082..35bb282e7ec0427f5cb5c03ec6fb75a4
  .nw-sheet footer .sp { flex: 1; } .nw-send-state { align-self: center; font-size: 13px; color: var(--plans-ink-2); } .nw-btn[disabled] { opacity: .5; cursor: default; }
  .nw-toast { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); background: var(--plans-ink); color: var(--plans-bg); padding: 9px 14px; border-radius: 99px; font: 550 13px var(--plans-sans); z-index: 80; box-shadow: var(--plans-shadow); }
 diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
-index ddb3b3cb3172bfb9bcad09ecc6bb69af09af211b..294b947d27882d4102a84662b45b0412d91ae68e 100644
+index 99dd9901798b750007370ea467aa4f1c2022f435..125c1f0a538939214852b2372879c97bce4fb77e 100644
 --- a/plugins/plans/skills/doc/runtime/htmlplan.js
 +++ b/plugins/plans/skills/doc/runtime/htmlplan.js
-@@ -581,7 +581,7 @@ document.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.tar
+@@ -586,7 +586,7 @@ document.addEventListener('pointerdown', (e) => { if (pop && !pop.contains(e.tar
  function openComment({ key, label, anchor, extra, onState }) {
    closePop();
    const cur = S.comments[key]?.text || '';
@@ -25,7 +25,7 @@ index ddb3b3cb3172bfb9bcad09ecc6bb69af09af211b..294b947d27882d4102a84662b45b0412
    const del = h('button', { class: 'nw-btn danger', onclick: () => { delete S.comments[key]; onState?.(false); save(); closePop(); } }, 'Remove');
    pop = h('div', { class: 'nw-pop', role: 'dialog' },
      h('div', { class: 'ref' }, label), extra || null, ta,
-@@ -736,18 +736,30 @@ function openSheet(title, bodyNodes, footerNodes) {
+@@ -741,18 +741,30 @@ function openSheet(title, bodyNodes, footerNodes) {
        h('div', { class: 'body' }, bodyNodes), footerNodes ? h('footer', null, footerNodes) : null));
    document.body.append(sheetBg);
  }
