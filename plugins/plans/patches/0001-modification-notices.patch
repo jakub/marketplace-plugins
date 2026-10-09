@@ -1,0 +1,49 @@
+diff --git a/plugins/plans/skills/doc/SKILL.md b/plugins/plans/skills/doc/SKILL.md
+index 140f8756f752f2abf718307f0fad2cd2dc715463..e7825ca053c0c3ba14264569563f5c1dd314af2d 100644
+--- a/plugins/plans/skills/doc/SKILL.md
++++ b/plugins/plans/skills/doc/SKILL.md
+@@ -2,6 +2,7 @@
+ name: html-plan
+ description: Write an implementation plan as one interactive HTML page - a tree of claims (why › what › how › where), each proved by one exhibit (UI mockup, state machine, call stack, schema or code), with the decisions the user has to make placed on the claim they change. Use when the user types /html-plan, or asks for a plan, RFC or design before building something that touches more than a couple of files.
+ ---
++<!-- Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE. -->
+ 
+ # html-plan
+ 
+diff --git a/plugins/plans/skills/doc/references/blocks.md b/plugins/plans/skills/doc/references/blocks.md
+index 65f514b3af56fe1195e9cd95bb5ac8adc9b58250..e96a76f46a5a5f5500f2cc360acb773637b82bd4 100644
+--- a/plugins/plans/skills/doc/references/blocks.md
++++ b/plugins/plans/skills/doc/references/blocks.md
+@@ -1,3 +1,4 @@
++<!-- Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE. -->
+ # Blocks
+ 
+ Every block's **source text goes in `<script type="text/plain">…</script>` as its first child**. Inside it `<`, `>` and generics are safe. Without it the first stray `<` cuts the block short, and pack reports an error.
+diff --git a/plugins/plans/skills/doc/runtime/htmlplan.css b/plugins/plans/skills/doc/runtime/htmlplan.css
+index c2414ee57a3210cee237336d9ddf9344789bd5bd..a52e7770267b4af83e42d41790aed0d3d3f551a5 100644
+--- a/plugins/plans/skills/doc/runtime/htmlplan.css
++++ b/plugins/plans/skills/doc/runtime/htmlplan.css
+@@ -1,3 +1,4 @@
++/* Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE. */
+ /* htmlplan — one stylesheet for every coding artifact.
+    Tokens first; everything else reads from them. Light + dark.
+    Type: 5 sizes (12 · 14 · 16 · 20 · 28, code 13) and 3 weights (430 · 550 · 600). Sentence case. One accent. Borders, not shadows. */
+diff --git a/plugins/plans/skills/doc/runtime/htmlplan.js b/plugins/plans/skills/doc/runtime/htmlplan.js
+index e8696b30c123e8cedae8d874c78cd07fa2537b1c..1cc1dc3a4150c69753b2df602b15badd7d507f70 100644
+--- a/plugins/plans/skills/doc/runtime/htmlplan.js
++++ b/plugins/plans/skills/doc/runtime/htmlplan.js
+@@ -1,3 +1,4 @@
++// Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE.
+ /* htmlplan.js — runtime for coding artifacts.
+    One file, no dependencies. Registers <doc-*> elements, builds the TOC,
+    collects answers/comments/edits into one copyable response.
+diff --git a/plugins/plans/skills/doc/runtime/pack.mjs b/plugins/plans/skills/doc/runtime/pack.mjs
+index 710a96c43747139bb1c85f46eccea05b61c6c9ec..ab9229f7bbe3d06f92ce1df7a23c129edda0682b 100644
+--- a/plugins/plans/skills/doc/runtime/pack.mjs
++++ b/plugins/plans/skills/doc/runtime/pack.mjs
+@@ -1,4 +1,5 @@
+ #!/usr/bin/env node
++// Modified by the plans plugin. Upstream pin and local patches: plugins/plans/NOTICE.
+ // pack.mjs — lint an artifact and inline everything into one portable .html
+ //   node pack.mjs page.html [-o out.html] [--root dir] [--lint-only] [--quiet] [--artifact]
+ // Lint runs the same parsers the browser uses (from htmlplan.js), fills <doc-code src>
