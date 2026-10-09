@@ -1,7 +1,7 @@
 {
   "name": "plans",
   "version": "0.1.0",
-  "description": "Publish, verify, and delete HTML plans, images, and video as viewable URLs through the open-source plans CLI and a self-hosted plansd server.",
+  "description": "Three skills for HTML output. show picks a Sketch in chat, an Inline render or a published Document for each visual. doc writes plan, review, walkthrough and report pages on a vendored, patched html-plan runtime. publish uploads, render-checks and deletes HTML, images and video through the plans CLI and a self-hosted plansd server.",
   "author": {
     "name": "jakub"
   }
