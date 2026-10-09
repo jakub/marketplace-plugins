@@ -67,9 +67,9 @@ A PR ships complete. Fix review findings in the `issue` loop, not in follow-up t
 
 When a background task, monitor or seat returns an error, null, a rate limit or a timeout, its outcome is unknown, so check it before a later step depends on it.
 
-When structure or visuals beat prose, publish HTML through the artifact publisher and hand back the URL.
+When structure or visuals beat prose, pick a tier with `plans:show` if installed, else sketch.
 
-A PR criterion counts as evidenced only if a reviewer can check it in a browser. Prefer a CI deep-link or a capture committed at a pinned SHA to pasted output. Publish HTML, video and large image sets with the artifact publisher's `--keep`, because a PR outlives any TTL, and say the link is tailnet-only.
+A PR criterion counts as evidenced only if a reviewer can check it in a browser. Prefer a CI deep-link or a capture committed at a pinned SHA to pasted output. Publish HTML, video and large image sets with `plans:publish --keep`, because a PR outlives any TTL, and say the link is tailnet-only.
 
 Prefer robust, formally correct designs to the quick fix. Add no abstraction, refactor, fallback, shim, deprecated path or flag that nobody asked for, and don't let a bug fix refactor other code.
 
