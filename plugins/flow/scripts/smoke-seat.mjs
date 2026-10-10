@@ -161,7 +161,7 @@ const EFFORT_OPTION = { claude: 'effort', codex: 'reasoningEffort' }
 const delegateInput = (record, id, fields = {}) => ({
   task: `${store.seatTag(id)}\nWorktree: ${record.worktree}\nRead the diff and answer in the flow envelope.`,
   role: 'general', runtimeMode: record.runtimeMode, clientRequestId: `flow-seat-${id}`,
-  target: { providerInstanceId: INSTANCE[record.provider], model: record.model, options: [{ id: EFFORT_OPTION[record.provider], value: record.effort }] }, mode: 'async', ...fields,
+  target: { providerInstanceId: record.providerInstanceId, model: record.model, options: [{ id: EFFORT_OPTION[record.provider], value: record.effort }] }, mode: 'async', ...fields,
 })
 const seatRecord = (provider, fields = {}) => RECORD({ provider, model: MODELS[provider], ...fields })
 // A record the parent has opened and its gate has admitted, ready for the child to bind.
@@ -834,21 +834,23 @@ const cases = {
     const { id } = store.writeRecord(record, SCHEMA)
     const host = 'claude'
     const variants = [
-      [{ target: { providerInstanceId: 'codex', model: record.model } }, /provider must be "claude"/],
+      [{ target: { providerInstanceId: 'codex', model: record.model } }, /target\.providerInstanceId must be "claudeAgent"/],
       [{ target: { providerInstanceId: 'claudeAgent', model: 'claude-sonnet-5-5' } }, /model must be "claude-opus-5-5"/],
       [{ runtimeMode: 'full-access' }, /runtimeMode must be "auto"/],
-      [{ runtimeMode: 'full-access', target: { providerInstanceId: 'codex', model: MODELS.codex } }, /runtimeMode must be "auto"; provider must be "claude"; model must be/],
+      [{ runtimeMode: 'full-access', target: { providerInstanceId: 'codex', model: MODELS.codex } }, /runtimeMode must be "auto"; target\.providerInstanceId must be "claudeAgent"; model must be/],
       [{ role: 'reviewer' }, /role "general"/],
       [{ role: undefined }, /role "general"/],
-      [{ target: { providerInstanceId: 'openai', model: record.model } }, /neither claudeAgent nor codex/],
+      [{ target: { providerInstanceId: 'openai', model: record.model } }, /target\.providerInstanceId must be "claudeAgent"/],
     ]
     for (const [fields, pattern] of variants) {
-      denied(guard('pre', host, preCall(host, randomUUID(), SPELLING.claude, delegateInput(record, id, fields))), pattern, JSON.stringify(fields))
+      const run = guard('pre', host, preCall(host, randomUUID(), SPELLING.claude, delegateInput(record, id, fields)))
+      denied(run, pattern, JSON.stringify(fields))
+      assert.doesNotMatch(run.answer.hookSpecificOutput.permissionDecisionReason, /neither claudeAgent nor codex/)
       assert.equal(store.readStamp(id, 'admitted'), null, `${JSON.stringify(fields)} admitted the record`)
     }
     silent(guard('pre', host, preCall(host, randomUUID(), SPELLING.claude, delegateInput(record, id))), 'the matching call after the refusals')
     assert.ok(store.readStamp(id, 'admitted'))
-    ok('a tagged call whose provider, model, runtimeMode or role differs from the record is denied and admits nothing; the matching call is still admitted after')
+    ok('a tagged call whose provider instance, model, runtimeMode or role differs from the record is denied, naming the record\'s instance rather than a family, and admits nothing; the matching call is still admitted after')
   },
 
   'admit-effort': () => {
@@ -891,9 +893,92 @@ const cases = {
       }
       const call = preCall(host, randomUUID(), SPELLING[host], delegateInput(record, id))
       silent(guard('pre', host, call), `${host} matching clientRequestId`)
-      assert.deepEqual(store.readStamp(id, 'admitted'), { at: store.readStamp(id, 'admitted').at, toolUseId: call.tool_use_id, clientRequestId: `flow-seat-${id}` })
+      const stamped = store.readStamp(id, 'admitted')
+      assert.deepEqual(Object.keys(stamped), ['at', 'toolUseId', 'clientRequestId', 'recordDigest'])
+      assert.deepEqual(stamped, { at: stamped.at, toolUseId: call.tool_use_id, clientRequestId: `flow-seat-${id}`, recordDigest: store.readRecord(id).digest })
     }
-    ok('a tagged call is admitted only with clientRequestId exactly flow-seat-<id>, and the admitted stamp records it beside the tool use id')
+    ok('a tagged call is admitted only with clientRequestId exactly flow-seat-<id>, and the admitted stamp records it beside the tool use id and the digest of the record it admitted')
+  },
+
+  'admit-instance-exact': () => {
+    const glm = { providerInstanceId: 'glm', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' }
+    for (const host of ['claude', 'codex']) {
+      for (const spelling of Object.values(SPELLING)) {
+        for (const form of ['array', 'object']) {
+          for (const fields of [{}, glm]) {
+            const record = seatRecord('claude', fields)
+            const { id } = store.writeRecord(record, SCHEMA)
+            const options = form === 'array' ? [{ id: 'effort', value: 'high' }] : { effort: 'high' }
+            const input = delegateInput(record, id, { target: { providerInstanceId: record.providerInstanceId, model: record.model, options } })
+            silent(guard('pre', host, preCall(host, randomUUID(), spelling, input)), `${host} ${spelling} ${form} ${record.providerInstanceId}`)
+            assert.equal(store.readStamp(id, 'admitted').recordDigest, store.readRecord(id).digest)
+          }
+        }
+      }
+    }
+    ok('a tagged call naming exactly the record\'s instance, claudeAgent or a custom one, is admitted from both parent hosts, under both T3 spellings, with options as an array or an object')
+
+    for (const [fields, refused] of [
+      [glm, ['GLM', 'Glm', 'glm ', ' glm', 'glm\u200b', 'claudeAgent', 'codex', '']],
+      [{}, ['claudeagent', 'ClaudeAgent', 'claudeAgent ', ' claudeAgent', 'glm', 'codex']],
+    ]) {
+      const record = seatRecord('claude', fields)
+      const { id } = store.writeRecord(record, SCHEMA)
+      for (const host of ['claude', 'codex']) {
+        for (const providerInstanceId of refused) {
+          const input = delegateInput(record, id, { target: { providerInstanceId, model: record.model, options: { effort: 'high' } } })
+          denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], input)), new RegExp(`target\\.providerInstanceId must be ${JSON.stringify(record.providerInstanceId)}`), `${host} ${JSON.stringify(providerInstanceId)}`)
+          assert.equal(store.readStamp(id, 'admitted'), null, `${JSON.stringify(providerInstanceId)} admitted the record`)
+        }
+      }
+    }
+    ok('an instance id that differs from the record\'s in case, by a trailing or leading space or an invisible character, or names another instance, is denied on both hosts and admits nothing')
+  },
+
+  'admit-custom-effort': () => {
+    const record = seatRecord('claude', { providerInstanceId: 'glm', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' })
+    for (const host of ['claude', 'codex']) {
+      const { id } = store.writeRecord(record, SCHEMA)
+      for (const options of [[{ id: 'reasoningEffort', value: 'high' }], { reasoningEffort: 'high' }, []]) {
+        const input = delegateInput(record, id, { target: { providerInstanceId: 'glm', model: record.model, options } })
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], input)), /target\.options effort must be "high"/, `${host} ${JSON.stringify(options)}`)
+        assert.equal(store.readStamp(id, 'admitted'), null)
+      }
+      silent(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], delegateInput(record, id))), `${host} effort`)
+      assert.ok(store.readStamp(id, 'admitted'))
+    }
+    ok('a claude-family seat on a custom instance carries its effort under effort, the claude family\'s option: effort admits, and reasoningEffort alone is denied')
+  },
+
+  'record-identity-required': () => {
+    // A record that lacks a field the identity rule reads, or was edited into a combination open
+    // refuses, as an older flow or a hand edit leaves it: readRecord still reads it, and every
+    // stage that judges a seat refuses it.
+    const broken = {
+      'no providerInstanceId': (record) => { delete record.providerInstanceId },
+      'no expectedServedModel': (record) => { delete record.expectedServedModel },
+      'an empty providerInstanceId': (record) => { record.providerInstanceId = '' },
+      'a null expectedServedModel': (record) => { record.expectedServedModel = null },
+      'no effort': (record) => { delete record.effort },
+      'no runtimeMode': (record) => { delete record.runtimeMode },
+      'an unknown provider': (record) => { record.provider = 'gemini' },
+      'a claude seat on instance codex': (record) => { record.providerInstanceId = 'codex' },
+      'a codex seat on a custom instance': (record) => { Object.assign(record, { provider: 'codex', model: MODELS.codex, providerInstanceId: 'codex-work', expectedServedModel: MODELS.codex }) },
+      'a codex seat expecting another model': (record) => { Object.assign(record, { provider: 'codex', model: MODELS.codex, providerInstanceId: 'codex', expectedServedModel: 'gpt-6-mini' }) },
+    }
+    for (const [what, edit] of Object.entries(broken)) {
+      const record = seatRecord('claude')
+      edit(record)
+      const { id } = store.writeRecord(record, SCHEMA)
+      assert.ok(store.readRecord(id), `${what}: readRecord refused the record, so cleanup could not read it`)
+      for (const host of ['claude', 'codex']) {
+        const input = delegateInput(record, id, { target: { providerInstanceId: record.providerInstanceId ?? 'claudeAgent', model: record.model ?? 'x', options: { effort: 'high', reasoningEffort: 'high' } } })
+        if (input.runtimeMode === undefined) input.runtimeMode = 'auto'
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], input)), /fails the seat identity rule/, `${host} ${what}`)
+      }
+      assert.equal(store.readStamp(id, 'admitted'), null, `${what} was admitted`)
+    }
+    ok('admission denies a record missing providerInstanceId, expectedServedModel, effort or runtimeMode, or holding a provider, instance or expected id open refuses, on both hosts, and admits nothing')
   },
 
   'admit-tag-line': () => {

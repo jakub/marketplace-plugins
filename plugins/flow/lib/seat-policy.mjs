@@ -9,9 +9,12 @@
 //                      without an explicit runtimeMode is denied, tagged or not, because a child
 //                      copies its parent's mode at spawn and a parent switched to full access would
 //                      silently widen every later child. A tagged call is admitted once, and only
-//                      when it asks for exactly what the seat record names: the runtime mode, the
-//                      provider, the model, the effort, and clientRequestId flow-seat-<id>, which
-//                      T3 builds the task id from, so close can tell this seat's task from another.
+//                      when its record passes seatIdentityProblem and the call asks for exactly
+//                      what the record names: the runtime mode, the provider instance id, the
+//                      model, the effort under the option id of the record's provider family, and
+//                      clientRequestId flow-seat-<id>, which T3 builds the task id from, so close
+//                      can tell this seat's task from another. The admitted stamp pins the digest
+//                      of the record it admitted, which the bind and close compare.
 //   bindProblem        the child's UserPromptSubmit: whether this session may bind the record. A
 //                      failed bind makes a void seat, which the adapter records and announces.
 //   seatCallProblem    the child's PreToolUse before containment: a void seat, a record that is
@@ -49,8 +52,6 @@ export const PERMISSION_MODES = Object.freeze({
   codex: Object.freeze(['default']),
 })
 
-// T3 names its providers by instance id; the record names the host family.
-const PROVIDERS = new Map([['claudeAgent', 'claude'], ['codex', 'codex']])
 const ACCESS = new Set(['read-only', 'workspace-write', 'review'])
 
 /** A model id, as seat.mjs open takes --model and --expected-served-model and a record holds them. */
@@ -105,8 +106,10 @@ const deny = (why) => ({ deny: `flow seat: ${why}` })
  * The parent's gate on one delegate_task call. Returns null when the call is not a seat call and
  * names its runtimeMode, which the caller allows by printing nothing; {deny: reason} to refuse it;
  * {admit: id} once the record's admitted stamp is written. deps.store is lib/seat-store.mjs and
- * deps.toolUseId, when a string, is recorded in the stamp beside the clientRequestId. The stamp is write-once, so of two
- * calls racing to admit one record exactly one is admitted and the other is denied.
+ * deps.toolUseId, when a string, is recorded in the stamp beside the clientRequestId and the
+ * recordDigest, the sha256 of the record bytes this call was checked against. The stamp is
+ * write-once, so of two calls racing to admit one record exactly one is admitted and the other is
+ * denied.
  */
 export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
   if (!plainObject(toolInput)) return deny('the delegate_task call could not be read, so it is refused.')
@@ -126,26 +129,27 @@ export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
   if (!loaded) return deny(`seat ${id} has no readable seat record. Open a new seat.`)
   if (store.readStamp(id, 'admitted') !== null) return deny(`seat ${id} was already admitted once. Open a new seat for another task.`)
   const { record } = loaded
+  const identity = seatIdentityProblem(record)
+  if (identity) return deny(`seat ${id}'s record fails the seat identity rule (${identity}), so it is never admitted. Open a new seat.`)
   if (toolInput.role !== 'general') return deny('a seat call passes role "general", so T3 prepends nothing to the task.')
   const { target } = toolInput
   if (!plainObject(target) || typeof target.providerInstanceId !== 'string' || typeof target.model !== 'string') {
     return deny('the call\'s target.providerInstanceId or target.model could not be read, so the call is refused.')
   }
-  const provider = PROVIDERS.get(target.providerInstanceId)
-  if (!provider) return deny(`provider instance ${JSON.stringify(target.providerInstanceId.slice(0, 64))} is neither claudeAgent nor codex.`)
   const clientRequestId = `flow-seat-${id}`
+  const effortOption = EFFORT_OPTION[record.provider]
   const mismatched = [
     ['runtimeMode', runtimeMode, record.runtimeMode],
-    ['provider', provider, record.provider],
+    ['target.providerInstanceId', target.providerInstanceId, record.providerInstanceId],
     ['model', target.model, record.model],
-    [`target.options ${EFFORT_OPTION[provider]}`, optionValue(target.options, EFFORT_OPTION[provider]), record.effort],
+    [`target.options ${effortOption}`, optionValue(target.options, effortOption), record.effort],
     ['clientRequestId', toolInput.clientRequestId, clientRequestId],
   ].filter(([, asked, recorded]) => asked !== recorded)
   if (mismatched.length > 0) {
     const lines = mismatched.map(([field, , recorded]) => `${field} must be ${JSON.stringify(recorded)}`)
     return deny(`the call does not match seat ${id}'s record: ${lines.join('; ')}.`)
   }
-  const stamp = typeof toolUseId === 'string' ? { toolUseId, clientRequestId } : { clientRequestId }
+  const stamp = { ...(typeof toolUseId === 'string' ? { toolUseId } : {}), clientRequestId, recordDigest: loaded.digest }
   if (!store.stamp(id, 'admitted', stamp)) return deny(`seat ${id} was admitted by another call first.`)
   return { admit: id }
 }
