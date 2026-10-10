@@ -70,15 +70,23 @@
 // one seat is never closed on another task's status. It then judges the seat
 // from its record and the stamps and results the hooks wrote, in this order of precedence, the
 // first that holds being the verdict:
-//   unknown         no readable record; a void stamp; no admitted, bound or receipt stamp; a
-//                   record whose bytes no longer match the digest the bind pinned; a bound
-//                   session whose index entry is void (session-index-void) or missing or names
-//                   another seat (session-index-mismatch); no Stop on record; a turn a prompt
+//   unknown         no readable record; a record that fails seatIdentityProblem, such as one
+//                   an older flow wrote without providerInstanceId or expectedServedModel; a
+//                   void stamp; no admitted, bound or receipt stamp; a record whose bytes no
+//                   longer match the digest the bind pinned, or a bind that pinned other bytes
+//                   than the admission did; a bound session whose index entry is void
+//                   (session-index-void) or missing or names another seat
+//                   (session-index-mismatch); no Stop on record; a turn a prompt
 //                   opened after the bind with no stop on record (turn-without-result); a last
 //                   stop that was valid with no intact result for its turn, or with a result that
 //                   names no served model; or no served model on record from any stop
-//   model-mismatch  a model the hooks saw serving the seat, at the bind or at any stop in any
-//                   turn (Stop keeps them as one set in the turn state), is not the record's
+//   model-mismatch  the model the hooks saw at the bind is not the record's model, the one the
+//                   call asked for (`bound to <X>, not <model>`), or a model a stop saw serving
+//                   the seat in any turn (Stop keeps them as one set in the turn state), or the
+//                   result's own, is not the record's expectedServedModel (`served by <Y>, not
+//                   <expected>`, one reason per distinct id in first-seen order, after the bind's).
+//                   A router id the call asked for is never read as a served one: flow maps no
+//                   router to the model behind it, so the parent declares it at open.
 //   tree-moved      for a review: the review worktree's HEAD left the head SHA or its tree is
 //                   dirty, the canonical checkout's snapshot, HEAD commit or branch changed, or
 //                   the coverage (read,
@@ -627,11 +635,15 @@ function judge(id, loaded) {
   const unknown = (reason) => ({ verdict: 'unknown', reasons: [reason], facts })
   if (!loaded) return unknown('the seat record is missing or corrupt')
   const { record, digest } = loaded
+  // A record the identity rule refuses names no instance or expected model to judge against.
+  const identity = seatIdentityProblem(record)
+  if (identity) return unknown(`the seat record fails the seat identity rule: ${identity}`)
   const voided = store.readStamp(id, 'void')
   if (voided) return unknown(`the seat is void: ${String(voided.reason ?? 'no reason recorded').slice(0, 120)}`)
   for (const name of STAMPS) if (!store.readStamp(id, name)) return unknown(`the ${name} stamp is missing`)
   const bound = store.readStamp(id, 'bound')
   if (bound.recordDigest !== digest) return unknown('the record changed after the bind')
+  if (store.readStamp(id, 'admitted').recordDigest !== bound.recordDigest) return unknown('the record changed between the admission and the bind')
   // The bound session's index entry is what made its tool calls seat calls. Voided or replaced
   // after the bind, the hooks no longer held that session as this seat.
   const entry = store.readIndex(bound.host, bound.sessionId)
@@ -665,11 +677,14 @@ function judge(id, loaded) {
   facts.servedModels = [...new Set([...strings(state.models), ...resultModels])]
   if (envelope && resultModels.length === 0) return unknown(`turn ${state.turn}'s result names no served model`)
   if (facts.servedModels.length === 0) return unknown('no served model is on record for any of the seat\'s stops')
-  const seen = [...(typeof bound.model === 'string' ? [bound.model] : []), ...facts.servedModels]
-  const others = [...new Set(seen.filter((model) => model !== record.model))]
-  if (others.length > 0) {
-    return { verdict: 'model-mismatch', reasons: [`served by ${others.map((model) => String(model).slice(0, 80)).join(', ')}, not ${record.model}`], facts }
+  // The bind sees the model the session asked for, which a router seat names but is not served
+  // by; every stop sees the model that answered, which must be the one the record expects.
+  const mismatches = []
+  if (typeof bound.model === 'string' && bound.model !== record.model) mismatches.push(`bound to ${bound.model.slice(0, 80)}, not ${record.model}`)
+  for (const model of new Set(facts.servedModels.filter((served) => served !== record.expectedServedModel))) {
+    mismatches.push(`served by ${model.slice(0, 80)}, not ${record.expectedServedModel}`)
   }
+  if (mismatches.length > 0) return { verdict: 'model-mismatch', reasons: mismatches, facts }
   if (record.access === 'review') {
     const reasons = treeReasons(record, envelope)
     if (reasons.length > 0) return { verdict: 'tree-moved', reasons, facts }

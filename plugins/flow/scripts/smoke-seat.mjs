@@ -5,8 +5,9 @@
 // The state directory is a temp directory named by FLOW_DELEGATION_STATE_DIR, and the races run as
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
-// Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, spawn-*, mcp-*, edit-*, bash-*, closed-*,
-// stop-*, open-*, close-*, prune-*, trust-*, fastpath-*); the containment families run against a
+// Cases are grouped by prefix (store-*, wire-*, admit-*, record-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
+// closed-*, stop-*, open-*, close-*, prune-*, trust-*, fastpath-*), and record-identity-required
+// follows one refused record through admission, bind and close; the containment families run against a
 // real temp git repository as the worktree, the executor families (open-*, close-*, prune-open,
 // trust-*) run scripts/seat.mjs as a process against a real canonical checkout with a linked
 // worktree and a fake codex first on PATH that speaks the App Server's JSON-RPC, and
@@ -357,17 +358,20 @@ function jobRecord(worktree, status) {
   return job
 }
 // A seat the hooks ran in, written straight through the store: the record (a new read-only one
-// unless id names one seat open wrote), the stamps listed, the bound stamp pinning digest, the
-// bound session's index entry naming the seat (index 'own'; 'none' writes none), and turn 1
-// ending as outcome with models as the models seen serving it, with a result for a valid turn
-// unless result is false.
-function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], stamps = ['admitted', 'bound', 'receipt'], digest = null, boundModel = null,
-  outcome = 'valid', blocks = 0, errors = [], served = [model], models = served, envelope = ENVELOPE_OK, result = true, index = 'own' } = {}) {
-  const seatId = id ?? store.writeRecord(RECORD({ provider, model, worktree: canon, repoRoot: canon }), null).id
+// with the record fields given unless id names one seat open wrote), the stamps listed, the
+// admitted stamp pinning admittedDigest and the bound stamp digest (each the record's own by
+// default), the bound session's index entry naming the seat (index 'own'; 'none' writes none),
+// and turn 1 ending as outcome with models as the models seen serving it, the record's expected
+// served model by default, with a result for a valid turn unless result is false.
+function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], record = {}, stamps = ['admitted', 'bound', 'receipt'], digest = null, admittedDigest = null,
+  boundModel = null, outcome = 'valid', blocks = 0, errors = [], served = [record.expectedServedModel ?? model], models = served, envelope = ENVELOPE_OK, result = true,
+  index = 'own' } = {}) {
+  const seatId = id ?? store.writeRecord(RECORD({ provider, model, worktree: canon, repoRoot: canon, ...record }), null).id
   const loaded = store.readRecord(seatId)
   const bound = { sessionId: `s-${seatId}`, host: provider, permissionMode: PERMISSION[provider], cwd: canon, recordDigest: digest ?? loaded.digest }
   if (boundModel) bound.model = boundModel
-  const bodies = { admitted: { toolUseId: 'toolu_x' }, bound, receipt: { tool: 'Bash' } }
+  const admitted = { toolUseId: 'toolu_x', clientRequestId: `flow-seat-${seatId}`, recordDigest: admittedDigest ?? loaded.digest }
+  const bodies = { admitted, bound, receipt: { tool: 'Bash' } }
   for (const name of stamps) assert.equal(store.stamp(seatId, name, bodies[name]), true)
   if (index === 'own') assert.equal(store.indexSession(provider, bound.sessionId, { id: seatId }), true)
   if (outcome !== null) {
@@ -996,6 +1000,51 @@ const cases = {
       denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), /void seat \(record-identity-invalid\)/, `${what} child call`)
     }
     ok('a bind of such a record, admitted with its own digest, is void (record-identity-invalid): no bound stamp, and every child call denied')
+
+    // A seat open made, stripped of a field after it, as a record an older flow wrote reads:
+    // close judges it unknown and still releases what open took.
+    const strip = (id, field) => {
+      const path = join(seats, id, 'record.json')
+      const record = JSON.parse(readFileSync(path, 'utf8'))
+      delete record[field]
+      writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`)
+      assert.ok(store.readRecord(id), 'the stripped record is unreadable')
+    }
+    const writerWt = gitWorktree('identity-writer')
+    const writer = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const holder = join(jobs.leaseDirOf(writerWt), `${writer.id}.live`)
+    assert.ok(existsSync(holder))
+    strip(writer.id, 'providerInstanceId')
+    const writerRecord = store.readRecord(writer.id).record
+    denied(guard('pre', 'claude', preCall('claude', randomUUID(), SPELLING.claude, delegateInput({ ...writerRecord, providerInstanceId: 'claudeAgent' }, writer.id))), /fails the seat identity rule/, 'the stripped writer\'s admission')
+    hookedSeat({ id: writer.id })
+    const writerOut = closeSeat(writer.id)
+    assert.deepEqual([writerOut.verdict, writerOut.reasons], ['unknown', ['the seat record fails the seat identity rule: providerInstanceId must be 1 to 128 UTF-8 bytes with no control character']], JSON.stringify(writerOut))
+    assert.equal(existsSync(holder), false, 'close kept the stripped writer\'s lease holder')
+    const taker = jobRecord(writerWt, 'queued')
+    jobs.acquireLease(taker)
+    jobs.releaseLease(taker)
+
+    const review = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    strip(review.id, 'expectedServedModel')
+    hookedSeat({ id: review.id })
+    const reviewOut = closeSeat(review.id)
+    assert.deepEqual([reviewOut.verdict, reviewOut.reasons], ['unknown', ['the seat record fails the seat identity rule: expectedServedModel must be a model id']], JSON.stringify(reviewOut))
+    assert.equal(existsSync(review.reviewWorktree), false, 'close kept the stripped review\'s worktree')
+    assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(review.reviewWorktree), 'git still lists the stripped review\'s worktree')
+    ok('close of a seat open made and later stripped of providerInstanceId or expectedServedModel is unknown with the identity reason, and still drops the writer\'s lease holder and removes the review worktree')
+
+    const abandonWt = gitWorktree('identity-abandon')
+    const unbound = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', abandonWt])
+    strip(unbound.id, 'expectedServedModel')
+    const abandoned = seatCli(['close', unbound.id, '--abandon'])
+    assert.deepEqual([abandoned.verdict, abandoned.reasons, abandoned.cleanupProblems], ['unknown', ['abandoned-before-bind'], undefined], JSON.stringify(abandoned))
+    assert.equal(existsSync(join(jobs.leaseDirOf(abandonWt), `${unbound.id}.live`)), false, 'abandon kept the stripped writer\'s holder')
+    const unboundReview = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    strip(unboundReview.id, 'providerInstanceId')
+    assert.equal(seatCli(['close', unboundReview.id, '--abandon']).verdict, 'unknown')
+    assert.equal(existsSync(unboundReview.reviewWorktree), false, 'abandon kept the stripped review\'s worktree')
+    ok('close --abandon of an unbound seat stripped of a field records unknown and still drops its lease holder and review worktree')
   },
 
   'admit-tag-line': () => {
@@ -2783,6 +2832,11 @@ const cases = {
     store.stamp(voided.id, 'void', { reason: 'bound-lost-race' })
     verdict(voided.id, 'unknown', /void: bound-lost-race/, 'a void stamp beside a full set')
     verdict(hookedSeat({ digest: 'f'.repeat(64) }).id, 'unknown', /record changed after the bind/, 'a record digest mismatch')
+    verdict(hookedSeat({ digest: 'f'.repeat(64), admittedDigest: 'e'.repeat(64) }).id, 'unknown', /record changed after the bind/, 'a bind and an admission that both pinned other bytes')
+    verdict(hookedSeat({ admittedDigest: 'e'.repeat(64) }).id, 'unknown', /^the record changed between the admission and the bind$/, 'an admission that pinned other bytes than the bind')
+    const unpinned = hookedSeat({ stamps: ['bound', 'receipt'] })
+    assert.equal(store.stamp(unpinned.id, 'admitted', { toolUseId: 'toolu_x', clientRequestId: `flow-seat-${unpinned.id}` }), true)
+    verdict(unpinned.id, 'unknown', /^the record changed between the admission and the bind$/, 'an admitted stamp with no recordDigest')
     const tampered = hookedSeat({})
     writeFileSync(join(seats, tampered.id, 'result-1.json'), JSON.stringify({ envelope: { ...ENVELOPE_OK, notes: 'edited' }, servedModels: ['claude-opus-5-5'] }))
     verdict(tampered.id, 'unknown', /does not match its recorded sha256/, 'a result sha mismatch')
@@ -2803,15 +2857,16 @@ const cases = {
     writeFileSync(join(seats, corrupt.id, 'record.json'), '{"v": 1')
     verdict(corrupt.id, 'unknown', /missing or corrupt/, 'a corrupt record')
     verdict(store.newId(), 'unknown', /missing or corrupt/, 'an id with no record directory at all')
-    ok('unknown: a missing admitted, bound or receipt stamp, any void stamp, a record digest the bind did not pin, a bound session whose index is void, missing or names another seat, a result whose sha256 does not match, no served model, no Stop, a valid turn with no result, or a missing or corrupt record')
+    ok('unknown: a missing admitted, bound or receipt stamp, any void stamp, a record digest the bind did not pin, an admission that pinned no digest or another one than the bind, a bound session whose index is void, missing or names another seat, a result whose sha256 does not match, no served model, no Stop, a valid turn with no result, or a missing or corrupt record')
 
     verdict(hookedSeat({ served: ['claude-sonnet-5-5'] }).id, 'model-mismatch', /served by claude-sonnet-5-5, not claude-opus-5-5/, 'served model mismatch')
-    verdict(hookedSeat({ provider: 'codex', model: 'gpt-6-luna', boundModel: 'gpt-6-mini', served: ['gpt-6-luna'] }).id, 'model-mismatch', /gpt-6-mini/, 'bind model mismatch')
+    const bindRow = verdict(hookedSeat({ provider: 'codex', model: 'gpt-6-luna', boundModel: 'gpt-6-mini', served: ['gpt-6-luna'] }).id, 'model-mismatch', /^bound to gpt-6-mini, not gpt-6-luna$/, 'bind model mismatch')
+    assert.deepEqual(bindRow.reasons, ['bound to gpt-6-mini, not gpt-6-luna'])
     verdict(hookedSeat({ boundModel: 'claude-sonnet-5-5', outcome: 'blocked', blocks: 1, errors: ['$: x'] }).id, 'model-mismatch', null, 'a mismatch outranks invalid')
     const both = hookedSeat({ served: ['claude-sonnet-5-5'] })
     store.stamp(both.id, 'void', { reason: 'r' })
     verdict(both.id, 'unknown', /void/, 'unknown outranks model-mismatch')
-    ok('model-mismatch: a served model or the model seen at the bind is not the record\'s, outranking invalid and outranked by unknown')
+    ok('model-mismatch: a served model is not the record\'s expected one, or the model seen at the bind is not the record\'s (bound to), outranking invalid and outranked by unknown')
   },
 
   'close-review': () => {
@@ -3112,19 +3167,54 @@ const cases = {
   'close-result-models': () => {
     const model = 'claude-opus-5-5'
     const cases = [
-      [{ served: [], models: [model] }, 'unknown', /turn 1's result names no served model/],
-      [{ served: [7], models: [model] }, 'unknown', /turn 1's result names no served model/],
-      [{ served: [model], models: [] }, 'valid', null],
-      [{ served: [model, 'claude-sonnet-5-5'], models: [model] }, 'model-mismatch', /claude-sonnet-5-5/],
-      [{ served: [model], models: [model, 'claude-sonnet-5-5'] }, 'model-mismatch', /claude-sonnet-5-5/],
+      [{ served: [], models: [model] }, 'unknown', ["turn 1's result names no served model"]],
+      [{ served: [7], models: [model] }, 'unknown', ["turn 1's result names no served model"]],
+      [{ served: [model], models: [] }, 'valid', []],
+      [{ served: [model, 'claude-sonnet-5-5'], models: [model] }, 'model-mismatch', ['served by claude-sonnet-5-5, not claude-opus-5-5']],
+      [{ served: [model], models: [model, 'claude-sonnet-5-5'] }, 'model-mismatch', ['served by claude-sonnet-5-5, not claude-opus-5-5']],
     ]
-    for (const [fields, verdict, reason] of cases) {
+    for (const [fields, verdict, reasons] of cases) {
       const seat = hookedSeat(fields)
       const out = closeSeat(seat.id)
       assert.equal(out.verdict, verdict, `${JSON.stringify(fields)}: ${JSON.stringify(out)}`)
-      if (reason) assert.match(out.reasons.join(' '), reason)
+      assert.deepEqual(out.reasons, reasons, JSON.stringify(fields))
     }
-    ok('close reads a valid turn whose result names no served model of its own as unknown, whatever earlier stops saw, and a model other than the record\'s in the result or in any stop as model-mismatch')
+    ok('close reads a valid turn whose result names no served model of its own as unknown, whatever earlier stops saw, and a model other than the record\'s expected one in the result or in any stop as model-mismatch')
+  },
+
+  'close-router-exact': () => {
+    const ROUTER = 'accounts/fireworks/routers/glm-5p3-us'
+    const SERVED = 'accounts/fireworks/models/glm-5p3'
+    const record = { providerInstanceId: 'glm', model: ROUTER, expectedServedModel: SERVED }
+    const rows = [
+      ['the declared concrete id alone', { served: [SERVED] }, 'valid', []],
+      ['the router id alone', { served: [ROUTER] }, 'model-mismatch', [`served by ${ROUTER}, not ${SERVED}`]],
+      ['the declared id and the router id', { served: [SERVED, ROUTER] }, 'model-mismatch', [`served by ${ROUTER}, not ${SERVED}`]],
+      ['the router id at an earlier stop', { served: [SERVED], models: [ROUTER, SERVED] }, 'model-mismatch', [`served by ${ROUTER}, not ${SERVED}`]],
+      ['another model', { served: ['accounts/fireworks/models/glm-5p3-flash'] }, 'model-mismatch', [`served by accounts/fireworks/models/glm-5p3-flash, not ${SERVED}`]],
+    ]
+    for (const [what, fields, verdict, reasons] of rows) {
+      const out = closeSeat(hookedSeat({ record, ...fields }).id)
+      assert.deepEqual([out.verdict, out.reasons], [verdict, reasons], `${what}: ${JSON.stringify(out)}`)
+      assert.deepEqual(out.servedModels, [...new Set([...(fields.models ?? fields.served), ...fields.served])], `${what}: servedModels is not the raw set`)
+    }
+    ok('a router seat is valid served by its declared concrete id alone; the router id alone, beside the declared id, at an earlier stop, or another id reads model-mismatch, and servedModels stays the raw ids')
+  },
+
+  'close-bind-versus-served': () => {
+    const ROUTER = 'accounts/fireworks/routers/glm-5p3-us'
+    const SERVED = 'accounts/fireworks/models/glm-5p3'
+    const record = { providerInstanceId: 'glm', model: ROUTER, expectedServedModel: SERVED }
+    const valid = closeSeat(hookedSeat({ record, boundModel: ROUTER, served: [SERVED] }).id)
+    assert.deepEqual([valid.verdict, valid.reasons], ['valid', []], JSON.stringify(valid))
+    ok('a seat bound to the model it asked for and served by the one it expects is valid, the two ids apart')
+
+    const bind = closeSeat(hookedSeat({ record, boundModel: SERVED, served: [SERVED] }).id)
+    assert.deepEqual([bind.verdict, bind.reasons], ['model-mismatch', [`bound to ${SERVED}, not ${ROUTER}`]], JSON.stringify(bind))
+    const both = closeSeat(hookedSeat({ record, boundModel: 'other-bind', models: ['m-y', SERVED], served: [SERVED, 'm-z', 'm-y'] }).id)
+    assert.deepEqual([both.verdict, both.reasons], ['model-mismatch', ['bound to other-bind, not ' + ROUTER, `served by m-y, not ${SERVED}`, `served by m-z, not ${SERVED}`]], JSON.stringify(both))
+    assert.deepEqual(both.servedModels, ['m-y', SERVED, 'm-z'])
+    ok('a bind to another model reads `bound to <X>, not <model>`, judged against the model asked for; with unexpected served ids too, the bind reason comes first, then one `served by` reason per distinct id in first-seen order')
   },
 
   'prune-void-index': () => {
