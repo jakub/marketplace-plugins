@@ -53,6 +53,39 @@ export const PERMISSION_MODES = Object.freeze({
 const PROVIDERS = new Map([['claudeAgent', 'claude'], ['codex', 'codex']])
 const ACCESS = new Set(['read-only', 'workspace-write', 'review'])
 
+/** A model id, as seat.mjs open takes --model and --expected-served-model and a record holds them. */
+export const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@+/[\]-]{0,127}$/
+/** The provider instance id seat.mjs open records when --provider-instance-id is omitted. */
+export const DEFAULT_INSTANCE = Object.freeze({ claude: 'claudeAgent', codex: 'codex' })
+// T3's instance id is opaque to flow and matched exactly, never trimmed or normalized: it is
+// checked for size and control characters alone, so it stays one line in a reason.
+const INSTANCE_BYTES = 128
+/** Whether id is a provider instance id a record may hold: 1 to 128 UTF-8 bytes, no Cc character. */
+export const validInstanceId = (id) => typeof id === 'string' && id !== '' && Buffer.byteLength(id, 'utf8') <= INSTANCE_BYTES && !/\p{Cc}/u.test(id)
+
+/**
+ * Why a seat's identity is refused, or null. One rule, read by seat.mjs open before it creates
+ * anything and by the admission, the bind and close on the record they read, so a record that
+ * lacks a field or was edited into a combination open refuses is never admitted, bound or judged.
+ * provider is the hook host family, which picks the effort option and the host a child binds on;
+ * providerInstanceId is the T3 instance the child runs on, which may route a Claude-family seat to
+ * another vendor's model; expectedServedModel is the model id the hooks must see serving it. A
+ * Codex seat runs on the default codex instance alone, serving the model it asks for.
+ */
+export function seatIdentityProblem({ provider, providerInstanceId, model, expectedServedModel, effort, runtimeMode }) {
+  if (provider !== 'claude' && provider !== 'codex') return `provider ${quote(provider)} is neither claude nor codex`
+  if (!validInstanceId(providerInstanceId)) return `providerInstanceId must be 1 to ${INSTANCE_BYTES} UTF-8 bytes with no control character`
+  if (typeof model !== 'string' || !MODEL.test(model)) return 'model must be a model id'
+  if (typeof expectedServedModel !== 'string' || !MODEL.test(expectedServedModel)) return 'expectedServedModel must be a model id'
+  if (typeof effort !== 'string' || effort === '') return 'effort must be a non-empty string'
+  if (typeof runtimeMode !== 'string' || runtimeMode === '') return 'runtimeMode must be a non-empty string'
+  if (provider === 'claude' && providerInstanceId === DEFAULT_INSTANCE.codex) return 'a claude seat cannot run on provider instance codex, the Codex default'
+  if (provider === 'codex' && providerInstanceId === DEFAULT_INSTANCE.claude) return 'a codex seat cannot run on provider instance claudeAgent, the Claude default'
+  if (provider === 'codex' && providerInstanceId !== DEFAULT_INSTANCE.codex) return 'a codex seat runs on provider instance codex alone, because flow refuses a custom Codex instance'
+  if (provider === 'codex' && expectedServedModel !== model) return 'a codex seat\'s expectedServedModel must be its model'
+  return null
+}
+
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 // The option id under which each provider's target carries its effort, as orchestrator_capabilities
 // advertises it. T3 takes options as an array of {id, value} or as a record of id to value.

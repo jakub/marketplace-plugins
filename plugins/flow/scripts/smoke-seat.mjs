@@ -45,11 +45,19 @@ const ok = (line) => { checks++; console.log(`  ok: ${line}`) }
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const mode = (path) => statSync(path).mode & 0o777
 const seats = join(state, 'seats')
-const RECORD = (fields = {}) => ({
-  v: 1, createdAt: new Date().toISOString(), access: 'read-only', repoRoot: '/r', worktree: '/r', reviewWorktree: null,
-  baseSha: null, headSha: null, provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto',
-  canonicalSnapshot: null, hooksDigest: null, ...fields,
-})
+// T3's default provider instance for each host family, as seat open records it.
+const INSTANCE = { claude: 'claudeAgent', codex: 'codex' }
+// A record as seat open writes it. providerInstanceId follows the provider and expectedServedModel
+// the model unless a case names them, so a Codex fixture is never cross-wired; a case about a
+// record that lacks one deletes it.
+const RECORD = (fields = {}) => {
+  const record = {
+    v: 1, createdAt: new Date().toISOString(), access: 'read-only', repoRoot: '/r', worktree: '/r', reviewWorktree: null,
+    baseSha: null, headSha: null, provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto',
+    canonicalSnapshot: null, hooksDigest: null, ...fields,
+  }
+  return { providerInstanceId: INSTANCE[record.provider], expectedServedModel: record.model, ...record }
+}
 const SCHEMA = { type: 'object', required: ['x'], properties: { x: { type: 'string' } } }
 // A final message that passes for a read-only or review seat with SCHEMA as its answer schema.
 const ENVELOPE_OK = { status: 'done', coverage: { read: ['a.txt'], partial: [], unopened: ['b.txt'], checksRun: ['node --test'] }, notes: '', answer: { x: 'ok' } }
@@ -126,7 +134,6 @@ function stopBlocked(run, what) {
 const MODELS = { claude: 'claude-opus-5-5', codex: 'gpt-6-luna' }
 const PERMISSION = { claude: 'auto', codex: 'default' }
 const SPELLING = { claude: 'mcp__t3-code__delegate_task', codex: 'mcp__t3_code__delegate_task' }
-const INSTANCE = { claude: 'claudeAgent', codex: 'codex' }
 function call(host, session, fields) {
   const base = host === 'claude'
     ? { session_id: session, transcript_path: `/home/u/.claude/projects/-home-u-repo/${session}.jsonl`, cwd: '/home/u/repo', prompt_id: randomUUID(), permission_mode: PERMISSION.claude }
@@ -1964,29 +1971,39 @@ const cases = {
 
   'open-access': () => {
     const read = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high'])
-    assert.deepEqual(Object.keys(read), ['ok', 'id', 'tag', 'clientRequestId', 'runtimeMode', 'provider', 'model', 'effort', 'worktree', 'reviewWorktree'])
+    assert.deepEqual(Object.keys(read), ['ok', 'id', 'tag', 'clientRequestId', 'runtimeMode', 'provider', 'providerInstanceId', 'model', 'expectedServedModel', 'effort', 'worktree', 'reviewWorktree'])
     assert.equal(read.ok, true)
     assert.match(read.id, /^[0-9a-f]{32}$/)
     assert.equal(read.tag, `<flow-seat id=${read.id}>`)
     assert.equal(read.clientRequestId, `flow-seat-${read.id}`)
-    assert.deepEqual({ ...read, id: undefined, tag: undefined, clientRequestId: undefined }, { ok: true, id: undefined, tag: undefined, clientRequestId: undefined, runtimeMode: 'auto', provider: 'claude', model: 'claude-opus-5-5', effort: 'high', worktree: canon, reviewWorktree: null })
+    assert.deepEqual({ ...read, id: undefined, tag: undefined, clientRequestId: undefined }, {
+      ok: true, id: undefined, tag: undefined, clientRequestId: undefined, runtimeMode: 'auto', provider: 'claude', providerInstanceId: 'claudeAgent',
+      model: 'claude-opus-5-5', expectedServedModel: 'claude-opus-5-5', effort: 'high', worktree: canon, reviewWorktree: null,
+    })
     const loaded = store.readRecord(read.id)
+    assert.deepEqual(Object.keys(loaded.record), [
+      'v', 'id', 'createdAt', 'access', 'repoRoot', 'worktree', 'reviewWorktree', 'reviewGitDir', 'baseSha', 'headSha', 'provider', 'providerInstanceId',
+      'model', 'expectedServedModel', 'effort', 'runtimeMode', 'canonicalSnapshot', 'hooksDigest', 'schemaSha256',
+    ])
     assert.deepEqual({ ...loaded.record, createdAt: undefined }, {
       v: 1, id: read.id, createdAt: undefined, access: 'read-only', repoRoot: canon, worktree: canon, reviewWorktree: null, baseSha: null, headSha: null,
-      reviewGitDir: null, provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto', canonicalSnapshot: null, hooksDigest: null, schemaSha256: null,
+      reviewGitDir: null, provider: 'claude', providerInstanceId: 'claudeAgent', model: 'claude-opus-5-5', expectedServedModel: 'claude-opus-5-5', effort: 'high',
+      runtimeMode: 'auto', canonicalSnapshot: null, hooksDigest: null, schemaSha256: null,
     })
     assert.equal(loaded.schema, null)
-    ok('a read-only seat opens in the working directory\'s worktree: the output names its id, tag, clientRequestId flow-seat-<id>, runtimeMode auto, model, effort and worktree, and the record holds the same with no schema')
+    ok('a read-only seat opens in the working directory\'s worktree: the output names its id, tag, clientRequestId flow-seat-<id>, runtimeMode auto, provider, instance, model, expected served model, effort and worktree in that order, and the record holds the same with no schema')
 
     const schemaFile = join(tmp, 'answer-schema.json')
     writeFileSync(schemaFile, JSON.stringify(SCHEMA))
     const linked = seatCli(['open', '--access', 'read-only', '--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'medium', '--worktree', join(linkedWt, 'sub'), '--schema', schemaFile])
     assert.equal(linked.worktree, linkedWt)
     const linkedRecord = store.readRecord(linked.id)
+    assert.deepEqual([linked.providerInstanceId, linked.expectedServedModel], ['codex', 'gpt-6-luna'])
+    assert.deepEqual([linkedRecord.record.providerInstanceId, linkedRecord.record.expectedServedModel], ['codex', 'gpt-6-luna'])
     assert.equal(linkedRecord.record.repoRoot, canon, 'the canonical checkout of a linked worktree is the main worktree')
     assert.equal(linkedRecord.record.worktree, linkedWt)
     assert.deepEqual(linkedRecord.schema, SCHEMA)
-    ok('--worktree inside a linked worktree opens at that worktree\'s top level, with the main worktree as the canonical checkout, and --schema is stored as the answer schema')
+    ok('--worktree inside a linked worktree opens at that worktree\'s top level, with the main worktree as the canonical checkout, and --schema is stored as the answer schema; a codex seat defaults to instance codex and its own model')
 
     const writer = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', linkedWt])
     assert.equal(writer.worktree, linkedWt)
@@ -1995,6 +2012,34 @@ const cases = {
     closeSeat(writer.id)
     assert.equal(existsSync(jobs.leaseDirOf(linkedWt)), false, 'close dropped the holder and the empty lease directory')
     ok('a writer seat writes its holder file into the worktree\'s lease directory, and close drops it')
+  },
+
+  'open-custom-instance': () => {
+    const ROUTER = 'accounts/fireworks/routers/glm-5p3-us'
+    const SERVED = 'accounts/fireworks/models/glm-5p3'
+    const glm = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--provider-instance-id', 'glm', '--model', ROUTER, '--expected-served-model', SERVED, '--effort', 'high'])
+    assert.equal(glm.ok, true, JSON.stringify(glm))
+    assert.deepEqual([glm.provider, glm.providerInstanceId, glm.model, glm.expectedServedModel, glm.effort], ['claude', 'glm', ROUTER, SERVED, 'high'])
+    const { record } = store.readRecord(glm.id)
+    assert.deepEqual([record.provider, record.providerInstanceId, record.model, record.expectedServedModel], ['claude', 'glm', ROUTER, SERVED])
+    for (const key of ['endpoint', 'baseUrl', 'credential', 'apiKey', 'family', 'vendor']) assert.equal(Object.hasOwn(record, key), false, key)
+    ok('a claude-family seat opens on a custom instance with a router model and a distinct expected served model, and the record stores the two ids exactly, with no endpoint, credential or vendor')
+
+    const exact = (id) => seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--provider-instance-id', id, '--model', 'claude-opus-5-5', '--effort', 'high'])
+    for (const id of ['Glm', 'glm ', ' glm', 'glm/US', 'é'.repeat(64)]) {
+      const out = exact(id)
+      assert.equal(out.ok, true, `${JSON.stringify(id)}: ${JSON.stringify(out)}`)
+      assert.equal(out.providerInstanceId, id)
+      assert.equal(store.readRecord(out.id).record.providerInstanceId, id, `${JSON.stringify(id)} was trimmed or normalized`)
+    }
+    const decomposed = 'e\u0301'
+    assert.equal(store.readRecord(exact(decomposed).id).record.providerInstanceId, decomposed, 'a decomposed id was normalized')
+    assert.equal(Buffer.byteLength('é'.repeat(64)), 128)
+    ok('an instance id is stored exactly as given, case, spaces and decomposition kept, up to 128 UTF-8 bytes of multibyte text')
+
+    const claudeExpected = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--expected-served-model', 'claude-opus-5-5-20261001', '--effort', 'high'])
+    assert.deepEqual([claudeExpected.providerInstanceId, claudeExpected.expectedServedModel], ['claudeAgent', 'claude-opus-5-5-20261001'])
+    ok('a claude seat on its default instance may expect a served id other than the one it asks for')
   },
 
   'open-review': () => {
@@ -2140,6 +2185,52 @@ const cases = {
     }
     for (const path of ['relative.json', join(tmp, 'no-such-schema.json')]) assert.equal(seatCli(['open', '--access', 'read-only', ...base, '--schema', path]).error.kind, 'BAD_SCHEMA')
     ok('--schema is admitted up to 16 KiB under outputSchema\'s keyword rules, and a larger, unparsable, non-object, unchecked-keyword, relative or missing one is BAD_SCHEMA')
+
+    // An identity refusal comes before open prunes or creates anything: a record closed past
+    // retention is still there after, and no record, lease holder, worktree or exclude line is new.
+    const stale = store.writeRecord(RECORD(), null).id
+    store.stamp(stale, 'closed', { at: new Date(Date.now() - RETENTION_MS - 60_000).toISOString(), verdict: 'valid', reasons: [] })
+    const identityWt = gitWorktree('open-identity')
+    rmSync(join(identityWt, '.git', 'info', 'exclude'), { force: true })
+    const leases = () => (existsSync(join(state, 'leases')) ? readdirSync(join(state, 'leases')).sort() : [])
+    const exclude = (path) => (existsSync(join(path, '.git', 'info', 'exclude')) ? readFileSync(join(path, '.git', 'info', 'exclude'), 'utf8') : null)
+    const world = () => [before(), leases(), exclude(canon), exclude(identityWt), gitOut(identityWt, 'worktree', 'list', '--porcelain'), existsSync(join(seats, stale))]
+    const identityBefore = world()
+    const claude = ['--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high']
+    const codex = ['--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'high']
+    const refusedIdentity = [
+      [[...claude, '--provider-instance-id', ''], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'a'.repeat(129)], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', `${'é'.repeat(64)}a`], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'gl\tm'], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'glm\n'], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'glm\u007f'], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'glm\u0085'], /--provider-instance-id must be/],
+      [[...claude, '--expected-served-model', ''], /--expected-served-model must be a model id/],
+      [[...claude, '--expected-served-model', 'a b'], /--expected-served-model must be a model id/],
+      [[...claude, '--expected-served-model', '-x'], /--expected-served-model must be a model id/],
+      [[...claude, '--provider-instance-id', 'glm', '--provider-instance-id', 'glm'], /given twice/],
+      [[...claude, '--expected-served-model'], /needs a value/],
+      [[...claude, '--provider-instance-id', 'codex'], /claude seat cannot run on provider instance codex/],
+      [[...codex, '--provider-instance-id', 'claudeAgent'], /codex seat cannot run on provider instance claudeAgent/],
+      [[...codex, '--provider-instance-id', 'codex-work'], /codex seat runs on provider instance codex alone/],
+      [[...codex, '--provider-instance-id', 'Codex'], /codex seat runs on provider instance codex alone/],
+      [[...codex, '--expected-served-model', 'gpt-6-mini'], /codex seat's expectedServedModel must be its model/],
+      [[...codex, '--provider-instance-id', 'codex', '--expected-served-model', 'gpt-6-mini'], /codex seat's expectedServedModel must be its model/],
+    ]
+    for (const [flags, pattern] of refusedIdentity) {
+      for (const access of [['read-only'], ['workspace-write', '--worktree', identityWt], ['review', '--worktree', identityWt, '--base', 'HEAD', '--head', 'HEAD']]) {
+        const out = seatCli(['open', '--access', ...access, ...flags])
+        assert.equal(out.ok, false, `${access[0]} ${JSON.stringify(flags)}`)
+        assert.equal(out.error.kind, 'BAD_REQUEST', `${access[0]} ${JSON.stringify(flags)}: ${out.error.message}`)
+        assert.match(out.error.message, pattern, `${access[0]} ${JSON.stringify(flags)}`)
+      }
+    }
+    assert.deepEqual(world(), identityBefore, 'an identity refusal pruned, created or changed something')
+    assert.ok(store.readRecord(stale), 'an identity refusal pruned a record')
+    // The next open would prune it, and the cases after this one count seat directories.
+    rmSync(join(seats, stale), { recursive: true })
+    ok('open refuses BAD_REQUEST an empty, 129-byte or control-character instance id, an empty or malformed expected id, a repeated or valueless flag, a claude seat on instance codex, and a codex seat on any other instance or expecting another model, for every access, before it prunes or creates any record, lease holder, worktree or exclude line')
   },
 
   'open-context-budget': () => {
