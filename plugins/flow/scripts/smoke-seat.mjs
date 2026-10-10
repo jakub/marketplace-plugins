@@ -164,11 +164,14 @@ const delegateInput = (record, id, fields = {}) => ({
   target: { providerInstanceId: record.providerInstanceId, model: record.model, options: [{ id: EFFORT_OPTION[record.provider], value: record.effort }] }, mode: 'async', ...fields,
 })
 const seatRecord = (provider, fields = {}) => RECORD({ provider, model: MODELS[provider], ...fields })
+// The admitted stamp the parent's gate writes, straight through the store: it pins the digest of
+// the record as it is now, which the bind and close compare with the record's bytes.
+const admit = (id, fields = {}) => store.stamp(id, 'admitted', { toolUseId: 'toolu_parent', clientRequestId: `flow-seat-${id}`, recordDigest: store.readRecord(id).digest, ...fields })
 // A record the parent has opened and its gate has admitted, ready for the child to bind.
 function admittedSeat(provider, fields = {}) {
   const record = seatRecord(provider, fields)
   const { id, digest } = store.writeRecord(record, SCHEMA)
-  assert.equal(store.stamp(id, 'admitted', { toolUseId: 'toolu_parent' }), true)
+  assert.equal(admit(id), true)
   return { id, digest, record: { ...record, id }, tag: store.seatTag(id) }
 }
 // The containment cases share one real git repository as the seat's worktree; tmp is a realpath,
@@ -979,6 +982,20 @@ const cases = {
       assert.equal(store.readStamp(id, 'admitted'), null, `${what} was admitted`)
     }
     ok('admission denies a record missing providerInstanceId, expectedServedModel, effort or runtimeMode, or holding a provider, instance or expected id open refuses, on both hosts, and admits nothing')
+
+    for (const [what, edit] of Object.entries(broken)) {
+      const record = seatRecord('claude')
+      edit(record)
+      const { id } = store.writeRecord(record, SCHEMA)
+      assert.equal(admit(id), true)
+      const host = record.provider === 'codex' ? 'codex' : 'claude'
+      const session = randomUUID()
+      assert.match(context(guard('prompt', host, promptCall(host, session, store.seatTag(id))), `${what} bind`), /record-identity-invalid/, what)
+      assert.deepEqual(store.readIndex(host, session), { id, void: 'record-identity-invalid' }, what)
+      assert.equal(store.readStamp(id, 'bound'), null, `${what} was bound`)
+      denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), /void seat \(record-identity-invalid\)/, `${what} child call`)
+    }
+    ok('a bind of such a record, admitted with its own digest, is void (record-identity-invalid): no bound stamp, and every child call denied')
   },
 
   'admit-tag-line': () => {
@@ -1078,7 +1095,7 @@ const cases = {
     assert.ok(!reviewText.includes('commits'), 'a review was told to report commits')
     const bare = seatRecord('claude')
     const { id: bareId } = store.writeRecord(bare, null)
-    assert.equal(store.stamp(bareId, 'admitted', {}), true)
+    assert.equal(admit(bareId), true)
     const bareText = context(guard('prompt', 'claude', promptCall('claude', randomUUID(), store.seatTag(bareId))), 'schemaless bind')
     assert.match(bareText, /this seat has no answer schema/)
     ok('a writer seat is told its worktree, the git -C commit form and the commits field; a review seat its base and head; a seat with no schema is told so')
@@ -1092,7 +1109,7 @@ const cases = {
       const schema = { ...SCHEMA, description }
       const record = seatRecord(host)
       const { id } = store.writeRecord(record, schema)
-      assert.equal(store.stamp(id, 'admitted', {}), true)
+      assert.equal(admit(id), true)
       return { id, schema, text: context(guard('prompt', host, promptCall(host, randomUUID(), store.seatTag(id))), `${host} bind`) }
     }
     for (const host of ['claude', 'codex']) {
@@ -1271,6 +1288,94 @@ const cases = {
       assert.equal(store.readStamp(id, 'void').reason, 'permission-mode-not-allowed', 'the replay rewrote the void stamp')
     }
     ok('a record voided by a failed first bind stays void: its tag replayed in a fresh session with an allowed mode binds nothing, on both hosts')
+  },
+
+  'bind-admission-digest': () => {
+    const voidBind = (host, id, reason, what) => {
+      const session = randomUUID()
+      const text = context(guard('prompt', host, promptCall(host, session, store.seatTag(id))), what)
+      assert.match(text, /void seat/, what)
+      assert.ok(text.includes(reason), `${what}: ${text}`)
+      assert.deepEqual(store.readIndex(host, session), { id, void: reason }, what)
+      assert.equal(store.readStamp(id, 'bound'), null, `${what}: the record was bound`)
+      assert.equal(store.readStamp(id, 'void').reason, reason, what)
+      denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), new RegExp(`void seat \\(${reason}\\)`), `${what}: a child call`)
+      denied(guard('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' })), /void seat/, `${what}: a child read`)
+      assert.equal(store.readStamp(id, 'receipt'), null, `${what}: a void seat stamped a receipt`)
+    }
+    for (const host of ['claude', 'codex']) {
+      // The parent's own gate admits the record, which is then rewritten to the same fields in
+      // other bytes: the digest the admission pinned no longer matches.
+      const record = seatRecord(host)
+      const { id } = store.writeRecord(record, SCHEMA)
+      silent(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], delegateInput(record, id))), `${host} admission`)
+      const admitted = store.readStamp(id, 'admitted').recordDigest
+      const path = join(seats, id, 'record.json')
+      writeFileSync(path, JSON.stringify(JSON.parse(readFileSync(path, 'utf8'))))
+      assert.notEqual(store.readRecord(id).digest, admitted)
+      voidBind(host, id, 'admission-digest-mismatch', `${host} a record rewritten after its admission`)
+
+      const edited = store.writeRecord(seatRecord(host), SCHEMA).id
+      assert.equal(admit(edited), true)
+      const editedPath = join(seats, edited, 'record.json')
+      writeFileSync(editedPath, JSON.stringify({ ...JSON.parse(readFileSync(editedPath, 'utf8')), effort: 'low' }, null, 2) + '\n')
+      voidBind(host, edited, 'admission-digest-mismatch', `${host} a record whose effort changed after its admission`)
+
+      const unpinned = store.writeRecord(seatRecord(host), SCHEMA).id
+      assert.equal(store.stamp(unpinned, 'admitted', { toolUseId: 'toolu_parent', clientRequestId: `flow-seat-${unpinned}` }), true)
+      voidBind(host, unpinned, 'admission-digest-mismatch', `${host} an admitted stamp with no recordDigest`)
+
+      const other = store.writeRecord(seatRecord(host), SCHEMA).id
+      assert.equal(admit(other, { recordDigest: 'f'.repeat(64) }), true)
+      voidBind(host, other, 'admission-digest-mismatch', `${host} an admitted stamp pinning other bytes`)
+    }
+    ok('a bind whose record bytes are not the ones the admitted stamp pinned, rewritten after the gate admitted it or admitted with no or another recordDigest, is void on both hosts: no bound stamp, and every later child call denied')
+  },
+
+  'bind-custom-host': () => {
+    const glm = { providerInstanceId: 'glm', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' }
+    const record = seatRecord('claude', glm)
+    const { id, digest } = store.writeRecord(record, SCHEMA)
+    silent(guard('pre', 'codex', preCall('codex', randomUUID(), SPELLING.codex, delegateInput(record, id))), 'a Codex parent admits a glm seat')
+    const session = randomUUID()
+    const text = context(guard('prompt', 'claude', promptCall('claude', session, store.seatTag(id))), 'glm bind on claude')
+    assert.match(text, new RegExp(`Seat ${id}:`))
+    assert.deepEqual(store.readIndex('claude', session), { id })
+    assert.equal(store.readStamp(id, 'bound').recordDigest, digest)
+    silent(guard('pre', 'claude', preCall('claude', session, 'Bash', { command: 'pwd' })), 'the glm seat\'s first call')
+    ok('a claude-family seat on a custom instance binds on a Claude host, whichever host admitted it')
+
+    const off = admittedSeat('claude', glm)
+    const codexSession = randomUUID()
+    assert.match(context(guard('prompt', 'codex', promptCall('codex', codexSession, off.tag)), 'glm bind on codex'), /host-mismatch/)
+    assert.deepEqual(store.readIndex('codex', codexSession), { id: off.id, void: 'host-mismatch' })
+    assert.equal(store.readStamp(off.id, 'bound'), null)
+    ok('a claude-family seat on a custom instance started on a Codex host is void (host-mismatch): its provider names the host, not the vendor')
+  },
+
+  'bind-context-routing-private': () => {
+    // The seat context names the provider family and the model the call asked for; the instance
+    // and the expected served id are routing facts the seat has no use for, so two records apart
+    // only in those read the same context, whether the schema is inlined or named by path.
+    const id = store.newId()
+    const plain = { ...seatRecord('claude', { model: 'accounts/fireworks/routers/glm-5p3-us' }), id }
+    const routed = { ...plain, providerInstanceId: 'routed-instance-7', expectedServedModel: 'accounts/fireworks/models/glm-5p3' }
+    const big = { ...SCHEMA, description: 'b'.repeat(7000) }
+    for (const [schema, what] of [[SCHEMA, 'inline'], [big, 'by path'], [null, 'none']]) {
+      const a = seatPolicy.seatContext(plain, schema, '/s/schema.json')
+      const b = seatPolicy.seatContext(routed, schema, '/s/schema.json')
+      assert.equal(b, a, `${what}: the context differs`)
+      assert.ok(!b.includes('routed-instance-7') && !b.includes('accounts/fireworks/models/glm-5p3'), `${what}: the context names a routing fact`)
+    }
+    assert.ok(seatPolicy.seatContext(routed, big, '/s/schema.json').includes('/s/schema.json'), 'the big schema was not named by path')
+    ok('seatContext is byte for byte the same for records apart only in instance and expected served id, with an inline schema, a schema named by path and none')
+
+    const seat = admittedSeat('claude', { providerInstanceId: 'routed-instance-7', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' })
+    const text = context(guard('prompt', 'claude', promptCall('claude', randomUUID(), seat.tag)), 'routed bind')
+    assert.match(text, new RegExp(`Seat ${seat.id}:`))
+    assert.ok(!text.includes('routed-instance-7'), 'the bind context names the instance')
+    assert.ok(!text.includes('accounts/fireworks/models/glm-5p3'), 'the bind context names the expected served id')
+    ok('a real bind of a routed seat injects neither its instance id nor its expected served id')
   },
 
   'spawn-names': () => {
@@ -1712,7 +1817,7 @@ const cases = {
 
     const bare = seatRecord('codex', { access: 'read-only', worktree, repoRoot: worktree })
     const { id: bareId } = store.writeRecord(bare, null)
-    assert.equal(store.stamp(bareId, 'admitted', {}), true)
+    assert.equal(admit(bareId), true)
     const bareSession = randomUUID()
     context(guard('prompt', 'codex', promptCall('codex', bareSession, store.seatTag(bareId))), 'schemaless bind')
     silent(guard('stop', 'codex', stopCall('codex', bareSession, JSON.stringify({ ...ENVELOPE_OK, answer: [1, 'any'] }), randomUUID())), 'schemaless answer')
@@ -1950,7 +2055,7 @@ const cases = {
     const schema = { type: 'object', required: ['x'], properties: { x: { type: 'string', pattern: '^(a+)+$' } } }
     const record = seatRecord('claude', { access: 'read-only', worktree, repoRoot: worktree })
     const { id } = store.writeRecord(record, schema)
-    assert.equal(store.stamp(id, 'admitted', {}), true)
+    assert.equal(admit(id), true)
     const session = randomUUID()
     context(guard('prompt', 'claude', promptCall('claude', session, store.seatTag(id))), 'bind')
     const started = performance.now()

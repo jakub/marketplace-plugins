@@ -16,7 +16,9 @@
 //                      can tell this seat's task from another. The admitted stamp pins the digest
 //                      of the record it admitted, which the bind and close compare.
 //   bindProblem        the child's UserPromptSubmit: whether this session may bind the record. A
-//                      failed bind makes a void seat, which the adapter records and announces.
+//                      record that fails seatIdentityProblem, or whose bytes are not the ones the
+//                      admitted stamp pinned, is never bound. A failed bind makes a void seat,
+//                      which the adapter records and announces.
 //   seatCallProblem    the child's PreToolUse before containment: a void seat, a record that is
 //                      missing or corrupt, a seat already closed, or a call that cannot be read is
 //                      denied outright.
@@ -158,7 +160,10 @@ export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
  * Why this session may not bind the seat, or null when it may. Each fact is read by the caller:
  * the host the hook runs on, whether the session id passed the store's validation, the session's
  * permission_mode, the readRecord result, and the admitted, bound, void and closed stamps (null
- * when absent).
+ * when absent). The record must pass seatIdentityProblem and hash to the admitted stamp's
+ * recordDigest, so a record rewritten between the admission and the bind, or admitted by a flow
+ * that pinned no digest, binds nothing; its provider names the host it binds on, whatever
+ * instance it runs on.
  * Creating the session index and the bound stamp are the bind's last two steps and can still be
  * lost to a racer after a null here; the caller reports those as their own reasons.
  */
@@ -171,6 +176,8 @@ export function bindProblem({ host, sessionValid, permissionMode, seat, admitted
   if (voided !== null && voided !== undefined) return 'record-void'
   if (admitted === null || admitted === undefined) return 'not-admitted'
   if (bound !== null && bound !== undefined) return 'already-bound'
+  if (seatIdentityProblem(seat.record)) return 'record-identity-invalid'
+  if (admitted.recordDigest !== seat.digest) return 'admission-digest-mismatch'
   if (!sessionValid) return 'session-id-invalid'
   if (seat.record.provider !== host) return 'host-mismatch'
   if (!(PERMISSION_MODES[host] ?? []).includes(permissionMode)) return 'permission-mode-not-allowed'
