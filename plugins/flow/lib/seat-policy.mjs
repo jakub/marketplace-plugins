@@ -9,11 +9,16 @@
 //                      without an explicit runtimeMode is denied, tagged or not, because a child
 //                      copies its parent's mode at spawn and a parent switched to full access would
 //                      silently widen every later child. A tagged call is admitted once, and only
-//                      when it asks for exactly what the seat record names: the runtime mode, the
-//                      provider, the model, the effort, and clientRequestId flow-seat-<id>, which
-//                      T3 builds the task id from, so close can tell this seat's task from another.
+//                      when its record passes seatIdentityProblem and the call asks for exactly
+//                      what the record names: the runtime mode, the provider instance id, the
+//                      model, the effort under the option id of the record's provider family, and
+//                      clientRequestId flow-seat-<id>, which T3 builds the task id from, so close
+//                      can tell this seat's task from another. The admitted stamp pins the digest
+//                      of the record it admitted, which the bind and close compare.
 //   bindProblem        the child's UserPromptSubmit: whether this session may bind the record. A
-//                      failed bind makes a void seat, which the adapter records and announces.
+//                      record that fails seatIdentityProblem, or whose bytes are not the ones the
+//                      admitted stamp pinned, is never bound. A failed bind makes a void seat,
+//                      which the adapter records and announces.
 //   seatCallProblem    the child's PreToolUse before containment: a void seat, a record that is
 //                      missing or corrupt, a seat already closed, or a call that cannot be read is
 //                      denied outright.
@@ -49,9 +54,40 @@ export const PERMISSION_MODES = Object.freeze({
   codex: Object.freeze(['default']),
 })
 
-// T3 names its providers by instance id; the record names the host family.
-const PROVIDERS = new Map([['claudeAgent', 'claude'], ['codex', 'codex']])
 const ACCESS = new Set(['read-only', 'workspace-write', 'review'])
+
+/** A model id, as seat.mjs open takes --model and --expected-served-model and a record holds them. */
+export const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@+/[\]-]{0,127}$/
+/** The provider instance id seat.mjs open records when --provider-instance-id is omitted. */
+export const DEFAULT_INSTANCE = Object.freeze({ claude: 'claudeAgent', codex: 'codex' })
+// T3's instance id is opaque to flow and matched exactly, never trimmed or normalized: it is
+// checked for size and control characters alone, so it stays one line in a reason.
+const INSTANCE_BYTES = 128
+/** Whether id is a provider instance id a record may hold: 1 to 128 UTF-8 bytes, no Cc character. */
+export const validInstanceId = (id) => typeof id === 'string' && id !== '' && Buffer.byteLength(id, 'utf8') <= INSTANCE_BYTES && !/\p{Cc}/u.test(id)
+
+/**
+ * Why a seat's identity is refused, or null. One rule, read by seat.mjs open before it creates
+ * anything and by the admission, the bind and close on the record they read, so a record that
+ * lacks a field or was edited into a combination open refuses is never admitted, bound or judged.
+ * provider is the hook host family, which picks the effort option and the host a child binds on;
+ * providerInstanceId is the T3 instance the child runs on, which may route a Claude-family seat to
+ * another vendor's model; expectedServedModel is the model id the hooks must see serving it. A
+ * Codex seat runs on the default codex instance alone, serving the model it asks for.
+ */
+export function seatIdentityProblem({ provider, providerInstanceId, model, expectedServedModel, effort, runtimeMode }) {
+  if (provider !== 'claude' && provider !== 'codex') return `provider ${quote(provider)} is neither claude nor codex`
+  if (!validInstanceId(providerInstanceId)) return `providerInstanceId must be 1 to ${INSTANCE_BYTES} UTF-8 bytes with no control character`
+  if (typeof model !== 'string' || !MODEL.test(model)) return 'model must be a model id'
+  if (typeof expectedServedModel !== 'string' || !MODEL.test(expectedServedModel)) return 'expectedServedModel must be a model id'
+  if (typeof effort !== 'string' || effort === '') return 'effort must be a non-empty string'
+  if (typeof runtimeMode !== 'string' || runtimeMode === '') return 'runtimeMode must be a non-empty string'
+  if (provider === 'claude' && providerInstanceId === DEFAULT_INSTANCE.codex) return 'a claude seat cannot run on provider instance codex, the Codex default'
+  if (provider === 'codex' && providerInstanceId === DEFAULT_INSTANCE.claude) return 'a codex seat cannot run on provider instance claudeAgent, the Claude default'
+  if (provider === 'codex' && providerInstanceId !== DEFAULT_INSTANCE.codex) return 'a codex seat runs on provider instance codex alone, because flow refuses a custom Codex instance'
+  if (provider === 'codex' && expectedServedModel !== model) return 'a codex seat\'s expectedServedModel must be its model'
+  return null
+}
 
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 // The option id under which each provider's target carries its effort, as orchestrator_capabilities
@@ -72,8 +108,10 @@ const deny = (why) => ({ deny: `flow seat: ${why}` })
  * The parent's gate on one delegate_task call. Returns null when the call is not a seat call and
  * names its runtimeMode, which the caller allows by printing nothing; {deny: reason} to refuse it;
  * {admit: id} once the record's admitted stamp is written. deps.store is lib/seat-store.mjs and
- * deps.toolUseId, when a string, is recorded in the stamp beside the clientRequestId. The stamp is write-once, so of two
- * calls racing to admit one record exactly one is admitted and the other is denied.
+ * deps.toolUseId, when a string, is recorded in the stamp beside the clientRequestId and the
+ * recordDigest, the sha256 of the record bytes this call was checked against. The stamp is
+ * write-once, so of two calls racing to admit one record exactly one is admitted and the other is
+ * denied.
  */
 export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
   if (!plainObject(toolInput)) return deny('the delegate_task call could not be read, so it is refused.')
@@ -93,26 +131,27 @@ export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
   if (!loaded) return deny(`seat ${id} has no readable seat record. Open a new seat.`)
   if (store.readStamp(id, 'admitted') !== null) return deny(`seat ${id} was already admitted once. Open a new seat for another task.`)
   const { record } = loaded
+  const identity = seatIdentityProblem(record)
+  if (identity) return deny(`seat ${id}'s record fails the seat identity rule (${identity}), so it is never admitted. Open a new seat.`)
   if (toolInput.role !== 'general') return deny('a seat call passes role "general", so T3 prepends nothing to the task.')
   const { target } = toolInput
   if (!plainObject(target) || typeof target.providerInstanceId !== 'string' || typeof target.model !== 'string') {
     return deny('the call\'s target.providerInstanceId or target.model could not be read, so the call is refused.')
   }
-  const provider = PROVIDERS.get(target.providerInstanceId)
-  if (!provider) return deny(`provider instance ${JSON.stringify(target.providerInstanceId.slice(0, 64))} is neither claudeAgent nor codex.`)
   const clientRequestId = `flow-seat-${id}`
+  const effortOption = EFFORT_OPTION[record.provider]
   const mismatched = [
     ['runtimeMode', runtimeMode, record.runtimeMode],
-    ['provider', provider, record.provider],
+    ['target.providerInstanceId', target.providerInstanceId, record.providerInstanceId],
     ['model', target.model, record.model],
-    [`target.options ${EFFORT_OPTION[provider]}`, optionValue(target.options, EFFORT_OPTION[provider]), record.effort],
+    [`target.options ${effortOption}`, optionValue(target.options, effortOption), record.effort],
     ['clientRequestId', toolInput.clientRequestId, clientRequestId],
   ].filter(([, asked, recorded]) => asked !== recorded)
   if (mismatched.length > 0) {
     const lines = mismatched.map(([field, , recorded]) => `${field} must be ${JSON.stringify(recorded)}`)
     return deny(`the call does not match seat ${id}'s record: ${lines.join('; ')}.`)
   }
-  const stamp = typeof toolUseId === 'string' ? { toolUseId, clientRequestId } : { clientRequestId }
+  const stamp = { ...(typeof toolUseId === 'string' ? { toolUseId } : {}), clientRequestId, recordDigest: loaded.digest }
   if (!store.stamp(id, 'admitted', stamp)) return deny(`seat ${id} was admitted by another call first.`)
   return { admit: id }
 }
@@ -121,7 +160,10 @@ export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
  * Why this session may not bind the seat, or null when it may. Each fact is read by the caller:
  * the host the hook runs on, whether the session id passed the store's validation, the session's
  * permission_mode, the readRecord result, and the admitted, bound, void and closed stamps (null
- * when absent).
+ * when absent). The record must pass seatIdentityProblem and hash to the admitted stamp's
+ * recordDigest, so a record rewritten between the admission and the bind, or admitted by a flow
+ * that pinned no digest, binds nothing; its provider names the host it binds on, whatever
+ * instance it runs on.
  * Creating the session index and the bound stamp are the bind's last two steps and can still be
  * lost to a racer after a null here; the caller reports those as their own reasons.
  */
@@ -134,6 +176,8 @@ export function bindProblem({ host, sessionValid, permissionMode, seat, admitted
   if (voided !== null && voided !== undefined) return 'record-void'
   if (admitted === null || admitted === undefined) return 'not-admitted'
   if (bound !== null && bound !== undefined) return 'already-bound'
+  if (seatIdentityProblem(seat.record)) return 'record-identity-invalid'
+  if (admitted.recordDigest !== seat.digest) return 'admission-digest-mismatch'
   if (!sessionValid) return 'session-id-invalid'
   if (seat.record.provider !== host) return 'host-mismatch'
   if (!(PERMISSION_MODES[host] ?? []).includes(permissionMode)) return 'permission-mode-not-allowed'

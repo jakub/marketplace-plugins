@@ -3,14 +3,15 @@
 // the seat with the one verdict the parent acts on, and reads or grants Codex's trust in flow's
 // own Codex hooks.
 //
-//   seat.mjs open --access read-only|workspace-write|review --provider claude|codex --model <id>
+//   seat.mjs open --access read-only|workspace-write|review --provider claude|codex
+//                 [--provider-instance-id <id>] --model <id> [--expected-served-model <id>]
 //                 --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>]
 //   seat.mjs close <seat-id> --task-status <json>
 //   seat.mjs close <seat-id> --abandon
 //   seat.mjs trust [--write --expect <digest>]
 //
 // stdout is one JSON line. open prints {ok: true, id, tag, clientRequestId, runtimeMode, provider,
-// model, effort, worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
+// providerInstanceId, model, expectedServedModel, effort, worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
 // servedModels, blocks, errors, cleanupProblems?}, with or without --abandon, trust prints {ok: true, keys: [{key, command, trustStatus,
 // currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
 // details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and
@@ -18,6 +19,18 @@
 // HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App
 // Server's own failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for
 // anything this script did not expect, INTERNAL.
+//
+// The seat's identity. --provider names the hook host family the child runs under, which picks
+// the host it binds on and the option its effort rides in, not the vendor of the model. The record
+// always holds providerInstanceId, the T3 provider instance the delegate_task call must name, and
+// expectedServedModel, the model id the hooks must see serving the seat; --model stays the id the
+// call asks for. An omitted --provider-instance-id is claudeAgent for claude and codex for codex,
+// and an omitted --expected-served-model is --model; an empty value is refused, never defaulted.
+// The instance id is opaque and matched exactly. Before anything is pruned or created, open refuses
+// BAD_REQUEST an instance id over 128 UTF-8 bytes or holding a control character, an expected id
+// that is no model id, and what seat-policy's seatIdentityProblem refuses: a claude seat on the
+// codex instance, and a codex seat on any instance but codex or expecting a model it did not ask
+// for. Flow stores no endpoint, credential or vendor, and maps no router id to a served one.
 //
 // open, in this order: prune closed records past retention; find the repository from --worktree,
 // or the working directory, and its canonical checkout, the main worktree; for a review, resolve
@@ -57,15 +70,23 @@
 // one seat is never closed on another task's status. It then judges the seat
 // from its record and the stamps and results the hooks wrote, in this order of precedence, the
 // first that holds being the verdict:
-//   unknown         no readable record; a void stamp; no admitted, bound or receipt stamp; a
-//                   record whose bytes no longer match the digest the bind pinned; a bound
-//                   session whose index entry is void (session-index-void) or missing or names
-//                   another seat (session-index-mismatch); no Stop on record; a turn a prompt
+//   unknown         no readable record; a record that fails seatIdentityProblem, such as one
+//                   an older flow wrote without providerInstanceId or expectedServedModel; a
+//                   void stamp; no admitted, bound or receipt stamp; a record whose bytes no
+//                   longer match the digest the bind pinned, or a bind that pinned other bytes
+//                   than the admission did; a bound session whose index entry is void
+//                   (session-index-void) or missing or names another seat
+//                   (session-index-mismatch); no Stop on record; a turn a prompt
 //                   opened after the bind with no stop on record (turn-without-result); a last
 //                   stop that was valid with no intact result for its turn, or with a result that
 //                   names no served model; or no served model on record from any stop
-//   model-mismatch  a model the hooks saw serving the seat, at the bind or at any stop in any
-//                   turn (Stop keeps them as one set in the turn state), is not the record's
+//   model-mismatch  the model the hooks saw at the bind is not the record's model, the one the
+//                   call asked for (`bound to <X>, not <model>`), or a model a stop saw serving
+//                   the seat in any turn (Stop keeps them as one set in the turn state), or the
+//                   result's own, is not the record's expectedServedModel (`served by <Y>, not
+//                   <expected>`, one reason per distinct id in first-seen order, after the bind's).
+//                   A router id the call asked for is never read as a served one: flow maps no
+//                   router to the model behind it, so the parent declares it at open.
 //   tree-moved      for a review: the review worktree's HEAD left the head SHA or its tree is
 //                   dirty, the canonical checkout's snapshot, HEAD commit or branch changed, or
 //                   the coverage (read,
@@ -152,7 +173,7 @@ import { dropLease, JOB_ID, leaseDirOf, leaseLive } from '../delegate/jobs.mjs'
 import { findExecutable } from '../delegate/providers.mjs'
 import { FINDINGS_SCHEMA, outputSchemaProblem } from '../delegate/schema.mjs'
 import { ensureExcluded } from '../lib/git-exclude.mjs'
-import { plainShellWord, seatContext } from '../lib/seat-policy.mjs'
+import { DEFAULT_INSTANCE, MODEL, plainShellWord, seatContext, seatIdentityProblem, validInstanceId } from '../lib/seat-policy.mjs'
 import * as store from '../lib/seat-store.mjs'
 import { inside } from '../lib/state-dir.mjs'
 
@@ -164,7 +185,6 @@ const VERSION = JSON.parse(readFileSync(join(HERE, '..', '.claude-plugin', 'plug
 const CLOSE_MS = 5_000
 const ACCESS = ['read-only', 'workspace-write', 'review']
 const PROVIDERS = ['claude', 'codex']
-const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@+/[\]-]{0,127}$/
 const EFFORT = /^[a-z][a-z0-9-]{0,31}$/
 const SEAT_ID = /^[0-9a-f]{32}$/
 const DIGEST = /^[0-9a-f]{64}$/
@@ -304,7 +324,7 @@ function holdLive(worktree, id) {
 const clientRequestIdOf = (id) => `flow-seat-${id}`
 
 async function open(argv) {
-  const opts = flags(argv, ['--access', '--provider', '--model', '--effort', '--worktree', '--base', '--head', '--schema'])
+  const opts = flags(argv, ['--access', '--provider', '--provider-instance-id', '--model', '--expected-served-model', '--effort', '--worktree', '--base', '--head', '--schema'])
   const access = opts['--access']
   const provider = opts['--provider']
   const model = opts['--model']
@@ -313,6 +333,13 @@ async function open(argv) {
   if (!PROVIDERS.includes(provider)) fail('BAD_REQUEST', `--provider must be one of ${PROVIDERS.join(', ')}.`)
   if (typeof model !== 'string' || !MODEL.test(model)) fail('BAD_REQUEST', '--model must be a model id.')
   if (typeof effort !== 'string' || !EFFORT.test(effort)) fail('BAD_REQUEST', '--effort must be an effort level.')
+  // Only an omitted flag takes its default: an empty value is refused like any other bad one.
+  const providerInstanceId = opts['--provider-instance-id'] ?? DEFAULT_INSTANCE[provider]
+  const expectedServedModel = opts['--expected-served-model'] ?? model
+  if (!validInstanceId(providerInstanceId)) fail('BAD_REQUEST', '--provider-instance-id must be 1 to 128 UTF-8 bytes with no control character.')
+  if (!MODEL.test(expectedServedModel)) fail('BAD_REQUEST', '--expected-served-model must be a model id.')
+  const identity = seatIdentityProblem({ provider, providerInstanceId, model, expectedServedModel, effort, runtimeMode: RUNTIME_MODE })
+  if (identity) fail('BAD_REQUEST', `--provider, --provider-instance-id and --expected-served-model do not fit: ${identity}.`)
   const review = access === 'review'
   if (opts['--worktree'] !== undefined && !isAbsolute(opts['--worktree'])) fail('BAD_REQUEST', '--worktree must be an absolute path.')
   if (access === 'workspace-write' && opts['--worktree'] === undefined) fail('BAD_REQUEST', 'A workspace-write seat names its --worktree.')
@@ -363,7 +390,7 @@ async function open(argv) {
     const digest = provider === 'codex' ? await seatTrust(repoRoot) : null
     const record = {
       v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, reviewGitDir, baseSha, headSha,
-      provider, model, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot: null, hooksDigest: digest,
+      provider, providerInstanceId, model, expectedServedModel, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot: null, hooksDigest: digest,
     }
     // The seat's context repeats its paths, and the prompt hook cannot deliver one past the hook
     // budget, so a seat whose context cannot fit is refused here, before the holder and the record.
@@ -386,7 +413,10 @@ async function open(argv) {
       store.stamp(id, 'closed', { verdict: 'unknown', reasons: [reason], taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
       fail('WORKSPACE_BUSY', `This open stalled for over a minute, so ${reason}, and a write job may hold the worktree now.`)
     }
-    return { ok: true, id, tag: store.seatTag(id), clientRequestId: clientRequestIdOf(id), runtimeMode: RUNTIME_MODE, provider, model, effort, worktree, reviewWorktree }
+    return {
+      ok: true, id, tag: store.seatTag(id), clientRequestId: clientRequestIdOf(id), runtimeMode: RUNTIME_MODE, provider, providerInstanceId, model,
+      expectedServedModel, effort, worktree, reviewWorktree,
+    }
   } catch (error) {
     for (const step of undo.reverse()) { try { step() } catch {} }
     throw error
@@ -605,11 +635,15 @@ function judge(id, loaded) {
   const unknown = (reason) => ({ verdict: 'unknown', reasons: [reason], facts })
   if (!loaded) return unknown('the seat record is missing or corrupt')
   const { record, digest } = loaded
+  // A record the identity rule refuses names no instance or expected model to judge against.
+  const identity = seatIdentityProblem(record)
+  if (identity) return unknown(`the seat record fails the seat identity rule: ${identity}`)
   const voided = store.readStamp(id, 'void')
   if (voided) return unknown(`the seat is void: ${String(voided.reason ?? 'no reason recorded').slice(0, 120)}`)
   for (const name of STAMPS) if (!store.readStamp(id, name)) return unknown(`the ${name} stamp is missing`)
   const bound = store.readStamp(id, 'bound')
   if (bound.recordDigest !== digest) return unknown('the record changed after the bind')
+  if (store.readStamp(id, 'admitted').recordDigest !== bound.recordDigest) return unknown('the record changed between the admission and the bind')
   // The bound session's index entry is what made its tool calls seat calls. Voided or replaced
   // after the bind, the hooks no longer held that session as this seat.
   const entry = store.readIndex(bound.host, bound.sessionId)
@@ -643,11 +677,14 @@ function judge(id, loaded) {
   facts.servedModels = [...new Set([...strings(state.models), ...resultModels])]
   if (envelope && resultModels.length === 0) return unknown(`turn ${state.turn}'s result names no served model`)
   if (facts.servedModels.length === 0) return unknown('no served model is on record for any of the seat\'s stops')
-  const seen = [...(typeof bound.model === 'string' ? [bound.model] : []), ...facts.servedModels]
-  const others = [...new Set(seen.filter((model) => model !== record.model))]
-  if (others.length > 0) {
-    return { verdict: 'model-mismatch', reasons: [`served by ${others.map((model) => String(model).slice(0, 80)).join(', ')}, not ${record.model}`], facts }
+  // The bind sees the model the session asked for, which a router seat names but is not served
+  // by; every stop sees the model that answered, which must be the one the record expects.
+  const mismatches = []
+  if (typeof bound.model === 'string' && bound.model !== record.model) mismatches.push(`bound to ${bound.model.slice(0, 80)}, not ${record.model}`)
+  for (const model of new Set(facts.servedModels.filter((served) => served !== record.expectedServedModel))) {
+    mismatches.push(`served by ${model.slice(0, 80)}, not ${record.expectedServedModel}`)
   }
+  if (mismatches.length > 0) return { verdict: 'model-mismatch', reasons: mismatches, facts }
   if (record.access === 'review') {
     const reasons = treeReasons(record, envelope)
     if (reasons.length > 0) return { verdict: 'tree-moved', reasons, facts }
@@ -797,7 +834,7 @@ function abandon(id) {
 
 // ----- main
 
-const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> --model <id> --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
+const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
 const [verb, ...argv] = process.argv.slice(2)
 let answer
 try {

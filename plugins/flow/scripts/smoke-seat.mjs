@@ -5,8 +5,9 @@
 // The state directory is a temp directory named by FLOW_DELEGATION_STATE_DIR, and the races run as
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
-// Cases are grouped by prefix (store-*, wire-*, admit-*, bind-*, spawn-*, mcp-*, edit-*, bash-*, closed-*,
-// stop-*, open-*, close-*, prune-*, trust-*, fastpath-*); the containment families run against a
+// Cases are grouped by prefix (store-*, wire-*, admit-*, record-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
+// closed-*, stop-*, open-*, close-*, prune-*, trust-*, fastpath-*), and record-identity-required
+// follows one refused record through admission, bind and close; the containment families run against a
 // real temp git repository as the worktree, the executor families (open-*, close-*, prune-open,
 // trust-*) run scripts/seat.mjs as a process against a real canonical checkout with a linked
 // worktree and a fake codex first on PATH that speaks the App Server's JSON-RPC, and
@@ -45,11 +46,19 @@ const ok = (line) => { checks++; console.log(`  ok: ${line}`) }
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const mode = (path) => statSync(path).mode & 0o777
 const seats = join(state, 'seats')
-const RECORD = (fields = {}) => ({
-  v: 1, createdAt: new Date().toISOString(), access: 'read-only', repoRoot: '/r', worktree: '/r', reviewWorktree: null,
-  baseSha: null, headSha: null, provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto',
-  canonicalSnapshot: null, hooksDigest: null, ...fields,
-})
+// T3's default provider instance for each host family, as seat open records it.
+const INSTANCE = { claude: 'claudeAgent', codex: 'codex' }
+// A record as seat open writes it. providerInstanceId follows the provider and expectedServedModel
+// the model unless a case names them, so a Codex fixture is never cross-wired; a case about a
+// record that lacks one deletes it.
+const RECORD = (fields = {}) => {
+  const record = {
+    v: 1, createdAt: new Date().toISOString(), access: 'read-only', repoRoot: '/r', worktree: '/r', reviewWorktree: null,
+    baseSha: null, headSha: null, provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto',
+    canonicalSnapshot: null, hooksDigest: null, ...fields,
+  }
+  return { providerInstanceId: INSTANCE[record.provider], expectedServedModel: record.model, ...record }
+}
 const SCHEMA = { type: 'object', required: ['x'], properties: { x: { type: 'string' } } }
 // A final message that passes for a read-only or review seat with SCHEMA as its answer schema.
 const ENVELOPE_OK = { status: 'done', coverage: { read: ['a.txt'], partial: [], unopened: ['b.txt'], checksRun: ['node --test'] }, notes: '', answer: { x: 'ok' } }
@@ -126,7 +135,6 @@ function stopBlocked(run, what) {
 const MODELS = { claude: 'claude-opus-5-5', codex: 'gpt-6-luna' }
 const PERMISSION = { claude: 'auto', codex: 'default' }
 const SPELLING = { claude: 'mcp__t3-code__delegate_task', codex: 'mcp__t3_code__delegate_task' }
-const INSTANCE = { claude: 'claudeAgent', codex: 'codex' }
 function call(host, session, fields) {
   const base = host === 'claude'
     ? { session_id: session, transcript_path: `/home/u/.claude/projects/-home-u-repo/${session}.jsonl`, cwd: '/home/u/repo', prompt_id: randomUUID(), permission_mode: PERMISSION.claude }
@@ -154,14 +162,17 @@ const EFFORT_OPTION = { claude: 'effort', codex: 'reasoningEffort' }
 const delegateInput = (record, id, fields = {}) => ({
   task: `${store.seatTag(id)}\nWorktree: ${record.worktree}\nRead the diff and answer in the flow envelope.`,
   role: 'general', runtimeMode: record.runtimeMode, clientRequestId: `flow-seat-${id}`,
-  target: { providerInstanceId: INSTANCE[record.provider], model: record.model, options: [{ id: EFFORT_OPTION[record.provider], value: record.effort }] }, mode: 'async', ...fields,
+  target: { providerInstanceId: record.providerInstanceId, model: record.model, options: [{ id: EFFORT_OPTION[record.provider], value: record.effort }] }, mode: 'async', ...fields,
 })
 const seatRecord = (provider, fields = {}) => RECORD({ provider, model: MODELS[provider], ...fields })
+// The admitted stamp the parent's gate writes, straight through the store: it pins the digest of
+// the record as it is now, which the bind and close compare with the record's bytes.
+const admit = (id, fields = {}) => store.stamp(id, 'admitted', { toolUseId: 'toolu_parent', clientRequestId: `flow-seat-${id}`, recordDigest: store.readRecord(id).digest, ...fields })
 // A record the parent has opened and its gate has admitted, ready for the child to bind.
 function admittedSeat(provider, fields = {}) {
   const record = seatRecord(provider, fields)
   const { id, digest } = store.writeRecord(record, SCHEMA)
-  assert.equal(store.stamp(id, 'admitted', { toolUseId: 'toolu_parent' }), true)
+  assert.equal(admit(id), true)
   return { id, digest, record: { ...record, id }, tag: store.seatTag(id) }
 }
 // The containment cases share one real git repository as the seat's worktree; tmp is a realpath,
@@ -347,17 +358,20 @@ function jobRecord(worktree, status) {
   return job
 }
 // A seat the hooks ran in, written straight through the store: the record (a new read-only one
-// unless id names one seat open wrote), the stamps listed, the bound stamp pinning digest, the
-// bound session's index entry naming the seat (index 'own'; 'none' writes none), and turn 1
-// ending as outcome with models as the models seen serving it, with a result for a valid turn
-// unless result is false.
-function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], stamps = ['admitted', 'bound', 'receipt'], digest = null, boundModel = null,
-  outcome = 'valid', blocks = 0, errors = [], served = [model], models = served, envelope = ENVELOPE_OK, result = true, index = 'own' } = {}) {
-  const seatId = id ?? store.writeRecord(RECORD({ provider, model, worktree: canon, repoRoot: canon }), null).id
+// with the record fields given unless id names one seat open wrote), the stamps listed, the
+// admitted stamp pinning admittedDigest and the bound stamp digest (each the record's own by
+// default), the bound session's index entry naming the seat (index 'own'; 'none' writes none),
+// and turn 1 ending as outcome with models as the models seen serving it, the record's expected
+// served model by default, with a result for a valid turn unless result is false.
+function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], record = {}, stamps = ['admitted', 'bound', 'receipt'], digest = null, admittedDigest = null,
+  boundModel = null, outcome = 'valid', blocks = 0, errors = [], served = [record.expectedServedModel ?? model], models = served, envelope = ENVELOPE_OK, result = true,
+  index = 'own' } = {}) {
+  const seatId = id ?? store.writeRecord(RECORD({ provider, model, worktree: canon, repoRoot: canon, ...record }), null).id
   const loaded = store.readRecord(seatId)
   const bound = { sessionId: `s-${seatId}`, host: provider, permissionMode: PERMISSION[provider], cwd: canon, recordDigest: digest ?? loaded.digest }
   if (boundModel) bound.model = boundModel
-  const bodies = { admitted: { toolUseId: 'toolu_x' }, bound, receipt: { tool: 'Bash' } }
+  const admitted = { toolUseId: 'toolu_x', clientRequestId: `flow-seat-${seatId}`, recordDigest: admittedDigest ?? loaded.digest }
+  const bodies = { admitted, bound, receipt: { tool: 'Bash' } }
   for (const name of stamps) assert.equal(store.stamp(seatId, name, bodies[name]), true)
   if (index === 'own') assert.equal(store.indexSession(provider, bound.sessionId, { id: seatId }), true)
   if (outcome !== null) {
@@ -827,21 +841,23 @@ const cases = {
     const { id } = store.writeRecord(record, SCHEMA)
     const host = 'claude'
     const variants = [
-      [{ target: { providerInstanceId: 'codex', model: record.model } }, /provider must be "claude"/],
+      [{ target: { providerInstanceId: 'codex', model: record.model } }, /target\.providerInstanceId must be "claudeAgent"/],
       [{ target: { providerInstanceId: 'claudeAgent', model: 'claude-sonnet-5-5' } }, /model must be "claude-opus-5-5"/],
       [{ runtimeMode: 'full-access' }, /runtimeMode must be "auto"/],
-      [{ runtimeMode: 'full-access', target: { providerInstanceId: 'codex', model: MODELS.codex } }, /runtimeMode must be "auto"; provider must be "claude"; model must be/],
+      [{ runtimeMode: 'full-access', target: { providerInstanceId: 'codex', model: MODELS.codex } }, /runtimeMode must be "auto"; target\.providerInstanceId must be "claudeAgent"; model must be/],
       [{ role: 'reviewer' }, /role "general"/],
       [{ role: undefined }, /role "general"/],
-      [{ target: { providerInstanceId: 'openai', model: record.model } }, /neither claudeAgent nor codex/],
+      [{ target: { providerInstanceId: 'openai', model: record.model } }, /target\.providerInstanceId must be "claudeAgent"/],
     ]
     for (const [fields, pattern] of variants) {
-      denied(guard('pre', host, preCall(host, randomUUID(), SPELLING.claude, delegateInput(record, id, fields))), pattern, JSON.stringify(fields))
+      const run = guard('pre', host, preCall(host, randomUUID(), SPELLING.claude, delegateInput(record, id, fields)))
+      denied(run, pattern, JSON.stringify(fields))
+      assert.doesNotMatch(run.answer.hookSpecificOutput.permissionDecisionReason, /neither claudeAgent nor codex/)
       assert.equal(store.readStamp(id, 'admitted'), null, `${JSON.stringify(fields)} admitted the record`)
     }
     silent(guard('pre', host, preCall(host, randomUUID(), SPELLING.claude, delegateInput(record, id))), 'the matching call after the refusals')
     assert.ok(store.readStamp(id, 'admitted'))
-    ok('a tagged call whose provider, model, runtimeMode or role differs from the record is denied and admits nothing; the matching call is still admitted after')
+    ok('a tagged call whose provider instance, model, runtimeMode or role differs from the record is denied, naming the record\'s instance rather than a family, and admits nothing; the matching call is still admitted after')
   },
 
   'admit-effort': () => {
@@ -884,9 +900,151 @@ const cases = {
       }
       const call = preCall(host, randomUUID(), SPELLING[host], delegateInput(record, id))
       silent(guard('pre', host, call), `${host} matching clientRequestId`)
-      assert.deepEqual(store.readStamp(id, 'admitted'), { at: store.readStamp(id, 'admitted').at, toolUseId: call.tool_use_id, clientRequestId: `flow-seat-${id}` })
+      const stamped = store.readStamp(id, 'admitted')
+      assert.deepEqual(Object.keys(stamped), ['at', 'toolUseId', 'clientRequestId', 'recordDigest'])
+      assert.deepEqual(stamped, { at: stamped.at, toolUseId: call.tool_use_id, clientRequestId: `flow-seat-${id}`, recordDigest: store.readRecord(id).digest })
     }
-    ok('a tagged call is admitted only with clientRequestId exactly flow-seat-<id>, and the admitted stamp records it beside the tool use id')
+    ok('a tagged call is admitted only with clientRequestId exactly flow-seat-<id>, and the admitted stamp records it beside the tool use id and the digest of the record it admitted')
+  },
+
+  'admit-instance-exact': () => {
+    const glm = { providerInstanceId: 'glm', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' }
+    for (const host of ['claude', 'codex']) {
+      for (const spelling of Object.values(SPELLING)) {
+        for (const form of ['array', 'object']) {
+          for (const fields of [{}, glm]) {
+            const record = seatRecord('claude', fields)
+            const { id } = store.writeRecord(record, SCHEMA)
+            const options = form === 'array' ? [{ id: 'effort', value: 'high' }] : { effort: 'high' }
+            const input = delegateInput(record, id, { target: { providerInstanceId: record.providerInstanceId, model: record.model, options } })
+            silent(guard('pre', host, preCall(host, randomUUID(), spelling, input)), `${host} ${spelling} ${form} ${record.providerInstanceId}`)
+            assert.equal(store.readStamp(id, 'admitted').recordDigest, store.readRecord(id).digest)
+          }
+        }
+      }
+    }
+    ok('a tagged call naming exactly the record\'s instance, claudeAgent or a custom one, is admitted from both parent hosts, under both T3 spellings, with options as an array or an object')
+
+    for (const [fields, refused] of [
+      [glm, ['GLM', 'Glm', 'glm ', ' glm', 'glm\u200b', 'claudeAgent', 'codex', '']],
+      [{}, ['claudeagent', 'ClaudeAgent', 'claudeAgent ', ' claudeAgent', 'glm', 'codex']],
+    ]) {
+      const record = seatRecord('claude', fields)
+      const { id } = store.writeRecord(record, SCHEMA)
+      for (const host of ['claude', 'codex']) {
+        for (const providerInstanceId of refused) {
+          const input = delegateInput(record, id, { target: { providerInstanceId, model: record.model, options: { effort: 'high' } } })
+          denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], input)), new RegExp(`target\\.providerInstanceId must be ${JSON.stringify(record.providerInstanceId)}`), `${host} ${JSON.stringify(providerInstanceId)}`)
+          assert.equal(store.readStamp(id, 'admitted'), null, `${JSON.stringify(providerInstanceId)} admitted the record`)
+        }
+      }
+    }
+    ok('an instance id that differs from the record\'s in case, by a trailing or leading space or an invisible character, or names another instance, is denied on both hosts and admits nothing')
+  },
+
+  'admit-custom-effort': () => {
+    const record = seatRecord('claude', { providerInstanceId: 'glm', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' })
+    for (const host of ['claude', 'codex']) {
+      const { id } = store.writeRecord(record, SCHEMA)
+      for (const options of [[{ id: 'reasoningEffort', value: 'high' }], { reasoningEffort: 'high' }, []]) {
+        const input = delegateInput(record, id, { target: { providerInstanceId: 'glm', model: record.model, options } })
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], input)), /target\.options effort must be "high"/, `${host} ${JSON.stringify(options)}`)
+        assert.equal(store.readStamp(id, 'admitted'), null)
+      }
+      silent(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], delegateInput(record, id))), `${host} effort`)
+      assert.ok(store.readStamp(id, 'admitted'))
+    }
+    ok('a claude-family seat on a custom instance carries its effort under effort, the claude family\'s option: effort admits, and reasoningEffort alone is denied')
+  },
+
+  'record-identity-required': () => {
+    // A record that lacks a field the identity rule reads, or was edited into a combination open
+    // refuses, as an older flow or a hand edit leaves it: readRecord still reads it, and every
+    // stage that judges a seat refuses it.
+    const broken = {
+      'no providerInstanceId': (record) => { delete record.providerInstanceId },
+      'no expectedServedModel': (record) => { delete record.expectedServedModel },
+      'an empty providerInstanceId': (record) => { record.providerInstanceId = '' },
+      'a null expectedServedModel': (record) => { record.expectedServedModel = null },
+      'no effort': (record) => { delete record.effort },
+      'no runtimeMode': (record) => { delete record.runtimeMode },
+      'an unknown provider': (record) => { record.provider = 'gemini' },
+      'a claude seat on instance codex': (record) => { record.providerInstanceId = 'codex' },
+      'a codex seat on a custom instance': (record) => { Object.assign(record, { provider: 'codex', model: MODELS.codex, providerInstanceId: 'codex-work', expectedServedModel: MODELS.codex }) },
+      'a codex seat expecting another model': (record) => { Object.assign(record, { provider: 'codex', model: MODELS.codex, providerInstanceId: 'codex', expectedServedModel: 'gpt-6-mini' }) },
+    }
+    for (const [what, edit] of Object.entries(broken)) {
+      const record = seatRecord('claude')
+      edit(record)
+      const { id } = store.writeRecord(record, SCHEMA)
+      assert.ok(store.readRecord(id), `${what}: readRecord refused the record, so cleanup could not read it`)
+      for (const host of ['claude', 'codex']) {
+        const input = delegateInput(record, id, { target: { providerInstanceId: record.providerInstanceId ?? 'claudeAgent', model: record.model ?? 'x', options: { effort: 'high', reasoningEffort: 'high' } } })
+        if (input.runtimeMode === undefined) input.runtimeMode = 'auto'
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], input)), /fails the seat identity rule/, `${host} ${what}`)
+      }
+      assert.equal(store.readStamp(id, 'admitted'), null, `${what} was admitted`)
+    }
+    ok('admission denies a record missing providerInstanceId, expectedServedModel, effort or runtimeMode, or holding a provider, instance or expected id open refuses, on both hosts, and admits nothing')
+
+    for (const [what, edit] of Object.entries(broken)) {
+      const record = seatRecord('claude')
+      edit(record)
+      const { id } = store.writeRecord(record, SCHEMA)
+      assert.equal(admit(id), true)
+      const host = record.provider === 'codex' ? 'codex' : 'claude'
+      const session = randomUUID()
+      assert.match(context(guard('prompt', host, promptCall(host, session, store.seatTag(id))), `${what} bind`), /record-identity-invalid/, what)
+      assert.deepEqual(store.readIndex(host, session), { id, void: 'record-identity-invalid' }, what)
+      assert.equal(store.readStamp(id, 'bound'), null, `${what} was bound`)
+      denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), /void seat \(record-identity-invalid\)/, `${what} child call`)
+    }
+    ok('a bind of such a record, admitted with its own digest, is void (record-identity-invalid): no bound stamp, and every child call denied')
+
+    // A seat open made, stripped of a field after it, as a record an older flow wrote reads:
+    // close judges it unknown and still releases what open took.
+    const strip = (id, field) => {
+      const path = join(seats, id, 'record.json')
+      const record = JSON.parse(readFileSync(path, 'utf8'))
+      delete record[field]
+      writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`)
+      assert.ok(store.readRecord(id), 'the stripped record is unreadable')
+    }
+    const writerWt = gitWorktree('identity-writer')
+    const writer = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const holder = join(jobs.leaseDirOf(writerWt), `${writer.id}.live`)
+    assert.ok(existsSync(holder))
+    strip(writer.id, 'providerInstanceId')
+    const writerRecord = store.readRecord(writer.id).record
+    denied(guard('pre', 'claude', preCall('claude', randomUUID(), SPELLING.claude, delegateInput({ ...writerRecord, providerInstanceId: 'claudeAgent' }, writer.id))), /fails the seat identity rule/, 'the stripped writer\'s admission')
+    hookedSeat({ id: writer.id })
+    const writerOut = closeSeat(writer.id)
+    assert.deepEqual([writerOut.verdict, writerOut.reasons], ['unknown', ['the seat record fails the seat identity rule: providerInstanceId must be 1 to 128 UTF-8 bytes with no control character']], JSON.stringify(writerOut))
+    assert.equal(existsSync(holder), false, 'close kept the stripped writer\'s lease holder')
+    const taker = jobRecord(writerWt, 'queued')
+    jobs.acquireLease(taker)
+    jobs.releaseLease(taker)
+
+    const review = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    strip(review.id, 'expectedServedModel')
+    hookedSeat({ id: review.id })
+    const reviewOut = closeSeat(review.id)
+    assert.deepEqual([reviewOut.verdict, reviewOut.reasons], ['unknown', ['the seat record fails the seat identity rule: expectedServedModel must be a model id']], JSON.stringify(reviewOut))
+    assert.equal(existsSync(review.reviewWorktree), false, 'close kept the stripped review\'s worktree')
+    assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(review.reviewWorktree), 'git still lists the stripped review\'s worktree')
+    ok('close of a seat open made and later stripped of providerInstanceId or expectedServedModel is unknown with the identity reason, and still drops the writer\'s lease holder and removes the review worktree')
+
+    const abandonWt = gitWorktree('identity-abandon')
+    const unbound = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', abandonWt])
+    strip(unbound.id, 'expectedServedModel')
+    const abandoned = seatCli(['close', unbound.id, '--abandon'])
+    assert.deepEqual([abandoned.verdict, abandoned.reasons, abandoned.cleanupProblems], ['unknown', ['abandoned-before-bind'], undefined], JSON.stringify(abandoned))
+    assert.equal(existsSync(join(jobs.leaseDirOf(abandonWt), `${unbound.id}.live`)), false, 'abandon kept the stripped writer\'s holder')
+    const unboundReview = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    strip(unboundReview.id, 'providerInstanceId')
+    assert.equal(seatCli(['close', unboundReview.id, '--abandon']).verdict, 'unknown')
+    assert.equal(existsSync(unboundReview.reviewWorktree), false, 'abandon kept the stripped review\'s worktree')
+    ok('close --abandon of an unbound seat stripped of a field records unknown and still drops its lease holder and review worktree')
   },
 
   'admit-tag-line': () => {
@@ -986,7 +1144,7 @@ const cases = {
     assert.ok(!reviewText.includes('commits'), 'a review was told to report commits')
     const bare = seatRecord('claude')
     const { id: bareId } = store.writeRecord(bare, null)
-    assert.equal(store.stamp(bareId, 'admitted', {}), true)
+    assert.equal(admit(bareId), true)
     const bareText = context(guard('prompt', 'claude', promptCall('claude', randomUUID(), store.seatTag(bareId))), 'schemaless bind')
     assert.match(bareText, /this seat has no answer schema/)
     ok('a writer seat is told its worktree, the git -C commit form and the commits field; a review seat its base and head; a seat with no schema is told so')
@@ -1000,7 +1158,7 @@ const cases = {
       const schema = { ...SCHEMA, description }
       const record = seatRecord(host)
       const { id } = store.writeRecord(record, schema)
-      assert.equal(store.stamp(id, 'admitted', {}), true)
+      assert.equal(admit(id), true)
       return { id, schema, text: context(guard('prompt', host, promptCall(host, randomUUID(), store.seatTag(id))), `${host} bind`) }
     }
     for (const host of ['claude', 'codex']) {
@@ -1179,6 +1337,94 @@ const cases = {
       assert.equal(store.readStamp(id, 'void').reason, 'permission-mode-not-allowed', 'the replay rewrote the void stamp')
     }
     ok('a record voided by a failed first bind stays void: its tag replayed in a fresh session with an allowed mode binds nothing, on both hosts')
+  },
+
+  'bind-admission-digest': () => {
+    const voidBind = (host, id, reason, what) => {
+      const session = randomUUID()
+      const text = context(guard('prompt', host, promptCall(host, session, store.seatTag(id))), what)
+      assert.match(text, /void seat/, what)
+      assert.ok(text.includes(reason), `${what}: ${text}`)
+      assert.deepEqual(store.readIndex(host, session), { id, void: reason }, what)
+      assert.equal(store.readStamp(id, 'bound'), null, `${what}: the record was bound`)
+      assert.equal(store.readStamp(id, 'void').reason, reason, what)
+      denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), new RegExp(`void seat \\(${reason}\\)`), `${what}: a child call`)
+      denied(guard('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' })), /void seat/, `${what}: a child read`)
+      assert.equal(store.readStamp(id, 'receipt'), null, `${what}: a void seat stamped a receipt`)
+    }
+    for (const host of ['claude', 'codex']) {
+      // The parent's own gate admits the record, which is then rewritten to the same fields in
+      // other bytes: the digest the admission pinned no longer matches.
+      const record = seatRecord(host)
+      const { id } = store.writeRecord(record, SCHEMA)
+      silent(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], delegateInput(record, id))), `${host} admission`)
+      const admitted = store.readStamp(id, 'admitted').recordDigest
+      const path = join(seats, id, 'record.json')
+      writeFileSync(path, JSON.stringify(JSON.parse(readFileSync(path, 'utf8'))))
+      assert.notEqual(store.readRecord(id).digest, admitted)
+      voidBind(host, id, 'admission-digest-mismatch', `${host} a record rewritten after its admission`)
+
+      const edited = store.writeRecord(seatRecord(host), SCHEMA).id
+      assert.equal(admit(edited), true)
+      const editedPath = join(seats, edited, 'record.json')
+      writeFileSync(editedPath, JSON.stringify({ ...JSON.parse(readFileSync(editedPath, 'utf8')), effort: 'low' }, null, 2) + '\n')
+      voidBind(host, edited, 'admission-digest-mismatch', `${host} a record whose effort changed after its admission`)
+
+      const unpinned = store.writeRecord(seatRecord(host), SCHEMA).id
+      assert.equal(store.stamp(unpinned, 'admitted', { toolUseId: 'toolu_parent', clientRequestId: `flow-seat-${unpinned}` }), true)
+      voidBind(host, unpinned, 'admission-digest-mismatch', `${host} an admitted stamp with no recordDigest`)
+
+      const other = store.writeRecord(seatRecord(host), SCHEMA).id
+      assert.equal(admit(other, { recordDigest: 'f'.repeat(64) }), true)
+      voidBind(host, other, 'admission-digest-mismatch', `${host} an admitted stamp pinning other bytes`)
+    }
+    ok('a bind whose record bytes are not the ones the admitted stamp pinned, rewritten after the gate admitted it or admitted with no or another recordDigest, is void on both hosts: no bound stamp, and every later child call denied')
+  },
+
+  'bind-custom-host': () => {
+    const glm = { providerInstanceId: 'glm', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' }
+    const record = seatRecord('claude', glm)
+    const { id, digest } = store.writeRecord(record, SCHEMA)
+    silent(guard('pre', 'codex', preCall('codex', randomUUID(), SPELLING.codex, delegateInput(record, id))), 'a Codex parent admits a glm seat')
+    const session = randomUUID()
+    const text = context(guard('prompt', 'claude', promptCall('claude', session, store.seatTag(id))), 'glm bind on claude')
+    assert.match(text, new RegExp(`Seat ${id}:`))
+    assert.deepEqual(store.readIndex('claude', session), { id })
+    assert.equal(store.readStamp(id, 'bound').recordDigest, digest)
+    silent(guard('pre', 'claude', preCall('claude', session, 'Bash', { command: 'pwd' })), 'the glm seat\'s first call')
+    ok('a claude-family seat on a custom instance binds on a Claude host, whichever host admitted it')
+
+    const off = admittedSeat('claude', glm)
+    const codexSession = randomUUID()
+    assert.match(context(guard('prompt', 'codex', promptCall('codex', codexSession, off.tag)), 'glm bind on codex'), /host-mismatch/)
+    assert.deepEqual(store.readIndex('codex', codexSession), { id: off.id, void: 'host-mismatch' })
+    assert.equal(store.readStamp(off.id, 'bound'), null)
+    ok('a claude-family seat on a custom instance started on a Codex host is void (host-mismatch): its provider names the host, not the vendor')
+  },
+
+  'bind-context-routing-private': () => {
+    // The seat context names the provider family and the model the call asked for; the instance
+    // and the expected served id are routing facts the seat has no use for, so two records apart
+    // only in those read the same context, whether the schema is inlined or named by path.
+    const id = store.newId()
+    const plain = { ...seatRecord('claude', { model: 'accounts/fireworks/routers/glm-5p3-us' }), id }
+    const routed = { ...plain, providerInstanceId: 'routed-instance-7', expectedServedModel: 'accounts/fireworks/models/glm-5p3' }
+    const big = { ...SCHEMA, description: 'b'.repeat(7000) }
+    for (const [schema, what] of [[SCHEMA, 'inline'], [big, 'by path'], [null, 'none']]) {
+      const a = seatPolicy.seatContext(plain, schema, '/s/schema.json')
+      const b = seatPolicy.seatContext(routed, schema, '/s/schema.json')
+      assert.equal(b, a, `${what}: the context differs`)
+      assert.ok(!b.includes('routed-instance-7') && !b.includes('accounts/fireworks/models/glm-5p3'), `${what}: the context names a routing fact`)
+    }
+    assert.ok(seatPolicy.seatContext(routed, big, '/s/schema.json').includes('/s/schema.json'), 'the big schema was not named by path')
+    ok('seatContext is byte for byte the same for records apart only in instance and expected served id, with an inline schema, a schema named by path and none')
+
+    const seat = admittedSeat('claude', { providerInstanceId: 'routed-instance-7', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' })
+    const text = context(guard('prompt', 'claude', promptCall('claude', randomUUID(), seat.tag)), 'routed bind')
+    assert.match(text, new RegExp(`Seat ${seat.id}:`))
+    assert.ok(!text.includes('routed-instance-7'), 'the bind context names the instance')
+    assert.ok(!text.includes('accounts/fireworks/models/glm-5p3'), 'the bind context names the expected served id')
+    ok('a real bind of a routed seat injects neither its instance id nor its expected served id')
   },
 
   'spawn-names': () => {
@@ -1620,7 +1866,7 @@ const cases = {
 
     const bare = seatRecord('codex', { access: 'read-only', worktree, repoRoot: worktree })
     const { id: bareId } = store.writeRecord(bare, null)
-    assert.equal(store.stamp(bareId, 'admitted', {}), true)
+    assert.equal(admit(bareId), true)
     const bareSession = randomUUID()
     context(guard('prompt', 'codex', promptCall('codex', bareSession, store.seatTag(bareId))), 'schemaless bind')
     silent(guard('stop', 'codex', stopCall('codex', bareSession, JSON.stringify({ ...ENVELOPE_OK, answer: [1, 'any'] }), randomUUID())), 'schemaless answer')
@@ -1858,7 +2104,7 @@ const cases = {
     const schema = { type: 'object', required: ['x'], properties: { x: { type: 'string', pattern: '^(a+)+$' } } }
     const record = seatRecord('claude', { access: 'read-only', worktree, repoRoot: worktree })
     const { id } = store.writeRecord(record, schema)
-    assert.equal(store.stamp(id, 'admitted', {}), true)
+    assert.equal(admit(id), true)
     const session = randomUUID()
     context(guard('prompt', 'claude', promptCall('claude', session, store.seatTag(id))), 'bind')
     const started = performance.now()
@@ -1964,29 +2210,39 @@ const cases = {
 
   'open-access': () => {
     const read = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high'])
-    assert.deepEqual(Object.keys(read), ['ok', 'id', 'tag', 'clientRequestId', 'runtimeMode', 'provider', 'model', 'effort', 'worktree', 'reviewWorktree'])
+    assert.deepEqual(Object.keys(read), ['ok', 'id', 'tag', 'clientRequestId', 'runtimeMode', 'provider', 'providerInstanceId', 'model', 'expectedServedModel', 'effort', 'worktree', 'reviewWorktree'])
     assert.equal(read.ok, true)
     assert.match(read.id, /^[0-9a-f]{32}$/)
     assert.equal(read.tag, `<flow-seat id=${read.id}>`)
     assert.equal(read.clientRequestId, `flow-seat-${read.id}`)
-    assert.deepEqual({ ...read, id: undefined, tag: undefined, clientRequestId: undefined }, { ok: true, id: undefined, tag: undefined, clientRequestId: undefined, runtimeMode: 'auto', provider: 'claude', model: 'claude-opus-5-5', effort: 'high', worktree: canon, reviewWorktree: null })
+    assert.deepEqual({ ...read, id: undefined, tag: undefined, clientRequestId: undefined }, {
+      ok: true, id: undefined, tag: undefined, clientRequestId: undefined, runtimeMode: 'auto', provider: 'claude', providerInstanceId: 'claudeAgent',
+      model: 'claude-opus-5-5', expectedServedModel: 'claude-opus-5-5', effort: 'high', worktree: canon, reviewWorktree: null,
+    })
     const loaded = store.readRecord(read.id)
+    assert.deepEqual(Object.keys(loaded.record), [
+      'v', 'id', 'createdAt', 'access', 'repoRoot', 'worktree', 'reviewWorktree', 'reviewGitDir', 'baseSha', 'headSha', 'provider', 'providerInstanceId',
+      'model', 'expectedServedModel', 'effort', 'runtimeMode', 'canonicalSnapshot', 'hooksDigest', 'schemaSha256',
+    ])
     assert.deepEqual({ ...loaded.record, createdAt: undefined }, {
       v: 1, id: read.id, createdAt: undefined, access: 'read-only', repoRoot: canon, worktree: canon, reviewWorktree: null, baseSha: null, headSha: null,
-      reviewGitDir: null, provider: 'claude', model: 'claude-opus-5-5', effort: 'high', runtimeMode: 'auto', canonicalSnapshot: null, hooksDigest: null, schemaSha256: null,
+      reviewGitDir: null, provider: 'claude', providerInstanceId: 'claudeAgent', model: 'claude-opus-5-5', expectedServedModel: 'claude-opus-5-5', effort: 'high',
+      runtimeMode: 'auto', canonicalSnapshot: null, hooksDigest: null, schemaSha256: null,
     })
     assert.equal(loaded.schema, null)
-    ok('a read-only seat opens in the working directory\'s worktree: the output names its id, tag, clientRequestId flow-seat-<id>, runtimeMode auto, model, effort and worktree, and the record holds the same with no schema')
+    ok('a read-only seat opens in the working directory\'s worktree: the output names its id, tag, clientRequestId flow-seat-<id>, runtimeMode auto, provider, instance, model, expected served model, effort and worktree in that order, and the record holds the same with no schema')
 
     const schemaFile = join(tmp, 'answer-schema.json')
     writeFileSync(schemaFile, JSON.stringify(SCHEMA))
     const linked = seatCli(['open', '--access', 'read-only', '--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'medium', '--worktree', join(linkedWt, 'sub'), '--schema', schemaFile])
     assert.equal(linked.worktree, linkedWt)
     const linkedRecord = store.readRecord(linked.id)
+    assert.deepEqual([linked.providerInstanceId, linked.expectedServedModel], ['codex', 'gpt-6-luna'])
+    assert.deepEqual([linkedRecord.record.providerInstanceId, linkedRecord.record.expectedServedModel], ['codex', 'gpt-6-luna'])
     assert.equal(linkedRecord.record.repoRoot, canon, 'the canonical checkout of a linked worktree is the main worktree')
     assert.equal(linkedRecord.record.worktree, linkedWt)
     assert.deepEqual(linkedRecord.schema, SCHEMA)
-    ok('--worktree inside a linked worktree opens at that worktree\'s top level, with the main worktree as the canonical checkout, and --schema is stored as the answer schema')
+    ok('--worktree inside a linked worktree opens at that worktree\'s top level, with the main worktree as the canonical checkout, and --schema is stored as the answer schema; a codex seat defaults to instance codex and its own model')
 
     const writer = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', linkedWt])
     assert.equal(writer.worktree, linkedWt)
@@ -1995,6 +2251,34 @@ const cases = {
     closeSeat(writer.id)
     assert.equal(existsSync(jobs.leaseDirOf(linkedWt)), false, 'close dropped the holder and the empty lease directory')
     ok('a writer seat writes its holder file into the worktree\'s lease directory, and close drops it')
+  },
+
+  'open-custom-instance': () => {
+    const ROUTER = 'accounts/fireworks/routers/glm-5p3-us'
+    const SERVED = 'accounts/fireworks/models/glm-5p3'
+    const glm = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--provider-instance-id', 'glm', '--model', ROUTER, '--expected-served-model', SERVED, '--effort', 'high'])
+    assert.equal(glm.ok, true, JSON.stringify(glm))
+    assert.deepEqual([glm.provider, glm.providerInstanceId, glm.model, glm.expectedServedModel, glm.effort], ['claude', 'glm', ROUTER, SERVED, 'high'])
+    const { record } = store.readRecord(glm.id)
+    assert.deepEqual([record.provider, record.providerInstanceId, record.model, record.expectedServedModel], ['claude', 'glm', ROUTER, SERVED])
+    for (const key of ['endpoint', 'baseUrl', 'credential', 'apiKey', 'family', 'vendor']) assert.equal(Object.hasOwn(record, key), false, key)
+    ok('a claude-family seat opens on a custom instance with a router model and a distinct expected served model, and the record stores the two ids exactly, with no endpoint, credential or vendor')
+
+    const exact = (id) => seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--provider-instance-id', id, '--model', 'claude-opus-5-5', '--effort', 'high'])
+    for (const id of ['Glm', 'glm ', ' glm', 'glm/US', 'é'.repeat(64)]) {
+      const out = exact(id)
+      assert.equal(out.ok, true, `${JSON.stringify(id)}: ${JSON.stringify(out)}`)
+      assert.equal(out.providerInstanceId, id)
+      assert.equal(store.readRecord(out.id).record.providerInstanceId, id, `${JSON.stringify(id)} was trimmed or normalized`)
+    }
+    const decomposed = 'e\u0301'
+    assert.equal(store.readRecord(exact(decomposed).id).record.providerInstanceId, decomposed, 'a decomposed id was normalized')
+    assert.equal(Buffer.byteLength('é'.repeat(64)), 128)
+    ok('an instance id is stored exactly as given, case, spaces and decomposition kept, up to 128 UTF-8 bytes of multibyte text')
+
+    const claudeExpected = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', 'claude-opus-5-5', '--expected-served-model', 'claude-opus-5-5-20261001', '--effort', 'high'])
+    assert.deepEqual([claudeExpected.providerInstanceId, claudeExpected.expectedServedModel], ['claudeAgent', 'claude-opus-5-5-20261001'])
+    ok('a claude seat on its default instance may expect a served id other than the one it asks for')
   },
 
   'open-review': () => {
@@ -2140,6 +2424,52 @@ const cases = {
     }
     for (const path of ['relative.json', join(tmp, 'no-such-schema.json')]) assert.equal(seatCli(['open', '--access', 'read-only', ...base, '--schema', path]).error.kind, 'BAD_SCHEMA')
     ok('--schema is admitted up to 16 KiB under outputSchema\'s keyword rules, and a larger, unparsable, non-object, unchecked-keyword, relative or missing one is BAD_SCHEMA')
+
+    // An identity refusal comes before open prunes or creates anything: a record closed past
+    // retention is still there after, and no record, lease holder, worktree or exclude line is new.
+    const stale = store.writeRecord(RECORD(), null).id
+    store.stamp(stale, 'closed', { at: new Date(Date.now() - RETENTION_MS - 60_000).toISOString(), verdict: 'valid', reasons: [] })
+    const identityWt = gitWorktree('open-identity')
+    rmSync(join(identityWt, '.git', 'info', 'exclude'), { force: true })
+    const leases = () => (existsSync(join(state, 'leases')) ? readdirSync(join(state, 'leases')).sort() : [])
+    const exclude = (path) => (existsSync(join(path, '.git', 'info', 'exclude')) ? readFileSync(join(path, '.git', 'info', 'exclude'), 'utf8') : null)
+    const world = () => [before(), leases(), exclude(canon), exclude(identityWt), gitOut(identityWt, 'worktree', 'list', '--porcelain'), existsSync(join(seats, stale))]
+    const identityBefore = world()
+    const claude = ['--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high']
+    const codex = ['--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'high']
+    const refusedIdentity = [
+      [[...claude, '--provider-instance-id', ''], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'a'.repeat(129)], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', `${'é'.repeat(64)}a`], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'gl\tm'], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'glm\n'], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'glm\u007f'], /--provider-instance-id must be/],
+      [[...claude, '--provider-instance-id', 'glm\u0085'], /--provider-instance-id must be/],
+      [[...claude, '--expected-served-model', ''], /--expected-served-model must be a model id/],
+      [[...claude, '--expected-served-model', 'a b'], /--expected-served-model must be a model id/],
+      [[...claude, '--expected-served-model', '-x'], /--expected-served-model must be a model id/],
+      [[...claude, '--provider-instance-id', 'glm', '--provider-instance-id', 'glm'], /given twice/],
+      [[...claude, '--expected-served-model'], /needs a value/],
+      [[...claude, '--provider-instance-id', 'codex'], /claude seat cannot run on provider instance codex/],
+      [[...codex, '--provider-instance-id', 'claudeAgent'], /codex seat cannot run on provider instance claudeAgent/],
+      [[...codex, '--provider-instance-id', 'codex-work'], /codex seat runs on provider instance codex alone/],
+      [[...codex, '--provider-instance-id', 'Codex'], /codex seat runs on provider instance codex alone/],
+      [[...codex, '--expected-served-model', 'gpt-6-mini'], /codex seat's expectedServedModel must be its model/],
+      [[...codex, '--provider-instance-id', 'codex', '--expected-served-model', 'gpt-6-mini'], /codex seat's expectedServedModel must be its model/],
+    ]
+    for (const [flags, pattern] of refusedIdentity) {
+      for (const access of [['read-only'], ['workspace-write', '--worktree', identityWt], ['review', '--worktree', identityWt, '--base', 'HEAD', '--head', 'HEAD']]) {
+        const out = seatCli(['open', '--access', ...access, ...flags])
+        assert.equal(out.ok, false, `${access[0]} ${JSON.stringify(flags)}`)
+        assert.equal(out.error.kind, 'BAD_REQUEST', `${access[0]} ${JSON.stringify(flags)}: ${out.error.message}`)
+        assert.match(out.error.message, pattern, `${access[0]} ${JSON.stringify(flags)}`)
+      }
+    }
+    assert.deepEqual(world(), identityBefore, 'an identity refusal pruned, created or changed something')
+    assert.ok(store.readRecord(stale), 'an identity refusal pruned a record')
+    // The next open would prune it, and the cases after this one count seat directories.
+    rmSync(join(seats, stale), { recursive: true })
+    ok('open refuses BAD_REQUEST an empty, 129-byte or control-character instance id, an empty or malformed expected id, a repeated or valueless flag, a claude seat on instance codex, and a codex seat on any other instance or expecting another model, for every access, before it prunes or creates any record, lease holder, worktree or exclude line')
   },
 
   'open-context-budget': () => {
@@ -2502,6 +2832,11 @@ const cases = {
     store.stamp(voided.id, 'void', { reason: 'bound-lost-race' })
     verdict(voided.id, 'unknown', /void: bound-lost-race/, 'a void stamp beside a full set')
     verdict(hookedSeat({ digest: 'f'.repeat(64) }).id, 'unknown', /record changed after the bind/, 'a record digest mismatch')
+    verdict(hookedSeat({ digest: 'f'.repeat(64), admittedDigest: 'e'.repeat(64) }).id, 'unknown', /record changed after the bind/, 'a bind and an admission that both pinned other bytes')
+    verdict(hookedSeat({ admittedDigest: 'e'.repeat(64) }).id, 'unknown', /^the record changed between the admission and the bind$/, 'an admission that pinned other bytes than the bind')
+    const unpinned = hookedSeat({ stamps: ['bound', 'receipt'] })
+    assert.equal(store.stamp(unpinned.id, 'admitted', { toolUseId: 'toolu_x', clientRequestId: `flow-seat-${unpinned.id}` }), true)
+    verdict(unpinned.id, 'unknown', /^the record changed between the admission and the bind$/, 'an admitted stamp with no recordDigest')
     const tampered = hookedSeat({})
     writeFileSync(join(seats, tampered.id, 'result-1.json'), JSON.stringify({ envelope: { ...ENVELOPE_OK, notes: 'edited' }, servedModels: ['claude-opus-5-5'] }))
     verdict(tampered.id, 'unknown', /does not match its recorded sha256/, 'a result sha mismatch')
@@ -2522,15 +2857,16 @@ const cases = {
     writeFileSync(join(seats, corrupt.id, 'record.json'), '{"v": 1')
     verdict(corrupt.id, 'unknown', /missing or corrupt/, 'a corrupt record')
     verdict(store.newId(), 'unknown', /missing or corrupt/, 'an id with no record directory at all')
-    ok('unknown: a missing admitted, bound or receipt stamp, any void stamp, a record digest the bind did not pin, a bound session whose index is void, missing or names another seat, a result whose sha256 does not match, no served model, no Stop, a valid turn with no result, or a missing or corrupt record')
+    ok('unknown: a missing admitted, bound or receipt stamp, any void stamp, a record digest the bind did not pin, an admission that pinned no digest or another one than the bind, a bound session whose index is void, missing or names another seat, a result whose sha256 does not match, no served model, no Stop, a valid turn with no result, or a missing or corrupt record')
 
     verdict(hookedSeat({ served: ['claude-sonnet-5-5'] }).id, 'model-mismatch', /served by claude-sonnet-5-5, not claude-opus-5-5/, 'served model mismatch')
-    verdict(hookedSeat({ provider: 'codex', model: 'gpt-6-luna', boundModel: 'gpt-6-mini', served: ['gpt-6-luna'] }).id, 'model-mismatch', /gpt-6-mini/, 'bind model mismatch')
+    const bindRow = verdict(hookedSeat({ provider: 'codex', model: 'gpt-6-luna', boundModel: 'gpt-6-mini', served: ['gpt-6-luna'] }).id, 'model-mismatch', /^bound to gpt-6-mini, not gpt-6-luna$/, 'bind model mismatch')
+    assert.deepEqual(bindRow.reasons, ['bound to gpt-6-mini, not gpt-6-luna'])
     verdict(hookedSeat({ boundModel: 'claude-sonnet-5-5', outcome: 'blocked', blocks: 1, errors: ['$: x'] }).id, 'model-mismatch', null, 'a mismatch outranks invalid')
     const both = hookedSeat({ served: ['claude-sonnet-5-5'] })
     store.stamp(both.id, 'void', { reason: 'r' })
     verdict(both.id, 'unknown', /void/, 'unknown outranks model-mismatch')
-    ok('model-mismatch: a served model or the model seen at the bind is not the record\'s, outranking invalid and outranked by unknown')
+    ok('model-mismatch: a served model is not the record\'s expected one, or the model seen at the bind is not the record\'s (bound to), outranking invalid and outranked by unknown')
   },
 
   'close-review': () => {
@@ -2831,19 +3167,54 @@ const cases = {
   'close-result-models': () => {
     const model = 'claude-opus-5-5'
     const cases = [
-      [{ served: [], models: [model] }, 'unknown', /turn 1's result names no served model/],
-      [{ served: [7], models: [model] }, 'unknown', /turn 1's result names no served model/],
-      [{ served: [model], models: [] }, 'valid', null],
-      [{ served: [model, 'claude-sonnet-5-5'], models: [model] }, 'model-mismatch', /claude-sonnet-5-5/],
-      [{ served: [model], models: [model, 'claude-sonnet-5-5'] }, 'model-mismatch', /claude-sonnet-5-5/],
+      [{ served: [], models: [model] }, 'unknown', ["turn 1's result names no served model"]],
+      [{ served: [7], models: [model] }, 'unknown', ["turn 1's result names no served model"]],
+      [{ served: [model], models: [] }, 'valid', []],
+      [{ served: [model, 'claude-sonnet-5-5'], models: [model] }, 'model-mismatch', ['served by claude-sonnet-5-5, not claude-opus-5-5']],
+      [{ served: [model], models: [model, 'claude-sonnet-5-5'] }, 'model-mismatch', ['served by claude-sonnet-5-5, not claude-opus-5-5']],
     ]
-    for (const [fields, verdict, reason] of cases) {
+    for (const [fields, verdict, reasons] of cases) {
       const seat = hookedSeat(fields)
       const out = closeSeat(seat.id)
       assert.equal(out.verdict, verdict, `${JSON.stringify(fields)}: ${JSON.stringify(out)}`)
-      if (reason) assert.match(out.reasons.join(' '), reason)
+      assert.deepEqual(out.reasons, reasons, JSON.stringify(fields))
     }
-    ok('close reads a valid turn whose result names no served model of its own as unknown, whatever earlier stops saw, and a model other than the record\'s in the result or in any stop as model-mismatch')
+    ok('close reads a valid turn whose result names no served model of its own as unknown, whatever earlier stops saw, and a model other than the record\'s expected one in the result or in any stop as model-mismatch')
+  },
+
+  'close-router-exact': () => {
+    const ROUTER = 'accounts/fireworks/routers/glm-5p3-us'
+    const SERVED = 'accounts/fireworks/models/glm-5p3'
+    const record = { providerInstanceId: 'glm', model: ROUTER, expectedServedModel: SERVED }
+    const rows = [
+      ['the declared concrete id alone', { served: [SERVED] }, 'valid', []],
+      ['the router id alone', { served: [ROUTER] }, 'model-mismatch', [`served by ${ROUTER}, not ${SERVED}`]],
+      ['the declared id and the router id', { served: [SERVED, ROUTER] }, 'model-mismatch', [`served by ${ROUTER}, not ${SERVED}`]],
+      ['the router id at an earlier stop', { served: [SERVED], models: [ROUTER, SERVED] }, 'model-mismatch', [`served by ${ROUTER}, not ${SERVED}`]],
+      ['another model', { served: ['accounts/fireworks/models/glm-5p3-flash'] }, 'model-mismatch', [`served by accounts/fireworks/models/glm-5p3-flash, not ${SERVED}`]],
+    ]
+    for (const [what, fields, verdict, reasons] of rows) {
+      const out = closeSeat(hookedSeat({ record, ...fields }).id)
+      assert.deepEqual([out.verdict, out.reasons], [verdict, reasons], `${what}: ${JSON.stringify(out)}`)
+      assert.deepEqual(out.servedModels, [...new Set([...(fields.models ?? fields.served), ...fields.served])], `${what}: servedModels is not the raw set`)
+    }
+    ok('a router seat is valid served by its declared concrete id alone; the router id alone, beside the declared id, at an earlier stop, or another id reads model-mismatch, and servedModels stays the raw ids')
+  },
+
+  'close-bind-versus-served': () => {
+    const ROUTER = 'accounts/fireworks/routers/glm-5p3-us'
+    const SERVED = 'accounts/fireworks/models/glm-5p3'
+    const record = { providerInstanceId: 'glm', model: ROUTER, expectedServedModel: SERVED }
+    const valid = closeSeat(hookedSeat({ record, boundModel: ROUTER, served: [SERVED] }).id)
+    assert.deepEqual([valid.verdict, valid.reasons], ['valid', []], JSON.stringify(valid))
+    ok('a seat bound to the model it asked for and served by the one it expects is valid, the two ids apart')
+
+    const bind = closeSeat(hookedSeat({ record, boundModel: SERVED, served: [SERVED] }).id)
+    assert.deepEqual([bind.verdict, bind.reasons], ['model-mismatch', [`bound to ${SERVED}, not ${ROUTER}`]], JSON.stringify(bind))
+    const both = closeSeat(hookedSeat({ record, boundModel: 'other-bind', models: ['m-y', SERVED], served: [SERVED, 'm-z', 'm-y'] }).id)
+    assert.deepEqual([both.verdict, both.reasons], ['model-mismatch', ['bound to other-bind, not ' + ROUTER, `served by m-y, not ${SERVED}`, `served by m-z, not ${SERVED}`]], JSON.stringify(both))
+    assert.deepEqual(both.servedModels, ['m-y', SERVED, 'm-z'])
+    ok('a bind to another model reads `bound to <X>, not <model>`, judged against the model asked for; with unexpected served ids too, the bind reason comes first, then one `served by` reason per distinct id in first-seen order')
   },
 
   'prune-void-index': () => {
