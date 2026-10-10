@@ -114,10 +114,14 @@ Run `seat open` once per seat:
 
 ```sh
 node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|review> \
-  --provider <claude|codex> --model <id> --effort <level> \
-  [--worktree <absolute-path>] [--base <rev> --head <rev>] [--schema <absolute-file>]
+  --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] \
+  --effort <level> [--worktree <absolute-path>] [--base <rev> --head <rev>] [--schema <absolute-file>]
 ```
 
+- `--provider` names the hook host family the child runs under, not the vendor of the model. It decides the host the child binds on and the option id its effort goes in. A Claude Code instance that routes to another vendor's model is still `claude`.
+- `--provider-instance-id` is the T3 provider instance the child runs on, as `orchestrator_capabilities` lists it. It defaults to `claudeAgent` for `claude` and `codex` for `codex`. Flow matches it exactly, with no trimming and no change of case, so copy it as T3 spells it. It is at most 128 UTF-8 bytes, with no control character.
+- `--expected-served-model` is the model id the hooks must see serving the seat. It defaults to `--model`. Give it when `--model` names a router, which asks for one id and is served under another. Flow maps no router to the model behind it, so you declare the served id here.
+- A Codex seat runs on the `codex` instance alone and expects the model it asks for. `open` refuses a custom Codex instance, a Codex seat on `claudeAgent`, a Claude seat on `codex`, and an expected id other than `--model` on Codex. An empty flag value is refused, not defaulted.
 - The seat's worktree is the top level of the Git worktree that `--worktree` names, or of the working directory when it names none.
 - A writer (`workspace-write`) names its `--worktree`.
 - A review names `--base` and `--head`. `open` resolves both to SHAs in `--worktree`, or in the working directory, and creates a detached worktree at the head under the canonical checkout's `.flow-worktrees/`. The seat reviews there.
@@ -127,10 +131,11 @@ node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|rev
 
 ```json
 {"ok": true, "id": "<32 hex>", "tag": "<flow-seat id=<32 hex>>", "clientRequestId": "flow-seat-<32 hex>", "runtimeMode": "auto",
- "provider": "claude", "model": "<id>", "effort": "<level>", "worktree": "<path>", "reviewWorktree": null}
+ "provider": "claude", "providerInstanceId": "claudeAgent", "model": "<id>", "expectedServedModel": "<id>", "effort": "<level>",
+ "worktree": "<path>", "reviewWorktree": null}
 ```
 
-Copy its `tag`, `clientRequestId` and `runtimeMode` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. Either host's flow copy may open a Codex-family seat. It counts as flow's hooks only those of `flow@<marketplace>`, the plugin id of the copy you run, and only when their `hooks/codex.json` matches that copy's byte for byte, so both hosts must carry one version of flow. The flow skill's `setup` grants that trust once per machine in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
+Copy its `tag`, `clientRequestId`, `runtimeMode`, `providerInstanceId` and `model` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. Either host's flow copy may open a Codex-family seat. It counts as flow's hooks only those of `flow@<marketplace>`, the plugin id of the copy you run, and only when their `hooks/codex.json` matches that copy's byte for byte, so both hosts must carry one version of flow. The flow skill's `setup` grants that trust once per machine in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
 
 ### Start it
 
@@ -140,10 +145,12 @@ Call `delegate_task` with these fields:
 - `role: "general"`, so T3 prepends nothing to the task.
 - `runtimeMode`: the value `open` printed.
 - `clientRequestId`: the value `open` printed, `flow-seat-<id>`. T3 builds the task's id from it, which is how `close` knows the task status is this seat's.
-- `target`: the provider instance and `model` you gave `open`, as `orchestrator_capabilities` lists them, with the effort you gave `open` in `options` under the option id that call advertises for the model: `effort` on Claude and `reasoningEffort` on Codex, as `[{"id": "effort", "value": "high"}]` or `{"effort": "high"}`.
+- `target`: `providerInstanceId` and `model` exactly as `open` printed them, with the effort you gave `open` in `options` under the option id of the seat's provider family: `effort` for `claude`, whatever instance it runs on, and `reasoningEffort` for `codex`, as `[{"id": "effort", "value": "high"}]` or `{"effort": "high"}`.
 - `mode`: leave it at `async`, the default.
 
-Your own PreToolUse hook admits a tagged call only when its `runtimeMode`, provider, model, effort and `clientRequestId` equal the record's and the record has not been admitted before.
+Your own PreToolUse hook admits a tagged call only when its `runtimeMode`, `target.providerInstanceId`, model, effort and `clientRequestId` equal the record's, byte for byte, and the record has not been admitted before. The admission pins the digest of the record bytes it checked. The child's bind is void (`admission-digest-mismatch`) when the record changed after that, and `close` reads such a seat `unknown`. A record that lacks `providerInstanceId` or `expectedServedModel`, as an older flow wrote it, or holds a combination `open` refuses, is never admitted, binds void (`record-identity-invalid`) and closes `unknown`. Open a new seat for it.
+
+For example, on 2026-10-10 a T3 Claude Code instance `glm` sent `accounts/fireworks/routers/glm-5p3-us` to Fireworks and was served `accounts/fireworks/models/glm-5p3`. Open that seat as `--provider claude --provider-instance-id glm --model accounts/fireworks/routers/glm-5p3-us --expected-served-model accounts/fireworks/models/glm-5p3`. That is the one pair measured. The served ids behind the instance's GLM 5.3 Flash and DeepSeek V4.1 Flash routers are not measured, so read them from a first run before you declare them.
 
 The child's hooks then hold the seat. UserPromptSubmit binds the child's session to the record and tells it that the Seat Contract governs it. PreToolUse holds it to its access: no spawns, no MCP tool outside a short read-only allowlist, edits only inside a writer's worktree, and nothing at all once the seat is closed. In the shell it reads each command word, through `env`, `sudo`, `timeout`, `npx` and the other common wrappers, and through a `bash -c` string. It denies a model CLI, `seat.mjs`, any `gh` but its reads, a `gh api` with clustered short flags, git off the read allowlist, git with `-c`, a `GIT_*` variable, `--output`, `-O` or `--ext-diff`, `git stash` and `git push`. It also denies anything run in the background: a lone `&`, `setsid`, `disown`, `coproc` or `run_in_background`. A writer also runs `git add`, `rm`, `mv`, `commit`, `restore` and `apply`, each only as `git -C <worktree>`. Its commits and its `add -A` name their paths. The shell reads a quoted argument as missing, so tell a seat to write its git and gh arguments out. Stop checks the final message and blocks the child, at most 3 times, with the problems it found.
 
@@ -183,15 +190,15 @@ node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status 
  "servedModels": ["<id>"], "blocks": 0, "errors": []}
 ```
 
-`result` is the envelope the Stop hook recorded, and it is `null` for every verdict but `valid`. `reasons` says why the verdict is not `valid`, and `errors` holds the last turn's problem lines from Stop. A `cleanupProblems` list appears only when `close` did not remove a review worktree or a writer's lease holder. It removes a review worktree only while the path, its git directory and `git worktree list` still match what `open` recorded, and leaves anything else at that path alone. Act on the verdict alone:
+`result` is the envelope the Stop hook recorded, and it is `null` for every verdict but `valid`. `servedModels` lists the ids the hooks saw, as the provider reported them. `reasons` says why the verdict is not `valid`, and `errors` holds the last turn's problem lines from Stop. A `cleanupProblems` list appears only when `close` did not remove a review worktree or a writer's lease holder. It removes a review worktree only while the path, its git directory and `git worktree list` still match what `open` recorded, and leaves anything else at that path alone. Act on the verdict alone:
 
 | Verdict | Meaning | Action |
 |---|---|---|
 | `valid` | Every stamp is present and the result matches its recorded sha256. | Use the envelope. A writer's envelope is still a claim, so check its commits against git. |
 | `invalid` | The hooks worked, and the last final message failed the envelope or the schema. | Rerun once with the errors on the same rung, then step up a rung. |
 | `capped` | Stop blocked the child 3 times, then let it end. | Same as `invalid`. |
-| `unknown` | A stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the bind, the bound session's index entry is void (`session-index-void`) or missing or names another seat (`session-index-mismatch`), the latest turn a prompt opened has no stop on record (`turn-without-result`), the result does not match its sha256, the latest result names no served model of its own, or no served model is on record. Nothing proves the hooks held the seat. | Fall back. |
-| `model-mismatch` | A model seen serving the seat, at the bind or at any stop in any turn, differs from the one you asked for. | Discard the answer. A mismatch is not a refusal, so the refusal rule does not count it. |
+| `unknown` | The record lacks `providerInstanceId` or `expectedServedModel` or holds a combination `open` refuses, a stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the admission or the bind, the bound session's index entry is void (`session-index-void`) or missing or names another seat (`session-index-mismatch`), the latest turn a prompt opened has no stop on record (`turn-without-result`), the result does not match its sha256, the latest result names no served model of its own, or no served model is on record. Nothing proves the hooks held the seat. | Fall back. |
+| `model-mismatch` | The model seen at the bind is not the `model` you asked for (`bound to <X>, not <model>`), or a model seen serving the seat at any stop in any turn is not its `expectedServedModel` (`served by <Y>, not <expected>`, one reason per id). A router id seen serving the seat is a mismatch too. | Discard the answer. A mismatch is not a refusal, so the refusal rule does not count it. |
 | `tree-moved` | The review worktree's HEAD left the head SHA or its tree is dirty, the canonical checkout's tree, HEAD commit or branch changed, or the coverage misses a file in the pinned diff. | Treat it as `unknown`. |
 
 A seat that made no tool call has no `receipt`, so it reads `unknown`. On Codex, the served-model check covers the model the hooks saw at UserPromptSubmit and at Stop. On Claude, it reads every model the transcript records for the seat's own turns.
