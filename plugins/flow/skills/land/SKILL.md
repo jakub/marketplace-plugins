@@ -21,10 +21,10 @@ Read the PR with `gh pr view <pr> --repo <repo> --json headRefOid,headRefName,ba
 Run this once, never batched with other work:
 
 ```bash
-node <plugin-root>/scripts/land-merge.mjs <pr> <head-sha>
+node <plugin-root>/scripts/land-merge.mjs <pr> <head-sha> [--reviewed <sha>]
 ```
 
-It reads every fact that can stop a land and merges only when none does, so there is nothing to check before calling it. It prints one JSON line:
+It reads every fact that can stop a land and merges only when none does, so there is nothing to check before calling it. The first run passes the head §1 recorded and no `--reviewed`. A run on a newer head passes `--reviewed <the head §1 recorded>`, the head that was reviewed, and the executor then stops unless both heads carry the same patch against the default branch. It prints one JSON line:
 
 - `merged` (exit 0): a re-read proved the merge. Name every `excused` entry in the land report.
 - `refused` (exit 1): nothing merged. `stops` lists every stop it found. Act on each one, then run it again.
@@ -34,8 +34,9 @@ Each stop has a fixed answer:
 
 - `not-open`, `draft`: abort.
 - `stacked-on-non-default`: the PR is stacked on another one. Land the parent first or retarget this one, and stop either way.
-- `behind-base`: rebase the branch onto the default branch in its worktree, push with `--force-with-lease`, wait for CI on the new head, and run again with it. When the rebase has conflicts, hand the PR back to babysit.
-- `head-moved`: the PR's head is not the one you read. If the url or head branch in the detail is not the PR the human named, stop and ask. Otherwise wait for CI on the new head, and run again with it.
+- `behind-base`: rebase the branch onto the default branch in its worktree, push with `--force-with-lease`, wait for CI on the new head, and run again with it and `--reviewed <the head §1 recorded>`. When the rebase has conflicts, hand the PR back to babysit.
+- `head-moved`: the PR's head is not the one you read. If the url or head branch in the detail is not the PR the human named, stop and ask. Otherwise wait for CI on the new head, and run again with it and `--reviewed <the head §1 recorded>`.
+- `patch-changed`, `patch-unreadable`: the new head carries a patch other than the one reviewed, or its patch could not be compared, so its change cannot be shown reviewed. Hand the PR to babysit for a review round on the new head. Then land that head with no `--reviewed`, and treat it as the head §1 recorded from then on.
 - `ci-pending`: wait in slices of at most five minutes, and run again. If it is still pending after about 30 minutes, report it and stop.
 - `ci-failed`: `checks.failed` lists each failed check with its link, which names the run. Read the job log with `gh run view <run> --attempt <n> --log-failed`, naming the attempt. If a check under `checks.flakeCandidates` has a log that shows the listed test as its only failure, run again with `--accept-flake <check>:<test>`, and name it in the land report. The rerun-once valve below covers a timing-shaped failure in a test that predates the PR. On anything else, abort and show it.
 - `ci-unknown`: a nameless, stale or unreadable check, or no checks yet. Right after a push, wait once and run again. Otherwise abort and show it.
