@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// land-merge.mjs <pr> <head-sha> [--accept-flake <check>:<test>]...
+// land-merge.mjs <pr> <head-sha> [--reviewed <sha>] [--accept-flake <check>:<test>]...
 //
 // The land gate and the only merge, on either host. Every fact that can stop a land is read and
 // judged here, in the one process that can merge, so no reading of a verdict stands between the
@@ -27,6 +27,43 @@
 // --accept-flake names it: the caller's statement that the job log shows that test as the check's
 // only failure, so one flag speaks for exactly one failed job, and two flags cannot share a check.
 //
+// --reviewed names the head the human asked to land, a full SHA like the head argument. It carries
+// whatever review that head had and claims no more: the check below proves a later head carries the
+// same patch, not that anyone reviewed it, and the human's request is the land's gate. A land re-run on a
+// new head, after a rebase or a push, would otherwise merge whatever that head carries, a conflict
+// resolved during the rebase or someone else's commit among it, with no review. So when the flag
+// names another commit than the head argument, both patches are read from GitHub over the diff
+// media type, `compare/<default>...<reviewed>` and `compare/<default>...<head>`, and ids that differ
+// stop `patch-changed`. The patch id is a sha256 of the diff text with only what a clean rebase
+// changes taken out: an `index <a>..<b>` line goes, and each hunk header loses the function context
+// after its second `@@`, since that context is a base line. The hunk's line ranges stay, because
+// they are where the change lands: without them, the reviewed edit moved to an identical block
+// elsewhere in the file, from one branch of a role check to another, reads as the same patch. Every
+// other line stays byte for byte, whitespace and any CR included. That is why it is not `git
+// patch-id`, which drops both the line numbers and the whitespace inside changed lines, so a string
+// literal or Python indentation that changed would read as the same patch. A compare that fails or
+// is refused (a diff too large among them), a diff that is empty or does not open with `diff --git`,
+// one that names 300 files or more, one holding a binary file, and one holding U+FFFD each stop
+// `patch-unreadable`, so the check never passes open. GitHub serves at most 300 files of a
+// comparison, so a diff that reaches the cap may have left files out, and two heads that differ only
+// there would read as one patch. A binary file's diff names its change only by abbreviated blob ids, and two different
+// blobs can share the abbreviation, so no diff text can show it unchanged. gh's output arrives decoded as UTF-8, and decoding turns every invalid byte into
+// U+FFFD, so two Latin-1 literals that differ would otherwise read as one patch; a diff that holds a
+// real U+FFFD costs one more review.
+// Context lines and line ranges count: a rebase that changed the base lines beside a hunk, or added
+// or removed base lines above one in the same file, reads as a changed patch though the pull
+// request's own change is the same, and that is accepted, because it only sends the pull request back
+// for one more review. The check proves that the head carries the patch of the --reviewed head, which
+// catches another writer's commit and a conflict resolved during a rebase. It does not prove the
+// patch still means what it meant on that head's base: a main that swapped two identical functions
+// above an unchanged hunk retargets the same patch. How a base change interacts with a patch is CI's
+// job, as it is for any rebase. With no flag, or one equal to the head argument, none of this is
+// read. The patch facts are read once, with the verdict,
+// and stay out of the re-read below: each id is a function of an immutable commit and its merge base
+// with the default branch, the re-read pins the head, and the tip read last pins the default branch
+// those merge bases come from, so a second pair of diffs, the largest reads the gate makes, could
+// only repeat the answer.
+//
 // With no stop, it reads the whole gate again, which has to read exactly as it did for the verdict,
 // then the default branch's tip, which has to be the one the compare was made against: a land
 // elsewhere during the reads above moves that tip, and the merge pins only the head. Then it
@@ -51,6 +88,7 @@
 // re-read and the merge is a race no client can close, and only branch protection's up-to-date rule
 // closes it on the server.
 
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 import { execCapture, ghRunner, parseJson, parseObject, runExecutor } from '../lib/gh-exec.mjs'
@@ -65,13 +103,16 @@ const MAX_COMMIT_PAGES = 20
 const FLAKES_PATH = '.github/known-flakes.txt'
 const HTTP_404 = /\(HTTP 404\)|\bNot Found\b/
 const PR_FIELDS = 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest,title'
-const USAGE_LINE = 'usage: land-merge.mjs <pull-request-number> <expected-head-sha> [--accept-flake <check-name>:<test_name>]...'
+const DIFF_MEDIA_TYPE = 'application/vnd.github.diff'
+const USAGE_LINE = 'usage: land-merge.mjs <pull-request-number> <expected-head-sha> [--reviewed <reviewed-head-sha>] [--accept-flake <check-name>:<test_name>]...'
 const USAGE = `${USAGE_LINE}
 
 Merges the pull request when nothing stops the land, and prints one JSON line: exit 0 merged,
 1 refused (nothing merged, every stop listed), 4 unknown. Origin must name github.com or a host in
-FLOW_GH_HOSTS, with no port. --accept-flake takes a check-name:test_name entry from the base
-branch's ${FLAKES_PATH}, for a failed check whose job log shows that test as its only failure.
+FLOW_GH_HOSTS, with no port. --reviewed takes the full SHA of the head the human asked to land, and when
+it is not the expected head, the land stops unless both carry the same patch against the default
+branch. --accept-flake takes a check-name:test_name entry from the base branch's ${FLAKES_PATH},
+for a failed check whose job log shows that test as its only failure.
 `
 
 const QUEUE_QUERY = 'query($owner: String!, $name: String!, $base: String!) { repository(owner: $owner, name: $name) { mergeQueue(branch: $base) { id } } }'
@@ -111,6 +152,23 @@ const stripLinks = (text) => String(text)
   .replace(/(?<!:)\/\/\S+/g, LINK_REMOVED)
   .replace(CAPABILITY_KEY, LINK_REMOVED)
 const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
+
+// The patch id of a compare diff; the header says what is taken out and why. Every content line
+// opens with ' ', '+', '-' or '\', so these tests match header lines only. Each runs on a line split
+// at LF alone, as git ends lines, because a CR, U+2028 or U+2029 inside a content line is content.
+const INDEX_LINE = /^index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]+)?$/
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/
+const isBinaryHeader = (line) => line.startsWith('Binary files ') || line === 'GIT binary patch'
+// GitHub serves at most this many files of a comparison, so a diff that reaches it may be partial.
+const COMPARE_FILE_CAP = 300
+const patchIdOf = (diff) => {
+  const kept = []
+  for (const line of diff.split('\n')) {
+    if (INDEX_LINE.test(line)) continue
+    kept.push(line.match(HUNK_HEADER)?.[0] ?? line)
+  }
+  return createHash('sha256').update(kept.join('\n')).digest('hex')
+}
 
 const bucketOf = (entry) => {
   if (entry.kind === 'status') return STATUS_BUCKET[upper(entry.state)] ?? 'unknown'
@@ -172,12 +230,18 @@ export function landMerge({ argv, env, cwd, runGh }) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) return { code: 0, stdout: USAGE, stderr: '' }
   const acceptFlakes = []
   const positional = []
+  let reviewed = null
   for (let i = 0; i < argv.length; i += 1) {
     const arg = String(argv[i])
     if (arg === '--accept-flake' || arg.startsWith('--accept-flake=')) {
       const value = (arg === '--accept-flake' ? String(argv[++i] ?? '') : arg.slice('--accept-flake='.length)).trim()
       if (value === '') return refuseNow('usage', `--accept-flake takes one check-name:test_name entry. ${USAGE_LINE}`)
       if (!acceptFlakes.includes(value)) acceptFlakes.push(value)
+    } else if (arg === '--reviewed' || arg.startsWith('--reviewed=')) {
+      const value = arg === '--reviewed' ? String(argv[++i] ?? '') : arg.slice('--reviewed='.length)
+      if (!SHA.test(value)) return refuseNow('usage', `--reviewed ${JSON.stringify(value)} is not a full 40-character lowercase commit SHA. ${USAGE_LINE}`)
+      if (reviewed !== null) return refuseNow('usage', `--reviewed is given twice, and one land judges against one --reviewed head. ${USAGE_LINE}`)
+      reviewed = value
     } else positional.push(arg)
   }
   if (positional.length !== 2) return refuseNow('usage', `expected the pull request number and the head SHA it was read at. ${USAGE_LINE}`)
@@ -505,7 +569,34 @@ export function landMerge({ argv, env, cwd, runGh }) {
   for (const { code, detail } of verdict.stops) stop(code, detail)
   const { base, defaultBranch, baseTip } = verdict
 
-  // ---- 13 and 14: any stop refuses; else the whole gate is read again right before the merge, and
+  // ---- 13: the patch, when the head is not the --reviewed one. Read once and kept out of the
+  // snapshot; the header says why. Each side is a patch id or the reason there is none.
+  if (reviewed !== null && reviewed !== head) {
+    const patchOf = (sha) => {
+      if (defaultBranch === null) return { why: 'cannot be read, because the default branch could not be read' }
+      const r = gh(['api', '--hostname', id.host, '-H', `Accept: ${DIFF_MEDIA_TYPE}`, `repos/${id.owner}/${id.repo}/compare/${refPath(defaultBranch)}...${sha}`], 120_000)
+      if (r.code !== 0) return { why: `could not be read (${said(r)})` }
+      if (r.stdout.trim() === '') return { why: 'is empty' }
+      if (!r.stdout.startsWith('diff --git ')) return { why: 'is not a diff' }
+      const lines = r.stdout.split('\n')
+      if (lines.filter((line) => line.startsWith('diff --git ')).length >= COMPARE_FILE_CAP) return { why: `names ${COMPARE_FILE_CAP} files or more, where GitHub may cut a comparison short` }
+      if (lines.some(isBinaryHeader)) return { why: 'holds a binary file, which a diff names only by abbreviated blob ids' }
+      if (r.stdout.includes('�')) return { why: 'holds U+FFFD, so bytes that are not UTF-8 cannot be told apart' }
+      return { patchId: patchIdOf(r.stdout) }
+    }
+    const was = patchOf(reviewed)
+    const now = patchOf(head)
+    const diffName = (sha) => `the diff of ${defaultBranch ?? 'the default branch'}...${sha}`
+    if (was.patchId === undefined || now.patchId === undefined) {
+      const why = [[reviewed, was], [head, now]].filter(([, side]) => side.patchId === undefined).map(([sha, side]) => `${diffName(sha)} ${side.why}`)
+      stop('patch-unreadable', `${why.join('; ')}, so the head cannot be shown to carry the patch of ${reviewed}; review the head and land it with no --reviewed`)
+    } else if (was.patchId !== now.patchId) {
+      stop('patch-changed', `the head ${head} carries patch ${now.patchId} against ${defaultBranch}, and the --reviewed head ${reviewed} carried patch ${was.patchId}, ` +
+        'so the change differs from the one asked to land; review the head and land it with no --reviewed')
+    }
+  }
+
+  // ---- 14 and 15: any stop refuses; else the whole gate is read again right before the merge, and
   // a re-read that is not whole, or a snapshot that moved, refuses. That shrinks every window the
   // merge cannot close. The default branch's tip goes last, nearest the merge.
   if (stops.length > 0) return refused()
@@ -530,7 +621,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
   }
   if (stops.length > 0) return refused()
 
-  // ---- 15: the merge, proven by a re-read
+  // ---- 16: the merge, proven by a re-read
   const merge = gh(['pr', 'merge', String(pr), '--repo', id.full, '--squash', '--match-head-commit', head,
     '--subject', again.message.subject, '--body', again.message.body], 120_000)
   const failure = merge.code === 0 ? null : said(merge)

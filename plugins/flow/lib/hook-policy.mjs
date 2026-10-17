@@ -219,11 +219,12 @@ export function mergeDenialFor({ command, cwd, env = {} }) {
 
   return `flow: this looks like a pull request merge (${shapes.join('; ')}), and this repository opts into flow's ` +
     'merge guardrail with a committed .flow/managed file. Merges here run through the executor: ' +
-    `\`node "${EXECUTOR}" <pr-number> <expected-head-sha> [--accept-flake <check>:<test>]...\`, with the full ` +
+    `\`node "${EXECUTOR}" <pr-number> <expected-head-sha> [--reviewed <sha>] [--accept-flake <check>:<test>]...\`, with the full ` +
     '40-character head SHA you read from `gh pr view`. It derives the repository from origin and runs the land ' +
     'gates itself. It refuses a pull request that is not open, is a draft, has moved off that head, is not based on ' +
     'the default branch or is behind it, or has auto-merge or a merge queue armed. It also refuses one with a ' +
-    'pending, failed or unknown check that the base branch\'s known flakes do not excuse, or with an unresolved ' +
-    'review thread. It merges with --match-head-commit and confirms by re-reading the pull request. Run it when ' +
+    'pending, failed or unknown check that the base branch\'s known flakes do not excuse, with an unresolved ' +
+    'review thread, or with a patch other than the one at the --reviewed head. It merges with ' +
+    '--match-head-commit and confirms by re-reading the pull request. Run it when ' +
     'the human has asked to land this pull request, and act on each stop it reports.'
 }
