@@ -24,7 +24,7 @@ Run this once, never batched with other work:
 node <plugin-root>/scripts/land-merge.mjs <pr> <head-sha> [--reviewed <sha>]
 ```
 
-It reads every fact that can stop a land and merges only when none does, so there is nothing to check before calling it. The first run passes the head §1 recorded and no `--reviewed`. A run on a newer head passes `--reviewed <the head §1 recorded>`, the head the human asked to land, and the executor then stops unless both heads carry the same patch against the default branch. That catches another writer's commit and a conflict resolved during the rebase. It cannot show the patch still means the same thing on a base that moved under it, which is CI's job, as for any rebase. It prints one JSON line:
+It reads every fact that can stop a land and merges only when none does, so there is nothing to check before calling it on the head the human asked to land. A head that came back from `patch-changed` or `patch-unreadable` waits for the review that answer names first. The first run passes the head §1 recorded and no `--reviewed`. A run on a newer head passes `--reviewed <the head §1 recorded>`, the head the human asked to land, and the executor then stops unless both heads carry the same patch against the default branch. That catches another writer's commit and a conflict resolved during the rebase. It cannot show the patch still means the same thing on a base that moved under it, which is CI's job, as for any rebase. It prints one JSON line:
 
 - `merged` (exit 0): a re-read proved the merge. Name every `excused` entry in the land report.
 - `refused` (exit 1): nothing merged. `stops` lists every stop it found. Act on each one, then run it again.
