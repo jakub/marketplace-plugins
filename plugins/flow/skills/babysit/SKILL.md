@@ -39,7 +39,7 @@ A round goes from what changed to pushed and answered:
 1. Gather against the current head: the per-check rollup (never an exit code), new top-level comments, and every unresolved thread. Note the head SHA, because everything this round decides is about it.
 2. Rebase first. If the base moved, rebase now, rerun the local tests, and push with `--force-with-lease`. A rebase after the fixes discards the CI runs and bot reviews they earned.
 3. Triage and fix every relevant finding and every red check, reproducing it locally and fixing the cause, in atomic conventional commits. A timing-shaped failure in a test this PR never touched may be a base flake: rerun the job once, and if it stays red, report it. Accepting a flake is the land stage's call.
-4. Before the push, get one adversarial review of the round's diff from the other family. A round of replies alone has no diff and skips this.
+4. Before the push, get one adversarial review of the round's diff from the other family. A round of replies alone has no diff and skips this. A commit on the branch that no round of yours made, such as another writer's push or a conflict resolution, gets the same review, pinned to the head that carries it, and the PR is not clean until that review is.
 5. Push once, then reply to and resolve the round's threads, citing the pushed SHA.
 6. Wait, then gather. The round is clean when CI completed on the new head and the bots posted against it, or when a reasonable quiet interval passed with nothing new.
 
