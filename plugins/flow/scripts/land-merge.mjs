@@ -53,9 +53,9 @@
 // Context lines and line ranges count: a rebase that changed the base lines beside a hunk, or added
 // or removed base lines above one in the same file, reads as a changed patch though the pull
 // request's own change is the same, and that is accepted, because it only sends the pull request back
-// for one more review. The check proves that the head carries the reviewed patch, which catches
-// another writer's commit and a conflict resolved during a rebase. It does not prove the patch still
-// means what it meant on the base it was reviewed on: a main that swapped two identical functions
+// for one more review. The check proves that the head carries the patch of the --reviewed head, which
+// catches another writer's commit and a conflict resolved during a rebase. It does not prove the
+// patch still means what it meant on that head's base: a main that swapped two identical functions
 // above an unchanged hunk retargets the same patch. How a base change interacts with a patch is CI's
 // job, as it is for any rebase. With no flag, or one equal to the head argument, none of this is
 // read. The patch facts are read once, with the verdict,
@@ -154,11 +154,11 @@ const stripLinks = (text) => String(text)
 const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
 
 // The patch id of a compare diff; the header says what is taken out and why. Every content line
-// opens with ' ', '+', '-' or '\', so these patterns match header lines only.
+// opens with ' ', '+', '-' or '\', so these tests match header lines only. Each runs on a line split
+// at LF alone, as git ends lines, because a CR, U+2028 or U+2029 inside a content line is content.
 const INDEX_LINE = /^index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]+)?$/
 const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/
-const BINARY_FILE = /^(?:Binary files |GIT binary patch$)/m
-const FILE_SECTION = /^diff --git /gm
+const isBinaryHeader = (line) => line.startsWith('Binary files ') || line === 'GIT binary patch'
 // GitHub serves at most this many files of a comparison, so a diff that reaches it may be partial.
 const COMPARE_FILE_CAP = 300
 const patchIdOf = (diff) => {
@@ -569,7 +569,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
   for (const { code, detail } of verdict.stops) stop(code, detail)
   const { base, defaultBranch, baseTip } = verdict
 
-  // ---- 13: the patch, when the head is not the one reviewed. Read once and kept out of the
+  // ---- 13: the patch, when the head is not the --reviewed one. Read once and kept out of the
   // snapshot; the header says why. Each side is a patch id or the reason there is none.
   if (reviewed !== null && reviewed !== head) {
     const patchOf = (sha) => {
@@ -578,8 +578,9 @@ export function landMerge({ argv, env, cwd, runGh }) {
       if (r.code !== 0) return { why: `could not be read (${said(r)})` }
       if (r.stdout.trim() === '') return { why: 'is empty' }
       if (!r.stdout.startsWith('diff --git ')) return { why: 'is not a diff' }
-      if ((r.stdout.match(FILE_SECTION) ?? []).length >= COMPARE_FILE_CAP) return { why: `names ${COMPARE_FILE_CAP} files or more, where GitHub may cut a comparison short` }
-      if (BINARY_FILE.test(r.stdout)) return { why: 'holds a binary file, which a diff names only by abbreviated blob ids' }
+      const lines = r.stdout.split('\n')
+      if (lines.filter((line) => line.startsWith('diff --git ')).length >= COMPARE_FILE_CAP) return { why: `names ${COMPARE_FILE_CAP} files or more, where GitHub may cut a comparison short` }
+      if (lines.some(isBinaryHeader)) return { why: 'holds a binary file, which a diff names only by abbreviated blob ids' }
       if (r.stdout.includes('�')) return { why: 'holds U+FFFD, so bytes that are not UTF-8 cannot be told apart' }
       return { patchId: patchIdOf(r.stdout) }
     }

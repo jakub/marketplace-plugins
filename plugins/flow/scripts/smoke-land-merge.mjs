@@ -615,7 +615,7 @@ console.log('\nreview threads, the base, and every stop at once')
   check('a merged pull request behind main reports not-open and behind-base together', codes(closedBehind).join() === 'not-open,behind-base' && closedBehind.st.merges.length === 0, shown(closedBehind))
 }
 
-console.log('\na head other than the reviewed one lands only with the patch that was reviewed')
+console.log('\na head other than the --reviewed one lands only with the patch of the --reviewed head')
 {
   const REVIEWED = 'a'.repeat(40)
   // One hunk as GitHub's compare diff serves it. A rebase moves the blob ids and the function context
@@ -685,6 +685,12 @@ console.log('\na head other than the reviewed one lands only with the patch that
     const r = run(reviewedArgs, { st: freshState(over) })
     check(`${name} refuses patch-unreadable and nothing merges`, refusedWith(r, 'patch-unreadable', text), shown(r))
   }
+
+  // Lines split at LF alone: a CR, U+2028 or U+2029 before header-like text inside a content line is
+  // content, so it neither counts toward the file cap nor reads as a binary header.
+  const tricky = diffOf({ added: ['x\rdiff --git a b', 'x Binary files a b differ', ...Array(298).fill('y diff --git c d')].join('\n+') })
+  const content = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: tricky, [HEAD]: tricky } }) })
+  check('header-like text after a CR, U+2028 or U+2029 in content is not a file or binary header', merged(content), shown(content))
 
   const plain = run()
   const atHead = run([...ARGS, '--reviewed', HEAD], { st: freshState({ diffs: rebased }) })
