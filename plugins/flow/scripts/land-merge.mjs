@@ -33,18 +33,20 @@
 // names another commit than the head argument, both patches are read from GitHub over the diff
 // media type, `compare/<default>...<reviewed>` and `compare/<default>...<head>`, and ids that differ
 // stop `patch-changed`. The patch id is a sha256 of the diff text with only what a clean rebase
-// changes taken out: an `index <a>..<b>` line goes, and each hunk header becomes a bare `@@`, its
-// line numbers and the function context after it gone, since that context is a base line. Every
+// changes taken out: an `index <a>..<b>` line goes, and each hunk header loses the function context
+// after its second `@@`, since that context is a base line. The hunk's line ranges stay, because
+// they are where the change lands: without them, the reviewed edit moved to an identical block
+// elsewhere in the file, from one branch of a role check to another, reads as the same patch. Every
 // other line stays byte for byte, whitespace and any CR included. That is why it is not `git
-// patch-id`, which drops whitespace inside changed lines, so a string literal or Python indentation
-// that changed would read as the same patch. A file with no hunk (a binary file) keeps its index
+// patch-id`, which drops both the line numbers and the whitespace inside changed lines, so a string
+// literal or Python indentation that changed would read as the same patch. A file with no hunk (a binary file) keeps its index
 // line, because there the blob ids are the only record of the change, and a clean rebase cannot move
 // them. A compare that fails or is refused (a diff too large among them), and a diff that is empty
 // or does not open with `diff --git`, each stop `patch-unreadable`, so the check never passes open.
-// Context lines count: a rebase that changed the base lines beside a hunk reads as a changed patch
-// though the pull request's own change is the same, and that is accepted, because it only sends the
-// pull request back for one more review. With no flag, or one
-// equal to the head argument, none of this is read. The patch facts are read once, with the verdict,
+// Context lines and line ranges count: a rebase that changed the base lines beside a hunk, or added
+// or removed base lines above one in the same file, reads as a changed patch though the pull
+// request's own change is the same, and that is accepted, because it only sends the pull request back
+// for one more review. With no flag, or one equal to the head argument, none of this is read. The patch facts are read once, with the verdict,
 // and stay out of the re-read below: each id is a function of an immutable commit and its merge base
 // with the default branch, the re-read pins the head, and the tip read last pins the default branch
 // those merge bases come from, so a second pair of diffs, the largest reads the gate makes, could
@@ -150,7 +152,7 @@ const patchIdOf = (diff) => {
     const hasHunk = file.some((line) => HUNK_HEADER.test(line))
     for (const line of file) {
       if (hasHunk && INDEX_LINE.test(line)) continue
-      kept.push(HUNK_HEADER.test(line) ? '@@' : line)
+      kept.push(line.match(HUNK_HEADER)?.[0] ?? line)
     }
     file = []
   }

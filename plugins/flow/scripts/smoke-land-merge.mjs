@@ -618,13 +618,13 @@ console.log('\nreview threads, the base, and every stop at once')
 console.log('\na head other than the reviewed one lands only with the patch that was reviewed')
 {
   const REVIEWED = 'a'.repeat(40)
-  // One hunk as GitHub's compare diff serves it. A rebase moves the blob ids, the line numbers and
-  // the function context after the hunk header, which the patch id leaves out; any other byte of a
-  // line, added or context, whitespace included, changes the id.
+  // One hunk as GitHub's compare diff serves it. A rebase moves the blob ids and the function context
+  // after the hunk header, which the patch id leaves out; the line ranges, and any other byte of a
+  // line, added or context, whitespace included, change the id.
   const diffOf = ({ blobs = '1111111..2222222', at = 1, fn = ' function f() {', context = 'const a = 1', added = 'const b = 2' } = {}) =>
     `diff --git a/x.mjs b/x.mjs\nindex ${blobs} 100644\n--- a/x.mjs\n+++ b/x.mjs\n@@ -${at},1 +${at},2 @@${fn}\n ${context}\n+${added}\n`
   const binaryOf = (blobs) => `diff --git a/x.png b/x.png\nindex ${blobs} 100644\nBinary files a/x.png and b/x.png differ\n`
-  const rebased = { [REVIEWED]: diffOf(), [HEAD]: diffOf({ blobs: '3333333..4444444', at: 7, fn: ' class G {' }) }
+  const rebased = { [REVIEWED]: diffOf(), [HEAD]: diffOf({ blobs: '3333333..4444444', fn: ' class G {' }) }
   const diffCalls = (st) => st.calls.filter((a) => a[0] === 'api' && a.includes('Accept: application/vnd.github.diff'))
   const reviewedArgs = [...ARGS, '--reviewed', REVIEWED]
 
@@ -647,8 +647,12 @@ console.log('\na head other than the reviewed one lands only with the patch that
   const withThread = run(reviewedArgs, { st: freshState({ diffs: { ...rebased, [HEAD]: diffOf({ added: 'const b = 3' }) }, threadPages: [[thread('T1', false)]] }) })
   check('patch-changed is collected with the other stops, not returned early', refusedWith(withThread, 'patch-changed') && refusedWith(withThread, 'threads-unresolved'), shown(withThread))
 
-  const moved = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: diffOf(), [HEAD]: diffOf({ blobs: '5555555..6666666', at: 40, fn: '' }) } }) })
-  check('a head whose diff differs only in index lines, hunk line numbers and function context merges', merged(moved), shown(moved))
+  const fnOnly = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: diffOf(), [HEAD]: diffOf({ blobs: '5555555..6666666', fn: '' }) } }) })
+  check('a head whose diff differs only in index lines and function context merges', merged(fnOnly), shown(fnOnly))
+  // The same edit with the same context, landed on an identical block elsewhere in the file, is
+  // another change: only the hunk's line range tells the two apart.
+  const moved = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: diffOf(), [HEAD]: diffOf({ at: 40 }) } }) })
+  check('the same hunk at another line range refuses patch-changed and nothing merges', refusedWith(moved, 'patch-changed'), shown(moved))
   // `git patch-id --stable` drops the whitespace in every line it hashes, so it would give each of
   // these pairs one id.
   for (const [name, was, now] of [
