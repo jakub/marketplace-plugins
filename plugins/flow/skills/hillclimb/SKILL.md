@@ -22,7 +22,8 @@ reproduction first.
 
 Reuse a suitable benchmark or build the smallest repeatable measurement command. Check its
 sensitivity with contrasting realistic cases, and sample enough to tell a change from noise.
-Record a baseline and passing correctness checks before any optimization.
+Make it report its error count and how much work it did, so a run that errored or did less
+work cannot read as a win. Record a baseline and passing correctness checks before any optimization.
 
 Agree on the workload, the metric and unit, the direction, the target, the correctness checks,
 secondary constraints such as memory, the comparison procedure, the minimum meaningful
@@ -56,7 +57,8 @@ settings and cache treatment. Build each candidate before timing it, and recheck
 as the comparison procedure says, so machine drift does not read as a win. Record one outcome:
 
 - **Accepted.** The improvement exceeds noise, correctness passes, constraints hold, and the
-  added complexity is justified.
+  added complexity is justified. A change that removes complexity and holds the metric within
+  noise is accepted too.
 - **Rejected.** A valid measurement or check disproves the benefit or breaks a constraint.
 - **Inconclusive.** Instrumentation failed, noise dominated or execution did not finish.
   Never use an inconclusive candidate as the next baseline.
@@ -68,6 +70,11 @@ interfere. A defective benchmark is a new agreement and a new baseline, never a 
 across incompatible methods.
 
 ## Stop, review and return
+
+A plateau is not the top. When batches keep coming back rejected, change approach before you
+judge the hill climbed: switch to a different kind of change, combine near-misses, reread the
+code on the measured path, or try a more radical idea. Do not stop while cheap untried
+hypotheses remain.
 
 Stop at a confirmed target, or after the exploration minimum when the remaining ideas are not
 worth it. If the goal is unmet, say so. Compare the final branch with the original baseline,
