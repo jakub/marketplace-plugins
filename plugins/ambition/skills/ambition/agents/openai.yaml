@@ -1,0 +1,5 @@
+interface:
+  display_name: "Ambition"
+  short_description: "Raise a task's ambition before starting it"
+policy:
+  allow_implicit_invocation: true

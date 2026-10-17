@@ -1,0 +1,8 @@
+{
+  "name": "ambition",
+  "version": "0.1.0",
+  "description": "One skill: an ambition pass before a task starts. It probes the environment for real baselines and instruments, finds the outcome behind the literal ask, the expert method and a hard numeric target, techniques from other fields plus a red team, and a check the executor cannot grade itself, then rewrites the task as a self-contained prompt and stops for a go-ahead. Distilled from Felix Rieseberg on being more ambitious with models.",
+  "author": {
+    "name": "jakub"
+  }
+}
