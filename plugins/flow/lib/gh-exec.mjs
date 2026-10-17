@@ -40,13 +40,17 @@ const notFound = (name) => ({ code: 127, stdout: '', stderr: `${name}: not found
 // busy repository. The cap is explicit and large, so a read either fits or fails naming the limit.
 const MAX_OUTPUT = 256 * 1024 * 1024
 
-/** Run a command and report a non-zero exit, a timeout, an overlong output or a missing binary as a value, never a throw. */
-export const execCapture = (bin, args, { cwd, timeoutMs, env } = {}) => {
+/**
+ * Run a command, with `input` on its stdin when one is given and no stdin otherwise, and report a
+ * non-zero exit, a timeout, an overlong output or a missing binary as a value, never a throw.
+ */
+export const execCapture = (bin, args, { cwd, timeoutMs, env, input } = {}) => {
   const childEnv = absolutePathEnv(env ?? process.env)
   const path = bin.includes('/') ? bin : resolveBin(bin, childEnv)
   if (!path) return notFound(bin)
   try {
-    const stdout = execFileSync(path, args, { encoding: 'utf8', timeout: timeoutMs, cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: MAX_OUTPUT })
+    const stdout = execFileSync(path, args, { encoding: 'utf8', timeout: timeoutMs, cwd, env: childEnv, input,
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], maxBuffer: MAX_OUTPUT })
     return { code: 0, stdout: String(stdout), stderr: '' }
   } catch (error) {
     if (error?.code === 'ENOBUFS') return { code: error?.status ?? 1, stdout: '', stderr: `${bin} printed more than the ${MAX_OUTPUT / 1024 / 1024} MiB output limit\n` }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// land-merge.mjs <pr> <head-sha> [--accept-flake <check>:<test>]...
+// land-merge.mjs <pr> <head-sha> [--reviewed <sha>] [--accept-flake <check>:<test>]...
 //
 // The land gate and the only merge, on either host. Every fact that can stop a land is read and
 // judged here, in the one process that can merge, so no reading of a verdict stands between the
@@ -26,6 +26,23 @@
 // like `ci/circleci: build` has a colon of its own) into check:test, which excuses nothing unless
 // --accept-flake names it: the caller's statement that the job log shows that test as the check's
 // only failure, so one flag speaks for exactly one failed job, and two flags cannot share a check.
+//
+// --reviewed names the head that was reviewed, a full SHA like the head argument. A land re-run on a
+// new head, after a rebase or a push, would otherwise merge whatever that head carries, a conflict
+// resolved during the rebase or someone else's commit among it, with no review. So when the flag
+// names another commit than the head argument, both patches are read from GitHub over the diff
+// media type, `compare/<default>...<reviewed>` and `compare/<default>...<head>`, each is hashed by
+// `git patch-id --stable` on stdin, which needs no objects in the repository, and ids that differ
+// stop `patch-changed`. A compare that fails or is refused (a diff too large among them), an empty
+// diff, and a patch-id that prints no single id each stop `patch-unreadable`, so the check never
+// passes open. patch-id hashes the context lines too: a rebase that changed the base lines beside a
+// hunk reads as a changed patch though the pull request's own change is the same, and that is
+// accepted, because it only sends the pull request back for one more review. With no flag, or one
+// equal to the head argument, none of this is read. The patch facts are read once, with the verdict,
+// and stay out of the re-read below: each id is a function of an immutable commit and its merge base
+// with the default branch, the re-read pins the head, and the tip read last pins the default branch
+// those merge bases come from, so a second pair of diffs, the largest reads the gate makes, could
+// only repeat the answer.
 //
 // With no stop, it reads the whole gate again, which has to read exactly as it did for the verdict,
 // then the default branch's tip, which has to be the one the compare was made against: a land
@@ -65,13 +82,16 @@ const MAX_COMMIT_PAGES = 20
 const FLAKES_PATH = '.github/known-flakes.txt'
 const HTTP_404 = /\(HTTP 404\)|\bNot Found\b/
 const PR_FIELDS = 'headRefOid,headRefName,state,isDraft,baseRefName,url,autoMergeRequest,title'
-const USAGE_LINE = 'usage: land-merge.mjs <pull-request-number> <expected-head-sha> [--accept-flake <check-name>:<test_name>]...'
+const DIFF_MEDIA_TYPE = 'application/vnd.github.diff'
+const USAGE_LINE = 'usage: land-merge.mjs <pull-request-number> <expected-head-sha> [--reviewed <reviewed-head-sha>] [--accept-flake <check-name>:<test_name>]...'
 const USAGE = `${USAGE_LINE}
 
 Merges the pull request when nothing stops the land, and prints one JSON line: exit 0 merged,
 1 refused (nothing merged, every stop listed), 4 unknown. Origin must name github.com or a host in
-FLOW_GH_HOSTS, with no port. --accept-flake takes a check-name:test_name entry from the base
-branch's ${FLAKES_PATH}, for a failed check whose job log shows that test as its only failure.
+FLOW_GH_HOSTS, with no port. --reviewed takes the full SHA of the head that was reviewed, and when
+it is not the expected head, the land stops unless both carry the same patch against the default
+branch. --accept-flake takes a check-name:test_name entry from the base branch's ${FLAKES_PATH},
+for a failed check whose job log shows that test as its only failure.
 `
 
 const QUEUE_QUERY = 'query($owner: String!, $name: String!, $base: String!) { repository(owner: $owner, name: $name) { mergeQueue(branch: $base) { id } } }'
@@ -172,12 +192,18 @@ export function landMerge({ argv, env, cwd, runGh }) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) return { code: 0, stdout: USAGE, stderr: '' }
   const acceptFlakes = []
   const positional = []
+  let reviewed = null
   for (let i = 0; i < argv.length; i += 1) {
     const arg = String(argv[i])
     if (arg === '--accept-flake' || arg.startsWith('--accept-flake=')) {
       const value = (arg === '--accept-flake' ? String(argv[++i] ?? '') : arg.slice('--accept-flake='.length)).trim()
       if (value === '') return refuseNow('usage', `--accept-flake takes one check-name:test_name entry. ${USAGE_LINE}`)
       if (!acceptFlakes.includes(value)) acceptFlakes.push(value)
+    } else if (arg === '--reviewed' || arg.startsWith('--reviewed=')) {
+      const value = arg === '--reviewed' ? String(argv[++i] ?? '') : arg.slice('--reviewed='.length)
+      if (!SHA.test(value)) return refuseNow('usage', `--reviewed ${JSON.stringify(value)} is not a full 40-character lowercase commit SHA. ${USAGE_LINE}`)
+      if (reviewed !== null) return refuseNow('usage', `--reviewed is given twice, and one land judges against one reviewed head. ${USAGE_LINE}`)
+      reviewed = value
     } else positional.push(arg)
   }
   if (positional.length !== 2) return refuseNow('usage', `expected the pull request number and the head SHA it was read at. ${USAGE_LINE}`)
@@ -505,7 +531,33 @@ export function landMerge({ argv, env, cwd, runGh }) {
   for (const { code, detail } of verdict.stops) stop(code, detail)
   const { base, defaultBranch, baseTip } = verdict
 
-  // ---- 13 and 14: any stop refuses; else the whole gate is read again right before the merge, and
+  // ---- 13: the patch, when the head is not the one reviewed. Read once and kept out of the
+  // snapshot; the header says why. Each side is a patch id or the reason there is none.
+  if (reviewed !== null && reviewed !== head) {
+    const patchOf = (sha) => {
+      if (defaultBranch === null) return { why: 'cannot be read, because the default branch could not be read' }
+      const r = gh(['api', '--hostname', id.host, '-H', `Accept: ${DIFF_MEDIA_TYPE}`, `repos/${id.owner}/${id.repo}/compare/${refPath(defaultBranch)}...${sha}`], 120_000)
+      if (r.code !== 0) return { why: `could not be read (${said(r)})` }
+      if (r.stdout.trim() === '') return { why: 'is empty' }
+      const hashed = execCapture('git', ['-C', cwd, 'patch-id', '--stable'], { input: r.stdout, timeoutMs: 60_000 })
+      const lines = hashed.code === 0 ? hashed.stdout.split('\n').filter((line) => line.trim() !== '') : []
+      const patchId = lines.length === 1 ? lines[0].split(' ')[0] : ''
+      if (SHA.test(patchId)) return { patchId }
+      return { why: `gave no single patch id (git patch-id ${hashed.code === 0 ? `printed ${lines.length} line(s)` : `failed: ${said(hashed)}`})` }
+    }
+    const was = patchOf(reviewed)
+    const now = patchOf(head)
+    const diffName = (sha) => `the diff of ${defaultBranch ?? 'the default branch'}...${sha}`
+    if (was.patchId === undefined || now.patchId === undefined) {
+      const why = [[reviewed, was], [head, now]].filter(([, side]) => side.patchId === undefined).map(([sha, side]) => `${diffName(sha)} ${side.why}`)
+      stop('patch-unreadable', `${why.join('; ')}, so the head cannot be shown to carry the patch reviewed at ${reviewed}; review the head and land it with no --reviewed`)
+    } else if (was.patchId !== now.patchId) {
+      stop('patch-changed', `the head ${head} carries patch ${now.patchId} against ${defaultBranch}, and the reviewed head ${reviewed} carried patch ${was.patchId}, ` +
+        'so the change differs from the one reviewed; review the head and land it with no --reviewed')
+    }
+  }
+
+  // ---- 14 and 15: any stop refuses; else the whole gate is read again right before the merge, and
   // a re-read that is not whole, or a snapshot that moved, refuses. That shrinks every window the
   // merge cannot close. The default branch's tip goes last, nearest the merge.
   if (stops.length > 0) return refused()
@@ -530,7 +582,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
   }
   if (stops.length > 0) return refused()
 
-  // ---- 15: the merge, proven by a re-read
+  // ---- 16: the merge, proven by a re-read
   const merge = gh(['pr', 'merge', String(pr), '--repo', id.full, '--squash', '--match-head-commit', head,
     '--subject', again.message.subject, '--body', again.message.body], 120_000)
   const failure = merge.code === 0 ? null : said(merge)

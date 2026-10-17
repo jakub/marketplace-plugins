@@ -7,7 +7,8 @@
 // executor asks for, so a 101st check really is on a second page. The fake records every call and
 // every merge. `gh pr view` answers with exactly the --json fields asked for, so a gate that stops
 // asking for a field it needs reads null rather than a value the fake volunteered, and the commit
-// headlines come only from the paged commits query, 100 to a page like GitHub's. Every case reads the one JSON line and the exit; each refusal asserts that nothing
+// headlines come only from the paged commits query, 100 to a page like GitHub's. A compare asked
+// for over the diff media type answers with a raw diff, which the real `git patch-id` hashes. Every case reads the one JSON line and the exit; each refusal asserts that nothing
 // merged, and each unproven outcome asserts that it does not read as a refusal. One case runs the
 // real gh runner against a fake gh binary to prove that GH_REPO and GH_HOST never reach gh, and
 // two prove that a gh or git planted behind a relative PATH entry never runs.
@@ -71,7 +72,7 @@ const freshState = (over = {}) => ({
   checkRuns: [checkRun('unit', 'success'), checkRun('lint', 'skipped')], totalCount: null, statuses: [],
   commits: HEADLINES.map(commit), commitTotal: null, commitPageFails: null, commitsNoCursor: false,
   threadPages: [[thread('T1')]], threadsNoCursor: false, baseFlakes: null, headFlakes: null, flakesHttp: null, flakesEncoding: 'base64',
-  calls: [], merges: [], ...over,
+  diffs: {}, diffFails: null, calls: [], merges: [], ...over,
   pr: { headRefOid: HEAD, headRefName: BRANCH, state: 'OPEN', isDraft: false, baseRefName: 'main', url: PR_URL, autoMergeRequest: null,
     title: TITLE, body: PR_BODY, ...(over.pr || {}) },
 })
@@ -136,6 +137,13 @@ const makeRunGh = (st) => (args) => {
       const text = decodeURIComponent(path.split('ref=')[1] ?? '') === st.pr.baseRefName ? baseFlakes : st.headFlakes
       if (text === null) return fail('gh: Not Found (HTTP 404)\n', '{"message":"Not Found"}')
       return ok({ encoding: st.flakesEncoding, content: st.flakesEncoding === 'base64' ? Buffer.from(text).toString('base64') : '' })
+    }
+    // A compare asked for over the diff media type answers with st.diffs[<sha after the dots>], raw,
+    // and diffFails names the one sha whose diff GitHub refuses as too large.
+    if (path.includes('/compare/') && args.includes('Accept: application/vnd.github.diff')) {
+      const sha = path.split('...').at(-1)
+      if (st.diffFails === sha) return fail('gh: Sorry, this diff is taking too long to generate. (HTTP 406)\n', '{"message":"Sorry, this diff is taking too long to generate."}')
+      return { code: 0, stdout: st.diffs[sha] ?? '', stderr: '' }
     }
     if (path.includes('/compare/')) {
       if (st.fail === 'compare') return serverError()
@@ -605,6 +613,60 @@ console.log('\nreview threads, the base, and every stop at once')
     ['f'.repeat(12), 'a'.repeat(12), HEAD.slice(0, 12)].every((s) => detailOf(landedMeanwhile, 'behind-base').includes(s)), shown(landedMeanwhile))
   const closedBehind = run(ARGS, { st: freshState({ pr: { state: 'MERGED' }, behindBy: 1 }) })
   check('a merged pull request behind main reports not-open and behind-base together', codes(closedBehind).join() === 'not-open,behind-base' && closedBehind.st.merges.length === 0, shown(closedBehind))
+}
+
+console.log('\na head other than the reviewed one lands only with the patch that was reviewed')
+{
+  const REVIEWED = 'a'.repeat(40)
+  // One hunk as GitHub's compare diff serves it. A rebase moves the blob ids and the line numbers,
+  // which patch-id ignores; a changed line, added or context, changes the id.
+  const diffOf = ({ blobs = '1111111..2222222', at = 1, context = 'const a = 1', added = 'const b = 2' } = {}) =>
+    `diff --git a/x.mjs b/x.mjs\nindex ${blobs} 100644\n--- a/x.mjs\n+++ b/x.mjs\n@@ -${at},1 +${at},2 @@\n ${context}\n+${added}\n`
+  const rebased = { [REVIEWED]: diffOf(), [HEAD]: diffOf({ blobs: '3333333..4444444', at: 7 }) }
+  const diffCalls = (st) => st.calls.filter((a) => a[0] === 'api' && a.includes('Accept: application/vnd.github.diff'))
+  const reviewedArgs = [...ARGS, '--reviewed', REVIEWED]
+
+  const same = run(reviewedArgs, { st: freshState({ diffs: rebased }) })
+  check('a rebased head carrying the same patch merges', merged(same), shown(same))
+  check('after one diff read each of compare/<default>...<reviewed> and compare/<default>...<head>, pinned to origin', JSON.stringify(diffCalls(same.st).map((a) => a.at(-1))) ===
+    JSON.stringify([`repos/${SLUG}/compare/main...${REVIEWED}`, `repos/${SLUG}/compare/main...${HEAD}`]) && same.st.calls.every(pinnedTo(IDENTITY, 'github.com')), JSON.stringify(diffCalls(same.st)))
+  check('and the patch is read once, not again with the gate before the merge', diffCalls(same.st).length === 2, JSON.stringify(diffCalls(same.st)))
+  const equals = run([...ARGS, `--reviewed=${REVIEWED}`], { st: freshState({ diffs: rebased }) })
+  check('the --reviewed=<sha> spelling is the same flag', merged(equals) && diffCalls(equals.st).length === 2, shown(equals))
+
+  const changed = run(reviewedArgs, { st: freshState({ diffs: { ...rebased, [HEAD]: diffOf({ added: 'const b = 3' }) } }) })
+  check('a head whose patch changed refuses patch-changed and nothing merges', refusedWith(changed, 'patch-changed'), shown(changed))
+  check('and the detail names both SHAs and both patch ids', [REVIEWED, HEAD].every((s) => detailOf(changed, 'patch-changed').includes(s)) &&
+    (detailOf(changed, 'patch-changed').match(/\b[0-9a-f]{40}\b/g) ?? []).length === 4, detailOf(changed, 'patch-changed'))
+  // The accepted conservative edge: the same added line under a changed context line is another patch.
+  const context = run(reviewedArgs, { st: freshState({ diffs: { ...rebased, [HEAD]: diffOf({ context: 'const z = 1' }) } }) })
+  check('a rebase that changed only a context line beside the hunk also refuses patch-changed', refusedWith(context, 'patch-changed'), shown(context))
+  const withThread = run(reviewedArgs, { st: freshState({ diffs: { ...rebased, [HEAD]: diffOf({ added: 'const b = 3' }) }, threadPages: [[thread('T1', false)]] }) })
+  check('patch-changed is collected with the other stops, not returned early', refusedWith(withThread, 'patch-changed') && refusedWith(withThread, 'threads-unresolved'), shown(withThread))
+
+  for (const [name, over, text] of [
+    ['a compare GitHub refuses on the head', { diffs: rebased, diffFails: HEAD }, 'HTTP 406'],
+    ['a compare GitHub refuses on the reviewed head', { diffs: rebased, diffFails: REVIEWED }, 'HTTP 406'],
+    ['an empty diff', { diffs: { [REVIEWED]: diffOf(), [HEAD]: '' } }, 'is empty'],
+    ['a diff patch-id prints nothing for', { diffs: { [REVIEWED]: diffOf(), [HEAD]: 'not a diff\n' } }, 'no single patch id'],
+    ['an unreadable default branch', { diffs: rebased, defaultBranch: null }, 'default branch could not be read'],
+  ]) {
+    const r = run(reviewedArgs, { st: freshState(over) })
+    check(`${name} refuses patch-unreadable and nothing merges`, refusedWith(r, 'patch-unreadable', text), shown(r))
+  }
+
+  const plain = run()
+  const atHead = run([...ARGS, '--reviewed', HEAD], { st: freshState({ diffs: rebased }) })
+  check('with no --reviewed, no diff is read', merged(plain) && diffCalls(plain.st).length === 0, shown(plain))
+  check('with --reviewed equal to the head, no diff is read and the calls are the plain run\'s', merged(atHead) && diffCalls(atHead.st).length === 0 &&
+    JSON.stringify(atHead.st.calls) === JSON.stringify(plain.st.calls), shown(atHead))
+
+  for (const [name, args] of [['--reviewed with no value', [...ARGS, '--reviewed']], ['an abbreviated --reviewed', [...ARGS, '--reviewed', REVIEWED.slice(0, 12)]],
+    ['an uppercase --reviewed', [...ARGS, '--reviewed', REVIEWED.toUpperCase()]], ['an empty --reviewed=', [...ARGS, '--reviewed=']],
+    ['--reviewed given twice', [...reviewedArgs, '--reviewed', HEAD]]]) {
+    const r = run(args)
+    check(`${name} is a usage refusal that calls no gh`, refusedWith(r, 'usage', '--reviewed') && r.st.calls.length === 0, shown(r))
+  }
 }
 
 console.log('\none JSON line on stdout, one human line on stderr, and the exit says which')
