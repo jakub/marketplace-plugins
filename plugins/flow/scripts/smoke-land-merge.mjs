@@ -664,11 +664,12 @@ console.log('\na head other than the reviewed one lands only with the patch that
     const r = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: diffOf({ added: was }), [HEAD]: diffOf({ added: now }) } }) })
     check(`${name} refuses patch-changed and nothing merges`, refusedWith(r, 'patch-changed'), shown(r))
   }
-  // A file with no hunk keeps its index line, the only record of what changed in it.
+  // A binary file's diff names its change only by abbreviated blob ids, which two different blobs can
+  // share, so even identical binary entries cannot show the patch unchanged.
   const binarySame = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: binaryOf('1111111..2222222'), [HEAD]: binaryOf('1111111..2222222') } }) })
-  check('a binary file with the same blob ids merges', merged(binarySame), shown(binarySame))
-  const binaryChanged = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: binaryOf('1111111..2222222'), [HEAD]: binaryOf('1111111..3333333') } }) })
-  check('a binary file whose new blob differs refuses patch-changed', refusedWith(binaryChanged, 'patch-changed'), shown(binaryChanged))
+  check('a binary file with the same abbreviated blob ids refuses patch-unreadable and nothing merges', refusedWith(binarySame, 'patch-unreadable', 'binary file'), shown(binarySame))
+  const binaryBeside = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: diffOf(), [HEAD]: `${diffOf()}${binaryOf('1111111..2222222')}` } }) })
+  check('a binary file beside a text file refuses patch-unreadable', refusedWith(binaryBeside, 'patch-unreadable', 'binary file'), shown(binaryBeside))
 
   for (const [name, over, text] of [
     ['a compare GitHub refuses on the head', { diffs: rebased, diffFails: HEAD }, 'HTTP 406'],

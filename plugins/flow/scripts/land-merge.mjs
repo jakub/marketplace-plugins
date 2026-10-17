@@ -39,11 +39,11 @@
 // elsewhere in the file, from one branch of a role check to another, reads as the same patch. Every
 // other line stays byte for byte, whitespace and any CR included. That is why it is not `git
 // patch-id`, which drops both the line numbers and the whitespace inside changed lines, so a string
-// literal or Python indentation that changed would read as the same patch. A file with no hunk (a binary file) keeps its index
-// line, because there the blob ids are the only record of the change, and a clean rebase cannot move
-// them. A compare that fails or is refused (a diff too large among them), a diff that is empty or
-// does not open with `diff --git`, and one holding U+FFFD each stop `patch-unreadable`, so the check
-// never passes open. gh's output arrives decoded as UTF-8, and decoding turns every invalid byte into
+// literal or Python indentation that changed would read as the same patch. A compare that fails or
+// is refused (a diff too large among them), a diff that is empty or does not open with `diff --git`,
+// one holding a binary file, and one holding U+FFFD each stop `patch-unreadable`, so the check never
+// passes open. A binary file's diff names its change only by abbreviated blob ids, and two different
+// blobs can share the abbreviation, so no diff text can show it unchanged. gh's output arrives decoded as UTF-8, and decoding turns every invalid byte into
 // U+FFFD, so two Latin-1 literals that differ would otherwise read as one patch; a diff that holds a
 // real U+FFFD costs one more review.
 // Context lines and line ranges count: a rebase that changed the base lines beside a hunk, or added
@@ -150,25 +150,16 @@ const stripLinks = (text) => String(text)
 const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
 
 // The patch id of a compare diff; the header says what is taken out and why. Every content line
-// opens with ' ', '+', '-' or '\', so these two patterns match header lines only.
+// opens with ' ', '+', '-' or '\', so these patterns match header lines only.
 const INDEX_LINE = /^index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]+)?$/
 const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/
+const BINARY_FILE = /^(?:Binary files |GIT binary patch$)/m
 const patchIdOf = (diff) => {
   const kept = []
-  let file = []
-  const flush = () => {
-    const hasHunk = file.some((line) => HUNK_HEADER.test(line))
-    for (const line of file) {
-      if (hasHunk && INDEX_LINE.test(line)) continue
-      kept.push(line.match(HUNK_HEADER)?.[0] ?? line)
-    }
-    file = []
-  }
   for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git ')) flush()
-    file.push(line)
+    if (INDEX_LINE.test(line)) continue
+    kept.push(line.match(HUNK_HEADER)?.[0] ?? line)
   }
-  flush()
   return createHash('sha256').update(kept.join('\n')).digest('hex')
 }
 
@@ -580,6 +571,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
       if (r.code !== 0) return { why: `could not be read (${said(r)})` }
       if (r.stdout.trim() === '') return { why: 'is empty' }
       if (!r.stdout.startsWith('diff --git ')) return { why: 'is not a diff' }
+      if (BINARY_FILE.test(r.stdout)) return { why: 'holds a binary file, which a diff names only by abbreviated blob ids' }
       if (r.stdout.includes('�')) return { why: 'holds U+FFFD, so bytes that are not UTF-8 cannot be told apart' }
       return { patchId: patchIdOf(r.stdout) }
     }
