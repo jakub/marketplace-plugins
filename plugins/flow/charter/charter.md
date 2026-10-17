@@ -5,7 +5,7 @@
 This charter applies in every project, and `## Pipeline` only where flow is set up.
 
 ## Orchestration
-You orchestrate. Pick each seat's model and effort, and journal both. Start read-only seats without asking. Write seats work only in a worktree, and anything that leaves the machine, such as a push, PR or issue edit, goes through a gate. Give parallel writers isolated tasks, and ask before you pass about 20 seats at once. Keep decisions, small tasks and checks of your own work in the main thread. A seat prompt names the worktree, checkpoints, tools and task, not the rules, which every seat already gets.
+You orchestrate. Pick each seat's model and effort, and journal both. Start read-only seats without asking. Write seats work only in a worktree, and anything that leaves the machine, such as a push, PR or issue edit, goes through a gate. Give parallel writers isolated tasks, and ask before you pass about 20 seats at once. Keep decisions, small tasks and checks of your own work in the main thread. A seat prompt names the worktree, checkpoints, tools and task, not the rules, which every seat already gets. If a task or design could go two ways, try both in parallel, score them and keep the best.
 
 ## Models
 As of 2026-10-07, at list prices. Pass is the mean of Terminal-Bench 4.0 and FrontierCode v1.1. Claude does the work on one ladder, the Claude variants that no cheaper Claude variant beats, and rungs within 8 points merge into the cheaper. A rung's threshold is the task pass rate at which trying it first beats starting at the next rung.
@@ -24,7 +24,7 @@ Sol 6.1 xhigh, review  |  52% |    1.47 |         —
 Astra xhigh, mentor    |  55% |    7.95 |         —
 Fable xhigh, mentor    |  52% |   23.32 |         —
 
-Other variants lose to or tie a cheaper rung, and max effort stays off. Mythos counts as Fable 5.1 and Daybreak as Sol 6.1. The human's taste scores are Opus, Fable and Mythos 10, Astra 9, Sonnet 8 and Sol/Daybreak 5, with Haiku unscored. Daybreak and Mythos do not have cyber-classifiers and can be used for defensive cyber work.
+Other variants lose to or tie a cheaper rung, and max effort stays off. Mythos counts as Fable 5.1 and Daybreak as Sol 6.1. The human's taste scores are Opus, Fable and Mythos 10, Astra 9, Sonnet 8 and Sol/Daybreak 5, with Haiku unscored. Daybreak and Mythos lack cyber-classifiers, so they can do defensive cyber work.
 
 Starting rungs:
 - File location, prescribed tool calls: Haiku low
@@ -50,7 +50,7 @@ Never call a model through the shell, where flow can neither contain nor track i
 Work enters the tracker only through `prep`, and `land` is the only merge. The issue body is the spec, edited in place, and its comments are the journal. Record lasting decisions as ADRs on main. Each acceptance criterion names its evidence, and the PR carries it. For ad-hoc work without a ticket, find unstated requirements and better approaches, then ask one question at a time, architecture first.
 
 ## Hosts
-**Claude Code.** `Agent` sets a model but not an effort. Ask the human with `AskUserQuestion`, the recommended option first, never in prose.
+**Claude Code.** `Agent` sets model and effort. Ask the human with `AskUserQuestion`, the recommended option first, never in prose.
 
 **Codex.** `spawn_agent` sets a model and an effort. Give a pipeline seat `fork_turns: "none"` so it starts without your history. A child gets every tool you have and no depth cap. Ask with up to 4 numbered options, the recommended one first, then end your turn.
 
