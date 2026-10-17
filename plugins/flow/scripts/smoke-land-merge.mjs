@@ -677,6 +677,8 @@ console.log('\na head other than the reviewed one lands only with the patch that
     ['an empty diff', { diffs: { [REVIEWED]: diffOf(), [HEAD]: '' } }, 'is empty'],
     ['a body that is not a diff', { diffs: { [REVIEWED]: diffOf(), [HEAD]: 'not a diff\n' } }, 'is not a diff'],
     // UTF-8 decoding turns 0xe9 and 0xea alike into U+FFFD, so two Latin-1 literals would hash as one.
+    // GitHub serves at most 300 files of a comparison, so a diff at the cap may be missing files.
+    ['a diff naming 300 files', { diffs: { [REVIEWED]: diffOf(), [HEAD]: diffOf().repeat(300) } }, '300 files'],
     ['a diff that decoded with U+FFFD', { diffs: { [REVIEWED]: diffOf({ added: 's = "�"' }), [HEAD]: diffOf({ added: 's = "�"' }) } }, 'U+FFFD'],
     ['an unreadable default branch', { diffs: rebased, defaultBranch: null }, 'default branch could not be read'],
   ]) {

@@ -41,8 +41,10 @@
 // patch-id`, which drops both the line numbers and the whitespace inside changed lines, so a string
 // literal or Python indentation that changed would read as the same patch. A compare that fails or
 // is refused (a diff too large among them), a diff that is empty or does not open with `diff --git`,
-// one holding a binary file, and one holding U+FFFD each stop `patch-unreadable`, so the check never
-// passes open. A binary file's diff names its change only by abbreviated blob ids, and two different
+// one that names 300 files or more, one holding a binary file, and one holding U+FFFD each stop
+// `patch-unreadable`, so the check never passes open. GitHub serves at most 300 files of a
+// comparison, so a diff that reaches the cap may have left files out, and two heads that differ only
+// there would read as one patch. A binary file's diff names its change only by abbreviated blob ids, and two different
 // blobs can share the abbreviation, so no diff text can show it unchanged. gh's output arrives decoded as UTF-8, and decoding turns every invalid byte into
 // U+FFFD, so two Latin-1 literals that differ would otherwise read as one patch; a diff that holds a
 // real U+FFFD costs one more review.
@@ -154,6 +156,9 @@ const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
 const INDEX_LINE = /^index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]+)?$/
 const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/
 const BINARY_FILE = /^(?:Binary files |GIT binary patch$)/m
+const FILE_SECTION = /^diff --git /gm
+// GitHub serves at most this many files of a comparison, so a diff that reaches it may be partial.
+const COMPARE_FILE_CAP = 300
 const patchIdOf = (diff) => {
   const kept = []
   for (const line of diff.split('\n')) {
@@ -571,6 +576,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
       if (r.code !== 0) return { why: `could not be read (${said(r)})` }
       if (r.stdout.trim() === '') return { why: 'is empty' }
       if (!r.stdout.startsWith('diff --git ')) return { why: 'is not a diff' }
+      if ((r.stdout.match(FILE_SECTION) ?? []).length >= COMPARE_FILE_CAP) return { why: `names ${COMPARE_FILE_CAP} files or more, where GitHub may cut a comparison short` }
       if (BINARY_FILE.test(r.stdout)) return { why: 'holds a binary file, which a diff names only by abbreviated blob ids' }
       if (r.stdout.includes('�')) return { why: 'holds U+FFFD, so bytes that are not UTF-8 cannot be told apart' }
       return { patchId: patchIdOf(r.stdout) }
