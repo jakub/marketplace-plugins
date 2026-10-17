@@ -41,12 +41,20 @@
 // patch-id`, which drops both the line numbers and the whitespace inside changed lines, so a string
 // literal or Python indentation that changed would read as the same patch. A file with no hunk (a binary file) keeps its index
 // line, because there the blob ids are the only record of the change, and a clean rebase cannot move
-// them. A compare that fails or is refused (a diff too large among them), and a diff that is empty
-// or does not open with `diff --git`, each stop `patch-unreadable`, so the check never passes open.
+// them. A compare that fails or is refused (a diff too large among them), a diff that is empty or
+// does not open with `diff --git`, and one holding U+FFFD each stop `patch-unreadable`, so the check
+// never passes open. gh's output arrives decoded as UTF-8, and decoding turns every invalid byte into
+// U+FFFD, so two Latin-1 literals that differ would otherwise read as one patch; a diff that holds a
+// real U+FFFD costs one more review.
 // Context lines and line ranges count: a rebase that changed the base lines beside a hunk, or added
 // or removed base lines above one in the same file, reads as a changed patch though the pull
 // request's own change is the same, and that is accepted, because it only sends the pull request back
-// for one more review. With no flag, or one equal to the head argument, none of this is read. The patch facts are read once, with the verdict,
+// for one more review. The check proves that the head carries the reviewed patch, which catches
+// another writer's commit and a conflict resolved during a rebase. It does not prove the patch still
+// means what it meant on the base it was reviewed on: a main that swapped two identical functions
+// above an unchanged hunk retargets the same patch. How a base change interacts with a patch is CI's
+// job, as it is for any rebase. With no flag, or one equal to the head argument, none of this is
+// read. The patch facts are read once, with the verdict,
 // and stay out of the re-read below: each id is a function of an immutable commit and its merge base
 // with the default branch, the re-read pins the head, and the tip read last pins the default branch
 // those merge bases come from, so a second pair of diffs, the largest reads the gate makes, could
@@ -572,6 +580,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
       if (r.code !== 0) return { why: `could not be read (${said(r)})` }
       if (r.stdout.trim() === '') return { why: 'is empty' }
       if (!r.stdout.startsWith('diff --git ')) return { why: 'is not a diff' }
+      if (r.stdout.includes('�')) return { why: 'holds U+FFFD, so bytes that are not UTF-8 cannot be told apart' }
       return { patchId: patchIdOf(r.stdout) }
     }
     const was = patchOf(reviewed)
