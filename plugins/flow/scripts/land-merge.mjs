@@ -27,7 +27,9 @@
 // --accept-flake names it: the caller's statement that the job log shows that test as the check's
 // only failure, so one flag speaks for exactly one failed job, and two flags cannot share a check.
 //
-// --reviewed names the head that was reviewed, a full SHA like the head argument. A land re-run on a
+// --reviewed names the head the human asked to land, a full SHA like the head argument. It carries
+// whatever review that head had and claims no more: the check below proves a later head carries the
+// same patch, not that anyone reviewed it, and the human's request is the land's gate. A land re-run on a
 // new head, after a rebase or a push, would otherwise merge whatever that head carries, a conflict
 // resolved during the rebase or someone else's commit among it, with no review. So when the flag
 // names another commit than the head argument, both patches are read from GitHub over the diff
@@ -107,7 +109,7 @@ const USAGE = `${USAGE_LINE}
 
 Merges the pull request when nothing stops the land, and prints one JSON line: exit 0 merged,
 1 refused (nothing merged, every stop listed), 4 unknown. Origin must name github.com or a host in
-FLOW_GH_HOSTS, with no port. --reviewed takes the full SHA of the head that was reviewed, and when
+FLOW_GH_HOSTS, with no port. --reviewed takes the full SHA of the head the human asked to land, and when
 it is not the expected head, the land stops unless both carry the same patch against the default
 branch. --accept-flake takes a check-name:test_name entry from the base branch's ${FLAKES_PATH},
 for a failed check whose job log shows that test as its only failure.
@@ -238,7 +240,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
     } else if (arg === '--reviewed' || arg.startsWith('--reviewed=')) {
       const value = arg === '--reviewed' ? String(argv[++i] ?? '') : arg.slice('--reviewed='.length)
       if (!SHA.test(value)) return refuseNow('usage', `--reviewed ${JSON.stringify(value)} is not a full 40-character lowercase commit SHA. ${USAGE_LINE}`)
-      if (reviewed !== null) return refuseNow('usage', `--reviewed is given twice, and one land judges against one reviewed head. ${USAGE_LINE}`)
+      if (reviewed !== null) return refuseNow('usage', `--reviewed is given twice, and one land judges against one --reviewed head. ${USAGE_LINE}`)
       reviewed = value
     } else positional.push(arg)
   }
@@ -586,10 +588,10 @@ export function landMerge({ argv, env, cwd, runGh }) {
     const diffName = (sha) => `the diff of ${defaultBranch ?? 'the default branch'}...${sha}`
     if (was.patchId === undefined || now.patchId === undefined) {
       const why = [[reviewed, was], [head, now]].filter(([, side]) => side.patchId === undefined).map(([sha, side]) => `${diffName(sha)} ${side.why}`)
-      stop('patch-unreadable', `${why.join('; ')}, so the head cannot be shown to carry the patch reviewed at ${reviewed}; review the head and land it with no --reviewed`)
+      stop('patch-unreadable', `${why.join('; ')}, so the head cannot be shown to carry the patch of ${reviewed}; review the head and land it with no --reviewed`)
     } else if (was.patchId !== now.patchId) {
-      stop('patch-changed', `the head ${head} carries patch ${now.patchId} against ${defaultBranch}, and the reviewed head ${reviewed} carried patch ${was.patchId}, ` +
-        'so the change differs from the one reviewed; review the head and land it with no --reviewed')
+      stop('patch-changed', `the head ${head} carries patch ${now.patchId} against ${defaultBranch}, and the --reviewed head ${reviewed} carried patch ${was.patchId}, ` +
+        'so the change differs from the one asked to land; review the head and land it with no --reviewed')
     }
   }
 

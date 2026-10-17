@@ -224,7 +224,7 @@ export function mergeDenialFor({ command, cwd, env = {} }) {
     'gates itself. It refuses a pull request that is not open, is a draft, has moved off that head, is not based on ' +
     'the default branch or is behind it, or has auto-merge or a merge queue armed. It also refuses one with a ' +
     'pending, failed or unknown check that the base branch\'s known flakes do not excuse, with an unresolved ' +
-    'review thread, or with a patch other than the one reviewed at the --reviewed head. It merges with ' +
+    'review thread, or with a patch other than the one at the --reviewed head. It merges with ' +
     '--match-head-commit and confirms by re-reading the pull request. Run it when ' +
     'the human has asked to land this pull request, and act on each stop it reports.'
 }
