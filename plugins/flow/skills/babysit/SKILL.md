@@ -26,6 +26,8 @@ Validate each finding against the current head first. For a behavioral claim, pr
 - **Rejected.** The finding is wrong, stale, or about code this PR does not touch. Reply with the concrete reason, such as the guard it missed or the file it misread, and resolve the thread.
 - **The human's.** The finding is a judgment call: a contested design point, a scope question, or anything whose dismissal changes the risk posture. Reply with your read, leave the thread open, and report it. Resolve a bot's thread either way, but leave a person's thread you disagree with open for them.
 
+Never reject a finding about security, privacy, auth, billing, data retention, permission boundaries, migrations, schemas, idempotency or concurrency yourself: fix it or make it the human's. Make a small fix that clearly lowers risk without changing the PR's intent rather than argue it. A past dismissal of a similar finding settles nothing.
+
 A finding that reveals an open design question is a prep failure found late. Stop fixing, say so, and route the human, because a design decided in review threads is one nobody approved.
 
 Reply and resolve with the two GraphQL mutations in the land stage's Threads section, and read `isResolved` back. `gh pr comment` does neither.
