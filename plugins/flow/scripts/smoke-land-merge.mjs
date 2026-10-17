@@ -8,7 +8,7 @@
 // every merge. `gh pr view` answers with exactly the --json fields asked for, so a gate that stops
 // asking for a field it needs reads null rather than a value the fake volunteered, and the commit
 // headlines come only from the paged commits query, 100 to a page like GitHub's. A compare asked
-// for over the diff media type answers with a raw diff, which the real `git patch-id` hashes. Every case reads the one JSON line and the exit; each refusal asserts that nothing
+// for over the diff media type answers with a raw diff, which the executor hashes in process. Every case reads the one JSON line and the exit; each refusal asserts that nothing
 // merged, and each unproven outcome asserts that it does not read as a refusal. One case runs the
 // real gh runner against a fake gh binary to prove that GH_REPO and GH_HOST never reach gh, and
 // two prove that a gh or git planted behind a relative PATH entry never runs.
@@ -618,11 +618,13 @@ console.log('\nreview threads, the base, and every stop at once')
 console.log('\na head other than the reviewed one lands only with the patch that was reviewed')
 {
   const REVIEWED = 'a'.repeat(40)
-  // One hunk as GitHub's compare diff serves it. A rebase moves the blob ids and the line numbers,
-  // which patch-id ignores; a changed line, added or context, changes the id.
-  const diffOf = ({ blobs = '1111111..2222222', at = 1, context = 'const a = 1', added = 'const b = 2' } = {}) =>
-    `diff --git a/x.mjs b/x.mjs\nindex ${blobs} 100644\n--- a/x.mjs\n+++ b/x.mjs\n@@ -${at},1 +${at},2 @@\n ${context}\n+${added}\n`
-  const rebased = { [REVIEWED]: diffOf(), [HEAD]: diffOf({ blobs: '3333333..4444444', at: 7 }) }
+  // One hunk as GitHub's compare diff serves it. A rebase moves the blob ids, the line numbers and
+  // the function context after the hunk header, which the patch id leaves out; any other byte of a
+  // line, added or context, whitespace included, changes the id.
+  const diffOf = ({ blobs = '1111111..2222222', at = 1, fn = ' function f() {', context = 'const a = 1', added = 'const b = 2' } = {}) =>
+    `diff --git a/x.mjs b/x.mjs\nindex ${blobs} 100644\n--- a/x.mjs\n+++ b/x.mjs\n@@ -${at},1 +${at},2 @@${fn}\n ${context}\n+${added}\n`
+  const binaryOf = (blobs) => `diff --git a/x.png b/x.png\nindex ${blobs} 100644\nBinary files a/x.png and b/x.png differ\n`
+  const rebased = { [REVIEWED]: diffOf(), [HEAD]: diffOf({ blobs: '3333333..4444444', at: 7, fn: ' class G {' }) }
   const diffCalls = (st) => st.calls.filter((a) => a[0] === 'api' && a.includes('Accept: application/vnd.github.diff'))
   const reviewedArgs = [...ARGS, '--reviewed', REVIEWED]
 
@@ -637,18 +639,38 @@ console.log('\na head other than the reviewed one lands only with the patch that
   const changed = run(reviewedArgs, { st: freshState({ diffs: { ...rebased, [HEAD]: diffOf({ added: 'const b = 3' }) } }) })
   check('a head whose patch changed refuses patch-changed and nothing merges', refusedWith(changed, 'patch-changed'), shown(changed))
   check('and the detail names both SHAs and both patch ids', [REVIEWED, HEAD].every((s) => detailOf(changed, 'patch-changed').includes(s)) &&
-    (detailOf(changed, 'patch-changed').match(/\b[0-9a-f]{40}\b/g) ?? []).length === 4, detailOf(changed, 'patch-changed'))
+    (detailOf(changed, 'patch-changed').match(/\b[0-9a-f]{40}\b/g) ?? []).length === 2 &&
+    (detailOf(changed, 'patch-changed').match(/\b[0-9a-f]{64}\b/g) ?? []).length === 2, detailOf(changed, 'patch-changed'))
   // The accepted conservative edge: the same added line under a changed context line is another patch.
   const context = run(reviewedArgs, { st: freshState({ diffs: { ...rebased, [HEAD]: diffOf({ context: 'const z = 1' }) } }) })
   check('a rebase that changed only a context line beside the hunk also refuses patch-changed', refusedWith(context, 'patch-changed'), shown(context))
   const withThread = run(reviewedArgs, { st: freshState({ diffs: { ...rebased, [HEAD]: diffOf({ added: 'const b = 3' }) }, threadPages: [[thread('T1', false)]] }) })
   check('patch-changed is collected with the other stops, not returned early', refusedWith(withThread, 'patch-changed') && refusedWith(withThread, 'threads-unresolved'), shown(withThread))
 
+  const moved = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: diffOf(), [HEAD]: diffOf({ blobs: '5555555..6666666', at: 40, fn: '' }) } }) })
+  check('a head whose diff differs only in index lines, hunk line numbers and function context merges', merged(moved), shown(moved))
+  // `git patch-id --stable` drops the whitespace in every line it hashes, so it would give each of
+  // these pairs one id.
+  for (const [name, was, now] of [
+    ['a string literal whose inner whitespace changed', 'const s = "read write";', 'const s = "readwrite";'],
+    ['an added line whose indentation alone changed', '    return 1', '  return 1'],
+    ['an added line whose trailing whitespace alone changed', 'const b = 2', 'const b = 2 '],
+    ['an added line that gained a CR', 'const b = 2', 'const b = 2\r'],
+  ]) {
+    const r = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: diffOf({ added: was }), [HEAD]: diffOf({ added: now }) } }) })
+    check(`${name} refuses patch-changed and nothing merges`, refusedWith(r, 'patch-changed'), shown(r))
+  }
+  // A file with no hunk keeps its index line, the only record of what changed in it.
+  const binarySame = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: binaryOf('1111111..2222222'), [HEAD]: binaryOf('1111111..2222222') } }) })
+  check('a binary file with the same blob ids merges', merged(binarySame), shown(binarySame))
+  const binaryChanged = run(reviewedArgs, { st: freshState({ diffs: { [REVIEWED]: binaryOf('1111111..2222222'), [HEAD]: binaryOf('1111111..3333333') } }) })
+  check('a binary file whose new blob differs refuses patch-changed', refusedWith(binaryChanged, 'patch-changed'), shown(binaryChanged))
+
   for (const [name, over, text] of [
     ['a compare GitHub refuses on the head', { diffs: rebased, diffFails: HEAD }, 'HTTP 406'],
     ['a compare GitHub refuses on the reviewed head', { diffs: rebased, diffFails: REVIEWED }, 'HTTP 406'],
     ['an empty diff', { diffs: { [REVIEWED]: diffOf(), [HEAD]: '' } }, 'is empty'],
-    ['a diff patch-id prints nothing for', { diffs: { [REVIEWED]: diffOf(), [HEAD]: 'not a diff\n' } }, 'no single patch id'],
+    ['a body that is not a diff', { diffs: { [REVIEWED]: diffOf(), [HEAD]: 'not a diff\n' } }, 'is not a diff'],
     ['an unreadable default branch', { diffs: rebased, defaultBranch: null }, 'default branch could not be read'],
   ]) {
     const r = run(reviewedArgs, { st: freshState(over) })

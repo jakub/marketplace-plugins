@@ -31,13 +31,19 @@
 // new head, after a rebase or a push, would otherwise merge whatever that head carries, a conflict
 // resolved during the rebase or someone else's commit among it, with no review. So when the flag
 // names another commit than the head argument, both patches are read from GitHub over the diff
-// media type, `compare/<default>...<reviewed>` and `compare/<default>...<head>`, each is hashed by
-// `git patch-id --stable` on stdin, which needs no objects in the repository, and ids that differ
-// stop `patch-changed`. A compare that fails or is refused (a diff too large among them), an empty
-// diff, and a patch-id that prints no single id each stop `patch-unreadable`, so the check never
-// passes open. patch-id hashes the context lines too: a rebase that changed the base lines beside a
-// hunk reads as a changed patch though the pull request's own change is the same, and that is
-// accepted, because it only sends the pull request back for one more review. With no flag, or one
+// media type, `compare/<default>...<reviewed>` and `compare/<default>...<head>`, and ids that differ
+// stop `patch-changed`. The patch id is a sha256 of the diff text with only what a clean rebase
+// changes taken out: an `index <a>..<b>` line goes, and each hunk header becomes a bare `@@`, its
+// line numbers and the function context after it gone, since that context is a base line. Every
+// other line stays byte for byte, whitespace and any CR included. That is why it is not `git
+// patch-id`, which drops whitespace inside changed lines, so a string literal or Python indentation
+// that changed would read as the same patch. A file with no hunk (a binary file) keeps its index
+// line, because there the blob ids are the only record of the change, and a clean rebase cannot move
+// them. A compare that fails or is refused (a diff too large among them), and a diff that is empty
+// or does not open with `diff --git`, each stop `patch-unreadable`, so the check never passes open.
+// Context lines count: a rebase that changed the base lines beside a hunk reads as a changed patch
+// though the pull request's own change is the same, and that is accepted, because it only sends the
+// pull request back for one more review. With no flag, or one
 // equal to the head argument, none of this is read. The patch facts are read once, with the verdict,
 // and stay out of the re-read below: each id is a function of an immutable commit and its merge base
 // with the default branch, the re-read pins the head, and the tip read last pins the default branch
@@ -68,6 +74,7 @@
 // re-read and the merge is a race no client can close, and only branch protection's up-to-date rule
 // closes it on the server.
 
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 import { execCapture, ghRunner, parseJson, parseObject, runExecutor } from '../lib/gh-exec.mjs'
@@ -131,6 +138,29 @@ const stripLinks = (text) => String(text)
   .replace(/(?<!:)\/\/\S+/g, LINK_REMOVED)
   .replace(CAPABILITY_KEY, LINK_REMOVED)
 const refPath = (ref) => ref.split('/').map(encodeURIComponent).join('/')
+
+// The patch id of a compare diff; the header says what is taken out and why. Every content line
+// opens with ' ', '+', '-' or '\', so these two patterns match header lines only.
+const INDEX_LINE = /^index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]+)?$/
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/
+const patchIdOf = (diff) => {
+  const kept = []
+  let file = []
+  const flush = () => {
+    const hasHunk = file.some((line) => HUNK_HEADER.test(line))
+    for (const line of file) {
+      if (hasHunk && INDEX_LINE.test(line)) continue
+      kept.push(HUNK_HEADER.test(line) ? '@@' : line)
+    }
+    file = []
+  }
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) flush()
+    file.push(line)
+  }
+  flush()
+  return createHash('sha256').update(kept.join('\n')).digest('hex')
+}
 
 const bucketOf = (entry) => {
   if (entry.kind === 'status') return STATUS_BUCKET[upper(entry.state)] ?? 'unknown'
@@ -539,11 +569,8 @@ export function landMerge({ argv, env, cwd, runGh }) {
       const r = gh(['api', '--hostname', id.host, '-H', `Accept: ${DIFF_MEDIA_TYPE}`, `repos/${id.owner}/${id.repo}/compare/${refPath(defaultBranch)}...${sha}`], 120_000)
       if (r.code !== 0) return { why: `could not be read (${said(r)})` }
       if (r.stdout.trim() === '') return { why: 'is empty' }
-      const hashed = execCapture('git', ['-C', cwd, 'patch-id', '--stable'], { input: r.stdout, timeoutMs: 60_000 })
-      const lines = hashed.code === 0 ? hashed.stdout.split('\n').filter((line) => line.trim() !== '') : []
-      const patchId = lines.length === 1 ? lines[0].split(' ')[0] : ''
-      if (SHA.test(patchId)) return { patchId }
-      return { why: `gave no single patch id (git patch-id ${hashed.code === 0 ? `printed ${lines.length} line(s)` : `failed: ${said(hashed)}`})` }
+      if (!r.stdout.startsWith('diff --git ')) return { why: 'is not a diff' }
+      return { patchId: patchIdOf(r.stdout) }
     }
     const was = patchOf(reviewed)
     const now = patchOf(head)
