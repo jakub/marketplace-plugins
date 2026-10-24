@@ -1935,6 +1935,67 @@ const cases = {
     ok('seatContext carries the no-human-questions sentence for every access, the Claude elicitation clause for claude records alone, starts with the orchestrator sentence and stays under 6000 bytes')
   },
 
+  'resources-denied': () => {
+    const NAMES = ['ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { id, session } = boundSeat(host, access)
+        assert.equal(store.readStamp(id, 'receipt'), null)
+        denied(seatCall(host, session, NAMES[0], {}), /\(MCP resources\)/, `${host} ${access} ${NAMES[0]}`)
+        assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[0], `${host} ${access}: the first deny did not stamp the receipt`)
+        for (const name of NAMES.slice(1)) denied(seatCall(host, session, name, {}), /\(MCP resources\)/, `${host} ${access} ${name}`)
+        assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[0], `${host} ${access}: a later call replaced the receipt`)
+      }
+    }
+    for (const access of ACCESSES) {
+      const record = { ...seatRecord('claude'), id: store.newId(), access, worktree, repoRoot: worktree }
+      for (const name of NAMES) {
+        const reason = seatPolicy.toolProblem({ record, toolName: name, toolInput: {}, cwd: worktree }, { patchPaths: () => null })
+        assert.match(reason ?? '', /\(MCP resources\)/, `toolProblem ${access} ${name}`)
+        assert.ok(reason.includes(name), `toolProblem ${access} ${name}: the reason does not name the tool`)
+      }
+    }
+    for (const host of ['claude', 'codex']) {
+      const { id, session } = boundSeat(host, 'read-only')
+      denied(seatCall(host, session, NAMES[3], {}), /\(MCP resources\)/, `${host} first-call resource`)
+      assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[3], `${host}: a resource call as the first pre call did not stamp the receipt`)
+      denied(seatCall(host, session, NAMES[1], {}), /\(MCP resources\)/, `${host} second-call resource`)
+      silent(seatCall(host, session, 'Read', { file_path: '/r/a' }), `${host} Read after a resource deny`)
+      assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[3], `${host}: a later call replaced the receipt`)
+    }
+    ok('ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool, list_mcp_resources, list_mcp_resource_templates and read_mcp_resource are denied in every seat on both hosts under the MCP resources label, toolProblem says so for every access, and a resource call as the first pre call stamps the receipt, which a later call does not replace')
+  },
+
+  'resources-outside': () => {
+    const NAMES = ['ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+    const fresh = join(tmp, 'resources-outside-state')
+    for (const host of ['claude', 'codex']) {
+      for (const name of NAMES) silent(guard('pre', host, preCall(host, randomUUID(), name, {}), { env: { FLOW_DELEGATION_STATE_DIR: fresh } }), `${host} non-seat ${name}`)
+    }
+    assert.equal(existsSync(fresh), false, 'a non-seat resource call wrote seat state')
+    ok('a session that is no seat gets no answer for any of the six resource tool names on either host, and writes no state')
+  },
+
+  'resources-precedence': () => {
+    const NAMES = ['ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { id, session } = boundSeat(host, access)
+        denied(seatCall(host, session, 'mcp__x__read_mcp_resource', {}), /\(MCP allowlist\)/, `${host} ${access} mcp__x__read_mcp_resource`)
+        denied(seatCall(host, session, 'Agent', { prompt: 'x' }), /\(no spawns\)/, `${host} ${access} Agent`)
+        denied(seatCall(host, session, 'AskUserQuestion', { questions: [] }), /\(no human questions\)/, `${host} ${access} AskUserQuestion`)
+        for (const name of ['Read', 'Grep', 'ToolSearch', 'TaskOutput']) silent(seatCall(host, session, name, { file_path: '/r/a' }), `${host} ${access} ${name}`)
+        assert.equal(store.stamp(id, 'closed', { verdict: 'valid', reasons: [] }), true)
+        for (const name of NAMES) denied(seatCall(host, session, name, {}), /this seat was closed/, `${host} ${access} ${name} after close`)
+      }
+      const { id } = store.writeRecord(seatRecord(host), SCHEMA)
+      const session = randomUUID()
+      context(guard('prompt', host, promptCall(host, session, `${store.seatTag(id)}\nwork`)), `${host} void bind`)
+      for (const name of NAMES) denied(guard('pre', host, preCall(host, session, name, {})), /void seat/, `${host} void ${name}`)
+    }
+    ok('a closed seat and a void seat keep their own deny reason for a resource call, mcp__x__read_mcp_resource keeps the MCP allowlist label, Agent and AskUserQuestion keep theirs, and Read, Grep, ToolSearch and TaskOutput stay allowed')
+  },
+
   'closed-seat': () => {
     for (const host of ['claude', 'codex']) {
       for (const access of ACCESSES) {
@@ -3607,6 +3668,34 @@ registerHooks({ resolve(specifier, context, next) { const found = next(specifier
       silent(guard(mode, host, input, { env: { ...env, SEAT_TRACE: traceLog }, nodeArgs: ['--import', pathToFileURL(trace).href] }), `${mode} ${host} traced`)
       return readFileSync(traceLog, 'utf8')
     }
+    // The builtins a hook process loaded, from process.moduleLoadList in an ESM preload: unlike the
+    // resolve hook above, it sees the loads process.getBuiltinModule makes, which is how seat-store.mjs
+    // reaches node:crypto. Each child writes its own trace file, and the file must parse to a
+    // non-empty array of strings, so a trace that saw nothing fails instead of passing.
+    const moduleTrace = join(tmp, 'fastpath-modules.mjs')
+    writeFileSync(moduleTrace, `import { writeFileSync } from 'node:fs'
+process.on('exit', () => { writeFileSync(process.env.SEAT_MODULES, JSON.stringify(process.moduleLoadList)) })
+`)
+    const builtins = (mode, host, input, childEnv) => {
+      const out = join(tmp, `fastpath-modules-${randomUUID()}.json`)
+      const run = guard(mode, host, input, { env: { ...childEnv, SEAT_MODULES: out }, nodeArgs: ['--import', pathToFileURL(moduleTrace).href] })
+      assert.ok(existsSync(out), `${mode} ${host}: the module trace was never written`)
+      const list = JSON.parse(readFileSync(out, 'utf8'))
+      assert.ok(Array.isArray(list) && list.length > 0 && list.every((entry) => typeof entry === 'string'), `${mode} ${host}: the module trace is not a non-empty array of strings`)
+      return Object.assign(list, { run })
+    }
+    // The positive control: a real bind of an admitted seat, in a state directory of its own, loads
+    // node:crypto and shows it as NativeModule crypto, so the absence asserted below means something.
+    for (const host of ['claude', 'codex']) {
+      const control = join(tmp, `fastpath-control-${host}`)
+      const outer = process.env.FLOW_DELEGATION_STATE_DIR
+      process.env.FLOW_DELEGATION_STATE_DIR = control
+      let seat
+      try { seat = admittedSeat(host, { access: 'read-only', worktree, repoRoot: worktree }) } finally { if (outer === undefined) delete process.env.FLOW_DELEGATION_STATE_DIR; else process.env.FLOW_DELEGATION_STATE_DIR = outer }
+      const bound = builtins('prompt', host, promptCall(host, randomUUID(), seat.tag), { FLOW_DELEGATION_STATE_DIR: control })
+      context(bound.run, `${host} control bind`)
+      assert.ok(bound.includes('NativeModule crypto'), `${host}: the seat-path bind never showed NativeModule crypto, so the trace proves nothing`)
+    }
     for (const host of ['claude', 'codex']) {
       const session = randomUUID()
       const calls = [
@@ -3626,7 +3715,9 @@ registerHooks({ resolve(specifier, context, next) { const found = next(specifier
       assert.ok(!loaded('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })).includes('seat-policy.mjs'), 'a non-seat tool call loaded the policy')
       assert.ok(!loaded('prompt', host, promptCall(host, session, 'plain prompt')).includes('seat-policy.mjs'), 'a plain prompt loaded the policy')
       assert.ok(!loaded('stop', host, stopCall(host, session, 'done', randomUUID())).includes('seat-policy.mjs'), 'a non-seat stop loaded the policy')
-      assert.ok(!loaded('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' })).includes('node:crypto'), 'a non-seat tool call loaded node:crypto')
+      const nonSeat = builtins('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' }), env)
+      silent(nonSeat.run, `${host} non-seat Read traced`)
+      assert.deepEqual(nonSeat.filter((entry) => /crypto/i.test(entry)), [], 'a non-seat tool call loaded node:crypto')
       const plain = { task: 'Summarise the README.', role: 'general', runtimeMode: 'auto', target: { providerInstanceId: 'codex', model: MODELS.codex } }
       assert.ok(loaded('pre', host, preCall(host, session, SPELLING[host], plain)).includes('seat-policy.mjs'), 'the delegate_task gate never loaded the policy, so the trace proves nothing')
     }

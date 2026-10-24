@@ -23,10 +23,11 @@
 //                      missing or corrupt, a seat already closed, or a call that cannot be read is
 //                      denied outright.
 //   toolProblem        the child's PreToolUse containment, by the record's access: no spawned
-//                      agent, no question to the human, no MCP tool off a two-name allowlist,
-//                      edits only inside a writer's worktree, and through the shell no push, no gh
-//                      but its reads, no git off the read and writer allowlists, no model CLI, no
-//                      seat executor and nothing in the background.
+//                      agent, no question to the human, no MCP tool off a two-name allowlist and
+//                      none of the six built-in tools that read MCP resources, edits only inside a
+//                      writer's worktree, and through the shell no push, no gh but its reads, no
+//                      git off the read and writer allowlists, no model CLI, no seat executor and
+//                      nothing in the background.
 //   stopTurn, finalAnswer, failedStop
 //                      the child's Stop: which turn a stop belongs to, whether the final message
 //                      is the flow envelope with an answer that matches the seat's schema, and
@@ -202,11 +203,15 @@ export function seatCallProblem({ entry, seat, closed = null, toolName, toolInpu
 
 // ------------------------------------------------------------------------------ containment
 
-/** The MCP tools a seat may call: Context7's two read-only documentation lookups. */
+/**
+ * The MCP tools a seat may call: Context7's two read-only documentation lookups. The built-in
+ * tools that read an MCP server's resources carry no mcp__ prefix, so RESOURCES denies them by name.
+ */
 export const MCP_ALLOWLIST = Object.freeze(['mcp__claude_ai_Context7__query-docs', 'mcp__claude_ai_Context7__resolve-library-id'])
 const MCP = new Set(MCP_ALLOWLIST)
 const SPAWNS = new Set(['Agent', 'Task', 'Workflow'])
 const QUESTIONS = new Set(['AskUserQuestion', 'request_user_input', 'request_user_input_async'])
+const RESOURCES = new Set(['ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'])
 const EDITS = new Set(['Edit', 'Write', 'NotebookEdit', 'apply_patch'])
 
 /**
@@ -225,6 +230,9 @@ export function toolProblem({ record, toolName, toolInput, cwd }, { patchPaths }
   if (toolName.startsWith('mcp__')) {
     if (MCP.has(toolName)) return null
     return `flow seat (MCP allowlist): ${quote(toolName)} is not on this seat's MCP allowlist, which holds Context7's query-docs and resolve-library-id alone.`
+  }
+  if (RESOURCES.has(toolName)) {
+    return `flow seat (MCP resources): ${quote(toolName)} reads an MCP server's resources, and a seat reaches no MCP server but Context7's two lookups. Report what you needed instead.`
   }
   if (EDITS.has(toolName)) return editProblem(record, toolName, toolInput, cwd, patchPaths)
   if (toolName === 'Bash') {
