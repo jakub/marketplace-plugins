@@ -170,14 +170,14 @@ export async function serve({ host, version }) {
 
   // The era of one request, read before it is dispatched and never written anywhere. A modern
   // request's identity and capabilities come from its own _meta; a legacy request gets a snapshot of
-  // what the last initialize negotiated. A malformed or unsupported modern _meta throws the JSON-RPC
-  // error the request is answered with: the modern RequestMeta requires clientCapabilities, needs a
-  // string name and version in clientInfo when that is present, and defines experimental and every
-  // extension's settings as objects.
+  // what the last initialize negotiated. A _meta that is no object cannot carry the version key, so
+  // the request is legacy by construction and is answered as it always was. A malformed or
+  // unsupported modern _meta throws the JSON-RPC error the request is answered with: the modern
+  // RequestMeta requires clientCapabilities, needs a string name and version in clientInfo when that
+  // is present, and defines experimental and every extension's settings as objects.
   function context(message) {
     const meta = message.params?._meta
-    if (meta !== undefined && !isObject(meta)) throw rpcError(-32602, 'Invalid params: _meta must be an object.')
-    if (!meta || !Object.hasOwn(meta, META_VERSION)) {
+    if (!isObject(meta) || !Object.hasOwn(meta, META_VERSION)) {
       return Object.freeze({ era: 'legacy', protocolVersion: legacyProtocol, clientInfo, capabilities: clientCapabilities, tasks: false })
     }
     const requested = meta[META_VERSION]

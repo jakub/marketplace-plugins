@@ -1564,11 +1564,12 @@ try {
   // The modern RequestMeta is checked whole: clientCapabilities is required, clientInfo needs a string
   // name and version when present, and experimental, the extensions map and every entry of either
   // are objects, never an array or null. Each input is refused before dispatch, on a tool call and on
-  // a task method whose id names a visible job.
+  // a task method whose id names a visible job. A non-object _meta is not here: it cannot carry the
+  // version key, so it is legacy (legacy-meta-non-object-unchanged).
   const capabilitiesOf = (capabilities) => ({ [META_VERSION]: MODERN, [META_CAPABILITIES]: capabilities })
   const infoOf = (clientInfo) => ({ ...capabilitiesOf({}), [META_CLIENT]: clientInfo })
   const UNKNOWN = 'com.example/unknown'
-  for (const meta of ['x', { [META_VERSION]: 20260728 }, { [META_VERSION]: MODERN }, { [META_VERSION]: MODERN, [META_CLIENT]: { name: 'smoke', version: '0' } },
+  for (const meta of [{ [META_VERSION]: 20260728 }, { [META_VERSION]: MODERN }, { [META_VERSION]: MODERN, [META_CLIENT]: { name: 'smoke', version: '0' } },
     capabilitiesOf('x'), capabilitiesOf({ extensions: 'invalid' }), capabilitiesOf({ extensions: [] }),
     capabilitiesOf({ extensions: { [TASKS]: [] } }), capabilitiesOf({ extensions: { [TASKS]: null } }),
     capabilitiesOf({ extensions: { [UNKNOWN]: null } }), capabilitiesOf({ extensions: { [UNKNOWN]: [] } }), capabilitiesOf({ extensions: { [UNKNOWN]: 'x' } }),
@@ -1589,6 +1590,13 @@ try {
   assert.equal(controlTask.error?.code, -32021, `tasks/get with an unknown extension was refused before dispatch: ${JSON.stringify(controlTask)}`)
   modern.noOutbound()
   ok('malformed-modern-meta')
+
+  // A _meta that is no object cannot carry the version key, so the request is legacy and is answered
+  // as it always was.
+  for (const meta of [null, [], 'x']) {
+    assert.deepEqual((await claudeHost.raw('ping', { _meta: meta })).result, {}, `ping with _meta ${JSON.stringify(meta)}`)
+  }
+  ok('legacy-meta-non-object-unchanged')
 
   const modernInit = await modern.request('initialize', { protocolVersion: MODERN, capabilities: {}, clientInfo: { name: 'smoke', version: '0' } })
   assert.deepEqual(modernInit.error, { code: -32601, message: 'Method not found: initialize' })
