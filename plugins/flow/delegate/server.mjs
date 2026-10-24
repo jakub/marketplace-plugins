@@ -171,7 +171,9 @@ export async function serve({ host, version }) {
   // The era of one request, read before it is dispatched and never written anywhere. A modern
   // request's identity and capabilities come from its own _meta; a legacy request gets a snapshot of
   // what the last initialize negotiated. A malformed or unsupported modern _meta throws the JSON-RPC
-  // error the request is answered with.
+  // error the request is answered with: the modern RequestMeta requires clientCapabilities, needs a
+  // string name and version in clientInfo when that is present, and defines experimental and every
+  // extension's settings as objects.
   function context(message) {
     const meta = message.params?._meta
     if (meta !== undefined && !isObject(meta)) throw rpcError(-32602, 'Invalid params: _meta must be an object.')
@@ -181,20 +183,27 @@ export async function serve({ host, version }) {
     const requested = meta[META_VERSION]
     if (typeof requested !== 'string' || !requested) throw rpcError(-32602, `Invalid params: ${META_VERSION} must be a non-empty string.`)
     if (requested !== MODERN) throw rpcError(-32022, 'Unsupported protocol version.', { supported: [MODERN], requested })
+    if (!Object.hasOwn(meta, META_CAPABILITIES)) throw rpcError(-32602, `Invalid params: ${META_CAPABILITIES} is required.`)
     for (const key of [META_CLIENT, META_CAPABILITIES]) {
       if (Object.hasOwn(meta, key) && !isObject(meta[key])) throw rpcError(-32602, `Invalid params: ${key} must be an object.`)
     }
-    // The nested declarations a dispatch reads are checked too: an extensions map, when present, and
-    // the tasks extension in it, are each an object and never an array.
-    const capabilities = meta[META_CAPABILITIES] ?? {}
-    const extensions = capabilities.extensions ?? {}
-    if (Object.hasOwn(capabilities, 'extensions') && !isObject(capabilities.extensions)) {
-      throw rpcError(-32602, `Invalid params: ${META_CAPABILITIES}.extensions must be an object.`)
+    const info = meta[META_CLIENT]
+    if (info !== undefined && (typeof info.name !== 'string' || typeof info.version !== 'string')) {
+      throw rpcError(-32602, `Invalid params: ${META_CLIENT} needs a string name and a string version.`)
     }
-    const tasks = Object.hasOwn(extensions, TASKS)
-    if (tasks && !isObject(extensions[TASKS])) throw rpcError(-32602, `Invalid params: the ${TASKS} extension must be an object.`)
+    // The nested declarations are checked too: experimental and extensions, when present, are objects,
+    // and so is every entry of either, an unknown extension's settings included.
+    const capabilities = meta[META_CAPABILITIES]
+    for (const field of ['experimental', 'extensions']) {
+      if (!Object.hasOwn(capabilities, field)) continue
+      if (!isObject(capabilities[field])) throw rpcError(-32602, `Invalid params: ${META_CAPABILITIES}.${field} must be an object.`)
+      for (const [entry, settings] of Object.entries(capabilities[field])) {
+        if (!isObject(settings)) throw rpcError(-32602, `Invalid params: ${META_CAPABILITIES}.${field}[${JSON.stringify(entry)}] must be an object.`)
+      }
+    }
+    const tasks = Object.hasOwn(capabilities.extensions ?? {}, TASKS)
     return Object.freeze({
-      era: 'modern', protocolVersion: requested, clientInfo: meta[META_CLIENT] ?? null, capabilities, tasks,
+      era: 'modern', protocolVersion: requested, clientInfo: info ?? null, capabilities, tasks,
     })
   }
 
