@@ -1,0 +1,1 @@
+Now stop that background task: call TaskStop with task_id of the task you started, exactly once. Then say in one line what TaskStop returned, verbatim.
