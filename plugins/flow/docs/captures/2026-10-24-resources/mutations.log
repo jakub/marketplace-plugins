@@ -1,0 +1,163 @@
+34:process.getBuiltinModule("node:crypto")
+== A new smoke + getBuiltinModule mutation
+fastpath-silent
+node:internal/modules/run_main:111
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: a non-seat tool call loaded node:crypto
++ actual - expected
+
++ [
++   'Internal Binding crypto',
++   'NativeModule internal/crypto/random',
++   'NativeModule internal/crypto/hashnames',
++   'NativeModule internal/crypto/util',
++   'NativeModule internal/crypto/keys',
++   'NativeModule internal/crypto/argon2',
++   'NativeModule internal/crypto/pbkdf2',
++   'NativeModule internal/crypto/scrypt',
++   'NativeModule internal/crypto/hkdf',
++   'NativeModule internal/crypto/keygen',
++   'NativeModule internal/crypto/diffiehellman',
++   'NativeModule internal/crypto/cipher',
++   'NativeModule internal/crypto/sig',
++   'NativeModule internal/crypto/hash',
++   'NativeModule internal/crypto/provider_mac',
++   'NativeModule internal/crypto/x509',
++   'NativeModule internal/crypto/certificate',
++   'NativeModule internal/crypto/kem',
++   'NativeModule crypto'
++ ]
+- []
+
+    at fastpath-silent (file://<worktree>/plugins/flow/scripts/smoke-seat.mjs:3720:14)
+    at file://<worktree>/plugins/flow/scripts/smoke-seat.mjs:3757:22 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: [
+    'Internal Binding crypto',
+    'NativeModule internal/crypto/random',
+    'NativeModule internal/crypto/hashnames',
+    'NativeModule internal/crypto/util',
+    'NativeModule internal/crypto/keys',
+    'NativeModule internal/crypto/argon2',
+    'NativeModule internal/crypto/pbkdf2',
+    'NativeModule internal/crypto/scrypt',
+    'NativeModule internal/crypto/hkdf',
+    'NativeModule internal/crypto/keygen',
+    'NativeModule internal/crypto/diffiehellman',
+    'NativeModule internal/crypto/cipher',
+    'NativeModule internal/crypto/sig',
+    'NativeModule internal/crypto/hash',
+    'NativeModule internal/crypto/provider_mac',
+    'NativeModule internal/crypto/x509',
+    'NativeModule internal/crypto/certificate',
+    'NativeModule internal/crypto/kem',
+    'NativeModule crypto'
+  ],
+  expected: [],
+  operator: 'deepStrictEqual',
+  diff: 'simple'
+}
+
+Node.js v26.10.0
+exit=1
+== A old smoke + getBuiltinModule mutation
+fastpath-silent
+  ok: a non-seat session on either host, with or without a tag-like string, an unreadable body, or an untagged delegate_task, gets no answer, writes no state, never loads node:crypto, and never loads seat-policy.mjs outside the gate
+
+smoke-seat: ALL PASS (1 checks, 1 cases)
+exit=0
+import "node:crypto"
+== B new smoke + static import mutation
+fastpath-silent
+node:internal/modules/run_main:111
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: a non-seat tool call loaded node:crypto
++ actual - expected
+
++ [
++   'Internal Binding crypto',
++   'NativeModule internal/crypto/random',
++   'NativeModule internal/crypto/hashnames',
++   'NativeModule internal/crypto/util',
++   'NativeModule internal/crypto/keys',
++   'NativeModule internal/crypto/argon2',
++   'NativeModule internal/crypto/pbkdf2',
++   'NativeModule internal/crypto/scrypt',
++   'NativeModule internal/crypto/hkdf',
++   'NativeModule internal/crypto/keygen',
++   'NativeModule internal/crypto/diffiehellman',
++   'NativeModule internal/crypto/cipher',
++   'NativeModule internal/crypto/sig',
++   'NativeModule internal/crypto/hash',
++   'NativeModule internal/crypto/provider_mac',
++   'NativeModule internal/crypto/x509',
++   'NativeModule internal/crypto/certificate',
++   'NativeModule internal/crypto/kem',
++   'NativeModule crypto',
++   'NativeModule internal/crypto/webcrypto'
++ ]
+- []
+
+    at fastpath-silent (file://<worktree>/plugins/flow/scripts/smoke-seat.mjs:3720:14)
+    at file://<worktree>/plugins/flow/scripts/smoke-seat.mjs:3757:22 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: [
+    'Internal Binding crypto',
+    'NativeModule internal/crypto/random',
+    'NativeModule internal/crypto/hashnames',
+    'NativeModule internal/crypto/util',
+    'NativeModule internal/crypto/keys',
+    'NativeModule internal/crypto/argon2',
+    'NativeModule internal/crypto/pbkdf2',
+    'NativeModule internal/crypto/scrypt',
+    'NativeModule internal/crypto/hkdf',
+    'NativeModule internal/crypto/keygen',
+    'NativeModule internal/crypto/diffiehellman',
+    'NativeModule internal/crypto/cipher',
+    'NativeModule internal/crypto/sig',
+    'NativeModule internal/crypto/hash',
+    'NativeModule internal/crypto/provider_mac',
+    'NativeModule internal/crypto/x509',
+    'NativeModule internal/crypto/certificate',
+    'NativeModule internal/crypto/kem',
+    'NativeModule crypto',
+    'NativeModule internal/crypto/webcrypto'
+  ],
+  expected: [],
+  operator: 'deepStrictEqual',
+  diff: 'simple'
+}
+
+Node.js v26.10.0
+exit=1
+== B old smoke + static import mutation
+fastpath-silent
+node:internal/modules/run_main:111
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: a non-seat tool call loaded node:crypto
+    at fastpath-silent (file://<worktree>/plugins/flow/scripts/smoke-seat.mjs:3629:14)
+    at file://<worktree>/plugins/flow/scripts/smoke-seat.mjs:3666:22 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: '==',
+  diff: 'simple'
+}
+
+Node.js v26.10.0
+exit=1
+== C new smoke, restored
+fastpath-silent
+  ok: a non-seat session on either host, with or without a tag-like string, an unreadable body, or an untagged delegate_task, gets no answer, writes no state, never loads node:crypto, and never loads seat-policy.mjs outside the gate
+
+smoke-seat: ALL PASS (1 checks, 1 cases)
+exit=0
