@@ -30,6 +30,11 @@
 // turn it opens (see continued), so a follow-up turn that never reaches Stop is not judged by the
 // turn before it.
 //
+// One prompt with a misplaced tag is not void: an echo, whose line 1 holds no whole tag and whose
+// every tag names a seat already bound to another session, is handled as an untagged prompt. A T3
+// wake quotes the child's task text, tag and all, into the parent's prompt, and on 2026-10-23 that
+// voided the parent orchestrator's session and denied every tool call it made after.
+//
 // Stop holds a bound seat to its answer. The turn is Claude's prompt_id or Codex's turn_id. A final
 // message that is the flow envelope with a matching answer is written as result-<turn>.json with
 // the digest of the message and the models that served it: Codex names its model in the Stop call,
@@ -61,6 +66,7 @@ async function prompt(input) {
   if (typeof text !== 'string') return
   const tag = text.includes('<flow-seat ') ? store.parseTag(text) : null
   if (tag === null) return continued(input)
+  if (tag.void && echoedElsewhere(tag.displaced, input.session_id)) return continued(input)
   const policy = await loadPolicy()
   const sessionId = input.session_id
   const id = tag.id ?? null
@@ -100,6 +106,19 @@ async function prompt(input) {
     complain(`bind: ${error.message}`)
     voidSeat('bind-failed')
   }
+}
+
+// True when parseTag found displaced tags and every one names a seat whose bound stamp is held by
+// another session. Anything less, an absent or unbound seat, a stamp that is unreadable or names no
+// host and session, or a seat bound to this very session, leaves the prompt void.
+function echoedElsewhere(displaced, sessionId) {
+  if (!Array.isArray(displaced) || displaced.length === 0) return false
+  return displaced.every((id) => {
+    const bound = store.readStamp(id, 'bound')
+    return bound !== null && typeof bound === 'object' && !Array.isArray(bound)
+      && typeof bound.host === 'string' && typeof bound.sessionId === 'string'
+      && (bound.host !== host || bound.sessionId !== sessionId)
+  })
 }
 
 // A prompt with no seat tag in a session bound to a seat opens another turn of that seat, such as

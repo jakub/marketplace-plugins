@@ -6,8 +6,9 @@
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
 // Cases are grouped by prefix (store-*, wire-*, admit-*, record-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
-// closed-*, stop-*, open-*, close-*, prune-*, trust-*, fastpath-*), and record-identity-required
-// follows one refused record through admission, bind and close; the containment families run against a
+// closed-*, stop-*, open-*, close-*, prune-*, trust-*, fastpath-*), record-identity-required
+// follows one refused record through admission, bind and close, and echoed-tag-of-bound-seat-ignored
+// replays a T3 wake that quotes a bound child's tag into another session; the containment families run against a
 // real temp git repository as the worktree, the executor families (open-*, close-*, prune-open,
 // trust-*) run scripts/seat.mjs as a process against a real canonical checkout with a linked
 // worktree and a fake codex first on PATH that speaks the App Server's JSON-RPC, and
@@ -541,13 +542,19 @@ const cases = {
 
     const other = store.newId()
     const VOID = { void: 'tag-not-on-line-1' }
-    assert.deepEqual(store.parseTag(`do the work\n${tag}`), VOID, 'a valid tag on line 2')
+    const DISPLACED = (...ids) => ({ ...VOID, displaced: ids })
+    assert.deepEqual(store.parseTag(`do the work\n${tag}`), DISPLACED(id), 'a valid tag on line 2')
     assert.deepEqual(store.parseTag(`${tag}\nbody\n<flow-seat id=${other}>`), VOID, 'a second tag below a valid line 1')
-    assert.deepEqual(store.parseTag(`please ${tag}\nbody`), VOID, 'line 1 holding more than the tag')
-    assert.deepEqual(store.parseTag(`${tag} \nbody`), VOID, 'trailing space after the tag')
-    assert.deepEqual(store.parseTag(`${tag}\r\nbody`), VOID, 'a CR ending line 1')
-    assert.deepEqual(store.parseTag(`\n${tag}`), VOID, 'an empty line 1')
-    ok('a well-formed tag anywhere but as the whole of line 1 voids the seat, including a valid line 1 with a second tag below it')
+    assert.deepEqual(store.parseTag(`${tag}\nbody\n${tag}`), VOID, 'the line-1 tag repeated below it')
+    assert.deepEqual(store.parseTag(`please ${tag}\nbody`), DISPLACED(id), 'line 1 holding more than the tag')
+    assert.deepEqual(store.parseTag(`${tag} \nbody`), DISPLACED(id), 'trailing space after the tag')
+    assert.deepEqual(store.parseTag(`${tag}\r\nbody`), DISPLACED(id), 'a CR ending line 1')
+    assert.deepEqual(store.parseTag(`\n${tag}`), DISPLACED(id), 'an empty line 1')
+    assert.deepEqual(store.parseTag(`a ${store.seatTag(other)} b ${tag}\n${tag}\n<flow-seat id=${other}>`), DISPLACED(other, id), 'two ids, each repeated')
+    for (const prompt of [`do the work\n${tag}`, `${tag}\nbody\n${store.seatTag(other)}`]) {
+      assert.equal(Object.hasOwn(store.parseTag(prompt), 'id'), false, `a void result carries an id: ${prompt}`)
+    }
+    ok('a well-formed tag anywhere but as the whole of line 1 voids the seat, including a valid line 1 with a second tag below it; without a line-1 tag the void names every distinct displaced id in order, never as id')
 
     for (const malformed of [
       `<flow-seat id=${id.toUpperCase()}>`, `<flow-seat id=${id.slice(1)}>`, `<flow-seat id=${id}0>`, `<flow-seat id="${id}">`,
@@ -1264,6 +1271,62 @@ const cases = {
       denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), /void seat/, 'the voided session')
     }
     ok('a seat tag below line 1 voids the session with no record named, and every tool call is denied')
+  },
+
+  'echoed-tag-of-bound-seat-ignored': () => {
+    // T3 names a delegated task by its text when it has no title, so a t3_thread_send wake hands
+    // the parent a task-notification that quotes the child's task, seat tag and all. This is the
+    // body observed on 2026-10-23, with the line break T3 kept inside the quoted task.
+    const notification = (tag) => {
+      const taskId = `node:delegated-task:command%3Amcp%3A${randomUUID()}%3Athread-send%3A${randomUUID()}`
+      return `Delegated task ${taskId} (${tag}\nWorktree: /home/u/repo/.flow-worktrees/repo-issue-1) [completed]. Use task_status with taskId ${taskId} to read the result.`
+    }
+    const listing = (id) => [readdirSync(seats).sort(), readdirSync(join(seats, id)).sort(), indexEntries()]
+    const turnKey = (host, key) => (host === 'claude' ? { prompt_id: key } : { turn_id: key })
+    const voided = (host, session, body, what) => {
+      assert.match(context(guard('prompt', host, promptCall(host, session, body)), what), /tag-not-on-line-1/, what)
+      assert.deepEqual(store.readIndex(host, session), { id: null, void: 'tag-not-on-line-1' }, what)
+    }
+    for (const host of ['claude', 'codex']) {
+      const child = boundSeat(host, 'read-only')
+      const tag = store.seatTag(child.id)
+      for (const [what, body] of [['observed notification', notification(tag)], ['tag alone on line 2', `The child finished.\n${tag}`]]) {
+        const parent = randomUUID()
+        const before = listing(child.id)
+        silent(guard('prompt', host, promptCall(host, parent, body)), `${host} ${what}`)
+        assert.equal(store.readIndex(host, parent), null, `${host} ${what}: the waking session was indexed`)
+        assert.equal(store.readStamp(child.id, 'void'), null, `${host} ${what}: the child's record was voided`)
+        assert.deepEqual(listing(child.id), before, `${host} ${what}: seat state changed`)
+        assert.deepEqual(store.readIndex(host, child.session), { id: child.id }, `${host} ${what}: the child's binding moved`)
+        silent(guard('pre', host, preCall(host, parent, 'Bash', { command: 'git status' })), `${host} ${what}: the parent's next tool call`)
+      }
+      ok(`${host}: a prompt that quotes the tag of a seat bound to another session, inside a T3 task-notification or alone on line 2, is an ordinary prompt: no answer, no index entry, no void stamp, no seat state written`)
+
+      // Controls: anything short of every displaced tag naming a seat bound elsewhere voids as today.
+      const unbound = admittedSeat(host)
+      voided(host, randomUUID(), `The child finished.\n${unbound.tag}`, `${host} unbound admitted seat`)
+      assert.equal(store.readStamp(unbound.id, 'void'), null, `${host}: a quoted unbound tag stamped its record void`)
+      voided(host, randomUUID(), notification(store.seatTag(store.newId())), `${host} absent seat`)
+      const malformed = store.writeRecord(seatRecord(host), SCHEMA).id
+      assert.equal(store.stamp(malformed, 'bound', { sessionId: child.session }), true)
+      voided(host, randomUUID(), `x\n${store.seatTag(malformed)}`, `${host} bound stamp without a host`)
+      const self = boundSeat(host, 'read-only')
+      voided(host, self.session, notification(store.seatTag(self.id)), `${host} the seat's own session`)
+      voided(host, randomUUID(), `${notification(tag)}\n${store.seatTag(store.newId())}`, `${host} bound elsewhere plus an absent seat`)
+      const fresh = admittedSeat(host)
+      voided(host, randomUUID(), `${fresh.tag}\n${notification(tag)}`, `${host} a line-1 tag with an echo below it`)
+      assert.equal(store.readStamp(fresh.id, 'bound'), null, `${host}: a line-1 tag with extras bound its seat`)
+      assert.equal(store.readStamp(child.id, 'void'), null, `${host}: a control voided the child's record`)
+      ok(`${host}: a quoted tag of an unbound or absent seat, of a seat whose bound stamp names no host, of the seat this session holds, or beside an absent seat's tag voids as today, and so does a line-1 tag with an echo below it`)
+
+      // A parent that is itself a bound seat gets its follow-up turn recorded, as for any untagged prompt.
+      const parent = boundSeat(host, 'read-only')
+      const key = randomUUID()
+      silent(guard('prompt', host, promptCall(host, parent.session, notification(tag), turnKey(host, key))), `${host} bound parent`)
+      assert.equal(store.readState(parent.id).opened, key, `${host}: the bound parent's turn was not recorded`)
+      assert.deepEqual(store.readIndex(host, parent.session), { id: parent.id })
+      ok(`${host}: a bound seat woken by another seat's echo records the turn it opens and stays bound`)
+    }
   },
 
   'bind-record-faults': () => {
