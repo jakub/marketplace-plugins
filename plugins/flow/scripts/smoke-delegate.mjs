@@ -1828,13 +1828,23 @@ try {
   }
   ok('tasks-missing-capability-legacy')
 
-  // An id this session cannot see gets one answer, whatever the reason.
+  // An id this session cannot see gets one answer, whatever the reason. A pruned id is one that a
+  // task answered for until a server started and its prune removed the job, ended past retention.
   const removed = record({ status: 'succeeded', createdAt: new Date().toISOString(), endedAt: new Date().toISOString() })
   rmSync(jobs.jobDir(removed.id), { recursive: true })
+  const pastRetention = new Date(Date.now() - RETENTION_MS - 86_400_000).toISOString()
+  const pruned = record({ status: 'succeeded', createdAt: pastRetention, endedAt: pastRetention })
+  assert.equal((await tasks.tasksGet(pruned.id)).result?.status, 'completed', 'the job to prune was not a task before the prune')
+  const pruning = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  assert.equal((await pruning.request('ping')).result.resultType, 'complete')
+  assert.equal(existsSync(jobs.jobDir(pruned.id)), false, 'a starting server did not prune a job ended past retention')
   const unknownAnswers = []
-  for (const params of [{ taskId: 'nope' }, {}, { taskId: claudeRead.job.id }, { taskId: viaRoots.job.id }, { taskId: removed.id }]) {
-    for (const method of ['tasks/get', 'tasks/cancel', 'tasks/update']) unknownAnswers.push(JSON.stringify((await tasks.request(method, params, { tasks: true })).error))
+  for (const client of [tasks, pruning]) {
+    for (const params of [{ taskId: 'nope' }, {}, { taskId: claudeRead.job.id }, { taskId: viaRoots.job.id }, { taskId: removed.id }, { taskId: pruned.id }]) {
+      for (const method of ['tasks/get', 'tasks/cancel', 'tasks/update']) unknownAnswers.push(JSON.stringify((await client.request(method, params, { tasks: true })).error))
+    }
   }
+  pruning.close()
   assert.deepEqual([...new Set(unknownAnswers)], [JSON.stringify({ code: -32602, message: 'Unknown task' })])
   ok('tasks-unknown-id-uniform')
 
