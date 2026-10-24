@@ -1,22 +1,23 @@
 #!/bin/bash
-# Copies the capture into the worktree's docs tree for the commit. Usage: bash assemble.sh
+# Copies a finished take from the capture working directory into this checkout's docs tree for the commit: the
+# arm outputs, HEAD.txt, arm-e.md and smoke-all.log when present, and every takes/<head>/. The harness files and
+# README.md are not copied; they live in the docs tree already.
+# Usage: CAPTURE_DIR=<dir> bash assemble.sh     (or: bash assemble.sh <dir>)
 set -eu
-C=/home/jakub/code/marketplace-plugins/.flow-worktrees/marketplace-plugins-issue-34-feat-flow-serve-flow-delegate-jobs-as/.flow-scratch/capture
-D=/home/jakub/code/marketplace-plugins/.flow-worktrees/marketplace-plugins-issue-34-feat-flow-serve-flow-delegate-jobs-as/plugins/flow/docs/captures/2026-10-23-mcp-tasks
-mkdir -p $D/harness $D/takes/36eb98f $D/takes/b993d39
-cp $C/README.md $C/HEAD.txt $C/arm-a.jsonl $C/arm-a.out $C/arm-b.jsonl $C/arm-b.out $C/arm-c.jsonl $C/arm-c.out \
-   $C/arm-d-pr.jsonl $C/arm-d-pr.last.txt $C/arm-d-base.jsonl $C/arm-d-base.last.txt $C/arm-e.md $D/
-cp $C/../smoke-all-final.log $D/smoke-all.log
-cp $C/tee.mjs $C/drive.mjs $C/make-fake.mjs $C/doctor-probe.mjs $C/arm-d.sh $C/run-all.sh $C/assemble.sh \
-   $C/prompt-a.txt $C/prompt-b.txt $C/prompt-b2.txt $C/prompt-c.txt $C/prompt-d.txt \
-   $C/mcp-a.json $C/mcp-b.json $C/mcp-c.json $C/settings-plain.json $D/harness/
-# The takes of arms (a) to (d) at the two heads before the final one.
-cp $C/takes/arm-a.jsonl $C/takes/arm-b.jsonl $C/takes/arm-c.jsonl $C/takes/arm-d-pr.jsonl $C/takes/arm-d-base.jsonl $D/takes/36eb98f/
-cp $C/takes/b993d39/arm-a.jsonl $C/takes/b993d39/arm-b.jsonl $C/takes/b993d39/arm-c.jsonl $C/takes/b993d39/arm-d-pr.jsonl $C/takes/b993d39/arm-d-base.jsonl $D/takes/b993d39/
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(git -C "$HERE" rev-parse --show-toplevel)
+C=${1:-${CAPTURE_DIR:-}}
+[ -n "$C" ] && [ -f "$C/HEAD.txt" ] || { echo "usage: CAPTURE_DIR=<dir with a finished take> bash assemble.sh" >&2; exit 2; }
+D=$ROOT/plugins/flow/docs/captures/2026-10-23-mcp-tasks
+mkdir -p "$D/takes"
+cp "$C/HEAD.txt" "$C"/arm-a.jsonl "$C"/arm-a.out "$C"/arm-b.jsonl "$C"/arm-b.out "$C"/arm-c.jsonl "$C"/arm-c.out \
+   "$C"/arm-d-pr.jsonl "$C"/arm-d-pr.last.txt "$C"/arm-d-base.jsonl "$C"/arm-d-base.last.txt "$D/"
+for extra in arm-e.md smoke-all.log; do [ -f "$C/$extra" ] && cp "$C/$extra" "$D/"; done
+for t in "$C"/takes/*/; do [ -d "$t" ] && cp -r "$t" "$D/takes/"; done
 # The tee redacts prompt, requestPreview, output, text and message values on the wire; the envelope's summary line
 # and the model-turn logs quote the request too, so the copied files get the same redaction here.
-find $D -maxdepth 1 -type f \( -name "arm-*" \) -exec sed -i -E 's/FLOW_FAKE_MODE=[a-z]+ say hello/<redacted prompt>/g' {} +
-find $D/takes -type f -exec sed -i -E 's/FLOW_FAKE_MODE=[a-z]+ say hello/<redacted prompt>/g' {} +
+find "$D" -maxdepth 1 -type f -name "arm-*" -exec sed -i -E 's/FLOW_FAKE_MODE=[a-z]+ say hello/<redacted prompt>/g' {} +
+find "$D/takes" -type f -exec sed -i -E 's/FLOW_FAKE_MODE=[a-z]+ say hello/<redacted prompt>/g' {} +
 echo "== secret scan of the capture (expect only this script, which holds the patterns)"
-grep -rIl -E 'sk-ant|ghp_|ghs_|xoxb|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH) PRIVATE' $D || true
-du -sh $D
+grep -rIl -E 'sk-ant|ghp_|ghs_|xoxb|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH) PRIVATE' "$D" || true
+du -sh "$D"
