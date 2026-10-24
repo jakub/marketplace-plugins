@@ -1276,10 +1276,12 @@ const cases = {
   'echoed-tag-of-bound-seat-ignored': () => {
     // T3 names a delegated task by its text when it has no title, so a t3_thread_send wake hands
     // the parent a task-notification that quotes the child's task, seat tag and all. This is the
-    // body observed on 2026-10-23, with the line break T3 kept inside the quoted task.
+    // body observed on 2026-10-23: one wake with the title absent, so the child's task text sits
+    // inside the parentheses. The tag opens line 1 after the "(", line 2 is the task's second line
+    // followed by the closing ")" and the status, and line 3 opens the fenced json result.
     const notification = (tag) => {
       const taskId = `node:delegated-task:command%3Amcp%3A${randomUUID()}%3Athread-send%3A${randomUUID()}`
-      return `Delegated task ${taskId} (${tag}\nWorktree: /home/u/repo/.flow-worktrees/repo-issue-1) [completed]. Use task_status with taskId ${taskId} to read the result.`
+      return `Delegated task ${taskId} (${tag}\nWorktree: /home/u/repo/.flow-worktrees/repo-issue-1) [completed]:\n\`\`\`json`
     }
     const listing = (id) => [readdirSync(seats).sort(), readdirSync(join(seats, id)).sort(), indexEntries()]
     const turnKey = (host, key) => (host === 'claude' ? { prompt_id: key } : { turn_id: key })
@@ -1290,6 +1292,14 @@ const cases = {
     for (const host of ['claude', 'codex']) {
       const child = boundSeat(host, 'read-only')
       const tag = store.seatTag(child.id)
+      // The fixture has to keep the observed position: the tag on line 1, after text, never a whole line.
+      const observed = notification(tag).split('\n')
+      assert.equal(observed.length, 3, 'the observed notification has three lines')
+      assert.ok(observed[0].endsWith(` (${tag}`) && observed[0].startsWith('Delegated task '), 'the tag sits on line 1 after the opening parenthesis')
+      assert.notEqual(observed[0].trim(), tag, 'line 1 is not a whole tag')
+      assert.ok(!observed[1].includes(tag) && !observed[2].includes(tag), 'the tag appears on line 1 only')
+      assert.match(observed[1], /^Worktree: .*\) \[completed\]:$/)
+      assert.equal(observed[2], '```json')
       for (const [what, body] of [['observed notification', notification(tag)], ['tag alone on line 2', `The child finished.\n${tag}`]]) {
         const parent = randomUUID()
         const before = listing(child.id)
