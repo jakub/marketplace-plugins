@@ -59,7 +59,7 @@ function tools(target) {
     {
       name: `delegate_to_${target}`,
       title: `Delegate to ${title}`,
-      description: `Run a ${title} job: a task, or an adversarial review of a pinned base..head diff that returns typed findings. Waits for the outcome unless waitSeconds is 0. continue resumes a finished job's thread.`,
+      description: `Run a ${title} job: a task, or an adversarial review of a pinned base..head diff that returns typed findings. Waits for the outcome unless waitSeconds is 0, or returns a background MCP task when the client declares the tasks extension and waitSeconds is absent. continue resumes a finished job's thread.`,
       inputSchema: object(start, ['prompt', 'model', 'effort', 'cwd']),
     },
     {
