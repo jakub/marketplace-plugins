@@ -1,8 +1,12 @@
-// The delegate MCP server, spoken by hand over stdio: initialize, ping, tools/list, tools/call,
-// the cancelled notification, and one outbound request, roots/list. It declares no outputSchema,
-// so structuredContent needs no validator. Jobs outlive this process: a runner is detached, and
-// stdin closing ends the server and nothing else. The doctor is the one tool that starts a
-// provider in this process, for a handshake that sends no prompt.
+// The delegate MCP server, spoken by hand over stdio in two eras, chosen per request. A request
+// whose params._meta carries io.modelcontextprotocol/protocolVersion is modern (2026-07-28): its
+// identity and capabilities come from that _meta alone, and the server writes no request to the
+// client for it. Any other request is legacy and reads what initialize negotiated. Both eras get
+// server/discover, ping, tools/list, tools/call and the cancelled notification; initialize is
+// legacy only, and the one outbound request, roots/list, serves legacy requests only. It declares
+// no outputSchema, so structuredContent needs no validator. Jobs outlive this process: a runner is
+// detached, and stdin closing ends the server and nothing else. The doctor is the one tool that
+// starts a provider in this process, for a handshake that sends no prompt.
 import { mkdirSync, realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
@@ -12,7 +16,14 @@ import { transport as codex } from './codex-app-server.mjs'
 import * as jobs from './jobs.mjs'
 import { findExecutable, probe, providerEnv } from './providers.mjs'
 
+// The versions a legacy initialize negotiates, and the one modern version a request's _meta may name.
 const PROTOCOLS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']
+const MODERN = '2026-07-28'
+const META_VERSION = 'io.modelcontextprotocol/protocolVersion'
+const META_CLIENT = 'io.modelcontextprotocol/clientInfo'
+const META_CAPABILITIES = 'io.modelcontextprotocol/clientCapabilities'
+const TASKS = 'io.modelcontextprotocol/tasks'
+const SERVER_INFO = 'io.modelcontextprotocol/serverInfo'
 const RESULT_KEYS = ['jobId', 'waitSeconds', 'events']
 const TRANSPORTS = { codex, claude }
 
@@ -109,12 +120,21 @@ function publicError(error) {
   return { kind: 'INTERNAL', message: 'The delegate server failed; server.log in the state directory has the detail.' }
 }
 
+const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
+// A protocol error, answered as a JSON-RPC error rather than a tool result.
+const rpcError = (code, message, data) => Object.assign(new Error(message), { rpc: { code, message, ...(data ? { data } : {}) } })
+
 export async function serve({ host, version }) {
   const target = host === 'claude' ? 'codex' : 'claude'
   const toolList = tools(target)
   const fixedRoots = (host === 'codex' ? [await jobs.codexRoot()] : [process.env.CLAUDE_PROJECT_DIR]).filter(Boolean)
+  // A modern request may not be asked for roots, so its roots are the fixed ones, resolved once for
+  // the life of the process: admission and every later lookup read the same list.
+  const modernRoots = Object.freeze(jobs.canonicalRoots(fixedRoots))
+  // The legacy globals. Only a legacy initialize writes them, and only legacy requests read them.
   let clientCapabilities = {}
   let clientInfo = null
+  let legacyProtocol = null
   let nextId = 0
   const pending = new Map()
   const inflight = new Map()
@@ -127,11 +147,40 @@ export async function serve({ host, version }) {
     pending.set(id, (reply) => { clearTimeout(timer); resolve(reply) })
     send({ id, method, params })
   })
+  // A modern result says it is complete; a legacy result goes out as it always has. A result that
+  // names its own resultType keeps it.
+  const reply = (ctx, id, result) => send({ id, result: ctx.era === 'modern' ? { resultType: 'complete', ...result } : result })
 
-  // Roots are asked for on every call that needs them, so a changed workspace is seen at once.
-  async function roots() {
+  // The era of one request, read before it is dispatched and never written anywhere. A modern
+  // request's identity and capabilities come from its own _meta; a legacy request gets a snapshot of
+  // what the last initialize negotiated. A malformed or unsupported modern _meta throws the JSON-RPC
+  // error the request is answered with.
+  function context(message) {
+    const meta = message.params?._meta
+    if (meta !== undefined && !isObject(meta)) throw rpcError(-32602, 'Invalid params: _meta must be an object.')
+    if (!meta || !Object.hasOwn(meta, META_VERSION)) {
+      return Object.freeze({ era: 'legacy', protocolVersion: legacyProtocol, clientInfo, capabilities: clientCapabilities, tasks: false })
+    }
+    const requested = meta[META_VERSION]
+    if (typeof requested !== 'string' || !requested) throw rpcError(-32602, `Invalid params: ${META_VERSION} must be a non-empty string.`)
+    if (requested !== MODERN) throw rpcError(-32022, 'Unsupported protocol version.', { supported: [MODERN], requested })
+    for (const key of [META_CLIENT, META_CAPABILITIES]) {
+      if (Object.hasOwn(meta, key) && !isObject(meta[key])) throw rpcError(-32602, `Invalid params: ${key} must be an object.`)
+    }
+    const capabilities = meta[META_CAPABILITIES] ?? {}
+    const extension = isObject(capabilities.extensions) ? capabilities.extensions[TASKS] : undefined
+    return Object.freeze({
+      era: 'modern', protocolVersion: requested, clientInfo: meta[META_CLIENT] ?? null, capabilities,
+      tasks: typeof extension === 'object' && extension !== null,
+    })
+  }
+
+  // Roots are asked for on every legacy call that needs them, so a changed workspace is seen at
+  // once. A modern call gets the fixed roots and no request.
+  async function roots(ctx) {
+    if (ctx.era === 'modern') return modernRoots
     const paths = [...fixedRoots]
-    if (clientCapabilities.roots) {
+    if (ctx.capabilities.roots) {
       const reply = await request('roots/list', {}, 5_000)
       for (const root of reply?.result?.roots ?? []) {
         try { if (String(root.uri).startsWith('file:')) paths.push(fileURLToPath(root.uri)) } catch {}
@@ -157,9 +206,10 @@ export async function serve({ host, version }) {
 
   // ok needs the provider installed and signed in, its handshake passed, and a usable root. The
   // handshake is the protocol drift check: a CLI release that changes a method or a field the
-  // transport depends on fails it here, with a typed kind, before any job runs.
-  async function doctor() {
-    const usable = await roots()
+  // transport depends on fails it here, with a typed kind, before any job runs. client, tasks and
+  // rootsSource describe the calling request, not the connection.
+  async function doctor(ctx) {
+    const usable = await roots(ctx)
     const bin = findExecutable(target)
     const [provider, transport] = await Promise.all([probe(target), bin ? checkTransport(bin, usable) : null])
     const error = !bin || !provider.installed ? { kind: 'PROVIDER_NOT_INSTALLED', message: `${target} is not on the PATH this server sees.` }
@@ -169,12 +219,15 @@ export async function serve({ host, version }) {
     const ready = transport?.ok && `${target} ${provider.version} ready: ${transport.catalog.length} model(s) listed, ${transport.profile ? `profile ${transport.profile}, ` : ''}${transport.mcpServersDisabled} MCP server(s) disabled, no turn`
     return toolResult({
       ok: !error, summary: error ? `${error.kind}: ${error.message}` : ready,
-      host, target, provider, transport, roots: usable, stateDir: stateDir(), node: process.version, client: clientInfo,
+      host, target, provider, transport, roots: usable, stateDir: stateDir(), node: process.version,
+      client: { era: ctx.era, protocolVersion: ctx.protocolVersion, clientInfo: ctx.clientInfo, capabilities: ctx.capabilities },
+      tasks: { served: true, declaredOnThisCall: ctx.tasks },
+      rootsSource: ctx.era === 'legacy' && ctx.capabilities.roots ? 'roots/list' : 'fixed',
       ...(error ? { error } : {}),
     })
   }
 
-  async function call(name, args, signal, progressToken) {
+  async function call(name, args, signal, progressToken, ctx) {
     const started = Date.now()
     let reported = 0
     const onTick = (job) => {
@@ -184,7 +237,7 @@ export async function serve({ host, version }) {
       send({ method: 'notifications/progress', params: { progressToken, progress: seconds, message: `${job.status} after ${seconds}s` } })
     }
     if (name === `delegate_to_${target}`) {
-      let job = await jobs.admit(args, { host, roots: await roots() })
+      let job = await jobs.admit(args, { host, roots: await roots(ctx) })
       // Past the budget, the default wait holds on for the job's whole stop (STOP_SECONDS in jobs.mjs).
       const seconds = args.waitSeconds ?? job.timeBudgetSeconds + jobs.STOP_SECONDS
       if (seconds > 0) job = await jobs.wait(job.id, seconds, { signal, onTick })
@@ -196,27 +249,27 @@ export async function serve({ host, version }) {
       jobs.checkKeys(args, RESULT_KEYS)
       const seconds = jobs.integer(args.waitSeconds, 'waitSeconds', 0, 7200, 0)
       const events = jobs.integer(args.events, 'events', 0, 200, 20)
-      let job = jobs.visibleJob(args.jobId, { host, roots: await roots() })
+      let job = jobs.visibleJob(args.jobId, { host, roots: await roots(ctx) })
       if (seconds > 0) job = await jobs.wait(job.id, seconds, { signal, onTick })
       return jobResult(job, events)
     }
     if (name === 'delegation_cancel') {
       jobs.checkKeys(args, ['jobId'])
-      return jobResult(await jobs.cancel(jobs.visibleJob(args.jobId, { host, roots: await roots() })))
+      return jobResult(await jobs.cancel(jobs.visibleJob(args.jobId, { host, roots: await roots(ctx) })))
     }
     // A steer is ok only once the provider took it, and the job comes back as it stands.
     if (name === 'delegation_steer') {
-      const { job, steer } = await jobs.requestSteer(args, { host, roots: await roots(), signal })
+      const { job, steer } = await jobs.requestSteer(args, { host, roots: await roots(ctx), signal })
       return toolResult({ ok: steer.status === 'delivered', job: jobs.envelope(job), steer })
     }
     if (name === 'delegation_doctor') {
       jobs.checkKeys(args, [])
-      return doctor()
+      return doctor(ctx)
     }
     return null
   }
 
-  async function onCall(message) {
+  async function onCall(message, ctx) {
     const { name, arguments: args = {}, _meta: meta } = message.params ?? {}
     if (!toolList.some((tool) => tool.name === name)) {
       send({ id: message.id, error: { code: -32602, message: `Unknown tool: ${name}` } })
@@ -225,11 +278,11 @@ export async function serve({ host, version }) {
     const controller = new AbortController()
     inflight.set(message.id, controller)
     let result
-    try { result = await call(name, args, controller.signal, meta?.progressToken) } catch (error) {
+    try { result = await call(name, args, controller.signal, meta?.progressToken, ctx) } catch (error) {
       result = toolResult({ ok: false, error: publicError(error) })
     } finally { inflight.delete(message.id) }
     // A request the client cancelled gets no response.
-    if (!controller.signal.aborted) send({ id: message.id, result })
+    if (!controller.signal.aborted) reply(ctx, message.id, result)
   }
 
   function onMessage(message) {
@@ -239,25 +292,45 @@ export async function serve({ host, version }) {
       pending.delete(message?.id)
       return
     }
-    const hasId = Object.hasOwn(message, 'id')
+    // A notification has no era and gets no answer. The cancelled one is the only one acted on.
+    if (!Object.hasOwn(message, 'id')) {
+      if (message.method === 'notifications/cancelled') inflight.get(message.params?.requestId)?.abort()
+      return
+    }
+    let ctx
+    try { ctx = context(message) } catch (error) {
+      if (!error.rpc) throw error
+      send({ id: message.id, error: error.rpc })
+      return
+    }
+    const notFound = () => send({ id: message.id, error: { code: -32601, message: `Method not found: ${message.method}` } })
     switch (message.method) {
+      // Discovery answers the same in both eras and writes nothing, so it makes no later call modern
+      // or task-capable.
+      case 'server/discover':
+        send({ id: message.id, result: {
+          resultType: 'complete', supportedVersions: [MODERN],
+          capabilities: { tools: {}, extensions: { [TASKS]: {} } },
+          _meta: { [SERVER_INFO]: { name: 'flow-delegate', version } },
+        } })
+        return
       case 'initialize': {
+        if (ctx.era === 'modern') return notFound()
         clientCapabilities = message.params?.capabilities ?? {}
         clientInfo = message.params?.clientInfo ?? null
         const asked = message.params?.protocolVersion
+        legacyProtocol = PROTOCOLS.includes(asked) ? asked : PROTOCOLS.at(-1)
         send({ id: message.id, result: {
-          protocolVersion: PROTOCOLS.includes(asked) ? asked : PROTOCOLS.at(-1),
+          protocolVersion: legacyProtocol,
           capabilities: { tools: {} },
           serverInfo: { name: 'flow-delegate', version },
         } })
         return
       }
-      case 'ping': send({ id: message.id, result: {} }); return
-      case 'tools/list': send({ id: message.id, result: { tools: toolList } }); return
-      case 'tools/call': onCall(message); return
-      case 'notifications/cancelled': inflight.get(message.params?.requestId)?.abort(); return
-      default:
-        if (hasId) send({ id: message.id, error: { code: -32601, message: `Method not found: ${message.method}` } })
+      case 'ping': reply(ctx, message.id, {}); return
+      case 'tools/list': reply(ctx, message.id, { tools: toolList }); return
+      case 'tools/call': onCall(message, ctx); return
+      default: notFound()
     }
   }
 

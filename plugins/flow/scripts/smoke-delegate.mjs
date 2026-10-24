@@ -385,49 +385,99 @@ function claudeCli() {
 }
 `
 
+// The 2026-07-28 era: the version a modern request names, its three _meta keys, and the tasks
+// extension a request may declare.
+const MODERN = '2026-07-28'
+const META_VERSION = 'io.modelcontextprotocol/protocolVersion'
+const META_CLIENT = 'io.modelcontextprotocol/clientInfo'
+const META_CAPABILITIES = 'io.modelcontextprotocol/clientCapabilities'
+const TASKS = 'io.modelcontextprotocol/tasks'
+
+// A legacy client (the default) opens with initialize and answers roots/list. A modern one sends no
+// initialize, puts the three _meta keys on every request, declares the tasks extension on a request
+// that asks for it, and never answers a server request: it records every server message that has
+// both a method and an id in outbound, which every modern case and close() require to be empty.
+// transcript keeps every frame in both directions. A request may be sent in the other era: legacy
+// on a modern client is a request with no _meta added, and modern on a legacy client adds it.
 class Client {
-  constructor({ host, cwd, env = {}, roots = null, entry = [MAIN] }) {
+  constructor({ host, cwd, env = {}, roots = null, entry = [MAIN], era = 'legacy' }) {
     this.roots = roots
+    this.era = era
     this.next = 0
     this.waiting = new Map()
+    this.transcript = []
+    this.outbound = []
     this.child = spawn(process.execPath, [...entry, 'mcp', '--host', host], { cwd, env: { ...ENV, ...env }, stdio: ['pipe', 'pipe', 'inherit'] })
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       const message = JSON.parse(line)
-      if (message.method === 'roots/list') {
+      this.transcript.push({ dir: 'server', message })
+      if (message.method && Object.hasOwn(message, 'id') && this.era === 'modern') {
+        this.outbound.push(message)
+      } else if (message.method === 'roots/list') {
         this.write({ id: message.id, result: { roots: (this.roots ?? []).map((root) => ({ uri: pathToFileURL(root).href, name: 'root' })) } })
       } else if (!message.method) {
         this.waiting.get(message.id)?.(message)
       }
     })
   }
-  write(message) { this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`) }
-  request(method, params) {
+  write(message) {
+    const framed = { jsonrpc: '2.0', ...message }
+    this.transcript.push({ dir: 'client', message: framed })
+    this.child.stdin.write(`${JSON.stringify(framed)}\n`)
+  }
+  // The _meta a modern request carries, with the tasks extension declared when tasks is set.
+  meta(tasks = false) {
+    return {
+      [META_VERSION]: MODERN, [META_CLIENT]: { name: 'smoke', version: '0' },
+      [META_CAPABILITIES]: { ...(this.roots ? { roots: {} } : {}), ...(tasks ? { extensions: { [TASKS]: {} } } : {}) },
+    }
+  }
+  // Sends one request and resolves with the whole answer, result or error.
+  request(method, params = {}, { era = this.era, tasks = false } = {}) {
+    const sent = era === 'modern' ? { ...params, _meta: { ...params._meta, ...this.meta(tasks) } } : params
     return new Promise((resolve, reject) => {
       const id = ++this.next
       const timer = setTimeout(() => reject(new Error(`${method} got no answer`)), 120_000)
       this.waiting.set(id, (message) => { clearTimeout(timer); resolve(message) })
-      this.write({ id, method, params })
+      this.write({ id, method, params: sent })
     })
   }
+  // A request sent exactly as given, with no _meta added.
+  raw(method, params = {}) { return this.request(method, params, { era: 'legacy' }) }
   async init() {
+    if (this.era === 'modern') return this
     await this.request('initialize', { protocolVersion: '2025-06-18', capabilities: this.roots ? { roots: {} } : {}, clientInfo: { name: 'smoke', version: '0' } })
     this.write({ method: 'notifications/initialized' })
     return this
   }
-  async call(name, args) {
-    const { result } = await this.request('tools/call', { name, arguments: args })
+  noOutbound() { assert.deepEqual(this.outbound, [], 'the server wrote a request to a modern client') }
+  // A tools/call's whole answer: a CallToolResult, a task, or an error.
+  callMessage(name, args, options = {}) { return this.request('tools/call', { name, arguments: args }, options) }
+  async call(name, args, options = {}) {
+    const message = await this.callMessage(name, args, options)
+    let { result } = message
+    assert.ok(result, `${name} got no result: ${JSON.stringify(message.error)}`)
+    if ((options.era ?? this.era) === 'modern') {
+      const { resultType, ...rest } = result
+      assert.equal(resultType, 'complete', 'a modern result says it is complete')
+      result = rest
+    }
     const text = result.content[0].text
     assert.equal(text.split('\n')[0].startsWith('{"summary": '), true, 'the text result opens with its summary')
     assert.deepEqual(JSON.parse(text), result.structuredContent, 'text and structuredContent carry the same object')
     assert.equal(Boolean(result.isError), !result.structuredContent.ok, 'isError mirrors ok')
     return { ...result.structuredContent, text }
   }
-  close() { this.child.stdin.end() }
+  close() {
+    if (this.era === 'modern') this.noOutbound()
+    this.child.stdin.end()
+  }
 }
 const connect = (options) => new Client(options).init()
-const start = (client, args) => client.call(`delegate_to_${client.target ?? 'codex'}`, {
-  model: client.target === 'claude' ? 'sonnet' : 'gpt-fake', effort: 'low', cwd: repo, ...args,
-})
+const startArgs = (client, args) => ({ model: client.target === 'claude' ? 'sonnet' : 'gpt-fake', effort: 'low', cwd: repo, ...args })
+const start = (client, args, options) => client.call(`delegate_to_${client.target ?? 'codex'}`, startArgs(client, args), options)
+const VERSION = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8')).version
+const jobIds = () => readdirSync(join(state, 'jobs')).filter((name) => jobs.JOB_ID.test(name)).sort()
 
 try {
   mkdirSync(fakeBin, { recursive: true })
@@ -1472,6 +1522,113 @@ try {
   }
   assert.equal(readFileSync(join(state, 'server.log'), 'utf8').match(/doctor handshake failed: .*OLD-CLI-STDERR/g)?.length, 2, 'the old CLIs\' stderr is not in server.log')
   ok('the doctor reports version, sign-in, roots and the transport handshake without the account identity, removes its TMPDIR, and types a missing provider or one whose handshake fails, keeping its stderr out of the result')
+
+  // The 2026-07-28 era, chosen per request. Discovery answers the same shape in both eras.
+  const DISCOVERED = { resultType: 'complete', supportedVersions: [MODERN], capabilities: { tools: {}, extensions: { [TASKS]: {} } },
+    _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'flow-delegate', version: VERSION } } }
+  const modern = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  assert.deepEqual((await modern.request('server/discover')).result, DISCOVERED)
+  assert.deepEqual((await claudeHost.request('server/discover')).result, DISCOVERED)
+  assert.deepEqual((await modern.raw('server/discover')).result, DISCOVERED)
+  modern.noOutbound()
+  ok('discover-shape')
+
+  // A modern version other than 2026-07-28 is refused before dispatch, so no job is admitted.
+  const before = jobIds()
+  const future = { [META_VERSION]: '2099-01-01', [META_CLIENT]: { name: 'smoke', version: '0' }, [META_CAPABILITIES]: {} }
+  for (const [method, params] of [['server/discover', { _meta: future }],
+    ['tools/call', { name: 'delegate_to_codex', arguments: startArgs(modern, { prompt: 'FLOW_FAKE_MODE=happy' }), _meta: future }]]) {
+    const { error, result } = await modern.raw(method, params)
+    assert.equal(result, undefined, `${method} answered an unsupported version`)
+    assert.deepEqual([error.code, error.data], [-32022, { supported: [MODERN], requested: '2099-01-01' }], `${method}: ${JSON.stringify(error)}`)
+  }
+  assert.deepEqual(jobIds(), before, 'an unsupported version admitted a job')
+  modern.noOutbound()
+  ok('unsupported-version')
+
+  for (const meta of ['x', { [META_VERSION]: 20260728 }, { [META_VERSION]: MODERN, [META_CAPABILITIES]: 'x' }]) {
+    const { error } = await modern.raw('tools/call', { name: 'delegation_doctor', arguments: {}, _meta: meta })
+    assert.equal(error?.code, -32602, JSON.stringify(meta))
+  }
+  modern.noOutbound()
+  ok('malformed-modern-meta')
+
+  const modernInit = await modern.request('initialize', { protocolVersion: MODERN, capabilities: {}, clientInfo: { name: 'smoke', version: '0' } })
+  assert.deepEqual(modernInit.error, { code: -32601, message: 'Method not found: initialize' })
+  modern.noOutbound()
+  ok('modern-initialize-rejected')
+
+  // One connection, both eras, both orders: each reply reports its own request's era, and a modern
+  // request never writes what a legacy one reads.
+  const interleaved = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  const doctorOf = (client, options) => client.call('delegation_doctor', {}, options)
+  const contextOf = (report) => [report.client.era, report.client.protocolVersion, report.client.clientInfo]
+  const SMOKE = { name: 'smoke', version: '0' }
+  const OTHER = { name: 'interleaved', version: '1' }
+  assert.deepEqual(contextOf(await doctorOf(interleaved)), ['modern', MODERN, SMOKE])
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { era: 'legacy' })), ['legacy', null, null], 'a modern request wrote the legacy globals')
+  const lateInit = await interleaved.raw('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: OTHER })
+  assert.equal(lateInit.result.protocolVersion, '2025-06-18')
+  assert.deepEqual(contextOf(await doctorOf(interleaved)), ['modern', MODERN, SMOKE], 'initialize changed a modern request\'s context')
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { era: 'legacy' })), ['legacy', '2025-06-18', OTHER], 'a modern request overwrote what initialize negotiated')
+  interleaved.close()
+  ok('era-interleaved')
+
+  // Two requests of different eras in flight at once on one connection.
+  const concurrent = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  const [modernReport, legacyReport] = await Promise.all([doctorOf(concurrent), doctorOf(concurrent, { era: 'legacy' })])
+  assert.deepEqual([contextOf(modernReport), contextOf(legacyReport)], [['modern', MODERN, SMOKE], ['legacy', null, null]])
+  concurrent.close()
+  ok('era-concurrent')
+
+  // Modern roots are CLAUDE_PROJECT_DIR alone, and no roots/list is sent even when the request
+  // advertises roots.
+  assert.equal((await start(modern, { prompt: 'FLOW_FAKE_MODE=happy' })).job.status, 'succeeded')
+  modern.noOutbound()
+  ok('modern-fixed-roots')
+  const modernListed = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, roots: [other], era: 'modern' })
+  const outsideModern = await start(modernListed, { prompt: 'x', cwd: other })
+  assert.deepEqual([outsideModern.ok, outsideModern.error?.kind], [false, 'OUTSIDE_ROOTS'], JSON.stringify(outsideModern))
+  assert.equal(modernListed.transcript.some(({ dir, message }) => dir === 'server' && message.method === 'roots/list'), false, 'a modern request was asked for roots')
+  modernListed.noOutbound()
+  ok('modern-outside-roots')
+  const modernBare = await connect({ host: 'claude', cwd: repo, era: 'modern' })
+  const noRootsModern = await start(modernBare, { prompt: 'x' })
+  assert.deepEqual([noRootsModern.ok, noRootsModern.error?.kind], [false, 'NO_ROOTS'], JSON.stringify(noRootsModern))
+  modernBare.close()
+  ok('modern-no-roots')
+
+  // A modern call that does not declare the extension waits as a legacy call does, and its envelope
+  // has the same shape.
+  const modernSync = await modern.callMessage('delegate_to_codex', startArgs(modern, { prompt: 'FLOW_FAKE_MODE=happy' }))
+  const legacySync = await claudeHost.callMessage('delegate_to_codex', startArgs(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy' }))
+  const { resultType, ...modernCall } = modernSync.result
+  assert.equal(resultType, 'complete')
+  assert.deepEqual(Object.keys(modernCall), Object.keys(legacySync.result))
+  assert.deepEqual(Object.keys(modernCall.structuredContent), Object.keys(legacySync.result.structuredContent))
+  assert.deepEqual(Object.keys(modernCall.structuredContent.job), Object.keys(legacySync.result.structuredContent.job))
+  assert.deepEqual([modernCall.structuredContent.job.status, modernCall.isError], [legacySync.result.structuredContent.job.status, legacySync.result.isError])
+  modern.noOutbound()
+  ok('modern-sync-envelope')
+
+  // The doctor labels the calling request: its era and identity, whether it declared the tasks
+  // extension, and where its roots came from.
+  const legacyDoctor = await doctorOf(claudeHost)
+  assert.deepEqual([legacyDoctor.client, legacyDoctor.tasks, legacyDoctor.rootsSource],
+    [{ era: 'legacy', protocolVersion: '2025-06-18', clientInfo: SMOKE, capabilities: {} }, { served: true, declaredOnThisCall: false }, 'fixed'])
+  const legacyListed = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, roots: [repo] })
+  const listedDoctor = await doctorOf(legacyListed)
+  assert.deepEqual([listedDoctor.client.capabilities, listedDoctor.tasks.declaredOnThisCall, listedDoctor.rootsSource], [{ roots: {} }, false, 'roots/list'])
+  legacyListed.close()
+  ok('doctor-legacy-context')
+  const declaring = await doctorOf(modernListed, { tasks: true })
+  assert.deepEqual([declaring.client, declaring.tasks, declaring.rootsSource],
+    [{ era: 'modern', protocolVersion: MODERN, clientInfo: SMOKE, capabilities: { roots: {}, extensions: { [TASKS]: {} } } }, { served: true, declaredOnThisCall: true }, 'fixed'])
+  const undeclared = await doctorOf(modern)
+  assert.deepEqual([undeclared.client.capabilities, undeclared.tasks.declaredOnThisCall, undeclared.rootsSource], [{}, false, 'fixed'])
+  modernListed.close()
+  modern.close()
+  ok('doctor-modern-context')
 
   const expired = await claudeHost.call('delegation_result', { jobId: timed.job.id, waitSeconds: 60 })
   assert.equal(expired.job.status, 'failed')
