@@ -1560,9 +1560,16 @@ try {
   modern.noOutbound()
   ok('unsupported-version')
 
-  for (const meta of ['x', { [META_VERSION]: 20260728 }, { [META_VERSION]: MODERN, [META_CAPABILITIES]: 'x' }]) {
-    const { error } = await modern.raw('tools/call', { name: 'delegation_doctor', arguments: {}, _meta: meta })
-    assert.equal(error?.code, -32602, JSON.stringify(meta))
+  // Nested capability metadata is checked too: an extensions map that is no object, and a tasks
+  // extension that is an array or null, are refused before dispatch, on a tool call and on a task
+  // method whose id names a visible job.
+  const capabilitiesOf = (capabilities) => ({ [META_VERSION]: MODERN, [META_CAPABILITIES]: capabilities })
+  for (const meta of ['x', { [META_VERSION]: 20260728 }, capabilitiesOf('x'), capabilitiesOf({ extensions: 'invalid' }), capabilitiesOf({ extensions: [] }),
+    capabilitiesOf({ extensions: { [TASKS]: [] } }), capabilitiesOf({ extensions: { [TASKS]: null } })]) {
+    for (const [method, params] of [['tools/call', { name: 'delegation_doctor', arguments: {} }], ['tasks/get', { taskId: timed.job.id }]]) {
+      const { error, result } = await modern.raw(method, { ...params, _meta: meta })
+      assert.deepEqual([result, error?.code, /^Invalid params: /.test(error?.message)], [undefined, -32602, true], `${method} ${JSON.stringify(meta)}: ${JSON.stringify(error ?? result)}`)
+    }
   }
   modern.noOutbound()
   ok('malformed-modern-meta')

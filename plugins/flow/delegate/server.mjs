@@ -184,11 +184,17 @@ export async function serve({ host, version }) {
     for (const key of [META_CLIENT, META_CAPABILITIES]) {
       if (Object.hasOwn(meta, key) && !isObject(meta[key])) throw rpcError(-32602, `Invalid params: ${key} must be an object.`)
     }
+    // The nested declarations a dispatch reads are checked too: an extensions map, when present, and
+    // the tasks extension in it, are each an object and never an array.
     const capabilities = meta[META_CAPABILITIES] ?? {}
-    const extension = isObject(capabilities.extensions) ? capabilities.extensions[TASKS] : undefined
+    const extensions = capabilities.extensions ?? {}
+    if (Object.hasOwn(capabilities, 'extensions') && !isObject(capabilities.extensions)) {
+      throw rpcError(-32602, `Invalid params: ${META_CAPABILITIES}.extensions must be an object.`)
+    }
+    const tasks = Object.hasOwn(extensions, TASKS)
+    if (tasks && !isObject(extensions[TASKS])) throw rpcError(-32602, `Invalid params: the ${TASKS} extension must be an object.`)
     return Object.freeze({
-      era: 'modern', protocolVersion: requested, clientInfo: meta[META_CLIENT] ?? null, capabilities,
-      tasks: typeof extension === 'object' && extension !== null,
+      era: 'modern', protocolVersion: requested, clientInfo: meta[META_CLIENT] ?? null, capabilities, tasks,
     })
   }
 
