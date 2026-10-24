@@ -11,6 +11,9 @@ C=$(cd "$C" && pwd)  # children run from other directories, so the path has to b
 export CAPTURE_DIR=$C
 fail() { echo "arm $1 failed (exit $2); see $C/arm-$1.out" >&2; exit 1; }
 # The tee writes a meta line as it starts, so a non-empty log proves nothing; a frame in either direction does.
+# Arm (b) exists to show the client sending tasks/cancel on TaskStop, so any frame is not enough for it. The client
+# polls no further after the cancel, so the log holds no cancelled status to require; the request is the evidence.
+require_cancel() { grep -qE '"dir":"client->server".*"method":"tasks/cancel"' "$1" || { echo "arm $2: no client tasks/cancel frame in $1" >&2; fail "$2" 1; }; }
 require_frame() { grep -qE '"dir":"(client->server|server->client)"' "$1" || fail "$2" 1; echo "$(grep -c . "$1") lines"; }
 
 PREV=$(sed -n "s/^head: //p" "$C/HEAD.txt" 2>/dev/null | cut -c1-7); T=$C/takes/${PREV:-unknown}
@@ -26,7 +29,7 @@ for f in "$C"/arm-*.jsonl "$C"/arm-*.out "$C"/arm-*.last.txt; do [ -e "$f" ] && 
 } > "$C/HEAD.txt"
 cat "$C/HEAD.txt"
 echo "== arm a"; node "$HERE/drive.mjs" a "$C/mcp-a.json" "$C/repo" mcp__flowtasks__delegate_to_codex "$C/prompt-a.txt" 1 > "$C/arm-a.out" 2>&1 || fail a $?; require_frame "$C/arm-a.jsonl" a
-echo "== arm b"; node "$HERE/drive.mjs" b "$C/mcp-b.json" "$C/repo" "mcp__flowtasks__delegate_to_codex,TaskStop" "$C/prompt-b.txt" 1 "$C/prompt-b2.txt" > "$C/arm-b.out" 2>&1 || fail b $?; require_frame "$C/arm-b.jsonl" b
+echo "== arm b"; node "$HERE/drive.mjs" b "$C/mcp-b.json" "$C/repo" "mcp__flowtasks__delegate_to_codex,TaskStop" "$C/prompt-b.txt" 1 "$C/prompt-b2.txt" > "$C/arm-b.out" 2>&1 || fail b $?; require_frame "$C/arm-b.jsonl" b; require_cancel "$C/arm-b.jsonl" b
 echo "== arm c"; node "$HERE/drive.mjs" c "$C/mcp-c.json" "$C/repo" "Agent,mcp__flowtasks__delegate_to_codex" "$C/prompt-c.txt" 1 > "$C/arm-c.out" 2>&1 || fail c $?; require_frame "$C/arm-c.jsonl" c
 echo "== arm d pr"; bash "$HERE/arm-d.sh" pr || fail d-pr $?; require_frame "$C/arm-d-pr.jsonl" d-pr
 echo "== arm d base"; bash "$HERE/arm-d.sh" base || fail d-base $?; require_frame "$C/arm-d-base.jsonl" d-base
