@@ -1,0 +1,12 @@
+{"t":"2026-10-24T17:49:44.666Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"in","kind":"request","method":"server/discover","id":"server-discover-probe-1"}
+{"t":"2026-10-24T17:49:44.666Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"out","kind":"response","id":"server-discover-probe-1","error":-32601}
+{"t":"2026-10-24T17:49:44.670Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"in","kind":"request","method":"initialize","id":0,"protocolVersion":"2025-11-25","clientElicitation":true}
+{"t":"2026-10-24T17:49:44.670Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"out","kind":"response","id":0}
+{"t":"2026-10-24T17:49:44.672Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"in","kind":"notification","method":"notifications/initialized"}
+{"t":"2026-10-24T17:49:44.672Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"in","kind":"request","method":"tools/list","id":1}
+{"t":"2026-10-24T17:49:44.672Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"out","kind":"response","id":1}
+{"t":"2026-10-24T17:49:46.674Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"out","kind":"request","method":"elicitation/create","id":1000,"mode":"form"}
+{"t":"2026-10-24T17:49:46.698Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"in","kind":"response","id":1000,"mode":"form","action":"decline"}
+{"t":"2026-10-24T17:49:48.175Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"out","kind":"request","method":"elicitation/create","id":1001,"mode":"url"}
+{"t":"2026-10-24T17:49:48.197Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"in","kind":"response","id":1001,"mode":"url","action":"decline"}
+{"t":"2026-10-24T17:49:48.197Z","pid":3631406,"projectDir":"/home/jakub/code/marketplace-plugins","dir":"meta","kind":"summary","summary":{"form":"decline","url":"decline"}}
