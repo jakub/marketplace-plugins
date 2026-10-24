@@ -1565,11 +1565,13 @@ try {
   modern.noOutbound()
   ok('unsupported-version')
 
-  // The modern RequestMeta is checked whole: clientCapabilities is required, clientInfo needs a string
-  // name and version when present, and experimental, the extensions map and every entry of either
-  // are objects, never an array or null. Each input is refused before dispatch, on a tool call and on
-  // a task method whose id names a visible job. A non-object _meta is not here: it cannot carry the
-  // version key, so it is legacy (legacy-meta-non-object-unchanged).
+  // The modern _meta fields the server reads are checked, and no others: clientCapabilities is
+  // required, clientInfo needs a string name and version when present, and experimental, the
+  // extensions map and every entry of either are objects, never an array or null. Each input is
+  // refused before dispatch, on a tool call and on a task method whose id names a visible job. A
+  // non-object _meta is not here: it cannot carry the version key, so it is legacy
+  // (legacy-meta-non-object-unchanged). The positive control below sends malformed fields the
+  // server does not read, which dispatch.
   const capabilitiesOf = (capabilities) => ({ [META_VERSION]: MODERN, [META_CAPABILITIES]: capabilities })
   const infoOf = (clientInfo) => ({ ...capabilitiesOf({}), [META_CLIENT]: clientInfo })
   const UNKNOWN = 'com.example/unknown'
@@ -1592,6 +1594,12 @@ try {
   assert.deepEqual([controlCall.error, controlCall.result?.resultType], [undefined, 'complete'], `tools/call with an unknown extension: ${JSON.stringify(controlCall)}`)
   const controlTask = await modern.raw('tasks/get', { taskId: timed.job.id, _meta: unknownExtension })
   assert.equal(controlTask.error?.code, -32021, `tasks/get with an unknown extension was refused before dispatch: ${JSON.stringify(controlTask)}`)
+  // The second control: fields the server never reads pass through even when malformed.
+  const unread = { [META_VERSION]: MODERN, [META_CLIENT]: { name: 'smoke', version: '0', title: 7 }, [META_CAPABILITIES]: { roots: null } }
+  const unreadCall = await modern.raw('tools/call', { name: 'delegation_doctor', arguments: {}, _meta: unread })
+  assert.deepEqual([unreadCall.error, unreadCall.result?.resultType], [undefined, 'complete'], `tools/call with unread fields malformed: ${JSON.stringify(unreadCall)}`)
+  const unreadTask = await modern.raw('tasks/get', { taskId: timed.job.id, _meta: unread })
+  assert.equal(unreadTask.error?.code, -32021, `tasks/get with unread fields malformed was refused before dispatch: ${JSON.stringify(unreadTask)}`)
   modern.noOutbound()
   ok('malformed-modern-meta')
 

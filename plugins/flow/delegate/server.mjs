@@ -172,9 +172,11 @@ export async function serve({ host, version }) {
   // request's identity and capabilities come from its own _meta; a legacy request gets a snapshot of
   // what the last initialize negotiated. A _meta that is no object cannot carry the version key, so
   // the request is legacy by construction and is answered as it always was. A malformed or
-  // unsupported modern _meta throws the JSON-RPC error the request is answered with: the modern
-  // RequestMeta requires clientCapabilities, needs a string name and version in clientInfo when that
-  // is present, and defines experimental and every extension's settings as objects.
+  // unsupported modern _meta throws the JSON-RPC error the request is answered with. This validates
+  // the fields the server reads and no others: the version, clientCapabilities (required), the
+  // string name and version of clientInfo when that is present, and experimental, extensions and
+  // every entry of either as objects. Every other field of the RequestMeta, and every other
+  // capability or clientInfo field, passes through untouched.
   function context(message) {
     const meta = message.params?._meta
     if (!isObject(meta) || !Object.hasOwn(meta, META_VERSION)) {
