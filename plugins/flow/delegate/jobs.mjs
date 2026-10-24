@@ -302,7 +302,7 @@ export function reviewPrompt(baseSha, headSha, focus) {
   return `Act as an adversarial code reviewer. Review the diff \`git diff ${baseSha} ${headSha}\` in this repository and try to refute the change. Hunt for reachable correctness, security, concurrency and trust-boundary defects; read surrounding code and tests as needed. Report only findings you verified against the code, never style or formatting. Cite a repository-relative file and the first affected line in the new code. Do not edit files. Answer in the output schema; a clean review has an empty findings array.${extra}`
 }
 
-export async function admit(input, { host, roots }) {
+export async function admit(input, { host, roots, signal }) {
   // A runner hands its provider FLOW_DELEGATION_DEPTH, so a server started inside a delegated
   // seat cannot start a second hop.
   if (process.env.FLOW_DELEGATION_DEPTH) fail('NESTED_DELEGATION', 'A delegated seat cannot start another delegation.')
@@ -343,6 +343,9 @@ export async function admit(input, { host, roots }) {
     schema = FINDINGS_SCHEMA
     access = 'read-only'
   }
+  // The commit point: nothing from here to the runner's spawn awaits, so a request cancelled by now
+  // admits no job, and one cancelled later finds the job admitted.
+  if (signal?.aborted) fail('CANCELLED', 'The request was cancelled before the job was admitted.')
   const job = {
     id: randomUUID(), host, target, mode: request.mode, access, cwd, worktree, model: input.model, effort: input.effort,
     status: 'queued', createdAt: new Date().toISOString(), endedAt: null,
@@ -498,13 +501,16 @@ export function reconcile(job) {
   return job
 }
 
-export function visibleJob(id, { host, roots }) {
+// A job is visible only to a server for its own host whose roots hold its cwd. findJob is that
+// check alone, returning the record as read; visibleJob reconciles it too.
+export function findJob(id, { host, roots }) {
   const job = typeof id === 'string' && JOB_ID.test(id) ? readJob(id) : null
   if (!job || job.host !== host || !roots.some((root) => inside(root, job.cwd))) {
     fail('JOB_NOT_FOUND', 'No job with that id is visible from this workspace.')
   }
-  return reconcile(job)
+  return job
 }
+export const visibleJob = (id, options) => reconcile(findJob(id, options))
 
 export async function wait(id, seconds, { signal, onTick } = {}) {
   const deadline = Date.now() + seconds * 1000
@@ -529,7 +535,10 @@ export async function wait(id, seconds, { signal, onTick } = {}) {
 // runner.mjs); the schema check, 10 s (CHECK_SECONDS in schema.mjs); and the provider's close, 5 s
 // (CLOSE_MS in providers.mjs). That is 45 s, and 60 leaves a margin.
 export const STOP_SECONDS = 60
-export const requestCancel = (id) => { try { writeFileSync(join(jobDir(id), 'cancel'), '') } catch {} }
+// The cancel marker asks a job's runner to stop it. markCancel lets a failed write throw, for a
+// caller that must report it; requestCancel is the best-effort form.
+export const markCancel = (id) => writeFileSync(join(jobDir(id), 'cancel'), '', { mode: 0o600 })
+export const requestCancel = (id) => { try { markCancel(id) } catch {} }
 export async function cancel(job) {
   if (TERMINAL.has(job.status)) fail('JOB_STATE', `The job already ended ${job.status}.`)
   requestCancel(job.id)

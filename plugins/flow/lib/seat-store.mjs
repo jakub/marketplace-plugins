@@ -42,8 +42,10 @@ const INDEX_NAME = /^(?:claude|codex)-[A-Za-z0-9._-]{1,128}$/
 const STAMPS = new Set(['admitted', 'bound', 'receipt', 'void', 'closed'])
 // The tag is all of line 1 and carries the id alone. A well-formed tag anywhere else in the prompt,
 // line 1 included when it holds more than the tag, voids the seat rather than reading as no tag.
+// TAG_ANYWHERE is global for matchAll alone, which clones it, so its lastIndex is never shared.
 const TAG_LINE = /^<flow-seat id=([0-9a-f]{32})>$/
-const TAG_ANYWHERE = /<flow-seat id=[0-9a-f]{32}>/
+const TAG_ANYWHERE = /<flow-seat id=([0-9a-f]{32})>/g
+const tagIds = (text) => [...new Set(Array.from(text.matchAll(TAG_ANYWHERE), (found) => found[1]))]
 
 const crypto = () => process.getBuiltinModule('node:crypto')
 const sha256 = (bytes) => crypto().createHash('sha256').update(bytes).digest('hex')
@@ -94,6 +96,13 @@ export function seatTag(id) {
  * includes a line 1 that only resembles a tag. {id} means line 1 is exactly a tag and no other
  * well-formed tag appears. {void} means a well-formed tag appears anywhere but as the whole of
  * line 1, so the session must not be treated as an ordinary one or bound as a seat.
+ *
+ * When line 1 is not a whole tag, the void also carries displaced: every distinct id the prompt's
+ * tags name, in order of appearance. The prompt hook uses it to tell a quoted tag from a misplaced
+ * one: a T3 wake can deliver another seat's task text, tag included, into a session that is no
+ * seat, and the hook lets that prompt through only when every displaced id is already bound to
+ * another session. A line-1 tag with another tag below it carries no displaced field, so it always
+ * voids. No displaced id is ever the id field, which names only a seat this prompt may bind.
  */
 export function parseTag(prompt) {
   if (typeof prompt !== 'string') return null
@@ -101,8 +110,9 @@ export function parseTag(prompt) {
   const first = cut < 0 ? prompt : prompt.slice(0, cut)
   const rest = cut < 0 ? '' : prompt.slice(cut + 1)
   const match = TAG_LINE.exec(first)
-  if (TAG_ANYWHERE.test(match ? rest : prompt)) return { void: 'tag-not-on-line-1' }
-  return match ? { id: match[1] } : null
+  if (match) return tagIds(rest).length > 0 ? { void: 'tag-not-on-line-1' } : { id: match[1] }
+  const displaced = tagIds(prompt)
+  return displaced.length > 0 ? { void: 'tag-not-on-line-1', displaced } : null
 }
 
 /** The record directory for id, or null when id is not a seat id. */

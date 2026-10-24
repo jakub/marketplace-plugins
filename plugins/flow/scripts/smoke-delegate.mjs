@@ -28,6 +28,7 @@ import { transport as codexTransport } from '../delegate/codex-app-server.mjs'
 import * as jobs from '../delegate/jobs.mjs'
 import { checkAnswer, FINDINGS_SCHEMA, schemaProblem, validate } from '../delegate/schema.mjs'
 import * as seatStore from '../lib/seat-store.mjs'
+import { RETENTION_MS } from '../lib/state-dir.mjs'
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MAIN = join(PLUGIN, 'delegate', 'main.mjs')
@@ -385,49 +386,113 @@ function claudeCli() {
 }
 `
 
+// The 2026-07-28 era: the version a modern request names, its three _meta keys, and the tasks
+// extension a request may declare.
+const MODERN = '2026-07-28'
+const META_VERSION = 'io.modelcontextprotocol/protocolVersion'
+const META_CLIENT = 'io.modelcontextprotocol/clientInfo'
+const META_CAPABILITIES = 'io.modelcontextprotocol/clientCapabilities'
+const TASKS = 'io.modelcontextprotocol/tasks'
+
+// A legacy client (the default) opens with initialize and answers roots/list. A modern one sends no
+// initialize, puts the three _meta keys on every request, declares the tasks extension on a request
+// that asks for it, and never answers a server request: it records every server message that has
+// both a method and an id in outbound, which every modern case and close() require to be empty.
+// transcript keeps every frame in both directions. A request may be sent in the other era: legacy
+// on a modern client is a request with no _meta added, and modern on a legacy client adds it.
 class Client {
-  constructor({ host, cwd, env = {}, roots = null, entry = [MAIN] }) {
+  constructor({ host, cwd, env = {}, roots = null, entry = [MAIN], era = 'legacy' }) {
     this.roots = roots
+    this.era = era
     this.next = 0
     this.waiting = new Map()
+    this.transcript = []
+    this.outbound = []
     this.child = spawn(process.execPath, [...entry, 'mcp', '--host', host], { cwd, env: { ...ENV, ...env }, stdio: ['pipe', 'pipe', 'inherit'] })
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       const message = JSON.parse(line)
-      if (message.method === 'roots/list') {
+      this.transcript.push({ dir: 'server', message })
+      if (message.method && Object.hasOwn(message, 'id') && this.era === 'modern') {
+        this.outbound.push(message)
+      } else if (message.method === 'roots/list') {
         this.write({ id: message.id, result: { roots: (this.roots ?? []).map((root) => ({ uri: pathToFileURL(root).href, name: 'root' })) } })
       } else if (!message.method) {
         this.waiting.get(message.id)?.(message)
       }
     })
   }
-  write(message) { this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`) }
-  request(method, params) {
+  write(message) {
+    const framed = { jsonrpc: '2.0', ...message }
+    this.transcript.push({ dir: 'client', message: framed })
+    this.child.stdin.write(`${JSON.stringify(framed)}\n`)
+  }
+  // The _meta a modern request carries, with the tasks extension declared when tasks is set, or with
+  // exactly the capabilities given.
+  meta(tasks = false, capabilities = null) {
+    return {
+      [META_VERSION]: MODERN, [META_CLIENT]: { name: 'smoke', version: '0' },
+      [META_CAPABILITIES]: capabilities ?? { ...(this.roots ? { roots: {} } : {}), ...(tasks ? { extensions: { [TASKS]: {} } } : {}) },
+    }
+  }
+  // Sends one request and resolves with the whole answer, result or error.
+  request(method, params = {}, { era = this.era, tasks = false, capabilities = null } = {}) {
+    const sent = era === 'modern' ? { ...params, _meta: { ...params._meta, ...this.meta(tasks, capabilities) } } : params
     return new Promise((resolve, reject) => {
       const id = ++this.next
       const timer = setTimeout(() => reject(new Error(`${method} got no answer`)), 120_000)
       this.waiting.set(id, (message) => { clearTimeout(timer); resolve(message) })
-      this.write({ id, method, params })
+      this.write({ id, method, params: sent })
     })
   }
+  // A request sent exactly as given, with no _meta added.
+  raw(method, params = {}) { return this.request(method, params, { era: 'legacy' }) }
   async init() {
+    if (this.era === 'modern') return this
     await this.request('initialize', { protocolVersion: '2025-06-18', capabilities: this.roots ? { roots: {} } : {}, clientInfo: { name: 'smoke', version: '0' } })
     this.write({ method: 'notifications/initialized' })
     return this
   }
-  async call(name, args) {
-    const { result } = await this.request('tools/call', { name, arguments: args })
+  noOutbound() { assert.deepEqual(this.outbound, [], 'the server wrote a request to a modern client') }
+  // A tools/call's whole answer: a CallToolResult, a task, or an error.
+  callMessage(name, args, options = {}) { return this.request('tools/call', { name, arguments: args }, options) }
+  // The task requests, each declaring the tasks extension unless told otherwise, each resolving with
+  // the whole answer.
+  createTask(name, args, options = {}) { return this.callMessage(name, args, { tasks: true, ...options }) }
+  tasksGet(taskId, options = {}) { return this.request('tasks/get', { taskId }, { tasks: true, ...options }) }
+  tasksCancel(taskId, options = {}) { return this.request('tasks/cancel', { taskId }, { tasks: true, ...options }) }
+  tasksUpdate(params, options = {}) { return this.request('tasks/update', params, { tasks: true, ...options }) }
+  // Polls tasks/get until the task is no longer working, and returns that answer.
+  async settled(taskId, ms = 60_000) {
+    for (const end = Date.now() + ms; ; await sleep(250)) {
+      const message = await this.tasksGet(taskId)
+      if (message.result?.status !== 'working' || Date.now() > end) return message
+    }
+  }
+  async call(name, args, options = {}) {
+    const message = await this.callMessage(name, args, options)
+    let { result } = message
+    assert.ok(result, `${name} got no result: ${JSON.stringify(message.error)}`)
+    if ((options.era ?? this.era) === 'modern') {
+      const { resultType, ...rest } = result
+      assert.equal(resultType, 'complete', 'a modern result says it is complete')
+      result = rest
+    }
     const text = result.content[0].text
     assert.equal(text.split('\n')[0].startsWith('{"summary": '), true, 'the text result opens with its summary')
     assert.deepEqual(JSON.parse(text), result.structuredContent, 'text and structuredContent carry the same object')
     assert.equal(Boolean(result.isError), !result.structuredContent.ok, 'isError mirrors ok')
     return { ...result.structuredContent, text }
   }
-  close() { this.child.stdin.end() }
+  close() {
+    if (this.era === 'modern') this.noOutbound()
+    this.child.stdin.end()
+  }
 }
 const connect = (options) => new Client(options).init()
-const start = (client, args) => client.call(`delegate_to_${client.target ?? 'codex'}`, {
-  model: client.target === 'claude' ? 'sonnet' : 'gpt-fake', effort: 'low', cwd: repo, ...args,
-})
+const startArgs = (client, args) => ({ model: client.target === 'claude' ? 'sonnet' : 'gpt-fake', effort: 'low', cwd: repo, ...args })
+const start = (client, args, options) => client.call(`delegate_to_${client.target ?? 'codex'}`, startArgs(client, args), options)
+const VERSION = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8')).version
+const jobIds = () => readdirSync(join(state, 'jobs')).filter((name) => jobs.JOB_ID.test(name)).sort()
 
 try {
   mkdirSync(fakeBin, { recursive: true })
@@ -1472,6 +1537,552 @@ try {
   }
   assert.equal(readFileSync(join(state, 'server.log'), 'utf8').match(/doctor handshake failed: .*OLD-CLI-STDERR/g)?.length, 2, 'the old CLIs\' stderr is not in server.log')
   ok('the doctor reports version, sign-in, roots and the transport handshake without the account identity, removes its TMPDIR, and types a missing provider or one whose handshake fails, keeping its stderr out of the result')
+
+  // The 2026-07-28 era, chosen per request. Discovery answers the same shape in both eras.
+  const DISCOVERED = { resultType: 'complete', supportedVersions: [MODERN], capabilities: { tools: {}, extensions: { [TASKS]: {} } },
+    _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'flow-delegate', version: VERSION } } }
+  const modern = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  assert.deepEqual((await modern.request('server/discover')).result, DISCOVERED)
+  assert.deepEqual((await claudeHost.request('server/discover')).result, DISCOVERED)
+  assert.deepEqual((await modern.raw('server/discover')).result, DISCOVERED)
+  modern.noOutbound()
+  ok('discover-shape')
+
+  // A modern version other than 2026-07-28 is refused before dispatch, so no job is admitted.
+  const before = jobIds()
+  // The empty string is a string the server does not support, so it is -32022 with requested "" and
+  // not a malformed one; a non-string version is -32602 (malformed-modern-meta).
+  for (const requested of ['2099-01-01', '']) {
+    const future = { [META_VERSION]: requested, [META_CLIENT]: { name: 'smoke', version: '0' }, [META_CAPABILITIES]: {} }
+    for (const [method, params] of [['server/discover', { _meta: future }],
+      ['tools/call', { name: 'delegate_to_codex', arguments: startArgs(modern, { prompt: 'FLOW_FAKE_MODE=happy' }), _meta: future }]]) {
+      const { error, result } = await modern.raw(method, params)
+      assert.equal(result, undefined, `${method} answered an unsupported version ${JSON.stringify(requested)}`)
+      assert.deepEqual([error.code, error.data], [-32022, { supported: [MODERN], requested }], `${method} ${JSON.stringify(requested)}: ${JSON.stringify(error)}`)
+    }
+  }
+  assert.deepEqual(jobIds(), before, 'an unsupported version admitted a job')
+  modern.noOutbound()
+  ok('unsupported-version')
+
+  // The modern _meta fields the server reads are checked, and no others: clientCapabilities is
+  // required, clientInfo needs a string name and version when present, and experimental, the
+  // extensions map and every entry of either are objects, never an array or null. Each input is
+  // refused before dispatch, on a tool call and on a task method whose id names a visible job. A
+  // non-object _meta is not here: it cannot carry the version key, so it is legacy
+  // (legacy-meta-non-object-unchanged). The positive control below sends malformed fields the
+  // server does not read, which dispatch.
+  const capabilitiesOf = (capabilities) => ({ [META_VERSION]: MODERN, [META_CAPABILITIES]: capabilities })
+  const infoOf = (clientInfo) => ({ ...capabilitiesOf({}), [META_CLIENT]: clientInfo })
+  const UNKNOWN = 'com.example/unknown'
+  for (const meta of [{ [META_VERSION]: 20260728 }, { [META_VERSION]: MODERN }, { [META_VERSION]: MODERN, [META_CLIENT]: { name: 'smoke', version: '0' } },
+    capabilitiesOf('x'), capabilitiesOf({ extensions: 'invalid' }), capabilitiesOf({ extensions: [] }),
+    capabilitiesOf({ extensions: { [TASKS]: [] } }), capabilitiesOf({ extensions: { [TASKS]: null } }),
+    capabilitiesOf({ extensions: { [UNKNOWN]: null } }), capabilitiesOf({ extensions: { [UNKNOWN]: [] } }), capabilitiesOf({ extensions: { [UNKNOWN]: 'x' } }),
+    capabilitiesOf({ experimental: [] }), capabilitiesOf({ experimental: 'x' }), capabilitiesOf({ experimental: null }),
+    capabilitiesOf({ experimental: { smoke: null } }), capabilitiesOf({ experimental: { smoke: [] } }),
+    infoOf('x'), infoOf([]), infoOf(null), infoOf({}), infoOf({ name: 'smoke' }), infoOf({ version: '0' }),
+    infoOf({ name: 1, version: '0' }), infoOf({ name: 'smoke', version: 1 }), infoOf({ name: null, version: null })]) {
+    for (const [method, params] of [['tools/call', { name: 'delegation_doctor', arguments: {} }], ['tasks/get', { taskId: timed.job.id }]]) {
+      const { error, result } = await modern.raw(method, { ...params, _meta: meta })
+      assert.deepEqual([result, error?.code, /^Invalid params: /.test(error?.message)], [undefined, -32602, true], `${method} ${JSON.stringify(meta)}: ${JSON.stringify(error ?? result)}`)
+    }
+  }
+  // The control: an extension the server does not know, with object settings, is accepted.
+  const unknownExtension = capabilitiesOf({ experimental: { smoke: {} }, extensions: { [UNKNOWN]: {} } })
+  const controlCall = await modern.raw('tools/call', { name: 'delegation_doctor', arguments: {}, _meta: unknownExtension })
+  assert.deepEqual([controlCall.error, controlCall.result?.resultType], [undefined, 'complete'], `tools/call with an unknown extension: ${JSON.stringify(controlCall)}`)
+  const controlTask = await modern.raw('tasks/get', { taskId: timed.job.id, _meta: unknownExtension })
+  assert.equal(controlTask.error?.code, -32021, `tasks/get with an unknown extension was refused before dispatch: ${JSON.stringify(controlTask)}`)
+  // The second control: fields the server never reads pass through even when malformed.
+  const unread = { [META_VERSION]: MODERN, [META_CLIENT]: { name: 'smoke', version: '0', title: 7 }, [META_CAPABILITIES]: { roots: null } }
+  const unreadCall = await modern.raw('tools/call', { name: 'delegation_doctor', arguments: {}, _meta: unread })
+  assert.deepEqual([unreadCall.error, unreadCall.result?.resultType], [undefined, 'complete'], `tools/call with unread fields malformed: ${JSON.stringify(unreadCall)}`)
+  const unreadTask = await modern.raw('tasks/get', { taskId: timed.job.id, _meta: unread })
+  assert.equal(unreadTask.error?.code, -32021, `tasks/get with unread fields malformed was refused before dispatch: ${JSON.stringify(unreadTask)}`)
+  modern.noOutbound()
+  ok('malformed-modern-meta')
+
+  // A _meta that is no object cannot carry the version key, so the request is legacy and is answered
+  // as it always was.
+  for (const meta of [null, [], 'x']) {
+    assert.deepEqual((await claudeHost.raw('ping', { _meta: meta })).result, {}, `ping with _meta ${JSON.stringify(meta)}`)
+  }
+  ok('legacy-meta-non-object-unchanged')
+
+  // Two named legacy exceptions, both for forms that violate JSON-RPC. The base server dispatched a
+  // message with no id as a request, so an id-less ping, initialize or tools/call got a reply with
+  // no id; it answers nothing now. It treated a notifications/cancelled that carries an id as the
+  // notification and sent no reply; it answers -32601 now, like any unknown method, and aborts
+  // nothing. The fence is a normal ping with an id: the server reads its input in order, and all
+  // three id-less forms (an unknown tool name makes tools/call answer at once) would reply before it.
+  const idless = claudeHost.transcript.length
+  for (const [method, params] of [['ping', {}], ['initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'idless', version: '0' } }],
+    ['tools/call', { name: 'no_such_tool', arguments: {} }]]) claudeHost.write({ method, params })
+  const fence = await claudeHost.raw('ping')
+  assert.deepEqual(claudeHost.transcript.slice(idless).filter(({ dir }) => dir === 'server').map(({ message }) => message),
+    [{ jsonrpc: '2.0', id: fence.id, result: {} }], 'an id-less message was answered')
+  const inFlightBefore = jobIds()
+  const inFlight = claudeHost.callMessage('delegate_to_codex', startArgs(claudeHost, { prompt: 'FLOW_FAKE_MODE=hang' }))
+  const inFlightId = claudeHost.next
+  const newJob = () => jobIds().find((id) => !inFlightBefore.includes(id))
+  const inFlightJob = await until(() => newJob() && fakeCall(newJob())?.childPid && newJob())
+  assert.ok(inFlightJob, 'the in-flight call admitted no running job')
+  const misidentified = await claudeHost.raw('notifications/cancelled', { requestId: inFlightId, reason: 'smoke' })
+  assert.deepEqual([misidentified.result, misidentified.error], [undefined, { code: -32601, message: 'Method not found: notifications/cancelled' }], JSON.stringify(misidentified))
+  await sleep(500)
+  assert.deepEqual([existsSync(jobPath(inFlightJob, 'cancel')), readJob(inFlightJob).status], [false, 'running'], 'a notifications/cancelled that carries an id aborted the call')
+  assert.equal((await claudeHost.call('delegation_cancel', { jobId: inFlightJob })).job.status, 'cancelled')
+  const inFlightDone = await inFlight
+  assert.deepEqual([inFlightDone.id, inFlightDone.result?.structuredContent?.job?.status], [inFlightId, 'cancelled'], 'the call was aborted instead of answered')
+  ok('legacy-idless-and-misidentified-forms')
+
+  const modernInit = await modern.request('initialize', { protocolVersion: MODERN, capabilities: {}, clientInfo: { name: 'smoke', version: '0' } })
+  assert.deepEqual(modernInit.error, { code: -32601, message: 'Method not found: initialize' })
+  modern.noOutbound()
+  ok('modern-initialize-rejected')
+
+  // One connection, both eras, both orders: each reply reports its own request's era, identity and
+  // capabilities, and a modern request never writes what a legacy one reads. Every request carries
+  // a capability set of its own. The legacy set names the tasks extension, which a legacy request
+  // still never counts as declared, and no roots, so no request goes to this modern client.
+  const interleaved = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  const doctorOf = (client, options) => client.call('delegation_doctor', {}, options)
+  const contextOf = (report) => [report.client.era, report.client.protocolVersion, report.client.clientInfo, report.client.capabilities, report.tasks.declaredOnThisCall]
+  const SMOKE = { name: 'smoke', version: '0' }
+  const OTHER = { name: 'interleaved', version: '1' }
+  const DECLARING = { extensions: { [TASKS]: {} } }
+  const ROOTED = { roots: {}, experimental: { smoke: {} } }
+  const NEGOTIATED = { sampling: {}, extensions: { [TASKS]: {} } }
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { capabilities: DECLARING })), ['modern', MODERN, SMOKE, DECLARING, true])
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { era: 'legacy' })), ['legacy', null, null, {}, false], 'a modern request wrote the legacy globals')
+  const lateInit = await interleaved.raw('initialize', { protocolVersion: '2025-06-18', capabilities: NEGOTIATED, clientInfo: OTHER })
+  assert.equal(lateInit.result.protocolVersion, '2025-06-18')
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { capabilities: ROOTED })), ['modern', MODERN, SMOKE, ROOTED, false], 'initialize changed a modern request\'s context')
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { capabilities: DECLARING })), ['modern', MODERN, SMOKE, DECLARING, true], 'one modern request\'s capabilities reached the next')
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { era: 'legacy' })), ['legacy', '2025-06-18', OTHER, NEGOTIATED, false], 'a modern request overwrote what initialize negotiated')
+  interleaved.close()
+  ok('era-interleaved')
+
+  // Requests of both eras and different capabilities in flight at once on one connection, after an
+  // initialize: each keeps its own, and the legacy context afterwards is still what initialize
+  // negotiated.
+  const concurrent = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  await concurrent.raw('initialize', { protocolVersion: '2025-03-26', capabilities: NEGOTIATED, clientInfo: OTHER })
+  const reports = await Promise.all([doctorOf(concurrent, { capabilities: DECLARING }), doctorOf(concurrent, { era: 'legacy' }), doctorOf(concurrent, { capabilities: ROOTED })])
+  assert.deepEqual(reports.map(contextOf), [['modern', MODERN, SMOKE, DECLARING, true], ['legacy', '2025-03-26', OTHER, NEGOTIATED, false], ['modern', MODERN, SMOKE, ROOTED, false]])
+  assert.deepEqual(contextOf(await doctorOf(concurrent, { era: 'legacy' })), ['legacy', '2025-03-26', OTHER, NEGOTIATED, false], 'concurrent modern requests changed what initialize negotiated')
+  concurrent.close()
+  ok('era-concurrent')
+
+  // Modern roots are CLAUDE_PROJECT_DIR alone, and no roots/list is sent even when the request
+  // advertises roots.
+  assert.equal((await start(modern, { prompt: 'FLOW_FAKE_MODE=happy' })).job.status, 'succeeded')
+  modern.noOutbound()
+  ok('modern-fixed-roots')
+  const modernListed = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, roots: [other], era: 'modern' })
+  const outsideModern = await start(modernListed, { prompt: 'x', cwd: other })
+  assert.deepEqual([outsideModern.ok, outsideModern.error?.kind], [false, 'OUTSIDE_ROOTS'], JSON.stringify(outsideModern))
+  assert.equal(modernListed.transcript.some(({ dir, message }) => dir === 'server' && message.method === 'roots/list'), false, 'a modern request was asked for roots')
+  modernListed.noOutbound()
+  ok('modern-outside-roots')
+  const modernBare = await connect({ host: 'claude', cwd: repo, era: 'modern' })
+  const noRootsModern = await start(modernBare, { prompt: 'x' })
+  assert.deepEqual([noRootsModern.ok, noRootsModern.error?.kind], [false, 'NO_ROOTS'], JSON.stringify(noRootsModern))
+  modernBare.close()
+  ok('modern-no-roots')
+
+  // A modern call that does not declare the extension waits as a legacy call does, and its envelope
+  // has the same shape.
+  const modernSync = await modern.callMessage('delegate_to_codex', startArgs(modern, { prompt: 'FLOW_FAKE_MODE=happy' }))
+  const legacySync = await claudeHost.callMessage('delegate_to_codex', startArgs(claudeHost, { prompt: 'FLOW_FAKE_MODE=happy' }))
+  const { resultType, ...modernCall } = modernSync.result
+  assert.equal(resultType, 'complete')
+  assert.deepEqual(Object.keys(modernCall), Object.keys(legacySync.result))
+  assert.deepEqual(Object.keys(modernCall.structuredContent), Object.keys(legacySync.result.structuredContent))
+  assert.deepEqual(Object.keys(modernCall.structuredContent.job), Object.keys(legacySync.result.structuredContent.job))
+  assert.deepEqual([modernCall.structuredContent.job.status, modernCall.isError], [legacySync.result.structuredContent.job.status, legacySync.result.isError])
+  modern.noOutbound()
+  ok('modern-sync-envelope')
+
+  // The doctor labels the calling request: its era and identity, whether it declared the tasks
+  // extension, and where its roots came from.
+  const legacyDoctor = await doctorOf(claudeHost)
+  assert.deepEqual([legacyDoctor.client, legacyDoctor.tasks, legacyDoctor.rootsSource],
+    [{ era: 'legacy', protocolVersion: '2025-06-18', clientInfo: SMOKE, capabilities: {} }, { served: true, declaredOnThisCall: false }, 'fixed'])
+  const legacyListed = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, roots: [repo] })
+  const listedDoctor = await doctorOf(legacyListed)
+  assert.deepEqual([listedDoctor.client.capabilities, listedDoctor.tasks.declaredOnThisCall, listedDoctor.rootsSource], [{ roots: {} }, false, 'roots/list'])
+  legacyListed.close()
+  ok('doctor-legacy-context')
+  const declaring = await doctorOf(modernListed, { tasks: true })
+  assert.deepEqual([declaring.client, declaring.tasks, declaring.rootsSource],
+    [{ era: 'modern', protocolVersion: MODERN, clientInfo: SMOKE, capabilities: { roots: {}, extensions: { [TASKS]: {} } } }, { served: true, declaredOnThisCall: true }, 'fixed'])
+  const undeclared = await doctorOf(modern)
+  assert.deepEqual([undeclared.client.capabilities, undeclared.tasks.declaredOnThisCall, undeclared.rootsSource], [{}, false, 'fixed'])
+  modernListed.close()
+  modern.close()
+  ok('doctor-modern-context')
+
+  // Tasks. A modern delegate call that declares the extension and names no waitSeconds gets the
+  // admitted job as a task; every other call keeps its synchronous answer.
+  const INTERNAL_TEXT = 'The delegate server failed; server.log in the state directory has the detail.'
+  const tasks = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  const createTask = (client, args, options) => client.createTask(`delegate_to_${client.target ?? 'codex'}`, startArgs(client, args), options)
+  // A provider that answers no interrupt and ignores SIGTERM: its cancel acknowledges at once and
+  // its stop runs every timeout, so it runs beside the rest.
+  const stubbornTask = (await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=hang-stubborn' })).result
+  const stubbornCancelled = (async () => {
+    assert.ok(await until(() => readJob(stubbornTask.taskId).turnOpen), 'the stubborn task\'s turn never opened')
+    const asked = Date.now()
+    const ack = await tasks.tasksCancel(stubbornTask.taskId)
+    return { ack, ms: Date.now() - asked, done: await tasks.settled(stubbornTask.taskId, 150_000) }
+  })()
+
+  const happyTask = await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=happy' })
+  assert.equal(happyTask.result?.resultType, 'task', JSON.stringify(happyTask))
+  const undeclaredCall = await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=happy' }, { tasks: false })
+  assert.deepEqual([undeclaredCall.result.resultType, undeclaredCall.result.structuredContent.job.status], ['complete', 'succeeded'])
+  // A legacy request never gets a task, even when initialize named the extension.
+  const legacyTasks = new Client({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo } })
+  await legacyTasks.raw('initialize', { protocolVersion: '2025-11-25', capabilities: { extensions: { [TASKS]: {} } }, clientInfo: { name: 'smoke', version: '0' } })
+  const legacyCall = await legacyTasks.callMessage('delegate_to_codex', startArgs(legacyTasks, { prompt: 'FLOW_FAKE_MODE=happy' }))
+  assert.deepEqual([legacyCall.result.resultType, legacyCall.result.structuredContent.job.status], [undefined, 'succeeded'])
+  legacyTasks.close()
+  tasks.noOutbound()
+  ok('task-only-when-wait-absent')
+
+  const zeroWait = await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=happy', waitSeconds: 0 })
+  assert.deepEqual([zeroWait.result.resultType, 'taskId' in zeroWait.result, zeroWait.result.structuredContent.ok], ['complete', false, true])
+  assert.ok(['queued', 'running', 'succeeded'].includes(zeroWait.result.structuredContent.job.status))
+  ok('task-wait-zero-sync')
+  const positiveWait = await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=happy', waitSeconds: 60 })
+  assert.deepEqual([positiveWait.result.resultType, 'taskId' in positiveWait.result, positiveWait.result.structuredContent.job.status], ['complete', false, 'succeeded'])
+  ok('task-wait-positive-sync')
+
+  const beforeRefusal = jobIds()
+  const refusedTask = await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=happy', cwd: other })
+  assert.deepEqual([refusedTask.result.resultType, refusedTask.result.isError, refusedTask.result.structuredContent.error.kind], ['complete', true, 'OUTSIDE_ROOTS'])
+  assert.deepEqual(jobIds(), beforeRefusal, 'a refused task left a job directory')
+  tasks.noOutbound()
+  ok('task-refusal-sync')
+
+  for (const [name, args] of [['delegation_result', { jobId: positiveWait.result.structuredContent.job.id }], ['delegation_cancel', { jobId: positiveWait.result.structuredContent.job.id }],
+    ['delegation_steer', { jobId: positiveWait.result.structuredContent.job.id, prompt: 'x' }], ['delegation_doctor', {}]]) {
+    const answer = await tasks.createTask(name, args)
+    assert.equal(answer.result?.resultType, 'complete', `${name}: ${JSON.stringify(answer)}`)
+    assert.ok(Array.isArray(answer.result.content) && !('taskId' in answer.result), `${name} returned a task`)
+  }
+  ok('task-other-tools-sync')
+
+  const discovering = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  assert.equal((await discovering.request('server/discover')).result.resultType, 'complete')
+  const afterDiscover = await createTask(discovering, { prompt: 'FLOW_FAKE_MODE=happy' }, { tasks: false })
+  assert.deepEqual([afterDiscover.result.resultType, afterDiscover.result.structuredContent.job.status], ['complete', 'succeeded'])
+  discovering.close()
+  ok('discover-not-sticky')
+
+  // The task is the job: the same id, the record's timestamps, the retention floor, and, once it
+  // ends, the synchronous result of the same job.
+  const created = happyTask.result
+  const ISO = (value) => typeof value === 'string' && new Date(value).toISOString() === value
+  assert.deepEqual(Object.keys(created).sort(), ['createdAt', 'lastUpdatedAt', 'pollIntervalMs', 'resultType', 'status', 'statusMessage', 'taskId', 'ttlMs'])
+  assert.ok(typeof created.taskId === 'string' && created.taskId.length <= 128 && /^[\x20-\x7e]+$/.test(created.taskId), created.taskId)
+  assert.equal(readJob(created.taskId).id, created.taskId, 'the task id is not a job id')
+  assert.deepEqual([created.status, created.statusMessage, created.createdAt, created.lastUpdatedAt], ['working', 'queued', readJob(created.taskId).createdAt, readJob(created.taskId).createdAt])
+  assert.ok(ISO(created.createdAt) && ISO(created.lastUpdatedAt))
+  assert.equal(created.ttlMs, RETENTION_MS)
+  assert.ok(created.pollIntervalMs === 1000 && created.pollIntervalMs >= 250 && created.pollIntervalMs <= 30_000)
+  const happyDone = await tasks.settled(created.taskId)
+  assert.deepEqual([happyDone.result.resultType, happyDone.result.status, happyDone.result.statusMessage, 'pollIntervalMs' in happyDone.result],
+    ['complete', 'completed', 'succeeded', false], JSON.stringify(happyDone))
+  const control = await claudeHost.callMessage('delegation_result', { jobId: created.taskId, events: 0 })
+  assert.deepEqual(happyDone.result.result, control.result, 'the completed task\'s result is not the synchronous result of its job')
+  assert.equal(happyDone.result.result.structuredContent.ok, true)
+  tasks.noOutbound()
+  ok('task-happy-path')
+
+  // Every job status: working while queued or running, completed with the isError envelope for
+  // every terminal failure, and a terminal projection that never changes. Each completed task's
+  // result is the whole CallToolResult a synchronous delegation_result returns for its job: content,
+  // the summary-first text, structuredContent with any partial output and commandFailures, isError.
+  const sameAsSync = async (done, label) => {
+    const control = await claudeHost.callMessage('delegation_result', { jobId: done.taskId, events: 0 })
+    assert.deepEqual(done.result, control.result, `${label}: the completed task's result is not the synchronous result of its job`)
+  }
+  const terminal = async (args, status, kind) => {
+    const begun = (await createTask(tasks, args)).result
+    const done = (await tasks.settled(begun.taskId)).result
+    assert.deepEqual([done.status, done.result.isError ?? false, done.result.structuredContent.job.status, done.result.structuredContent.job.error?.kind ?? null],
+      ['completed', status !== 'succeeded', status, kind], JSON.stringify(done))
+    return done
+  }
+  await sameAsSync(await terminal({ prompt: 'FLOW_FAKE_MODE=refusal' }, 'failed', 'REFUSAL'), 'refusal')
+  const cancelledTask = (await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=hang' })).result
+  assert.ok(await until(() => readJob(cancelledTask.taskId).turnOpen), 'the hanging task\'s turn never opened')
+  assert.equal((await claudeHost.call('delegation_cancel', { jobId: cancelledTask.taskId })).job.status, 'cancelled')
+  const cancelledDone = (await tasks.tasksGet(cancelledTask.taskId)).result
+  assert.deepEqual([cancelledDone.status, cancelledDone.result.isError, cancelledDone.result.structuredContent.job.error.kind], ['completed', true, 'CANCELLED'])
+  await sameAsSync(cancelledDone, 'cancelled')
+  const orphanTask = (await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=hang' })).result
+  const orphanTaskCall = await until(() => fakeCall(orphanTask.taskId)?.childPid && fakeCall(orphanTask.taskId))
+  process.kill(readJob(orphanTask.taskId).runnerPid, 'SIGKILL')
+  await until(() => !alive(readJob(orphanTask.taskId).runnerPid))
+  const orphanDone = (await tasks.settled(orphanTask.taskId)).result
+  assert.deepEqual([orphanDone.status, orphanDone.result.isError, orphanDone.result.structuredContent.job.status, orphanDone.result.structuredContent.job.error.kind],
+    ['completed', true, 'unknown', 'RUNNER_LOST'])
+  await sameAsSync(orphanDone, 'lost runner')
+  assert.ok(await until(() => !alive(orphanTaskCall.pid) && !alive(orphanTaskCall.childPid)), 'the orphaned task\'s provider group was killed')
+  const record = (fields) => {
+    const job = { ...late, id: randomUUID(), access: 'read-only', tmpDir: null, ...fields }
+    mkdirSync(jobs.jobDir(job.id), { recursive: true })
+    return jobs.writeJob(job)
+  }
+  const stale = record({ status: 'queued', createdAt: new Date(Date.now() - 120_000).toISOString() })
+  const staleDone = (await tasks.tasksGet(stale.id)).result
+  assert.deepEqual([staleDone.status, staleDone.result.isError, staleDone.result.structuredContent.job.status, staleDone.result.structuredContent.job.error.kind],
+    ['completed', true, 'failed', 'RUNNER_LOST'])
+  await sameAsSync(staleDone, 'never started')
+  const fresh = record({ status: 'queued', createdAt: new Date().toISOString() })
+  const live = record({ status: 'running', createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), runnerPid: process.pid, runnerStart: jobs.startToken(process.pid) })
+  for (const [job, status] of [[fresh, 'queued'], [live, 'running']]) {
+    const seen = (await tasks.tasksGet(job.id)).result
+    assert.deepEqual([seen.status, seen.statusMessage, seen.pollIntervalMs, 'result' in seen], ['working', status, 1000, false], JSON.stringify(seen))
+  }
+  const again = (await tasks.tasksGet(stale.id)).result
+  assert.deepEqual(again, staleDone, 'a terminal task\'s projection changed between polls')
+  ok('task-status-map')
+
+  // lastUpdatedAt moves from createdAt to startedAt to endedAt, and createdAt never moves.
+  const timedTask = (await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=slow' })).result
+  const seenStamps = []
+  for (const end = Date.now() + 30_000; Date.now() < end; await sleep(50)) {
+    const seen = (await tasks.tasksGet(timedTask.taskId)).result
+    seenStamps.push([seen.statusMessage, seen.createdAt, seen.lastUpdatedAt])
+    if (seen.status === 'completed') break
+  }
+  const timedJob = readJob(timedTask.taskId)
+  const expected = { queued: timedJob.createdAt, running: timedJob.startedAt, succeeded: timedJob.endedAt }
+  assert.ok(seenStamps.every(([status, createdAt, updated]) => createdAt === timedTask.createdAt && updated === expected[status]), JSON.stringify({ seenStamps, expected }))
+  assert.deepEqual([seenStamps.some(([status]) => status === 'running'), seenStamps.at(-1)[0], timedTask.lastUpdatedAt], [true, 'succeeded', timedJob.createdAt])
+  ok('task-timestamps')
+
+  // Another server on the same state directory answers for the same task the same way.
+  const restarted = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  for (const id of [created.taskId, timedTask.taskId]) {
+    assert.deepEqual((await restarted.tasksGet(id)).result, (await tasks.tasksGet(id)).result, 'a restarted server projected the task differently')
+  }
+  restarted.close()
+  ok('task-restart')
+
+  // The task methods need the extension declared on the request itself, in either era, before the
+  // id is looked at.
+  const NEEDS_TASKS = { requiredCapabilities: { extensions: { [TASKS]: {} } } }
+  for (const [method, params] of [['tasks/get', { taskId: created.taskId }], ['tasks/cancel', { taskId: created.taskId }], ['tasks/update', { taskId: created.taskId }], ['tasks/get', { taskId: 'nope' }]]) {
+    const { error } = await tasks.request(method, params, { tasks: false })
+    assert.deepEqual([error?.code, error?.data], [-32021, NEEDS_TASKS], `${method}: ${JSON.stringify(error)}`)
+  }
+  tasks.noOutbound()
+  ok('tasks-missing-capability')
+  for (const method of ['tasks/get', 'tasks/cancel', 'tasks/update']) {
+    const { error } = await claudeHost.request(method, { taskId: created.taskId })
+    assert.deepEqual([error?.code, error?.data], [-32021, NEEDS_TASKS], `${method}: ${JSON.stringify(error)}`)
+  }
+  ok('tasks-missing-capability-legacy')
+
+  // An id this session cannot see gets one answer, whatever the reason. A pruned id is one that a
+  // task answered for until a server started and its prune removed the job, ended past retention.
+  const removed = record({ status: 'succeeded', createdAt: new Date().toISOString(), endedAt: new Date().toISOString() })
+  rmSync(jobs.jobDir(removed.id), { recursive: true })
+  const pastRetention = new Date(Date.now() - RETENTION_MS - 86_400_000).toISOString()
+  const pruned = record({ status: 'succeeded', createdAt: pastRetention, endedAt: pastRetention })
+  assert.equal((await tasks.tasksGet(pruned.id)).result?.status, 'completed', 'the job to prune was not a task before the prune')
+  const pruning = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
+  assert.equal((await pruning.request('ping')).result.resultType, 'complete')
+  assert.equal(existsSync(jobs.jobDir(pruned.id)), false, 'a starting server did not prune a job ended past retention')
+  const unknownAnswers = []
+  for (const client of [tasks, pruning]) {
+    for (const params of [{ taskId: 'nope' }, {}, { taskId: claudeRead.job.id }, { taskId: viaRoots.job.id }, { taskId: removed.id }, { taskId: pruned.id }]) {
+      for (const method of ['tasks/get', 'tasks/cancel', 'tasks/update']) unknownAnswers.push(JSON.stringify((await client.request(method, params, { tasks: true })).error))
+    }
+  }
+  pruning.close()
+  assert.deepEqual([...new Set(unknownAnswers)], [JSON.stringify({ code: -32602, message: 'Unknown task' })])
+  ok('tasks-unknown-id-uniform')
+
+  // A record the lookup sees but reconcile cannot settle, because its directory refuses the write:
+  // the task is failed with the fixed message, and the detail stays in server.log.
+  const wedgedTask = record({ status: 'running', createdAt: new Date().toISOString(), runnerPid: deadPid, runnerStart: '1', providerPgid: null, providerStart: null })
+  chmodSync(jobs.jobDir(wedgedTask.id), 0o500)
+  let faulted
+  let cancelFault
+  try {
+    faulted = await tasks.tasksGet(wedgedTask.id)
+    cancelFault = await tasks.tasksCancel(wedgedTask.id)
+  } finally { chmodSync(jobs.jobDir(wedgedTask.id), 0o700) }
+  assert.deepEqual(faulted.result, { resultType: 'complete', taskId: wedgedTask.id, status: 'failed', statusMessage: 'failed', createdAt: wedgedTask.createdAt,
+    lastUpdatedAt: wedgedTask.createdAt, ttlMs: RETENTION_MS, error: { code: -32603, message: INTERNAL_TEXT } })
+  assert.deepEqual(cancelFault.error, { code: -32603, message: INTERNAL_TEXT })
+  for (const answer of [faulted, cancelFault]) {
+    const text = JSON.stringify(answer)
+    assert.ok(!text.includes(state) && !text.includes('EACCES') && !/\n\s+at /.test(text) && !text.includes('.mjs'), `a fault leaked its detail: ${text}`)
+  }
+  assert.match(readFileSync(join(state, 'server.log'), 'utf8'), /internal error: Error: EACCES/)
+  ok('tasks-internal-sanitized')
+
+  // tasks/cancel writes the marker and acknowledges at once; the runner stops the job, and the
+  // task completes with the CANCELLED envelope. A second cancel and a cancel of an ended task are
+  // acknowledged the same way.
+  const hangTask = (await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=hang' })).result
+  assert.ok(await until(() => readJob(hangTask.taskId).turnOpen), 'the hanging task\'s turn never opened')
+  const cancelAsked = Date.now()
+  const cancelAck = await tasks.tasksCancel(hangTask.taskId)
+  const cancelMs = Date.now() - cancelAsked
+  assert.deepEqual(cancelAck.result, { resultType: 'complete' })
+  assert.ok(cancelMs < 1000, `tasks/cancel took ${cancelMs} ms`)
+  assert.ok(existsSync(jobPath(hangTask.taskId, 'cancel')), 'tasks/cancel wrote no marker')
+  const secondAck = await tasks.tasksCancel(hangTask.taskId)
+  const hangDone = (await tasks.settled(hangTask.taskId)).result
+  assert.deepEqual([hangDone.status, hangDone.result.isError, hangDone.result.structuredContent.job.status, hangDone.result.structuredContent.job.error.kind],
+    ['completed', true, 'cancelled', 'CANCELLED'], JSON.stringify(hangDone))
+  ok('task-cancel-hang')
+  const stubbornOut = await stubbornCancelled
+  assert.deepEqual(stubbornOut.ack.result, { resultType: 'complete' })
+  assert.ok(stubbornOut.ms < 1000, `tasks/cancel of a stubborn job took ${stubbornOut.ms} ms`)
+  assert.deepEqual([stubbornOut.done.result.status, stubbornOut.done.result.result.isError, stubbornOut.done.result.result.structuredContent.job.status],
+    ['completed', true, 'cancelled'], JSON.stringify(stubbornOut.done))
+  ok('task-cancel-stubborn')
+  assert.deepEqual(secondAck.result, { resultType: 'complete' })
+  assert.deepEqual((await tasks.tasksCancel(hangTask.taskId)).result, { resultType: 'complete' })
+  assert.deepEqual((await tasks.tasksCancel(created.taskId)).result, { resultType: 'complete' })
+  assert.equal(existsSync(jobPath(created.taskId, 'cancel')), false, 'a cancel of an ended task wrote a marker')
+  ok('task-cancel-terminal-and-repeat')
+
+  // A cancel that arrives after the turn completed, while the provider is still exiting, loses to
+  // the native success.
+  const lingerTask = (await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=linger' })).result
+  assert.ok(await until(() => existsSync(jobPath(lingerTask.taskId, 'events.jsonl')) && journal(lingerTask.taskId).some((event) => event.method === 'turn/completed')
+    && readJob(lingerTask.taskId).status === 'running'), 'the lingering task never showed a completed turn while its runner ran')
+  assert.deepEqual((await tasks.tasksCancel(lingerTask.taskId)).result, { resultType: 'complete' })
+  const lingerDone = (await tasks.settled(lingerTask.taskId)).result
+  assert.deepEqual([lingerDone.status, lingerDone.result.structuredContent.ok, lingerDone.result.structuredContent.job.status], ['completed', true, 'succeeded'], JSON.stringify(lingerDone))
+  ok('task-cancel-race-native-success')
+
+  // A marker that cannot be written is an error, never an acknowledgement.
+  const unmarkable = record({ status: 'running', createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), runnerPid: process.pid, runnerStart: jobs.startToken(process.pid) })
+  mkdirSync(jobPath(unmarkable.id, 'cancel'))
+  const markFailed = await tasks.tasksCancel(unmarkable.id)
+  assert.deepEqual([markFailed.result, markFailed.error], [undefined, { code: -32603, message: INTERNAL_TEXT }], JSON.stringify(markFailed))
+  ok('task-cancel-marker-write-fails')
+
+  // tasks/cancel decides from the record as read and reconciles nothing: a queued writer past its
+  // grace keeps its record, its lease and its unclaimed state, and gets only the marker. The next
+  // tasks/get settles it as it always did.
+  const staleWriter = record({ status: 'queued', access: 'workspace-write', worktree: join(tmp, `held-${randomUUID()}`), createdAt: new Date(Date.now() - 120_000).toISOString() })
+  jobs.acquireLease(staleWriter)
+  const staleAsked = Date.now()
+  const staleAck = await tasks.tasksCancel(staleWriter.id)
+  const staleMs = Date.now() - staleAsked
+  assert.deepEqual(staleAck.result, { resultType: 'complete' }, JSON.stringify(staleAck))
+  assert.ok(staleMs < 1000, `tasks/cancel of a stale queued job took ${staleMs} ms`)
+  assert.deepEqual(readJob(staleWriter.id), staleWriter, 'tasks/cancel settled a stale queued job')
+  assert.deepEqual(leaseOf(staleWriter.worktree), [staleWriter.id], 'tasks/cancel released a lease')
+  assert.deepEqual([existsSync(jobPath(staleWriter.id, 'cancel')), existsSync(jobPath(staleWriter.id, 'claim'))], [true, false], 'tasks/cancel claimed the job or wrote no marker')
+  const staleWriterDone = (await tasks.tasksGet(staleWriter.id)).result
+  assert.deepEqual([staleWriterDone.status, staleWriterDone.result.structuredContent.job.status, staleWriterDone.result.structuredContent.job.error.kind], ['completed', 'failed', 'RUNNER_LOST'])
+  assert.deepEqual(leaseOf(staleWriter.worktree), [], 'the reconciling tasks/get kept the lease')
+  ok('task-cancel-stale-queued-marker-only')
+
+  // A running job whose runner died: the acknowledgement goes out without signalling its provider
+  // group or removing its TMPDIR, which the next tasks/get then does.
+  const lostGroup = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
+  const lostGroupGone = reaped(lostGroup)
+  const lostRunner = record({ status: 'running', createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), runnerPid: deadPid, runnerStart: '1', ...groupOf(lostGroup) })
+  lostRunner.tmpDir = jobs.tmpPath(lostRunner.id)
+  strays.push(lostRunner.tmpDir)
+  jobs.makeTmp(lostRunner.tmpDir)
+  jobs.writeJob(lostRunner)
+  const lostAsked = Date.now()
+  const lostAck = await tasks.tasksCancel(lostRunner.id)
+  const lostMs = Date.now() - lostAsked
+  assert.deepEqual(lostAck.result, { resultType: 'complete' }, JSON.stringify(lostAck))
+  assert.ok(lostMs < 1000, `tasks/cancel of a job with a dead runner took ${lostMs} ms`)
+  await sleep(300)
+  assert.deepEqual([alive(lostGroup.pid), existsSync(lostRunner.tmpDir), existsSync(jobPath(lostRunner.id, 'cancel'))], [true, true, true], 'tasks/cancel signalled the group or removed the TMPDIR')
+  assert.deepEqual(readJob(lostRunner.id), lostRunner, 'tasks/cancel settled a job whose runner died')
+  const lostDone = (await tasks.tasksGet(lostRunner.id)).result
+  assert.deepEqual([lostDone.status, lostDone.result.structuredContent.job.status, lostDone.result.structuredContent.job.error.kind], ['completed', 'unknown', 'RUNNER_LOST'])
+  await lostGroupGone
+  assert.equal(existsSync(lostRunner.tmpDir), false, 'the reconciling tasks/get left the TMPDIR')
+  ok('task-cancel-dead-runner-marker-only')
+
+  const updated = await tasks.tasksUpdate({ taskId: live.id, inputResponses: { anything: { action: 'accept' } }, extra: true })
+  assert.deepEqual(updated.result, { resultType: 'complete' })
+  assert.deepEqual(readJob(live.id), live, 'tasks/update changed the job')
+  ok('tasks-update-ack')
+  for (const job of [fresh, live, unmarkable]) jobs.settle(readJob(job.id), 'cancelled')
+
+  // notifications/cancelled names requests, and a task's creating request has already been
+  // answered, so naming it changes nothing.
+  const notified = await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=slow' })
+  tasks.write({ method: 'notifications/cancelled', params: { requestId: notified.id, reason: 'smoke' } })
+  const notifiedDone = (await tasks.settled(notified.result.taskId)).result
+  assert.deepEqual([notifiedDone.status, notifiedDone.result.structuredContent.ok, existsSync(jobPath(notified.result.taskId, 'cancel'))], ['completed', true, false], JSON.stringify(notifiedDone))
+  ok('notifications-cancelled-ignores-task')
+
+  // A task-mode call cancelled before admission commits leaves nothing behind. The call and its
+  // cancel arrive in one chunk, so the cancel is read before admission's first await returns.
+  const callIds = () => readdirSync(calls).sort()
+  const [jobsBeforeAbort, callsBeforeAbort] = [jobIds(), callIds()]
+  const abortId = `abort-${randomUUID()}`
+  const frame = (message) => `${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`
+  tasks.child.stdin.write(frame({ id: abortId, method: 'tools/call', params: { name: 'delegate_to_codex', arguments: startArgs(tasks, { prompt: 'FLOW_FAKE_MODE=happy' }), _meta: tasks.meta(true) } })
+    + frame({ method: 'notifications/cancelled', params: { requestId: abortId, reason: 'smoke' } }))
+  await sleep(2000)
+  assert.equal((await tasks.request('ping')).result.resultType, 'complete')
+  assert.deepEqual([jobIds(), callIds()], [jobsBeforeAbort, callsBeforeAbort], 'a call cancelled before admission committed left a job')
+  assert.equal(tasks.transcript.some(({ dir, message }) => dir === 'server' && message.id === abortId), false, 'a cancelled request was answered')
+  ok('abort-before-commit')
+
+  // A cancel that lands after admission committed and before the answer is written: there is no
+  // await in between, so a preload sends the cancel from inside the runner's spawn. The job gets the
+  // cooperative marker, the request no answer, and the runner settles the job cancelled.
+  const handoff = join(tmp, 'abort-handoff.mjs')
+  writeFileSync(handoff, `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+const real = cp.spawn
+let fired = false
+cp.spawn = function (command, args, options) {
+  if (!fired && Array.isArray(args) && args.includes('--job')) {
+    fired = true
+    process.stdin.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } }) + '\\n'))
+  }
+  return real.call(this, command, args, options)
+}
+syncBuiltinESMExports()
+`)
+  const handedOff = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern', entry: ['--import', pathToFileURL(handoff).href, MAIN] })
+  const jobsBeforeHandoff = jobIds()
+  handedOff.createTask('delegate_to_codex', startArgs(handedOff, { prompt: 'FLOW_FAKE_MODE=happy' })).catch(() => {})
+  const [handoffJob] = await until(() => { const added = jobIds().filter((id) => !jobsBeforeHandoff.includes(id)); return added.length ? added : null })
+  assert.ok(handoffJob, 'the call cancelled after admission admitted no job')
+  assert.ok(await until(() => existsSync(jobPath(handoffJob, 'cancel'))), 'the call cancelled after admission left no cancel marker')
+  assert.ok(await until(() => readJob(handoffJob).status === 'cancelled'), 'the job cancelled before handoff never settled')
+  assert.equal(readJob(handoffJob).error.kind, 'CANCELLED')
+  assert.equal((await handedOff.request('ping')).result.resultType, 'complete')
+  assert.equal(handedOff.transcript.some(({ dir, message }) => dir === 'server' && message.id === 1), false, 'a request cancelled before its answer was answered')
+  assert.deepEqual(jobIds().filter((id) => !jobsBeforeHandoff.includes(id)), [handoffJob])
+  handedOff.close()
+  ok('abort-before-handoff')
+
+  // Once the task is handed over, cancelling its request reaches nothing, even while the job runs.
+  const handedOver = await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=slow' })
+  assert.ok(await until(() => readJob(handedOver.result.taskId).status === 'running'), 'the handed-over task never ran')
+  tasks.write({ method: 'notifications/cancelled', params: { requestId: handedOver.id, reason: 'smoke' } })
+  const handedOverDone = (await tasks.settled(handedOver.result.taskId)).result
+  assert.deepEqual([handedOverDone.status, handedOverDone.result.structuredContent.ok, existsSync(jobPath(handedOver.result.taskId, 'cancel'))], ['completed', true, false], JSON.stringify(handedOverDone))
+  ok('abort-after-handoff')
+  tasks.close()
 
   const expired = await claudeHost.call('delegation_result', { jobId: timed.job.id, waitSeconds: 60 })
   assert.equal(expired.job.status, 'failed')
