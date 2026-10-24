@@ -19,6 +19,12 @@ for t in "$C"/takes/*/; do [ -d "$t" ] && cp -r "$t" "$D/takes/"; done
 # and the model-turn logs quote the request too, so the copied files get the same redaction here.
 find "$D" -maxdepth 1 -type f -name "arm-*" -exec sed -i -E 's/FLOW_FAKE_MODE=[a-z]+ say hello/<redacted prompt>/g' {} +
 find "$D/takes" -type f -exec sed -i -E 's/FLOW_FAKE_MODE=[a-z]+ say hello/<redacted prompt>/g' {} +
-echo "== secret scan of the capture (expect only this script, which holds the patterns)"
-grep -rIl -E 'sk-ant|ghp_|ghs_|xoxb|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH) PRIVATE' "$D" || true
+echo "== secret scan of the capture"
+# A match anywhere but this script (which holds the patterns) fails the assembly, so a capture that
+# picked up a credential never reaches the docs tree silently. grep exits 1 on no match, 2 on an error.
+if matches=$(grep -rIl -E 'sk-ant|ghp_|ghs_|xoxb|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH) PRIVATE' --exclude=assemble.sh "$D"); then
+  printf 'secret scan matched:\n%s\n' "$matches" >&2; exit 1
+else
+  status=$?; [ "$status" -eq 1 ] || { echo "secret scan failed to run (grep exit $status)" >&2; exit "$status"; }
+fi
 du -sh "$D"

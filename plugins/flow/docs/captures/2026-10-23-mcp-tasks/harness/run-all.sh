@@ -10,6 +10,8 @@ C=${1:-${CAPTURE_DIR:-}}
 C=$(cd "$C" && pwd)  # children run from other directories, so the path has to be absolute
 export CAPTURE_DIR=$C
 fail() { echo "arm $1 failed (exit $2); see $C/arm-$1.out" >&2; exit 1; }
+# The tee writes a meta line as it starts, so a non-empty log proves nothing; a frame in either direction does.
+require_frame() { grep -qE '"dir":"(client->server|server->client)"' "$1" || fail "$2" 1; echo "$(grep -c . "$1") lines"; }
 
 PREV=$(sed -n "s/^head: //p" "$C/HEAD.txt" 2>/dev/null | cut -c1-7); T=$C/takes/${PREV:-unknown}
 for f in "$C"/arm-*.jsonl "$C"/arm-*.out "$C"/arm-*.last.txt; do [ -e "$f" ] && { mkdir -p "$T"; mv "$f" "$T/"; }; done
@@ -23,9 +25,9 @@ for f in "$C"/arm-*.jsonl "$C"/arm-*.out "$C"/arm-*.last.txt; do [ -e "$f" ] && 
   echo "taken: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$C/HEAD.txt"
 cat "$C/HEAD.txt"
-echo "== arm a"; node "$HERE/drive.mjs" a "$C/mcp-a.json" "$C/repo" mcp__flowtasks__delegate_to_codex "$C/prompt-a.txt" 1 > "$C/arm-a.out" 2>&1 || fail a $?; grep -c . "$C/arm-a.jsonl"
-echo "== arm b"; node "$HERE/drive.mjs" b "$C/mcp-b.json" "$C/repo" "mcp__flowtasks__delegate_to_codex,TaskStop" "$C/prompt-b.txt" 1 "$C/prompt-b2.txt" > "$C/arm-b.out" 2>&1 || fail b $?; grep -c . "$C/arm-b.jsonl"
-echo "== arm c"; node "$HERE/drive.mjs" c "$C/mcp-c.json" "$C/repo" "Agent,mcp__flowtasks__delegate_to_codex" "$C/prompt-c.txt" 1 > "$C/arm-c.out" 2>&1 || fail c $?; grep -c . "$C/arm-c.jsonl"
-echo "== arm d pr"; bash "$HERE/arm-d.sh" pr || fail d-pr $?; grep -c . "$C/arm-d-pr.jsonl"
-echo "== arm d base"; bash "$HERE/arm-d.sh" base || fail d-base $?; grep -c . "$C/arm-d-base.jsonl"
+echo "== arm a"; node "$HERE/drive.mjs" a "$C/mcp-a.json" "$C/repo" mcp__flowtasks__delegate_to_codex "$C/prompt-a.txt" 1 > "$C/arm-a.out" 2>&1 || fail a $?; require_frame "$C/arm-a.jsonl" a
+echo "== arm b"; node "$HERE/drive.mjs" b "$C/mcp-b.json" "$C/repo" "mcp__flowtasks__delegate_to_codex,TaskStop" "$C/prompt-b.txt" 1 "$C/prompt-b2.txt" > "$C/arm-b.out" 2>&1 || fail b $?; require_frame "$C/arm-b.jsonl" b
+echo "== arm c"; node "$HERE/drive.mjs" c "$C/mcp-c.json" "$C/repo" "Agent,mcp__flowtasks__delegate_to_codex" "$C/prompt-c.txt" 1 > "$C/arm-c.out" 2>&1 || fail c $?; require_frame "$C/arm-c.jsonl" c
+echo "== arm d pr"; bash "$HERE/arm-d.sh" pr || fail d-pr $?; require_frame "$C/arm-d-pr.jsonl" d-pr
+echo "== arm d base"; bash "$HERE/arm-d.sh" base || fail d-base $?; require_frame "$C/arm-d-base.jsonl" d-base
 echo "== results"; grep -h "RESULT:\|EXIT" "$C/arm-a.out" "$C/arm-b.out" "$C/arm-c.out" | cut -c1-120

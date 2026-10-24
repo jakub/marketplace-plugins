@@ -40,4 +40,5 @@ createInterface({ input: child.stdout }).on('line', (line) => {
 })
 // Exit with the child's code so run-all.sh can tell a failed arm from a good one: a signal kill (code null) and
 // the timeout both exit non-zero even when the child reports 0.
-child.on('exit', (code) => { out('EXIT', code); process.exit(timedOut ? 1 : (code ?? 1)) })
+// close, not exit: it fires after the child's stdio closed, so buffered stream-json lines reach the log first.
+child.on('close', (code) => { out('EXIT', code); process.exit(timedOut ? 1 : (code ?? 1)) })
