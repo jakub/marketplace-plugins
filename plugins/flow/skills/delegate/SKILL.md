@@ -9,7 +9,7 @@ Outside T3 Code, one MCP server, `flow_delegate`, reaches the other family in bo
 
 ## The five tools
 
-- `delegate_to_codex` on a Claude host, or `delegate_to_claude` on a Codex host, starts a job. It waits for the outcome unless you detach.
+- `delegate_to_codex` on a Claude host, or `delegate_to_claude` on a Codex host, starts a job. It waits for the outcome unless you detach, or unless a capable Claude main thread gets a background task back (see `## Wait or detach`).
 - `delegation_result` reads one job: its status, its outcome and its last event lines. With `waitSeconds` it blocks until the job ends or the wait runs out.
 - `delegation_cancel` stops a queued or running job and kills its provider's whole process group.
 - `delegation_steer` adds an instruction to a running job's turn without stopping the job.
@@ -21,7 +21,7 @@ Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`,
 
 The server checks both against the provider's own model catalog before the prompt goes out. If the catalog lists the model but not the effort, the job fails `BAD_MODEL` and costs no turn. On Claude Code 2.1.284, for example, `haiku` takes no effort level, so it fails at every effort. An id the catalog does not list still runs, and the envelope says `catalog: "absent"`.
 
-`cwd` is an absolute directory inside a workspace root and inside a Git worktree. On Claude the roots are the session's MCP roots and `CLAUDE_PROJECT_DIR`. On Codex the one root is the directory the session started in, and only when that directory is a repository's top level and not your home. A worktree under `<repo>/.flow-worktrees/` sits inside its repository's root. A path outside every root, or a symlink that leads out of one, fails `OUTSIDE_ROOTS`.
+`cwd` is an absolute directory inside a workspace root and inside a Git worktree. On Claude the roots are the session's MCP roots and `CLAUDE_PROJECT_DIR`, except over MCP 2026-07-28, which Claude Code 2.1.309 speaks. There the server asks for no roots and the one root is `CLAUDE_PROJECT_DIR`. A directory added with `--add-dir` is then not a root, and a job whose `cwd` lies only in one fails `OUTSIDE_ROOTS`. The doctor's `rootsSource` says which rule applied. On Codex the one root is the directory the session started in, and only when that directory is a repository's top level and not your home. A worktree under `<repo>/.flow-worktrees/` sits inside its repository's root. A path outside every root, or a symlink that leads out of one, fails `OUTSIDE_ROOTS`.
 
 `access` is `read-only` (the default) or `workspace-write`. A write job may edit its worktree and nothing else, and it holds that worktree's one write lease, so a second write job there fails `WORKSPACE_BUSY` while read-only jobs still run beside it. No Flow hook runs inside a delegated job, so the access level is the whole confinement. Never point a writer at a worktree that holds another seat's uncommitted work. The job sees no host MCP server, plugin or hook, so anything it needs that is not in the repository goes inline in `prompt`.
 
@@ -35,9 +35,11 @@ The server checks both against the provider's own model catalog before the promp
 
 ## Wait or detach
 
-By default the call waits for the whole budget and returns the finished job. `waitSeconds: 0` returns as soon as the job starts. Collect it later with `delegation_result` and a `waitSeconds` of your own. A job keeps running when the session that started it ends, and any later session in the same workspace can collect it. If you interrupt a `delegate_to_*` call while it waits, the job is cancelled with it. An interrupted `delegation_result` wait leaves the job running.
+On a Claude main thread that declares the MCP tasks extension, omit `waitSeconds`. The call returns a background task at once, and the result arrives in a later turn, so you write no polling. Claude Code 2.1.309 declares the extension on an interactive main thread, on a stream-json main thread run with `CLAUDE_AUTO_BACKGROUND_TASKS=1`, and in T3 children. The task is the job: its `taskId` is the job id, so `delegation_result` and `delegation_cancel` take it as `jobId`. A completed task carries the same envelope a synchronous call returns, so `ok`, `job.status` and `error.kind` read the same, and a `failed`, `cancelled` or `unknown` job is still a completed task with `isError` set. The client's `tasks/cancel` only asks the job to stop and does not wait for it, and `delegation_cancel` is the call that waits.
 
-On Claude Code, run a call beside other work through the `flow:bridge` seat. It returns the envelope when the job ends. Its definition fixes its model, so do not pass one. On Codex there is no transport seat. Detach with `waitSeconds: 0` and collect with `delegation_result`.
+Everywhere else the call waits for the whole budget and returns the finished job. `waitSeconds: 0` returns as soon as the job starts, with the queued envelope, on every client. A positive `waitSeconds` waits that long. Either value keeps the call off the task path. Collect a detached job later with `delegation_result` and a `waitSeconds` of your own. A job keeps running when the session that started it ends, and any later session in the same workspace can collect it. If you interrupt a `delegate_to_*` call before its answer arrives, the job is cancelled with it. Once the call has returned a task or a detached envelope, interrupting no longer reaches the job. An interrupted `delegation_result` wait leaves the job running.
+
+On Claude Code, run a call beside other work through the `flow:bridge` seat. It returns the envelope when the job ends. Its definition fixes its model, so do not pass one. An `Agent` subagent and `flow:bridge` never declare the tasks extension, so their calls stay synchronous. On Codex there is no transport seat, and Codex does not declare the extension either. Detach with `waitSeconds: 0` and collect with `delegation_result`.
 
 ## Steer a running job
 
@@ -75,7 +77,7 @@ A succeeded review with `findings: []` is not yet a pass. A reviewer that never 
 
 ## Before the first call
 
-Run `delegation_doctor` as the preflight. It answers without a workspace, which is what you need when the answer is that you have none. It starts the provider for a handshake that runs no turn, so it costs a second or two and no tokens. `ok` is true only when the provider is installed and signed in, its handshake passed, and a usable root exists.
+Run `delegation_doctor` as the preflight. It answers without a workspace, which is what you need when the answer is that you have none. It starts the provider for a handshake that runs no turn, so it costs a second or two and no tokens. `ok` is true only when the provider is installed and signed in, its handshake passed, and a usable root exists. It also reports three fields for the request that called it: `client` (`era`, `protocolVersion`, `clientInfo` and `capabilities`), `tasks` (`served` and `declaredOnThisCall`) and `rootsSource`.
 
 The handshake's result is `transport`:
 
@@ -94,9 +96,16 @@ The server depends on these provider interfaces, checked against Codex CLI 0.159
 
 The doctor proves the handshake part of this list on every call. The rest runs only inside a turn. If the doctor passes on a newer CLI and jobs still fail with `PROVIDER_ERROR`, check `turn/start`, `turn/steer`, `turn/interrupt` and `thread/resume` against `codex app-server generate-ts --experimental --out <dir>`. For Claude, check `--model`, `--effort`, `--session-id`, `--resume`, `--append-system-prompt-file`, `--json-schema`, `--max-turns` and `--max-budget-usd` against `claude --help`.
 
+The dates above describe the provider transports. The server also depends on how each MCP client talks to it, read on 2026-10-23.
+
+- Claude Code 2.1.309 probes `server/discover` first and falls back to `initialize` when that fails. After the probe every request carries `io.modelcontextprotocol/protocolVersion`, `clientInfo` and `clientCapabilities` in `_meta`, for protocol 2026-07-28. It declares `io.modelcontextprotocol/tasks` per `tools/call`, never from an `Agent` subagent, and it polls a task with `tasks/get`. The server builds no multi-round-trip roots exchange for it.
+- Codex 0.164.0 sends a legacy `initialize` at protocol 2025-06-18. It sends no `server/discover`, declares no tasks extension and gets the legacy path unchanged.
+
 ## T3 seats
 
 A T3 seat is a T3 Code child that `delegate_task` starts for a flow stage, held to the Seat Contract by flow's own hooks. It is neither a native seat (`Agent` or `spawn_agent`) nor a delegated job. Like a native seat, it runs with flow's hooks, the user's config, their credentials and the network. The hooks deny what the Seat Contract forbids and stamp each step they see. They are a guardrail under your authority, not a sandbox. A child that runs as the same user can edit its seat record through Bash. The shell rules catch the plain forms a confused seat writes. They do not catch a command that is quoted, escaped or expanded, run by `source`, run from a command substitution or built at run time, and they do not see a Bash write outside the worktree. Native seats (`flow:reader`, `flow:implementer` and Explore) run Bash with the same posture, under the git, publish and protect-files guards, which also load in a T3 child. A Codex T3 seat also runs in Codex's sandbox with the network off under `auto`. A read-only seat is read-only for Bash by instruction alone. `close` checks trees only for a review seat, the pinned review worktree and the canonical checkout.
+
+An MCP task for a job is not a seat. A task is the MCP view of a `flow_delegate` job. Its `taskId` is the job id, the job store is its only authority, and it ends when the job does. A seat is a T3 `delegate_task` child. Its task id comes from T3, never from the `flow_delegate` server, the seat record is its authority, and `seat.mjs close` ends it. Never pass a job's `taskId` to `task_status` or `seat.mjs close`, and never pass a seat's task id to `delegation_result` or `tasks/get`.
 
 ### Inside T3
 
