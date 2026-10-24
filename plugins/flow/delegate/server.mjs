@@ -181,7 +181,7 @@ export async function serve({ host, version }) {
       return Object.freeze({ era: 'legacy', protocolVersion: legacyProtocol, clientInfo, capabilities: clientCapabilities, tasks: false })
     }
     const requested = meta[META_VERSION]
-    if (typeof requested !== 'string' || !requested) throw rpcError(-32602, `Invalid params: ${META_VERSION} must be a non-empty string.`)
+    if (typeof requested !== 'string') throw rpcError(-32602, `Invalid params: ${META_VERSION} must be a string.`)
     if (requested !== MODERN) throw rpcError(-32022, 'Unsupported protocol version.', { supported: [MODERN], requested })
     if (!Object.hasOwn(meta, META_CAPABILITIES)) throw rpcError(-32602, `Invalid params: ${META_CAPABILITIES} is required.`)
     for (const key of [META_CLIENT, META_CAPABILITIES]) {

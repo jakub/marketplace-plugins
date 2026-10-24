@@ -1550,12 +1550,16 @@ try {
 
   // A modern version other than 2026-07-28 is refused before dispatch, so no job is admitted.
   const before = jobIds()
-  const future = { [META_VERSION]: '2099-01-01', [META_CLIENT]: { name: 'smoke', version: '0' }, [META_CAPABILITIES]: {} }
-  for (const [method, params] of [['server/discover', { _meta: future }],
-    ['tools/call', { name: 'delegate_to_codex', arguments: startArgs(modern, { prompt: 'FLOW_FAKE_MODE=happy' }), _meta: future }]]) {
-    const { error, result } = await modern.raw(method, params)
-    assert.equal(result, undefined, `${method} answered an unsupported version`)
-    assert.deepEqual([error.code, error.data], [-32022, { supported: [MODERN], requested: '2099-01-01' }], `${method}: ${JSON.stringify(error)}`)
+  // The empty string is a string the server does not support, so it is -32022 with requested "" and
+  // not a malformed one; a non-string version is -32602 (malformed-modern-meta).
+  for (const requested of ['2099-01-01', '']) {
+    const future = { [META_VERSION]: requested, [META_CLIENT]: { name: 'smoke', version: '0' }, [META_CAPABILITIES]: {} }
+    for (const [method, params] of [['server/discover', { _meta: future }],
+      ['tools/call', { name: 'delegate_to_codex', arguments: startArgs(modern, { prompt: 'FLOW_FAKE_MODE=happy' }), _meta: future }]]) {
+      const { error, result } = await modern.raw(method, params)
+      assert.equal(result, undefined, `${method} answered an unsupported version ${JSON.stringify(requested)}`)
+      assert.deepEqual([error.code, error.data], [-32022, { supported: [MODERN], requested }], `${method} ${JSON.stringify(requested)}: ${JSON.stringify(error)}`)
+    }
   }
   assert.deepEqual(jobIds(), before, 'an unsupported version admitted a job')
   modern.noOutbound()
