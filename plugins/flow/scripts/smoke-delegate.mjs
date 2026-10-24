@@ -426,16 +426,17 @@ class Client {
     this.transcript.push({ dir: 'client', message: framed })
     this.child.stdin.write(`${JSON.stringify(framed)}\n`)
   }
-  // The _meta a modern request carries, with the tasks extension declared when tasks is set.
-  meta(tasks = false) {
+  // The _meta a modern request carries, with the tasks extension declared when tasks is set, or with
+  // exactly the capabilities given.
+  meta(tasks = false, capabilities = null) {
     return {
       [META_VERSION]: MODERN, [META_CLIENT]: { name: 'smoke', version: '0' },
-      [META_CAPABILITIES]: { ...(this.roots ? { roots: {} } : {}), ...(tasks ? { extensions: { [TASKS]: {} } } : {}) },
+      [META_CAPABILITIES]: capabilities ?? { ...(this.roots ? { roots: {} } : {}), ...(tasks ? { extensions: { [TASKS]: {} } } : {}) },
     }
   }
   // Sends one request and resolves with the whole answer, result or error.
-  request(method, params = {}, { era = this.era, tasks = false } = {}) {
-    const sent = era === 'modern' ? { ...params, _meta: { ...params._meta, ...this.meta(tasks) } } : params
+  request(method, params = {}, { era = this.era, tasks = false, capabilities = null } = {}) {
+    const sent = era === 'modern' ? { ...params, _meta: { ...params._meta, ...this.meta(tasks, capabilities) } } : params
     return new Promise((resolve, reject) => {
       const id = ++this.next
       const timer = setTimeout(() => reject(new Error(`${method} got no answer`)), 120_000)
@@ -1579,26 +1580,36 @@ try {
   modern.noOutbound()
   ok('modern-initialize-rejected')
 
-  // One connection, both eras, both orders: each reply reports its own request's era, and a modern
-  // request never writes what a legacy one reads.
+  // One connection, both eras, both orders: each reply reports its own request's era, identity and
+  // capabilities, and a modern request never writes what a legacy one reads. Every request carries
+  // a capability set of its own. The legacy set names the tasks extension, which a legacy request
+  // still never counts as declared, and no roots, so no request goes to this modern client.
   const interleaved = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
   const doctorOf = (client, options) => client.call('delegation_doctor', {}, options)
-  const contextOf = (report) => [report.client.era, report.client.protocolVersion, report.client.clientInfo]
+  const contextOf = (report) => [report.client.era, report.client.protocolVersion, report.client.clientInfo, report.client.capabilities, report.tasks.declaredOnThisCall]
   const SMOKE = { name: 'smoke', version: '0' }
   const OTHER = { name: 'interleaved', version: '1' }
-  assert.deepEqual(contextOf(await doctorOf(interleaved)), ['modern', MODERN, SMOKE])
-  assert.deepEqual(contextOf(await doctorOf(interleaved, { era: 'legacy' })), ['legacy', null, null], 'a modern request wrote the legacy globals')
-  const lateInit = await interleaved.raw('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: OTHER })
+  const DECLARING = { extensions: { [TASKS]: {} } }
+  const ROOTED = { roots: {}, experimental: { smoke: {} } }
+  const NEGOTIATED = { sampling: {}, extensions: { [TASKS]: {} } }
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { capabilities: DECLARING })), ['modern', MODERN, SMOKE, DECLARING, true])
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { era: 'legacy' })), ['legacy', null, null, {}, false], 'a modern request wrote the legacy globals')
+  const lateInit = await interleaved.raw('initialize', { protocolVersion: '2025-06-18', capabilities: NEGOTIATED, clientInfo: OTHER })
   assert.equal(lateInit.result.protocolVersion, '2025-06-18')
-  assert.deepEqual(contextOf(await doctorOf(interleaved)), ['modern', MODERN, SMOKE], 'initialize changed a modern request\'s context')
-  assert.deepEqual(contextOf(await doctorOf(interleaved, { era: 'legacy' })), ['legacy', '2025-06-18', OTHER], 'a modern request overwrote what initialize negotiated')
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { capabilities: ROOTED })), ['modern', MODERN, SMOKE, ROOTED, false], 'initialize changed a modern request\'s context')
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { capabilities: DECLARING })), ['modern', MODERN, SMOKE, DECLARING, true], 'one modern request\'s capabilities reached the next')
+  assert.deepEqual(contextOf(await doctorOf(interleaved, { era: 'legacy' })), ['legacy', '2025-06-18', OTHER, NEGOTIATED, false], 'a modern request overwrote what initialize negotiated')
   interleaved.close()
   ok('era-interleaved')
 
-  // Two requests of different eras in flight at once on one connection.
+  // Requests of both eras and different capabilities in flight at once on one connection, after an
+  // initialize: each keeps its own, and the legacy context afterwards is still what initialize
+  // negotiated.
   const concurrent = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern' })
-  const [modernReport, legacyReport] = await Promise.all([doctorOf(concurrent), doctorOf(concurrent, { era: 'legacy' })])
-  assert.deepEqual([contextOf(modernReport), contextOf(legacyReport)], [['modern', MODERN, SMOKE], ['legacy', null, null]])
+  await concurrent.raw('initialize', { protocolVersion: '2025-03-26', capabilities: NEGOTIATED, clientInfo: OTHER })
+  const reports = await Promise.all([doctorOf(concurrent, { capabilities: DECLARING }), doctorOf(concurrent, { era: 'legacy' }), doctorOf(concurrent, { capabilities: ROOTED })])
+  assert.deepEqual(reports.map(contextOf), [['modern', MODERN, SMOKE, DECLARING, true], ['legacy', '2025-03-26', OTHER, NEGOTIATED, false], ['modern', MODERN, SMOKE, ROOTED, false]])
+  assert.deepEqual(contextOf(await doctorOf(concurrent, { era: 'legacy' })), ['legacy', '2025-03-26', OTHER, NEGOTIATED, false], 'concurrent modern requests changed what initialize negotiated')
   concurrent.close()
   ok('era-concurrent')
 
