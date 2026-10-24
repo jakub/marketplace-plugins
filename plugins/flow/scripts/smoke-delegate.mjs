@@ -1602,6 +1602,33 @@ try {
   }
   ok('legacy-meta-non-object-unchanged')
 
+  // Two named legacy exceptions, both for forms that violate JSON-RPC. The base server dispatched a
+  // message with no id as a request, so an id-less ping, initialize or tools/call got a reply with
+  // no id; it answers nothing now. It treated a notifications/cancelled that carries an id as the
+  // notification and sent no reply; it answers -32601 now, like any unknown method, and aborts
+  // nothing. The fence is a normal ping with an id: the server reads its input in order, and all
+  // three id-less forms (an unknown tool name makes tools/call answer at once) would reply before it.
+  const idless = claudeHost.transcript.length
+  for (const [method, params] of [['ping', {}], ['initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'idless', version: '0' } }],
+    ['tools/call', { name: 'no_such_tool', arguments: {} }]]) claudeHost.write({ method, params })
+  const fence = await claudeHost.raw('ping')
+  assert.deepEqual(claudeHost.transcript.slice(idless).filter(({ dir }) => dir === 'server').map(({ message }) => message),
+    [{ jsonrpc: '2.0', id: fence.id, result: {} }], 'an id-less message was answered')
+  const inFlightBefore = jobIds()
+  const inFlight = claudeHost.callMessage('delegate_to_codex', startArgs(claudeHost, { prompt: 'FLOW_FAKE_MODE=hang' }))
+  const inFlightId = claudeHost.next
+  const newJob = () => jobIds().find((id) => !inFlightBefore.includes(id))
+  const inFlightJob = await until(() => newJob() && fakeCall(newJob())?.childPid && newJob())
+  assert.ok(inFlightJob, 'the in-flight call admitted no running job')
+  const misidentified = await claudeHost.raw('notifications/cancelled', { requestId: inFlightId, reason: 'smoke' })
+  assert.deepEqual([misidentified.result, misidentified.error], [undefined, { code: -32601, message: 'Method not found: notifications/cancelled' }], JSON.stringify(misidentified))
+  await sleep(500)
+  assert.deepEqual([existsSync(jobPath(inFlightJob, 'cancel')), readJob(inFlightJob).status], [false, 'running'], 'a notifications/cancelled that carries an id aborted the call')
+  assert.equal((await claudeHost.call('delegation_cancel', { jobId: inFlightJob })).job.status, 'cancelled')
+  const inFlightDone = await inFlight
+  assert.deepEqual([inFlightDone.id, inFlightDone.result?.structuredContent?.job?.status], [inFlightId, 'cancelled'], 'the call was aborted instead of answered')
+  ok('legacy-idless-and-misidentified-forms')
+
   const modernInit = await modern.request('initialize', { protocolVersion: MODERN, capabilities: {}, clientInfo: { name: 'smoke', version: '0' } })
   assert.deepEqual(modernInit.error, { code: -32601, message: 'Method not found: initialize' })
   modern.noOutbound()
