@@ -3691,7 +3691,7 @@ process.on('exit', () => { writeFileSync(process.env.SEAT_MODULES, JSON.stringif
       const outer = process.env.FLOW_DELEGATION_STATE_DIR
       process.env.FLOW_DELEGATION_STATE_DIR = control
       let seat
-      try { seat = admittedSeat(host, { access: 'read-only', worktree, repoRoot: worktree }) } finally { process.env.FLOW_DELEGATION_STATE_DIR = outer }
+      try { seat = admittedSeat(host, { access: 'read-only', worktree, repoRoot: worktree }) } finally { if (outer === undefined) delete process.env.FLOW_DELEGATION_STATE_DIR; else process.env.FLOW_DELEGATION_STATE_DIR = outer }
       const bound = builtins('prompt', host, promptCall(host, randomUUID(), seat.tag), { FLOW_DELEGATION_STATE_DIR: control })
       context(bound.run, `${host} control bind`)
       assert.ok(bound.includes('NativeModule crypto'), `${host}: the seat-path bind never showed NativeModule crypto, so the trace proves nothing`)
