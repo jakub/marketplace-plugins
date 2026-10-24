@@ -320,8 +320,8 @@ export async function serve({ host, version }) {
   // can reach one. A request that does not declare the extension is refused before its id is read,
   // and an id that names no job this session may see gets one answer whatever the reason, so the
   // answer tells nobody whether a job exists. A cancel only writes the marker: the runner stops and
-  // settles the job, or reconcile settles it if no runner ever started, and a native success may
-  // still win.
+  // settles the job, or a later tasks/get reconciles it if its runner never started or died, and a
+  // native success may still win.
   function onTask(message, ctx) {
     const { id } = message
     if (!ctx.tasks) {
@@ -346,11 +346,14 @@ export async function serve({ host, version }) {
       }
       return reply(ctx, id, projected)
     }
+    // A cancel decides from the record as the lookup read it and does not reconcile: reconciling
+    // settles a lost job and releases its lease, and for a running job whose runner died it signals
+    // the provider group and removes the TMPDIR before the acknowledgement could go out. That work
+    // is left to the next tasks/get and to a lease takeover. A job that ended since the lookup gets
+    // a marker nothing reads.
     if (message.method === 'tasks/cancel') {
       try {
-        const job = jobs.reconcile(seen)
-        if (!job) throw lost()
-        if (!jobs.TERMINAL.has(job.status)) jobs.markCancel(job.id)
+        if (!jobs.TERMINAL.has(seen.status)) jobs.markCancel(seen.id)
       } catch (error) { return send({ id, error: fault(error) }) }
     }
     // tasks/update has nothing to update, since no task ever waits for input.

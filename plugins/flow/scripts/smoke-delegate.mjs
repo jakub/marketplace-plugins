@@ -1876,6 +1876,47 @@ try {
   assert.deepEqual([markFailed.result, markFailed.error], [undefined, { code: -32603, message: INTERNAL_TEXT }], JSON.stringify(markFailed))
   ok('task-cancel-marker-write-fails')
 
+  // tasks/cancel decides from the record as read and reconciles nothing: a queued writer past its
+  // grace keeps its record, its lease and its unclaimed state, and gets only the marker. The next
+  // tasks/get settles it as it always did.
+  const staleWriter = record({ status: 'queued', access: 'workspace-write', worktree: join(tmp, `held-${randomUUID()}`), createdAt: new Date(Date.now() - 120_000).toISOString() })
+  jobs.acquireLease(staleWriter)
+  const staleAsked = Date.now()
+  const staleAck = await tasks.tasksCancel(staleWriter.id)
+  const staleMs = Date.now() - staleAsked
+  assert.deepEqual(staleAck.result, { resultType: 'complete' }, JSON.stringify(staleAck))
+  assert.ok(staleMs < 1000, `tasks/cancel of a stale queued job took ${staleMs} ms`)
+  assert.deepEqual(readJob(staleWriter.id), staleWriter, 'tasks/cancel settled a stale queued job')
+  assert.deepEqual(leaseOf(staleWriter.worktree), [staleWriter.id], 'tasks/cancel released a lease')
+  assert.deepEqual([existsSync(jobPath(staleWriter.id, 'cancel')), existsSync(jobPath(staleWriter.id, 'claim'))], [true, false], 'tasks/cancel claimed the job or wrote no marker')
+  const staleWriterDone = (await tasks.tasksGet(staleWriter.id)).result
+  assert.deepEqual([staleWriterDone.status, staleWriterDone.result.structuredContent.job.status, staleWriterDone.result.structuredContent.job.error.kind], ['completed', 'failed', 'RUNNER_LOST'])
+  assert.deepEqual(leaseOf(staleWriter.worktree), [], 'the reconciling tasks/get kept the lease')
+  ok('task-cancel-stale-queued-marker-only')
+
+  // A running job whose runner died: the acknowledgement goes out without signalling its provider
+  // group or removing its TMPDIR, which the next tasks/get then does.
+  const lostGroup = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
+  const lostGroupGone = reaped(lostGroup)
+  const lostRunner = record({ status: 'running', createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), runnerPid: deadPid, runnerStart: '1', ...groupOf(lostGroup) })
+  lostRunner.tmpDir = jobs.tmpPath(lostRunner.id)
+  strays.push(lostRunner.tmpDir)
+  jobs.makeTmp(lostRunner.tmpDir)
+  jobs.writeJob(lostRunner)
+  const lostAsked = Date.now()
+  const lostAck = await tasks.tasksCancel(lostRunner.id)
+  const lostMs = Date.now() - lostAsked
+  assert.deepEqual(lostAck.result, { resultType: 'complete' }, JSON.stringify(lostAck))
+  assert.ok(lostMs < 1000, `tasks/cancel of a job with a dead runner took ${lostMs} ms`)
+  await sleep(300)
+  assert.deepEqual([alive(lostGroup.pid), existsSync(lostRunner.tmpDir), existsSync(jobPath(lostRunner.id, 'cancel'))], [true, true, true], 'tasks/cancel signalled the group or removed the TMPDIR')
+  assert.deepEqual(readJob(lostRunner.id), lostRunner, 'tasks/cancel settled a job whose runner died')
+  const lostDone = (await tasks.tasksGet(lostRunner.id)).result
+  assert.deepEqual([lostDone.status, lostDone.result.structuredContent.job.status, lostDone.result.structuredContent.job.error.kind], ['completed', 'unknown', 'RUNNER_LOST'])
+  await lostGroupGone
+  assert.equal(existsSync(lostRunner.tmpDir), false, 'the reconciling tasks/get left the TMPDIR')
+  ok('task-cancel-dead-runner-marker-only')
+
   const updated = await tasks.tasksUpdate({ taskId: live.id, inputResponses: { anything: { action: 'accept' } }, extra: true })
   assert.deepEqual(updated.result, { resultType: 'complete' })
   assert.deepEqual(readJob(live.id), live, 'tasks/update changed the job')
