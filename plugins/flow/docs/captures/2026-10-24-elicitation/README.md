@@ -72,7 +72,7 @@ Taken 2026-10-24, 17:48 to 17:50 UTC. The logs are under `runs/`.
 
 | Run | Log file | Form action | Url action | Latency form / url (ms) | Gripe rows | Seat verdict |
 |---|---|---|---|---|---|---|
-| 1 seat | `runs/run1-seat.jsonl` | `decline` | `decline` | 30 / 28 | 2 (`runs/run1-gripe-rows.jsonl`); `session_id` matches `bound.json`'s `088a47a4-…`: yes | `valid` (`runs/run1-seat-close.json`) |
+| 1 seat | `runs/run1-seat.jsonl` | `decline` | `decline` | 30 / 28 | 2 (`runs/run1-gripe-rows.jsonl`); `session_id` matches `runs/run1-seat-bound.json`: yes | `valid` (`runs/run1-seat-close.json`) |
 | 2 child | `runs/run2-child.jsonl` | `decline` | `decline` | 24 / 22 | 0 new | n/a |
 | 3 tty | `runs/run3-tty/server.jsonl` | `cancel` | `cancel` | 2373 / 2877 | 0 new | n/a |
 
@@ -81,4 +81,5 @@ Notes:
 - In run 1 the gate opened on the seat's `receipt.json`, so both requests arrived after the session was a member. The seat's envelope said no server asked it for input. The decline happened in the hook, and the model never saw the request.
 - Run 2's child ran the same branch hook, which stayed silent for a non-member. T3's provider then declined on its own. The same auto-decline showed in a hookless probe before the run, at about 2 ms.
 - Run 3's `form-dialog.txt` and `url-dialog.txt` show the "requests your input" form and the "wants to open a URL" dialog. The pane also shows the plan name the session runs under.
+- `smoke-all.log` is `node scripts/smoke-all.mjs` at the code head that `HEAD.txt` names, `48d5626`. Only capture files changed after that commit. The guard, `wire.mjs`, the registration and the harness server are byte-identical between `6692985` and `48d5626`.
 - `runs/run1-seat-close.json` keeps the verdict fields and the envelope's `status` alone. The envelope body is left out, because the shared agent rules keep agent-session message bodies out of commits.
