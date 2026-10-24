@@ -1935,6 +1935,67 @@ const cases = {
     ok('seatContext carries the no-human-questions sentence for every access, the Claude elicitation clause for claude records alone, starts with the orchestrator sentence and stays under 6000 bytes')
   },
 
+  'resources-denied': () => {
+    const NAMES = ['ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { id, session } = boundSeat(host, access)
+        assert.equal(store.readStamp(id, 'receipt'), null)
+        denied(seatCall(host, session, NAMES[0], {}), /\(MCP resources\)/, `${host} ${access} ${NAMES[0]}`)
+        assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[0], `${host} ${access}: the first deny did not stamp the receipt`)
+        for (const name of NAMES.slice(1)) denied(seatCall(host, session, name, {}), /\(MCP resources\)/, `${host} ${access} ${name}`)
+        assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[0], `${host} ${access}: a later call replaced the receipt`)
+      }
+    }
+    for (const access of ACCESSES) {
+      const record = { ...seatRecord('claude'), id: store.newId(), access, worktree, repoRoot: worktree }
+      for (const name of NAMES) {
+        const reason = seatPolicy.toolProblem({ record, toolName: name, toolInput: {}, cwd: worktree }, { patchPaths: () => null })
+        assert.match(reason ?? '', /\(MCP resources\)/, `toolProblem ${access} ${name}`)
+        assert.ok(reason.includes(name), `toolProblem ${access} ${name}: the reason does not name the tool`)
+      }
+    }
+    for (const host of ['claude', 'codex']) {
+      const { id, session } = boundSeat(host, 'read-only')
+      denied(seatCall(host, session, NAMES[3], {}), /\(MCP resources\)/, `${host} first-call resource`)
+      assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[3], `${host}: a resource call as the first pre call did not stamp the receipt`)
+      denied(seatCall(host, session, NAMES[1], {}), /\(MCP resources\)/, `${host} second-call resource`)
+      silent(seatCall(host, session, 'Read', { file_path: '/r/a' }), `${host} Read after a resource deny`)
+      assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[3], `${host}: a later call replaced the receipt`)
+    }
+    ok('ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool, list_mcp_resources, list_mcp_resource_templates and read_mcp_resource are denied in every seat on both hosts under the MCP resources label, toolProblem says so for every access, and a resource call as the first pre call stamps the receipt, which a later call does not replace')
+  },
+
+  'resources-outside': () => {
+    const NAMES = ['ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+    const fresh = join(tmp, 'resources-outside-state')
+    for (const host of ['claude', 'codex']) {
+      for (const name of NAMES) silent(guard('pre', host, preCall(host, randomUUID(), name, {}), { env: { FLOW_DELEGATION_STATE_DIR: fresh } }), `${host} non-seat ${name}`)
+    }
+    assert.equal(existsSync(fresh), false, 'a non-seat resource call wrote seat state')
+    ok('a session that is no seat gets no answer for any of the six resource tool names on either host, and writes no state')
+  },
+
+  'resources-precedence': () => {
+    const NAMES = ['ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { id, session } = boundSeat(host, access)
+        denied(seatCall(host, session, 'mcp__x__read_mcp_resource', {}), /\(MCP allowlist\)/, `${host} ${access} mcp__x__read_mcp_resource`)
+        denied(seatCall(host, session, 'Agent', { prompt: 'x' }), /\(no spawns\)/, `${host} ${access} Agent`)
+        denied(seatCall(host, session, 'AskUserQuestion', { questions: [] }), /\(no human questions\)/, `${host} ${access} AskUserQuestion`)
+        for (const name of ['Read', 'Grep', 'ToolSearch', 'TaskOutput']) silent(seatCall(host, session, name, { file_path: '/r/a' }), `${host} ${access} ${name}`)
+        assert.equal(store.stamp(id, 'closed', { verdict: 'valid', reasons: [] }), true)
+        for (const name of NAMES) denied(seatCall(host, session, name, {}), /this seat was closed/, `${host} ${access} ${name} after close`)
+      }
+      const { id } = store.writeRecord(seatRecord(host), SCHEMA)
+      const session = randomUUID()
+      context(guard('prompt', host, promptCall(host, session, `${store.seatTag(id)}\nwork`)), `${host} void bind`)
+      for (const name of NAMES) denied(guard('pre', host, preCall(host, session, name, {})), /void seat/, `${host} void ${name}`)
+    }
+    ok('a closed seat and a void seat keep their own deny reason for a resource call, mcp__x__read_mcp_resource keeps the MCP allowlist label, Agent and AskUserQuestion keep theirs, and Read, Grep, ToolSearch and TaskOutput stay allowed')
+  },
+
   'closed-seat': () => {
     for (const host of ['claude', 'codex']) {
       for (const access of ACCESSES) {
