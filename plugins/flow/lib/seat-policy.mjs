@@ -23,10 +23,10 @@
 //                      missing or corrupt, a seat already closed, or a call that cannot be read is
 //                      denied outright.
 //   toolProblem        the child's PreToolUse containment, by the record's access: no spawned
-//                      agent, no MCP tool off a two-name allowlist, edits only inside a writer's
-//                      worktree, and through the shell no push, no gh but its reads, no git off
-//                      the read and writer allowlists, no model CLI, no seat executor and nothing
-//                      in the background.
+//                      agent, no question to the human, no MCP tool off a two-name allowlist,
+//                      edits only inside a writer's worktree, and through the shell no push, no gh
+//                      but its reads, no git off the read and writer allowlists, no model CLI, no
+//                      seat executor and nothing in the background.
 //   stopTurn, finalAnswer, failedStop
 //                      the child's Stop: which turn a stop belongs to, whether the final message
 //                      is the flow envelope with an answer that matches the seat's schema, and
@@ -206,6 +206,7 @@ export function seatCallProblem({ entry, seat, closed = null, toolName, toolInpu
 export const MCP_ALLOWLIST = Object.freeze(['mcp__claude_ai_Context7__query-docs', 'mcp__claude_ai_Context7__resolve-library-id'])
 const MCP = new Set(MCP_ALLOWLIST)
 const SPAWNS = new Set(['Agent', 'Task', 'Workflow'])
+const QUESTIONS = new Set(['AskUserQuestion', 'request_user_input', 'request_user_input_async'])
 const EDITS = new Set(['Edit', 'Write', 'NotebookEdit', 'apply_patch'])
 
 /**
@@ -217,6 +218,9 @@ const EDITS = new Set(['Edit', 'Write', 'NotebookEdit', 'apply_patch'])
 export function toolProblem({ record, toolName, toolInput, cwd }, { patchPaths }) {
   if (SPAWNS.has(toolName) || toolName.endsWith('spawn_agent') || toolName.startsWith('collaboration')) {
     return `flow seat (no spawns): ${quote(toolName)} starts another agent, and a seat does its work itself, in this session.`
+  }
+  if (QUESTIONS.has(toolName)) {
+    return `flow seat (no human questions): ${quote(toolName)} asks the human, and a seat never does. Report the missing input and the incomplete work in your envelope.`
   }
   if (toolName.startsWith('mcp__')) {
     if (MCP.has(toolName)) return null
@@ -776,6 +780,8 @@ export function seatContext(record, schema = null, schemaPath = null) {
     lines.push(`- worktree: ${record.worktree}. Edit nothing.`)
   }
   lines.push(
+    'Do not ask the human. When input you need is missing, report it and the incomplete work in the envelope.' +
+      (record.provider === 'claude' ? ' Claude Code declines MCP elicitations in this seat; do not retry one to obtain approval.' : ''),
     '',
     'Your final message is one JSON object in the flow envelope and nothing else, alone or as the whole of one fenced block:',
     envelopeFor(record.access),

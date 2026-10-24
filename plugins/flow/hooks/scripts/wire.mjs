@@ -58,6 +58,17 @@ export const promptBlock = (reason) => ({ decision: 'block', reason })
 export const stopBlock = (reason) => ({ decision: 'block', reason })
 
 /**
+ * The Elicitation answer that declines an MCP server's request, so Claude Code shows no form or URL
+ * dialog and the server receives a decline. Claude only: Codex has no Elicitation hook event.
+ */
+export const elicitationDecline = () => ({
+  hookSpecificOutput: {
+    hookEventName: 'Elicitation',
+    action: 'decline',
+  },
+})
+
+/**
  * The hook call on stdin, or null when there is nothing usable there.
  *
  * Every hook script in this directory opened with its own copy of this, in two different idioms,

@@ -1,5 +1,5 @@
 {
-  "description": "flow: charter injection at session and subagent start, plus no-backlog, git, publish, protected-file and T3 seat guards.",
+  "description": "flow: charter injection at session and subagent start, plus no-backlog, git, publish, protected-file and T3 seat guards, plus an MCP elicitation decline in seats.",
   "hooks": {
     "SessionStart": [
       {
@@ -83,6 +83,17 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/seat-guard.mjs\" stop claude",
             "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/elicitation-guard.mjs\"",
+            "timeout": 5
           }
         ]
       }

@@ -6,7 +6,7 @@
 // separate node processes released together, so the write-once claims are tested against real
 // concurrent link(2) calls, not a single event loop.
 // Cases are grouped by prefix (store-*, wire-*, admit-*, record-*, bind-*, spawn-*, mcp-*, edit-*, bash-*,
-// closed-*, stop-*, open-*, close-*, prune-*, trust-*, fastpath-*), record-identity-required
+// question-*, closed-*, stop-*, open-*, close-*, prune-*, trust-*, fastpath-*), record-identity-required
 // follows one refused record through admission, bind and close, and echoed-tag-of-bound-seat-ignored
 // replays a T3 wake that quotes a bound child's tag into another session; the containment families run against a
 // real temp git repository as the worktree, the executor families (open-*, close-*, prune-open,
@@ -1490,6 +1490,7 @@ const cases = {
       assert.ok(!b.includes('routed-instance-7') && !b.includes('accounts/fireworks/models/glm-5p3'), `${what}: the context names a routing fact`)
     }
     assert.ok(seatPolicy.seatContext(routed, big, '/s/schema.json').includes('/s/schema.json'), 'the big schema was not named by path')
+    assert.match(seatPolicy.seatContext(routed, SCHEMA, '/s/schema.json'), /Claude Code declines MCP elicitations in this seat/, 'a claude record\'s context lacks the elicitation clause')
     ok('seatContext is byte for byte the same for records apart only in instance and expected served id, with an inline schema, a schema named by path and none')
 
     const seat = admittedSeat('claude', { providerInstanceId: 'routed-instance-7', model: 'accounts/fireworks/routers/glm-5p3-us', expectedServedModel: 'accounts/fireworks/models/glm-5p3' })
@@ -1885,6 +1886,53 @@ const cases = {
       for (const command of allowed) silent(seatCall(host, session, 'Bash', { command }), `${host} ${command}`)
     }
     ok('a writer seat runs add, rm, mv, commit, restore and apply only as git -C <worktree realpath> with no override, commits only named paths (no -a, -i, --include, --amend without paths or abbreviation of them, and no redirection target read as a path), stages with -A, -u, --renormalize or --no-ignore-removal only beside named paths, applies with no --unsafe-paths or --directory, and is denied every other non-read git subcommand, config writes in any scope included')
+  },
+
+  'question-denied': () => {
+    const NAMES = ['AskUserQuestion', 'request_user_input', 'request_user_input_async']
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { id, session } = boundSeat(host, access)
+        assert.equal(store.readStamp(id, 'receipt'), null)
+        denied(seatCall(host, session, NAMES[0], { questions: [] }), /\(no human questions\)/, `${host} ${access} ${NAMES[0]}`)
+        assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[0], `${host} ${access}: the first deny did not stamp the receipt`)
+        for (const name of NAMES.slice(1)) denied(seatCall(host, session, name, { questions: [] }), /\(no human questions\)/, `${host} ${access} ${name}`)
+      }
+      for (const name of NAMES) silent(guard('pre', host, preCall(host, randomUUID(), name, { questions: [] })), `${host} non-seat ${name}`)
+    }
+    ok('AskUserQuestion, request_user_input and request_user_input_async are denied in every seat on both hosts, the first deny stamps the receipt, and a session that is no seat gets no answer')
+
+    for (const host of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const { id, session } = boundSeat(host, access)
+        assert.equal(store.stamp(id, 'closed', { verdict: 'valid', reasons: [] }), true)
+        for (const name of NAMES) denied(seatCall(host, session, name, {}), /this seat was closed/, `${host} ${access} ${name} after close`)
+      }
+      const { id } = store.writeRecord(seatRecord(host), SCHEMA)
+      const session = randomUUID()
+      context(guard('prompt', host, promptCall(host, session, `${store.seatTag(id)}\nwork`)), `${host} void bind`)
+      for (const name of NAMES) denied(guard('pre', host, preCall(host, session, name, {})), /void seat/, `${host} void ${name}`)
+    }
+    ok('a closed seat and a void seat keep their own deny reason for a question call: the question rule comes after them')
+  },
+
+  'question-context': () => {
+    const SENTENCE = 'Do not ask the human. When input you need is missing, report it and the incomplete work in the envelope.'
+    const CLAUSE = 'Claude Code declines MCP elicitations in this seat; do not retry one to obtain approval.'
+    for (const provider of ['claude', 'codex']) {
+      for (const access of ACCESSES) {
+        const record = { ...seatRecord(provider), id: store.newId(), access, worktree: '/r/w', ...(access === 'review' ? { baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) } : {}) }
+        for (const schema of [SCHEMA, null]) {
+          const text = seatPolicy.seatContext(record, schema, '/s/schema.json')
+          assert.ok(text.startsWith('The orchestrator half of the flow charter does not apply in this session'), text)
+          assert.ok(text.includes(SENTENCE), `${provider} ${access}: no host-neutral sentence`)
+          assert.equal(text.includes(CLAUSE), provider === 'claude', `${provider} ${access}: the Claude clause is ${provider === 'claude' ? 'missing' : 'present'}`)
+          assert.ok(Buffer.byteLength(text) < 6000, `${provider} ${access}: ${Buffer.byteLength(text)} bytes`)
+          assert.ok(text.indexOf(SENTENCE) < text.indexOf('Your final message is one JSON object'), 'the sentence follows the envelope paragraph')
+        }
+      }
+    }
+    ok('seatContext carries the no-human-questions sentence for every access, the Claude elicitation clause for claude records alone, starts with the orchestrator sentence and stays under 6000 bytes')
   },
 
   'closed-seat': () => {

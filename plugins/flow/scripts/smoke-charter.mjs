@@ -130,6 +130,18 @@ try {
     ok(`hooks/${file} registers the seat guard as the last PreToolUse group, matcher ${JSON.stringify(matcher)}, on UserPromptSubmit${host === 'codex' ? ' with a 6000-token context limit' : ''}, and on Stop with a 30 s timeout`)
   }
 
+  // The elicitation guard is Claude-only: Codex 0.164.0 has no Elicitation event, so it registers nowhere in codex.json.
+  const claudeHooks = JSON.parse(readFileSync(join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks
+  assert.deepEqual(claudeHooks.Elicitation, [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/elicitation-guard.mjs"', timeout: 5 }] }])
+  assert.equal(codexHooks.Elicitation, undefined, 'hooks/codex.json registers an Elicitation event')
+  for (const [file, hooks] of [['hooks.json', claudeHooks], ['codex.json', codexHooks]]) {
+    for (const event of Object.keys(hooks).filter((name) => file === 'codex.json' || name !== 'Elicitation')) {
+      const found = (hooks[event] ?? []).some((group) => group.hooks.some((hook) => hook.command.includes('elicitation-guard.mjs')))
+      assert.equal(found, false, `hooks/${file} registers the elicitation guard on ${event}`)
+    }
+  }
+  ok('hooks/hooks.json registers the elicitation guard on Elicitation alone, with no matcher; hooks/codex.json registers none')
+
   const seat = seatPayload(charter)
   for (const host of ['claude', 'codex']) {
     for (const input of [JSON.stringify({ agent_type: 'general-purpose' }), '{']) {
