@@ -2,15 +2,17 @@
 // whose params._meta carries io.modelcontextprotocol/protocolVersion is modern (2026-07-28): its
 // identity and capabilities come from that _meta alone, and the server writes no request to the
 // client for it. Any other request is legacy and reads what initialize negotiated. Both eras get
-// server/discover, ping, tools/list, tools/call and the cancelled notification; initialize is
-// legacy only, and the one outbound request, roots/list, serves legacy requests only. It declares
+// server/discover, ping, tools/list, tools/call, tasks/get, tasks/cancel, tasks/update and the
+// cancelled notification; initialize is legacy only, and the one outbound request, roots/list,
+// serves legacy requests only. A modern delegate call that declares the tasks extension and names
+// no waitSeconds is answered with a task, which is the job under its own id. It declares
 // no outputSchema, so structuredContent needs no validator. Jobs outlive this process: a runner is
 // detached, and stdin closing ends the server and nothing else. The doctor is the one tool that
 // starts a provider in this process, for a handshake that sends no prompt.
 import { mkdirSync, realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import { stateDir } from '../lib/state-dir.mjs'
+import { RETENTION_MS, stateDir } from '../lib/state-dir.mjs'
 import { transport as claude } from './claude-control.mjs'
 import { transport as codex } from './codex-app-server.mjs'
 import * as jobs from './jobs.mjs'
@@ -24,6 +26,7 @@ const META_CLIENT = 'io.modelcontextprotocol/clientInfo'
 const META_CAPABILITIES = 'io.modelcontextprotocol/clientCapabilities'
 const TASKS = 'io.modelcontextprotocol/tasks'
 const SERVER_INFO = 'io.modelcontextprotocol/serverInfo'
+const POLL_MS = 1000
 const RESULT_KEYS = ['jobId', 'waitSeconds', 'events']
 const TRANSPORTS = { codex, claude }
 
@@ -112,12 +115,26 @@ const jobResult = (job, events = 0) => toolResult({
   job: jobs.envelope(job, events),
 })
 
+// A job seen as a task. Every terminal job is a completed task whose result is the CallToolResult a
+// synchronous call returns, so a failed, cancelled or unknown job reaches the caller as its isError
+// envelope. The timestamps come from the record, so a poll reads nothing else. ttlMs is a floor:
+// the prune counts its 14 days from endedAt, and only at a server's start.
+const task = (job) => {
+  const done = jobs.TERMINAL.has(job.status)
+  return {
+    taskId: job.id, status: done ? 'completed' : 'working', statusMessage: job.status,
+    createdAt: job.createdAt, lastUpdatedAt: job.endedAt ?? job.startedAt ?? job.createdAt, ttlMs: RETENTION_MS,
+    ...(done ? { result: jobResult(job) } : { pollIntervalMs: POLL_MS }),
+  }
+}
+
+const INTERNAL_MESSAGE = 'The delegate server failed; server.log in the state directory has the detail.'
 // A DelegateError is written for the caller. Anything else is an internal fault: its detail goes
 // to server.log and the caller gets a fixed message.
 function publicError(error) {
   if (error instanceof jobs.DelegateError) return { kind: error.kind, message: error.message, ...(error.details ? { details: error.details } : {}) }
   jobs.log(`internal error: ${error?.stack || error}`)
-  return { kind: 'INTERNAL', message: 'The delegate server failed; server.log in the state directory has the detail.' }
+  return { kind: 'INTERNAL', message: INTERNAL_MESSAGE }
 }
 
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -238,12 +255,17 @@ export async function serve({ host, version }) {
     }
     if (name === `delegate_to_${target}`) {
       let job = await jobs.admit(args, { host, roots: await roots(ctx) })
-      // Past the budget, the default wait holds on for the job's whole stop (STOP_SECONDS in jobs.mjs).
-      const seconds = args.waitSeconds ?? job.timeBudgetSeconds + jobs.STOP_SECONDS
-      if (seconds > 0) job = await jobs.wait(job.id, seconds, { signal, onTick })
+      // A call that declared the tasks extension and named no wait gets the admitted job as a task at
+      // once. An explicit waitSeconds, 0 included, keeps its meaning.
+      const asTask = ctx.tasks && !Object.hasOwn(args, 'waitSeconds')
+      if (!asTask) {
+        // Past the budget, the default wait holds on for the job's whole stop (STOP_SECONDS in jobs.mjs).
+        const seconds = args.waitSeconds ?? job.timeBudgetSeconds + jobs.STOP_SECONDS
+        if (seconds > 0) job = await jobs.wait(job.id, seconds, { signal, onTick })
+      }
       // The caller who waited went away mid-call: the job goes with it. A detached job is untouched.
       if (signal.aborted && !jobs.TERMINAL.has(job.status)) jobs.requestCancel(job.id)
-      return jobResult(job)
+      return asTask ? { resultType: 'task', ...task(job) } : jobResult(job)
     }
     if (name === 'delegation_result') {
       jobs.checkKeys(args, RESULT_KEYS)
@@ -283,6 +305,54 @@ export async function serve({ host, version }) {
     } finally { inflight.delete(message.id) }
     // A request the client cancelled gets no response.
     if (!controller.signal.aborted) reply(ctx, message.id, result)
+  }
+
+  // An internal fault on a task method: the detail goes to server.log and the caller gets the fixed
+  // message.
+  const fault = (error) => {
+    jobs.log(`internal error: ${error?.stack || error}`)
+    return { code: -32603, message: INTERNAL_MESSAGE }
+  }
+
+  // tasks/get, tasks/cancel and tasks/update, answered synchronously, so no notifications/cancelled
+  // can reach one. A request that does not declare the extension is refused before its id is read,
+  // and an id that names no job this session may see gets one answer whatever the reason, so the
+  // answer tells nobody whether a job exists. A cancel only writes the marker: the runner stops and
+  // settles the job, or reconcile settles it if no runner ever started, and a native success may
+  // still win.
+  function onTask(message, ctx) {
+    const { id } = message
+    if (!ctx.tasks) {
+      return send({ id, error: { code: -32021, message: `${message.method} needs the ${TASKS} extension declared on the request.`,
+        data: { requiredCapabilities: { extensions: { [TASKS]: {} } } } } })
+    }
+    let seen
+    try { seen = jobs.findJob(message.params?.taskId, { host, roots: modernRoots }) } catch (error) {
+      return send({ id, error: error instanceof jobs.DelegateError && error.kind === 'JOB_NOT_FOUND' ? { code: -32602, message: 'Unknown task' } : fault(error) })
+    }
+    const lost = () => new Error(`the record of job ${seen.id} was lost after it was seen`)
+    if (message.method === 'tasks/get') {
+      // A job that faults after it was seen is a failed task: the protocol's one use of failed.
+      let projected
+      try {
+        const job = jobs.reconcile(seen)
+        if (!job) throw lost()
+        projected = task(job)
+      } catch (error) {
+        projected = { taskId: seen.id, status: 'failed', statusMessage: 'failed', createdAt: seen.createdAt,
+          lastUpdatedAt: seen.endedAt ?? seen.startedAt ?? seen.createdAt, ttlMs: RETENTION_MS, error: fault(error) }
+      }
+      return reply(ctx, id, projected)
+    }
+    if (message.method === 'tasks/cancel') {
+      try {
+        const job = jobs.reconcile(seen)
+        if (!job) throw lost()
+        if (!jobs.TERMINAL.has(job.status)) jobs.markCancel(job.id)
+      } catch (error) { return send({ id, error: fault(error) }) }
+    }
+    // tasks/update has nothing to update, since no task ever waits for input.
+    return reply(ctx, id, {})
   }
 
   function onMessage(message) {
@@ -330,6 +400,9 @@ export async function serve({ host, version }) {
       case 'ping': reply(ctx, message.id, {}); return
       case 'tools/list': reply(ctx, message.id, { tools: toolList }); return
       case 'tools/call': onCall(message, ctx); return
+      case 'tasks/get':
+      case 'tasks/cancel':
+      case 'tasks/update': onTask(message, ctx); return
       default: notFound()
     }
   }

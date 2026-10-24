@@ -498,13 +498,16 @@ export function reconcile(job) {
   return job
 }
 
-export function visibleJob(id, { host, roots }) {
+// A job is visible only to a server for its own host whose roots hold its cwd. findJob is that
+// check alone, returning the record as read; visibleJob reconciles it too.
+export function findJob(id, { host, roots }) {
   const job = typeof id === 'string' && JOB_ID.test(id) ? readJob(id) : null
   if (!job || job.host !== host || !roots.some((root) => inside(root, job.cwd))) {
     fail('JOB_NOT_FOUND', 'No job with that id is visible from this workspace.')
   }
-  return reconcile(job)
+  return job
 }
+export const visibleJob = (id, options) => reconcile(findJob(id, options))
 
 export async function wait(id, seconds, { signal, onTick } = {}) {
   const deadline = Date.now() + seconds * 1000
@@ -529,7 +532,10 @@ export async function wait(id, seconds, { signal, onTick } = {}) {
 // runner.mjs); the schema check, 10 s (CHECK_SECONDS in schema.mjs); and the provider's close, 5 s
 // (CLOSE_MS in providers.mjs). That is 45 s, and 60 leaves a margin.
 export const STOP_SECONDS = 60
-export const requestCancel = (id) => { try { writeFileSync(join(jobDir(id), 'cancel'), '') } catch {} }
+// The cancel marker asks a job's runner to stop it. markCancel lets a failed write throw, for a
+// caller that must report it; requestCancel is the best-effort form.
+export const markCancel = (id) => writeFileSync(join(jobDir(id), 'cancel'), '', { mode: 0o600 })
+export const requestCancel = (id) => { try { markCancel(id) } catch {} }
 export async function cancel(job) {
   if (TERMINAL.has(job.status)) fail('JOB_STATE', `The job already ended ${job.status}.`)
   requestCancel(job.id)
