@@ -12,7 +12,7 @@ C=$(cd "$C" && pwd)
 D=$ROOT/plugins/flow/docs/captures/2026-10-23-mcp-tasks
 mkdir -p "$D/takes"
 cp "$C/HEAD.txt" "$C"/arm-a.jsonl "$C"/arm-a.out "$C"/arm-b.jsonl "$C"/arm-b.out "$C"/arm-c.jsonl "$C"/arm-c.out \
-   "$C"/arm-d-pr.jsonl "$C"/arm-d-pr.last.txt "$C"/arm-d-base.jsonl "$C"/arm-d-base.last.txt "$D/"
+   "$C"/arm-d-pr.jsonl "$C"/arm-d-pr.out "$C"/arm-d-pr.last.txt "$C"/arm-d-base.jsonl "$C"/arm-d-base.out "$C"/arm-d-base.last.txt "$D/"
 for extra in arm-e.md smoke-all.log; do [ -f "$C/$extra" ] && cp "$C/$extra" "$D/"; done
 for t in "$C"/takes/*/; do [ -d "$t" ] && cp -r "$t" "$D/takes/"; done
 # The tee redacts prompt, requestPreview, output, text and message values on the wire; the envelope's summary line
