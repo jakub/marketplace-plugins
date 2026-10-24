@@ -1741,20 +1741,27 @@ try {
   ok('task-happy-path')
 
   // Every job status: working while queued or running, completed with the isError envelope for
-  // every terminal failure, and a terminal projection that never changes.
+  // every terminal failure, and a terminal projection that never changes. Each completed task's
+  // result is the whole CallToolResult a synchronous delegation_result returns for its job: content,
+  // the summary-first text, structuredContent with any partial output and commandFailures, isError.
+  const sameAsSync = async (done, label) => {
+    const control = await claudeHost.callMessage('delegation_result', { jobId: done.taskId, events: 0 })
+    assert.deepEqual(done.result, control.result, `${label}: the completed task's result is not the synchronous result of its job`)
+  }
   const terminal = async (args, status, kind) => {
     const begun = (await createTask(tasks, args)).result
     const done = (await tasks.settled(begun.taskId)).result
     assert.deepEqual([done.status, done.result.isError ?? false, done.result.structuredContent.job.status, done.result.structuredContent.job.error?.kind ?? null],
       ['completed', status !== 'succeeded', status, kind], JSON.stringify(done))
-    return begun.taskId
+    return done
   }
-  await terminal({ prompt: 'FLOW_FAKE_MODE=refusal' }, 'failed', 'REFUSAL')
+  await sameAsSync(await terminal({ prompt: 'FLOW_FAKE_MODE=refusal' }, 'failed', 'REFUSAL'), 'refusal')
   const cancelledTask = (await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=hang' })).result
   assert.ok(await until(() => readJob(cancelledTask.taskId).turnOpen), 'the hanging task\'s turn never opened')
   assert.equal((await claudeHost.call('delegation_cancel', { jobId: cancelledTask.taskId })).job.status, 'cancelled')
   const cancelledDone = (await tasks.tasksGet(cancelledTask.taskId)).result
   assert.deepEqual([cancelledDone.status, cancelledDone.result.isError, cancelledDone.result.structuredContent.job.error.kind], ['completed', true, 'CANCELLED'])
+  await sameAsSync(cancelledDone, 'cancelled')
   const orphanTask = (await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=hang' })).result
   const orphanTaskCall = await until(() => fakeCall(orphanTask.taskId)?.childPid && fakeCall(orphanTask.taskId))
   process.kill(readJob(orphanTask.taskId).runnerPid, 'SIGKILL')
@@ -1762,6 +1769,7 @@ try {
   const orphanDone = (await tasks.settled(orphanTask.taskId)).result
   assert.deepEqual([orphanDone.status, orphanDone.result.isError, orphanDone.result.structuredContent.job.status, orphanDone.result.structuredContent.job.error.kind],
     ['completed', true, 'unknown', 'RUNNER_LOST'])
+  await sameAsSync(orphanDone, 'lost runner')
   assert.ok(await until(() => !alive(orphanTaskCall.pid) && !alive(orphanTaskCall.childPid)), 'the orphaned task\'s provider group was killed')
   const record = (fields) => {
     const job = { ...late, id: randomUUID(), access: 'read-only', tmpDir: null, ...fields }
@@ -1772,6 +1780,7 @@ try {
   const staleDone = (await tasks.tasksGet(stale.id)).result
   assert.deepEqual([staleDone.status, staleDone.result.isError, staleDone.result.structuredContent.job.status, staleDone.result.structuredContent.job.error.kind],
     ['completed', true, 'failed', 'RUNNER_LOST'])
+  await sameAsSync(staleDone, 'never started')
   const fresh = record({ status: 'queued', createdAt: new Date().toISOString() })
   const live = record({ status: 'running', createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), runnerPid: process.pid, runnerStart: jobs.startToken(process.pid) })
   for (const [job, status] of [[fresh, 'queued'], [live, 'running']]) {
