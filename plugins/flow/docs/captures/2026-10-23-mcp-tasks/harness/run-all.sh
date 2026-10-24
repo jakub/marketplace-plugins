@@ -7,6 +7,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(git -C "$HERE" rev-parse --show-toplevel)
 C=${1:-${CAPTURE_DIR:-}}
 [ -n "$C" ] && [ -d "$C/repo" ] || { echo "usage: CAPTURE_DIR=<dir from setup.sh> bash run-all.sh" >&2; exit 2; }
+C=$(cd "$C" && pwd)  # children run from other directories, so the path has to be absolute
 export CAPTURE_DIR=$C
 fail() { echo "arm $1 failed (exit $2); see $C/arm-$1.out" >&2; exit 1; }
 

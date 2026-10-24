@@ -8,6 +8,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(git -C "$HERE" rev-parse --show-toplevel)
 C=${1:-${CAPTURE_DIR:-}}
 [ -n "$C" ] && [ -f "$C/HEAD.txt" ] || { echo "usage: CAPTURE_DIR=<dir with a finished take> bash assemble.sh" >&2; exit 2; }
+C=$(cd "$C" && pwd)
 D=$ROOT/plugins/flow/docs/captures/2026-10-23-mcp-tasks
 mkdir -p "$D/takes"
 cp "$C/HEAD.txt" "$C"/arm-a.jsonl "$C"/arm-a.out "$C"/arm-b.jsonl "$C"/arm-b.out "$C"/arm-c.jsonl "$C"/arm-c.out \

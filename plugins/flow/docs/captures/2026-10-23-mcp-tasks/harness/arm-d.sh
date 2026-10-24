@@ -9,6 +9,8 @@ ROOT=$(git -C "$HERE" rev-parse --show-toplevel)
 C=${2:-${CAPTURE_DIR:-}}
 which=${1:-}
 if [ -z "$C" ] || { [ "$which" != pr ] && [ "$which" != base ]; }; then echo "usage: CAPTURE_DIR=<dir> bash arm-d.sh <pr|base>" >&2; exit 2; fi
+[ -d "$C" ] || { echo "arm-d.sh: $C is not a directory" >&2; exit 2; }
+C=$(cd "$C" && pwd)  # the server reads its paths from the environment, so the path has to be absolute
 NODE_DIR=$(dirname "$(command -v node)")
 if [ "$which" = pr ]; then MAIN=$ROOT/plugins/flow/delegate/main.mjs; else MAIN=$C/base/plugins/flow/delegate/main.mjs; fi
 DISABLE=()
