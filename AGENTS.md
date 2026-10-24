@@ -37,11 +37,12 @@ The `tools:` list on an agent definition is load-bearing. `implementer` has no A
 
 ### Hooks
 
-`lib/hook-policy.mjs` holds the protected-file, publication and merge policy and knows no event names. `hooks/scripts/wire.mjs` holds the answer shapes, and each host has its own adapter. The two hosts differ on purpose in three ways:
+`lib/hook-policy.mjs` holds the protected-file, publication and merge policy and knows no event names. `hooks/scripts/wire.mjs` holds the answer shapes, and each host has its own adapter. The two hosts differ on purpose:
 
 - **Publication.** Claude's `publish-guard.mjs` asks, and `publish-guard-codex.mjs` denies. Codex reads an unsupported `ask` as a hook failure and runs the command anyway (observed on 0.149.1 and 0.152.0), so never return `preToolAsk` to Codex.
 - **Unreadable input.** The Claude adapters fail open on a call they cannot read. `publish-guard-codex.mjs` and `protect-files-codex.mjs` fail closed.
 - **The edit envelope.** Codex edits arrive as `apply_patch` with the whole patch in `tool_input.command`. `protect-files-codex.mjs` checks every target in it and refuses a patch it cannot enumerate, and a benign `file_path` never vouches for the patch beside it.
+- **Elicitation.** Claude's `elicitation-guard.mjs` declines MCP elicitations in a T3 seat's session. Codex has no hook event for them, and the script's header names that gap and the native-subagent one.
 
 `.flow/managed` is a committed marker that opts a repository into merge enforcement. With it, both publish guards deny every merge command they recognize and name `scripts/land-merge.mjs`. The tripwire's **one hard requirement is that it never matches the executor's own invocation**, which `smoke-publish-guard.mjs` asserts.
 
