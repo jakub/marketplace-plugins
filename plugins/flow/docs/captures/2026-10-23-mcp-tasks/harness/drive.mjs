@@ -18,7 +18,8 @@ if (flagged === '1') env.CLAUDE_AUTO_BACKGROUND_TASKS = '1'
 const child = spawn('claude', args, { stdio: ['pipe', 'pipe', 'inherit'], env, cwd })
 const t0 = Date.now()
 const out = (...a) => console.log(`[${arm} +${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...a)
-const timer = setTimeout(() => { out('TIMEOUT'); child.kill('SIGTERM') }, 600_000)
+let timedOut = false
+const timer = setTimeout(() => { timedOut = true; out('TIMEOUT'); child.kill('SIGTERM') }, 600_000)
 child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n')
 if (interruptAfter && !followup) setTimeout(() => { out('INTERRUPT: sending control_request interrupt'); child.stdin.write(JSON.stringify({ type: 'control_request', request_id: 'int-1', request: { subtype: 'interrupt' } }) + '\n') }, Number(interruptAfter))
 createInterface({ input: child.stdout }).on('line', (line) => {
@@ -37,4 +38,6 @@ createInterface({ input: child.stdout }).on('line', (line) => {
     clearTimeout(timer); child.stdin.end()
   }
 })
-child.on('exit', (code) => { out('EXIT', code); process.exit(0) })
+// Exit with the child's code so run-all.sh can tell a failed arm from a good one: a signal kill (code null) and
+// the timeout both exit non-zero even when the child reports 0.
+child.on('exit', (code) => { out('EXIT', code); process.exit(timedOut ? 1 : (code ?? 1)) })
