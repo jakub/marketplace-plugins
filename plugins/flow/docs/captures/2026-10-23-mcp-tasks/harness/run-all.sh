@@ -13,7 +13,12 @@ fail() { echo "arm $1 failed (exit $2); see $C/arm-$1.out" >&2; exit 1; }
 # The tee writes a meta line as it starts, so a non-empty log proves nothing; a frame in either direction does.
 # Arm (b) exists to show the client sending tasks/cancel on TaskStop, so any frame is not enough for it. The client
 # polls no further after the cancel, so the log holds no cancelled status to require; the request is the evidence.
-require_cancel() { grep -qE '"dir":"client->server".*"method":"tasks/cancel"' "$1" || { echo "arm $2: no client tasks/cancel frame in $1" >&2; fail "$2" 1; }; }
+# Parsed, not grepped: a tools/call row whose arguments carried the text "tasks/cancel" must not pass.
+require_cancel() {
+  node -e 'const rows = require("node:fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    process.exit(rows.some((r) => r.dir === "client->server" && r.frame?.method === "tasks/cancel") ? 0 : 1)' "$1" \
+    || { echo "arm $2: no client tasks/cancel frame in $1" >&2; fail "$2" 1; }
+}
 require_frame() { grep -qE '"dir":"(client->server|server->client)"' "$1" || fail "$2" 1; echo "$(grep -c . "$1") lines"; }
 
 PREV=$(sed -n "s/^head: //p" "$C/HEAD.txt" 2>/dev/null | cut -c1-7); T=$C/takes/${PREV:-unknown}
