@@ -254,7 +254,7 @@ export async function serve({ host, version }) {
       send({ method: 'notifications/progress', params: { progressToken, progress: seconds, message: `${job.status} after ${seconds}s` } })
     }
     if (name === `delegate_to_${target}`) {
-      let job = await jobs.admit(args, { host, roots: await roots(ctx) })
+      let job = await jobs.admit(args, { host, roots: await roots(ctx), signal })
       // A call that declared the tasks extension and named no wait gets the admitted job as a task at
       // once. An explicit waitSeconds, 0 included, keeps its meaning.
       const asTask = ctx.tasks && !Object.hasOwn(args, 'waitSeconds')
@@ -263,7 +263,9 @@ export async function serve({ host, version }) {
         const seconds = args.waitSeconds ?? job.timeBudgetSeconds + jobs.STOP_SECONDS
         if (seconds > 0) job = await jobs.wait(job.id, seconds, { signal, onTick })
       }
-      // The caller who waited went away mid-call: the job goes with it. A detached job is untouched.
+      // A request cancelled before its answer is written takes its admitted job with it as a
+      // cooperative cancel marker, whether the call waited, detached or was to become a task. Once
+      // the answer is written, the request no longer reaches the job.
       if (signal.aborted && !jobs.TERMINAL.has(job.status)) jobs.requestCancel(job.id)
       return asTask ? { resultType: 'task', ...task(job) } : jobResult(job)
     }

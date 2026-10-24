@@ -1889,6 +1889,59 @@ try {
   const notifiedDone = (await tasks.settled(notified.result.taskId)).result
   assert.deepEqual([notifiedDone.status, notifiedDone.result.structuredContent.ok, existsSync(jobPath(notified.result.taskId, 'cancel'))], ['completed', true, false], JSON.stringify(notifiedDone))
   ok('notifications-cancelled-ignores-task')
+
+  // A task-mode call cancelled before admission commits leaves nothing behind. The call and its
+  // cancel arrive in one chunk, so the cancel is read before admission's first await returns.
+  const callIds = () => readdirSync(calls).sort()
+  const [jobsBeforeAbort, callsBeforeAbort] = [jobIds(), callIds()]
+  const abortId = `abort-${randomUUID()}`
+  const frame = (message) => `${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`
+  tasks.child.stdin.write(frame({ id: abortId, method: 'tools/call', params: { name: 'delegate_to_codex', arguments: startArgs(tasks, { prompt: 'FLOW_FAKE_MODE=happy' }), _meta: tasks.meta(true) } })
+    + frame({ method: 'notifications/cancelled', params: { requestId: abortId, reason: 'smoke' } }))
+  await sleep(2000)
+  assert.equal((await tasks.request('ping')).result.resultType, 'complete')
+  assert.deepEqual([jobIds(), callIds()], [jobsBeforeAbort, callsBeforeAbort], 'a call cancelled before admission committed left a job')
+  assert.equal(tasks.transcript.some(({ dir, message }) => dir === 'server' && message.id === abortId), false, 'a cancelled request was answered')
+  ok('abort-before-commit')
+
+  // A cancel that lands after admission committed and before the answer is written: there is no
+  // await in between, so a preload sends the cancel from inside the runner's spawn. The job gets the
+  // cooperative marker, the request no answer, and the runner settles the job cancelled.
+  const handoff = join(tmp, 'abort-handoff.mjs')
+  writeFileSync(handoff, `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+const real = cp.spawn
+let fired = false
+cp.spawn = function (command, args, options) {
+  if (!fired && Array.isArray(args) && args.includes('--job')) {
+    fired = true
+    process.stdin.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } }) + '\\n'))
+  }
+  return real.call(this, command, args, options)
+}
+syncBuiltinESMExports()
+`)
+  const handedOff = await connect({ host: 'claude', cwd: repo, env: { CLAUDE_PROJECT_DIR: repo }, era: 'modern', entry: ['--import', pathToFileURL(handoff).href, MAIN] })
+  const jobsBeforeHandoff = jobIds()
+  handedOff.createTask('delegate_to_codex', startArgs(handedOff, { prompt: 'FLOW_FAKE_MODE=happy' })).catch(() => {})
+  const [handoffJob] = await until(() => { const added = jobIds().filter((id) => !jobsBeforeHandoff.includes(id)); return added.length ? added : null })
+  assert.ok(handoffJob, 'the call cancelled after admission admitted no job')
+  assert.ok(await until(() => existsSync(jobPath(handoffJob, 'cancel'))), 'the call cancelled after admission left no cancel marker')
+  assert.ok(await until(() => readJob(handoffJob).status === 'cancelled'), 'the job cancelled before handoff never settled')
+  assert.equal(readJob(handoffJob).error.kind, 'CANCELLED')
+  assert.equal((await handedOff.request('ping')).result.resultType, 'complete')
+  assert.equal(handedOff.transcript.some(({ dir, message }) => dir === 'server' && message.id === 1), false, 'a request cancelled before its answer was answered')
+  assert.deepEqual(jobIds().filter((id) => !jobsBeforeHandoff.includes(id)), [handoffJob])
+  handedOff.close()
+  ok('abort-before-handoff')
+
+  // Once the task is handed over, cancelling its request reaches nothing, even while the job runs.
+  const handedOver = await createTask(tasks, { prompt: 'FLOW_FAKE_MODE=slow' })
+  assert.ok(await until(() => readJob(handedOver.result.taskId).status === 'running'), 'the handed-over task never ran')
+  tasks.write({ method: 'notifications/cancelled', params: { requestId: handedOver.id, reason: 'smoke' } })
+  const handedOverDone = (await tasks.settled(handedOver.result.taskId)).result
+  assert.deepEqual([handedOverDone.status, handedOverDone.result.structuredContent.ok, existsSync(jobPath(handedOver.result.taskId, 'cancel'))], ['completed', true, false], JSON.stringify(handedOverDone))
+  ok('abort-after-handoff')
   tasks.close()
 
   const expired = await claudeHost.call('delegation_result', { jobId: timed.job.id, waitSeconds: 60 })

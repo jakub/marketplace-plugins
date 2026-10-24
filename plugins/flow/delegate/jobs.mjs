@@ -302,7 +302,7 @@ export function reviewPrompt(baseSha, headSha, focus) {
   return `Act as an adversarial code reviewer. Review the diff \`git diff ${baseSha} ${headSha}\` in this repository and try to refute the change. Hunt for reachable correctness, security, concurrency and trust-boundary defects; read surrounding code and tests as needed. Report only findings you verified against the code, never style or formatting. Cite a repository-relative file and the first affected line in the new code. Do not edit files. Answer in the output schema; a clean review has an empty findings array.${extra}`
 }
 
-export async function admit(input, { host, roots }) {
+export async function admit(input, { host, roots, signal }) {
   // A runner hands its provider FLOW_DELEGATION_DEPTH, so a server started inside a delegated
   // seat cannot start a second hop.
   if (process.env.FLOW_DELEGATION_DEPTH) fail('NESTED_DELEGATION', 'A delegated seat cannot start another delegation.')
@@ -343,6 +343,9 @@ export async function admit(input, { host, roots }) {
     schema = FINDINGS_SCHEMA
     access = 'read-only'
   }
+  // The commit point: nothing from here to the runner's spawn awaits, so a request cancelled by now
+  // admits no job, and one cancelled later finds the job admitted.
+  if (signal?.aborted) fail('CANCELLED', 'The request was cancelled before the job was admitted.')
   const job = {
     id: randomUUID(), host, target, mode: request.mode, access, cwd, worktree, model: input.model, effort: input.effort,
     status: 'queued', createdAt: new Date().toISOString(), endedAt: null,
