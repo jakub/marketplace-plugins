@@ -3668,6 +3668,34 @@ registerHooks({ resolve(specifier, context, next) { const found = next(specifier
       silent(guard(mode, host, input, { env: { ...env, SEAT_TRACE: traceLog }, nodeArgs: ['--import', pathToFileURL(trace).href] }), `${mode} ${host} traced`)
       return readFileSync(traceLog, 'utf8')
     }
+    // The builtins a hook process loaded, from process.moduleLoadList in an ESM preload: unlike the
+    // resolve hook above, it sees the loads process.getBuiltinModule makes, which is how seat-store.mjs
+    // reaches node:crypto. Each child writes its own trace file, and the file must parse to a
+    // non-empty array of strings, so a trace that saw nothing fails instead of passing.
+    const moduleTrace = join(tmp, 'fastpath-modules.mjs')
+    writeFileSync(moduleTrace, `import { writeFileSync } from 'node:fs'
+process.on('exit', () => { writeFileSync(process.env.SEAT_MODULES, JSON.stringify(process.moduleLoadList)) })
+`)
+    const builtins = (mode, host, input, childEnv) => {
+      const out = join(tmp, `fastpath-modules-${randomUUID()}.json`)
+      const run = guard(mode, host, input, { env: { ...childEnv, SEAT_MODULES: out }, nodeArgs: ['--import', pathToFileURL(moduleTrace).href] })
+      assert.ok(existsSync(out), `${mode} ${host}: the module trace was never written`)
+      const list = JSON.parse(readFileSync(out, 'utf8'))
+      assert.ok(Array.isArray(list) && list.length > 0 && list.every((entry) => typeof entry === 'string'), `${mode} ${host}: the module trace is not a non-empty array of strings`)
+      return Object.assign(list, { run })
+    }
+    // The positive control: a real bind of an admitted seat, in a state directory of its own, loads
+    // node:crypto and shows it as NativeModule crypto, so the absence asserted below means something.
+    for (const host of ['claude', 'codex']) {
+      const control = join(tmp, `fastpath-control-${host}`)
+      const outer = process.env.FLOW_DELEGATION_STATE_DIR
+      process.env.FLOW_DELEGATION_STATE_DIR = control
+      let seat
+      try { seat = admittedSeat(host, { access: 'read-only', worktree, repoRoot: worktree }) } finally { process.env.FLOW_DELEGATION_STATE_DIR = outer }
+      const bound = builtins('prompt', host, promptCall(host, randomUUID(), seat.tag), { FLOW_DELEGATION_STATE_DIR: control })
+      context(bound.run, `${host} control bind`)
+      assert.ok(bound.includes('NativeModule crypto'), `${host}: the seat-path bind never showed NativeModule crypto, so the trace proves nothing`)
+    }
     for (const host of ['claude', 'codex']) {
       const session = randomUUID()
       const calls = [
@@ -3687,7 +3715,9 @@ registerHooks({ resolve(specifier, context, next) { const found = next(specifier
       assert.ok(!loaded('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })).includes('seat-policy.mjs'), 'a non-seat tool call loaded the policy')
       assert.ok(!loaded('prompt', host, promptCall(host, session, 'plain prompt')).includes('seat-policy.mjs'), 'a plain prompt loaded the policy')
       assert.ok(!loaded('stop', host, stopCall(host, session, 'done', randomUUID())).includes('seat-policy.mjs'), 'a non-seat stop loaded the policy')
-      assert.ok(!loaded('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' })).includes('node:crypto'), 'a non-seat tool call loaded node:crypto')
+      const nonSeat = builtins('pre', host, preCall(host, session, 'Read', { file_path: '/r/a' }), env)
+      silent(nonSeat.run, `${host} non-seat Read traced`)
+      assert.deepEqual(nonSeat.filter((entry) => /crypto/i.test(entry)), [], 'a non-seat tool call loaded node:crypto')
       const plain = { task: 'Summarise the README.', role: 'general', runtimeMode: 'auto', target: { providerInstanceId: 'codex', model: MODELS.codex } }
       assert.ok(loaded('pre', host, preCall(host, session, SPELLING[host], plain)).includes('seat-policy.mjs'), 'the delegate_task gate never loaded the policy, so the trace proves nothing')
     }
