@@ -1889,18 +1889,18 @@ const cases = {
   },
 
   'question-denied': () => {
-    const NAMES = ['AskUserQuestion', 'request_user_input']
+    const NAMES = ['AskUserQuestion', 'request_user_input', 'request_user_input_async']
     for (const host of ['claude', 'codex']) {
       for (const access of ACCESSES) {
         const { id, session } = boundSeat(host, access)
         assert.equal(store.readStamp(id, 'receipt'), null)
         denied(seatCall(host, session, NAMES[0], { questions: [] }), /\(no human questions\)/, `${host} ${access} ${NAMES[0]}`)
         assert.equal(store.readStamp(id, 'receipt')?.tool, NAMES[0], `${host} ${access}: the first deny did not stamp the receipt`)
-        denied(seatCall(host, session, NAMES[1], { questions: [] }), /\(no human questions\)/, `${host} ${access} ${NAMES[1]}`)
+        for (const name of NAMES.slice(1)) denied(seatCall(host, session, name, { questions: [] }), /\(no human questions\)/, `${host} ${access} ${name}`)
       }
       for (const name of NAMES) silent(guard('pre', host, preCall(host, randomUUID(), name, { questions: [] })), `${host} non-seat ${name}`)
     }
-    ok('AskUserQuestion and request_user_input are denied in every seat on both hosts, the first deny stamps the receipt, and a session that is no seat gets no answer')
+    ok('AskUserQuestion, request_user_input and request_user_input_async are denied in every seat on both hosts, the first deny stamps the receipt, and a session that is no seat gets no answer')
 
     for (const host of ['claude', 'codex']) {
       for (const access of ACCESSES) {

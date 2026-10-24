@@ -206,7 +206,7 @@ export function seatCallProblem({ entry, seat, closed = null, toolName, toolInpu
 export const MCP_ALLOWLIST = Object.freeze(['mcp__claude_ai_Context7__query-docs', 'mcp__claude_ai_Context7__resolve-library-id'])
 const MCP = new Set(MCP_ALLOWLIST)
 const SPAWNS = new Set(['Agent', 'Task', 'Workflow'])
-const QUESTIONS = new Set(['AskUserQuestion', 'request_user_input'])
+const QUESTIONS = new Set(['AskUserQuestion', 'request_user_input', 'request_user_input_async'])
 const EDITS = new Set(['Edit', 'Write', 'NotebookEdit', 'apply_patch'])
 
 /**
