@@ -10,6 +10,12 @@
 # seat, so the Elicitation hook of the flow plugin, if installed, must exit without declining. Every
 # wait is bounded. On a timeout the script prints the pane and exits 1. A trap kills the tmux session
 # and removes the scratch project directory.
+#
+# The run passes only if the dialogs really showed. After the summary line the script fails unless the
+# summary records `cancel` for both form and url, form-dialog.txt contains `requests your input` and
+# url-dialog.txt contains `wants to open a URL` (the strings Claude Code 2.1.310 drew). A client that
+# drops or auto-declines the requests reaches the summary line after server.mjs's timeout with
+# `no-response` or `decline`, and the script exits 1.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -82,5 +88,11 @@ tmux send-keys -t "$SESSION" Escape
 
 wait_for "the summary line" 45 '"kind":"summary"'
 pane > "$OUT/final-pane.txt"
-echo "tty-control: done. $(grep -F '"kind":"summary"' "$LOG" | tail -n 1)"
+SUMMARY=$(grep -F '"kind":"summary"' "$LOG" | tail -n 1)
+for field in '"form":"cancel"' '"url":"cancel"'; do
+  grep -qF -- "$field" <<<"$SUMMARY" || fail "the summary lacks $field: $SUMMARY"
+done
+grep -qF -- 'requests your input' "$OUT/form-dialog.txt" || fail "form-dialog.txt shows no form dialog (no 'requests your input')"
+grep -qF -- 'wants to open a URL' "$OUT/url-dialog.txt" || fail "url-dialog.txt shows no url dialog (no 'wants to open a URL')"
+echo "tty-control: done. $SUMMARY"
 echo "tty-control: output in $OUT"
