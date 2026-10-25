@@ -92,11 +92,11 @@ Containment. Do the work yourself. Spawn no agents, delegate nothing, call no mo
 
 Synchronous execution. Run every command in the foreground and wait for it. A turn that ends while a background command runs ends the seat.
 
-Scope and completion. Follow checkpoints in order, use TDD where the plan asks, make one conventional commit per checkpoint, and stay in scope. Say you're done only when every checkpoint is. If one is blocked, finish the rest and say what is missing and why. Stop at a structural deviation and report it. Adapt to a local one and note it in the commit.
+Scope and completion. Follow checkpoints in order, use TDD where the plan asks, make one conventional commit per checkpoint, and stay in scope. Say you're done only when every checkpoint is. If one is blocked, don't ask the human: finish the rest and say what is missing and why. Stop at a structural deviation and report it. Adapt to a local one and note it in the commit.
 
 Reporting. List each commit by SHA and subject, each checkpoint as done, partial or blocked with its command and output, each deviation with its reason, and anything not done. Retry a transient failure up to three times with backoff, then call it unknown. Never round unknown up to a pass, and never report a pass you didn't see.
 
 ## Gripes
-If `gripe` is installed, file tooling or workflow friction with its CLI and don't mention it. The human reads the log later.
+If `gripe` is installed, file tooling or workflow friction with its CLI and don't mention it.
 
 </flow-charter>
