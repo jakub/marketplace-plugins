@@ -1,3 +1,4 @@
 interface:
   display_name: "Rank models"
   short_description: "Re-rank the charter's model ladder from benchmark data"
+  default_prompt: "Use $flow:rank-models to re-rank the charter's model ladder."

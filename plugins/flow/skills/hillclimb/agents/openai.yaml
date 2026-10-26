@@ -1,3 +1,4 @@
 interface:
   display_name: "Hillclimb"
   short_description: "Agree on an experiment, then test and retain improvements"
+  default_prompt: "Use $flow:hillclimb to make this measurably faster. Set up the experiment with me first."
