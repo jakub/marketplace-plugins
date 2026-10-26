@@ -73,7 +73,7 @@ Most projects are greenfield. Unless told otherwise: no migrations, no backwards
 
 Agents own the test environments. Dev is the human's and holds production-like data. Production is the homelab: it tolerates some risk and has no formal upgrade procedure.
 
-A PR ships complete. Fix review findings in the `issue` loop, not in follow-up tickets. Only a major cross-cutting refactor waits: note it in the PR and handle it at landing.
+A PR ships complete: fix every real finding in the `issue` loop, not in follow-up tickets. Only nits and a major cross-cutting refactor wait, in the PR's follow-up draft for landing.
 
 When a background task, monitor or seat comes back with an error, a null, a rate limit or a timeout, you don't know what happened. Check before anything depends on it.
 

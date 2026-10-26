@@ -51,7 +51,7 @@ Each stop has one answer:
 | `accept-flake-refused` | The flag named nothing the base branch's `.github/known-flakes.txt` declares for exactly one failed check. Fix the flag or drop it. |
 | `threads-unresolved` | Step 3 on each thread in `threads`, then run again. |
 | `auto-merge-armed`, `merge-queue` | Someone armed a merge that would land the PR out of sight. Tell the user, and never merge over it. |
-| `read-failed`, `head-unreadable`, `gate-moved` | Re-read and run again. A read that keeps failing is a report, not a pass. |
+| `read-failed`, `head-unreadable`, `gate-moved` | Re-read and run again. The gate reads through GraphQL, so if `gh api rate_limit --jq .resources.graphql` shows `remaining` near 0, wait for `reset` first. A read that keeps failing is a report, not a pass. |
 | `merge-rejected` | GitHub refused, for a conflict or branch protection. Show it and stop. |
 | `redirected`, `origin`, `usage`, `cron` | Fix the call or report it. |
 
@@ -91,7 +91,7 @@ Write the reply to a file and pass `-F body=@<reply-file>`, never inline, becaus
 
 1. **Child PRs.** Run `gh pr list --repo <repo> --base <head branch> --state open --json number,title`. Retarget each with `gh pr edit <n> --repo <repo> --base <base>` before step 5 deletes the branch, and tell the user which rebases they'll need.
 2. **Issues.** A squash commit's `(#N)` closes nothing. Close each still-open `closingIssuesReferences` number with `gh issue close <N> --repo <repo> --comment "Landed via PR #<pr> (<url>)."`. Then scan the title, the body and the head branch for other numbers the PR claims to close: a closing phrase outside code that isn't negated, or a `feat|fix|chore/issue-<N>-` branch. Another repo's PR URL isn't a local issue, and a bare mention closes nothing. Ask the user about each candidate, with "close none" as an option, and close the ones they confirm. Read every closure back with `gh issue view <N> --repo <repo> --json state`, and report each linked issue's final state, or "no linked issues".
-3. **Follow-up draft.** Read the body and every page of top-level comments (`gh api --paginate --slurp repos/<owner>/<name>/issues/<pr>/comments`) for a `## follow-up draft` heading: findings the run deferred as too big for this PR. Ask the user whether to file it or drop it, with the cost of each. To file it, run `FLOW_SANCTION=land gh issue create --repo <repo> --title ... --body ... --label needs-triage` with the sanction inline, because the no-backlog hook reads the command string. The body links this PR, and the new issue still goes through prep. To drop it, reply on the PR saying it was dropped on purpose.
+3. **Follow-up draft.** Read the body and every page of top-level comments (`gh api --paginate --slurp repos/<owner>/<name>/issues/<pr>/comments`) for a `## follow-up draft` heading: the nits the run declined and work too big for this PR. Ask the user whether to file it or drop it, with the cost of each. To file it, run `FLOW_SANCTION=land gh issue create --repo <repo> --title ... --body ... --label needs-triage` with the sanction inline, because the no-backlog hook reads the command string. The body links this PR, and the new issue still goes through prep. To drop it, reply on the PR saying it was dropped on purpose.
 
 ## 5. Retire this run
 
