@@ -25,6 +25,21 @@ Two files leave the plugin cache for `~/.local/bin`, and each has its own update
 
 Adding a plugin: `plugins/<name>/` with a `.claude-plugin/plugin.json`, plus an entry in the manifest's `plugins` array with `"source": "./plugins/<name>"`. Plugins don't reach into each other's files. Flow's prep stage uses `grill-with-docs` when it is installed and grills inline otherwise, and that one-way, soft dependency is the model.
 
+## Voice
+
+Every skill, the charter and the agent files are written the way tstack writes them: one engineer talking to a capable colleague who just walked in. These rules come from reading all nine tstack skills (t3dotgg/tstack at 7de017b).
+
+1. **Open with the situation, not the mechanism.** The first paragraph says why this exists and what the user wants. "If the user triggered this, they aren't watching." Mechanism lives in the script header that implements it.
+2. **The description is the trigger.** Say what it does in one clause and when to use it in another. Gate a stage with one plain clause ("Use only when the user asks to land a specific PR"), not a paragraph of MUST.
+3. **Talk to "you".** Use contractions. Say "the user". A short aside is fine when it carries a fact ("Review bots are useful, even when they're wrong").
+4. **Rule, then the reason, in the same breath.** "Never run two watchers on one PR. Every watcher on a GitHub account shares one rate limit." No reason, no rule.
+5. **Route hosts inline, T3 first.** Where hosts differ, write one bullet each: **In T3 Code**, **In Claude Code**, **In Codex**. Where they don't, say it once. Name tools bare (`delegate_task`, `watch_pull_request`), and give the prefix once per skill if it matters.
+6. **Show judgment with BAD and GOOD.** When the point is taste (a criterion, a reply, a PR title), show one ❌ and one ✅ instead of describing them.
+7. **Be exact where it matters.** Exit codes, flags, JSON fields, command lines and numbers stay exact. Everything else stays short.
+8. **Call other skills by name.** "Hand it to `babysit`." A skill never restates another skill's steps.
+9. **Fight scope.** Say so where review loops can grow the work: fix the case that happened, decline the rest with a reason.
+10. **Reference material leaves the skill.** Error catalogs, protocol fields and version notes go in a `reference.md` next to the skill, read on demand.
+
 ## flow
 
 `charter/charter.md` is hand-authored by jakub and is the source of truth: one file, one marker line, orchestrator doctrine above it and seat rules below. `hooks/scripts/inject-charter.mjs` prints the whole file at SessionStart and the seat half at SubagentStart on both hosts, and `delegate/runner.mjs` gives every delegated job the same seat bytes as its instructions. **The charter stays under 9,500 characters.** `smoke-charter.mjs` fails above that, and the injector refuses above 9,800 rather than let Claude Code swap the charter for a 2KB preview. The charter sits close to the cap, so an edit that adds a line cuts one. `skills/rank-models/` regenerates the `## Models` section; follow it for a new model rather than scoring one by hand.
