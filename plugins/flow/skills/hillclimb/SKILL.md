@@ -38,7 +38,7 @@ Measure one candidate at a time on an idle machine, with the frozen method, data
 - **Rejected**: a valid measurement or check disproves it, or it breaks a constraint.
 - **Inconclusive**: instrumentation failed, noise won, or it didn't finish. Never use one as the next baseline.
 
-Bring a real architectural tradeoff to the user with its evidence, and keep working on independent ideas while you wait. Integrate accepted candidates one logical change per commit, then measure the combination, because things that help separately can interfere. A broken benchmark means a new agreement and a new baseline, never a comparison across methods.
+Bring a real architectural tradeoff to the user with its evidence, and keep working on independent ideas while you wait. Integrate accepted candidates one logical change per commit, then measure the combination and run the correctness checks on it, because things that help separately can interfere. A broken benchmark means a new agreement and a new baseline, never a comparison across methods.
 
 ## Stop, review and return
 

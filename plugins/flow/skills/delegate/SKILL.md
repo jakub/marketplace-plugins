@@ -40,8 +40,8 @@ Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`,
 
 ### Wait or detach
 
-- **On a Claude Code main thread**, leave out `waitSeconds`. The call returns a background task right away and the result arrives in a later turn, so you write no polling. The task's `taskId` is the job id, and a failed job is still a completed task, with `isError` set.
-- **Anywhere else** (subagents, `flow:bridge`, Codex), the call waits for the whole budget. To run beside other work, pass `waitSeconds: 0` and collect later with `delegation_result`. In Claude Code you can also put the call in a `flow:bridge` seat. Its definition fixes its own model, so don't pass one.
+- **On a caller that declares the MCP tasks extension**, leave out `waitSeconds`. The call returns a background task right away and the result arrives in a later turn, so you write no polling. Claude Code 2.1.309 declares it on an interactive main thread, on a stream-json main thread run with `CLAUDE_AUTO_BACKGROUND_TASKS=1`, and in T3 children. The doctor's `tasks.declaredOnThisCall` says whether this caller does. The task's `taskId` is the job id, and a failed job is still a completed task, with `isError` set.
+- **Anywhere else** (subagents, `flow:bridge`, Codex, a stream-json thread without that variable), the call waits for the whole budget. To run beside other work, pass `waitSeconds: 0` and collect later with `delegation_result`. In Claude Code you can also put the call in a `flow:bridge` seat. Its definition fixes its own model, so don't pass one.
 
 A job outlives the session that started it, and any later session in the same workspace can collect it. Interrupting a `delegate_to_*` call before it answers cancels the job. Once it has returned a task or a detached envelope, interrupting no longer reaches it.
 
@@ -107,7 +107,7 @@ Your hook admits the call only if all of that matches the seat record byte for b
 
 A T3 writer commits its own paths with `git -C <worktree> commit -- <paths>`. Put that exact form in its task: the child's shell starts in the canonical checkout, where a bare `git commit` would hit the wrong branch, so the hooks deny it. Also tell it to write git and gh arguments without quotes, because the shell guard reads a quoted argument as missing.
 
-The seat can't ask the user anything. The hooks deny the question tools and decline MCP elicitations, so it reports missing input in its envelope.
+The seat can't ask the user anything. The hooks deny the question tools, and in Claude Code they also decline MCP elicitations. Codex has no elicitation hook: it rejects them on its own unless `approval_policy.granular.mcp_elicitations = true`, and a Codex seat on a machine with that set can still show one. Either way, tell the seat to report missing input in its envelope.
 
 ### 3. The envelope
 

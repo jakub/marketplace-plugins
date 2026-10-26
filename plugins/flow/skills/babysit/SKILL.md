@@ -43,7 +43,7 @@ GOOD
 
 Never reject a finding about security, privacy, auth, billing, data retention, permissions, migrations, schemas, idempotency or concurrency yourself. Fix it or make it the user's. If a small fix clearly lowers risk without changing what the PR is for, make it instead of arguing. A past dismissal of something similar settles nothing.
 
-Outside those areas, keep the PR the size its goal needs. Review loops grow a PR one cheap-looking fix at a time. Fix real bugs in the intended case. Decline the rest with a written reason and add each to the PR body's `## follow-up draft`, which `land` offers to file: tests nobody needs, guards for cases that don't matter, extra compatibility, small performance costs. Prefer the fix that deletes or narrows code.
+Outside those areas, keep the PR the size its goal needs. Review loops grow a PR one cheap-looking fix at a time. Fix every real bug the PR introduces or leaves in its intended case, and every finding backed by a failing test. Decline the rest with a written reason and add each to the PR body's `## follow-up draft`, which `land` offers to file: tests nobody needs, guards for cases that don't matter, extra compatibility, small performance costs. Prefer the fix that deletes or narrows code.
 
 A finding that reveals an open design question means prep missed it. Stop fixing, say so, and route the user, because a design decided in review threads is one nobody approved.
 
@@ -87,7 +87,15 @@ An errored or timed-out watcher is unknown, not quiet. When a wake brings nothin
 
 ## GitHub rate limits
 
-`gh pr view`, `gh pr checks` and the thread mutations use GraphQL, and every session and watcher on the account shares one GraphQL budget. When a read fails, run `gh api rate_limit --jq .resources.graphql`. If `remaining` is near 0, gather through REST, which has its own limit: `gh api repos/<owner>/<repo>/pulls/<n>` for the PR, `gh api repos/<owner>/<repo>/commits/<sha>/check-runs` for checks, and `gh api repos/<owner>/<repo>/pulls/<n>/comments` for review comments. REST can't tell you whether a thread is resolved, and resolving is GraphQL only, so wait for `reset` before you resolve or call the PR clean. In T3 Code, "Stopped watching, could not read it" usually means this budget ran out: check it before you watch again, and never watch again in a tight loop.
+`gh pr view`, `gh pr checks` and the thread mutations use GraphQL, and every session and watcher on the account shares one GraphQL budget. When a read fails, run `gh api rate_limit --jq .resources.graphql`. If `remaining` is near 0, gather through REST, which has its own limit, and page every list:
+
+- `gh api repos/<owner>/<repo>/pulls/<n>` for the PR and its head SHA;
+- `gh api --paginate repos/<owner>/<repo>/issues/<n>/comments` for top-level comments;
+- `gh api --paginate repos/<owner>/<repo>/pulls/<n>/reviews` for review bodies;
+- `gh api --paginate repos/<owner>/<repo>/pulls/<n>/comments` for review comments;
+- `gh api --paginate repos/<owner>/<repo>/commits/<sha>/check-runs` and `gh api --paginate repos/<owner>/<repo>/commits/<sha>/statuses` for checks.
+
+REST can't tell you whether a thread is resolved, and resolving is GraphQL only, so wait for `reset` before you resolve or call the PR clean. In T3 Code, "Stopped watching, could not read it" usually means this budget ran out: check it before you watch again, and never watch again in a tight loop.
 
 ## Report
 

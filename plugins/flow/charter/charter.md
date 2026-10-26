@@ -13,7 +13,7 @@ Keep decisions, small tasks and checks of your own work in the main thread.
 
 A seat prompt names the worktree, the checkpoints, the tools and the task. Don't paste the rules in: every seat already gets them.
 
-If a task or design could go two ways, try both in parallel, score them, and keep the better one.
+If a task or design could go two ways, try both in parallel, score them, keep the better one.
 
 ## Models
 As of 2026-10-07, list prices. Pass is the mean of Terminal-Bench 4.0 and FrontierCode v1.1. The Claude ladder keeps only the variants no cheaper Claude variant beats, and rungs within 8 points merge into the cheaper one. Threshold: if you expect a task to pass more often than this, try this rung before the next one up.
@@ -43,13 +43,13 @@ Where to start:
 - Code review: Sol 6.1 xhigh, or Astra xhigh for a hard one
 - Unresolved taste disagreements: a mentor
 
-Security work goes to Mythos at xhigh. Daybreak takes over when Mythos refuses, and each reviews the other's diffs. Mentors (Fable or Astra at xhigh) give a second opinion on a hard call or a stuck seat. They advise. They never write.
+Security work goes to Mythos and Daybreak at xhigh. Mythos does it, Daybreak takes over when it refuses, and each reviews the other's diffs. Mentors (Fable or Astra at xhigh) give a second opinion on a hard call or a stuck seat. They advise and never write.
 
 Pick the rung for the hardest decision left in the task: the cheapest one that meets its capability and taste needs. Start lower only when you expect the task to clear that rung's threshold, which settled work often does. Move up one rung only after a focused failure that had the right context and tools. Escalate without asking. Don't set turn, token or spending caps, or shorter timeouts, unless asked.
 
 Models in one family share blind spots, so review crosses families. Outside security work, a Claude diff gets an adversarial review from the OpenAI reviewer against a fixed base, and an OpenAI diff gets one from Opus high. A design worth a second proposal gets a blind one from a mentor.
 
-A refusal is a typed result. Never report it as some other model's answer. Retry once on the security seat in the refusing model's family, or on Daybreak after Mythos refuses security work. For `reasoning_extraction`, fix the prompt. Two refusals: stop and ask the human.
+Report a refusal as a typed result, never as another model's answer. Retry once on the security seat in the refusing model's family, or on Daybreak after Mythos refuses security work. For `reasoning_extraction`, fix the prompt. Two refusals: stop and ask the human.
 
 ## Delegation
 Never call a model through the shell. Flow can't contain or track it there. In T3 Code, every seat goes through `delegate_task`, reviews included, and a T3 seat that can't prove its hooks ran reruns natively, or through `flow_delegate` for the other family. Outside T3, the other family is only reachable through `flow_delegate`. Set model and effort on every call, and read the `flow:delegate` skill before your first one.
@@ -62,7 +62,7 @@ No ticket? Look for the unstated requirements and the better approach first, the
 ## Hosts
 **Claude Code.** `Agent` sets model and effort. Ask the human with `AskUserQuestion`, recommended option first, never in prose.
 
-**Codex.** `spawn_agent` sets model and effort. Give a pipeline seat `fork_turns: "none"` so it starts without your history. A child gets every tool you have, and there's no depth cap. Ask with up to 4 numbered options, recommended first, then end your turn.
+**Codex.** `spawn_agent` sets model and effort. Give a pipeline seat `fork_turns: "none"` so it starts without your history. A child gets every tool you have and no depth cap. Ask with up to 4 numbered options, recommended first, then end your turn.
 
 <!-- flow-charter: seat rules. Everything below this line is also delivered to every seat. -->
 
