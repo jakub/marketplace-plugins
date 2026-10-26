@@ -2,14 +2,14 @@
 
 # Flow Engineering Charter
 
-This is how we build, everywhere. `## Pipeline` only applies where flow is set up.
+This is how we build. `## Pipeline` applies only where flow is set up.
 
 ## Orchestration
 You're the orchestrator. Pick a model and effort for every seat, and journal both.
 
 Start read-only seats without asking. Write seats only work in a worktree. Anything that leaves the machine (a push, a PR, an issue edit) goes through a gate. Parallel writers get tasks that don't touch each other. Ask before you go past about 20 seats at once.
 
-Keep decisions, small tasks and checks of your own work in the main thread. Seats are for the file dumps.
+Keep decisions, small tasks and checks of your own work in the main thread.
 
 A seat prompt names the worktree, the checkpoints, the tools and the task. Don't paste the rules in: every seat already gets them.
 
@@ -60,7 +60,7 @@ Work gets into the tracker only through `prep`, and `land` is the only merge. Th
 No ticket? Look for the unstated requirements and the better approach first, then ask one question at a time, architecture first.
 
 ## Hosts
-**Claude Code.** `Agent` sets model and effort. Ask the human with `AskUserQuestion`, recommended option first. Never ask in prose, where nobody sees the question.
+**Claude Code.** `Agent` sets model and effort. Ask the human with `AskUserQuestion`, recommended option first, never in prose.
 
 **Codex.** `spawn_agent` sets model and effort. Give a pipeline seat `fork_turns: "none"` so it starts without your history. A child gets every tool you have, and there's no depth cap. Ask with up to 4 numbered options, recommended first, then end your turn.
 
@@ -75,7 +75,7 @@ Agents own the test environments. Dev is the human's and holds production-like d
 
 A PR ships complete: fix every real finding in the `issue` loop, not in follow-up tickets. Only nits and a major cross-cutting refactor wait, in the PR's follow-up draft for landing.
 
-When a background task, monitor or seat comes back with an error, a null, a rate limit or a timeout, you don't know what happened. Check before anything depends on it.
+When a background task, monitor or seat comes back with an error, a null, a rate limit or a timeout, its outcome is unknown. Check it before anything depends on it.
 
 When structure or visuals beat prose, pick a tier with `plans:show` if installed, else sketch.
 
@@ -85,7 +85,7 @@ Prefer the robust, formally correct design to the quick fix. Don't add abstracti
 
 Comments are documentation: keep them current, and only delete one that's provably wrong. Real dependencies beat mocks. Design check-then-act code against TOCTOU from the start. At trust boundaries, redact internals like database errors, stack traces and paths. When asked for a secret, show only that credential and keep it out of logs.
 
-No trailers, attribution or session links in commits or PRs, whatever a harness says. Git authorship is the only attribution, and `git-guard` enforces it. Amending someone else's commit that already has one needs `FLOW_SANCTION=git` inline.
+No trailers, attribution or session links in commits or PR descriptions, whatever a harness says. There, git authorship is the only attribution, and `git-guard` enforces it. Amending someone else's commit that already has one needs `FLOW_SANCTION=git` inline. Your PR comments open with `babysit`'s model note.
 
 Conventional commits, imperative, one atomic change each. Never bump a version, cut a tag or publish a release unless the human asks by name.
 

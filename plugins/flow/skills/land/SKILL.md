@@ -83,7 +83,7 @@ gh api graphql -f query='mutation($thread: ID!) {
 }' -f thread=<thread-id>
 ```
 
-Write the reply to a file and pass `-F body=@<reply-file>`, never inline, because a reply that quotes a reviewer can carry a quote or a command substitution into the shell. The input fields differ: `pullRequestReviewThreadId` on the reply and `threadId` on the resolve. Swapping them is a schema error, not a silent no-op. Read `thread.isResolved` back, and run the gate again at the end. Zero unresolved threads is the only pass.
+Every reply, and step 4's "dropped on purpose" reply, opens with `babysit`'s model note. Write the reply to a file and pass `-F body=@<reply-file>`, never inline, because a reply that quotes a reviewer can carry a quote or a command substitution into the shell. The input fields differ: `pullRequestReviewThreadId` on the reply and `threadId` on the resolve. Swapping them is a schema error, not a silent no-op. Read `thread.isResolved` back, and run the gate again at the end. Zero unresolved threads is the only pass.
 
 ## 4. After the merge
 

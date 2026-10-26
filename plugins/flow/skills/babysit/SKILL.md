@@ -49,6 +49,17 @@ A finding that reveals an open design question means prep missed it. Stop fixing
 
 Reply and resolve with the two GraphQL mutations in `land`'s "Threads" section, and read `isResolved` back. `gh pr comment` does neither.
 
+Every comment or reply you post on the PR opens with this note, so a reader knows an agent wrote it:
+
+```md
+> [!NOTE]
+> 🤖 **<model> responding on behalf of <user>**
+
+The reply starts here.
+```
+
+Use the public name of the model that wrote it, as the harness reports it, and the user's GitHub login (`gh api user --jq .login`). If the harness names no model, name the harness. Never guess. Keep the attribution inside the callout and the reply outside it, with no signature or second attribution. The note goes on PR comments and review replies only, never on a PR description, a commit or an issue comment. Before you post, check the whole reply, quotes included, for secrets and private details.
+
 ## Rounds
 
 A round goes from "something changed" to "pushed and answered":
