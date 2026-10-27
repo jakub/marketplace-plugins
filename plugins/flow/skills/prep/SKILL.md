@@ -103,6 +103,17 @@ GOOD
 
 Add a `surface:` sub-bullet when the evidence doesn't make the landing spot obvious. `label-contract.md` lists the four values.
 
+Then write a `## Risk` section. Its tier sets how much review `issue` spends, so pick it from what a bug would cost, never from the size of the change:
+
+```markdown
+## Risk
+- tier: high
+- why: changes how the WAL replays at boot, and a bug there loses acknowledged events
+- persisted state: WAL segment layout
+```
+
+`low` is work where a bug costs one quick fix-forward: copy, log levels, docs, a contained UI tweak. `high` is a trust boundary, data that outlives a revert, CI and release workflows, installers. Everything else is `standard`, and an issue with no `## Risk` section runs as `standard`.
+
 ## 7. Finalize
 
 1. **Docs.** If the repo keeps a design record (`context.md`, `docs/adr/`, or whatever its instructions name), commit the grill's docs to current main in one `docs(...)` commit and push. Otherwise skip it and say so in the journal. If a path the grill wrote was already dirty at the post-scout snapshot, stop and ask, because you can't tell their changes from the grill's. Stage only the grill's paths by name, and stop if `git status --porcelain` shows anything else moved since that snapshot.

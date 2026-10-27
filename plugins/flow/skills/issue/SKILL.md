@@ -22,6 +22,16 @@ A hand-off line that mentions this stage is not an invocation. A number that isn
 
 **Done** is an open PR, pushed, reviewed, evidenced and linked with `Closes #N`. Invoke the `babysit` skill with it right away, without asking.
 
+The PR body carries a `## Risk` section (the tier, why, and any tripwire that raised it) and a `## Revert` section, both written from the diff that ships. Revert says what a rollback leaves behind, judged against the data stance in the repo's `AGENTS.md`. With no stance there, a change to persisted state isn't reversible, so say that.
+
+BAD
+
+> ❌ `## Revert` Revert the squash commit.
+
+GOOD
+
+> ✅ `## Revert` Not clean. `git revert` restores the code, but WAL segments this build wrote keep the new layout, and trawl is forward-only. Back up the WAL directory before upgrading. To roll back, stop trawld, restore that backup, then start the old build.
+
 **Or** a clean escalation: `needs-info`, `needs-human` or `needs-rebase`, a comment saying what blocks, and a ping (step 8). An escalation or a suspension stops there, even after a checkpoint push.
 
 ## 1. Preflight
@@ -57,7 +67,7 @@ Pass `--kind` only if the label default is wrong: `bug` is fix, `documentation` 
 
 Three kinds of issue comment, and no others:
 
-1. **Launch**, before work starts: the base SHA, the AC digest, and the seats with their models, efforts and why.
+1. **Launch**, before work starts: the base SHA, the AC digest, the risk tier, and the seats with their models, efforts and why.
 2. **Events**, as they happen: a tripwire fired, the run widened or narrowed, a fork guessed, a seat re-run on a stronger model, the breaker tripped, a stale answer rejected.
 3. **Final**: a verdict per criterion, and coverage: which seats actually looked at the diff versus the ones you planned, by name.
 
@@ -65,12 +75,12 @@ When you recover from anything, re-read live state. A journal line never authori
 
 ## 4. Design pass
 
-Every production-code run gets one, even when prep or an ADR settled the spec. Start the native leg, then the other-family leg, so both land in the same turn:
+Every `standard` or `high` run gets one, even when prep or an ADR settled the spec. A `low` run skips it, because prep's dialectic already shaped the change. Start the native leg, then the other-family leg, so both land in the same turn:
 
 - The native leg frames the smallest change with the most reuse, grounded in the real code seams.
 - The other-family leg is blind. It proposes its own shape and names what the issue left unsaid.
 
-Synthesize them yourself, and resolve each disagreement out loud instead of averaging. Say where each new thing lives and why, which layer enforces each invariant, and the checkpoints with a difficulty for each. Difficulty is about what could break, never file count, and it picks each write seat's rung. A docs-, config- or comment-only change can shrink this to one cross-family check, never to nothing.
+Synthesize them yourself, and resolve each disagreement out loud instead of averaging. Say where each new thing lives and why, which layer enforces each invariant, and the checkpoints with a difficulty for each. Difficulty is about what could break, never file count, and it picks each write seat's rung.
 
 Open design found mid-run means prep missed something. A small shape question is a fork (step 8), journaled as a prep-gap event. A genuinely open design is `needs-info`, back through prep.
 
@@ -80,7 +90,7 @@ Open design found mid-run means prep missed something. A small shape question is
 2. **Someone tries to break it.** Tell at least one review seat to refute the change, not summarize it. A finding backed by a failing test it wrote skips adjudication, and its fix keeps that test as the regression guard. If the fixer thinks the test encodes the wrong requirement, it says so instead of satisfying it.
 3. **Unknown is not a pass.** CI is green only on a head you checked is in sync (the local SHA equals the PR's `headRefOid`) and that you actually saw. Never infer it from an exit code. A `failed`, `cancelled` or `unknown` review job is a missing seat, not a clean review.
 4. **Every criterion has evidence a stranger can re-run.** Each gets a verdict and a pointer in the PR's evidence ledger, reproducible from the merged repo alone with a committed test, script or artifact. Journal prose is narrative. An expiring URL is evidence with a TTL.
-5. **Stop on evidence, not exhaustion.** Normal work converges on one clean adversarial pass from the family that didn't write the fix. Trust-boundary contact or a churning run needs two clean passes in a row from different seats. The final pass sweeps the whole diff file by file and lists what it read and skipped, and a file no reviewer named since the last fix round is a gap. `findings: []` carries no such list, so continue that job and ask for one before the pass counts. A finding that leaves no defect in the intended case or in code this PR touches, such as a test nobody needs, a guard for a case that doesn't matter, extra compatibility or a small cost, is declined with a one-line reason and goes in the PR body's `## follow-up draft`, so review can't grow the PR. A real bug the PR introduces, a finding backed by a failing test, and a finding on a topic `babysit` says never to reject yourself are never declined this way. Past about five fix rounds, stop fixing: hand the survivors to a seat picked for settling conflicting reviewers, and escalate the real ones to the user instead of shipping them.
+5. **Stop on evidence, not exhaustion.** The issue's `## Risk` tier sets the bar, and no section means `standard`. `low` and `standard` converge on one clean adversarial pass from the family that didn't write the fix. `high` needs two clean passes in a row from different seats, and a security seat is one of the reviewers. The final pass sweeps the whole diff file by file and lists what it read and skipped, and a file no reviewer named since the last fix round is a gap. `findings: []` carries no such list, so continue that job and ask for one before the pass counts. A finding that leaves no defect in the intended case or in code this PR touches, such as a test nobody needs, a guard for a case that doesn't matter, extra compatibility or a small cost, is declined with a one-line reason and goes in the PR body's `## follow-up draft`, so review can't grow the PR. A real bug the PR introduces, a finding backed by a failing test, and a finding on a topic `babysit` says never to reject yourself are never declined this way. Past about five fix rounds (three on `low`), stop fixing: hand the survivors to a seat picked for settling conflicting reviewers, and escalate the real ones to the user instead of shipping them.
 6. **One file, one writer.** No two seats hold the same file at once, and each stages only its own paths, because the index is shared. Notes, logs, captures and anything else the run won't commit go in the worktree's `.flow-scratch/`, which the claim git-ignores. Never put them in /tmp or the workspace root, because `land` retires scratch with the worktree. Say so in each seat's task.
    - A `flow_delegate` writer can edit but not commit, so tell it that. When it returns, verify it (invariant 8), stage its files by path, and commit them. Name the seat in the journal, never in the commit.
    - A T3 writer commits its own paths with `git -C <wt> commit -- <paths>`, and invariant 8 checks those commits.
@@ -95,12 +105,14 @@ Open design found mid-run means prep missed something. A small shape question is
 
 ## 7. Tripwires
 
-Size isn't fixed at launch. Each of these forces a rethink of seats and rounds, journaled as an event:
+Size isn't fixed at launch. Each of these raises the tier one step and forces a rethink of seats and rounds, journaled as an event:
 
 - the diff touches a trust boundary the issue never mentioned: auth, input parsing, shell, SQL or template construction, secrets;
 - the diff grows past about twice the planned file count;
 - fix rounds churn on one area, with each fix spawning findings where it lands;
 - the two families' reviewers disagree hard on the same code.
+
+A trust boundary makes the run `high` outright. Nothing lowers the tier mid-run, because a run that talks itself into less review is exactly what the tier guards against.
 
 ## 8. Forks and escalation
 

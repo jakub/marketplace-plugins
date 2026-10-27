@@ -99,4 +99,4 @@ REST can't tell you whether a thread is resolved, and resolving is GraphQL only,
 
 ## Report
 
-Clean: say so, with the head SHA, and name `land` as the next move. Otherwise: the PR's state, what each open item waits on, and what you tried. The thread replies are the audit trail.
+Clean: say so, with the head SHA, and name `land` as the next move. If the PR body has `## Risk` and `## Revert` sections, repeat the tier and the Revert line, so the user sees what a rollback costs before they ask to land. Otherwise: the PR's state, what each open item waits on, and what you tried. The thread replies are the audit trail.
