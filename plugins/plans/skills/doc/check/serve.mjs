@@ -17,8 +17,11 @@
 //     (no scheme, no leading slash, no `?`, `#`, `%`, backslash or NUL, and no empty, `.` or `..`
 //     component), every component lstats as a non-symlink (a link that points inside the directory
 //     is refused too), every component but the last is a directory, the last opens with O_NOFOLLOW
-//     as a regular file with the same inode, and its lowercased extension is in MEDIA and is not
-//     .html or .htm. Subpaths such as assets/x.png are allowed, as the plans CLI allows them.
+//     and O_NONBLOCK and fstats as a regular file with the same inode before any read, and its
+//     lowercased extension is in MEDIA and is not .html or .htm. O_NONBLOCK is there because the
+//     last component can be swapped after its lstat: a FIFO there would block a plain open, and
+//     with it the event loop and runChecks' deadline. Subpaths such as assets/x.png are allowed, as
+//     the plans CLI allows them.
 //   - /favicon.ico, answered 204
 //   - /__plans-probe, an empty HTML page without the sandbox CSP, for clipboard read-back
 // A request handler never touches the filesystem: a file that changes or vanishes after serve()
@@ -64,7 +67,7 @@ export const PROBE = '/__plans-probe'
 const PROBE_PAGE = Buffer.from('<!doctype html><html><head><meta charset="utf-8"><title>probe</title></head><body></body></html>\n')
 
 function readFile(path, ino) {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   try {
     const st = fstatSync(fd)
     if (!st.isFile() || st.ino !== ino) throw new Error('changed while it was read')

@@ -308,7 +308,7 @@ export default async function ({ ROOT, check, skip }) {
    Chromium: no plans-chromium-* profile in it and no process whose cmdline names it, before and
    after every build. One case sends SIGTERM to the builder while Chromium runs. */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -531,7 +531,7 @@ function raw(port, text) {
   })
 }
 
-async function serveUnits({ check, serveMod, base }) {
+async function serveUnits({ check, serveMod, serveUrl, base }) {
   const { serve, CSP, CANDIDATE, PROBE } = serveMod
   const dir = join(base, 'served')
   mkdirSync(join(dir, 'sub'), { recursive: true })
@@ -615,6 +615,36 @@ async function serveUnits({ check, serveMod, base }) {
   } finally {
     await srv.close()
   }
+
+  // The last component swapped for a FIFO between admit's lstat and its open. A child process
+  // patches lstatSync to make the swap, so a regression that blocks in open(2) is a timeout here
+  // rather than a hung smoke.
+  const swapDir = join(base, 'swap')
+  mkdirSync(swapDir)
+  const swapScript = join(base, 'fifo-swap.mjs')
+  writeFileSync(swapScript, `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+import { execFileSync } from 'node:child_process'
+const [url, dir] = process.argv.slice(2)
+const target = dir + '/swap.png'
+fs.writeFileSync(target, 'png bytes')
+const real = fs.lstatSync
+fs.lstatSync = (p, ...rest) => {
+  const st = real(p, ...rest)
+  if (p === target) { fs.unlinkSync(target); execFileSync('mkfifo', [target]) }
+  return st
+}
+syncBuiltinESMExports()
+const { mediaRoutes } = await import(url)
+const got = mediaRoutes(dir, ['swap.png'])
+process.stdout.write(JSON.stringify({ routes: [...got.routes.keys()], refused: got.refused }))
+`)
+  const swap = spawnSync(process.execPath, [swapScript, serveUrl, swapDir], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' })
+  let swapped = null
+  try { swapped = JSON.parse(swap.stdout) } catch {}
+  check('serve: a FIFO swapped in after the lstat is refused without blocking the open',
+    swap.status === 0 && swapped?.routes.length === 0 && /changed while it was read/.test(swapped?.refused[0]?.reason ?? '') && statSync(join(swapDir, 'swap.png')).isFIFO(),
+    `status ${swap.status} signal ${swap.signal} stdout ${swap.stdout} stderr ${swap.stderr}`)
 }
 
 /* ---------------------------------------------------------------- leak checks */
@@ -710,7 +740,7 @@ async function browserSection({ ROOT, check, skip }) {
     // --- Node-only, never skipped.
     await pipeUnits({ check, cdp })
     await childExitUnit({ check, cdp, base })
-    await serveUnits({ check, serveMod, base })
+    await serveUnits({ check, serveMod, serveUrl: pathToFileURL(join(DOC, 'check/serve.mjs')).href, base })
 
     // --- The case list, checked against the fixture tree both ways before anything runs.
     const dirs = fixtureDirs(FIX).sort()
