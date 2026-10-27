@@ -350,6 +350,8 @@ const KIT_BAD = [
   ['local-storage', 'exception', /localStorage/],
   ['response-mismatch', 'response-mismatch', /^engine picks pg: option 30d of question retention is not checked in the DOM/],
   ['kit-silenced', 'kit-error', /data-plans-kit was already set when the kit started/],
+  // The page swallows console.error, so only the kit's own banner shows that it stopped.
+  ['banner-unlogged', 'response-mismatch', /^initial response: the page shows the kit's error banner, but no kit error was logged$/],
 ]
 // css-url beyond a plain stylesheet rule, under bad/: [directory, patterns]. Each pattern must
 // match the detail of some css-url fault.
@@ -368,6 +370,10 @@ const CASES = [
   { dir: 'good-copy-blocked', args: [], exit: 0, states: KIT_STATES, copy: 'blocked-selected', named: [
     ['a blocked copy leaves the whole response selected', /^interaction: copy after one press$/],
     ['a blocked copy after a note edit leaves the whole response selected', /^interaction: copy with a note edit between two presses$/],
+  ] },
+  // The page's own role=alert is content: the kit runs, and the interaction script drives it.
+  { dir: 'good-alert', args: [], exit: 0, states: KIT_STATES, copy: 'copied-verified', named: [
+    ['an authored role=alert leaves the initial response to the kit', /^interaction: initial response$/],
   ] },
   // A page script turns the kit's "blocked" status into "Copied". The read-back finds the sentinel.
   { dir: 'bad-kit/copy', args: [], exit: 1, fault: 'copy', match: /says "Copied", but the clipboard holds the check's sentinel/ },

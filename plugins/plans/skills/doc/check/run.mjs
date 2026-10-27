@@ -31,10 +31,10 @@
 // States. `initial`; `details-open`, with every native <details> opened and the page settled
 // again; and on a Document page with kit hooks, `interaction`, probed after the interaction
 // script and the copy check below, with <details> still open. A kit page whose kit already
-// logged an error or shows its alert banner gets the cell without the script, since its response
-// is off. `undriven` lists every control outside the kit: a button, select, textarea, input,
-// contenteditable or tabindex that no fieldset[data-ask], textarea[data-note], data-respond or
-// data-ask-summary holds. Kit controls join it, marked `kit`, only when the script did not run.
+// logged an error gets the cell without the script, since its response is off. `undriven` lists
+// every control outside the kit: a button, select, textarea, input, contenteditable or tabindex
+// that no fieldset[data-ask], textarea[data-note], data-respond or data-ask-summary holds. Kit
+// controls join it, marked `kit`, only when the script did not run.
 //
 // Interaction script (Document pages with kit hooks). It reads a static model once from the DOM:
 // the <title> text, the plans-build content, each fieldset[data-ask] with its id, its own legend
@@ -64,8 +64,9 @@
 // (the readonly textarea in [data-respond]) must equal format() from expect.mjs over the record,
 // byte for byte. The first difference is the fault `response-mismatch`, and the script stops
 // there, since every later step would compare against a record the page has left. A kit page
-// that logged no kit error but has no response textarea is `response-mismatch` too: its kit never
-// ran and never said so.
+// that logged no kit error but shows the kit's own error banner
+// (div.plans-ask-error[data-plans-kit="banner"], never a page's own role=alert) or has no response
+// textarea is `response-mismatch` too: its kit stopped and never said so.
 //
 // Copy check (after step 7). The clipboard is shared by the whole browser, so a /__plans-probe
 // target in the view's browser context first writes a fresh sentinel. Browser.grantPermissions
@@ -406,8 +407,11 @@ function readModel() {
   })
   const notes = [...document.querySelectorAll('textarea[data-note]')].map((t) => ({ name: t.getAttribute('data-note'), text: t.value }))
   const respond = document.querySelector('[data-respond]')
-  const broken = !!document.querySelector('[role="alert"]') || !respond || !respond.querySelector('textarea[readonly]')
-  return { title: titleEl ? titleEl.textContent : '', build: meta ? meta.getAttribute('content') ?? '' : '', questions, notes, broken }
+  // The kit's own error banner, which ask.js creates and the builder refuses in authored markup.
+  // A page's own role=alert is content and says nothing about the kit.
+  const banner = !!document.querySelector('div.plans-ask-error[data-plans-kit="banner"]')
+  const response = !!respond && !!respond.querySelector('textarea[readonly]')
+  return { title: titleEl ? titleEl.textContent : '', build: meta ? meta.getAttribute('content') ?? '' : '', questions, notes, banner, response }
 }
 
 // The DOM facts each step is compared on: every option's checked, and the response textarea.
@@ -595,10 +599,12 @@ async function interact(io, rec, viewName) {
   const { send, evaluate } = io
   const faults = []
   const s = await evaluate(call(readModel))
-  // runView skips this script when the kit logged an error, so a page that reaches here without a
-  // filled response region has a kit that never ran and never said so.
-  if (s.broken) {
-    const detail = 'initial response: the page has kit hooks, but no kit error was logged and the response region holds no response textarea'
+  // runView skips this script when the kit logged an error, so a page that reaches here with the
+  // kit's banner, or without a filled response region, has a kit that stopped and never said so.
+  if (s.banner || !s.response) {
+    const detail = s.banner
+      ? 'initial response: the page shows the kit\'s error banner, but no kit error was logged'
+      : 'initial response: the page has kit hooks, but no kit error was logged and the response region holds no response textarea'
     rec.steps.push({ name: 'initial response', result: 'fail', detail, view: viewName })
     rec.copies.push('unknown')
     return { faults: [{ kind: 'response-mismatch', detail }], driven: false }
