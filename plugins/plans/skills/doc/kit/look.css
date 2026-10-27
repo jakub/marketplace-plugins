@@ -138,23 +138,24 @@ summary { cursor: pointer; font-weight: 700; }
     border-left: 0;
     font-size: .84rem;
   }
-  /* A diff note is a sibling right after the block that holds its caret, so a float would line up
-     with the next block. Instead the diff becomes a two-column grid reaching into the outer column:
-     every block sits in the first column, and each note takes the second column of the row its
-     block opened. Sparse auto-placement keeps a note beside its own block, and a second note from
-     the same block starts the next row. div.plans-diff and .plans-diff > * raise the specificity
-     over marks.css, which the builder inlines after this file. */
-  div.plans-diff {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 15rem;
-    column-gap: 2.5rem;
-    margin-right: calc(-2.5rem - 15rem);
+  /* A diff note is a sibling right after the block that holds its caret. It floats into the outer
+     column the way .margin does, so a note that doesn't fit beside its block runs on down the
+     margin, clear:right starts a later note below an earlier one, and the body column keeps its
+     own spacing. A plain float after a block would line up with the next block, so the block a
+     note follows becomes a full-width inline-block: the note then floats on the line that block
+     sits on and starts level with it. Only that block loses margin collapsing with its
+     neighbours. div.plans-diff and .plans-diff > raise the specificity over marks.css, which the
+     builder inlines after this file. */
+  div.plans-diff > :has(+ .plans-note) {
+    display: inline-block;
+    width: 100%;
+    vertical-align: top;
   }
-  .plans-diff > * { grid-column: 1; min-width: 0; }
-  .plans-diff > .plans-note {
-    grid-column: 2;
-    align-self: start;
-    margin: .15rem 0 .9rem;
+  div.plans-diff > .plans-note {
+    float: right;
+    clear: right;
+    width: 15rem;
+    margin: .15rem calc(-2.5rem - 15rem) .9rem 0;
     font-size: .84rem;
   }
   /* The leader: a hairline from the column rule to the note's first line. */

@@ -284,6 +284,7 @@
       if (ui) {
         ui.copy.disabled = true
         ui.response.value = ''
+        fitResponse()
         ui.said.textContent = 'Copying is off until the page is fixed.'
       }
     }
@@ -421,7 +422,16 @@
       const response = el('textarea', 'plans-ask-response')
       response.readOnly = true
       response.spellcheck = false
+      response.rows = 6
       responseField.append(el('span', 'plans-ask-fieldname', 'Response'), response)
+      // A width change rewraps the response, so it refits. Its own height change comes back here
+      // with the same width and is ignored, so the observer never feeds itself.
+      let fitWidth = -1
+      new ResizeObserver(() => {
+        if (response.clientWidth === fitWidth) return
+        fitWidth = response.clientWidth
+        fitResponse()
+      }).observe(response)
 
       const actions = el('div', 'plans-ask-actions')
       const copy = el('button', 'plans-ask-btn plans-ask-copy', 'Copy response')
@@ -469,9 +479,20 @@
         ui.status.open.textContent = `${counts.open} not answered`
         ui.status.open.classList.toggle('plans-ask-need', counts.open > 0)
       }
-      const text = format()
-      ui.response.value = text
-      ui.response.rows = Math.min(Math.max(text.split('\n').length, 6), 40)
+      ui.response.value = format()
+      fitResponse()
+    }
+
+    // Sizes the response to its wrapped text, so the whole response shows at any width with no
+    // inner scrolling. height:auto falls back to the 6-row floor, and scrollHeight then measures the
+    // wrapped text. Overflow is hidden while it measures, so a scrollbar that appears at the floor
+    // height can't narrow the text and inflate the measure.
+    function fitResponse () {
+      const r = ui.response
+      r.style.overflowY = 'hidden'
+      r.style.height = 'auto'
+      r.style.height = r.scrollHeight + r.offsetHeight - r.clientHeight + 'px'
+      r.style.overflowY = ''
     }
 
     function touched () {

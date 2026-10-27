@@ -161,6 +161,8 @@ textarea[data-note],
   list-style: none;
   font-variant-numeric: tabular-nums;
 }
+/* look.css spaces prose list items with li + li, which in this flex row drops every item but the first. */
+.plans-ask-status > li { margin: 0; }
 .plans-ask-status .plans-ask-need { color: var(--plans-accent-text); font-weight: 600; }
 .plans-ask-save { margin: 0 0 1rem; font-weight: 600; }
 .plans-ask-field { display: block; margin: 1rem 0; }
