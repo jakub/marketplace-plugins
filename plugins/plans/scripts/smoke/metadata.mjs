@@ -1,6 +1,6 @@
 // The plans metadata the issue requires, beyond the agreement smoke-plugin-manifests.mjs checks between
 // manifests: the plugin manifest and the marketplace entry carry one description that names all three
-// skills (show, doc, publish), both sit at version 0.1.0, plans ships no Codex manifest because Codex
+// skills (show, doc, publish), both sit at version 0.2.0, plans ships no Codex manifest because Codex
 // finds skills/*/SKILL.md by itself, and the README row names the three skills. Each rule is a function
 // of in-memory state, so every negative control mutates that state and proves the rule fails; nothing
 // is written to disk.
@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const SKILLS = ['show', 'doc', 'publish']
-const VERSION = '0.1.0'
+const VERSION = '0.2.0'
 const BASE_DESCRIPTION = 'Publish, verify, and delete HTML plans, images, and video as viewable URLs through the open-source plans CLI and a self-hosted plansd server.'
 
 const namesAll = (text) => SKILLS.every((skill) => new RegExp(`\\b${skill}\\b`).test(text))
@@ -32,7 +32,7 @@ export default async function ({ ROOT, check }) {
 
   check('control: the base-era description fails the description rule', !descriptionOk(BASE_DESCRIPTION, BASE_DESCRIPTION))
   check('control: manifests that differ in description fail the description rule', !descriptionOk(plugin.description, `${plugin.description} `))
-  check('control: version 0.1.1 in either place fails the version rule', !versionOk('0.1.1', VERSION) && !versionOk(VERSION, '0.1.1'))
+  check('control: version 0.2.1 in either place fails the version rule', !versionOk('0.2.1', VERSION) && !versionOk(VERSION, '0.2.1'))
   check('control: a present Codex manifest path fails the Codex rule', !codexOk(true))
   check('control: a README row without doc fails the row rule', !rowNamesAll(row.replaceAll('`doc`', 'docs')))
 }
