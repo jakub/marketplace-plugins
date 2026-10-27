@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log retention for the spool</title>
+<!-- plans:kit -->
+<script>
+  // This page stands for a viewer that blocks every clipboard write: the async API rejects, and
+  // the execCommand fallback reports failure. The kit must then leave the whole response selected.
+  navigator.clipboard.writeText = () => Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError'))
+  document.execCommand = () => false
+</script>
+</head>
+<body>
+<main>
+<h1>Log retention for the spool</h1>
+<p>Closed spool files stay on disk for 7 days after they ship. The disk holds about 9 days of files at today's rate, so a slow week leaves 2 days of headroom.</p>
+
+<fieldset data-ask="spool-days">
+  <legend>How many days do shipped spool files stay on disk?</legend>
+  <p>Each day kept costs about 4 GB of disk. A file that is still on disk can be shipped again without a restore.</p>
+  <label><input type="radio" name="spool-days" value="7" checked> 7 days, as today</label>
+  <label><input type="radio" name="spool-days" value="3"> 3 days
+    <span data-then>Then a resend after day 3 needs a restore from the store.</span></label>
+</fieldset>
+
+<label for="note-spool">Anything else about the spool</label>
+<textarea id="note-spool" data-note="Spool" rows="3"></textarea>
+
+<section data-respond>
+  <h2>Your response</h2>
+</section>
+</main>
+</body>
+</html>

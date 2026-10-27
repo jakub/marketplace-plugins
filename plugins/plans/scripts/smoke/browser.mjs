@@ -342,6 +342,14 @@ const NAMED = [
 const CASES = [
   { dir: 'reading', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'] },
   { dir: 'good', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'], states: KIT_STATES, copy: 'copied-verified', named: NAMED },
+  // The clipboard API rejects and execCommand returns false: the kit leaves the whole response
+  // selected, and the copy check passes it as blocked.
+  { dir: 'good-copy-blocked', args: [], exit: 0, states: KIT_STATES, copy: 'blocked-selected', named: [
+    ['a blocked copy leaves the whole response selected', /^interaction: copy after one press$/],
+    ['a blocked copy after a note edit leaves the whole response selected', /^interaction: copy with a note edit between two presses$/],
+  ] },
+  // A page script turns the kit's "blocked" status into "Copied". The read-back finds the sentinel.
+  { dir: 'bad-kit/copy', args: [], exit: 1, fault: 'copy', match: /says "Copied", but the clipboard holds the check's sentinel/ },
   { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: ['360', '728'] },
   ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind })),
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
@@ -713,7 +721,8 @@ async function browserSection({ ROOT, check, skip }) {
           check(`browser: ${c.dir} --shots writes one PNG per cell and result.json`, pngs && res.result === 'pass' && res.buildId === j.buildId, have.join(','))
         }
       } else {
-        check(name, r.status === 1 && j.result === 'fail' && kinds.includes(c.fault) && !existsSync(out) && j.digest === null,
+        const named = (j.matrix ?? []).flatMap((cell) => cell.faults).filter((f) => f.kind === c.fault && (!c.match || c.match.test(f.detail)))
+        check(name, r.status === 1 && j.result === 'fail' && named.length > 0 && !existsSync(out) && j.digest === null,
           `status ${r.status} result ${j.result} faults ${kinds.join(',')}\n${r.stderr}`)
       }
       check(`browser: ${c.dir} leaves no profile or Chromium behind`, clean(before) && clean(after), JSON.stringify({ before, after }))
