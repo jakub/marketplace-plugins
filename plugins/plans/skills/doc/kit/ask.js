@@ -85,7 +85,8 @@
   }
 
   // Reads every hook from the live DOM. refs and sig together are the snapshot: refs fixes element
-  // identity, membership, order and ownership, and sig fixes the text and attribute facts.
+  // identity, membership, order and ownership, hints and thens included, and sig fixes the text and
+  // attribute facts and how many hints and thens each legend and option owns.
   function collect () {
     const errs = []
     const refs = []
@@ -112,6 +113,8 @@
       const legend = legendEl ? collapse(ownText(legendEl)) : ''
       if (!legend) errs.push(`question "${id}" has no <legend> with text`)
       refs.push(legendEl)
+      const legendHints = legendEl ? Array.from(legendEl.querySelectorAll('[data-hint]')) : []
+      refs.push(...legendHints)
 
       const inputs = []
       for (const el of fs.querySelectorAll('input')) {
@@ -119,6 +122,7 @@
         const value = el.getAttribute('value')
         const labelEls = Array.from(el.labels || [])
         const thens = []
+        const hints = []
         for (const l of labelEls) {
           refs.push(l)
           if (!fs.contains(l)) errs.push(`a label of option "${value}" in question "${id}" sits outside its fieldset`)
@@ -131,9 +135,13 @@
             thens.push(t)
             refs.push(t)
           }
+          for (const h of l.querySelectorAll('[data-hint]')) {
+            hints.push(h)
+            refs.push(h)
+          }
         }
         const label = collapse(labelEls.map(ownText).join(' '))
-        inputs.push({ el, name: el.getAttribute('name'), type: el.type, value, def: el.hasAttribute('checked'), label, labelEls, thens })
+        inputs.push({ el, name: el.getAttribute('name'), type: el.type, value, def: el.hasAttribute('checked'), label, labelEls, thens, hints })
       }
 
       const type = inputs.length ? inputs[0].type : ''
@@ -159,7 +167,7 @@
           el instanceof HTMLTextAreaElement || el instanceof HTMLButtonElement
         if (control && !inputs.some((i) => i.el === el)) errs.push(`a control outside question "${id}" shares its name`)
       }
-      questions.push({ fs, id, legend, type, inputs })
+      questions.push({ fs, id, legend, legendHints, type, inputs })
     }
 
     for (const t of document.querySelectorAll('[data-then]')) {
@@ -204,8 +212,8 @@
       }
     }
 
-    const sig = JSON.stringify([title, build, questions.map((q) => [q.id, q.fs.id, q.legend, q.type,
-      q.inputs.map((i) => [i.name, i.type, i.value, i.def, i.label, i.thens.length])]), notes.map((n) => n.name)])
+    const sig = JSON.stringify([title, build, questions.map((q) => [q.id, q.fs.id, q.legend, q.legendHints.length, q.type,
+      q.inputs.map((i) => [i.name, i.type, i.value, i.def, i.label, i.thens.length, i.hints.length])]), notes.map((n) => n.name)])
     return { errs, refs, sig, title, build, questions, notes, summary: summaries[0] || null, respond: responds[0] || null, asking }
   }
 
@@ -242,6 +250,11 @@
     const kept = new Map()
     let broken = false
     let ui = null
+    // generation moves on every render and on failure, so a copy that resolves later can tell the
+    // response it copied is no longer the one on screen. copies counts clicks, so only the newest
+    // copy speaks.
+    let generation = 0
+    let copies = 0
 
     // Idempotent: the observer calls back after every DOM write, so a second call that wrote the UI
     // again would feed the observer forever.
@@ -249,6 +262,7 @@
       report(messages)
       if (broken) return
       broken = true
+      generation++
       if (ui) {
         ui.copy.disabled = true
         ui.response.value = ''
@@ -256,13 +270,17 @@
       }
     }
 
-    // Synchronous re-check before every render and copy. The MutationObserver below only makes a
-    // violation show promptly; it is asynchronous, so it never stands in for this call.
+    // Synchronous re-check before every render and copy. It reruns the whole load-time validation,
+    // global id uniqueness and the form and link rules included, and then compares the snapshot.
+    // The MutationObserver below only makes a violation show promptly; it is asynchronous, so it
+    // never stands in for this call.
     function assertSnapshot () {
       if (root.getAttribute(MARK) !== 'ready') fail([TWICE])
       else if (!broken) {
         const now = collect()
-        if (now.sig !== snap.sig || !sameRefs(now.refs, snap.refs)) fail(['the questions, options or defaults changed after the page loaded'])
+        const errs = now.errs.concat(idErrors(now.questions))
+        if (now.sig !== snap.sig || !sameRefs(now.refs, snap.refs)) errs.push('the questions, options or defaults changed after the page loaded')
+        if (errs.length) fail(errs)
       }
       return !broken
     }
@@ -402,6 +420,7 @@
 
     function render () {
       if (!assertSnapshot()) return
+      generation++
       const counts = { changed: 0, kept: 0, open: 0 }
       questions.forEach((q, n) => {
         const state = stateOf(q)
@@ -448,11 +467,15 @@
       ui.response.setSelectionRange(0, ui.response.value.length)
     }
 
+    // A copy that finishes after the response changed, after a newer copy started or after the kit
+    // failed never says "Copied": the clipboard may hold text that is no longer on screen.
     async function doCopy () {
       if (!assertSnapshot()) return
       render()
       if (broken) return
       ui.said.textContent = ''
+      const attempt = ++copies
+      const gen = generation
       const text = ui.response.value
       let ok = false
       try {
@@ -460,6 +483,11 @@
         ok = true
       } catch (e) {
         ok = false
+      }
+      if (attempt !== copies || !assertSnapshot()) return
+      if (gen !== generation || ui.response.value !== text) {
+        ui.said.textContent = 'The response changed while it was being copied. Copy it again.'
+        return
       }
       if (!ok) {
         selectAll()
