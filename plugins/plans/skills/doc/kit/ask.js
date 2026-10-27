@@ -10,7 +10,8 @@
      are filled by the kit
    It validates that markup in the live DOM, snapshots it, and re-asserts the snapshot before every
    render and copy. A violation shows a role=alert banner, disables Copy, empties the response and
-   logs `plans-kit: ...` once per violation, which fails the build. The kit owns the
+   logs `plans-kit: ...` once per violation, which fails the build. On a page with no hook at
+   load the kit stays idle, and a hook that appears later is a violation too. The kit owns the
    data-plans-kit marker on <html>, which the builder refuses in its input: a marker already there
    when the kit starts is a kit error, whether a second copy of the kit or the page set it. State is the inputs' checked
    properties against the captured defaults plus a Map of kept flags; nothing is stored. Page text
@@ -29,6 +30,7 @@
   const GENERAL = 'General'
   const TWICE = 'the kit was initialized a second time'
   const PRESET = 'data-plans-kit was already set when the kit started: the page set it, or the kit was initialized a second time'
+  const LATE = 'a kit hook appeared after the page loaded: put every question, note, summary and response region in the markup'
 
   let banner = null
   let bannerList = null
@@ -252,8 +254,16 @@
 
   whenReady(() => {
     if (document.querySelector('[data-ask], [data-note], [data-ask-summary], [data-respond]') === null) {
-      if (root.getAttribute(MARK) === 'ready') root.setAttribute(MARK, 'idle')
-      else report([TWICE])
+      if (root.getAttribute(MARK) !== 'ready') { report([TWICE]); return }
+      root.setAttribute(MARK, 'idle')
+      // An idle kit runs no checks and fills no response, so a hook that a script adds later, from
+      // a <details> toggle say, is a kit error. The observer stops at the first one.
+      const late = new MutationObserver(() => {
+        if (document.querySelector('[data-ask], [data-note], [data-ask-summary], [data-respond]') === null) return
+        late.disconnect()
+        report([LATE])
+      })
+      late.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-ask', 'data-note', 'data-ask-summary', 'data-respond'] })
       return
     }
 

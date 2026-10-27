@@ -68,7 +68,7 @@ A label that names its input with `for`:
 
 ## Leave the questions alone after load
 
-The kit records every question at load: which fieldsets exist and in what order, their ids, names, types, values and defaults, the legend and label texts, which hint and then each label owns, and the note names. Never add, remove or change any of those from a script later. A change after load is a kit error, and so is a second copy of the kit starting on the same page.
+The kit records every question at load: which fieldsets exist and in what order, their ids, names, types, values and defaults, the legend and label texts, which hint and then each label owns, and the note names. Never add, remove or change any of those from a script later. A change after load is a kit error, and so is a second copy of the kit starting on the same page. That holds on a page with no kit hook at load too: a hook that a script adds later, from a `<details>` toggle say, is a kit error.
 
 ## Know how a question counts as answered
 

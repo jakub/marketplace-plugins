@@ -352,6 +352,9 @@ const KIT_BAD = [
   ['kit-silenced', 'kit-error', /data-plans-kit was already set when the kit started/],
   // The page swallows console.error, so only the kit's own banner shows that it stopped.
   ['banner-unlogged', 'response-mismatch', /^initial response: the page shows the kit's error banner, but no kit error was logged$/],
+  // No hook at load, so the kit is idle, and a <details> toggle then adds a question and a
+  // response region from a script.
+  ['hook-in-details', 'kit-error', /a kit hook appeared after the page loaded/],
 ]
 // css-url beyond a plain stylesheet rule, under bad/: [directory, patterns]. Each pattern must
 // match the detail of some css-url fault.
@@ -828,6 +831,12 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     ['runChecks: an exception thrown while the controls are read fails the run', undefined, page('<p>A quiet page.</p>'),
       (out) => out.result === 'fail' && out.reason.kind === 'exception' && has(out, '390-light', 'details-open', 'exception'),
       { pageThrow: nth('Runtime.evaluate', /function controls/, 1) }],
+    // A kit hook that appears only when <details> opens, on a page with no kit to log an error:
+    // the hook makes it a kit page, so the interaction state runs and finds no response.
+    ['runChecks: a kit hook that appears when <details> opens requires the interaction checks', undefined,
+      page('<details id="more"><summary>More</summary><p>Hidden.</p></details>\n<script>document.getElementById("more").addEventListener("toggle", (e) => { if (!e.target.open || document.querySelector("[data-ask]")) return; const f = document.createElement("fieldset"); f.setAttribute("data-ask", "late"); e.target.append(f) })</script>'),
+      (out) => out.result === 'fail' && has(out, '390-light', 'interaction', 'response-mismatch') && !has(out, '390-light', 'initial', 'response-mismatch')
+        && out.matrix.filter((c) => c.state === 'interaction').length === 4],
   ]
   let u = 0
   for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null } = {}] of cases) {

@@ -33,9 +33,11 @@
 // probe that follows reports media-decode for a lazy image whose copy decoded to 0 px wide.
 //
 // States. `initial`; `details-open`, with every native <details> opened and the page settled
-// again; and on a Document page with kit hooks, `interaction`, probed after the interaction
-// script and the copy check below, with <details> still open. A kit page whose kit already
-// logged an error gets the cell without the script, since its response is off. `undriven` lists
+// again; and on a Document page with kit hooks in either of those states, `interaction`, probed
+// after the interaction script and the copy check below, with <details> still open. A hook that
+// first appears when <details> opens counts the same as one at load, so it needs a kit error or a
+// response the script can drive. A kit page whose kit already logged an error gets the cell
+// without the script, since its response is off. `undriven` lists
 // every control outside the kit: a button, select, textarea, input, contenteditable or tabindex
 // that no fieldset[data-ask], textarea[data-note], data-respond or data-ask-summary holds. Kit
 // controls join it, marked `kit`, only when the script did not run.
@@ -1022,7 +1024,9 @@ async function runView(browser, ctx, v, rec) {
           settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
         }
         const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken }))
-        if (state === 'initial') kitPage = got.kitPage
+        // Hooks in any measured state make it a kit page. A hook that appears when <details> opens
+        // needs a kit error, or the response and interaction checks, as much as one at load.
+        if (got.kitPage) kitPage = true
         drain()
         for (const f of got.faults) fault(f.kind, f.detail)
         // The cell is in rec before its screenshot, so a capture or write that fails keeps it.
