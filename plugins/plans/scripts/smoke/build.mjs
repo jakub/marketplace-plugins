@@ -10,7 +10,7 @@
 // check would run, then exits 1, so the check is unknown and nothing needs a real browser.
 
 import { createHash } from 'node:crypto'
-import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -291,6 +291,55 @@ export default async function ({ ROOT, check, skip }) {
         r.status === 3 && readFileSync(join(shots, '390-light-initial.png'), 'utf8') === 'new' && readFileSync(join(shots, 'kept.png'), 'utf8') === OLD,
         `status ${r.status} files ${files} ${r.stderr}`)
       check('build --shots: the staging directory is gone afterwards', files === '390-light-initial.png,kept.png,result.json', files)
+    }
+
+    // The input's directory and the shots directory are pinned when the build starts. The stand-in
+    // runs where the browser check would: it stages one PNG, then renames live/ to moved/ and sh/
+    // to sh-moved/ and puts a symlink to an outside directory at each old name. Every file must
+    // still land where the input was read from, and nothing may reach the outside directories.
+    {
+      const d = fresh()
+      const live = join(d, 'live'), moved = join(d, 'moved'), outside = join(d, 'outside')
+      const sh = join(d, 'sh'), shMoved = join(d, 'sh-moved'), shOutside = join(d, 'sh-outside')
+      for (const x of [live, outside, sh, shOutside]) mkdirSync(x)
+      writeFileSync(join(live, 'p.html'), page())
+      writeFileSync(join(outside, 'p.built.html'), OLD)
+      const chromium = fakeChromium(d, [
+        `for s in "${sh}"/.plans-shots.*.tmp; do printf new > "$s/390-light-initial.png"; done`,
+        `mv "${live}" "${moved}" && ln -s "${outside}" "${live}"`,
+        `mv "${sh}" "${shMoved}" && ln -s "${shOutside}" "${sh}"`,
+      ].join('\n'))
+      const r = run(['--json', '--shots', sh, join(live, 'p.html')], base, { env: { PLANS_CHROMIUM: chromium } })
+      const built = existsSync(join(moved, 'p.built.html')) ? readFileSync(join(moved, 'p.built.html')) : Buffer.alloc(0)
+      check('build: a directory swapped mid-build still gets the output, and the symlink target keeps its bytes',
+        r.status === 3 && sha(built) === r.json?.digest && readFileSync(join(outside, 'p.built.html'), 'utf8') === OLD && readdirSync(outside).join(',') === 'p.built.html' && temps(moved).length === 0,
+        `status ${r.status} moved ${readdirSync(moved).join(',')} outside ${readdirSync(outside).join(',')} ${r.stderr}`)
+      check('build --shots: a shots directory swapped mid-build still gets the PNGs and result.json',
+        readdirSync(shOutside).length === 0 && readdirSync(shMoved).sort().join(',') === '390-light-initial.png,result.json' && readJson(join(shMoved, 'result.json'))?.result === 'unknown',
+        `sh-moved ${readdirSync(shMoved).join(',')} sh-outside ${readdirSync(shOutside).join(',')}`)
+    }
+
+    // pinDir in memory: through /proc/self/fd where it exists, and the stat-checked path elsewhere.
+    {
+      const d = fresh()
+      mkdirSync(join(d, 'a'))
+      const viaPath = mod.pinDir(join(d, 'a'), join(d, 'no-proc'))
+      const before = viaPath.at('x')
+      renameSync(join(d, 'a'), join(d, 'b'))
+      mkdirSync(join(d, 'a'))
+      let refused = null
+      try { viaPath.at('x') } catch (e) { refused = e.code }
+      check('pinDir without /proc: a name resolves by path until the path names another directory', !viaPath.viaProc && before === join(d, 'a', 'x') && refused === 'EPINNED', `${before} ${refused}`)
+      closeSync(viaPath.fd)
+      if (existsSync('/proc/self/fd')) {
+        const pin = mod.pinDir(join(d, 'b'))
+        renameSync(join(d, 'b'), join(d, 'c'))
+        writeFileSync(pin.at('y'), 'y')
+        check('pinDir with /proc: a name resolves through the descriptor after the directory moves', pin.viaProc && readFileSync(join(d, 'c', 'y'), 'utf8') === 'y' && !existsSync(join(d, 'a', 'y')))
+        closeSync(pin.fd)
+      } else {
+        skip('pinDir with /proc', '/proc/self/fd is missing on this platform')
+      }
     }
 
     // Diff expansion.

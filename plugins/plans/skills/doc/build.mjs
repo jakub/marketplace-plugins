@@ -12,8 +12,8 @@
 //
 // Input. INPUT ends in `.html` and is a regular file, opened once with O_NOFOLLOW and O_NONBLOCK
 // and then checked with fstat, so a symlink is refused and a FIFO is refused without blocking the
-// open. Diff inputs are opened the same way. Its bytes must be strict UTF-8, and a BOM is kept as
-// text.
+// open. Diff inputs are opened the same way. INPUT's bytes must be strict UTF-8, and a BOM is
+// kept as text.
 //
 // Output. `<stem>.built.html` (Document mode) or `<stem>.inline.html` (`--inline`) in INPUT's
 // directory. A relative `--out` resolves against INPUT's directory, not the working directory.
@@ -25,6 +25,20 @@
 // bytes, because the rename replaces the name rather than writing through it. Every file the
 // builder writes, in INPUT's directory or in --shots DIR, is written this way: no existing file is
 // ever opened for writing.
+//
+// Directory identity. The builder opens INPUT's directory, and --shots DIR when given, once each
+// as an O_DIRECTORY descriptor held for the whole run, and reaches every name in them through that
+// descriptor: INPUT, the diff inputs, the output checks, each temp file and its rename, the
+// screenshots, result.json and every cleanup. Node has no openat or renameat, so on Linux the path
+// is /proc/self/fd/<fd>/<name>, used only after /proc/self/fd/<fd> shows the descriptor's device
+// and inode. The kernel resolves that path through the descriptor, so renaming the directory, or
+// putting a symlink at its old path, after the build starts changes nothing: the files land in
+// the directory INPUT was read from, and `out` keeps naming the path as given. Where
+// /proc/self/fd is missing (macOS), each name is reached by the directory's path after a stat
+// shows the same device and inode, and the step fails with EPINNED when it doesn't. A swap that
+// lands between that stat and the open, rename or unlink after it still redirects that one step:
+// that window is open on macOS only. The media the browser check serves are read by path on
+// every platform.
 //
 // Assembly. The marker is replaced, in order, by `<meta name="plans-build" content="">`, one
 // `<style data-plans-kit>` and, in Document mode only, one `<script data-plans-kit>`. Document mode
@@ -86,10 +100,11 @@
 // old target.
 //
 // The module exports its pure helpers for smoke imports and runs the CLI only when it is the entry
-// point: kitRefusals(name, text), readKit(), assemble(text, opts), KIT_FILES and the limits.
+// point: kitRefusals(name, text), readKit(), assemble(text, opts), pinDir(path, procRoot),
+// KIT_FILES and the limits.
 
 import { createHash, randomBytes } from 'node:crypto'
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -359,7 +374,8 @@ export function parseArgs(argv) {
 }
 
 // What the builder made and has not yet renamed into place: temp files and the screenshot staging
-// directory. The signal and exit handlers remove whatever is left.
+// directory, each as the path it was created through. The signal and exit handlers remove
+// whatever is left.
 const scratch = new Set()
 function dropScratch() {
   for (const p of scratch) { try { rmSync(p, { recursive: true, force: true }) } catch {} }
@@ -368,18 +384,40 @@ function dropScratch() {
 
 const hex = () => randomBytes(6).toString('hex')
 
-function syncDir(dir) {
+// A directory pinned by identity: an O_DIRECTORY descriptor held open for the rest of the run, and
+// at(name), the path that reaches one name inside it, or the directory itself with no name. Where
+// procRoot/<fd> shows the descriptor's own device and inode (Linux), that path goes through
+// procRoot/<fd>, which the kernel resolves through the descriptor. Elsewhere at() stats the
+// directory's path first, throws code EPINNED when the path names another directory now, and
+// returns the plain path. The header says what that leaves open.
+export function pinDir(path, procRoot = '/proc/self/fd') {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NONBLOCK)
+  const { dev, ino } = fstatSync(fd)
+  const proc = `${procRoot}/${fd}`
+  let viaProc = false
   try {
-    const d = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY)
-    try { fsyncSync(d) } finally { closeSync(d) }
+    const st = statSync(proc)
+    viaProc = st.dev === dev && st.ino === ino
   } catch {}
+  const at = (name = '') => {
+    if (viaProc) return name ? `${proc}/${name}` : proc
+    let st = null
+    try { st = statSync(path) } catch {}
+    if (!st || st.dev !== dev || st.ino !== ino) {
+      throw Object.assign(new Error(`${path} is no longer the directory the build started in`), { code: 'EPINNED' })
+    }
+    return name ? join(path, name) : path
+  }
+  return { fd, path, viaProc, at }
 }
 
-// Writes bytes to dir/name through a fresh `.<name>.<random hex>.tmp`, then renames it over the
-// name. An existing file there, or a hard link or symlink at that name, is replaced, never
-// written through.
+const syncDir = (dir) => { try { fsyncSync(dir.fd) } catch {} }
+
+// Writes bytes to name in a pinned directory through a fresh `.<name>.<random hex>.tmp`, then
+// renames it over the name. An existing file there, or a hard link or symlink at that name, is
+// replaced, never written through.
 function replaceFile(dir, name, bytes) {
-  const tmp = join(dir, `.${name}.${hex()}.tmp`)
+  const tmp = dir.at(`.${name}.${hex()}.tmp`)
   const fd = openSync(tmp, 'wx', 0o644)
   scratch.add(tmp)
   try {
@@ -389,7 +427,7 @@ function replaceFile(dir, name, bytes) {
     } finally {
       closeSync(fd)
     }
-    renameSync(tmp, join(dir, name))
+    renameSync(tmp, dir.at(name))
   } catch (e) {
     try { unlinkSync(tmp) } catch {}
     throw e
@@ -399,32 +437,34 @@ function replaceFile(dir, name, bytes) {
   syncDir(dir)
 }
 
-// A fresh directory inside the shots directory for the browser check's PNGs.
+// A fresh directory inside the pinned shots directory for the browser check's PNGs, pinned too.
 function stageShots(dir) {
-  const staging = join(dir, `.plans-shots.${hex()}.tmp`)
-  mkdirSync(staging, 0o700)
-  scratch.add(staging)
-  return staging
+  const name = `.plans-shots.${hex()}.tmp`
+  const path = dir.at(name)
+  mkdirSync(path, 0o700)
+  scratch.add(path)
+  return { name, path, pin: pinDir(path) }
 }
 
 // Renames every staged PNG into the shots directory, then removes the staging directory.
 function settleShots(dir, staging) {
   let names = []
-  try { names = readdirSync(staging) } catch (e) {
-    process.stderr.write(`build.mjs: cannot read the staged screenshots in ${staging} (${e.code ?? 'error'})\n`)
+  try { names = readdirSync(staging.pin.at()) } catch (e) {
+    process.stderr.write(`build.mjs: cannot read the staged screenshots in ${join(dir.path, staging.name)} (${e.code ?? 'error'})\n`)
   }
   for (const name of names) {
-    try { renameSync(join(staging, name), join(dir, name)) } catch (e) {
-      process.stderr.write(`build.mjs: cannot write ${join(dir, name)} (${e.code ?? 'error'})\n`)
+    try { renameSync(staging.pin.at(name), dir.at(name)) } catch (e) {
+      process.stderr.write(`build.mjs: cannot write ${join(dir.path, name)} (${e.code ?? 'error'})\n`)
     }
   }
-  try { rmSync(staging, { recursive: true, force: true }) } catch {}
-  scratch.delete(staging)
+  closeSync(staging.pin.fd)
+  try { rmSync(dir.at(staging.name), { recursive: true, force: true }) } catch {}
+  scratch.delete(staging.path)
   syncDir(dir)
 }
 
-// The output path for an input, or a Refusal.
-function outputPath(input, inputStat, outArg, inline) {
+// The output path for an input, or a Refusal. inDir is the input's pinned directory.
+function outputPath(input, inputStat, outArg, inline, inDir) {
   const dir = dirname(input)
   const out = outArg === null
     ? join(dir, basename(input).replace(/\.html$/, '') + (inline ? '.inline.html' : '.built.html'))
@@ -433,7 +473,7 @@ function outputPath(input, inputStat, outArg, inline) {
   if (!out.endsWith('.html')) throw new Refusal('out', `--out ${outArg} must end in .html`)
   if (out === input) throw new Refusal('out', `--out ${outArg} is the input`)
   let st = null
-  try { st = lstatSync(out) } catch (e) { if (e.code !== 'ENOENT') throw new Refusal('out', `the output ${out} cannot be checked (${e.code ?? 'error'})`) }
+  try { st = lstatSync(inDir.at(basename(out))) } catch (e) { if (e.code !== 'ENOENT') throw new Refusal('out', `the output ${out} cannot be checked (${e.code ?? 'error'})`) }
   if (st) {
     if (st.isSymbolicLink()) throw new Refusal('out', `the output ${out} is a symlink`)
     if (!st.isFile()) throw new Refusal('out', `the output ${out} is not a regular file`)
@@ -461,7 +501,7 @@ async function main(argv) {
     if (shots) {
       const receipt = Buffer.from(JSON.stringify({ buildId: result.buildId, result: result.result, reason: result.reason }, null, 2) + '\n', 'utf8')
       try { replaceFile(shots, 'result.json', receipt) } catch (e) {
-        process.stderr.write(`build.mjs: cannot write ${join(shots, 'result.json')} (${e.code ?? 'error'})\n`)
+        process.stderr.write(`build.mjs: cannot write ${join(shots.path, 'result.json')} (${e.code ?? 'error'})\n`)
       }
     }
     return code
@@ -478,17 +518,24 @@ async function main(argv) {
 
   if (opts.shots !== null) {
     const dir = resolve(dirname(input), opts.shots)
-    try { mkdirSync(dir, { recursive: true }) } catch (e) {
+    try {
+      mkdirSync(dir, { recursive: true })
+      shots = pinDir(dir)
+    } catch (e) {
       return refuse([{ kind: 'write', line: null, message: `cannot create the --shots directory ${dir} (${e.code ?? 'error'})` }])
     }
-    shots = dir
   }
 
-  let source, out, kit
+  let inDir, source, out, kit
   try {
     if (!input.endsWith('.html')) throw new Refusal('input', 'must end in .html')
-    source = readText(input, Infinity)
-    out = outputPath(input, source.stat, opts.out, opts.inline)
+    try { inDir = pinDir(dirname(input)) } catch (e) {
+      throw new Refusal('input', e.code === 'ENOENT' ? 'does not exist' : `cannot be opened (${e.code ?? 'error'})`)
+    }
+    let path
+    try { path = inDir.at(basename(input)) } catch (e) { throw new Refusal('input', `cannot be opened (${e.code})`) }
+    source = readText(path, Infinity)
+    out = outputPath(input, source.stat, opts.out, opts.inline, inDir)
     result.out = out
   } catch (e) {
     if (!(e instanceof Refusal)) throw e
@@ -499,7 +546,7 @@ async function main(argv) {
   }
 
   const dir = dirname(input)
-  const readSibling = (name) => readText(join(dir, name), DIFF_MAX, 'diff').text
+  const readSibling = (name) => readText(inDir.at(name), DIFF_MAX, 'diff').text
   const built = assemble(source.text, { inline: opts.inline, kit, readSibling })
   result.buildId = built.buildId
   result.skippedMedia = built.skippedMedia
@@ -512,14 +559,17 @@ async function main(argv) {
   if (found.reason) {
     browser = { result: 'unknown', reason: found.reason, matrix: [], checks: [{ name: 'browser', result: 'unknown', detail: `${found.reason.kind}: ${found.reason.detail}` }], copy: null, undriven: [] }
   } else {
-    let staging = null
+    let staging = null, stagedAt = null
     if (shots) {
-      try { staging = stageShots(shots) } catch (e) {
-        return refuse([{ kind: 'write', line: null, message: `cannot create a staging directory in ${shots} (${e.code ?? 'error'})` }])
+      try {
+        staging = stageShots(shots)
+        stagedAt = staging.pin.at()
+      } catch (e) {
+        return refuse([{ kind: 'write', line: null, message: `cannot create a staging directory in ${shots.path} (${e.code ?? 'error'})` }])
       }
     }
     process.stderr.write(`build.mjs: checking ${basename(out)} in ${found.path}\n`)
-    browser = await runChecks({ buffer: built.buffer, inline: opts.inline, dir, media: built.media, skippedMedia: built.skippedMedia, chromium: found.path, shots: staging })
+    browser = await runChecks({ buffer: built.buffer, inline: opts.inline, dir, media: built.media, skippedMedia: built.skippedMedia, chromium: found.path, shots: stagedAt })
     if (staging) settleShots(shots, staging)
   }
   result.matrix = browser.matrix
@@ -545,7 +595,7 @@ async function main(argv) {
   }
 
   try {
-    replaceFile(dirname(out), basename(out), built.buffer)
+    replaceFile(inDir, basename(out), built.buffer)
   } catch (e) {
     return refuse([{ kind: 'write', line: null, message: `cannot write ${out} (${e.code ?? 'error'})` }])
   }
