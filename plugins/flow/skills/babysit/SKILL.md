@@ -64,14 +64,14 @@ Use the public name of the model that wrote it, as the harness reports it, and t
 
 A round goes from "something changed" to "pushed and answered":
 
-1. **Gather** against the current head: the per-check rollup (never an exit code), new top-level comments, and every unresolved thread. Note the head SHA. Everything this round decides is about it.
+1. **Gather** against the current head: the per-check rollup (never an exit code), new top-level comments, new review bodies, and every unresolved thread. Note the head SHA. Everything this round decides is about it.
 2. **Rebase first.** If the base moved, rebase now, rerun the local tests, and push with `--force-with-lease`. A rebase after the fixes throws away the CI runs and bot reviews they earned.
 3. **Fix** every relevant finding and every red check: reproduce it locally and fix the cause, in atomic conventional commits. A timing-shaped failure in a test this PR never touched might be a base flake. Rerun the job once, and if it stays red, report it. Accepting a flake is `land`'s call.
 4. **Get it reviewed.** Before you push, get one adversarial review of the round's diff from the other family. A round that's only replies has no diff and skips this. A commit on the branch that no round of yours made, such as someone else's push or a conflict resolution, gets the same review, pinned to the head that carries it. The PR isn't clean until that review is.
 5. **Push once**, then reply to and resolve the round's threads, citing the pushed SHA.
 6. **Wait, then gather.** The round is clean when CI finished on the new head and the bots posted against it, or when a reasonable quiet stretch passed with nothing new.
 
-Fix minor findings inline. Hand a substantial round to a write seat with the worktree path: a T3 seat through `delegate_task` in T3 Code, `flow:implementer` in Claude Code, a native spawn in Codex (small enough to verify with git before the next). The cross-family review is `adversarial-review` mode: a T3 seat in T3 Code, `delegate_to_codex` from Claude Code, `delegate_to_claude` from Codex.
+Fix minor findings inline. Hand a substantial round to a write seat with the worktree path: a T3 seat through `delegate_task` in T3 Code, `flow:implementer` in Claude Code, a native spawn in Codex (small enough to verify with git before the next). The cross-family review in T3 Code is a review seat, opened with `seat.mjs open --access review` as the `delegate` skill says. Outside T3 it's `adversarial-review` mode, through `delegate_to_codex` from Claude Code or `delegate_to_claude` from Codex.
 
 Past about five fix rounds, or when fixes keep spawning findings where they land, stop. Hand the survivors to the user with your read on each.
 

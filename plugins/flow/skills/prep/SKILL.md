@@ -14,7 +14,7 @@ Prep writes no code and makes no worktree, except for the quick fix in step 3. T
 
 ## 1. Entry
 
-`42` or `#42` is issue mode. Anything else is free text. If a message mentions `#N` but is clearly about something else, ask which one they mean.
+A subject that names one issue, such as `42`, `#42` or "issue 42", is issue mode. Anything else is free text. If a message mentions `#N` but is clearly about something else, ask which one they mean.
 
 **Issue mode.** Read it with `gh issue view <N> --json number,title,body,labels,state,url,comments`. Stop if it's closed, `wontfix` or `deferred`. If it already has `ready-for-agent`, ask whether to prep it again.
 
@@ -81,7 +81,7 @@ The upstream grill skills assume other doc conventions. Give it ours:
 
 ## 6. Acceptance criteria
 
-Write a `## Acceptance Criteria` section, spelled exactly like that. The claim script finds it by that heading, so `Acceptance criteria` hands the run an empty spec.
+Write a `## Acceptance Criteria` section, spelled exactly like that. The claim script finds it by that heading, so under `Acceptance criteria` it refuses the claim with `no-acceptance-criteria`.
 
 Every criterion is testable as written, fits in one PR, and names its evidence: a link, a test CI runs, a file and line in the diff, or a committed or published capture.
 
