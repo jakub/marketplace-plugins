@@ -396,14 +396,18 @@ const CASES = [
   // url() text inside CSS strings and comments loads nothing, so it raises no css-url.
   { dir: 'good-css-strings', args: [], exit: 0 },
   // Boxes inside a horizontal scroller that can never bring them into view: a fixed box and an
-  // absolute one that escape it, and boxes past its start edge, left to right, right to left and
-  // in a scroller drawn at twice its size.
-  { dir: 'bad/clipped-in-scroller', args: [], exit: 1, fault: 'clipped', matches: [/^p#fixed /, /^p#start /, /^p#escaped /, /^p#rtl-start /, /^p#scaled-start /] },
+  // absolute one that escape it, and boxes past its start edge, left to right, right to left, in
+  // a scroller drawn at twice its size and in scrollers mirrored by a negative scale and by a
+  // transform, where the start edge is drawn on the right.
+  { dir: 'bad/clipped-in-scroller', args: [], exit: 1, fault: 'clipped', matches: [/^p#fixed /, /^p#start /, /^p#escaped /, /^p#rtl-start /, /^p#scaled-start /,
+    /^p#mirrored-start /, /^p#turned-start /] },
   // Boxes past the page's edge that their scroller does reach: end-edge overflow in a
   // right-to-left scroller, and absolute and fixed boxes whose containing block is inside it.
   { dir: 'good-scrollers', args: [], exit: 0 },
   // Scrollers drawn larger than their layout box, by a transform on the scroller or on an ancestor
-  // and by zoom, that still reach their content, and fractional widths that pixel snapping rounds.
+  // and by zoom, that still reach their content, fractional widths that pixel snapping rounds, and
+  // scrollers mirrored by a negative scale and by a transform, whose end-edge overflow is drawn on
+  // the left.
   { dir: 'good-scaled-scroller', args: [], exit: 0 },
   // Figures that fill boxes drawn at another size than their layout box, by a transform on the box
   // or on an ancestor and by zoom, larger and smaller: none is wider than its box.
@@ -413,6 +417,11 @@ const CASES = [
   { dir: 'bad/svg-wide-scaled', args: [], exit: 1, fault: 'svg-wide', matches: [
     /^svg#scaled "A strip the scaled box clips": 400 px wide in a 300 px <div>$/,
     /^svg#zoomed "A strip the zoomed box clips": 400 px wide in a 300 px <div>$/,
+  ] },
+  // A figure wider than a box mirrored and drawn at half its size by a negative scale, read at the
+  // magnitude of that scale.
+  { dir: 'bad/svg-wide-mirrored', args: [], exit: 1, fault: 'svg-wide', matches: [
+    /^svg#mirrored "A strip the mirrored box clips": 400 px wide in a 300 px <div>$/,
   ] },
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
 ]

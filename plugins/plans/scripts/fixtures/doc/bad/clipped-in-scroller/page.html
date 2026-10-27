@@ -27,6 +27,14 @@
 <div style="width: 150px; margin-bottom: 4em; overflow-x: auto; transform: scale(2); transform-origin: top left">
   <p id="scaled-start" style="width: 100px; margin: 0 0 0 -60px">This box runs past the start edge of a scroller drawn at twice its size.</p>
 </div>
+<div style="width: 300px; height: 6em; overflow-x: auto; scale: -1 1">
+  <p id="mirrored-start" style="width: 200px; margin: 0 0 0 -100px">This box runs past the start edge of a scroller its scale property mirrors.</p>
+  <p style="width: 600px; margin: 0">A wide paragraph gives the scroller a range to scroll.</p>
+</div>
+<div style="width: 300px; height: 6em; overflow-x: auto; transform: scaleX(-1)">
+  <p id="turned-start" style="width: 200px; margin: 0 0 0 -100px">This box runs past the start edge of a scroller its transform mirrors.</p>
+  <p style="width: 600px; margin: 0">A wide paragraph gives the scroller a range to scroll.</p>
+</div>
 </main>
 </body>
 </html>

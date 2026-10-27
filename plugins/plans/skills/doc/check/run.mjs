@@ -108,17 +108,21 @@
 // nearest horizontal scroller on its containing-block chain can scroll every part of it into view,
 // so a fixed or absolute box that escapes a scroller, and content past a scroller's start edge,
 // still count. The box and the scroll range are compared in the scroller's own layout px: the
-// box's viewport rect maps there through the scroller's effective zoom times the horizontal scale
-// of every transform and scale property on it and its ancestors, so a scroller drawn larger or
-// smaller than its layout box is read at the size it scrolls. svg-wide compares an SVG's drawn
-// width with its parent's clientWidth the same way, in the parent's layout px, so a figure in a box
-// drawn at another size is measured at the size that box holds it. Shadow roots are not walked by
-// any probe. In Inline mode the skipped absolute media paths raise no network or decode fault,
-// since html_preview inlines them. An SVG that is not rendered (getScreenCTM null, or no client
-// rects) is skipped by svg-wide and svg-text-small, and SVG text size is font size times the CTM's
-// vertical scale times visualViewport.scale, so a page without a viewport meta that mobile
-// emulation shrinks shows its real on-screen size. The CTM already holds every transform and zoom
-// above the text, and the computed font size holds neither, so that product needs no pxScale.
+// box's viewport rect maps there through the scroller's effective zoom times the magnitude of the
+// horizontal scale of every transform and scale property on it and its ancestors, so a scroller
+// drawn larger or smaller than its layout box is read at the size it scrolls. When that chain
+// mirrors the scroller, by an odd count of transforms whose x axis points left and negative scale
+// x values, the map runs from the right edge of its drawn box, so a mirrored scroller is read in
+// the direction it scrolls. svg-wide compares an SVG's drawn width with its parent's clientWidth
+// the same way, in the parent's layout px and through the same magnitude, so a figure in a box
+// drawn at another size, mirrored or not, is measured at the size that box holds it. Neither reads
+// the individual rotate property. Shadow roots are not walked by any probe. In Inline mode the
+// skipped absolute media paths raise no network or decode fault, since html_preview inlines them.
+// An SVG that is not rendered (getScreenCTM null, or no client rects) is skipped by svg-wide and
+// svg-text-small, and SVG text size is font size times the CTM's vertical scale times
+// visualViewport.scale, so a page without a viewport meta that mobile emulation shrinks shows its
+// real on-screen size. The CTM already holds every transform and zoom above the text, and the
+// computed font size holds neither, so that product needs no pxScale.
 // Console messages and exceptions inside workers are not captured.
 //
 // Unknown versus fail. A launch or handshake failure, a lost transport, a protocol error on a
@@ -303,20 +307,34 @@ function probe(cfg) {
     return null
   }
   // How many viewport px one of x's own layout px spans horizontally: its effective zoom, times
-  // the x axis of every transform and scale on it and on its ancestors. Layout px are what
-  // clientWidth, scrollLeft and scrollWidth measure, before zoom and transforms, while
+  // the length of the x axis of every transform and scale on it and on its ancestors. Layout px
+  // are what clientWidth, scrollLeft and scrollWidth measure, before zoom and transforms, while
   // getBoundingClientRect is after both. It is computed rather than measured, because offsetWidth
   // is snapped to whole px, which a long scroll range multiplies, and ResizeObserver reports
-  // nothing in a closed <details> or a skipped content-visibility subtree. A perspective
-  // projection is not a scale, and this reads none from it.
+  // nothing in a closed <details> or a skipped content-visibility subtree. It is a distance, never
+  // negative, so a mirrored box spans as many px as one drawn the right way round, and mirrored()
+  // gives the direction. A perspective projection is not a scale, and this reads none from it,
+  // and neither function reads the individual rotate property.
   const pxScale = (x) => {
     let s = x.currentCSSZoom
     for (let a = x; a; a = a.parentElement) {
       const cs = getComputedStyle(a)
       if (cs.transform !== 'none') { const m = new DOMMatrixReadOnly(cs.transform); s *= Math.hypot(m.m11, m.m12) }
-      if (cs.scale !== 'none') s *= parseFloat(cs.scale)
+      if (cs.scale !== 'none') s *= Math.abs(parseFloat(cs.scale))
     }
     return s
+  }
+  // Whether x's own layout x axis points left on screen, so its left border edge is drawn at the
+  // right of its box: an odd count, on it and on its ancestors, of transforms whose x axis points
+  // left (m11 under 0, as in scaleX(-1) or rotate(180deg)) and scale properties with a negative x.
+  const mirrored = (x) => {
+    let m = false
+    for (let a = x; a; a = a.parentElement) {
+      const cs = getComputedStyle(a)
+      if (cs.transform !== 'none' && new DOMMatrixReadOnly(cs.transform).m11 < 0) m = !m
+      if (cs.scale !== 'none' && parseFloat(cs.scale) < 0) m = !m
+    }
+    return m
   }
   const reachable = (el, r) => {
     for (let a = containingBlock(el); a; a = containingBlock(a)) {
@@ -324,10 +342,13 @@ function probe(cfg) {
       const cs = getComputedStyle(a)
       if ((cs.overflowX !== 'auto' && cs.overflowX !== 'scroll') || cs.display === 'inline' || cs.display === 'contents') continue
       // The range and r meet in a's own layout px: r maps there from a's left border edge on
-      // screen, through a's scale.
+      // screen, through a's scale. A mirrored a draws that edge at the right of its box, and a
+      // screen x further left is further from it.
       const scale = pxScale(a)
-      const edge = a.getBoundingClientRect().left
-      const left = (r.left - edge) / scale, right = (r.right - edge) / scale
+      const box = a.getBoundingClientRect()
+      const [left, right] = mirrored(a)
+        ? [(box.right - r.right) / scale, (box.right - r.left) / scale]
+        : [(r.left - box.left) / scale, (r.right - box.left) / scale]
       // scrollLeft counts up from 0 where the start edge is the left, and down from 0 where it is
       // the right, so the scrollable range's left end sits at start either way.
       const flipped = cs.writingMode === 'horizontal-tb' ? cs.direction === 'rtl' : /-rl$/.test(cs.writingMode)
