@@ -25,13 +25,28 @@ Two files leave the plugin cache for `~/.local/bin`, and each has its own update
 
 Adding a plugin: `plugins/<name>/` with a `.claude-plugin/plugin.json`, plus an entry in the manifest's `plugins` array with `"source": "./plugins/<name>"`. Plugins don't reach into each other's files. Flow's prep stage uses `grill-with-docs` when it is installed and grills inline otherwise, and that one-way, soft dependency is the model.
 
+## Voice
+
+Every skill, the charter and the agent files are written the way tstack writes them: one engineer talking to a capable colleague who just walked in. These rules come from reading all nine tstack skills (t3dotgg/tstack at 7de017b).
+
+1. **Open with the situation, not the mechanism.** The first paragraph says why this exists and what the user wants. "If the user triggered this, they aren't watching." Mechanism lives in the script header that implements it.
+2. **The description is the trigger.** Say what it does in one clause and when to use it in another. Gate a stage with one plain clause ("Use only when the user asks to land a specific PR"), not a paragraph of MUST.
+3. **Talk to "you".** Use contractions. Say "the user". A short aside is fine when it carries a fact ("Review bots are useful, even when they're wrong").
+4. **Rule, then the reason, in the same breath.** "Never run two watchers on one PR. Every watcher on a GitHub account shares one rate limit." No reason, no rule.
+5. **Route hosts inline, T3 first.** Where hosts differ, write one bullet each: **In T3 Code**, **In Claude Code**, **In Codex**. Where they don't, say it once. Name tools bare (`delegate_task`, `watch_pull_request`), and give the prefix once per skill if it matters.
+6. **Show judgment with BAD and GOOD.** When the point is taste (a criterion, a reply, a PR title), show one ❌ and one ✅ instead of describing them.
+7. **Be exact where it matters.** Exit codes, flags, JSON fields, command lines and numbers stay exact. Everything else stays short.
+8. **Call other skills by name.** "Hand it to `babysit`." A skill never restates another skill's steps.
+9. **Fight scope.** Say so where review loops can grow the work: fix the case that happened, decline the rest with a reason.
+10. **Reference material leaves the skill.** Error catalogs, protocol fields and version notes go in a `reference.md` next to the skill, read on demand.
+
 ## flow
 
 `charter/charter.md` is hand-authored by jakub and is the source of truth: one file, one marker line, orchestrator doctrine above it and seat rules below. `hooks/scripts/inject-charter.mjs` prints the whole file at SessionStart and the seat half at SubagentStart on both hosts, and `delegate/runner.mjs` gives every delegated job the same seat bytes as its instructions. **The charter stays under 9,500 characters.** `smoke-charter.mjs` fails above that, and the injector refuses above 9,800 rather than let Claude Code swap the charter for a 2KB preview. The charter sits close to the cap, so an edit that adds a line cuts one. `skills/rank-models/` regenerates the `## Models` section; follow it for a new model rather than scoring one by hand.
 
 Doctrine lives in two places and no more: the charter holds what must be true in every session, and the stage bodies hold the steps a stage executes. If something appears in both, delete one copy.
 
-Each stage (`skills/prep/`, `skills/issue/`, `skills/babysit/`, `skills/land/`) is one `SKILL.md`: a host-neutral body that names no model, then `## Host mechanics` with exactly `### Claude Code` and `### Codex`. Stages are model-invocable on both hosts and gated by the description's MUST clause, so a `SKILL.md` sets no `disable-model-invocation` and its `agents/openai.yaml` carries display metadata only. **No command alias may share a stage's name**: Claude Code resolves commands and skills in one namespace, so the alias would collide with the skill.
+Each stage (`skills/prep/`, `skills/issue/`, `skills/babysit/`, `skills/land/`) is one `SKILL.md` whose body names no model. Where the hosts differ, one bullet each says **In T3 Code**, **In Claude Code** and **In Codex**, T3 first, and where they don't, the body says it once. There is no per-host section. Stages are model-invocable on both hosts and gated by the description's "Use only when" clause, so a `SKILL.md` sets no `disable-model-invocation` and its `agents/openai.yaml` carries display metadata and a `default_prompt` only. **No command alias may share a stage's name**: Claude Code resolves commands and skills in one namespace, so the alias would collide with the skill.
 
 The `tools:` list on an agent definition is load-bearing. `implementer` has no Agent tool, so it cannot spawn. `reader` has no Edit, Write or Agent tool, and no Skill tool either, because whether a skill's `allowed-tools` can widen a seat is untested. `bridge` holds ToolSearch and every delegate tool except `delegation_steer`, and its frontmatter fixes its model and effort.
 
@@ -69,7 +84,7 @@ The timers find flow through `~/.claude/plugins/installed_plugins.json`, which i
 
 ### Delegation
 
-`delegate/` is eight files on Node built-ins. They speak `codex app-server --stdio` and the stream-json control channel of `claude -p` by hand, and serve five tools on each host. `docs/DELEGATION.md` is the maintenance record, and its `## Contracts that bind an edit` section is the list to read before an edit. `skills/delegate/SKILL.md` is what a session reads before its first call, and it lists the provider methods and flags the server depends on with the CLI versions they were read from. `delegation_doctor` is the protocol drift check: it runs each transport's `check`, the job's handshake with no turn, so a CLI release that changes a handshake step fails every stage preflight with a typed kind. A new step before the prompt joins `check` in the same commit. The doctor cannot reach what runs only inside a turn, so re-check those methods and flags on every CLI bump, since both CLIs ship weekly. `.mcp.json` sets no `cwd`, because the directory Codex starts the dispatcher in is the server's only root there.
+`delegate/` is eight files on Node built-ins. They speak `codex app-server --stdio` and the stream-json control channel of `claude -p` by hand, and serve five tools on each host. `docs/DELEGATION.md` is the maintenance record, and its `## Contracts that bind an edit` section is the list to read before an edit. `skills/delegate/SKILL.md` is what a session reads before its first call, and `skills/delegate/reference.md` beside it lists the provider methods and flags the server depends on, with the CLI versions they were read from. `delegation_doctor` is the protocol drift check: it runs each transport's `check`, the job's handshake with no turn, so a CLI release that changes a handshake step fails every stage preflight with a typed kind. A new step before the prompt joins `check` in the same commit. The doctor cannot reach what runs only inside a turn, so re-check those methods and flags on every CLI bump, since both CLIs ship weekly. `.mcp.json` sets no `cwd`, because the directory Codex starts the dispatcher in is the server's only root there.
 
 ## gripe
 

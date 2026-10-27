@@ -103,7 +103,7 @@ The server speaks the other family's session protocol by hand, `codex app-server
 
 `land` (`/flow:land`) is the human gate and the only merge path. One executor reads the live PR state (every check, the base branch's known flakes, every review thread, stacking, how far the head is behind the default branch, auto-merge arming) and squash-merges pinned to the head the stage read only when nothing stops it. When something does, it lists every stop at once, and the stage acts on each and runs it again. Then the stage closes the linked issues, cleans up, and surveys what is up next. In a repo with a committed `.flow/managed` marker, a hook denies a raw merge command and names that executor.
 
-All four run on Codex too. Each stage is one skill: a host-neutral body, then a `## Host mechanics` section holding only what differs between the hosts. On Codex, open the canonical checkout and name the stage, for example "run issue #42".
+All four run on Codex too. Each stage is one skill, and where the hosts differ it says so inline, one bullet per host. On Codex, open the canonical checkout and name the stage, for example "run issue #42".
 
 Two timers run in the background once the flow skill's `setup` has installed them: a nightly lint that keeps labels, worktrees and branches honest, and a weekly doc sweep that reports doc drift. Both are headless `claude -p` sessions whose one shell command is `lint-actions.mjs`. The sweep may run only its read-only `survey`, so it changes nothing.
 

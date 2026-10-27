@@ -1,3 +1,4 @@
 interface:
   display_name: "Prep Stage"
   short_description: "Design-harden one issue or idea into ready-for-agent"
+  default_prompt: "Use $flow:prep to turn this idea, or issue #<number>, into a ready-for-agent issue."

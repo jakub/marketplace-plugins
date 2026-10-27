@@ -1,3 +1,4 @@
 interface:
   display_name: "Babysit Stage"
   short_description: "Watch one open PR through external review and CI to green, then hand it to the land stage"
+  default_prompt: "Use $flow:babysit to watch this PR until it's ready to land."

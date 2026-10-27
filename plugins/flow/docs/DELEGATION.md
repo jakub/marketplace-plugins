@@ -1,6 +1,6 @@
 # Cross-family delegation
 
-This is the maintenance record for `plugins/flow/delegate/`. To call the tools, read `skills/delegate/SKILL.md` instead. Nothing here repeats it.
+This is the maintenance record for `plugins/flow/delegate/`. To call the tools, read `skills/delegate/SKILL.md` instead, and `reference.md` beside it for the protocol detail. Nothing here repeats it.
 
 A T3 seat is not a delegated job, and this file does not govern it. `skills/delegate/SKILL.md` covers it under `## T3 seats`. A T3 seat runs inside T3 Code with flow's hooks, the user's config, their credentials and the network, and those hooks are its only guard. A delegated job is the reverse: no hook runs in it, and its session's read-back is its confinement.
 

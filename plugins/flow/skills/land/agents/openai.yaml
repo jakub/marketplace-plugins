@@ -1,3 +1,4 @@
 interface:
   display_name: "Land Stage"
   short_description: "Land one named PR through the flow gates"
+  default_prompt: "Use $flow:land to land PR #<number>."
