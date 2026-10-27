@@ -200,6 +200,22 @@ export default async function ({ ROOT, check, skip }) {
     refuse('a viewport meta without width=device-width', { input: page({ viewport: '<meta name="viewport" content="initial-scale=1">' }), kind: 'viewport' })
     refuse('a viewport meta with width=980', { input: page({ viewport: '<meta name="viewport" content="width=980">' }), kind: 'viewport' })
     refuse('a viewport meta inside a <template>', { input: page({ viewport: '<template><meta name="viewport" content="width=device-width"></template>' }), kind: 'viewport' })
+    // Chromium applies only the last viewport meta and the last width in one, so each of these lays
+    // the 390 px view out 980 px wide (measured in Chromium 155). The fault names the conflict.
+    {
+      const r = refuse('a second viewport meta with width=980', { input: page({ viewport: '<meta name="viewport" content="width=device-width"><meta name="viewport" content="width=980">' }), kind: 'viewport' })
+      check('the second-meta fault names the conflict', /2 viewport metas: Chromium applies only the last one/.test(r.stderr), r.stderr)
+      const s = refuse('width=980 after width=device-width in one viewport meta', { input: page({ viewport: '<meta name="viewport" content="width=device-width, width=980">' }), kind: 'viewport' })
+      check('the in-content fault names the conflict', /sets width=980 as well as width=device-width, and Chromium applies the last width/.test(s.stderr), s.stderr)
+    }
+    for (const [what, viewport] of [
+      ['a viewport name with spaces, which Chromium ignores', '<meta name=" viewport " content="width=device-width">'],
+      ['a viewport key with no value', '<meta name="viewport" content="width=device-width initial-scale">'],
+      ['a loose viewport list Chromium reads as another width', '<meta name="viewport" content="width=device-width; foo width x=980">'],
+      ['a viewport initial-scale below 1', '<meta name="viewport" content="width=device-width, initial-scale=0.5">'],
+      ['a viewport maximum-scale below 1', '<meta name="viewport" content="width=device-width, maximum-scale=0.5">'],
+      ['a viewport content with a named character reference', '<meta name="viewport" content="width=device-width&comma; initial-scale=1">'],
+    ]) refuse(what, { input: page({ viewport }), kind: 'viewport' })
 
     // Media.
     refuse('a media src holding an unknown named entity', { input: page({ body: '<img src="a&nbsp;b.png" alt="">' }), kind: 'media' })
@@ -379,6 +395,10 @@ export default async function ({ ROOT, check, skip }) {
       ['a viewport meta with its keys reordered', '<meta name="viewport" content="initial-scale=1, width=device-width">', []],
       ['a viewport meta with spaces around =', '<meta name="viewport" content="width = device-width">', []],
       ['an upper-case viewport name and value', '<meta name="Viewport" content="WIDTH=DEVICE-WIDTH">', []],
+      ['a viewport meta with extra directives', '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, minimum-scale=0.5, user-scalable=no, viewport-fit=cover">', []],
+      ['a viewport meta with semicolons', '<meta name="viewport" content="width=device-width;initial-scale=1">', []],
+      ['a second viewport meta inside a <template>', `${VIEWPORT}<template><meta name="viewport" content="width=980"></template>`, []],
+      ['an Inline page with two viewport metas', '<meta name="viewport" content="width=device-width"><meta name="viewport" content="width=980">', ['--inline']],
     ]) {
       const d = fresh()
       writeFileSync(join(d, 'p.html'), page({ viewport }))

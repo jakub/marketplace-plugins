@@ -72,11 +72,18 @@
 //     524,288 bytes or not UTF-8. Each distinct file is read once.
 //   - a media `src` on img, video, audio or source holding a named entity other than the five the
 //     scanner decodes
-//   - in Document mode, no `<meta name="viewport">` outside a template whose content sets
-//     `width=device-width` (kind `viewport`). Without it a phone, and the 390 px views, lay the
-//     page out 980 px wide, so page-overflow and clipped mean little there. The Plans viewer
-//     serves a Document top-level, so a reader's phone sees the same. Inline mode doesn't need it,
-//     because T3 renders an Inline page in an iframe.
+//   - in Document mode, a viewport that may not lay the page out at the device's width (kind
+//     `viewport`). Without width=device-width a phone, and the 390 px views, lay the page out 980 px
+//     wide, so page-overflow and clipped mean little there. The Plans viewer serves a Document
+//     top-level, so a reader's phone sees the same. Inline mode doesn't need it, because T3 renders
+//     an Inline page in an iframe. The rule is static and strict, because Chromium applies only the
+//     last viewport meta and the last value of each key, and reads a list that isn't plain pairs
+//     loosely (`width=device-width; foo width x=980` lays out 980 px wide). So the page needs
+//     exactly one `<meta name="viewport">` outside a template, its name matched case-insensitively
+//     but untrimmed as Chromium matches it, whose content is `key=value` pairs separated by spaces,
+//     commas or semicolons, with at least one width, every width `device-width`, and any
+//     initial-scale or maximum-scale a number of at least 1. A smaller scale widens the layout too:
+//     0.5 lays the page out 780 px wide. Measured in Chromium 155 at 390 px, 2026-10-27.
 //   - in Inline mode, any kit hook (data-ask, data-note, data-ask-summary, data-respond), or
 //     output over 500,000 UTF-8 bytes
 //   - SVG or MathML content check/scan.mjs can't follow (kind `foreign`): markup inside an SVG
@@ -141,9 +148,11 @@ export const KIT_FILES = {
 }
 const USAGE = 'usage: build.mjs [--inline] [--out FILE] [--shots DIR] [--json] [--] INPUT'
 const MEDIA_TAGS = new Set(['img', 'video', 'audio', 'source'])
-// width=device-width as one key in a viewport content list, which Chromium reads case-insensitively
-// with commas, semicolons or spaces between keys and spaces allowed around `=`.
-const DEVICE_WIDTH = /(?:^|[\s,;])width\s*=\s*device-width(?=$|[\s,;])/i
+// A viewport content list of plain key=value pairs, with spaces, commas or semicolons between
+// pairs and spaces around `=`, as Chromium separates them. Anything else is refused, not guessed.
+const VIEWPORT_PAIRS = /^[ \t\n\r,;]*(?:[^ \t\n\r,;=]+[ \t\n\r]*=[ \t\n\r]*[^ \t\n\r,;=]+(?:[ \t\n\r,;]+|$))+$/
+const VIEWPORT_PAIR = /([^ \t\n\r,;=]+)[ \t\n\r]*=[ \t\n\r]*([^ \t\n\r,;=]+)/g
+const SCALE = /^(?:\d+\.?\d*|\.\d+)$/
 const VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1">'
 const RAW_NAMES = { script: '<script>', style: '<style>', title: '<title>', textarea: '<textarea>' }
 
@@ -265,11 +274,27 @@ export function assemble(text, { inline = false, kit, readSibling }) {
     }
   }
 
-  // The viewport, in Document mode.
+  // The viewport, in Document mode. The header gives the rule and why it is strict.
   if (!inline) {
-    const fits = tokens.some((t) => t.type === 'start' && t.name === 'meta' && !t.template &&
-      attr(t, 'name')?.value.trim().toLowerCase() === 'viewport' && DEVICE_WIDTH.test(attr(t, 'content')?.value ?? ''))
-    if (!fits) fault('viewport', null, `no viewport meta with width=device-width: put ${VIEWPORT_META} in <head>, or the page lays out 980 px wide on a phone`)
+    const metas = tokens.filter((t) => t.type === 'start' && t.name === 'meta' && !t.template && attr(t, 'name')?.value.toLowerCase() === 'viewport')
+    if (metas.length === 0) fault('viewport', null, `no viewport meta with width=device-width: put ${VIEWPORT_META} in <head>, or the page lays out 980 px wide on a phone`)
+    if (metas.length > 1) fault('viewport', metas[1].start, `${metas.length} viewport metas: Chromium applies only the last one, so a later meta can override width=device-width. Keep one: ${VIEWPORT_META}`)
+    if (metas.length === 1) {
+      const t = metas[0], content = attr(t, 'content')
+      const say = (m) => fault('viewport', t.start, `viewport content "${content?.value ?? ''}" ${m}: write ${VIEWPORT_META}, or the page may lay out wider than a phone's screen`)
+      if (content?.odd) say('holds a character reference the builder can\'t decode exactly')
+      else if (!VIEWPORT_PAIRS.test(content?.value ?? '')) say('is not a plain list of key=value pairs, and Chromium reads a loose list in ways that can set another width')
+      else {
+        const pairs = [...content.value.matchAll(VIEWPORT_PAIR)].map(([, k, v]) => [k.toLowerCase(), v])
+        const widths = pairs.filter(([k]) => k === 'width').map(([, v]) => v)
+        const others = widths.filter((v) => v.toLowerCase() !== 'device-width')
+        if (widths.length === 0) say('sets no width=device-width')
+        else if (others.length) say(`sets ${others.map((v) => `width=${v}`).join(' and ')}${others.length < widths.length ? ' as well as width=device-width, and Chromium applies the last width' : ', not width=device-width'}`)
+        for (const [k, v] of pairs) {
+          if ((k === 'initial-scale' || k === 'maximum-scale') && !(SCALE.test(v) && Number(v) >= 1)) say(`sets ${k}=${v}, and a scale that is not a number of at least 1 widens the layout`)
+        }
+      }
+    }
   }
 
   // Start tags: built-code markers, kit hooks, media and diff placeholders.
