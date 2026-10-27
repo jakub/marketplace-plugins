@@ -26,7 +26,11 @@
 //
 // Settle. Page.loadEventFired, then one evaluate that awaits document.fonts.ready, every eager
 // image (complete, or a load or error event), every video and audio element with a source
-// (readyState 1 or more, or an error), and two requestAnimationFrame calls, capped at 10 s.
+// (readyState 1 or more, or an error), and two requestAnimationFrame calls, capped at 10 s. A
+// loading="lazy" image that is not complete never starts loading far from the viewport or while
+// not rendered, and decode() on it never settles, so settle loads a detached eager copy of it
+// (new Image() with its crossOrigin and src, the page's markup untouched) and awaits that. The
+// probe that follows reports media-decode for a lazy image whose copy decoded to 0 px wide.
 //
 // States. `initial`; `details-open`, with every native <details> opened and the page settled
 // again; and on a Document page with kit hooks, `interaction`, probed after the interaction
@@ -180,11 +184,24 @@ const clip = (s, n = 300) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
 // Each of these is serialized with toString and run in the isolated world, so it may use only
 // its own arguments and the page's DOM.
 
-async function settle(capMs) {
+// Returns { lazyBroken }, the src URLs of lazy images whose eager copy decoded to 0 px wide.
+async function settle(capMs, skipped) {
   const once = (el, names, capture = false) => new Promise((r) => { for (const n of names) el.addEventListener(n, r, { once: true, capture }) })
   const waits = [document.fonts.ready]
+  // A lazy image far from the viewport, or not rendered, never starts loading, and decode() on it
+  // never settles. Each one not yet complete is loaded through a detached eager copy with its
+  // crossOrigin and src, which leaves the page's own markup untouched.
+  const copies = []
   for (const img of document.images) {
-    if (!img.complete && img.loading !== 'lazy') waits.push(once(img, ['load', 'error']))
+    if (img.complete) continue
+    if (img.loading !== 'lazy') { waits.push(once(img, ['load', 'error'])); continue }
+    const src = img.getAttribute('src')
+    if (src !== null && skipped.includes(src)) continue
+    const copy = new Image()
+    copy.crossOrigin = img.crossOrigin
+    copy.src = img.src
+    copies.push(copy)
+    waits.push(once(copy, ['load', 'error']))
   }
   for (const m of document.querySelectorAll('video, audio')) {
     if (m.readyState >= 1 || m.error || m.networkState === 0 || m.networkState === 3) continue
@@ -192,7 +209,7 @@ async function settle(capMs) {
   }
   await Promise.race([Promise.all(waits), new Promise((r) => setTimeout(r, capMs))])
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
-  return true
+  return { lazyBroken: copies.filter((c) => c.complete && c.naturalWidth === 0).map((c) => c.src) }
 }
 
 function openDetails() {
@@ -224,6 +241,7 @@ function probe(cfg) {
     const src = img.getAttribute('src')
     if (src !== null && cfg.skipped.includes(src)) continue
     if (img.complete && img.naturalWidth === 0 && (img.currentSrc || img.src)) add('media-decode', img, `${src ?? img.currentSrc} decoded to 0 px wide`)
+    else if (!img.complete && img.loading === 'lazy' && cfg.lazyBroken.includes(img.src)) add('media-decode', img, `${src} decoded to 0 px wide, loaded eagerly since it is loading="lazy"`)
   }
   for (const m of document.querySelectorAll('video, audio')) {
     if (m.error) add('media-decode', m, `MediaError code ${m.error.code}${m.error.message ? ` (${m.error.message})` : ''}`)
@@ -852,7 +870,7 @@ async function runView(browser, ctx, v, rec) {
       if (nav.errorText) throw new CdpError('protocol', `Page.navigate to the viewer double failed: ${nav.errorText}`)
       await loaded
       ;({ executionContextId: world } = await send('Page.createIsolatedWorld', { frameId: nav.frameId, worldName: 'plans-check' }))
-      await evaluate(call(settle, SETTLE_MS))
+      let settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
 
       const add = eventFaults(ctx.origin, ctx.skipped, ctx.refused)
       let seen = 0
@@ -863,7 +881,7 @@ async function runView(browser, ctx, v, rec) {
         const push = (kind, detail) => faults.push({ kind, detail })
         if (state === 'details-open') {
           await evaluate(call(openDetails))
-          await evaluate(call(settle, SETTLE_MS))
+          settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
         }
         if (state === INTERACTION) {
           if (ctx.inline || !kitPage) break
@@ -876,9 +894,9 @@ async function runView(browser, ctx, v, rec) {
             driven = got.driven
           }
           await evaluate(call(scrollHome))
-          await evaluate(call(settle, SETTLE_MS))
+          settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
         }
-        const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList }))
+        const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken }))
         if (state === 'initial') kitPage = got.kitPage
         for (; seen < events.length; seen++) add(events[seen], push)
         faults.push(...got.faults)

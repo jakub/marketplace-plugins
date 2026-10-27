@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: media-decode, lazy images far down</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Lazy decode</h1>
+<p>Both images below are loading="lazy" and sit far below the first screen, so the browser never starts loading them on its own. One is a data URL whose bytes are not a PNG, the other a sibling whose bytes are not a PNG.</p>
+<div style="height:4000px"></div>
+<img loading="lazy" src="data:image/png;base64,AAAA" alt="A broken data URL">
+<img loading="lazy" src="broken.png" alt="A broken sibling">
+</main>
+</body>
+</html>

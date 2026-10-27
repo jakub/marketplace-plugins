@@ -381,6 +381,13 @@ const CASES = [
   { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: ['360', '728'] },
   ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind })),
   ...CSS_URL.map(([dir, matches]) => ({ dir: `bad/${dir}`, args: [], exit: 1, fault: 'css-url', matches })),
+  // Two broken loading="lazy" images far down the page, which the browser never loads by itself.
+  { dir: 'bad/media-decode-lazy', args: [], exit: 1, fault: 'media-decode', matches: [
+    /^img: data:image\/png;base64,AAAA decoded to 0 px wide, loaded eagerly since it is loading="lazy"$/,
+    /^img: broken\.png decoded to 0 px wide, loaded eagerly since it is loading="lazy"$/,
+  ] },
+  // Lazy images that decode, far down, inside a closed <details> and never rendered, all pass.
+  { dir: 'good-lazy', args: [], exit: 0 },
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
 ]
 
