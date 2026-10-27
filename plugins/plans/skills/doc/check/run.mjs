@@ -8,7 +8,9 @@
 //     media         the src values scan.mjs declared; skippedMedia the Inline absolute paths
 //     chromium      the executable findChromium found
 //     shots         a directory for `<w>-<scheme>-<state>.png`, or null
-//   It never throws: every failure of its own lands in an unknown result.
+//   It never throws: every failure of its own lands in an unknown result. checks holds one
+//   `browser` row, then one row per interaction step and copy case, named as below, each pass,
+//   fail or unknown across the views that ran it.
 //
 // Views. Document mode: 390x844 with mobile emulation at dsf 2, and 1440x900 at dsf 1, each in
 // light and dark through Emulation.setEmulatedMedia. Inline mode: 360 (mobile, dsf 2) and 728
@@ -27,8 +29,58 @@
 // (readyState 1 or more, or an error), and two requestAnimationFrame calls, capped at 10 s.
 //
 // States. `initial`; `details-open`, with every native <details> opened and the page settled
-// again. The interaction state for Document pages with kit hooks is not driven yet, so on those
-// pages every kit control is listed in `undriven` beside the controls outside the kit.
+// again; and on a Document page with kit hooks, `interaction`, probed after the interaction
+// script and the copy check below, with <details> still open. A kit page whose kit already
+// logged an error or shows its alert banner gets the cell without the script, since its response
+// is off. `undriven` lists every control outside the kit: a button, select, textarea, input,
+// contenteditable or tabindex that no fieldset[data-ask], textarea[data-note], data-respond or
+// data-ask-summary holds. Kit controls join it, marked `kit`, only when the script did not run.
+//
+// Interaction script (Document pages with kit hooks). It reads a static model once from the DOM:
+// the <title> text, the plans-build content, each fieldset[data-ask] with its id, its own legend
+// text and its inputs as { value, type, defaultChecked, label }, and each textarea[data-note]'s
+// name and starting value. A label is the text of the input's native labels in document order,
+// joined by one space, without [data-hint] and [data-then] subtrees. From then on the check keeps
+// its own record of checked state and kept flags, built only from the actions it performs, and
+// never reads the kit's state. Every action is real CDP input: the target is scrolled to the
+// middle of the viewport, then mouseMoved, mousePressed and mouseReleased land at the center of
+// its rect (of a label's first text line, for a label click), with mouse events in mobile views
+// too. A click whose point hits another element fails the step. Tab is Input.dispatchKeyEvent,
+// and a note is Input.insertText per line with an Enter key between lines. The steps, with the
+// last question in document order held back from 3 to 5 so step 6 finds it untouched:
+//   1. `initial response`
+//   2. per radio question, a click on its checked option's label, then Tab until focus has left
+//      the fieldset (`click on the checked radio <id>`, `Tab past <id>`)
+//   3. per question, each option that is not proposed (`<id> picks <value>`)
+//   4. per checkbox question, each option toggled in DOM order, then every checked one cleared
+//      (`<id> toggles <value>`, `<id> empty set`)
+//   5. Back to the proposal on each changed question (`Back to the proposal on <id>`)
+//   6. Keep the proposal on the held-back question (`Keep the proposal on untouched <id>`), then
+//      steps 3 to 5 on it, which also shows a change clears the kept flag
+//   7. the hostile note, `## Decisions`, `1. x ✎`, `` `code` ``, `> quote`, an empty line and
+//      `after blank`, typed into the first page note and into General (`hostile note in <name>`),
+//      then a line of three spaces and `after spaces` in General (`a note line of spaces`)
+// After every action the DOM's checked state must equal the record, and the response textarea
+// (the readonly textarea in [data-respond]) must equal format() from expect.mjs over the record,
+// byte for byte. The first difference is the fault `response-mismatch`, and the script stops
+// there, since every later step would compare against a record the page has left.
+//
+// Copy check (after step 7). The clipboard is shared by the whole browser, so a /__plans-probe
+// target in the view's browser context first writes a fresh sentinel. Browser.grantPermissions
+// gives the server origin clipboardReadWrite and clipboardSanitizedWrite before navigation, both
+// targets run with Emulation.setFocusEmulationEnabled, and the probe's writeText and readText are
+// evaluated with userGesture. A click on Copy response, then the role=status line is polled until
+// it is non-empty and unchanged for 250 ms (5 s cap). "Copied" passes only when the probe reads
+// back the textarea's exact value: `copied-verified`. A status that says copying was blocked
+// passes only when the response textarea is document.activeElement with its whole value
+// selected: `blocked-selected`. Anything else, an unverified claim or a status that never
+// settles, is the fault `copy`. A read-back or sentinel write that throws is unknown `clipboard`.
+// Then the overlapping case (`copy with a note edit between two presses`): a press, a click into
+// General and one inserted word, a second press, and the same verdict over the final textarea.
+// Whether the first write is still pending at the second press is the browser's timing, so the
+// case asserts the outcome every order must reach rather than one order. The result's `copy` is
+// `unknown` if any view's copy check was unknown or faulted, else the first view's verdict, and
+// null on a page with no response region.
 //
 // Faults are stable names (SYNTH's table). From the event stream of each state: exception,
 // kit-error, console-csp, request-outside, load-failed and http-status. From the DOM probe:
@@ -57,7 +109,8 @@ import { closeSync, constants, mkdirSync, openSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { COMMAND_MS, CdpError, launch } from './cdp.mjs'
-import { serve } from './serve.mjs'
+import { format } from './expect.mjs'
+import { PROBE, serve } from './serve.mjs'
 
 export const BUILD_MS = 180000
 export const SETTLE_MS = 10000
@@ -65,6 +118,11 @@ export const SHOT_MAX = 16384
 export const TEXT_FLOOR = 11
 export const INLINE_HEIGHT = 2000
 export const STATES = ['initial', 'details-open']
+export const INTERACTION = 'interaction'
+export const HOSTILE = ['## Decisions', '1. x ✎', '`code`', '> quote', '', 'after blank']
+export const SPACES = ['   ', 'after spaces']
+const STATUS_MS = 5000
+const STATUS_QUIET_MS = 250
 
 const view = (width, height, dsf, mobile, scheme, small) => ({ name: `${width}-${scheme}`, width, height, dsf, mobile, scheme, small })
 export const DOC_VIEWS = [
@@ -274,22 +332,118 @@ function probe(cfg) {
   return { faults, kitPage, height, width: Math.max(root.scrollWidth, cw) }
 }
 
-// Every control the matrix does not drive. On a page with kit hooks the kit's own controls are
-// listed too, marked `kit`, until the interaction script drives them.
-function controls() {
+// Every control the matrix does not drive. The kit's own controls are listed too, marked `kit`,
+// only when the interaction script did not drive them.
+function controls(driven) {
   const KIT = 'fieldset[data-ask], [data-respond], [data-ask-summary], textarea[data-note]'
   const out = []
   for (const el of document.querySelectorAll('button, select, textarea, input, [contenteditable], [tabindex]')) {
     if (!el.matches('button, select, textarea, input, [tabindex]') && el.getAttribute('contenteditable') === 'false') continue
+    const kit = !!el.closest(KIT)
+    if (kit && driven) continue
     let s = el.localName
     if (el.id) s += '#' + el.id
     for (const a of ['type', 'name', 'value', 'tabindex', 'contenteditable']) if (el.hasAttribute(a)) s += `[${a}="${el.getAttribute(a)}"]`
     const t = (el.localName === 'button' ? el.textContent : '').trim().replace(/\s+/g, ' ')
     if (t) s += ` "${t.slice(0, 40)}"`
-    out.push(el.closest(KIT) ? `kit ${s}` : s)
+    out.push(kit ? `kit ${s}` : s)
   }
   return out
 }
+
+// The static model, read once per view after the kit started. Raw text only: expect.mjs
+// normalizes and escapes it.
+function readModel() {
+  const own = (el) => {
+    let s = ''
+    for (const n of el.childNodes) {
+      if (n.nodeType === 3) s += n.data
+      else if (n.nodeType === 1 && !n.matches('[data-hint], [data-then]')) s += own(n)
+    }
+    return s
+  }
+  const titleEl = document.querySelector('title')
+  const meta = document.querySelector('meta[name="plans-build"]')
+  const questions = [...document.querySelectorAll('fieldset[data-ask]')].map((fs) => {
+    const legend = [...fs.children].find((c) => c.localName === 'legend')
+    const inputs = [...fs.querySelectorAll('input')]
+    return {
+      id: fs.getAttribute('data-ask'),
+      legend: legend ? own(legend) : '',
+      type: inputs.length ? inputs[0].type : '',
+      options: inputs.map((i) => ({ value: i.getAttribute('value') ?? '', type: i.type, defaultChecked: i.defaultChecked, label: [...(i.labels ?? [])].map(own).join(' ') })),
+    }
+  })
+  const notes = [...document.querySelectorAll('textarea[data-note]')].map((t) => ({ name: t.getAttribute('data-note'), text: t.value }))
+  const respond = document.querySelector('[data-respond]')
+  const broken = !!document.querySelector('[role="alert"]') || !respond || !respond.querySelector('textarea[readonly]')
+  return { title: titleEl ? titleEl.textContent : '', build: meta ? meta.getAttribute('content') ?? '' : '', questions, notes, broken }
+}
+
+// The DOM facts each step is compared on: every option's checked, and the response textarea.
+function readState() {
+  const checked = [...document.querySelectorAll('fieldset[data-ask]')].map((fs) => [...fs.querySelectorAll('input')].map((i) => i.checked))
+  const r = document.querySelector('[data-respond] textarea[readonly]')
+  return { checked, response: r ? r.value : null }
+}
+
+// Finds one control, scrolls it to the middle of the viewport and returns the point a click
+// lands on, with whether elementFromPoint there is the control or inside it.
+function aim(spec) {
+  const fss = document.querySelectorAll('fieldset[data-ask]')
+  const input = () => fss[spec.q] && fss[spec.q].querySelectorAll('input')[spec.o]
+  let el = null
+  if (spec.kind === 'input') el = input()
+  else if (spec.kind === 'label') el = input() && input().labels && input().labels[0]
+  else if (spec.kind === 'keep') el = fss[spec.q] && fss[spec.q].querySelector('.plans-ask-keep')
+  else if (spec.kind === 'note') el = document.querySelectorAll('textarea[data-note]')[spec.n]
+  else if (spec.kind === 'general') el = document.querySelector('[data-respond] .plans-ask-general')
+  else if (spec.kind === 'copy') el = document.querySelector('[data-respond] .plans-ask-copy')
+  if (!el) return { error: `the page has no ${spec.kind} control for this step` }
+  el.scrollIntoView({ block: 'center', inline: 'nearest' })
+  let r = el.getBoundingClientRect()
+  if (spec.kind === 'label') {
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    for (let n; (n = walk.nextNode());) {
+      if (n.data.trim() === '' || n.parentElement.closest('[data-hint], [data-then]')) continue
+      const range = document.createRange()
+      range.selectNodeContents(n)
+      const first = range.getClientRects()[0]
+      if (first && first.width > 0) { r = first; break }
+    }
+  }
+  const x = r.left + r.width / 2, y = r.top + r.height / 2
+  const hit = document.elementFromPoint(x, y)
+  const name = (e) => e ? e.localName + (e.id ? '#' + e.id : '') + (e.className && typeof e.className === 'string' ? '.' + e.className.trim().split(/\s+/).join('.') : '') : 'nothing'
+  return { x, y, ok: !!hit && (hit === el || el.contains(hit)), hit: name(hit), want: name(el) }
+}
+
+function focusInside(q) {
+  const fs = document.querySelectorAll('fieldset[data-ask]')[q]
+  return !!fs && fs.contains(document.activeElement)
+}
+
+// Polls the role=status line until it is non-empty and unchanged for quietMs, or capMs passes.
+async function statusSettled(capMs, quietMs) {
+  const el = document.querySelector('[data-respond] [role="status"]')
+  if (!el) return { text: null }
+  const end = Date.now() + capMs
+  let last = el.textContent, since = Date.now()
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 25))
+    const now = el.textContent
+    if (now !== last) { last = now; since = Date.now() }
+    if (now.trim() !== '' && Date.now() - since >= quietMs) return { text: now }
+    if (Date.now() > end) return { text: now, late: true }
+  }
+}
+
+function selectionSpans() {
+  const t = document.querySelector('[data-respond] textarea[readonly]')
+  return { active: !!t && document.activeElement === t, start: t ? t.selectionStart : -1, end: t ? t.selectionEnd : -1, length: t ? t.value.length : -1, value: t ? t.value : null }
+}
+
+function scrollHome() { scrollTo(0, 0); return true }
 
 const call = (fn, ...args) => `(${fn.toString()})(${args.map((a) => JSON.stringify(a)).join(', ')})`
 
@@ -356,6 +510,247 @@ function eventFaults(origin, skipped, refused) {
   }
 }
 
+/* ---------------------------------------------------------------- interaction */
+
+// The first line where two strings part, for a mismatch detail.
+function firstDiff(want, got) {
+  const a = want.split('\n'), b = got.split('\n')
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return `line ${i + 1}: expected ${JSON.stringify(a[i] ?? '(end)')}, the page has ${JSON.stringify(b[i] ?? '(end)')}`
+  }
+  return 'the strings differ'
+}
+
+class Mismatch extends Error {}
+
+// A /__plans-probe target in the view's browser context, for clipboard read-back. It holds no
+// page script, so the evaluations below run in a document nothing on the candidate can reach.
+async function clipboardProbe(browser, browserContextId, origin) {
+  const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank', browserContextId })
+  const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true })
+  const send = (method, params = {}) => browser.send(method, params, sessionId)
+  let resolveLoad
+  const loaded = new Promise((r) => { resolveLoad = r })
+  const listener = (m) => { if (m.method === 'Page.loadEventFired') resolveLoad() }
+  browser.on(sessionId, listener)
+  try {
+    await send('Page.enable')
+    await send('Runtime.enable')
+    await send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    let timer
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new CdpError('timeout', `${PROBE} did not load within ${COMMAND_MS} ms`)), COMMAND_MS) })
+    const nav = await send('Page.navigate', { url: origin + PROBE })
+    if (nav.errorText) throw new CdpError('protocol', `Page.navigate to ${PROBE} failed: ${nav.errorText}`)
+    await Promise.race([loaded, late]).finally(() => clearTimeout(timer))
+  } finally {
+    browser.off(sessionId, listener)
+  }
+  // Returns { ok, value } or { ok: false, error } when the page call threw.
+  const probeEval = async (expression) => {
+    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true })
+    if (r.exceptionDetails) return { ok: false, error: r.exceptionDetails.exception?.description ?? r.exceptionDetails.text }
+    return { ok: true, value: r.result.value }
+  }
+  return {
+    write: (text) => probeEval(`navigator.clipboard.writeText(${JSON.stringify(text)}).then(() => true)`),
+    read: () => probeEval('navigator.clipboard.readText()'),
+    close: () => browser.send('Target.closeTarget', { targetId }).catch(() => {}),
+  }
+}
+
+// Runs the interaction script and the copy check in one view. io: { send, evaluate, browser,
+// browserContextId, origin }. Records steps in rec.steps, copy verdicts in rec.copies and
+// clipboard unknowns in rec.unknowns, and returns the faults for the interaction cell.
+async function interact(io, rec, viewName) {
+  const { send, evaluate } = io
+  const faults = []
+  const s = await evaluate(call(readModel))
+  if (s.broken) return { faults, driven: false }
+  const model = {
+    title: s.title, build: s.build,
+    questions: s.questions.map((q) => ({ id: q.id, legend: q.legend, type: q.type, kept: false, options: q.options.map((o) => ({ value: o.value, label: o.label, defaultChecked: o.defaultChecked, checked: o.defaultChecked })) })),
+    notes: [...s.notes.map((n) => ({ name: n.name, text: n.text })), { name: 'General', text: '' }],
+  }
+  const general = model.notes[model.notes.length - 1]
+  const step = (name, result, detail = '') => rec.steps.push({ name, result, detail, view: viewName })
+  let current = 'initial response'
+
+  const mouse = async (x, y) => {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' })
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 })
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 })
+  }
+  const click = async (spec, name) => {
+    const a = await evaluate(call(aim, spec))
+    if (a.error) throw new Mismatch(`${name}: ${a.error}`)
+    if (!a.ok) throw new Mismatch(`${name}: a click at the center of ${a.want} (${Math.round(a.x)}, ${Math.round(a.y)}) lands on ${a.hit}`)
+    await mouse(a.x, a.y)
+  }
+  const key = async (k, code, vk, text) => {
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, ...(text ? { text, unmodifiedText: text } : {}) })
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk })
+  }
+  const verify = async (name) => {
+    const got = await evaluate(call(readState))
+    for (const [qi, q] of model.questions.entries()) {
+      for (const [oi, o] of q.options.entries()) {
+        if (got.checked[qi]?.[oi] !== o.checked) throw new Mismatch(`${name}: option ${o.value} of question ${q.id} is ${got.checked[qi]?.[oi] ? '' : 'not '}checked in the DOM, but the check's record says ${o.checked ? 'checked' : 'unchecked'}`)
+      }
+    }
+    const want = format(model)
+    if (got.response === null) throw new Mismatch(`${name}: the page has no response textarea`)
+    if (got.response !== want) throw new Mismatch(`${name}: the response differs from the independent formatter, ${firstDiff(want, got.response)}`)
+  }
+  const run = async (name, act) => {
+    current = name
+    await act()
+    await verify(name)
+    step(name, 'pass')
+  }
+
+  const pickOption = (q, o) => async () => {
+    await click({ kind: 'input', q: model.questions.indexOf(q), o: q.options.indexOf(o) }, `${q.id} ${o.value}`)
+    if (q.type === 'radio') {
+      if (o.checked) return
+      for (const x of q.options) x.checked = x === o
+    } else o.checked = !o.checked
+    q.kept = false
+  }
+  const changed = (q) => q.options.some((o) => o.checked !== o.defaultChecked)
+  const keep = (q) => async () => {
+    await click({ kind: 'keep', q: model.questions.indexOf(q) }, `the proposal button of ${q.id}`)
+    for (const o of q.options) o.checked = o.defaultChecked
+    q.kept = true
+  }
+  const exercise = async (qs) => {
+    for (const q of qs) for (const o of q.options) if (!o.defaultChecked) await run(`${q.id} picks ${o.value}`, pickOption(q, o))
+    for (const q of qs) {
+      if (q.type !== 'checkbox') continue
+      for (const o of q.options) await run(`${q.id} toggles ${o.value}`, pickOption(q, o))
+      for (const o of q.options) if (o.checked) await run(`${q.id} empty set`, pickOption(q, o))
+      if (!q.options.some((o) => o.checked)) step(`${q.id} empty set`, 'pass')
+    }
+    for (const q of qs) if (changed(q)) await run(`Back to the proposal on ${q.id}`, keep(q))
+  }
+  // A click into a textarea puts the caret under the pointer, so Ctrl+End moves it to the end.
+  const focusEnd = async (spec, name) => {
+    await click(spec, name)
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35, modifiers: 2 })
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'End', code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35, modifiers: 2 })
+  }
+  const typeLines = async (spec, note, lines, name) => {
+    current = name
+    await focusEnd(spec, name)
+    for (const [i, line] of lines.entries()) {
+      if (i > 0 || note.text !== '') {
+        await key('Enter', 'Enter', 13, '\r')
+        note.text += '\n'
+        await verify(`${name}, Enter`)
+      }
+      if (line !== '') {
+        await send('Input.insertText', { text: line })
+        note.text += line
+        await verify(`${name}, ${JSON.stringify(line)}`)
+      }
+    }
+    step(name, 'pass')
+  }
+
+  try {
+    await verify('initial response')
+    step('initial response', 'pass')
+    for (const [qi, q] of model.questions.entries()) {
+      if (q.type !== 'radio') continue
+      const o = q.options.find((x) => x.defaultChecked)
+      if (!o) continue
+      await run(`click on the checked radio ${q.id}`, () => click({ kind: 'label', q: qi, o: q.options.indexOf(o) }, `the label of ${q.id} ${o.value}`))
+      // The label click leaves focus on the radio, so the Tab presses go into and then past it.
+      const cap = q.options.length + 4
+      let tabs = 0
+      current = `Tab past ${q.id}`
+      if (!(await evaluate(call(focusInside, qi)))) throw new Mismatch(`Tab past ${q.id}: the click on the checked label left focus outside the question`)
+      while (tabs < cap && (await evaluate(call(focusInside, qi)))) { await key('Tab', 'Tab', 9); tabs++ }
+      if (await evaluate(call(focusInside, qi))) throw new Mismatch(`Tab past ${q.id}: focus is still inside the question after ${cap} Tab presses`)
+      await verify(`Tab past ${q.id}`)
+      step(`Tab past ${q.id}`, 'pass', `${tabs} Tab presses`)
+    }
+    const held = model.questions[model.questions.length - 1]
+    await exercise(model.questions.slice(0, -1))
+    if (held) {
+      await run(`Keep the proposal on untouched ${held.id}`, keep(held))
+      await exercise([held])
+    }
+    const firstNote = s.notes.length ? model.notes[0] : null
+    if (firstNote) await typeLines({ kind: 'note', n: 0 }, firstNote, HOSTILE, `hostile note in ${firstNote.name}`)
+    await typeLines({ kind: 'general' }, general, HOSTILE, 'hostile note in General')
+    await typeLines({ kind: 'general' }, general, SPACES, 'a note line of spaces')
+  } catch (e) {
+    if (!(e instanceof Mismatch)) throw e
+    step(current, 'fail', e.message)
+    faults.push({ kind: 'response-mismatch', detail: e.message })
+    rec.copies.push('unknown')
+    return { faults, driven: true }
+  }
+
+  // The copy check, single press then the overlapping case.
+  const probe = await clipboardProbe(io.browser, io.browserContextId, io.origin)
+  try {
+    const verdict = async (name, press) => {
+      const sentinel = `plans-check sentinel ${Math.random().toString(36).slice(2)}`
+      const w = await probe.write(sentinel)
+      if (!w.ok) return { unknown: `${name}: the probe could not write the clipboard (${clip(w.error, 200)})` }
+      await press()
+      const st = await evaluate(call(statusSettled, STATUS_MS, STATUS_QUIET_MS))
+      if (st.text === null) return { fault: `${name}: the response region has no role=status line` }
+      const text = st.text.trim()
+      if (st.late) return { fault: `${name}: the status line did not settle within ${STATUS_MS} ms (it reads ${JSON.stringify(clip(text, 80))})` }
+      if (text === 'Copied') {
+        const sel = await evaluate(call(selectionSpans))
+        const r = await probe.read()
+        if (!r.ok) return { unknown: `${name}: the clipboard read-back threw (${clip(r.error, 200)})` }
+        if (r.value === sel.value) return { pass: 'copied-verified' }
+        return { fault: `${name}: the page says "Copied", but the clipboard holds ${r.value === sentinel ? 'the check\'s sentinel, so nothing was copied' : JSON.stringify(clip(r.value, 80))}` }
+      }
+      if (/blocked/i.test(text)) {
+        const sel = await evaluate(call(selectionSpans))
+        if (sel.active && sel.start === 0 && sel.end === sel.length) return { pass: 'blocked-selected' }
+        return { fault: `${name}: the page says copying was blocked, but ${sel.active ? `the selection is ${sel.start} to ${sel.end} of ${sel.length}` : 'the response textarea does not have focus'}` }
+      }
+      return { fault: `${name}: after the press the status line reads ${JSON.stringify(clip(text, 120))}` }
+    }
+    const pressCopy = () => click({ kind: 'copy' }, 'Copy response')
+    const cases = [
+      ['copy after one press', pressCopy],
+      ['copy with a note edit between two presses', async () => {
+        await pressCopy()
+        await focusEnd({ kind: 'general' }, 'the General note')
+        await send('Input.insertText', { text: ' edited' })
+        general.text += ' edited'
+        await pressCopy()
+      }],
+    ]
+    for (const [name, press] of cases) {
+      let v
+      try {
+        v = await verdict(name, press)
+        if (!v.unknown) await verify(name)
+      } catch (e) {
+        if (!(e instanceof Mismatch)) throw e
+        step(name, 'fail', e.message)
+        faults.push({ kind: 'response-mismatch', detail: e.message })
+        rec.copies.push('unknown')
+        break
+      }
+      if (v.pass) { step(name, 'pass', v.pass); rec.copies.push(v.pass) }
+      else if (v.unknown) { step(name, 'unknown', v.unknown); rec.unknowns.push({ kind: 'clipboard', detail: `${viewName}: ${v.unknown}` }); rec.copies.push('unknown') }
+      else { step(name, 'fail', v.fault); faults.push({ kind: 'copy', detail: v.fault }); rec.copies.push('unknown') }
+    }
+  } finally {
+    await probe.close()
+  }
+  return { faults, driven: true }
+}
+
 /* ---------------------------------------------------------------- shots */
 
 function writeShot(path, bytes) {
@@ -365,9 +760,12 @@ function writeShot(path, bytes) {
 
 /* ---------------------------------------------------------------- one view */
 
-async function runView(browser, ctx, v, done) {
+// One view. rec: { cells, steps, copies, unknowns }, filled as the view runs, so a retry starts
+// from a fresh one.
+async function runView(browser, ctx, v, rec) {
   const { browserContextId } = await browser.send('Target.createBrowserContext', { disposeOnDetach: true })
   try {
+    if (!ctx.inline) await browser.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: ctx.origin, browserContextId })
     const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank', browserContextId })
     const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true })
     const events = []
@@ -401,6 +799,8 @@ async function runView(browser, ctx, v, done) {
       if (ctx.inline) {
         await send('Page.addScriptToEvaluateOnNewDocument', { source: themeScript(v.scheme) })
         await send('Emulation.setDefaultBackgroundColorOverride', { color: T3[v.scheme].ground })
+      } else {
+        await send('Emulation.setFocusEmulationEnabled', { enabled: true })
       }
       const loaded = waitFor('Page.loadEventFired')
       const nav = await send('Page.navigate', { url: ctx.url })
@@ -411,17 +811,32 @@ async function runView(browser, ctx, v, done) {
 
       const add = eventFaults(ctx.origin, ctx.skipped, ctx.refused)
       let seen = 0
-      for (const state of STATES) {
+      let kitPage = false
+      let driven = false
+      for (const state of [...STATES, INTERACTION]) {
+        const faults = []
+        const push = (kind, detail) => faults.push({ kind, detail })
         if (state === 'details-open') {
           await evaluate(call(openDetails))
           await evaluate(call(settle, SETTLE_MS))
         }
+        if (state === INTERACTION) {
+          if (ctx.inline || !kitPage) break
+          ctx.kitDoc = true
+          // A kit that already logged an error has turned its response off: nothing to drive.
+          const kitFailed = rec.cells.some((c) => c.view === v.name && c.faults.some((f) => f.kind === 'kit-error'))
+          if (!kitFailed) {
+            const got = await interact({ send, evaluate, browser, browserContextId, origin: ctx.origin }, rec, v.name)
+            faults.push(...got.faults)
+            driven = got.driven
+          }
+          await evaluate(call(scrollHome))
+          await evaluate(call(settle, SETTLE_MS))
+        }
         const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList }))
-        const faults = []
-        const push = (kind, detail) => faults.push({ kind, detail })
+        if (state === 'initial') kitPage = got.kitPage
         for (; seen < events.length; seen++) add(events[seen], push)
         faults.push(...got.faults)
-        if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls))
         if (ctx.shots) {
           const w = Math.min(Math.ceil(got.width), Math.floor(SHOT_MAX / v.dsf))
           const h = Math.min(Math.ceil(got.height), Math.floor(SHOT_MAX / v.dsf))
@@ -430,8 +845,9 @@ async function runView(browser, ctx, v, done) {
         }
         const unique = new Map()
         for (const f of faults) unique.set(`${f.kind}\0${f.detail}`, f)
-        done.push({ view: v.name, state, faults: [...unique.values()] })
+        rec.cells.push({ view: v.name, state, faults: [...unique.values()] })
       }
+      if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls, driven))
     } finally {
       browser.off(sessionId, listener)
     }
@@ -442,25 +858,27 @@ async function runView(browser, ctx, v, done) {
 
 const hang = (e) => e instanceof CdpError && (e.kind === 'timeout' || e.kind === 'crashed')
 
-// One view with the retry rule. Returns { cells, flaky } or throws for an unknown.
+// One view with the retry rule. Returns { rec, flaky } or throws for an unknown.
+const freshRec = () => ({ cells: [], steps: [], copies: [], unknowns: [] })
 async function viewWithRetry(browser, ctx, v) {
-  const first = []
+  const first = freshRec()
   try {
     await runView(browser, ctx, v, first)
-    return { cells: first, flaky: null }
+    return { rec: first, flaky: null }
   } catch (e) {
     if (!hang(e)) throw e
     if (!(await browser.ping())) throw new CdpError('deadline', `${v.name}: ${e.message}, and the browser stopped answering`)
-    const again = []
+    const again = freshRec()
     try {
       await runView(browser, ctx, v, again)
-      return { cells: again, flaky: `${v.name}: ${e.message} once, then passed on a retry` }
+      return { rec: again, flaky: `${v.name}: ${e.message} once, then passed on a retry` }
     } catch (e2) {
       if (!hang(e2)) throw e2
       if (!(await browser.ping())) throw new CdpError('deadline', `${v.name}: ${e2.message}, and the browser stopped answering`)
-      const state = STATES[again.length] ?? STATES[STATES.length - 1]
-      again.push({ view: v.name, state, faults: [{ kind: e2.kind === 'crashed' ? 'target-crashed' : 'deadline', detail: `${e2.message}, twice, in a browser that still answers` }] })
-      return { cells: again, flaky: null }
+      const all = [...STATES, INTERACTION]
+      const state = all[again.cells.length] ?? all[all.length - 1]
+      again.cells.push({ view: v.name, state, faults: [{ kind: e2.kind === 'crashed' ? 'target-crashed' : 'deadline', detail: `${e2.message}, twice, in a browser that still answers` }] })
+      return { rec: again, flaky: null }
     }
   }
 }
@@ -475,8 +893,10 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
   const out = { result: 'unknown', reason: null, matrix: [], checks: [], copy: null, undriven: [] }
   const unknowns = []
   let server = null, browser = null, timer
+  const steps = []
+  const copies = []
   const ctx = {
-    inline, shots, undriven: null,
+    inline, shots, undriven: null, kitDoc: false,
     declared: [...new Set(media.map((m) => (typeof m === 'string' ? m : m.src)))],
     skippedList: [...skippedMedia], skipped: new Set(skippedMedia),
   }
@@ -488,8 +908,11 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
     ctx.refused = new Map(server.refused.map((r) => [r.src, r.reason]))
     browser = await launch(chromium, { tmp })
     for (const v of views) {
-      const { cells, flaky } = await viewWithRetry(browser, ctx, v)
-      out.matrix.push(...cells)
+      const { rec, flaky } = await viewWithRetry(browser, ctx, v)
+      out.matrix.push(...rec.cells)
+      steps.push(...rec.steps)
+      copies.push(...rec.copies)
+      unknowns.push(...rec.unknowns)
       if (flaky) unknowns.push({ kind: 'flaky', detail: flaky })
     }
   })()
@@ -506,7 +929,8 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
 
   out.undriven = ctx.undriven ?? []
   const have = new Set(out.matrix.map((c) => `${c.view}/${c.state}`))
-  const missing = views.flatMap((v) => STATES.map((s) => `${v.name}/${s}`)).filter((k) => !have.has(k))
+  const required = ctx.kitDoc ? [...STATES, INTERACTION] : STATES
+  const missing = views.flatMap((v) => required.map((s) => `${v.name}/${s}`)).filter((k) => !have.has(k))
   if (missing.length && !unknowns.length) unknowns.push({ kind: 'incomplete', detail: `matrix cells not checked: ${missing.join(', ')}` })
   const faults = out.matrix.flatMap((c) => c.faults)
   if (faults.length) {
@@ -525,5 +949,17 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
     detail: out.result === 'pass' ? `${cells} cells, no faults` : out.result === 'fail' ? `${faults.length} faults in ${cells} cells` : `${out.reason.kind}: ${out.reason.detail}`,
   })
   for (const u of unknowns.slice(out.result === 'unknown' ? 1 : 0)) out.checks.push({ name: 'browser', result: 'unknown', detail: `${u.kind}: ${u.detail}` })
+  // One row per step name across the views: fail if any view failed it, then unknown, else pass.
+  const byName = new Map()
+  for (const st of steps) {
+    if (!byName.has(st.name)) byName.set(st.name, [])
+    byName.get(st.name).push(st)
+  }
+  for (const [name, list] of byName) {
+    const worst = list.find((x) => x.result === 'fail') ?? list.find((x) => x.result === 'unknown') ?? list[0]
+    const detail = worst.result === 'pass' ? `${list.map((x) => x.view).join(', ')}${worst.detail ? `: ${worst.detail}` : ''}` : `${worst.view}: ${worst.detail}`
+    out.checks.push({ name: `interaction: ${name}`, result: worst.result, detail })
+  }
+  if (copies.length) out.copy = copies.includes('unknown') ? 'unknown' : copies[0]
   return out
 }

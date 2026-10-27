@@ -322,8 +322,26 @@ const BAD = ['exception', 'console-csp', 'request-outside', 'load-failed', 'http
   'clipped', 'a-target', 'form', 'outbound-link', 'srcset', 'poster', 'css-url', 'svg-href', 'svg-viewbox', 'svg-label',
   'svg-wide', 'svg-text-small', 'empty-title', 'media-undeclared']
 const BAD_INLINE = ['inline-height', 'inline-kit-hook', 'inline-frame']
+// A kit page adds the interaction state to every view, so its matrix has 12 cells. `named` maps
+// a case name to a pattern over the result's `interaction: ...` check names: the case passes when
+// at least one check matches and every match passed.
+const KIT_STATES = ['initial', 'details-open', 'interaction']
+const NAMED = [
+  ['the untouched page reads not answered', /^interaction: initial response$/],
+  ['a click on the checked radio leaves it not answered', /^interaction: click on the checked radio /],
+  ['Tab past a question leaves it not answered', /^interaction: Tab past /],
+  ['each option that is not proposed', /^interaction: \S+ picks /],
+  ['an empty multi-select', /^interaction: \S+ empty set$/],
+  ['Back to the proposal marks a changed question kept', /^interaction: Back to the proposal on /],
+  ['Keep the proposal marks an untouched question kept', /^interaction: Keep the proposal on untouched /],
+  ['a hostile note in a page note and in General', /^interaction: hostile note in /],
+  ['a note line of spaces keeps its spaces', /^interaction: a note line of spaces$/],
+  ['copy after one press', /^interaction: copy after one press$/],
+  ['copy with a note edit between two presses', /^interaction: copy with a note edit between two presses$/],
+]
 const CASES = [
   { dir: 'reading', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'] },
+  { dir: 'good', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'], states: KIT_STATES, copy: 'copied-verified', named: NAMED },
   { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: ['360', '728'] },
   ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind })),
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
@@ -664,7 +682,11 @@ async function browserSection({ ROOT, check, skip }) {
 
     for (const c of CASES) {
       const name = `browser: ${c.dir} ${c.exit === 0 ? 'passes, exit 0' : `fails with ${c.fault}, exit 1`}`
-      if (why) { skip(name, why); continue }
+      if (why) {
+        skip(name, why)
+        for (const [label] of c.named ?? []) skip(`browser: ${c.dir} ${label}`, why)
+        continue
+      }
       const work = join(base, `case${++n}`)
       cpSync(join(FIX, c.dir), work, { recursive: true })
       const before = leaks(priv)
@@ -675,11 +697,16 @@ async function browserSection({ ROOT, check, skip }) {
       const out = join(work, c.args.includes('--inline') ? 'page.inline.html' : 'page.built.html')
       if (c.exit === 0) {
         const bytes = existsSync(out) ? readFileSync(out) : Buffer.alloc(0)
-        check(name, r.status === 0 && j.result === 'pass' && kinds.length === 0 && j.matrix.length === 8 && j.digest === sha(bytes),
-          `status ${r.status} result ${j.result} reason ${JSON.stringify(j.reason)} faults ${kinds.join(',')}\n${r.stderr}`)
+        const states = c.states ?? ['initial', 'details-open']
+        check(name, r.status === 0 && j.result === 'pass' && kinds.length === 0 && j.matrix.length === 4 * states.length && j.digest === sha(bytes) && (j.copy ?? null) === (c.copy ?? null),
+          `status ${r.status} result ${j.result} reason ${JSON.stringify(j.reason)} faults ${kinds.join(',')} cells ${j.matrix?.length} copy ${j.copy}\n${r.stderr}`)
+        for (const [label, re] of c.named ?? []) {
+          const rows = (j.checks ?? []).filter((x) => re.test(x.name))
+          check(`browser: ${c.dir} ${label}`, rows.length > 0 && rows.every((x) => x.result === 'pass'), rows.length ? rows.filter((x) => x.result !== 'pass').map((x) => `${x.name}: ${x.result} ${x.detail}`).join(' | ') : 'no such check in the result')
+        }
         if (c.shots) {
           const shots = join(work, 'shots')
-          const want = c.shots.flatMap((w) => ['light', 'dark'].flatMap((s) => ['initial', 'details-open'].map((st) => `${w}-${s}-${st}.png`)))
+          const want = c.shots.flatMap((w) => ['light', 'dark'].flatMap((s) => states.map((st) => `${w}-${s}-${st}.png`)))
           const have = existsSync(shots) ? readdirSync(shots) : []
           const pngs = want.every((f) => have.includes(f) && readFileSync(join(shots, f)).subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
           const res = have.includes('result.json') ? JSON.parse(readFileSync(join(shots, 'result.json'), 'utf8')) : {}

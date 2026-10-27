@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snapshot pruning moves into the backup agent</title>
+<!-- plans:kit -->
+<style>
+  h2 { display: grid; grid-template-columns: 2.25ch 1fr; column-gap: .5rem; }
+  h2 .num { color: var(--plans-ink-2); font-weight: 400; }
+  .lede { font-size: 1.125em; }
+  tr.changed > td:first-child { border-left: 3px solid var(--plans-accent); padding-left: .6rem; }
+  .fig { display: block; width: 100%; max-width: 26rem; height: auto; color: var(--plans-ink); }
+  .fig text { font-family: var(--plans-sans); font-size: 14px; fill: currentColor; font-variant-numeric: tabular-nums; }
+  .fig .mono { font-family: var(--plans-mono); }
+  .fig .soft { fill: var(--plans-ink-2); }
+  .fig line, .fig path, .fig rect { vector-effect: non-scaling-stroke; }
+  .fig .ln { fill: none; stroke: currentColor; stroke-width: 1; }
+  .fig .hair { fill: none; stroke: var(--plans-rule); stroke-width: 1; }
+  .fig .chg { stroke: var(--plans-accent); }
+  .fig text.chg { fill: var(--plans-accent-text); stroke: none; }
+  .fig .arrow-chg { fill: var(--plans-accent); }
+  .tag { color: var(--plans-ink-2); font-size: .84em; }
+</style>
+</head>
+<body>
+<main>
+<h1>Snapshot pruning moves into the backup agent</h1>
+<p class="lede">The backup agent will delete expired snapshots itself, right after each upload succeeds. The nightly <code>prune.sh</code> cron job goes away. Two files change on each host, and the repository format stays as it is.</p>
+
+<dl class="title-block">
+  <div><dt>Kind</dt><dd>Plan</dd></div>
+  <div><dt>Date</dt><dd class="num">2026-10-26</dd></div>
+  <div><dt>Hosts</dt><dd class="num">4</dd></div>
+  <div><dt>Files per host</dt><dd class="num">2</dd></div>
+</dl>
+
+<p class="tag">This plan asks three questions. Each one sits beside the part it governs, and your response is at the end.</p>
+<nav data-ask-summary aria-label="Questions on this page"></nav>
+
+<h2><span class="num">1</span> What changes</h2>
+<p>Today two jobs touch the repository every night: the agent uploads at 02:00, and cron prunes at 03:00. They share nothing but the repository lock. When an upload runs long or fails, the prune still runs, and it can delete the last good snapshot while it keeps a broken one. <span class="margin">Observed on pve-02 on 2026-10-19: the upload ran 71 minutes, the prune ran right after it, and the newest snapshot was incomplete.</span></p>
+
+<figure>
+  <svg class="fig" viewBox="0 0 360 336" role="img" aria-labelledby="f1-title">
+    <title id="f1-title">Before: the agent uploads at 02:00 and cron prunes at 03:00, independently. After: the agent uploads, then prunes only after a good upload.</title>
+    <defs>
+      <marker id="f1-arrow" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+        <path d="M0 0L8 4L0 8Z" fill="currentColor"/>
+      </marker>
+      <marker id="f1-arrow-chg" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+        <path class="arrow-chg" d="M0 0L8 4L0 8Z"/>
+      </marker>
+    </defs>
+    <text class="soft" x="8" y="16">Before</text>
+    <text x="8" y="40">agent</text>
+    <rect class="ln" x="8" y="48" width="96" height="40"/>
+    <text x="256" y="40">repository</text>
+    <rect class="ln" x="256" y="48" width="96" height="40"/>
+    <path class="ln" d="M104 68H256" marker-end="url(#f1-arrow)"/>
+    <text class="soft" x="180" y="60" text-anchor="middle">upload, 02:00</text>
+    <text x="8" y="120">cron</text>
+    <rect class="ln" x="8" y="128" width="96" height="40"/>
+    <path class="ln" d="M104 148H304V88" marker-end="url(#f1-arrow)"/>
+    <text class="soft mono" x="120" y="140">prune.sh, 03:00</text>
+    <line class="hair" x1="8" y1="192" x2="352" y2="192"/>
+    <text class="soft" x="8" y="216">After</text>
+    <text x="8" y="240">agent</text>
+    <rect class="ln" x="8" y="248" width="96" height="40"/>
+    <text x="256" y="240">repository</text>
+    <rect class="ln" x="256" y="248" width="96" height="40"/>
+    <path class="ln" d="M104 268H256" marker-end="url(#f1-arrow)"/>
+    <text class="soft" x="180" y="260" text-anchor="middle">upload, 02:00</text>
+    <path class="ln chg" d="M56 288V320H304V288" marker-end="url(#f1-arrow-chg)"/>
+    <text class="chg" x="180" y="312" text-anchor="middle">prune, after a good upload</text>
+  </svg>
+  <figcaption>Figure 1. The prune becomes the last step of a good upload. Cron no longer touches the repository.</figcaption>
+</figure>
+
+<fieldset data-ask="pruner">
+  <legend>Who prunes old snapshots?</legend>
+  <p>The agent change is about 40 lines and needs a new agent release on all four hosts. Keeping cron costs nothing now, but it leaves the race in Figure 1 in place. Running both for a week doubles the prune work during that week and shows whether the two agree.</p>
+  <label><input type="radio" name="pruner" value="agent" checked> The agent, after each good upload
+    <span data-hint>One job owns the repository at night.</span></label>
+  <label><input type="radio" name="pruner" value="cron"> Cron, as today
+    <span data-then>Then the race stays, and this plan stops here.</span></label>
+  <label><input type="radio" name="pruner" value="both-1w"> Both, for one week, with cron in dry-run mode
+    <span data-then>Then cron logs what it would delete, and the agent's first week is checked against it.</span></label>
+</fieldset>
+
+<h2><span class="num">2</span> The runbook, before and after</h2>
+<p>The runbook's pruning section changes with the job. Struck words go, underlined words are new.</p>
+<div data-diff-before="before.md" data-diff-after="after.md"></div>
+
+<label for="note-runbook">Anything the new runbook text gets wrong or leaves out</label>
+<textarea id="note-runbook" data-note="Runbook" rows="3"></textarea>
+
+<h2><span class="num">3</span> How long snapshots live</h2>
+<p>The agent reads its retention from <code>agent.toml</code>. The cron script keeps 30 daily snapshots. The plan proposes 14, because no restore in the last year reached back more than 9 days.</p>
+<table>
+  <thead><tr><th>Daily snapshots kept</th><th class="num">Repository size</th><th class="num">Oldest restore point</th></tr></thead>
+  <tbody>
+    <tr><td>30, today</td><td class="num">1.42 TB</td><td class="num">30 days</td></tr>
+    <tr class="changed"><td>14, proposed</td><td class="num">0.86 TB</td><td class="num">14 days</td></tr>
+    <tr><td>7</td><td class="num">0.61 TB</td><td class="num">7 days</td></tr>
+  </tbody>
+</table>
+<p class="tag">Sizes are estimates from the snapshot list on 2026-10-26, summed over the four hosts.</p>
+<pre><code># agent.toml, as proposed
+[prune]
+after_upload = true
+keep_daily   = 14
+keep_weekly  = 8</code></pre>
+
+<fieldset data-ask="retention">
+  <legend>How many daily snapshots does the agent keep?</legend>
+  <p>Fewer snapshots free disk space now. More snapshots let you restore from further back. Weekly snapshots stay at 8 in every option.</p>
+  <label><input type="radio" name="retention" value="14" checked> 14 days (keep_daily = 14)
+    <span data-hint>Frees about 560 GB.</span></label>
+  <label><input type="radio" name="retention" value="30"> 30 days, as cron does today (keep_daily = 30)
+    <span data-then>Then nothing is freed, and the repository keeps growing about 20 GB a week.</span></label>
+  <label><input type="radio" name="retention" value="7"> 7 days (keep_daily = 7)
+    <span data-then>Then a restore from 8 days back needs a weekly snapshot.</span></label>
+</fieldset>
+
+<h2><span class="num">4</span> Rollout</h2>
+<p>Each host gets the new agent release and its <code>agent.toml</code>, and loses its cron line. A host can go back by restoring both files.</p>
+<table>
+  <thead><tr><th>Host</th><th class="num">Snapshots</th><th class="num">Last prune</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td><code>nas-01</code></td><td class="num">38</td><td class="num">4 min</td><td>file shares</td></tr>
+    <tr><td><code>pve-01</code></td><td class="num">38</td><td class="num">11 min</td><td>VM host</td></tr>
+    <tr><td><code>pve-02</code></td><td class="num">37</td><td class="num">19 min</td><td>VM host, had the race</td></tr>
+    <tr><td><code>pve-03</code></td><td class="num">38</td><td class="num">9 min</td><td>VM host</td></tr>
+  </tbody>
+</table>
+
+<fieldset data-ask="first-hosts">
+  <legend>Which hosts move in the first week?</legend>
+  <p>Hosts that move first test the change for the others. A host that waits keeps the race for one more week.</p>
+  <label><input type="checkbox" name="first-hosts" value="pve-02" checked> pve-02
+    <span data-hint>The host that had the race.</span></label>
+  <label><input type="checkbox" name="first-hosts" value="nas-01" checked> nas-01
+    <span data-hint>Smallest repository, fastest to check.</span></label>
+  <label><input type="checkbox" name="first-hosts" value="pve-01"> pve-01</label>
+  <label><input type="checkbox" name="first-hosts" value="pve-03"> pve-03</label>
+</fieldset>
+
+<h2><span class="num">5</span> What stays the same</h2>
+<ul>
+  <li>The repository format, its encryption key and its path.</li>
+  <li>The upload schedule, 02:00 on every host.</li>
+  <li>Weekly snapshots: 8 are kept.</li>
+  <li>Restore commands. A restore never reads <code>agent.toml</code>.</li>
+</ul>
+
+<h2><span class="num">6</span> Open questions</h2>
+<ul>
+  <li><strong>Unknown:</strong> how long a prune takes on pve-02 when it runs right after a 70-minute upload. The first week measures it.</li>
+  <li><strong>Unknown:</strong> whether the agent's lock wait needs a timeout. Today it waits forever, and nothing has needed more than 2 minutes.</li>
+</ul>
+
+<section data-respond>
+  <h2><span class="num">7</span> Your response</h2>
+</section>
+</main>
+</body>
+</html>
