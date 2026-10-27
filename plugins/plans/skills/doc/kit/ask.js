@@ -251,10 +251,11 @@
     let broken = false
     let ui = null
     // generation moves on every render and on failure, so a copy that resolves later can tell the
-    // response it copied is no longer the one on screen. copies counts clicks, so only the newest
-    // copy speaks.
+    // response it copied is no longer the one on screen. copying is true while a clipboard write is
+    // in flight, and again remembers a press made meanwhile.
     let generation = 0
-    let copies = 0
+    let copying = false
+    let again = false
 
     // Idempotent: the observer calls back after every DOM write, so a second call that wrote the UI
     // again would feed the observer forever.
@@ -467,36 +468,49 @@
       ui.response.setSelectionRange(0, ui.response.value.length)
     }
 
-    // A copy that finishes after the response changed, after a newer copy started or after the kit
-    // failed never says "Copied": the clipboard may hold text that is no longer on screen.
+    // At most one clipboard write is in flight, so an older write can never land after "Copied" was
+    // shown for a newer one. A press while a write is pending is remembered, and once that write
+    // settles the kit copies the response on screen at that moment, once. A copy that finishes after
+    // the response changed or after the kit failed never says "Copied": the clipboard may hold text
+    // that is no longer on screen.
     async function doCopy () {
       if (!assertSnapshot()) return
       render()
       if (broken) return
       ui.said.textContent = ''
-      const attempt = ++copies
-      const gen = generation
-      const text = ui.response.value
-      let ok = false
+      if (copying) { again = true; return }
+      copying = true
       try {
-        await navigator.clipboard.writeText(text)
-        ok = true
-      } catch (e) {
-        ok = false
-      }
-      if (attempt !== copies || !assertSnapshot()) return
-      if (gen !== generation || ui.response.value !== text) {
-        ui.said.textContent = 'The response changed while it was being copied. Copy it again.'
-        return
-      }
-      if (!ok) {
-        selectAll()
-        try { ok = document.execCommand('copy') === true } catch (e) { ok = false }
-      }
-      if (ok) ui.said.textContent = 'Copied'
-      else {
-        selectAll()
-        ui.said.textContent = 'This viewer blocked copying. The whole response is selected, so copy it by hand.'
+        for (;;) {
+          again = false
+          const gen = generation
+          const text = ui.response.value
+          let ok = false
+          try {
+            await navigator.clipboard.writeText(text)
+            ok = true
+          } catch (e) {
+            ok = false
+          }
+          if (!assertSnapshot()) return
+          if (again) continue
+          if (gen !== generation || ui.response.value !== text) {
+            ui.said.textContent = 'The response changed while it was being copied. Copy it again.'
+            return
+          }
+          if (!ok) {
+            selectAll()
+            try { ok = document.execCommand('copy') === true } catch (e) { ok = false }
+          }
+          if (ok) ui.said.textContent = 'Copied'
+          else {
+            selectAll()
+            ui.said.textContent = 'This viewer blocked copying. The whole response is selected, so copy it by hand.'
+          }
+          return
+        }
+      } finally {
+        copying = false
       }
     }
 
