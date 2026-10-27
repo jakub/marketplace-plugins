@@ -773,10 +773,41 @@ const nth = (method, re, n) => () => {
   let k = 0
   return (m, p) => m === method && re.test(JSON.stringify(p)) && ++k === n
 }
+// A hit factory for any of several, each counting every command it sees.
+const anyOf = (...factories) => () => {
+  const hits = factories.map((f) => f())
+  return (m, p) => hits.map((h) => h(m, p)).some(Boolean)
+}
+
+// Chromium's reply to one exact command and page events after it, in one chunk on the pipe, so the
+// reply settles the command before the events reach the view's listener. The command picked by
+// hit(method, params) still runs in Chromium: the promise send returns is registered under an id of
+// its own, and once Chromium's reply comes back, its result goes to the pipe's readable as one
+// chunk with the events, read by the Pipe's real framing as it reads fd 4. With error, the reply
+// is an error reply instead. The real send is back in place when the run returns.
+const frame = (o) => Buffer.from(JSON.stringify(o) + '\0', 'utf8')
+async function withChunk(cdp, { hit, events, error = false }, run) {
+  const real = cdp.Pipe.prototype.send
+  cdp.Pipe.prototype.send = function (method, params, sessionId, ...rest) {
+    if (!hit(method, params ?? {})) return real.call(this, method, params, sessionId, ...rest)
+    return new Promise((resolve, reject) => {
+      const id = this.nextId++
+      this.pending.set(id, { method, resolve, reject, timer: undefined })
+      real.call(this, method, params, sessionId, ...rest).then((result) => {
+        const reply = error ? { id, error: { code: -32000, message: 'answered with an error by the smoke' } } : { id, result }
+        this.r.emit('data', Buffer.concat([reply, ...events.map(([m, p]) => ({ method: m, params: p, sessionId }))].map(frame)))
+      }, (e) => { if (this.pending.delete(id)) reject(e) })
+    })
+  }
+  try { return await run() } finally { cdp.Pipe.prototype.send = real }
+}
+const CRASH = ['Inspector.targetCrashed', {}]
+const DETACH = ['Inspector.detached', { reason: 'Render process gone.' }]
 
 // runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
-// chosen point, a driver command or a screenshot write that fails after a fault was measured, and
-// a page event that arrives after a view's last probe.
+// chosen point, a driver command or a screenshot write that fails after a fault was measured, a
+// page event that arrives after a view's last probe, and a crash or detach in the same chunk as a
+// command's reply.
 // Each case checks the leak state the moment runChecks returns, and counts this process's pending
 // timers, since a wait the run left behind rejects later with nobody listening.
 const timers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
@@ -837,9 +868,31 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
       page('<details id="more"><summary>More</summary><p>Hidden.</p></details>\n<script>document.getElementById("more").addEventListener("toggle", (e) => { if (!e.target.open || document.querySelector("[data-ask]")) return; const f = document.createElement("fieldset"); f.setAttribute("data-ask", "late"); e.target.append(f) })</script>'),
       (out) => out.result === 'fail' && has(out, '390-light', 'interaction', 'response-mismatch') && !has(out, '390-light', 'initial', 'response-mismatch')
         && out.matrix.filter((c) => c.state === 'interaction').length === 4],
+    // The target crashes or detaches just after a command's reply, in the same chunk. Each view
+    // reads its controls last, or the probe of its last state once the first view has read them.
+    // The crash or detach decides how the view ends, so it reaches the retry rule: one is a retry
+    // that passed, unknown flaky, and two in a row are the fault on the cell being measured.
+    ['runChecks: a crash that arrives with the reply to the last command of a view retries it', undefined, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page crashed \(Inspector\.targetCrashed\) once/.test(out.reason.detail) && out.matrix.length === 8,
+      { chunk: { hit: nth('Runtime.evaluate', /function controls/, 1), events: [CRASH] } }],
+    ['runChecks: a crash with the reply to the last command of both attempts is a target-crashed fault', undefined, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'fail' && has(out, '390-light', 'details-open', 'target-crashed') && out.matrix.flatMap((c) => c.faults).length === 1,
+      { chunk: { hit: anyOf(nth('Runtime.evaluate', /function controls/, 1), nth('Runtime.evaluate', /function probe\(cfg\)/, 4)), events: [CRASH] } }],
+    ['runChecks: a crash that arrives with an error reply retries the view', undefined, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page crashed/.test(out.reason.detail) && !unknownRow(out, /^protocol: /),
+      { chunk: { hit: nth('Runtime.evaluate', /function probe\(cfg\)/, 1), events: [CRASH], error: true } }],
+    ['runChecks: a crash that arrives with the page load event retries the view', undefined, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page crashed/.test(out.reason.detail),
+      { chunk: { hit: nth('Page.navigate', /./, 1), events: [['Page.loadEventFired', { timestamp: 0 }], CRASH] } }],
+    ['runChecks: a detach that arrives with the reply to the last command of a view retries it', undefined, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page's target detached \(Inspector\.detached: Render process gone\.\) once/.test(out.reason.detail) && out.matrix.length === 8,
+      { chunk: { hit: nth('Runtime.evaluate', /function controls/, 1), events: [DETACH] } }],
+    ['runChecks: a detach with the reply to the last command of both attempts is a target-detached fault', undefined, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'fail' && has(out, '390-light', 'details-open', 'target-detached') && out.matrix.flatMap((c) => c.faults).length === 1,
+      { chunk: { hit: anyOf(nth('Runtime.evaluate', /function controls/, 1), nth('Runtime.evaluate', /function probe\(cfg\)/, 4)), events: [DETACH] } }],
   ]
   let u = 0
-  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null } = {}] of cases) {
+  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null, chunk = null } = {}] of cases) {
     if (why) { skip(name, why); continue }
     let shotsDir = null
     if (shots) {
@@ -849,7 +902,7 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     }
     const before = { ...leaks(priv), timers: timers() }
     const go = () => runMod.runChecks({ buffer, dir: base, chromium, tmp: priv, deadlineMs, shots: shotsDir })
-    const out = fail ? await withFailing(cdp, fail(), go) : pageThrow ? await withPageThrow(cdp, pageThrow(), go) : await go()
+    const out = fail ? await withFailing(cdp, fail(), go) : pageThrow ? await withPageThrow(cdp, pageThrow(), go) : chunk ? await withChunk(cdp, { ...chunk, hit: chunk.hit() }, go) : await go()
     const after = { ...leaks(priv), timers: timers() }
     check(name, ok(out) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), before, after }))
   }

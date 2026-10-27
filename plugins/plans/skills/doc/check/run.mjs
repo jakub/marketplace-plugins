@@ -120,13 +120,19 @@
 //
 // Unknown versus fail. A launch or handshake failure, a lost transport, a protocol error on a
 // driver command, an exception in this code (`checker-error`), or a deadline while the browser
-// fails a 2 s Browser.getVersion ping is unknown. A command deadline or Inspector.targetCrashed
-// while the browser answers the ping is retried once in a fresh context: again is a fail, with
-// the fault `deadline` or `target-crashed` on that cell, and a pass on the retry is unknown
-// `flaky`, never a pass. The whole run has deadlineMs (180 s) and passing it is unknown
-// `deadline`. However the run stops, runChecks waits for a launch still in flight (up to its 10 s
-// handshake), closes the browser, waits for its own work to unwind and closes the server before
-// it returns, so no Chromium process, profile, timer or screenshot write outlives it. A fault joins
+// fails a 2 s Browser.getVersion ping is unknown. A command deadline, or a lost target, while the
+// browser answers the ping is retried once in a fresh context: again is a fail, with the fault
+// `deadline`, `target-crashed` or `target-detached` on that cell, and a pass on the retry is
+// unknown `flaky`, never a pass. A target is lost when its session gets Inspector.targetCrashed,
+// or Inspector.detached, which this check never causes while it listens, since a page cannot
+// close its own tab. Chromium 155 answers none of the target's pending commands then, so the event
+// ends every wait of the view, and it is kept as view state, so the view ends lost even when a
+// command's reply, a success or an error, came in the same chunk just before the event. The
+// browser-level Target.detachedFromTarget, which follows either event, is not read. The whole run
+// has deadlineMs (180 s) and passing it is unknown `deadline`. However the run stops, runChecks
+// waits for a launch still in flight (up to its 10 s handshake), closes the browser, waits for its
+// own work to unwind and closes the server before it returns, so no Chromium process, profile,
+// timer or screenshot write outlives it. A fault joins
 // the record the moment it is measured, in the cell of the state being measured: a probe's faults
 // before the cell's screenshot, an interaction fault and a copy verdict at their step, and the
 // event stream's faults at the state's probe and when the view ends, finished or stopped, before
@@ -959,21 +965,26 @@ async function runView(browser, ctx, v, rec) {
     const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true })
     const events = []
     const waiters = []
-    let crash
-    const crashed = new Promise((_, reject) => { crash = reject })
-    crashed.catch(() => {})
+    // The page's target is lost once Chromium says it crashed or detached this session, which this
+    // view never does while its listener is on. Chromium answers no command that is pending then,
+    // so `gone` ends every wait of the view at once. `lost` keeps the cause as view state, and it
+    // decides how the view ends even when a command's reply reached the view before the event did.
+    let lost = null, lose
+    const gone = new Promise((_, reject) => { lose = reject })
+    gone.catch(() => {})
     const listener = (m) => {
       events.push(m)
-      if (m.method === 'Inspector.targetCrashed') crash(new CdpError('crashed', 'the page crashed (Inspector.targetCrashed)'))
+      if (!lost && m.method === 'Inspector.targetCrashed') lose((lost = new CdpError('crashed', 'the page crashed (Inspector.targetCrashed)')))
+      if (!lost && m.method === 'Inspector.detached') lose((lost = new CdpError('detached', `the page's target detached (Inspector.detached: ${m.params?.reason ?? 'no reason'})`)))
       for (const w of [...waiters]) if (w.method === m.method) { waiters.splice(waiters.indexOf(w), 1); w.resolve(m) }
     }
     browser.on(sessionId, listener)
-    const send = (method, params = {}) => Promise.race([browser.send(method, params, sessionId), crashed])
+    const send = (method, params = {}) => Promise.race([browser.send(method, params, sessionId), gone])
     const waitFor = (method) => {
       let timer
       const got = new Promise((resolve) => waiters.push({ method, resolve }))
       const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new CdpError('timeout', `${method} did not arrive within ${COMMAND_MS} ms`)), COMMAND_MS) })
-      return Promise.race([got, late, crashed, ctx.stopped]).finally(() => clearTimeout(timer))
+      return Promise.race([got, late, gone, ctx.stopped]).finally(() => clearTimeout(timer))
     }
     let world = null
     const evaluate = async (expression) => {
@@ -1039,6 +1050,9 @@ async function runView(browser, ctx, v, rec) {
         }
       }
       if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls, driven))
+    } catch (e) {
+      // A lost target ends the view through the retry rule, whatever error it caused first.
+      throw lost ?? e
     } finally {
       // Events that arrived after the last drain, while the last screenshot or the controls read
       // was pending or before an error stopped the view, are measured faults of the state it ended
@@ -1046,12 +1060,17 @@ async function runView(browser, ctx, v, rec) {
       drain()
       browser.off(sessionId, listener)
     }
+    // No await stands between the last command's reply and the listener's removal, so a crash or
+    // detach that came in the same chunk as that reply, after it, is in `lost` by now.
+    if (lost) throw lost
   } finally {
     try { await browser.send('Target.disposeBrowserContext', { browserContextId }, undefined, { timeout: 5000 }) } catch {}
   }
 }
 
-const hang = (e) => e instanceof CdpError && (e.kind === 'timeout' || e.kind === 'crashed')
+// The view errors the retry rule covers, with the fault each one is when it happens twice.
+const HANG = { timeout: 'deadline', crashed: 'target-crashed', detached: 'target-detached' }
+const hang = (e) => e instanceof CdpError && Object.hasOwn(HANG, e.kind)
 
 // One view with the retry rule. Each attempt's record joins recs before it runs, so runChecks
 // sees every fault it measured even when the attempt, or the whole run, stops early. Returns
@@ -1072,7 +1091,7 @@ async function viewWithRetry(browser, ctx, v, recs) {
     } catch (e2) {
       if (!hang(e2)) throw e2
       if (!(await browser.ping())) throw new CdpError('deadline', `${v.name}: ${e2.message}, and the browser stopped answering`)
-      cellOf(again, v.name, again.state).faults.push({ kind: e2.kind === 'crashed' ? 'target-crashed' : 'deadline', detail: `${e2.message}, twice, in a browser that still answers` })
+      cellOf(again, v.name, again.state).faults.push({ kind: HANG[e2.kind], detail: `${e2.message}, twice, in a browser that still answers` })
       return { flaky: null }
     }
   }
