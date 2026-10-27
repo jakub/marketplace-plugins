@@ -30,7 +30,8 @@
 //   - front matter: a `---` block on the document's first line
 //   - fenced code: ``` or ~~~, closed by the next fence line of either kind
 //   - ATX headings `#` to `######`, thematic breaks (`---`, `***`, `___`)
-//   - pipe tables: rows starting with `|`, with the separator row dropped
+//   - pipe tables: rows starting with `|`, with the delimiter row dropped (the second row, when
+//     every cell is hyphens with an optional colon at either end)
 //   - blockquotes: one level of `>`, consecutive lines joined
 //   - list items: `-`, `*`, `+`, `1.` or `1)`, one indent level per 2 leading spaces
 //   - indented lines under a list item, one level per 3 leading spaces
@@ -378,6 +379,12 @@ function cells(row) {
   return t.split(/(?<!\\)\|/).map((c) => c.trim())
 }
 
+// GFM's delimiter row, the one row a table drops: its second row, when every cell is one or more
+// hyphens with an optional colon at either end. It is split by cells(), as every row is set, so a
+// body row of `---` cells or a row whose first cell is `--keep` stays content.
+const DELIM = /^:?-+:?$/
+const delimiter = (row, i) => i === 1 && cells(row).every((c) => DELIM.test(c))
+
 const indent = (n) => `plans-i${Math.min(6, Math.max(1, n))}`
 
 export function renderBlocks(B, chap) {
@@ -400,7 +407,7 @@ export function renderBlocks(B, chap) {
       case 'table': {
         const clean = b.lines.every((ln) => ln.every((x) => x.t === '='))
         if (!clean) { h += pre(b.lines.map(preLine).join('\n')); break }
-        const rows = b.lines.map(aft).filter((r) => !/^\s*\|?\s*:?-{2,}/.test(r)).map(cells)
+        const rows = b.lines.map(aft).filter((r, i) => !delimiter(r, i)).map(cells)
         h += '<div class="plans-tw" tabindex="0"><table>' + rows.map((r, ri) => {
           const tg = ri === 0 ? 'th' : 'td'
           return '<tr>' + r.map((c) => `<${tg}>${inl(c, { c: false, b: false })}</${tg}>`).join('') + '</tr>'

@@ -1,9 +1,9 @@
 // Prose diff: skills/doc/kit/diff.mjs rebuilds both inputs byte for byte from its ops, keeps a
 // literal U+2029 as text, draws one ¶ for a paragraph merge, turns a cut over noteWords into a
 // numbered caret and one margin note, falls back to pre.plans-pre for a changed table, fence or
-// rule, keeps every cut of 10,000 seeded pairs in a del, labels a hunk coarse past the pair cap
-// after trimming, escapes its input, and writes no style attribute and no class outside the
-// plans-* contract.
+// rule, drops only the delimiter row of an unchanged table, keeps every cut of 10,000 seeded
+// pairs in a del, labels a hunk coarse past the pair cap after trimming, escapes its input, and
+// writes no style attribute and no class outside the plans-* contract.
 
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -113,6 +113,26 @@ export default async function ({ ROOT, check }) {
     check('an unchanged table renders in div.plans-tw', u.html.includes('<div class="plans-tw" tabindex="0"><table>') && !u.html.includes('plans-pre'), u.html)
     const f = run('Text.\n\n```js\nconst a = 1\n```\n', 'Text.\n\n```js\nconst a = 2\n```\n')
     check('a changed fence falls back to pre.plans-pre', /<pre class="plans-pre">[^]*<del class="plans-cut">1<\/del><ins class="plans-new">2<\/ins>[^]*<\/pre>/.test(f.html), f.html)
+  }
+
+  // Only the delimiter row of an unchanged table is dropped: the second row, when every cell is
+  // hyphens with an optional colon at either end. A body row that starts with hyphens is content.
+  {
+    const rowsOf = (h) => [...h.matchAll(/<tr>([^]*?)<\/tr>/g)].map((m) => [...m[1].matchAll(/<t[hd]>([^]*?)<\/t[hd]>/g)].map((c) => c[1]).join(' | '))
+    const flags = '| flag | meaning |\n| --- | --- |\n| --keep | retain forever |\n| --ttl | expire later |\n'
+    const want = 'flag | meaning,--keep | retain forever,--ttl | expire later'
+    const alone = run(flags, flags)
+    check('an unchanged table keeps its --flag rows', rowsOf(alone.html).join(',') === want, alone.html)
+    const beside = run(`Intro.\n\n${flags}`, `Intro changed.\n\n${flags}`)
+    check('an unchanged table beside an edit keeps its --flag rows', rowsOf(beside.html).join(',') === want && beside.html.includes('<ins class="plans-new"> changed</ins>'), beside.html)
+    for (const delim of ['| --- | --- |', '|:---|---:|', '| :-: | - |', '|-|-|']) {
+      const t = `| a | b |\n${delim}\n| 1 | 2 |\n`
+      const d = run(t, t)
+      check(`the delimiter row ${delim} is dropped`, rowsOf(d.html).join(',') === 'a | b,1 | 2', d.html)
+    }
+    const body = '| a | b |\n|---|---|\n| --- | --- |\n| - | -- |\n'
+    const kept = run(body, body)
+    check('a body row of hyphen cells stays a row', rowsOf(kept.html).join(',') === 'a | b,--- | ---,- | --', kept.html)
   }
 
   // A table or fence on either side selects the fallback, including one that only the before text
