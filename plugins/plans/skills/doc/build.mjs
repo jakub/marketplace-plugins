@@ -72,6 +72,11 @@
 //     524,288 bytes or not UTF-8. Each distinct file is read once.
 //   - a media `src` on img, video, audio or source holding a named entity other than the five the
 //     scanner decodes
+//   - in Document mode, no `<meta name="viewport">` outside a template whose content sets
+//     `width=device-width` (kind `viewport`). Without it a phone, and the 390 px views, lay the
+//     page out 980 px wide, so page-overflow and clipped mean little there. The Plans viewer
+//     serves a Document top-level, so a reader's phone sees the same. Inline mode doesn't need it,
+//     because T3 renders an Inline page in an iframe.
 //   - in Inline mode, any kit hook (data-ask, data-note, data-ask-summary, data-respond), or
 //     output over 500,000 UTF-8 bytes
 //   - SVG or MathML content check/scan.mjs can't follow (kind `foreign`): markup inside an SVG
@@ -136,6 +141,10 @@ export const KIT_FILES = {
 }
 const USAGE = 'usage: build.mjs [--inline] [--out FILE] [--shots DIR] [--json] [--] INPUT'
 const MEDIA_TAGS = new Set(['img', 'video', 'audio', 'source'])
+// width=device-width as one key in a viewport content list, which Chromium reads case-insensitively
+// with commas, semicolons or spaces between keys and spaces allowed around `=`.
+const DEVICE_WIDTH = /(?:^|[\s,;])width\s*=\s*device-width(?=$|[\s,;])/i
+const VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1">'
 const RAW_NAMES = { script: '<script>', style: '<style>', title: '<title>', textarea: '<textarea>' }
 
 const header = (name) => `/* plans-kit:${name} */`
@@ -254,6 +263,13 @@ export function assemble(text, { inline = false, kit, readSibling }) {
     if (headStart === -1 || headEnd === -1 || ix < headStart || ix > headEnd) {
       fault('marker', marker.start, `the ${MARKER} marker must sit between <head> and </head>`)
     }
+  }
+
+  // The viewport, in Document mode.
+  if (!inline) {
+    const fits = tokens.some((t) => t.type === 'start' && t.name === 'meta' && !t.template &&
+      attr(t, 'name')?.value.trim().toLowerCase() === 'viewport' && DEVICE_WIDTH.test(attr(t, 'content')?.value ?? ''))
+    if (!fits) fault('viewport', null, `no viewport meta with width=device-width: put ${VIEWPORT_META} in <head>, or the page lays out 980 px wide on a phone`)
   }
 
   // Start tags: built-code markers, kit hooks, media and diff placeholders.

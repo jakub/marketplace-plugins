@@ -19,8 +19,9 @@ import { pathToFileURL } from 'node:url'
 const OLD = 'previous output, kept byte for byte\n'
 const sha = (b) => createHash('sha256').update(b).digest('hex')
 
-const page = ({ head = '<!-- plans:kit -->', body = '<p>Body text.</p>', title = 'Fixture', before = '' } = {}) =>
-  `${before}<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>${title}</title>\n${head}\n</head>\n<body>\n${body}\n</body>\n</html>\n`
+const VIEWPORT = '<meta name="viewport" content="width=device-width, initial-scale=1">'
+const page = ({ head = '<!-- plans:kit -->', body = '<p>Body text.</p>', title = 'Fixture', before = '', viewport = VIEWPORT } = {}) =>
+  `${before}<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n${viewport}\n<title>${title}</title>\n${head}\n</head>\n<body>\n${body}\n</body>\n</html>\n`
 
 export default async function ({ ROOT, check, skip }) {
   const DOC = join(ROOT, 'plugins/plans/skills/doc')
@@ -193,6 +194,13 @@ export default async function ({ ROOT, check, skip }) {
       refuse(`a plans-build meta inside an <svg> <${el}>`, { input: page({ body: `<svg><${el}><meta name="plans-build" content="old"></${el}></svg>` }), kind: 'built' })
     }
 
+    // A Document needs a viewport meta with width=device-width, or the 390 px views lay it out at
+    // 980 px, as a phone in the Plans viewer would.
+    refuse('a Document page with no viewport meta', { input: page({ viewport: '' }), kind: 'viewport' })
+    refuse('a viewport meta without width=device-width', { input: page({ viewport: '<meta name="viewport" content="initial-scale=1">' }), kind: 'viewport' })
+    refuse('a viewport meta with width=980', { input: page({ viewport: '<meta name="viewport" content="width=980">' }), kind: 'viewport' })
+    refuse('a viewport meta inside a <template>', { input: page({ viewport: '<template><meta name="viewport" content="width=device-width"></template>' }), kind: 'viewport' })
+
     // Media.
     refuse('a media src holding an unknown named entity', { input: page({ body: '<img src="a&nbsp;b.png" alt="">' }), kind: 'media' })
 
@@ -363,6 +371,19 @@ export default async function ({ ROOT, check, skip }) {
       } else {
         skip('pinDir with /proc', '/proc/self/fd is missing on this platform')
       }
+    }
+
+    // The viewport rule's accepted forms, and Inline mode, which T3 renders in an iframe.
+    for (const [what, viewport, args] of [
+      ['an Inline page with no viewport meta', '', ['--inline']],
+      ['a viewport meta with its keys reordered', '<meta name="viewport" content="initial-scale=1, width=device-width">', []],
+      ['a viewport meta with spaces around =', '<meta name="viewport" content="width = device-width">', []],
+      ['an upper-case viewport name and value', '<meta name="Viewport" content="WIDTH=DEVICE-WIDTH">', []],
+    ]) {
+      const d = fresh()
+      writeFileSync(join(d, 'p.html'), page({ viewport }))
+      const r = run(['--json', ...args, join(d, 'p.html')])
+      check(`build: ${what} builds`, r.status === 3 && r.json?.result === 'unknown', `${r.status} ${r.stderr}`)
     }
 
     // Foreign content the scanner follows builds: the guide's figure shape, MathML, CDATA in SVG
