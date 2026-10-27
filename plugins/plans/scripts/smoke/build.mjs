@@ -128,7 +128,7 @@ export default async function ({ ROOT, check, skip }) {
     }
 
     // --- Refusals: exit 1, --json fail, nothing written, the old output and its hard link intact.
-    const refuse = (what, { input = page(), name = 'p.html', setup, args = [], kind, inline = false, timeout } = {}) => {
+    const refuse = (what, { input = page(), name = 'p.html', setup, args = [], kind, also = [], inline = false, timeout } = {}) => {
       const d = fresh()
       const inPath = join(d, name)
       if (input !== null) writeFileSync(inPath, input)
@@ -141,9 +141,10 @@ export default async function ({ ROOT, check, skip }) {
       const r = run([...(inline ? ['--inline'] : []), '--json', ...args, inPath], base, { timeout })
       const kept = readFileSync(out, 'utf8') === OLD && statSync(out).ino === ino && readFileSync(join(d, 'linked.html'), 'utf8') === OLD
       const after = readdirSync(d).sort().join(',')
-      const ok = r.status === 1 && r.json?.result === 'fail' && (!kind || r.json?.reason?.kind === kind) && r.json?.digest === null && r.stderr.trim() !== ''
+      const named = new Set(r.json?.checks?.map((c) => c.name))
+      const ok = r.status === 1 && r.json?.result === 'fail' && (!kind || r.json?.reason?.kind === kind) && also.every((k) => named.has(k)) && r.json?.digest === null && r.stderr.trim() !== ''
       check(`build refuses ${what}`, ok && kept && before === after && temps(d).length === 0,
-        `status ${r.status} kind ${r.json?.reason?.kind} kept ${kept} files ${before} → ${after} stderr ${r.stderr.trim()}`)
+        `status ${r.status} kind ${r.json?.reason?.kind} also ${[...named].join('+')} kept ${kept} files ${before} → ${after} stderr ${r.stderr.trim()}`)
       return r
     }
 
@@ -172,11 +173,25 @@ export default async function ({ ROOT, check, skip }) {
     refuse('a marker inside another comment', { input: page({ head: '<!-- note <!-- plans:kit --> -->' }), kind: 'marker' })
     refuse('a real marker plus one inside <style>', { input: page({ head: '<!-- plans:kit -->\n<style>/* <!-- plans:kit --> */</style>' }), kind: 'marker' })
     refuse('a page with no <head> tags', { input: '<!doctype html><title>T</title><!-- plans:kit --><p>x</p>\n', kind: 'marker' })
+    // A template's content is inert, so a marker there would leave the kit dead.
+    refuse('a marker inside a <template> in <head>', { input: page({ head: '<template><!-- plans:kit --></template>' }), kind: 'marker' })
+    refuse('a marker after a nested template, still inside the outer one', { input: page({ head: '<template><template></template><!-- plans:kit --></template>' }), kind: 'marker' })
+    refuse('a live marker plus one inside a <template>', { input: page({ head: '<!-- plans:kit -->\n<template><!-- plans:kit --></template>' }), kind: 'marker' })
+    // Foreign content: CDATA is text there, and a comment there is no place for the kit.
+    refuse('a marker inside CDATA in an <svg> in <head>', { input: page({ head: '<svg><![CDATA[> <!-- plans:kit --> ]]></svg>' }), kind: 'marker' })
+    refuse('a marker inside an <svg>', { input: page({ head: '<svg><!-- plans:kit --></svg>' }), kind: 'marker' })
+    refuse('a marker inside an <svg> <desc>', { input: page({ head: '<svg><desc>text <!-- plans:kit --></desc></svg>' }), kind: 'marker' })
 
     // Built code in the input.
     refuse('an input holding a plans-build meta', { input: page({ head: '<!-- plans:kit -->\n<meta name="plans-build" content="">' }), kind: 'built' })
     refuse('an input holding a kit header line', { input: page({ body: '<pre>/* plans-kit:look.css */</pre>' }), kind: 'built' })
     refuse('an input holding a data-plans-kit style', { input: page({ head: '<!-- plans:kit -->\n<style data-plans-kit>p{}</style>' }), kind: 'built' })
+    // In foreign content a style, script or textarea is no raw-text element, and an SVG title
+    // holds HTML, so a meta in any of them is live.
+    refuse('a plans-build meta inside an <svg> <title>', { input: page({ body: '<svg><title><meta name="plans-build" content="old"></title></svg>' }), kind: 'built', also: ['foreign'] })
+    for (const el of ['style', 'script', 'textarea', 'xmp']) {
+      refuse(`a plans-build meta inside an <svg> <${el}>`, { input: page({ body: `<svg><${el}><meta name="plans-build" content="old"></${el}></svg>` }), kind: 'built' })
+    }
 
     // Media.
     refuse('a media src holding an unknown named entity', { input: page({ body: '<img src="a&nbsp;b.png" alt="">' }), kind: 'media' })
@@ -186,6 +201,14 @@ export default async function ({ ROOT, check, skip }) {
       refuse(`the kit hook ${hook.split('=')[0]} in Inline mode`, { input: page({ body: `<div ${hook}></div>` }), inline: true, kind: 'inline-hook' })
     }
     refuse('Inline output over 500,000 bytes', { input: page({ body: `<p>${'x'.repeat(500000)}</p>` }), inline: true, kind: 'inline-size' })
+    refuse('a data-note textarea inside an <svg> <title> in Inline mode', { input: page({ body: '<svg><title><textarea data-note="x"></textarea></title></svg>' }), inline: true, kind: 'inline-hook', also: ['foreign'] })
+    refuse('a data-note div inside an <svg> <style> in Inline mode', { input: page({ body: '<svg><style><div data-note="n"></div></style></svg>' }), inline: true, kind: 'inline-hook' })
+
+    // Foreign content the scanner can't follow is refused with its own kind.
+    refuse('markup inside an <svg> <desc>', { input: page({ body: '<svg viewBox="0 0 8 8"><desc>a <b>bold</b> word</desc></svg>' }), kind: 'foreign' })
+    refuse('markup inside an <svg> <foreignObject>', { input: page({ body: '<svg viewBox="0 0 8 8"><foreignObject><div>x</div></foreignObject></svg>' }), kind: 'foreign' })
+    refuse('markup inside a MathML <mi>', { input: page({ body: '<math><mi><span>x</span></mi></math>' }), kind: 'foreign' })
+    refuse('an end tag that closes no open <svg> element', { input: page({ body: '<div><svg viewBox="0 0 8 8"><g></div>' }), kind: 'foreign' })
 
     // Diff placeholders.
     const ph = (attrs, content = '') => page({ body: `<div ${attrs}>${content}</div>` })
@@ -340,6 +363,20 @@ export default async function ({ ROOT, check, skip }) {
       } else {
         skip('pinDir with /proc', '/proc/self/fd is missing on this platform')
       }
+    }
+
+    // Foreign content the scanner follows builds: the guide's figure shape, MathML, CDATA in SVG
+    // text, a breakout that leaves the svg, and templates outside the marker's way.
+    {
+      const d = fresh()
+      const figure = '<svg viewBox="0 0 80 40" role="img"><title>Fig 1: two boxes</title><desc>One box & another</desc>' +
+        '<style>.f1 text { font-size: 14px; }</style><defs><marker id="f1-m"><path d="M0 0L8 4z"/></marker></defs>' +
+        '<g class="f1"><rect x="0" y="0" width="8" height="8"/><text x="8" y="16">a &lt; b <tspan>c</tspan></text>' +
+        '<text><![CDATA[x <y> z]]></text><path d="M0 0" marker-end="url(#f1-m)"/></g></svg>'
+      const body = `${figure}\n<math><mi>x</mi><mo>=</mo><mn>1</mn></math>\n<svg viewBox="0 0 8 8"><title>t</title></svg><p>after</p>\n<template><p>inert</p></template>`
+      writeFileSync(join(d, 'p.html'), page({ body, head: '<!-- plans:kit -->\n<template><p>x</p></template>' }))
+      const r = run(['--json', join(d, 'p.html')])
+      check('build: SVG figures, MathML, CDATA in SVG text and templates away from the marker build', r.status === 3 && r.json?.result === 'unknown', `${r.status} ${r.stderr}`)
     }
 
     // Diff expansion.

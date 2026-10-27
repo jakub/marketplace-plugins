@@ -57,8 +57,10 @@
 // Refusals, each exit 1 with one line per fault on stderr and nothing written:
 //   - INPUT missing, not `.html`, a symlink, not a regular file (a FIFO included), or not UTF-8
 //   - the `--out` rules above
-//   - no marker comment, more than one, a marker text inside a raw-text element or another
-//     comment, or a marker outside the first `<head>` ... `</head>`
+//   - no marker comment, more than one, a marker text inside a raw-text element, a CDATA section
+//     or another comment, a marker inside a `<template>` or inside SVG or MathML content, or a
+//     marker outside the first `<head>` ... `</head>`. The one marker must be a live comment in
+//     HTML content.
 //   - input that already holds built kit code: a `plans-build` meta, a `data-plans-kit`
 //     attribute, or a `/* plans-kit:<kit file> */` line
 //   - a kit file that holds `</script`, `</style` or `<!--` in any case, or lacks its header line
@@ -72,6 +74,9 @@
 //     scanner decodes
 //   - in Inline mode, any kit hook (data-ask, data-note, data-ask-summary, data-respond), or
 //     output over 500,000 UTF-8 bytes
+//   - SVG or MathML content check/scan.mjs can't follow (kind `foreign`): markup inside an SVG
+//     title, desc or foreignObject or a MathML text element, or an end tag that closes no open
+//     foreign element. scan.mjs's header says why.
 //
 // The browser check. After the static checks pass, check/run.mjs loads the exact final Buffer,
 // served from memory by check/serve.mjs, in Chromium through check/cdp.mjs, across its view and
@@ -219,7 +224,7 @@ export function assemble(text, { inline = false, kit, readSibling }) {
     if (at !== -1) fault('built', at, `holds the kit line ${header(name)}: build from the source page, not from a built one`)
   }
 
-  const { tokens } = scan(text)
+  const { tokens, unsure } = scan(text)
 
   // The marker.
   const comments = tokens.filter((t) => t.type === 'comment' && t.raw === MARKER)
@@ -233,10 +238,15 @@ export function assemble(text, { inline = false, kit, readSibling }) {
     if (raw) { fault('marker', at, `the ${MARKER} marker sits inside ${RAW_NAMES[raw.name] ?? `<${raw.name}>`}`); continue }
     const inComment = tokens.find((t) => t.type === 'comment' && t.start < at && at < t.end)
     if (inComment) { fault('marker', at, `the ${MARKER} marker sits inside another comment`); continue }
+    if (tokens.some((t) => t.type === 'cdata' && t.start < at && at < t.end)) { fault('marker', at, `the ${MARKER} marker sits inside a CDATA section, which the browser keeps as text`); continue }
     fault('marker', at, `the ${MARKER} marker sits inside a tag`)
   }
   if (rawOccurrences.length === 0) fault('marker', null, `no ${MARKER} marker: put exactly one in <head>`)
   if (comments.length > 1) for (const c of comments.slice(1)) fault('marker', c.start, `the ${MARKER} marker appears ${comments.length} times`)
+  for (const c of comments) {
+    if (c.template) fault('marker', c.start, `the ${MARKER} marker sits inside a <template>, whose content never runs: put it in <head> itself`)
+    if (c.foreign) fault('marker', c.start, `the ${MARKER} marker sits inside <svg> or <math> content: put it in <head>, outside any figure`)
+  }
   let marker = null
   if (comments.length === 1) {
     marker = comments[0]
@@ -315,6 +325,9 @@ export function assemble(text, { inline = false, kit, readSibling }) {
     const PREFIX = '<div class="plans-diff">'
     replacements.push({ start: t.start, end: next.end, parts: [open + html.slice(PREFIX.length)] })
   }
+
+  // Foreign content the scanner can't follow, after the specific faults so those lead.
+  for (const u of unsure) fault('foreign', u.start, u.message)
 
   if (faults.length) return { faults, buffer: null, buildId: null, media, skippedMedia }
 
