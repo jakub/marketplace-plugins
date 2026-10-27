@@ -1,13 +1,16 @@
-// The builder's static half, Node only and never skipped. Every CLI case spawns
-// skills/doc/build.mjs with process.execPath on pages written into a fresh mkdtemp directory,
-// always with PLANS_CHROMIUM=/nonexistent, so a static success is exit 3 with kind no-chromium.
+// The builder's static half, Node only and never skipped but for the one case below. Every CLI
+// case spawns skills/doc/build.mjs with process.execPath on pages written into a fresh mkdtemp
+// directory, always with PLANS_CHROMIUM=/nonexistent, so a static success is exit 3 with kind
+// no-chromium.
 // It covers argv (exit 2), every refusal (exit 1, nothing written, a previous output and its hard
 // link kept byte for byte, no temp file left), the marker, the --out rules, diff placeholders,
 // the build id and digest recomputed from the written file, the two assemblies, the pure helpers
 // in memory, static rules over kit/ask.js, findChromium and the MEDIA table. Every spawn has a
 // SIGKILL deadline, so a build that blocks fails its check instead of hanging the smoke. A few
 // cases put a stand-in for Chromium in PLANS_CHROMIUM: a shell script that acts where the browser
-// check would run, then exits 1, so the check is unknown and nothing needs a real browser.
+// check would run, then exits 1, so the check is unknown and nothing needs a real browser. The one
+// exception is a passing build whose --shots write fails, which needs the real browser check to
+// pass: it runs with the Chromium findChromium finds, and is skipped when there is none.
 
 import { createHash } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -338,6 +341,49 @@ export default async function ({ ROOT, check, skip }) {
         r.status === 3 && readFileSync(join(shots, '390-light-initial.png'), 'utf8') === 'new' && readFileSync(join(shots, 'kept.png'), 'utf8') === OLD,
         `status ${r.status} files ${files} ${r.stderr}`)
       check('build --shots: the staging directory is gone afterwards', files === '390-light-initial.png,kept.png,result.json', files)
+    }
+
+    // A --shots write that fails is in the printed result as a failed write check, and it is
+    // never a pass. A directory at result.json or at a PNG's name makes the rename fail.
+    {
+      const writes = (r) => (r.json?.checks ?? []).filter((c) => c.name === 'write' && c.result === 'fail').map((c) => c.detail)
+      const d = fresh()
+      writeFileSync(join(d, 'p.html'), page())
+      mkdirSync(join(d, 'shots', 'result.json'), { recursive: true })
+      const r = run(['--json', '--shots', 'shots', join(d, 'p.html')])
+      check('build --shots: a result.json that cannot be written is a write check in the printed result',
+        r.status === 3 && r.json?.result === 'unknown' && writes(r).some((w) => /result\.json \(EISDIR\)$/.test(w)), `status ${r.status} ${r.stdout}`)
+      const f = fresh()
+      writeFileSync(join(f, 'p.html'), page({ head: '' }))
+      mkdirSync(join(f, 'shots', 'result.json'), { recursive: true })
+      const s = run(['--json', '--shots', 'shots', join(f, 'p.html')])
+      check('build --shots: a refusal whose result.json cannot be written stays exit 1 and names the write',
+        s.status === 1 && s.json?.result === 'fail' && s.json?.reason?.kind === 'marker' && writes(s).length === 1, `status ${s.status} ${s.stdout}`)
+      const g = fresh(), shots = join(g, 'shots')
+      writeFileSync(join(g, 'p.html'), page())
+      mkdirSync(join(shots, '390-light-initial.png'), { recursive: true })
+      const chromium = fakeChromium(g, `for s in "${shots}"/.plans-shots.*.tmp; do printf new > "$s/390-light-initial.png"; done`)
+      const t = run(['--json', '--shots', 'shots', join(g, 'p.html')], base, { env: { PLANS_CHROMIUM: chromium } })
+      check('build --shots: a screenshot that cannot be put in place is a write check in the printed result',
+        t.status === 3 && writes(t).some((w) => /390-light-initial\.png \(EISDIR\)$/.test(w)), `status ${t.status} ${t.stdout}`)
+
+      // A build that would pass needs a real browser, which the static half never requires.
+      const real = findChromium(process.env, process.platform)
+      if (real.reason) {
+        skip('build --shots: a passing build whose evidence write fails exits 3', 'no Chromium for the browser check')
+      } else {
+        for (const [what, blocked] of [['result.json', 'result.json'], ['screenshot', '390-light-initial.png']]) {
+          const h = fresh()
+          writeFileSync(join(h, 'p.html'), page())
+          mkdirSync(join(h, 'shots', blocked), { recursive: true })
+          const u = run(['--json', '--shots', 'shots', join(h, 'p.html')], base, { env: { PLANS_CHROMIUM: real.path }, timeout: 240000 })
+          const receipt = readJson(join(h, 'shots', 'result.json'))
+          check(`build --shots: a passing build whose ${what} cannot be written exits 3, written and unknown`,
+            u.status === 3 && u.json?.result === 'unknown' && u.json?.reason?.kind === 'write' && u.json?.digest !== null &&
+            existsSync(join(h, 'p.built.html')) && (blocked === 'result.json' || receipt?.result === 'unknown'),
+            `status ${u.status} result ${u.json?.result} reason ${JSON.stringify(u.json?.reason)} receipt ${JSON.stringify(receipt)} ${u.stderr}`)
+        }
+      }
     }
 
     // The input's directory and the shots directory are pinned when the build starts. The stand-in

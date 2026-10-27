@@ -100,7 +100,7 @@
 // temp file before the exit.
 //
 // Exit codes: 0 written and every check passed, 1 a fault with nothing written, 2 usage, 3 written
-// with the browser result unknown.
+// with the result unknown, from the browser check or from a --shots write below.
 //
 // `--json` prints one object on stdout: result (pass | fail | unknown), reason {kind, detail},
 // buildId, digest, out, bytes, matrix [{view, state, faults[]}], checks [{name, result, detail}],
@@ -114,7 +114,11 @@
 // file and rename. The browser check writes its PNGs into a fresh `.plans-shots.<random hex>.tmp`
 // directory inside DIR, and the builder renames each into DIR, then removes that directory, which
 // the signal and exit handlers also remove. A hard link or symlink at any of those names keeps its
-// old target.
+// old target. Those writes finish before the verdict is printed, and a failed one, a PNG rename or
+// result.json, is never a pass: it adds a `write` check that fails, and a build that would pass
+// becomes unknown with reason kind `write` and exits 3, because the HTML is already written by
+// then. A failed build stays exit 1. result.json records the result after any failed PNG; its own
+// failure shows only in the printed result and the exit code.
 //
 // The module exports its pure helpers for smoke imports and runs the CLI only when it is the entry
 // point: kitRefusals(name, text), readKit(), assemble(text, opts), pinDir(path, procRoot),
@@ -500,21 +504,25 @@ function stageShots(dir) {
   return { name, path, pin: pinDir(path) }
 }
 
-// Renames every staged PNG into the shots directory, then removes the staging directory.
+// Renames every staged PNG into the shots directory, then removes the staging directory. Returns
+// one message per screenshot it could not put in place.
 function settleShots(dir, staging) {
+  const lost = []
   let names = []
   try { names = readdirSync(staging.pin.at()) } catch (e) {
-    process.stderr.write(`build.mjs: cannot read the staged screenshots in ${join(dir.path, staging.name)} (${e.code ?? 'error'})\n`)
+    lost.push(`cannot read the staged screenshots in ${join(dir.path, staging.name)} (${e.code ?? 'error'})`)
   }
   for (const name of names) {
     try { renameSync(staging.pin.at(name), dir.at(name)) } catch (e) {
-      process.stderr.write(`build.mjs: cannot write ${join(dir.path, name)} (${e.code ?? 'error'})\n`)
+      lost.push(`cannot write ${join(dir.path, name)} (${e.code ?? 'error'})`)
     }
   }
+  for (const m of lost) process.stderr.write(`build.mjs: ${m}\n`)
   closeSync(staging.pin.fd)
   try { rmSync(dir.at(staging.name), { recursive: true, force: true }) } catch {}
   scratch.delete(staging.path)
   syncDir(dir)
+  return lost
 }
 
 // The output path for an input, or a Refusal. inDir is the input's pinned directory.
@@ -550,14 +558,28 @@ async function main(argv) {
   const result = { result: 'fail', reason: null, buildId: null, digest: null, out: null, bytes: null, matrix: [], checks: [], copy: null, undriven: [], skippedMedia: [] }
   const input = resolve(opts.input)
   let shots = null
+  const shotsLost = []
+  // Finishes the --shots writes, lets a failed one change the result as the header says, then
+  // prints the result.
   const finish = (code) => {
-    if (opts.json) process.stdout.write(JSON.stringify(result) + '\n')
+    const lost = (detail) => {
+      result.checks.push({ name: 'write', result: 'fail', detail })
+      if (code !== 0) return
+      code = 3
+      result.result = 'unknown'
+      result.reason = { kind: 'write', detail }
+      process.stderr.write(`build.mjs: the --shots evidence is incomplete, so the result is unknown. Exit 3 is never a pass.\n`)
+    }
+    for (const m of shotsLost) lost(m)
     if (shots) {
       const receipt = Buffer.from(JSON.stringify({ buildId: result.buildId, result: result.result, reason: result.reason }, null, 2) + '\n', 'utf8')
       try { replaceFile(shots, 'result.json', receipt) } catch (e) {
-        process.stderr.write(`build.mjs: cannot write ${join(shots.path, 'result.json')} (${e.code ?? 'error'})\n`)
+        const m = `cannot write ${join(shots.path, 'result.json')} (${e.code ?? 'error'})`
+        process.stderr.write(`build.mjs: ${m}\n`)
+        lost(m)
       }
     }
+    if (opts.json) process.stdout.write(JSON.stringify(result) + '\n')
     return code
   }
   const refuse = (faults) => {
@@ -624,7 +646,7 @@ async function main(argv) {
     }
     process.stderr.write(`build.mjs: checking ${basename(out)} in ${found.path}\n`)
     browser = await runChecks({ buffer: built.buffer, inline: opts.inline, dir, media: built.media, skippedMedia: built.skippedMedia, chromium: found.path, shots: stagedAt })
-    if (staging) settleShots(shots, staging)
+    if (staging) shotsLost.push(...settleShots(shots, staging))
   }
   result.matrix = browser.matrix
   result.checks.push(...browser.checks)
