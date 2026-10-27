@@ -1,75 +1,68 @@
-/* Theme tokens for hand-written Inline HTML (see ../show/SKILL.md). Paste the marked block into
-   the page's <style>, then style with var(--plans-*). The block is byte-identical to the one in
-   ../doc/runtime/htmlplan.css, and the plans smoke fails if the two drift. */
-/* plans-tokens:start */
-/* Theme tokens, shared byte for byte by skills/doc/runtime/htmlplan.css and skills/show/tokens.css.
-   Inside a T3 render each token reads the host's variable; standalone, it reads its --plans-fb-*
-   fallback. Light and dark change only the fallbacks. Mockup content keeps its own palette. */
+/* The plans palette. Two things read this file: hand-written `plans:show` Inline output, which
+   pastes it whole into its <style>, and the `plans:doc` builder, which inlines it ahead of the kit
+   CSS in both modes. Style with the --plans-* names below and nothing else.
+   Inside a T3 render each token reads the host's theme variable. A published Document never runs
+   under T3, so there every token reads its --plans-fb-* fallback: a technical drawing in cool
+   grays with one orange accent. Light and dark change only the fallbacks. Nothing here paints a
+   background: T3 output stays transparent, and only the Document frame paints --plans-fb-ground.
+   --plans-accent is for marks (rules, strike and underline lines, bars), at 3:1 or better on the
+   ground. Text that must be orange uses --plans-accent-text, at 4.5:1 or better. --plans-chart-*
+   is for multi-series data only. */
 :root {
-  --plans-fb-bg: #faf9f5; --plans-fb-card: #ffffff; --plans-fb-sunk: #f0eee6;
-  --plans-fb-ink: #141413; --plans-fb-ink-2: #3d3d3a; --plans-fb-ink-3: #73726c; --plans-fb-line: rgba(31,30,29,.15); --plans-fb-line-2: rgba(31,30,29,.08);
-  --plans-fb-accent: #c6613f; --plans-fb-on-accent: #ffffff; --plans-fb-accent-soft: #f6e7df;
-  --plans-fb-green: #2c7a39; --plans-fb-green-soft: #e2efdf;
-  --plans-fb-amber: #946410; --plans-fb-amber-soft: #f4ead2;
-  --plans-fb-red: #b3261e;   --plans-fb-red-soft: #f7dfdc;
-  --plans-fb-blue: #2a69b8;  --plans-fb-blue-soft: #dde8f5;
-  --plans-fb-purple: #6f4bb8; --plans-fb-purple-soft: #e8e1f5;
-  --plans-fb-float: 0 2px 8px rgba(0,0,0,.08);
-  --plans-bg: var(--background, var(--plans-fb-bg));
-  --plans-card: var(--card, var(--plans-fb-card));
-  --plans-sunk: var(--muted, var(--plans-fb-sunk));
+  --plans-fb-ground: #fff;
+  --plans-fb-panel: #f3f4f6;
+  --plans-fb-ink: #111418;
+  --plans-fb-ink-2: #3f454c;
+  --plans-fb-rule: #9aa1a9;
+  --plans-fb-accent: #f25500;
+  --plans-fb-accent-text: #b83a00;
+  --plans-fb-accent-surface: #feeee6;
+  --plans-fb-radius: 0;
+  --plans-fb-sans: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", system-ui, sans-serif;
+  --plans-fb-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --plans-fb-chart-1: #111418;
+  --plans-fb-chart-2: #f25500;
+  --plans-fb-chart-3: #23787a;
+  --plans-fb-chart-4: #8a6a00;
+  --plans-fb-chart-5: #6b737c;
+  --plans-fb-chart-6: #a83c74;
+
+  --plans-panel: var(--card, var(--plans-fb-panel));
+  --plans-code: var(--code-background, var(--plans-fb-panel));
   --plans-ink: var(--foreground, var(--plans-fb-ink));
-  --plans-ink-3: var(--muted-foreground, var(--plans-fb-ink-3));
-  --plans-line: var(--border, var(--plans-fb-line));
-  /* Between two host colours inside T3; standalone both sides are the fallback, so it is exact. */
-  --plans-ink-2: color-mix(in srgb, var(--foreground, var(--plans-fb-ink-2)) 80%, var(--background, var(--plans-fb-ink-2)));
-  --plans-line-2: color-mix(in srgb, var(--border, var(--plans-fb-line-2)) 50%, var(--background, var(--plans-fb-line-2)));
-  --plans-accent: var(--primary, var(--plans-fb-accent));
-  --plans-on-accent: var(--primary-foreground, var(--plans-fb-on-accent));
-  --plans-green: var(--success, var(--plans-fb-green));
-  --plans-amber: var(--warning, var(--plans-fb-amber));
-  --plans-red: var(--destructive, var(--plans-fb-red));
-  --plans-blue: var(--info, var(--plans-fb-blue));
-  --plans-purple: var(--plans-fb-purple);
-  --plans-accent-soft: color-mix(in srgb, var(--plans-accent) 12%, var(--plans-bg));
-  --plans-green-soft: color-mix(in srgb, var(--plans-green) 12%, var(--plans-bg));
-  --plans-amber-soft: var(--warning-surface, color-mix(in srgb, var(--plans-amber) 12%, var(--plans-bg)));
-  --plans-red-soft: var(--destructive-surface, color-mix(in srgb, var(--plans-red) 12%, var(--plans-bg)));
-  --plans-blue-soft: color-mix(in srgb, var(--plans-blue) 12%, var(--plans-bg));
-  --plans-purple-soft: color-mix(in srgb, var(--plans-purple) 12%, var(--plans-bg));
-  --plans-sans: "Anthropic Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --plans-serif: "Anthropic Serif", ui-serif, Georgia, "Times New Roman", serif;
-  --plans-mono: "Anthropic Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --plans-col: 740px; --plans-wide: 1080px; --plans-r: 12px; --plans-r-sm: 8px;
-  --plans-shadow: none; --plans-float: var(--plans-fb-float);
-  color-scheme: light dark;
-}
-@supports not (color: color-mix(in srgb, red 50%, blue)) {
-  :root {
-    --plans-ink-2: var(--plans-fb-ink-2); --plans-line-2: var(--plans-fb-line-2);
-    --plans-accent-soft: var(--plans-fb-accent-soft); --plans-green-soft: var(--plans-fb-green-soft);
-    --plans-amber-soft: var(--warning-surface, var(--plans-fb-amber-soft)); --plans-red-soft: var(--destructive-surface, var(--plans-fb-red-soft));
-    --plans-blue-soft: var(--plans-fb-blue-soft); --plans-purple-soft: var(--plans-fb-purple-soft);
-  }
+  --plans-ink-2: var(--muted-foreground, var(--plans-fb-ink-2));
+  --plans-rule: var(--border, var(--plans-fb-rule));
+  /* The rule color at 40% over transparent: on the fallback grounds, about #d6d9dc and #2d3136. */
+  --plans-hair: color-mix(in srgb, var(--border, var(--plans-fb-rule)) 40%, transparent);
+  --plans-accent: var(--warning, var(--plans-fb-accent));
+  --plans-accent-text: var(--plans-fb-accent-text);
+  --plans-accent-surface: var(--warning-surface, var(--plans-fb-accent-surface));
+  --plans-focus: var(--ring, var(--plans-fb-ink));
+  --plans-radius: var(--radius, var(--plans-fb-radius));
+  --plans-sans: var(--font-sans, var(--plans-fb-sans));
+  --plans-mono: var(--font-mono, var(--plans-fb-mono));
+  --plans-chart-1: var(--chart-1, var(--plans-fb-chart-1));
+  --plans-chart-2: var(--chart-2, var(--plans-fb-chart-2));
+  --plans-chart-3: var(--chart-3, var(--plans-fb-chart-3));
+  --plans-chart-4: var(--chart-4, var(--plans-fb-chart-4));
+  --plans-chart-5: var(--chart-5, var(--plans-fb-chart-5));
+  --plans-chart-6: var(--chart-6, var(--plans-fb-chart-6));
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --plans-fb-bg: #262624; --plans-fb-card: #30302e; --plans-fb-sunk: #1f1e1d;
-    --plans-fb-ink: #faf9f5; --plans-fb-ink-2: #c2c0b6; --plans-fb-ink-3: #9c9a92; --plans-fb-line: rgba(222,220,209,.15); --plans-fb-line-2: rgba(222,220,209,.08);
-    --plans-fb-accent: #d97757; --plans-fb-on-accent: #ffffff; --plans-fb-accent-soft: #46302a;
-    --plans-fb-green: #6fb37a; --plans-fb-green-soft: #26372a; --plans-fb-amber: #d9a441; --plans-fb-amber-soft: #3d331f;
-    --plans-fb-red: #e5776e; --plans-fb-red-soft: #432725; --plans-fb-blue: #7aa7e0; --plans-fb-blue-soft: #25313f;
-    --plans-fb-purple: #a990e0; --plans-fb-purple-soft: #322a45;
-    --plans-fb-float: 0 2px 8px rgba(0,0,0,.3);
+  :root {
+    --plans-fb-ground: #0f1113;
+    --plans-fb-panel: #181b1f;
+    --plans-fb-ink: #e8eaed;
+    --plans-fb-ink-2: #c0c6cc;
+    --plans-fb-rule: #5a616a;
+    --plans-fb-accent: #ff7a1f;
+    --plans-fb-accent-text: #ff8a4c;
+    --plans-fb-accent-surface: #2c1e14;
+    --plans-fb-chart-1: #e8eaed;
+    --plans-fb-chart-2: #ff7a1f;
+    --plans-fb-chart-3: #4fb8b3;
+    --plans-fb-chart-4: #d9b443;
+    --plans-fb-chart-5: #9aa2ab;
+    --plans-fb-chart-6: #e586b8;
   }
 }
-:root[data-theme="dark"] {
-  --plans-fb-bg: #262624; --plans-fb-card: #30302e; --plans-fb-sunk: #1f1e1d;
-  --plans-fb-ink: #faf9f5; --plans-fb-ink-2: #c2c0b6; --plans-fb-ink-3: #9c9a92; --plans-fb-line: rgba(222,220,209,.15); --plans-fb-line-2: rgba(222,220,209,.08);
-  --plans-fb-accent: #d97757; --plans-fb-on-accent: #ffffff; --plans-fb-accent-soft: #46302a;
-  --plans-fb-green: #6fb37a; --plans-fb-green-soft: #26372a; --plans-fb-amber: #d9a441; --plans-fb-amber-soft: #3d331f;
-  --plans-fb-red: #e5776e; --plans-fb-red-soft: #432725; --plans-fb-blue: #7aa7e0; --plans-fb-blue-soft: #25313f;
-  --plans-fb-purple: #a990e0; --plans-fb-purple-soft: #322a45;
-  --plans-fb-float: 0 2px 8px rgba(0,0,0,.3);
-}
-/* plans-tokens:end */

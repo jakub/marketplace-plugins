@@ -1,0 +1,156 @@
+/* plans-kit:look.css */
+/* The Document frame: page ground, measure, type and section rules, in the look of a technical
+   drawing. The builder inlines it in Document mode only, after tokens.css, and never in Inline
+   output, which T3 frames itself. It reads only the --plans-* names tokens.css declares.
+   The page is one main column of about 66ch. At 900px and up it gains an outer column on the
+   right, behind a hairline, for .margin notes and diff notes (.plans-note). Below 900px both fold
+   under the text they belong to.
+   Opt-in primitives, and the only ones:
+   - .title-block: the drawing's revision facts, real ones only. A <dl> whose children are
+     <div><dt>Label</dt><dd>Value</dd></div> cells, ruled into a grid.
+   - .margin: a short note for the outer column, with a hairline leader back to the text. Put it
+     as a <span> at the end of the paragraph it annotates, so it folds under that paragraph.
+   - .grid-rules: rules any element's children into a grid of hairline cells.
+   - .num: tabular figures, for numbers that line up.
+   There are no cards, accordions or layout components. Corners are square, and the only filled
+   panel is code. */
+html {
+  box-sizing: border-box;
+  background: var(--plans-fb-ground);
+  color-scheme: light dark;
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-top: 1rem;
+}
+*, *::before, *::after { box-sizing: inherit; }
+
+body {
+  position: relative;
+  box-sizing: content-box;
+  max-width: 66ch;
+  margin: 0 auto;
+  padding: 1.5rem 1.125rem 5rem;
+  color: var(--plans-ink);
+  font: 400 1rem/1.55 var(--plans-sans);
+  font-kerning: normal;
+  overflow-wrap: break-word;
+}
+
+h1, h2, h3, h4, h5, h6 { margin: 2.25rem 0 .8rem; font-weight: 700; line-height: 1.2; }
+h1 { margin-top: 0; padding-top: .6rem; border-top: 3px solid var(--plans-ink); font-size: 2em; letter-spacing: -.01em; }
+h2 { padding-top: .5rem; border-top: 2px solid var(--plans-ink); font-size: 1.45em; }
+h3 { padding-top: .45rem; border-top: 1px solid var(--plans-rule); font-size: 1em; letter-spacing: .06em; text-transform: uppercase; }
+h4, h5, h6 { font-size: 1em; }
+
+p, ul, ol, dl, blockquote, figure, table, details { margin: 0 0 .9rem; }
+ul, ol { padding-left: 1.4em; }
+li + li { margin-top: .25rem; }
+blockquote { padding-left: .9rem; border-left: 2px solid var(--plans-rule); color: var(--plans-ink-2); }
+hr { height: 0; margin: 2rem 0; border: 0; border-top: 1px solid var(--plans-rule); }
+strong { font-weight: 700; }
+small, figcaption { color: var(--plans-ink-2); font-size: .84em; }
+
+a { color: inherit; text-decoration-color: var(--plans-rule); text-underline-offset: .18em; }
+a:hover { text-decoration-color: var(--plans-ink); }
+:focus-visible { outline: 2px solid var(--plans-focus); outline-offset: 2px; }
+
+code, kbd, samp, pre { font-family: var(--plans-mono); }
+code { padding: .05em .25em; background: var(--plans-code); border-radius: var(--plans-radius); font-size: .86em; overflow-wrap: anywhere; }
+pre {
+  margin: 0 0 1rem;
+  padding: 16px;
+  overflow-x: auto;
+  background: var(--plans-code);
+  border-radius: var(--plans-radius);
+  font-size: .84em;
+  line-height: 1.5;
+}
+pre code { padding: 0; background: none; font-size: inherit; overflow-wrap: normal; }
+
+table { border-collapse: collapse; font-size: .94em; line-height: 1.4; }
+th, td { padding: .45rem .8rem .45rem 0; border-bottom: 1px solid var(--plans-hair); text-align: left; vertical-align: top; }
+thead th {
+  padding-top: 0;
+  border-bottom: 1px solid var(--plans-ink);
+  color: var(--plans-ink-2);
+  font-size: .74em;
+  font-weight: 400;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+img, svg, video { max-width: 100%; height: auto; }
+summary { cursor: pointer; font-weight: 700; }
+
+.num { font-variant-numeric: tabular-nums; }
+
+/* Ruled grids. The container draws the top and left rules, every cell its right and bottom. */
+.title-block, .grid-rules {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  margin: 0 0 2rem;
+  padding: 0;
+  border-top: 1px solid var(--plans-ink);
+  border-left: 1px solid var(--plans-rule);
+}
+.grid-rules { grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); border-top-color: var(--plans-rule); }
+.title-block > *, .grid-rules > * {
+  min-width: 0;
+  margin: 0;
+  padding: .4rem .7rem .45rem;
+  border-right: 1px solid var(--plans-rule);
+  border-bottom: 1px solid var(--plans-rule);
+}
+.title-block dt {
+  color: var(--plans-ink-2);
+  font-size: .68rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.title-block dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Below 900px a margin note folds under its text, behind a hairline. */
+.margin {
+  display: block;
+  margin: .3rem 0 .9rem;
+  padding: .1rem 0 .1rem .7rem;
+  border-left: 1px solid var(--plans-rule);
+  color: var(--plans-ink-2);
+  font-size: .86em;
+  line-height: 1.45;
+}
+
+@media (min-width: 900px) {
+  body {
+    padding: 2.5rem calc(1.5rem + 2.5rem + 15rem) 7rem 1.5rem;
+    font-size: 1.0625rem;
+  }
+  /* The column rule between the main and the outer column. */
+  body::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(100% - 1.5rem - 15rem - 1.25rem);
+    border-left: 1px solid var(--plans-hair);
+    pointer-events: none;
+  }
+  /* .plans-diff raises the specificity over marks.css, which the builder inlines after this file. */
+  .margin, .plans-diff .plans-note {
+    position: relative;
+    float: right;
+    clear: right;
+    width: 15rem;
+    margin: .15rem calc(-2.5rem - 15rem) .9rem 0;
+    font-size: .84rem;
+  }
+  .margin { padding: 0; border-left: 0; }
+  /* The leader: a hairline from the column rule to the note's first line. */
+  .margin::before {
+    content: "";
+    position: absolute;
+    top: .7em;
+    right: calc(100% + .25rem);
+    width: 1rem;
+    border-top: 1px solid var(--plans-rule);
+  }
+}
