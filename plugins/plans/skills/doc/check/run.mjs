@@ -115,10 +115,14 @@
 // `flaky`, never a pass. The whole run has deadlineMs (180 s) and passing it is unknown
 // `deadline`. However the run stops, runChecks waits for a launch still in flight (up to its 10 s
 // handshake), closes the browser, waits for its own work to unwind and closes the server before
-// it returns, so no Chromium process, profile, timer or screenshot write outlives it. A cell is
-// kept once its probe has run, so a view that stops early, by an error, a retry or the deadline,
-// keeps the cells it completed, and a cell that two attempts both reached holds the faults of
-// both. The interaction steps and copy verdicts come from each view's last attempt.
+// it returns, so no Chromium process, profile, timer or screenshot write outlives it. A fault joins
+// the record the moment it is measured, in the cell of the state being measured: a probe's faults
+// before the cell's screenshot, an interaction fault and a copy verdict at their step, and the
+// event stream's faults at the state's probe or when the view stops. So a view that stops early,
+// by an error, a retry, a failed screenshot or the deadline, keeps every fault it measured, and the
+// error that stopped it is an unknown beside them. A cell with no fault is kept once its probe has
+// run, and a cell that two attempts both reached holds the faults of both. The interaction steps
+// and copy verdicts come from each view's last attempt.
 // Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A required matrix
 // cell that is missing is unknown `incomplete`.
 
@@ -611,12 +615,12 @@ async function clipboardProbe(browser, browserContextId, origin, stopped) {
   }
 }
 
-// Runs the interaction script and the copy check in one view. io: { send, evaluate, browser,
-// browserContextId, origin, stopped }. Records steps in rec.steps, copy verdicts in rec.copies and
-// clipboard unknowns in rec.unknowns, and returns the faults for the interaction cell.
+// Runs the interaction script and the copy check in one view. io: { send, evaluate, fault, browser,
+// browserContextId, origin, stopped }. Records steps in rec.steps, copy verdicts in rec.copies,
+// clipboard unknowns in rec.unknowns and each fault through io.fault the moment it is measured, and
+// returns whether it drove the kit.
 async function interact(io, rec, viewName) {
-  const { send, evaluate } = io
-  const faults = []
+  const { send, evaluate, fault } = io
   const s = await evaluate(call(readModel))
   // runView skips this script when the kit logged an error, so a page that reaches here with the
   // kit's banner, or without a filled response region, has a kit that stopped and never said so.
@@ -625,8 +629,9 @@ async function interact(io, rec, viewName) {
       ? 'initial response: the page shows the kit\'s error banner, but no kit error was logged'
       : 'initial response: the page has kit hooks, but no kit error was logged and the response region holds no response textarea'
     rec.steps.push({ name: 'initial response', result: 'fail', detail, view: viewName })
+    fault('response-mismatch', detail)
     rec.copies.push('unknown')
-    return { faults: [{ kind: 'response-mismatch', detail }], driven: false }
+    return false
   }
   const model = {
     title: s.title, build: s.build,
@@ -749,9 +754,9 @@ async function interact(io, rec, viewName) {
   } catch (e) {
     if (!(e instanceof Mismatch)) throw e
     step(current, 'fail', e.message)
-    faults.push({ kind: 'response-mismatch', detail: e.message })
+    fault('response-mismatch', e.message)
     rec.copies.push('unknown')
-    return { faults, driven: true }
+    return true
   }
 
   // The copy check, single press then the overlapping case.
@@ -792,25 +797,25 @@ async function interact(io, rec, viewName) {
       }],
     ]
     for (const [name, press] of cases) {
-      let v
       try {
-        v = await verdict(name, press)
+        const v = await verdict(name, press)
+        // The verdict is recorded before the response check, which may stop the view.
+        if (v.pass) { step(name, 'pass', v.pass); rec.copies.push(v.pass) }
+        else if (v.unknown) { step(name, 'unknown', v.unknown); rec.unknowns.push({ kind: 'clipboard', detail: `${viewName}: ${v.unknown}` }); rec.copies.push('unknown') }
+        else { step(name, 'fail', v.fault); fault('copy', v.fault); rec.copies.push('unknown') }
         if (!v.unknown) await verify(name)
       } catch (e) {
         if (!(e instanceof Mismatch)) throw e
         step(name, 'fail', e.message)
-        faults.push({ kind: 'response-mismatch', detail: e.message })
+        fault('response-mismatch', e.message)
         rec.copies.push('unknown')
         break
       }
-      if (v.pass) { step(name, 'pass', v.pass); rec.copies.push(v.pass) }
-      else if (v.unknown) { step(name, 'unknown', v.unknown); rec.unknowns.push({ kind: 'clipboard', detail: `${viewName}: ${v.unknown}` }); rec.copies.push('unknown') }
-      else { step(name, 'fail', v.fault); faults.push({ kind: 'copy', detail: v.fault }); rec.copies.push('unknown') }
     }
   } finally {
     await probe.close()
   }
-  return { faults, driven: true }
+  return true
 }
 
 /* ---------------------------------------------------------------- shots */
@@ -822,8 +827,15 @@ function writeShot(path, bytes) {
 
 /* ---------------------------------------------------------------- one view */
 
-// One view. rec: { cells, steps, copies, unknowns }, filled as the view runs, so a retry starts
-// from a fresh one.
+// The cell of one state in one attempt's record, made the first time a fault or a probe needs it.
+function cellOf(rec, view, state) {
+  let cell = rec.cells.find((c) => c.state === state)
+  if (!cell) rec.cells.push((cell = { view, state, faults: [] }))
+  return cell
+}
+
+// One view. rec: { cells, steps, copies, unknowns, state }, filled as the view runs, so a retry
+// starts from a fresh one. rec.state is the state being measured, whose cell a fault joins.
 async function runView(browser, ctx, v, rec) {
   const { browserContextId } = await browser.send('Target.createBrowserContext', { disposeOnDetach: true })
   try {
@@ -854,6 +866,12 @@ async function runView(browser, ctx, v, rec) {
       if (r.exceptionDetails) throw new Error(`a page probe threw: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`)
       return r.result.value
     }
+    // A fault joins rec the moment it is measured. Events wait in `events` until the state's probe,
+    // or until the view stops, whichever comes first.
+    const fault = (kind, detail) => cellOf(rec, v.name, rec.state).faults.push({ kind, detail })
+    const add = eventFaults(ctx.origin, ctx.skipped, ctx.refused)
+    let seen = 0
+    const drain = () => { for (; seen < events.length; seen++) add(events[seen], fault) }
     try {
       for (const d of ['Runtime', 'Log', 'Network', 'Page', 'Inspector']) await send(`${d}.enable`)
       await send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dsf, mobile: v.mobile })
@@ -873,45 +891,41 @@ async function runView(browser, ctx, v, rec) {
       ;({ executionContextId: world } = await send('Page.createIsolatedWorld', { frameId: nav.frameId, worldName: 'plans-check' }))
       let settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
 
-      const add = eventFaults(ctx.origin, ctx.skipped, ctx.refused)
-      let seen = 0
       let kitPage = false
       let driven = false
       for (const state of [...STATES, INTERACTION]) {
-        const faults = []
-        const push = (kind, detail) => faults.push({ kind, detail })
+        if (state === INTERACTION && (ctx.inline || !kitPage)) break
+        rec.state = state
         if (state === 'details-open') {
           await evaluate(call(openDetails))
           settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
         }
         if (state === INTERACTION) {
-          if (ctx.inline || !kitPage) break
           ctx.kitDoc = true
           // A kit that already logged an error has turned its response off: nothing to drive.
           const kitFailed = rec.cells.some((c) => c.view === v.name && c.faults.some((f) => f.kind === 'kit-error'))
-          if (!kitFailed) {
-            const got = await interact({ send, evaluate, browser, browserContextId, origin: ctx.origin, stopped: ctx.stopped }, rec, v.name)
-            faults.push(...got.faults)
-            driven = got.driven
-          }
+          if (!kitFailed) driven = await interact({ send, evaluate, fault, browser, browserContextId, origin: ctx.origin, stopped: ctx.stopped }, rec, v.name)
           await evaluate(call(scrollHome))
           settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
         }
         const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken }))
         if (state === 'initial') kitPage = got.kitPage
-        for (; seen < events.length; seen++) add(events[seen], push)
-        faults.push(...got.faults)
+        drain()
+        for (const f of got.faults) fault(f.kind, f.detail)
+        // The cell is in rec before its screenshot, so a capture or write that fails keeps it.
+        cellOf(rec, v.name, state)
         if (ctx.shots) {
           const w = Math.min(Math.ceil(got.width), Math.floor(SHOT_MAX / v.dsf))
           const h = Math.min(Math.ceil(got.height), Math.floor(SHOT_MAX / v.dsf))
           const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: w, height: h, scale: 1 } })
           writeShot(join(ctx.shots, `${v.width}-${v.scheme}-${state}.png`), Buffer.from(data, 'base64'))
         }
-        const unique = new Map()
-        for (const f of faults) unique.set(`${f.kind}\0${f.detail}`, f)
-        rec.cells.push({ view: v.name, state, faults: [...unique.values()] })
       }
       if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls, driven))
+    } catch (e) {
+      // Events that arrived before the view stopped are measured faults of the state it stopped in.
+      drain()
+      throw e
     } finally {
       browser.off(sessionId, listener)
     }
@@ -923,9 +937,9 @@ async function runView(browser, ctx, v, rec) {
 const hang = (e) => e instanceof CdpError && (e.kind === 'timeout' || e.kind === 'crashed')
 
 // One view with the retry rule. Each attempt's record joins recs before it runs, so runChecks
-// sees the cells it completed even when the attempt, or the whole run, stops early. Returns
+// sees every fault it measured even when the attempt, or the whole run, stops early. Returns
 // { flaky } or throws for an unknown.
-const freshRec = () => ({ cells: [], steps: [], copies: [], unknowns: [] })
+const freshRec = () => ({ cells: [], steps: [], copies: [], unknowns: [], state: STATES[0] })
 async function viewWithRetry(browser, ctx, v, recs) {
   const attempt = () => { const r = freshRec(); recs.push(r); return r }
   try {
@@ -941,9 +955,7 @@ async function viewWithRetry(browser, ctx, v, recs) {
     } catch (e2) {
       if (!hang(e2)) throw e2
       if (!(await browser.ping())) throw new CdpError('deadline', `${v.name}: ${e2.message}, and the browser stopped answering`)
-      const all = [...STATES, INTERACTION]
-      const state = all[again.cells.length] ?? all[all.length - 1]
-      again.cells.push({ view: v.name, state, faults: [{ kind: e2.kind === 'crashed' ? 'target-crashed' : 'deadline', detail: `${e2.message}, twice, in a browser that still answers` }] })
+      cellOf(again, v.name, again.state).faults.push({ kind: e2.kind === 'crashed' ? 'target-crashed' : 'deadline', detail: `${e2.message}, twice, in a browser that still answers` })
       return { flaky: null }
     }
   }

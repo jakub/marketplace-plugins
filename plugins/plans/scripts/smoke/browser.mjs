@@ -712,12 +712,43 @@ function runBuild(BUILD, args, env, { onSpawn } = {}) {
   })
 }
 
+// A driver command made to fail at one exact point, the way Chromium's error reply or a command
+// deadline would fail it. fail(method, params) returns null to send the command, or the CdpError
+// kind to reject it with. The real send is back in place when the run returns.
+async function withFailing(cdp, fail, run) {
+  const real = cdp.Pipe.prototype.send
+  cdp.Pipe.prototype.send = function (method, params, ...rest) {
+    const kind = fail(method, params ?? {})
+    return kind ? Promise.reject(new cdp.CdpError(kind, `${method}: failed by the smoke`)) : real.call(this, method, params, ...rest)
+  }
+  try { return await run() } finally { cdp.Pipe.prototype.send = real }
+}
+// Fail factories: each call gives a fresh predicate. once fails the first command named method
+// whose params match re; onceAfter does the same, but only once a command matching first was sent.
+const once = (method, re, kind = 'protocol') => () => {
+  let done = false
+  return (m, p) => (!done && m === method && re.test(JSON.stringify(p)) ? ((done = true), kind) : null)
+}
+const always = (method, kind) => () => (m) => (m === method ? kind : null)
+const onceAfter = (first, method, re) => () => {
+  let armed = false, done = false
+  return (m, p) => {
+    if (m === first[0] && first[1].test(JSON.stringify(p))) armed = true
+    return armed && !done && m === method && re.test(JSON.stringify(p)) ? ((done = true), 'protocol') : null
+  }
+}
+
 // runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
-// chosen point. Each case checks the leak state the moment runChecks returns, and counts this
-// process's pending timers, since a wait the run left behind rejects later with nobody listening.
+// chosen point, and a driver command or a screenshot write that fails after a fault was measured.
+// Each case checks the leak state the moment runChecks returns, and counts this process's pending
+// timers, since a wait the run left behind rejects later with nobody listening.
 const timers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
-async function runUnits({ check, skip, why, chromium, runMod, base, priv }) {
+async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX, base, priv }) {
   const page = (body) => Buffer.from(`<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>run unit</title>\n</head>\n<body>\n<main>\n${body}\n</main>\n</body>\n</html>\n`)
+  const kitPage = (dir) => buildMod.assemble(readFileSync(join(FIX, dir, 'page.html'), 'utf8'), { inline: false, kit: buildMod.readKit(), readSibling: () => '' }).buffer
+  const has = (out, view, state, kind) => out.matrix.some((c) => c.view === view && c.state === state && c.faults.some((f) => f.kind === kind))
+  const unknownRow = (out, re) => out.checks.some((c) => c.name === 'browser' && c.result === 'unknown' && re.test(c.detail))
+  const target = page('<p><a href="#top" target="_blank">a fault in every cell</a></p>')
   const cases = [
     // The initial state holds a fault, and opening <details> blocks the page past the deadline.
     ['runChecks: a cell measured before the deadline keeps its fault, so the run fails', 4000,
@@ -728,11 +759,46 @@ async function runUnits({ check, skip, why, chromium, runMod, base, priv }) {
     // The deadline lands while Chromium is still launching: the launch is waited for and closed.
     ['runChecks: a deadline during the launch leaves no profile or Chromium behind', 20, page('<p>A quiet page.</p>'),
       (out) => out.result === 'unknown' && out.reason.kind === 'deadline' && out.matrix.length === 0],
+    // A screenshot that fails after its cell's probe, refused by Chromium or not written: the cell
+    // keeps the fault it measured, and the failure adds an unknown.
+    ['runChecks: a screenshot Chromium refuses keeps the fault its cell measured', undefined, target,
+      (out) => out.result === 'fail' && out.reason.kind === 'a-target' && has(out, '390-light', 'initial', 'a-target') && unknownRow(out, /^protocol: Page\.captureScreenshot: /),
+      { shots: true, fail: once('Page.captureScreenshot', /./) }],
+    ['runChecks: a screenshot that cannot be written keeps the fault its cell measured', undefined, target,
+      (out) => out.result === 'fail' && out.reason.kind === 'a-target' && has(out, '390-light', 'initial', 'a-target') && unknownRow(out, /EISDIR/),
+      { shots: (dir) => mkdirSync(join(dir, '390-light-initial.png')) }],
+    // A capture past its deadline twice, in a browser that answers: the deadline lands on the cell
+    // whose screenshot hung, beside the fault that cell measured.
+    ['runChecks: a screenshot past its deadline twice puts the deadline beside the fault in its own cell', undefined, target,
+      (out) => out.result === 'fail' && has(out, '390-light', 'initial', 'a-target') && has(out, '390-light', 'initial', 'deadline') && !out.matrix.some((c) => c.state === 'details-open'),
+      { shots: true, fail: always('Page.captureScreenshot', 'timeout') }],
+    // Interaction faults, then a later command fails before the interaction cell's probe.
+    ['runChecks: a response mismatch survives a command that fails after it', undefined, kitPage('bad-kit/response-mismatch'),
+      (out) => out.result === 'fail' && has(out, '390-light', 'interaction', 'response-mismatch') && unknownRow(out, /^protocol: Runtime\.evaluate: /),
+      { fail: once('Runtime.evaluate', /function scrollHome/) }],
+    ['runChecks: a copy fault survives a failure in the next copy case', undefined, kitPage('bad-kit/copy'),
+      (out) => out.result === 'fail' && has(out, '390-light', 'interaction', 'copy') && unknownRow(out, /^protocol: Input\.insertText: /),
+      { fail: once('Input.insertText', /"text":" edited"/) }],
+    ['runChecks: a copy fault survives a failure in the response check after it', undefined, kitPage('bad-kit/copy'),
+      (out) => out.result === 'fail' && has(out, '390-light', 'interaction', 'copy') && unknownRow(out, /^protocol: Runtime\.evaluate: /),
+      { fail: onceAfter(['Runtime.evaluate', /function statusSettled/], 'Runtime.evaluate', /function readState/) }],
+    // An event the stream delivered, then the state's own probe fails.
+    ['runChecks: an exception the page threw survives a probe that fails', undefined, page('<p>A script throws at load.</p>\n<script>throw new Error("thrown at load")</script>'),
+      (out) => out.result === 'fail' && out.reason.kind === 'exception' && has(out, '390-light', 'initial', 'exception') && unknownRow(out, /^protocol: Runtime\.evaluate: /),
+      { fail: once('Runtime.evaluate', /function probe\(cfg\)/) }],
   ]
-  for (const [name, deadlineMs, buffer, ok] of cases) {
+  let u = 0
+  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null } = {}] of cases) {
     if (why) { skip(name, why); continue }
+    let shotsDir = null
+    if (shots) {
+      shotsDir = join(base, `unit-shots-${++u}`)
+      mkdirSync(shotsDir)
+      if (typeof shots === 'function') shots(shotsDir)
+    }
     const before = { ...leaks(priv), timers: timers() }
-    const out = await runMod.runChecks({ buffer, dir: base, chromium, tmp: priv, deadlineMs })
+    const go = () => runMod.runChecks({ buffer, dir: base, chromium, tmp: priv, deadlineMs, shots: shotsDir })
+    const out = fail ? await withFailing(cdp, fail(), go) : await go()
     const after = { ...leaks(priv), timers: timers() }
     check(name, ok(out) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), before, after }))
   }
@@ -757,6 +823,7 @@ async function browserSection({ ROOT, check, skip }) {
   const cdp = await import(pathToFileURL(join(DOC, 'check/cdp.mjs')).href)
   const serveMod = await import(pathToFileURL(join(DOC, 'check/serve.mjs')).href)
   const runMod = await import(pathToFileURL(join(DOC, 'check/run.mjs')).href)
+  const buildMod = await import(pathToFileURL(BUILD).href)
 
   const base = mkdtempSync(join(tmpdir(), 'plans-browser-smoke-'))
   try {
@@ -844,7 +911,7 @@ async function browserSection({ ROOT, check, skip }) {
       check(sigName, caught && r.status === 143 && gone && left.length === 0, `caught ${caught} status ${r.status} signal ${r.signal} leaks ${JSON.stringify(leaks(priv))} left ${left.join(',')}\n${r.stderr}`)
     }
 
-    await runUnits({ check, skip, why, chromium: found.path, runMod, base, priv })
+    await runUnits({ check, skip, why, chromium: found.path, runMod, cdp, buildMod, FIX, base, priv })
   } finally {
     // Any Chromium a failed case left is killed by its profile path before the directory goes.
     for (const pid of procsNaming(join(base, 'tmp', 'plans-chromium-'))) { try { process.kill(pid, 'SIGKILL') } catch {} }
