@@ -393,6 +393,14 @@ const CASES = [
   ] },
   // Lazy images that decode, far down, inside a closed <details> and never rendered, all pass.
   { dir: 'good-lazy', args: [], exit: 0 },
+  // preload="none" video and audio, which fetch nothing by themselves, read through detached
+  // copies: bytes that don't decode fail through a src and through a <source> list, and bytes that
+  // decode pass, past a <source> whose type the browser can't play.
+  { dir: 'bad/media-decode-preload', args: [], exit: 1, fault: 'media-decode', matches: [
+    /^video#direct: broken\.webm: MediaError code \d+.*, in a copy loaded with preload="metadata" since the element had loaded no metadata$/,
+    /^audio#listed: broken\.webm: (MediaError code \d+.*|no <source> could be loaded), in a copy loaded with preload="metadata" since the element had loaded no metadata$/,
+  ] },
+  { dir: 'good-media-preload', args: [], exit: 0 },
   // url() text inside CSS strings and comments loads nothing, so it raises no css-url.
   { dir: 'good-css-strings', args: [], exit: 0 },
   // Boxes inside a horizontal scroller that can never bring them into view: a fixed box and an
@@ -819,13 +827,34 @@ async function withChunk(cdp, { hit, events, error = false }, run) {
   }
   try { return await run() } finally { cdp.Pipe.prototype.send = real }
 }
+// A request that never answers, and the settle cap cut to capMs. Before a page navigates,
+// Fetch.enable on its session pauses every request whose URL matches pattern, and the smoke never
+// continues one, so the load hangs as a stalled server's would. The cap argument of each settle
+// call is rewritten from SETTLE_MS to capMs, so the case waits that long per state rather than
+// 10 s. The real send is back in place when the run returns.
+async function withStall(cdp, { pattern, capMs, settleMs }, run) {
+  const real = cdp.Pipe.prototype.send
+  const from = `)(${settleMs}, `
+  cdp.Pipe.prototype.send = async function (method, params, sessionId, ...rest) {
+    if (method === 'Page.navigate' && sessionId) await real.call(this, 'Fetch.enable', { patterns: [{ urlPattern: pattern }] }, sessionId)
+    const e = params?.expression
+    if (method === 'Runtime.evaluate' && e?.startsWith('(async function settle(')) {
+      const at = e.lastIndexOf(from)
+      if (at < 0) throw new Error(`withStall: the settle call holds no ${JSON.stringify(from)} to cut`)
+      params ={ ...params, expression: `${e.slice(0, at)})(${capMs}, ${e.slice(at + from.length)}` }
+    }
+    return real.call(this, method, params, sessionId, ...rest)
+  }
+  try { return await run() } finally { cdp.Pipe.prototype.send = real }
+}
+
 const CRASH = ['Inspector.targetCrashed', {}]
 const DETACH = ['Inspector.detached', { reason: 'Render process gone.' }]
 
 // runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
 // chosen point, a driver command or a screenshot write that fails after a fault was measured, a
-// page event that arrives after a view's last probe, and a crash or detach in the same chunk as a
-// command's reply.
+// page event that arrives after a view's last probe, a crash or detach in the same chunk as a
+// command's reply, and a media request that never answers.
 // Each case checks the leak state the moment runChecks returns, and counts this process's pending
 // timers, since a wait the run left behind rejects later with nobody listening.
 const timers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
@@ -908,9 +937,16 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     ['runChecks: a detach with the reply to the last command of both attempts is a target-detached fault', undefined, page('<p>A quiet page.</p>'),
       (out) => out.result === 'fail' && has(out, '390-light', 'details-open', 'target-detached') && out.matrix.flatMap((c) => c.faults).length === 1,
       { chunk: { hit: anyOf(nth('Runtime.evaluate', /function controls/, 1), nth('Runtime.evaluate', /function probe\(cfg\)/, 4)), events: [DETACH] } }],
+    // A preload="none" video whose bytes never arrive: its copy neither loads nor fails, so every
+    // state of every view is unknown media-unsettled, never a pass.
+    ['runChecks: a media copy that neither loads nor fails within the settle cap is unknown', undefined,
+      page('<video preload="none" src="stall.webm" width="160" height="90"></video>'),
+      (out) => out.result === 'unknown' && out.reason.kind === 'media-unsettled' && out.matrix.length === 8 && out.matrix.every((c) => c.faults.length === 0)
+        && out.checks.filter((c) => c.name === 'browser' && c.result === 'unknown' && /^media-unsettled: \S+ (initial|details-open): the preload="metadata" copy of <video> stall\.webm neither loaded nor failed within \d+ ms$/.test(c.detail)).length === 8,
+      { media: ['stall.webm'], stall: { pattern: '*stall.webm', capMs: 300 } }],
   ]
   let u = 0
-  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null, chunk = null } = {}] of cases) {
+  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null, chunk = null, media = [], stall = null } = {}] of cases) {
     if (why) { skip(name, why); continue }
     let shotsDir = null
     if (shots) {
@@ -919,8 +955,9 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
       if (typeof shots === 'function') shots(shotsDir)
     }
     const before = { ...leaks(priv), timers: timers() }
-    const go = () => runMod.runChecks({ buffer, dir: base, chromium, tmp: priv, deadlineMs, shots: shotsDir })
-    const out = fail ? await withFailing(cdp, fail(), go) : pageThrow ? await withPageThrow(cdp, pageThrow(), go) : chunk ? await withChunk(cdp, { ...chunk, hit: chunk.hit() }, go) : await go()
+    const go = () => runMod.runChecks({ buffer, dir: base, media, chromium, tmp: priv, deadlineMs, shots: shotsDir })
+    const out = fail ? await withFailing(cdp, fail(), go) : pageThrow ? await withPageThrow(cdp, pageThrow(), go) : chunk ? await withChunk(cdp, { ...chunk, hit: chunk.hit() }, go)
+      : stall ? await withStall(cdp, { ...stall, settleMs: runMod.SETTLE_MS }, go) : await go()
     const after = { ...leaks(priv), timers: timers() }
     check(name, ok(out) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), before, after }))
   }

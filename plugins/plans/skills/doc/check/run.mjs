@@ -25,12 +25,20 @@
 // script that replaces a builtin cannot bend them.
 //
 // Settle. Page.loadEventFired, then one evaluate that awaits document.fonts.ready, every eager
-// image (complete, or a load or error event), every video and audio element with a source
-// (readyState 1 or more, or an error), and two requestAnimationFrame calls, capped at 10 s. A
+// image (complete, or a load or error event) and a detached copy of each lazy image and media
+// element below, capped at 10 s, then two requestAnimationFrame calls. Settle never touches the
+// page's own elements, their preload or their markup, since the recorded markup is compared. A
 // loading="lazy" image that is not complete never starts loading far from the viewport or while
-// not rendered, and decode() on it never settles, so settle loads a detached eager copy of it
-// (new Image() with its crossOrigin and src, the page's markup untouched) and awaits that. The
-// probe that follows reports media-decode for a lazy image whose copy decoded to 0 px wide.
+// not rendered, and decode() on it never settles, so its copy is new Image() with its crossOrigin
+// and src, which loads eagerly. A video or audio element with no metadata and no error, as with
+// preload="none", may never fetch its bytes while the check runs, so its copy is a fresh element
+// of its tag with preload="metadata", its crossOrigin, and its src or a clone of each <source>
+// child, awaited until loadedmetadata, an error on the copy, or an error on its last <source>,
+// since an earlier <source> that fails hands over to the next. A src in skippedMedia gets no
+// copy. The probe that follows reports media-decode for a lazy image whose copy decoded to 0 px
+// wide and for a media element whose copy failed. When the cap expires, settle returns each eager
+// image and each copy that neither loaded nor failed, and the view records each one as unknown
+// `media-unsettled`, so bytes the check never read never pass.
 //
 // States. `initial`; `details-open`, with every native <details> opened and the page settled
 // again; and on a Document page with kit hooks in either of those states, `interaction`, probed
@@ -150,7 +158,8 @@
 // both reached holds the faults of both. The interaction steps and copy verdicts come from each
 // view's last attempt.
 // Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A required matrix
-// cell that is missing is unknown `incomplete`.
+// cell that is missing is unknown `incomplete`, and each eager image or copy that settle left
+// unresolved is unknown `media-unsettled`, one per view, state and element.
 
 import { closeSync, constants, mkdirSync, openSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -215,32 +224,65 @@ const clip = (s, n = 300) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
 // Each of these is serialized with toString and run in the isolated world, so it may use only
 // its own arguments and the page's DOM.
 
-// Returns { lazyBroken }, the src URLs of lazy images whose eager copy decoded to 0 px wide.
+// Returns { lazyBroken, mediaBroken, unsettled }: the src URLs of lazy images whose eager copy
+// decoded to 0 px wide; { key, detail } for each media element whose copy failed, keyed as the
+// probe keys it; and a description of each eager image and copy still unresolved at the cap.
 async function settle(capMs, skipped) {
-  const once = (el, names, capture = false) => new Promise((r) => { for (const n of names) el.addEventListener(n, r, { once: true, capture }) })
+  const once = (el, names) => new Promise((r) => { for (const n of names) el.addEventListener(n, r, { once: true }) })
   const waits = [document.fonts.ready]
   // A lazy image far from the viewport, or not rendered, never starts loading, and decode() on it
   // never settles. Each one not yet complete is loaded through a detached eager copy with its
   // crossOrigin and src, which leaves the page's own markup untouched.
-  const copies = []
+  const eager = [], copies = []
   for (const img of document.images) {
     if (img.complete) continue
-    if (img.loading !== 'lazy') { waits.push(once(img, ['load', 'error'])); continue }
+    if (img.loading !== 'lazy') { eager.push(img); waits.push(once(img, ['load', 'error'])); continue }
     const src = img.getAttribute('src')
     if (src !== null && skipped.includes(src)) continue
     const copy = new Image()
     copy.crossOrigin = img.crossOrigin
     copy.src = img.src
-    copies.push(copy)
+    copies.push({ copy, src })
     waits.push(once(copy, ['load', 'error']))
   }
+  // A video or audio element with no metadata, as with preload="none", may never fetch its bytes.
+  // Each one is loaded through a detached copy of its tag with preload="metadata", its crossOrigin
+  // and its src, or a clone of each <source> child when it has no src, as the resource selection
+  // algorithm picks one or the other. A failed <source> fires error at itself and hands over to
+  // the next, so only an error on the copy or on its last <source> ends the wait.
+  const media = []
   for (const m of document.querySelectorAll('video, audio')) {
-    if (m.readyState >= 1 || m.error || m.networkState === 0 || m.networkState === 3) continue
-    waits.push(once(m, ['loadedmetadata', 'error'], true))
+    if (m.readyState >= 1 || m.error) continue
+    const sources = m.hasAttribute('src') ? [] : [...m.children].filter((c) => c.localName === 'source')
+    const srcs = m.hasAttribute('src') ? [m.getAttribute('src')] : sources.map((s) => s.getAttribute('src') ?? '')
+    if (!srcs.length || srcs.some((s) => skipped.includes(s))) continue
+    const copy = document.createElement(m.localName)
+    copy.preload = 'metadata'
+    copy.crossOrigin = m.crossOrigin
+    const clones = sources.map((s) => s.cloneNode(true))
+    const entry = { copy, srcs, tag: m.localName, key: `<${m.localName}> ${m.hasAttribute('src') ? m.src : sources.map((s) => s.src).join(' ')}`, state: null }
+    waits.push(new Promise((r) => {
+      copy.addEventListener('loadedmetadata', () => { entry.state = 'loaded'; r() }, { once: true })
+      copy.addEventListener('error', (e) => { if (e.target === copy || e.target === clones.at(-1)) { entry.state = 'failed'; r() } }, { capture: true })
+    }))
+    if (m.hasAttribute('src')) copy.src = m.getAttribute('src')
+    else copy.append(...clones)
+    media.push(entry)
   }
   await Promise.race([Promise.all(waits), new Promise((r) => setTimeout(r, capMs))])
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
-  return { lazyBroken: copies.filter((c) => c.complete && c.naturalWidth === 0).map((c) => c.src) }
+  const failed = (e) => e.copy.error
+    ? `MediaError code ${e.copy.error.code}${e.copy.error.message ? ` (${e.copy.error.message})` : ''}`
+    : 'no <source> could be loaded'
+  return {
+    lazyBroken: copies.filter((c) => c.copy.complete && c.copy.naturalWidth === 0).map((c) => c.copy.src),
+    mediaBroken: media.filter((e) => e.state === 'failed').map((e) => ({ key: e.key, detail: `${e.srcs.join(' ')}: ${failed(e)}, in a copy loaded with preload="metadata" since the element had loaded no metadata` })),
+    unsettled: [
+      ...eager.filter((i) => !i.complete).map((i) => `<img> ${i.getAttribute('src') ?? i.currentSrc}`),
+      ...copies.filter((c) => !c.copy.complete).map((c) => `the eager copy of <img loading="lazy"> ${c.src ?? c.copy.src}`),
+      ...media.filter((e) => e.state === null).map((e) => `the preload="metadata" copy of <${e.tag}> ${e.srcs.join(' ')}`),
+    ],
+  }
 }
 
 function openDetails() {
@@ -275,7 +317,12 @@ function probe(cfg) {
     else if (!img.complete && img.loading === 'lazy' && cfg.lazyBroken.includes(img.src)) add('media-decode', img, `${src} decoded to 0 px wide, loaded eagerly since it is loading="lazy"`)
   }
   for (const m of document.querySelectorAll('video, audio')) {
-    if (m.error) add('media-decode', m, `MediaError code ${m.error.code}${m.error.message ? ` (${m.error.message})` : ''}`)
+    if (m.error) { add('media-decode', m, `MediaError code ${m.error.code}${m.error.message ? ` (${m.error.message})` : ''}`); continue }
+    if (m.readyState >= 1) continue
+    // Keyed as settle keys its copy: the tag, then the resolved src or each <source> child's.
+    const key = `<${m.localName}> ${m.hasAttribute('src') ? m.src : [...m.children].filter((c) => c.localName === 'source').map((s) => s.src).join(' ')}`
+    const broken = cfg.mediaBroken.find((b) => b.key === key)
+    if (broken) add('media-decode', m, broken.detail)
   }
 
   if (root.scrollWidth > root.clientWidth) add('page-overflow', null, `the root's scrollWidth ${root.scrollWidth} is over its clientWidth ${root.clientWidth}`)
@@ -1060,7 +1107,9 @@ async function runView(browser, ctx, v, rec) {
           await evaluate(call(scrollHome))
           settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
         }
-        const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken }))
+        // Media the settle cap cut off was never read, so its state can't pass.
+        for (const u of settled.unsettled) rec.unknowns.push({ kind: 'media-unsettled', detail: `${v.name} ${state}: ${u} neither loaded nor failed within ${SETTLE_MS} ms` })
+        const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken, mediaBroken: settled.mediaBroken }))
         // Hooks in any measured state make it a kit page. A hook that appears when <details> opens
         // needs a kit error, or the response and interaction checks, as much as one at load.
         if (got.kitPage) kitPage = true
