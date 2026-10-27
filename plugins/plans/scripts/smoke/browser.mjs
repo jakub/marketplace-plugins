@@ -660,7 +660,9 @@ function runBuild(BUILD, args, env, { onSpawn } = {}) {
 }
 
 // runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
-// chosen point. Each case checks the leak state the moment runChecks returns.
+// chosen point. Each case checks the leak state the moment runChecks returns, and counts this
+// process's pending timers, since a wait the run left behind rejects later with nobody listening.
+const timers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
 async function runUnits({ check, skip, why, chromium, runMod, base, priv }) {
   const page = (body) => Buffer.from(`<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>run unit</title>\n</head>\n<body>\n<main>\n${body}\n</main>\n</body>\n</html>\n`)
   const cases = [
@@ -670,13 +672,16 @@ async function runUnits({ check, skip, why, chromium, runMod, base, priv }) {
       (out) => out.result === 'fail' && out.reason.kind === 'a-target'
         && out.matrix.some((c) => c.view === '390-light' && c.state === 'initial' && c.faults.some((f) => f.kind === 'a-target'))
         && out.checks.some((c) => c.name === 'browser' && c.result === 'unknown' && /^deadline: /.test(c.detail))],
+    // The deadline lands while Chromium is still launching: the launch is waited for and closed.
+    ['runChecks: a deadline during the launch leaves no profile or Chromium behind', 20, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'unknown' && out.reason.kind === 'deadline' && out.matrix.length === 0],
   ]
   for (const [name, deadlineMs, buffer, ok] of cases) {
     if (why) { skip(name, why); continue }
-    const before = leaks(priv)
+    const before = { ...leaks(priv), timers: timers() }
     const out = await runMod.runChecks({ buffer, dir: base, chromium, tmp: priv, deadlineMs })
-    const after = leaks(priv)
-    check(name, ok(out) && clean(before) && clean(after), JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), before, after }))
+    const after = { ...leaks(priv), timers: timers() }
+    check(name, ok(out) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), before, after }))
   }
 }
 

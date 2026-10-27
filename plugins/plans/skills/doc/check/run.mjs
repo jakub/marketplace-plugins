@@ -104,7 +104,9 @@
 // while the browser answers the ping is retried once in a fresh context: again is a fail, with
 // the fault `deadline` or `target-crashed` on that cell, and a pass on the retry is unknown
 // `flaky`, never a pass. The whole run has deadlineMs (180 s) and passing it is unknown
-// `deadline`. A cell is kept once its probe has run, so a view that stops early, by an error, a
+// `deadline`. However the run stops, runChecks waits for a launch still in flight (up to its 10 s
+// handshake), closes the browser, waits for its own work to unwind and closes the server before
+// it returns, so no Chromium process, profile, timer or screenshot write outlives it. A cell is kept once its probe has run, so a view that stops early, by an error, a
 // retry or the deadline, keeps the cells it completed, and a cell that two attempts both reached
 // holds the faults of both. The interaction steps and copy verdicts come from each view's last
 // attempt. Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A
@@ -530,7 +532,7 @@ class Mismatch extends Error {}
 
 // A /__plans-probe target in the view's browser context, for clipboard read-back. It holds no
 // page script, so the evaluations below run in a document nothing on the candidate can reach.
-async function clipboardProbe(browser, browserContextId, origin) {
+async function clipboardProbe(browser, browserContextId, origin, stopped) {
   const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank', browserContextId })
   const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true })
   const send = (method, params = {}) => browser.send(method, params, sessionId)
@@ -542,11 +544,11 @@ async function clipboardProbe(browser, browserContextId, origin) {
     await send('Page.enable')
     await send('Runtime.enable')
     await send('Emulation.setFocusEmulationEnabled', { enabled: true })
-    let timer
-    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new CdpError('timeout', `${PROBE} did not load within ${COMMAND_MS} ms`)), COMMAND_MS) })
     const nav = await send('Page.navigate', { url: origin + PROBE })
     if (nav.errorText) throw new CdpError('protocol', `Page.navigate to ${PROBE} failed: ${nav.errorText}`)
-    await Promise.race([loaded, late]).finally(() => clearTimeout(timer))
+    let timer
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new CdpError('timeout', `${PROBE} did not load within ${COMMAND_MS} ms`)), COMMAND_MS) })
+    await Promise.race([loaded, late, stopped]).finally(() => clearTimeout(timer))
   } finally {
     browser.off(sessionId, listener)
   }
@@ -564,7 +566,7 @@ async function clipboardProbe(browser, browserContextId, origin) {
 }
 
 // Runs the interaction script and the copy check in one view. io: { send, evaluate, browser,
-// browserContextId, origin }. Records steps in rec.steps, copy verdicts in rec.copies and
+// browserContextId, origin, stopped }. Records steps in rec.steps, copy verdicts in rec.copies and
 // clipboard unknowns in rec.unknowns, and returns the faults for the interaction cell.
 async function interact(io, rec, viewName) {
   const { send, evaluate } = io
@@ -705,7 +707,7 @@ async function interact(io, rec, viewName) {
   }
 
   // The copy check, single press then the overlapping case.
-  const probe = await clipboardProbe(io.browser, io.browserContextId, io.origin)
+  const probe = await clipboardProbe(io.browser, io.browserContextId, io.origin, io.stopped)
   try {
     const verdict = async (name, press) => {
       const sentinel = `plans-check sentinel ${Math.random().toString(36).slice(2)}`
@@ -796,7 +798,7 @@ async function runView(browser, ctx, v, rec) {
       let timer
       const got = new Promise((resolve) => waiters.push({ method, resolve }))
       const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new CdpError('timeout', `${method} did not arrive within ${COMMAND_MS} ms`)), COMMAND_MS) })
-      return Promise.race([got, late, crashed]).finally(() => clearTimeout(timer))
+      return Promise.race([got, late, crashed, ctx.stopped]).finally(() => clearTimeout(timer))
     }
     let world = null
     const evaluate = async (expression) => {
@@ -815,6 +817,8 @@ async function runView(browser, ctx, v, rec) {
         await send('Emulation.setFocusEmulationEnabled', { enabled: true })
       }
       const loaded = waitFor('Page.loadEventFired')
+      // Awaited below; marked handled now so a navigation that throws leaves no stray rejection.
+      loaded.catch(() => {})
       const nav = await send('Page.navigate', { url: ctx.url })
       if (nav.errorText) throw new CdpError('protocol', `Page.navigate to the viewer double failed: ${nav.errorText}`)
       await loaded
@@ -838,7 +842,7 @@ async function runView(browser, ctx, v, rec) {
           // A kit that already logged an error has turned its response off: nothing to drive.
           const kitFailed = rec.cells.some((c) => c.view === v.name && c.faults.some((f) => f.kind === 'kit-error'))
           if (!kitFailed) {
-            const got = await interact({ send, evaluate, browser, browserContextId, origin: ctx.origin }, rec, v.name)
+            const got = await interact({ send, evaluate, browser, browserContextId, origin: ctx.origin, stopped: ctx.stopped }, rec, v.name)
             faults.push(...got.faults)
             driven = got.driven
           }
@@ -922,36 +926,54 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
   const views = inline ? INLINE_VIEWS : DOC_VIEWS
   const out = { result: 'unknown', reason: null, matrix: [], checks: [], copy: null, undriven: [] }
   const unknowns = []
-  let server = null, browser = null, timer
+  let timer, stop
   // One { recs, flaky } per view, with every attempt's record, filled as the views run and read
   // after the run stops.
   const runs = []
+  // The server and the browser are owned as promises from the moment they are asked for, so the
+  // cleanup below reaches one that is still starting. stopped rejects when the run stops, which
+  // ends every wait of the work that no CDP reply ends, and halted keeps it from starting more.
+  let serving = null, launching = null, halted = false
   const ctx = {
     inline, shots, undriven: null, kitDoc: false,
     declared: [...new Set(media.map((m) => (typeof m === 'string' ? m : m.src)))],
     skippedList: [...skippedMedia], skipped: new Set(skippedMedia),
+    stopped: new Promise((_, reject) => { stop = reject }),
   }
+  ctx.stopped.catch(() => {})
   const work = (async () => {
     if (shots) mkdirSync(shots, { recursive: true })
-    server = await serve({ html: buffer, dir, media: ctx.declared, skipped: ctx.skippedList })
+    serving = serve({ html: buffer, dir, media: ctx.declared, skipped: ctx.skippedList })
+    const server = await serving
     ctx.url = server.url
     ctx.origin = server.origin
     ctx.refused = new Map(server.refused.map((r) => [r.src, r.reason]))
-    browser = await launch(chromium, { tmp })
+    if (halted) return
+    launching = launch(chromium, { tmp })
+    const browser = await launching
     for (const v of views) {
+      if (halted) return
       const run = { recs: [], flaky: null }
       runs.push(run)
       run.flaky = (await viewWithRetry(browser, ctx, v, run.recs)).flaky
     }
   })()
   work.catch(() => {})
+  const owned = async (p) => { try { return p ? await p : null } catch { return null } }
   try {
     await Promise.race([work, new Promise((_, reject) => { timer = setTimeout(() => reject(new CdpError('deadline', `the browser check passed its ${deadlineMs} ms deadline`)), deadlineMs) })])
   } catch (e) {
     unknowns.push(unknownOf(e))
   } finally {
+    // Stop the work, close the browser (a launch in flight is waited for, up to its handshake),
+    // wait for the work to unwind, then close the server. Nothing the run started outlives it.
     clearTimeout(timer)
+    halted = true
+    stop(new CdpError('deadline', 'the browser check stopped'))
+    const browser = await owned(launching)
     try { if (browser) await browser.close() } catch (e) { unknowns.push(unknownOf(e)) }
+    await work.catch(() => {})
+    const server = await owned(serving)
     try { if (server) await server.close() } catch (e) { unknowns.push(unknownOf(e)) }
   }
 
