@@ -105,12 +105,16 @@
 // refuses, so load-failed reports it. clipped spares a box outside the root's width only when the
 // nearest horizontal scroller on its containing-block chain can scroll every part of it into view,
 // so a fixed or absolute box that escapes a scroller, and content past a scroller's start edge,
-// still count. Shadow roots are not walked by any probe. In Inline mode the skipped absolute media
-// paths raise no network or decode fault, since html_preview inlines them. An SVG that is not
-// rendered (getScreenCTM null, or no client rects) is skipped by svg-wide and svg-text-small, and
-// SVG text size is font size times the CTM's vertical scale times visualViewport.scale, so a page
-// without a viewport meta that mobile emulation shrinks shows its real on-screen size. Console
-// messages and exceptions inside workers are not captured.
+// still count. The box and the scroll range are compared in the scroller's own layout px: the
+// box's viewport rect maps there through the scroller's effective zoom times the horizontal scale
+// of every transform and scale property on it and its ancestors, so a scroller drawn larger or
+// smaller than its layout box is read at the size it scrolls. Shadow roots are not walked by any
+// probe. In Inline mode the skipped absolute media paths raise no network or decode fault, since
+// html_preview inlines them. An SVG that is not rendered (getScreenCTM null, or no client rects)
+// is skipped by svg-wide and svg-text-small, and SVG text size is font size times the CTM's
+// vertical scale times visualViewport.scale, so a page without a viewport meta that mobile
+// emulation shrinks shows its real on-screen size. Console messages and exceptions inside workers
+// are not captured.
 //
 // Unknown versus fail. A launch or handshake failure, a lost transport, a protocol error on a
 // driver command, an exception in this code (`checker-error`), or a deadline while the browser
@@ -287,17 +291,37 @@ function probe(cfg) {
     }
     return null
   }
+  // How many viewport px one of x's own layout px spans horizontally: its effective zoom, times
+  // the x axis of every transform and scale on it and on its ancestors. Layout px are what
+  // clientWidth, scrollLeft and scrollWidth measure, before zoom and transforms, while
+  // getBoundingClientRect is after both. It is computed rather than measured, because offsetWidth
+  // is snapped to whole px, which a long scroll range multiplies, and ResizeObserver reports
+  // nothing in a closed <details> or a skipped content-visibility subtree. A perspective
+  // projection is not a scale, and this reads none from it.
+  const pxScale = (x) => {
+    let s = x.currentCSSZoom
+    for (let a = x; a; a = a.parentElement) {
+      const cs = getComputedStyle(a)
+      if (cs.transform !== 'none') { const m = new DOMMatrixReadOnly(cs.transform); s *= Math.hypot(m.m11, m.m12) }
+      if (cs.scale !== 'none') s *= parseFloat(cs.scale)
+    }
+    return s
+  }
   const reachable = (el, r) => {
     for (let a = containingBlock(el); a; a = containingBlock(a)) {
       if (a === root || a === viewportBody) continue
       const cs = getComputedStyle(a)
       if ((cs.overflowX !== 'auto' && cs.overflowX !== 'scroll') || cs.display === 'inline' || cs.display === 'contents') continue
+      // The range and r meet in a's own layout px: r maps there from a's left border edge on
+      // screen, through a's scale.
+      const scale = pxScale(a)
+      const edge = a.getBoundingClientRect().left
+      const left = (r.left - edge) / scale, right = (r.right - edge) / scale
       // scrollLeft counts up from 0 where the start edge is the left, and down from 0 where it is
       // the right, so the scrollable range's left end sits at start either way.
-      const port = a.getBoundingClientRect().left + a.clientLeft
       const flipped = cs.writingMode === 'horizontal-tb' ? cs.direction === 'rtl' : /-rl$/.test(cs.writingMode)
-      const start = flipped ? port + a.clientWidth - a.scrollLeft - a.scrollWidth : port - a.scrollLeft
-      return r.left >= start - 0.5 && r.right <= start + a.scrollWidth + 0.5
+      const start = flipped ? a.clientLeft + a.clientWidth - a.scrollLeft - a.scrollWidth : a.clientLeft - a.scrollLeft
+      return left >= start - 0.5 && right <= start + a.scrollWidth + 0.5
     }
     return false
   }
