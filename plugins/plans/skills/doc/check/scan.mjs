@@ -18,7 +18,9 @@
 // What it reads:
 //   - comments: `<!--` up to the first `-->` or `--!>`, plus the abrupt `<!-->` and `<!--->`
 //   - bogus comments: `<!` (doctype included, and CDATA in HTML content) and `<?` up to the first
-//     `>`, and `</` followed by a non-letter
+//     `>`, and `</` followed by a non-letter. A `>` inside a quoted doctype identifier ends the
+//     doctype here too, because the tokenizer treats it as an abrupt identifier and ends the doctype
+//     (checked against Chromium 155 on 2026-10-27)
 //   - start and end tags, with double-quoted, single-quoted and unquoted attribute values. Names are
 //     lowercased. A later duplicate attribute is kept in attrs, as the browser drops it, so callers
 //     read the first. A tag that reaches the end of input is dropped, as the browser drops it.
