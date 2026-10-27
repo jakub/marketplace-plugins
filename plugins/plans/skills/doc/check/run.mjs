@@ -63,7 +63,9 @@
 // After every action the DOM's checked state must equal the record, and the response textarea
 // (the readonly textarea in [data-respond]) must equal format() from expect.mjs over the record,
 // byte for byte. The first difference is the fault `response-mismatch`, and the script stops
-// there, since every later step would compare against a record the page has left.
+// there, since every later step would compare against a record the page has left. A kit page
+// that logged no kit error but has no response textarea is `response-mismatch` too: its kit never
+// ran, as when a page sets data-plans-kit itself before the kit starts.
 //
 // Copy check (after step 7). The clipboard is shared by the whole browser, so a /__plans-probe
 // target in the view's browser context first writes a fresh sentinel. Browser.grantPermissions
@@ -565,7 +567,14 @@ async function interact(io, rec, viewName) {
   const { send, evaluate } = io
   const faults = []
   const s = await evaluate(call(readModel))
-  if (s.broken) return { faults, driven: false }
+  // runView skips this script when the kit logged an error, so a page that reaches here without a
+  // filled response region has a kit that never ran and never said so.
+  if (s.broken) {
+    const detail = 'initial response: the page has kit hooks, but no kit error was logged and the response region holds no response textarea'
+    rec.steps.push({ name: 'initial response', result: 'fail', detail, view: viewName })
+    rec.copies.push('unknown')
+    return { faults: [{ kind: 'response-mismatch', detail }], driven: false }
+  }
   const model = {
     title: s.title, build: s.build,
     questions: s.questions.map((q) => ({ id: q.id, legend: q.legend, type: q.type, kept: false, options: q.options.map((o) => ({ value: o.value, label: o.label, defaultChecked: o.defaultChecked, checked: o.defaultChecked })) })),

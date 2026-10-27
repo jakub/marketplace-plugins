@@ -339,6 +339,18 @@ const NAMED = [
   ['copy after one press', /^interaction: copy after one press$/],
   ['copy with a note edit between two presses', /^interaction: copy with a note edit between two presses$/],
 ]
+// Kit negative fixtures under bad-kit/: [directory, fault, pattern its detail must match].
+const KIT_BAD = [
+  ['duplicate-ask-id', 'kit-error', /question id "engine" is used more than once/],
+  ['mixed-input-types', 'kit-error', /question "engine" mixes input types/],
+  ['radio-no-proposal', 'kit-error', /radio question "retention" has 0 checked options/],
+  ['markup-error', 'kit-error', /note "Risks" has no <label for>/],
+  ['snapshot-changed', 'kit-error', /changed after the page loaded/],
+  ['second-init', 'kit-error', /initialized a second time/],
+  ['local-storage', 'exception', /localStorage/],
+  ['response-mismatch', 'response-mismatch', /^engine picks pg: option 30d of question retention is not checked in the DOM/],
+  ['kit-silenced', 'response-mismatch', /no kit error was logged and the response region holds no response textarea/],
+]
 const CASES = [
   { dir: 'reading', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'] },
   { dir: 'good', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'], states: KIT_STATES, copy: 'copied-verified', named: NAMED },
@@ -350,6 +362,7 @@ const CASES = [
   ] },
   // A page script turns the kit's "blocked" status into "Copied". The read-back finds the sentinel.
   { dir: 'bad-kit/copy', args: [], exit: 1, fault: 'copy', match: /says "Copied", but the clipboard holds the check's sentinel/ },
+  ...KIT_BAD.map(([dir, fault, match]) => ({ dir: `bad-kit/${dir}`, args: [], exit: 1, fault, match })),
   { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: ['360', '728'] },
   ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind })),
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),

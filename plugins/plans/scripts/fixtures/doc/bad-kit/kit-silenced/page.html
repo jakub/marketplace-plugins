@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store engine and retention</title>
+<script>document.documentElement.setAttribute("data-plans-kit", "ready")</script>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Store engine and retention</h1>
+<!-- A head script sets data-plans-kit before the kit starts, so the kit stops without logging an error and fills no response region. -->
+<fieldset data-ask="engine">
+  <legend>Which engine backs the store?</legend>
+  <label><input type="radio" name="engine" value="sqlite" checked> SQLite <span data-hint>One file on disk.</span></label>
+  <label><input type="radio" name="engine" value="pg"> Postgres <span data-then>Then a server needs running and backing up.</span></label>
+</fieldset>
+<fieldset data-ask="retention">
+  <legend>How long do logs stay?</legend>
+  <label><input type="radio" name="retention" value="30d" checked> 30 days</label>
+  <label><input type="radio" name="retention" value="90d"> 90 days</label>
+</fieldset>
+<p><label for="risks">Risks</label></p>
+<textarea id="risks" data-note="Risks"></textarea>
+<section data-respond><h2>Your response</h2></section>
+</main>
+</body>
+</html>
