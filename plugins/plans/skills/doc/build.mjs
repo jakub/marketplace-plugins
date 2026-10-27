@@ -10,8 +10,10 @@
 // missing or dash-led value, no input, a second input or a bare `-` exits 2 with the usage line on
 // stderr and nothing on stdout.
 //
-// Input. INPUT ends in `.html` and is a regular file, opened once with O_NOFOLLOW, so a symlink is
-// refused. Its bytes must be strict UTF-8, and a BOM is kept as text.
+// Input. INPUT ends in `.html` and is a regular file, opened once with O_NOFOLLOW and O_NONBLOCK
+// and then checked with fstat, so a symlink is refused and a FIFO is refused without blocking the
+// open. Diff inputs are opened the same way. Its bytes must be strict UTF-8, and a BOM is kept as
+// text.
 //
 // Output. `<stem>.built.html` (Document mode) or `<stem>.inline.html` (`--inline`) in INPUT's
 // directory. A relative `--out` resolves against INPUT's directory, not the working directory.
@@ -20,7 +22,9 @@
 // a regular file is refused. The bytes go to `.<out>.<random hex>.tmp`, opened `wx`, then fsync,
 // then rename over the output. The temp file is unlinked on every error path, in the SIGINT,
 // SIGTERM and SIGHUP handlers, and on exit. An existing output's other hard links keep the old
-// bytes, because the rename replaces the name rather than writing through it.
+// bytes, because the rename replaces the name rather than writing through it. Every file the
+// builder writes, in INPUT's directory or in --shots DIR, is written this way: no existing file is
+// ever opened for writing.
 //
 // Assembly. The marker is replaced, in order, by `<meta name="plans-build" content="">`, one
 // `<style data-plans-kit>` and, in Document mode only, one `<script data-plans-kit>`. Document mode
@@ -37,7 +41,7 @@
 // browser check reads those bytes and the same Buffer is written. Nothing is reread.
 //
 // Refusals, each exit 1 with one line per fault on stderr and nothing written:
-//   - INPUT missing, not `.html`, a symlink, not a regular file, or not UTF-8
+//   - INPUT missing, not `.html`, a symlink, not a regular file (a FIFO included), or not UTF-8
 //   - the `--out` rules above
 //   - no marker comment, more than one, a marker text inside a raw-text element or another
 //     comment, or a marker outside the first `<head>` ... `</head>`
@@ -74,13 +78,18 @@
 //
 // `--shots DIR` resolves a relative DIR against INPUT's directory, as `--out` does, creates it,
 // and writes `result.json` there with the build id and the result, on fail too, plus one full-page
-// `<w>-<scheme>-<state>.png` per matrix cell the browser check reached, capped at 16384 px.
+// `<w>-<scheme>-<state>.png` per matrix cell the browser check reached, capped at 16384 px. A DIR
+// that can't be created is a `write` refusal, with no result.json. result.json gets its own temp
+// file and rename. The browser check writes its PNGs into a fresh `.plans-shots.<random hex>.tmp`
+// directory inside DIR, and the builder renames each into DIR, then removes that directory, which
+// the signal and exit handlers also remove. A hard link or symlink at any of those names keeps its
+// old target.
 //
 // The module exports its pure helpers for smoke imports and runs the CLI only when it is the entry
 // point: kitRefusals(name, text), readKit(), assemble(text, opts), KIT_FILES and the limits.
 
 import { createHash, randomBytes } from 'node:crypto'
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -136,10 +145,12 @@ class Refusal extends Error {
 }
 
 // Reads one file through O_NOFOLLOW and a fatal UTF-8 decode. Throws a Refusal with kind.
+// O_NONBLOCK makes the open of a FIFO return at once, so fstat can refuse it. It changes nothing
+// for the read of a regular file.
 function readText(path, max, kind = 'input') {
   let fd
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   } catch (e) {
     if (e.code === 'ELOOP') throw new Refusal(kind, 'is a symlink')
     if (e.code === 'ENOENT') throw new Refusal(kind, 'does not exist')
@@ -347,36 +358,69 @@ export function parseArgs(argv) {
   return o
 }
 
-let tempPath = null
-function dropTemp() {
-  if (tempPath === null) return
-  try { unlinkSync(tempPath) } catch {}
-  tempPath = null
+// What the builder made and has not yet renamed into place: temp files and the screenshot staging
+// directory. The signal and exit handlers remove whatever is left.
+const scratch = new Set()
+function dropScratch() {
+  for (const p of scratch) { try { rmSync(p, { recursive: true, force: true }) } catch {} }
+  scratch.clear()
 }
 
-function writeAtomic(out, buffer) {
-  const tmp = join(dirname(out), `.${basename(out)}.${randomBytes(6).toString('hex')}.tmp`)
-  const fd = openSync(tmp, 'wx', 0o644)
-  tempPath = tmp
+const hex = () => randomBytes(6).toString('hex')
+
+function syncDir(dir) {
   try {
-    for (let off = 0; off < buffer.length;) off += writeSync(fd, buffer, off, buffer.length - off)
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-  renameSync(tmp, out)
-  tempPath = null
-  try {
-    const d = openSync(dirname(out), constants.O_RDONLY | constants.O_DIRECTORY)
+    const d = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY)
     try { fsyncSync(d) } finally { closeSync(d) }
   } catch {}
 }
 
-function writeResultJson(dir, result) {
-  mkdirSync(dir, { recursive: true })
-  const path = join(dir, 'result.json')
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o644)
-  try { writeSync(fd, JSON.stringify(result, null, 2) + '\n') } finally { closeSync(fd) }
+// Writes bytes to dir/name through a fresh `.<name>.<random hex>.tmp`, then renames it over the
+// name. An existing file there, or a hard link or symlink at that name, is replaced, never
+// written through.
+function replaceFile(dir, name, bytes) {
+  const tmp = join(dir, `.${name}.${hex()}.tmp`)
+  const fd = openSync(tmp, 'wx', 0o644)
+  scratch.add(tmp)
+  try {
+    try {
+      for (let off = 0; off < bytes.length;) off += writeSync(fd, bytes, off, bytes.length - off)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    renameSync(tmp, join(dir, name))
+  } catch (e) {
+    try { unlinkSync(tmp) } catch {}
+    throw e
+  } finally {
+    scratch.delete(tmp)
+  }
+  syncDir(dir)
+}
+
+// A fresh directory inside the shots directory for the browser check's PNGs.
+function stageShots(dir) {
+  const staging = join(dir, `.plans-shots.${hex()}.tmp`)
+  mkdirSync(staging, 0o700)
+  scratch.add(staging)
+  return staging
+}
+
+// Renames every staged PNG into the shots directory, then removes the staging directory.
+function settleShots(dir, staging) {
+  let names = []
+  try { names = readdirSync(staging) } catch (e) {
+    process.stderr.write(`build.mjs: cannot read the staged screenshots in ${staging} (${e.code ?? 'error'})\n`)
+  }
+  for (const name of names) {
+    try { renameSync(join(staging, name), join(dir, name)) } catch (e) {
+      process.stderr.write(`build.mjs: cannot write ${join(dir, name)} (${e.code ?? 'error'})\n`)
+    }
+  }
+  try { rmSync(staging, { recursive: true, force: true }) } catch {}
+  scratch.delete(staging)
+  syncDir(dir)
 }
 
 // The output path for an input, or a Refusal.
@@ -406,16 +450,17 @@ async function main(argv) {
     return 2
   }
 
-  for (const [sig, n] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) process.on(sig, () => { dropTemp(); process.exit(128 + n) })
-  process.on('exit', dropTemp)
+  for (const [sig, n] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) process.on(sig, () => { dropScratch(); process.exit(128 + n) })
+  process.on('exit', dropScratch)
 
   const result = { result: 'fail', reason: null, buildId: null, digest: null, out: null, bytes: null, matrix: [], checks: [], copy: null, undriven: [], skippedMedia: [] }
   const input = resolve(opts.input)
-  const shots = opts.shots === null ? null : resolve(dirname(input), opts.shots)
+  let shots = null
   const finish = (code) => {
     if (opts.json) process.stdout.write(JSON.stringify(result) + '\n')
     if (shots) {
-      try { writeResultJson(shots, { buildId: result.buildId, result: result.result, reason: result.reason }) } catch (e) {
+      const receipt = Buffer.from(JSON.stringify({ buildId: result.buildId, result: result.result, reason: result.reason }, null, 2) + '\n', 'utf8')
+      try { replaceFile(shots, 'result.json', receipt) } catch (e) {
         process.stderr.write(`build.mjs: cannot write ${join(shots, 'result.json')} (${e.code ?? 'error'})\n`)
       }
     }
@@ -429,6 +474,14 @@ async function main(argv) {
     result.result = 'fail'
     result.reason = { kind: faults[0].kind, detail: faults[0].message }
     return finish(1)
+  }
+
+  if (opts.shots !== null) {
+    const dir = resolve(dirname(input), opts.shots)
+    try { mkdirSync(dir, { recursive: true }) } catch (e) {
+      return refuse([{ kind: 'write', line: null, message: `cannot create the --shots directory ${dir} (${e.code ?? 'error'})` }])
+    }
+    shots = dir
   }
 
   let source, out, kit
@@ -459,8 +512,15 @@ async function main(argv) {
   if (found.reason) {
     browser = { result: 'unknown', reason: found.reason, matrix: [], checks: [{ name: 'browser', result: 'unknown', detail: `${found.reason.kind}: ${found.reason.detail}` }], copy: null, undriven: [] }
   } else {
+    let staging = null
+    if (shots) {
+      try { staging = stageShots(shots) } catch (e) {
+        return refuse([{ kind: 'write', line: null, message: `cannot create a staging directory in ${shots} (${e.code ?? 'error'})` }])
+      }
+    }
     process.stderr.write(`build.mjs: checking ${basename(out)} in ${found.path}\n`)
-    browser = await runChecks({ buffer: built.buffer, inline: opts.inline, dir, media: built.media, skippedMedia: built.skippedMedia, chromium: found.path, shots })
+    browser = await runChecks({ buffer: built.buffer, inline: opts.inline, dir, media: built.media, skippedMedia: built.skippedMedia, chromium: found.path, shots: staging })
+    if (staging) settleShots(shots, staging)
   }
   result.matrix = browser.matrix
   result.checks.push(...browser.checks)
@@ -485,9 +545,8 @@ async function main(argv) {
   }
 
   try {
-    writeAtomic(out, built.buffer)
+    replaceFile(dirname(out), basename(out), built.buffer)
   } catch (e) {
-    dropTemp()
     return refuse([{ kind: 'write', line: null, message: `cannot write ${out} (${e.code ?? 'error'})` }])
   }
   result.result = browser.result

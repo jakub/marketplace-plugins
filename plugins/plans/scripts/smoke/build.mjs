@@ -4,10 +4,13 @@
 // It covers argv (exit 2), every refusal (exit 1, nothing written, a previous output and its hard
 // link kept byte for byte, no temp file left), the marker, the --out rules, diff placeholders,
 // the build id and digest recomputed from the written file, the two assemblies, the pure helpers
-// in memory, static rules over kit/ask.js, findChromium and the MEDIA table.
+// in memory, static rules over kit/ask.js, findChromium and the MEDIA table. Every spawn has a
+// SIGKILL deadline, so a build that blocks fails its check instead of hanging the smoke. A few
+// cases put a stand-in for Chromium in PLANS_CHROMIUM: a shell script that acts where the browser
+// check would run, then exits 1, so the check is unknown and nothing needs a real browser.
 
 import { createHash } from 'node:crypto'
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -19,7 +22,7 @@ const sha = (b) => createHash('sha256').update(b).digest('hex')
 const page = ({ head = '<!-- plans:kit -->', body = '<p>Body text.</p>', title = 'Fixture', before = '' } = {}) =>
   `${before}<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>${title}</title>\n${head}\n</head>\n<body>\n${body}\n</body>\n</html>\n`
 
-export default async function ({ ROOT, check }) {
+export default async function ({ ROOT, check, skip }) {
   const DOC = join(ROOT, 'plugins/plans/skills/doc')
   const BUILD = join(DOC, 'build.mjs')
   const mod = await import(pathToFileURL(BUILD).href)
@@ -30,13 +33,22 @@ export default async function ({ ROOT, check }) {
   try {
     let n = 0
     const fresh = () => { const d = join(base, `c${++n}`); mkdirSync(d); return d }
-    const run = (args, cwd = base) => {
-      const r = spawnSync(process.execPath, [BUILD, ...args], { cwd, encoding: 'utf8', env: { ...process.env, PLANS_CHROMIUM: '/nonexistent' } })
+    const run = (args, cwd = base, { env = {}, timeout = 60000 } = {}) => {
+      const r = spawnSync(process.execPath, [BUILD, ...args], { cwd, encoding: 'utf8', timeout, killSignal: 'SIGKILL', env: { ...process.env, PLANS_CHROMIUM: '/nonexistent', ...env } })
       let json = null
       try { json = JSON.parse(r.stdout) } catch {}
       return { status: r.status, stdout: r.stdout, stderr: r.stderr, json }
     }
     const temps = (dir) => readdirSync(dir).filter((f) => f.endsWith('.tmp'))
+    const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null } }
+    const mkfifo = (p) => spawnSync('mkfifo', [p]).status === 0
+    // A stand-in for Chromium that runs the shell lines given, then exits 1.
+    const fakeChromium = (d, lines) => {
+      const p = join(d, 'fake-chromium')
+      writeFileSync(p, `#!/bin/sh\n${lines}\nexit 1\n`)
+      chmodSync(p, 0o755)
+      return p
+    }
 
     // --- argv: exit 2, usage on stderr, nothing on stdout, nothing written.
     {
@@ -116,7 +128,7 @@ export default async function ({ ROOT, check }) {
     }
 
     // --- Refusals: exit 1, --json fail, nothing written, the old output and its hard link intact.
-    const refuse = (what, { input = page(), name = 'p.html', setup, args = [], kind, inline = false } = {}) => {
+    const refuse = (what, { input = page(), name = 'p.html', setup, args = [], kind, inline = false, timeout } = {}) => {
       const d = fresh()
       const inPath = join(d, name)
       if (input !== null) writeFileSync(inPath, input)
@@ -126,7 +138,7 @@ export default async function ({ ROOT, check }) {
       const ino = statSync(out).ino
       setup?.(d, inPath)
       const before = readdirSync(d).sort().join(',')
-      const r = run([...(inline ? ['--inline'] : []), '--json', ...args, inPath])
+      const r = run([...(inline ? ['--inline'] : []), '--json', ...args, inPath], base, { timeout })
       const kept = readFileSync(out, 'utf8') === OLD && statSync(out).ino === ino && readFileSync(join(d, 'linked.html'), 'utf8') === OLD
       const after = readdirSync(d).sort().join(',')
       const ok = r.status === 1 && r.json?.result === 'fail' && (!kind || r.json?.reason?.kind === kind) && r.json?.digest === null && r.stderr.trim() !== ''
@@ -141,6 +153,13 @@ export default async function ({ ROOT, check }) {
     refuse('an input that is a symlink', { input: null, kind: 'input', setup: (d, p) => { writeFileSync(join(d, 'real.html'), page()); symlinkSync('real.html', p) } })
     refuse('an input that is a directory', { input: null, kind: 'input', setup: (d, p) => mkdirSync(p) })
     refuse('an input that is not UTF-8', { input: Buffer.concat([Buffer.from(page()), Buffer.from([0xff, 0xfe])]), kind: 'input' })
+    // A FIFO with no writer blocks a plain open forever, so these run under a 5 s SIGKILL.
+    if (mkfifo(join(fresh(), 'probe'))) {
+      refuse('an input that is a FIFO, without blocking', { input: null, kind: 'input', timeout: 5000, setup: (d, p) => mkfifo(p) })
+      refuse('a diff input that is a FIFO, without blocking', { input: page({ body: '<div data-diff-before="a.md" data-diff-after="b.md"></div>' }), kind: 'diff', timeout: 5000, setup: (d) => { writeFileSync(join(d, 'b.md'), 'b\n'); mkfifo(join(d, 'a.md')) } })
+    } else {
+      skip('build refuses a FIFO input or diff input without blocking', 'mkfifo is unavailable here')
+    }
 
     // The marker.
     refuse('a missing marker', { input: page({ head: '' }), kind: 'marker' })
@@ -231,6 +250,47 @@ export default async function ({ ROOT, check }) {
       run(['--shots', 'badshots', join(d, 'bad.html')])
       const bad = JSON.parse(readFileSync(join(d, 'badshots', 'result.json'), 'utf8'))
       check('build --shots: result.json holds the build id and result, on fail too', /^[0-9a-f]{64}$/.test(ok.buildId) && ok.result === 'unknown' && bad.result === 'fail', JSON.stringify([ok, bad]))
+    }
+
+    // --shots replaces result.json by rename, so whatever held that name keeps its bytes.
+    {
+      const d = fresh()
+      writeFileSync(join(d, 'p.html'), page({ head: '' }))
+      writeFileSync(join(d, 'p.built.html'), OLD)
+      linkSync(join(d, 'p.built.html'), join(d, 'result.json'))
+      const r = run(['--json', '--shots', '.', join(d, 'p.html')])
+      const receipt = readJson(join(d, 'result.json'))
+      check('build --shots: a refusal replaces a hard-linked result.json and leaves its other link alone',
+        r.status === 1 && readFileSync(join(d, 'p.built.html'), 'utf8') === OLD && receipt?.result === 'fail' && temps(d).length === 0,
+        `status ${r.status} p.built.html ${JSON.stringify(readFileSync(join(d, 'p.built.html'), 'utf8').slice(0, 40))} files ${readdirSync(d).join(',')}`)
+    }
+    {
+      const d = fresh()
+      writeFileSync(join(d, 'p.html'), page())
+      writeFileSync(join(d, 'target.txt'), OLD)
+      symlinkSync('target.txt', join(d, 'result.json'))
+      const r = run(['--json', '--shots', '.', join(d, 'p.html')])
+      check('build --shots: a symlink at result.json is replaced, and its target keeps its bytes',
+        r.status === 3 && readFileSync(join(d, 'target.txt'), 'utf8') === OLD && !lstatSync(join(d, 'result.json')).isSymbolicLink() && readJson(join(d, 'result.json'))?.result === 'unknown' && temps(d).length === 0,
+        `status ${r.status} ${r.stderr}`)
+    }
+
+    // Screenshots are written into a fresh staging directory inside DIR and renamed into place,
+    // so no existing file in DIR is opened. The stand-in writes where run.mjs would.
+    {
+      const d = fresh()
+      const shots = join(d, 'shots')
+      writeFileSync(join(d, 'p.html'), page())
+      mkdirSync(shots)
+      writeFileSync(join(shots, '390-light-initial.png'), OLD)
+      linkSync(join(shots, '390-light-initial.png'), join(shots, 'kept.png'))
+      const chromium = fakeChromium(d, `for s in "${shots}"/.plans-shots.*.tmp; do printf new > "$s/390-light-initial.png"; done`)
+      const r = run(['--json', '--shots', 'shots', join(d, 'p.html')], base, { env: { PLANS_CHROMIUM: chromium } })
+      const files = readdirSync(shots).sort().join(',')
+      check('build --shots: a screenshot replaces its name by rename and leaves a hard link alone',
+        r.status === 3 && readFileSync(join(shots, '390-light-initial.png'), 'utf8') === 'new' && readFileSync(join(shots, 'kept.png'), 'utf8') === OLD,
+        `status ${r.status} files ${files} ${r.stderr}`)
+      check('build --shots: the staging directory is gone afterwards', files === '390-light-initial.png,kept.png,result.json', files)
     }
 
     // Diff expansion.
