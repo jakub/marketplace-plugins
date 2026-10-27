@@ -1,8 +1,9 @@
 // Prose diff: skills/doc/kit/diff.mjs rebuilds both inputs byte for byte from its ops, keeps a
 // literal U+2029 as text, draws one ¶ for a paragraph merge, turns a cut over noteWords into a
-// numbered caret and one margin note, falls back to pre.plans-pre for a changed table or fence,
-// labels a hunk coarse past the pair cap after trimming, escapes its input, and writes no style
-// attribute and no class outside the plans-* contract.
+// numbered caret and one margin note, falls back to pre.plans-pre for a changed table, fence or
+// rule, keeps every cut of 10,000 seeded pairs in a del, labels a hunk coarse past the pair cap
+// after trimming, escapes its input, and writes no style attribute and no class outside the
+// plans-* contract.
 
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -143,6 +144,60 @@ export default async function ({ ROOT, check }) {
     const fenced = run('Intro.\n\n```\ncode\n```\n\nOutro stays a paragraph.\n', 'Intro.\n\nOutro stays a paragraph.\n')
     check('a deleted fence leaves the paragraph after it outside the pre', fenced.html.includes('<p>Outro stays a paragraph.</p>') &&
       inPre(fenced.html, /<del class="plans-cut">```/), fenced.html)
+  }
+
+  // A line that becomes a thematic rule keeps its cuts in pre.plans-pre, since an hr holds no text.
+  // An unchanged rule stays an hr.
+  {
+    const inPre = (h, re) => [...h.matchAll(/<pre class="plans-pre">([^]*?)<\/pre>/g)].some((m) => re.test(m[1]))
+    for (const rule of ['***', '___', '- - -', '---']) {
+      const whole = run('old text', rule)
+      check(`a line that becomes ${rule} keeps its cut`, inPre(whole.html, /<del class="plans-cut">old text<\/del>/), whole.html)
+      const mid = run('Intro.\n\nold text\n\nOutro.\n', `Intro.\n\n${rule}\n\nOutro.\n`)
+      check(`a mid-document line that becomes ${rule} keeps its cut`, inPre(mid.html, /<del class="plans-cut">old text<\/del>/) &&
+        mid.html.includes('<p>Intro.</p>') && mid.html.includes('<p>Outro.</p>'), mid.html)
+      const kept = run(`Intro.\n\n${rule}\n\nOld outro.\n`, `Intro.\n\n${rule}\n\nNew outro.\n`)
+      check(`an unchanged ${rule} stays an hr`, kept.html.includes('<p>Intro.</p><hr><p>') && !kept.html.includes('plans-pre'), kept.html)
+    }
+  }
+
+  // Over 10,000 seeded document pairs, the ops rebuild both inputs, and every non-space character
+  // of every cut appears inside a del in the render. Backticks, stars and ¶ are dropped from both
+  // sides, because inline code and bold turn them into tags.
+  {
+    const rng = (s) => () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x80000000 }
+    const SHAPES = ['# H w', '## w w', '- w w', '* w', '1. w w', '  - w', '    w w', '> w w', '***', '___', '- - -', '---',
+      '| a | w |', '|---|---|', '```', '~~~', 'w w w', 'w **w** `w`', '', '', 'w']
+    const WORDS = ['alpha', 'beta', 'gamma', 'delta', 'eps', 'zeta', 'eta']
+    const line = (r) => SHAPES[Math.floor(r() * SHAPES.length)].replace(/\bw\b/g, () => WORDS[Math.floor(r() * WORDS.length)])
+    const doc = (r) => Array.from({ length: 1 + Math.floor(r() * 8) }, () => line(r)).join('\n') + (r() < 0.8 ? '\n' : '')
+    const mutate = (s, r) => {
+      const L = s.split('\n')
+      for (let n = 1 + Math.floor(r() * 3); n > 0; n--) {
+        const j = Math.floor(r() * (L.length + 1)), op = r()
+        if (op < 0.4) L[Math.min(j, L.length - 1)] = line(r)
+        else if (op < 0.7) L.splice(Math.min(j, L.length - 1), 1)
+        else L.splice(j, 0, line(r))
+      }
+      return L.join('\n')
+    }
+    const norm = (s) => [...s.replace(/[\s`*¶]/g, '')].sort().join('')
+    const unesc = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')
+    const cutText = (h) => [...h.matchAll(/<del class="plans-cut">([^]*?)<\/del>/g)].map((m) => unesc(m[1].replace(/<[^>]*>/g, ''))).join('')
+    let lostRebuild = '', lostCut = ''
+    for (let seed = 1; seed <= 10000 && !(lostRebuild && lostCut); seed++) {
+      const r = rng(seed), before = doc(r), after = r() < 0.5 ? mutate(before, r) : doc(r)
+      for (const noteWords of [12, 0, 1]) {
+        const { ops } = diff(before, after, { noteWords })
+        if (!lostRebuild && !(same(rebuilt(ops, 'del'), before) && same(rebuilt(ops, 'ins'), after))) lostRebuild = `seed ${seed}`
+        const html = render(ops, { noteWords })
+        if (!lostCut && norm(ops.filter((o) => o.t === 'del').map((o) => o.s).join('')) !== norm(cutText(html))) {
+          lostCut = `seed ${seed} noteWords ${noteWords}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}: ${html}`
+        }
+      }
+    }
+    check('10,000 seeded pairs: the ops rebuild both inputs', !lostRebuild, lostRebuild)
+    check('10,000 seeded pairs: every cut is in a del in the render', !lostCut, lostCut)
   }
 
   // The pair cap applies after prefix and suffix trimming, at both levels.

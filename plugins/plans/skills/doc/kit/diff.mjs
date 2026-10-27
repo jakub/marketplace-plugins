@@ -43,14 +43,14 @@
 //   div.plans-diff  the whole block           del.plans-cut   a cut
 //   ins.plans-new   new words                 span.plans-pil  a generated ¶ for a lost break
 //   sup.plans-caret a numbered caret          span.plans-note a margin note
-//   pre.plans-pre   front matter, code, a changed table or fence, a coarse hunk
+//   pre.plans-pre   front matter, code, a changed table, fence or rule, a coarse hunk
 //   .plans-coarse-label  the label before a coarse hunk's pre
 //   p.plans-h1..6   headings                  p.plans-li      a list item
 //   p.plans-ind     an indented line          div.plans-tw    a table wrapper
 //   plans-i1..6     the indent level of a list item or indented line
-// Paragraphs are bare `p`, a quote is `blockquote > p`, a rule is `hr`, and a block that only lost
-// text is a bare `p`. A list item opens with a classless `span` holding its marker. Nothing carries
-// a `style` attribute.
+// Paragraphs are bare `p`, a quote is `blockquote > p`, an unchanged rule is `hr`, and a block
+// that only lost text is a bare `p`. A list item opens with a classless `span` holding its marker.
+// Nothing carries a `style` attribute.
 //
 // Cuts. A cut of more than noteWords words becomes `sup.plans-caret` (‸ and its number) in the
 // text, plus one `span.plans-note` (its number and the whole cut in a `del`) emitted right after
@@ -61,12 +61,14 @@
 // one ¶. ¶ marks are generated span.plans-pil elements, never characters placed in the text, so a
 // U+2029 in input stays text.
 //
-// Fallbacks. A changed table or a changed fence shows as pre.plans-pre with del and ins, with each
-// run of cut line breaks shown as a ¶. Fences and tables are the one place the setter reads the
-// before-text too, so a cut table, a cut fence, or fence lines cut around kept text take this
-// fallback rather than being set as paragraphs or inline code. A coarse hunk shows as a .plans-coarse-label paragraph and
-// a pre.plans-pre holding the whole cut and then the whole new text, widened to whole lines with
-// the unchanged text around it. Margin notes never appear inside a pre.
+// Fallbacks. A changed table, a changed fence or a changed thematic rule shows as pre.plans-pre with
+// del and ins, with each run of cut line breaks shown as a ¶. A rule has no text to hold a cut, so a
+// line that becomes a rule, or a rule that gains or loses text, keeps its cuts this way. Fences
+// and tables are the one place the setter reads the before-text too, so a cut table, a cut fence,
+// or fence lines cut around kept text take this fallback rather than being set as paragraphs or
+// inline code. A coarse hunk shows as a .plans-coarse-label paragraph and a pre.plans-pre holding
+// the whole cut and then the whole new text, widened to whole lines with the unchanged text around
+// it. Margin notes never appear inside a pre.
 //
 // Limits.
 //   - Words are ASCII. A non-Latin word aligns one code point at a time, which is correct but
@@ -290,7 +292,7 @@ export function toBlocks(lines, start = true) {
     }
     if (!a.trim()) { if (hasDel) B.push({ k: 'gone', items: ln }); blank = true; return }
     if ((m = a.match(/^(#{1,6})\s+/))) { B.push({ k: 'h', lv: m[1].length, items: strip(ln, m[0].length) }); blank = false; return }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(a)) { B.push({ k: 'hr' }); blank = false; return }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(a)) { B.push({ k: 'hr', ln }); blank = false; return }
     if ((m = a.match(/^>\s?/))) {
       const it = strip(ln, m[0].length)
       if (last && last.k === 'bq' && !blank) last.items.push({ t: '=', s: ' ' }, ...it)
@@ -393,7 +395,7 @@ export function renderBlocks(B, chap) {
       case 'ind': h += `<p class="plans-ind ${indent(b.ind)}">${rItems(b.items, ctx)}</p>`; break
       case 'bq': h += `<blockquote><p>${rItems(b.items, ctx)}</p></blockquote>`; break
       case 'gone': h += `<p>${rItems(b.items, ctx)}</p>`; break
-      case 'hr': h += '<hr>'; break
+      case 'hr': h += b.ln.every((x) => x.t === '=') ? '<hr>' : pre(preLine(b.ln)); break
       case 'pre': h += pre(b.lines.map(preLine).join('\n')); break
       case 'table': {
         const clean = b.lines.every((ln) => ln.every((x) => x.t === '='))
