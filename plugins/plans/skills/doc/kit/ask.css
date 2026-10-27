@@ -1,0 +1,180 @@
+/* plans-kit:ask.css */
+/* Question-kit styles. They read only the --plans-* tokens that show/tokens.css declares, and
+   declare none. Controls get 44px touch targets and a --plans-focus ring. The accent marks only
+   what changed or needs the reader: a changed question's bar, its then-text and an open count. */
+
+fieldset[data-ask] {
+  min-width: 0;
+  margin: 2rem 0;
+  padding: 0 0 0 1rem;
+  border: 0;
+  border-left: 3px solid transparent;
+}
+fieldset[data-ask][data-plans-state="changed"] { border-left-color: var(--plans-accent); }
+fieldset[data-ask] > legend {
+  float: left;
+  width: 100%;
+  margin: 0 0 .5rem;
+  padding: 0;
+  font-weight: 600;
+}
+fieldset[data-ask] > legend + * { clear: both; }
+
+fieldset[data-ask] label {
+  display: block;
+  position: relative;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: .625rem 0 .625rem 2rem;
+  border-top: 1px solid var(--plans-hair);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+fieldset[data-ask] label > input {
+  position: absolute;
+  top: .75rem;
+  left: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  accent-color: var(--plans-ink);
+}
+fieldset[data-ask] label:has(> input[checked]) { padding-right: 5.5rem; }
+fieldset[data-ask] label:has(> input[checked])::after {
+  content: "proposed";
+  position: absolute;
+  top: .75rem;
+  right: 0;
+  color: var(--plans-ink-2);
+  font-family: var(--plans-mono);
+  font-size: .8125rem;
+}
+
+[data-hint] {
+  display: block;
+  margin-top: .125rem;
+  color: var(--plans-ink-2);
+  font-size: .9375em;
+}
+[data-then] {
+  display: block;
+  margin-top: .375rem;
+  padding: .5rem .75rem;
+  border-left: 2px solid var(--plans-accent);
+  background: var(--plans-accent-surface);
+  color: var(--plans-ink);
+}
+[data-then][hidden] { display: none !important; }
+
+.plans-ask-keeprow { margin-top: .75rem; }
+
+.plans-ask-btn {
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 1rem;
+  border: 1px solid var(--plans-rule);
+  border-radius: var(--plans-radius);
+  background: transparent;
+  color: var(--plans-ink);
+  font: inherit;
+  font-size: .9375rem;
+  cursor: pointer;
+}
+.plans-ask-btn[aria-pressed="true"] { border-color: var(--plans-ink); font-weight: 600; }
+.plans-ask-btn[aria-pressed="true"]::before { content: "✓ "; }
+.plans-ask-btn:disabled { border-style: dashed; color: var(--plans-ink-2); cursor: not-allowed; }
+.plans-ask-copy { border-color: var(--plans-ink); background: var(--plans-panel); font-weight: 600; }
+
+fieldset[data-ask] input:focus-visible,
+.plans-ask-btn:focus-visible,
+.plans-ask-rows a:focus-visible,
+.plans-ask-field textarea:focus-visible,
+textarea[data-note]:focus-visible {
+  outline: 2px solid var(--plans-focus);
+  outline-offset: 2px;
+}
+
+textarea[data-note],
+.plans-ask-field textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: .5rem .75rem;
+  border: 1px solid var(--plans-rule);
+  border-radius: var(--plans-radius);
+  background: transparent;
+  color: var(--plans-ink);
+  font: inherit;
+}
+.plans-ask-field textarea.plans-ask-response {
+  border-color: var(--plans-hair);
+  background: var(--plans-code);
+  font-family: var(--plans-mono);
+  font-size: .8125rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.plans-ask-rows {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--plans-rule);
+  list-style: none;
+}
+.plans-ask-rows li { border-bottom: 1px solid var(--plans-hair); }
+.plans-ask-rows a {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  column-gap: .75rem;
+  align-items: baseline;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: .625rem 0;
+  color: inherit;
+  text-decoration: none;
+}
+.plans-ask-num {
+  grid-row: 1;
+  grid-column: 1;
+  color: var(--plans-ink-2);
+  font-family: var(--plans-mono);
+  font-variant-numeric: tabular-nums;
+}
+.plans-ask-q { grid-row: 1; grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
+.plans-ask-state { grid-row: 1; grid-column: 3; color: var(--plans-ink-2); font-size: .875rem; white-space: nowrap; }
+.plans-ask-ans { grid-row: 2; grid-column: 2 / 4; min-width: 0; color: var(--plans-ink-2); overflow-wrap: anywhere; }
+.plans-ask-rows [data-plans-state="changed"] .plans-ask-state { color: var(--plans-accent-text); font-weight: 600; }
+.plans-ask-rows [data-plans-state="kept"] .plans-ask-state { color: var(--plans-ink); }
+
+.plans-ask-respond { margin-top: 1rem; }
+.plans-ask-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem 1.5rem;
+  margin: 0 0 1rem;
+  padding: .5rem 0;
+  border-top: 1px solid var(--plans-rule);
+  border-bottom: 1px solid var(--plans-hair);
+  list-style: none;
+  font-variant-numeric: tabular-nums;
+}
+.plans-ask-status .plans-ask-need { color: var(--plans-accent-text); font-weight: 600; }
+.plans-ask-save { margin: 0 0 1rem; font-weight: 600; }
+.plans-ask-field { display: block; margin: 1rem 0; }
+.plans-ask-fieldname { display: block; margin-bottom: .375rem; font-weight: 600; }
+.plans-ask-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+.plans-ask-said { margin: 0; color: var(--plans-ink-2); }
+
+.plans-ask-error {
+  margin: 0 0 1.5rem;
+  padding: 16px;
+  border: 2px solid var(--plans-accent);
+  border-radius: var(--plans-radius);
+  background: var(--plans-accent-surface);
+  color: var(--plans-ink);
+}
+.plans-ask-error p { margin: 0 0 .5rem; font-weight: 600; }
+.plans-ask-error ul { margin: 0; padding-left: 1.25rem; }
