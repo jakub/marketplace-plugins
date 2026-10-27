@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: media-undeclared</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Undeclared</h1>
+<p>A script adds an image whose src the builder never read.</p>
+<img src="dot.png" alt="A declared sibling">
+<script>const img = new Image(); img.alt = ""; img.setAttribute("src", "./dot.png"); document.querySelector("main").append(img)</script>
+</main>
+</body>
+</html>

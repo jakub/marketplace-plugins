@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retry wording</title>
+<!-- plans:kit -->
+<style>
+body { margin: 0; color: var(--plans-ink); font: 15px/1.5 var(--plans-sans); }
+h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
+figure { margin: 1rem 0 0; }
+figcaption { color: var(--plans-ink-2); font-size: .9em; }
+svg { display: block; max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<main>
+<h2>The retry paragraph, before and after</h2>
+<div data-diff-before="before.md" data-diff-after="after.md" aria-label="The retry paragraph"></div>
+<figure>
+  <svg viewBox="0 0 320 90" role="img" aria-label="Three tries, each twice as far apart as the last">
+    <g fill="none" stroke="currentColor" stroke-width="2"><path d="M10 60 H310"/><path d="M30 50 V70 M90 50 V70 M210 50 V70"/></g>
+    <g fill="currentColor" font-size="15" text-anchor="middle"><text x="30" y="38">try 1</text><text x="90" y="38">try 2</text><text x="210" y="38">try 3</text></g>
+  </svg>
+  <figcaption>Each retry waits twice as long as the one before.</figcaption>
+</figure>
+</main>
+</body>
+</html>

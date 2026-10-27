@@ -55,9 +55,14 @@
 //   - in Inline mode, any kit hook (data-ask, data-note, data-ask-summary, data-respond), or
 //     output over 500,000 UTF-8 bytes
 //
-// The browser check is not wired yet. With no Chromium the result is unknown `no-chromium`. With
-// Chromium found it is unknown `checker-error` with detail `browser check not wired`. Either way
-// the complete file is written and the exit is 3, which is never a pass.
+// The browser check. After the static checks pass, check/run.mjs loads the exact final Buffer,
+// served from memory by check/serve.mjs, in Chromium through check/cdp.mjs, across its view and
+// state matrix. A pass writes the file and exits 0. A fault writes nothing and exits 1, with one
+// line per distinct fault naming its kind and the cells it appeared in. An unknown, which includes
+// no Chromium at all (`no-chromium`), writes the complete file and exits 3, which is never a pass.
+// The browser and the server are closed, and Chromium's profile removed, before the write, on
+// every path; a signal mid-check kills Chromium's process group and removes the profile and the
+// temp file before the exit.
 //
 // Exit codes: 0 written and every check passed, 1 a fault with nothing written, 2 usage, 3 written
 // with the browser result unknown.
@@ -68,8 +73,8 @@
 // digest and bytes are null unless the file was written. Human lines go to stderr.
 //
 // `--shots DIR` resolves a relative DIR against INPUT's directory, as `--out` does, creates it,
-// and writes `result.json` there with the build id and the result, on fail too. Screenshots,
-// `<w>-<scheme>-<state>.png`, arrive with the browser check.
+// and writes `result.json` there with the build id and the result, on fail too, plus one full-page
+// `<w>-<scheme>-<state>.png` per matrix cell the browser check reached, capped at 16384 px.
 //
 // The module exports its pure helpers for smoke imports and runs the CLI only when it is the entry
 // point: kitRefusals(name, text), readKit(), assemble(text, opts), KIT_FILES and the limits.
@@ -82,6 +87,7 @@ import { fileURLToPath } from 'node:url'
 import { render, diff } from './kit/diff.mjs'
 import { attr, lineOf, scan } from './check/scan.mjs'
 import { findChromium } from './check/cdp.mjs'
+import { runChecks } from './check/run.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -392,7 +398,7 @@ function outputPath(input, inputStat, outArg, inline) {
   return out
 }
 
-function main(argv) {
+async function main(argv) {
   let opts
   try { opts = parseArgs(argv) } catch (e) {
     if (!(e instanceof Usage)) throw e
@@ -447,10 +453,36 @@ function main(argv) {
   if (built.faults.length) return refuse(built.faults)
   result.checks.push({ name: 'static', result: 'pass', detail: '' })
 
-  // The browser half. Until it is wired, every static pass is unknown.
+  // The browser half, over the exact bytes that will be written.
   const found = findChromium(process.env, process.platform)
-  const reason = found.reason ?? { kind: 'checker-error', detail: 'browser check not wired' }
-  result.checks.push({ name: 'browser', result: 'unknown', detail: `${reason.kind}: ${reason.detail}` })
+  let browser
+  if (found.reason) {
+    browser = { result: 'unknown', reason: found.reason, matrix: [], checks: [{ name: 'browser', result: 'unknown', detail: `${found.reason.kind}: ${found.reason.detail}` }], copy: null, undriven: [] }
+  } else {
+    process.stderr.write(`build.mjs: checking ${basename(out)} in ${found.path}\n`)
+    browser = await runChecks({ buffer: built.buffer, inline: opts.inline, dir, media: built.media, skippedMedia: built.skippedMedia, chromium: found.path, shots })
+  }
+  result.matrix = browser.matrix
+  result.checks.push(...browser.checks)
+  result.copy = browser.copy
+  result.undriven = browser.undriven
+  for (const u of browser.undriven) process.stderr.write(`build.mjs: not driven: ${u}\n`)
+
+  if (browser.result === 'fail') {
+    const lines = new Map()
+    for (const cell of browser.matrix) {
+      for (const f of cell.faults) {
+        const key = `${f.kind}: ${f.detail}`
+        if (!lines.has(key)) lines.set(key, [])
+        lines.get(key).push(`${cell.view} ${cell.state}`)
+      }
+    }
+    for (const [line, cells] of lines) process.stderr.write(`build.mjs: ${opts.input}: ${line} [${cells.length === browser.matrix.length ? 'every cell' : cells.join(', ')}]\n`)
+    process.stderr.write(`build.mjs: the browser check failed: nothing written\n`)
+    result.result = 'fail'
+    result.reason = browser.reason
+    return finish(1)
+  }
 
   try {
     writeAtomic(out, built.buffer)
@@ -458,13 +490,14 @@ function main(argv) {
     dropTemp()
     return refuse([{ kind: 'write', line: null, message: `cannot write ${out} (${e.code ?? 'error'})` }])
   }
-  result.result = 'unknown'
-  result.reason = reason
+  result.result = browser.result
+  result.reason = browser.reason
   result.digest = createHash('sha256').update(built.buffer).digest('hex')
   result.bytes = built.buffer.length
   process.stderr.write(`build.mjs: wrote ${out} (${built.buffer.length} bytes, build ${built.buildId.slice(0, 12)})\n`)
-  process.stderr.write(`build.mjs: browser check unknown: ${reason.kind}: ${reason.detail}. Exit 3 is never a pass.\n`)
+  if (browser.result === 'pass') return finish(0)
+  process.stderr.write(`build.mjs: browser check unknown: ${browser.reason.kind}: ${browser.reason.detail}. Exit 3 is never a pass.\n`)
   return finish(3)
 }
 
-if (import.meta.main) process.exitCode = main(process.argv.slice(2))
+if (import.meta.main) process.exitCode = await main(process.argv.slice(2))
