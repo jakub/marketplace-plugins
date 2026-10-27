@@ -97,8 +97,10 @@
 // inline-kit-hook and inline-frame. Chromium 155 prints no "Refused to" line for a CSP block, so
 // console-csp also reads Log.entryAdded with source `security` and loadingFailed with
 // blockedReason `csp`. css-url reads the declarations the CSSOM parsed, in document.styleSheets,
-// document.adoptedStyleSheets and every [style], so CSS escapes arrive decoded, and it decodes
-// them itself in the text the CSSOM keeps raw: custom properties and @property initial values.
+// document.adoptedStyleSheets and every [style], and the text the CSSOM keeps raw: custom
+// properties and @property initial values. It tokenizes each value as CSS does, so only a url()
+// function counts, never url() text inside a string or a comment, and escapes are decoded in the
+// function's name and argument.
 // SVG attributes are read as written: an escaped external url() there is a load the sandboxed
 // page refuses, so load-failed reports it. Shadow roots are not walked by any probe. In Inline
 // mode the skipped absolute media paths raise no network or decode fault, since html_preview
@@ -285,31 +287,80 @@ function probe(cfg) {
   for (const el of document.querySelectorAll('[srcset]')) add('srcset', el, `srcset="${el.getAttribute('srcset')}"`)
   for (const el of document.querySelectorAll('[poster]')) add('poster', el, `poster="${el.getAttribute('poster')}"`)
 
-  const URL_RE = /url\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^)\s]*))/gi
-  const badUrls = (text) => {
+  // The argument of every url() function in CSS text, read as the CSS tokenizer reads it. url()
+  // text inside a string or a comment is not a function, nor is a name joined to a number, a hash
+  // or an at-keyword, and escapes are decoded in the name and the argument, so u\72l( reads as
+  // url(. The CSSOM serializes a parsed declaration decoded, but keeps raw text for a custom
+  // property and an @property initial-value, and a raw u\72l( there still loads through var().
+  const cssUrls = (text) => {
     const out = []
-    for (const m of text.matchAll(URL_RE)) {
-      const v = (m[1] ?? m[2] ?? m[3] ?? '').trim()
-      if (!/^data:/i.test(v) && !v.startsWith('#')) out.push(v)
+    const n = text.length
+    let i = 0
+    const nl = (c) => c === '\n' || c === '\r' || c === '\f'
+    const ws = (c) => c === ' ' || c === '\t' || nl(c)
+    const nameChar = (c) => c !== undefined && (/[\w-]/.test(c) || c.charCodeAt(0) >= 0x80)
+    const escapeAt = (j) => text[j] === '\\' && j + 1 < n && !nl(text[j + 1])
+    // At a valid escape: consumes it and returns the code point it stands for.
+    const escape = () => {
+      const hex = /^[0-9a-fA-F]{1,6}/.exec(text.slice(i + 1, i + 7))
+      if (!hex) {
+        const cp = text.codePointAt(i + 1)
+        i += cp > 0xffff ? 3 : 2
+        return String.fromCodePoint(cp)
+      }
+      i += 1 + hex[0].length
+      if (text[i] === '\r' && text[i + 1] === '\n') i += 2
+      else if (ws(text[i])) i++
+      const cp = parseInt(hex[0], 16)
+      return cp === 0 || (cp >= 0xd800 && cp <= 0xdfff) || cp > 0x10ffff ? '\ufffd' : String.fromCodePoint(cp)
+    }
+    const name = () => {
+      let s = ''
+      for (;;) {
+        if (nameChar(text[i])) s += text[i++]
+        else if (escapeAt(i)) s += escape()
+        else return s
+      }
+    }
+    // At a quote: consumes the string and returns its value. A newline ends a string unclosed.
+    const string = () => {
+      const q = text[i++]
+      let s = ''
+      while (i < n && text[i] !== q && !nl(text[i])) {
+        if (text[i] !== '\\') s += text[i++]
+        else if (i + 1 >= n) i++
+        else if (nl(text[i + 1])) i += text[i + 1] === '\r' && text[i + 2] === '\n' ? 3 : 2
+        else s += escape()
+      }
+      if (text[i] === q) i++
+      return s
+    }
+    while (i < n) {
+      const c = text[i]
+      if (c === '/' && text[i + 1] === '*') {
+        const end = text.indexOf('*/', i + 2)
+        i = end === -1 ? n : end + 2
+      } else if (c === '"' || c === "'") string()
+      else if (c === '#' || c === '@') { i++; name() }
+      else if (nameChar(c) || escapeAt(i)) {
+        // A digit is a name character, so a number and its unit, as in 1url(, stay one name.
+        if (!/^[uU][rR][lL]$/.test(name()) || text[i] !== '(') continue
+        i++
+        while (ws(text[i])) i++
+        let v = ''
+        if (text[i] === '"' || text[i] === "'") v = string()
+        else while (i < n && text[i] !== ')') v += escapeAt(i) ? escape() : text[i++]
+        out.push(v.trim())
+      } else i++
     }
     return out
   }
-  const cssFault = (where, text) => { for (const v of badUrls(text)) add('css-url', null, `url(${v}) in ${where}`) }
-  // CSS escapes decoded as the tokenizer decodes them, so u\72l( reads as url(. The CSSOM
-  // serializes a parsed declaration decoded, but keeps raw text for a custom property and an
-  // @property initial-value, and a raw u\72l( there still loads through var().
-  const unescape = (s) => s.replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|([^\n\r\f]))/g, (_, hex, ch) => {
-    if (ch !== undefined) return ch
-    const n = parseInt(hex, 16)
-    return n === 0 || (n >= 0xd800 && n <= 0xdfff) || n > 0x10ffff ? '\ufffd' : String.fromCodePoint(n)
-  })
+  const cssFault = (where, text) => {
+    for (const v of cssUrls(text)) if (!/^data:/i.test(v) && !v.startsWith('#')) add('css-url', null, `url(${v}) in ${where}`)
+  }
   // Every declaration of a CSSStyleDeclaration, as the CSSOM parsed it.
   const declFaults = (where, style) => {
-    for (let i = 0; i < style.length; i++) {
-      const p = style.item(i)
-      const v = style.getPropertyValue(p)
-      cssFault(where, p.startsWith('--') ? unescape(v) : v)
-    }
+    for (let i = 0; i < style.length; i++) cssFault(where, style.getPropertyValue(style.item(i)))
   }
   const walk = (rules, where) => {
     for (const r of rules) {
@@ -318,7 +369,7 @@ function probe(cfg) {
         try { if (r.styleSheet) walk(r.styleSheet.cssRules, where) } catch {}
       }
       if (r.style) declFaults(where, r.style)
-      if (typeof r.initialValue === 'string') cssFault(where, unescape(r.initialValue))
+      if (typeof r.initialValue === 'string') cssFault(where, r.initialValue)
       if (r.cssRules) walk(r.cssRules, where)
     }
   }

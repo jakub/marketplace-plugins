@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: css-url after url() text in a string</title>
+<!-- plans:kit -->
+<style>
+.never-used::before { content: "url(in-string.png)" url(after.png); }
+.never-used { --plans-fixture-mix: 'url(in-raw-string.png)' url(after-raw.png); }
+</style>
+</head>
+<body>
+<main>
+<h1>A string, then a URL</h1>
+<p>Each value holds url() text in a string, then a real url() function, which still loads.</p>
+</main>
+</body>
+</html>

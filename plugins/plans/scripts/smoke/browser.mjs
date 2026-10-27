@@ -361,6 +361,8 @@ const CSS_URL = [
   ['css-url-adopted', [/^url\(adopted\.png\) in adopted stylesheet 1$/]],
   // Escaped url() text the CSSOM keeps raw: a custom property and an @property initial value.
   ['css-url-raw', [/^url\(property\.png\) in style /, /^url\(custom\.png\) in style /]],
+  // A real url() after url() text in a string, in a parsed declaration and in a custom property.
+  ['css-url-after-string', [/^url\(after\.png\) in style /, /^url\(after-raw\.png\) in style /]],
 ]
 const CASES = [
   { dir: 'reading', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'] },
@@ -388,6 +390,8 @@ const CASES = [
   ] },
   // Lazy images that decode, far down, inside a closed <details> and never rendered, all pass.
   { dir: 'good-lazy', args: [], exit: 0 },
+  // url() text inside CSS strings and comments loads nothing, so it raises no css-url.
+  { dir: 'good-css-strings', args: [], exit: 0 },
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
 ]
 
