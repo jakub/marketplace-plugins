@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: clipped inside a scroller that can't reach it</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Out of a scroller's reach</h1>
+<p>Each box below sits inside a horizontal scroller, but scrolling it never brings the box into view.</p>
+<div style="overflow-x: auto">
+  <p id="fixed" style="position: fixed; left: -200px; top: 100px; width: 100px">A fixed box escapes the scroller.</p>
+</div>
+<div style="overflow-x: auto">
+  <p id="start" style="margin-left: -400px">This paragraph runs past the scroller's start edge.</p>
+</div>
+<div style="position: relative">
+  <div style="overflow-x: auto">
+    <p id="escaped" style="position: absolute; left: -300px; width: 100px">Its containing block is outside the scroller.</p>
+  </div>
+</div>
+<div dir="rtl" style="overflow-x: auto">
+  <p id="rtl-start" style="margin-right: -2000px">This paragraph runs past the start edge of a right-to-left scroller.</p>
+</div>
+</main>
+</body>
+</html>

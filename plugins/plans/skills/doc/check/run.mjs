@@ -101,13 +101,16 @@
 // properties and @property initial values. It tokenizes each value as CSS does, so only a url()
 // function counts, never url() text inside a string or a comment, and escapes are decoded in the
 // function's name and argument.
-// SVG attributes are read as written: an escaped external url() there is a load the sandboxed
-// page refuses, so load-failed reports it. Shadow roots are not walked by any probe. In Inline
-// mode the skipped absolute media paths raise no network or decode fault, since html_preview
-// inlines them. An SVG that is not rendered (getScreenCTM null, or no client rects) is skipped
-// by svg-wide and svg-text-small, and SVG text size is font size times the CTM's vertical scale
-// times visualViewport.scale, so a page without a viewport meta that mobile emulation shrinks
-// shows its real on-screen size. Console messages and exceptions inside workers are not captured.
+// SVG attributes are read as written: an escaped external url() there is a load the sandboxed page
+// refuses, so load-failed reports it. clipped spares a box outside the root's width only when the
+// nearest horizontal scroller on its containing-block chain can scroll every part of it into view,
+// so a fixed or absolute box that escapes a scroller, and content past a scroller's start edge,
+// still count. Shadow roots are not walked by any probe. In Inline mode the skipped absolute media
+// paths raise no network or decode fault, since html_preview inlines them. An SVG that is not
+// rendered (getScreenCTM null, or no client rects) is skipped by svg-wide and svg-text-small, and
+// SVG text size is font size times the CTM's vertical scale times visualViewport.scale, so a page
+// without a viewport meta that mobile emulation shrinks shows its real on-screen size. Console
+// messages and exceptions inside workers are not captured.
 //
 // Unknown versus fail. A launch or handshake failure, a lost transport, a protocol error on a
 // driver command, an exception in this code (`checker-error`), or a deadline while the browser
@@ -256,10 +259,43 @@ function probe(cfg) {
 
   if (root.scrollWidth > root.clientWidth) add('page-overflow', null, `the root's scrollWidth ${root.scrollWidth} is over its clientWidth ${root.clientWidth}`)
 
-  const scroller = (el) => {
-    for (let a = el.parentElement; a; a = a.parentElement) {
-      const o = getComputedStyle(a).overflowX
-      if (o === 'auto' || o === 'scroll') return true
+  // Whether scrolling can bring every part of el's box r into view. The nearest horizontal scroller
+  // on el's containing-block chain decides, since it clips el to its scrollport. A fixed box's
+  // containing block is the viewport unless an ancestor holds fixed boxes, and an absolute box's
+  // is its nearest positioned ancestor, so a scroller between either one and its containing block
+  // doesn't count. The viewport takes the root's overflow, or body's when the root's is visible,
+  // and its scrolling is page-overflow's to report. A scroller's range ends at its start edge, so
+  // content past that edge is never in reach.
+  const rootStyle = getComputedStyle(root)
+  const viewportBody = rootStyle.overflowX === 'visible' && rootStyle.overflowY === 'visible' ? body : null
+  const words = (v) => v.split(/[\s,]+/)
+  // An ancestor that holds fixed boxes, and absolute ones, from its computed style. A cause this
+  // misses only reports more.
+  const holdsFixed = (cs) => cs.transform !== 'none' || cs.translate !== 'none' || cs.rotate !== 'none' || cs.scale !== 'none'
+    || cs.perspective !== 'none' || cs.filter !== 'none' || cs.backdropFilter !== 'none'
+    || words(cs.contain).some((w) => ['layout', 'paint', 'strict', 'content'].includes(w))
+    || words(cs.containerType).some((w) => w === 'size' || w === 'inline-size')
+    || words(cs.willChange).some((w) => ['transform', 'translate', 'rotate', 'scale', 'perspective', 'filter', 'backdrop-filter'].includes(w))
+  const containingBlock = (x) => {
+    const pos = getComputedStyle(x).position
+    for (let a = x.parentElement; a; a = a.parentElement) {
+      if (pos !== 'absolute' && pos !== 'fixed') return a
+      const cs = getComputedStyle(a)
+      if (holdsFixed(cs) || (pos === 'absolute' && cs.position !== 'static')) return a
+    }
+    return null
+  }
+  const reachable = (el, r) => {
+    for (let a = containingBlock(el); a; a = containingBlock(a)) {
+      if (a === root || a === viewportBody) continue
+      const cs = getComputedStyle(a)
+      if ((cs.overflowX !== 'auto' && cs.overflowX !== 'scroll') || cs.display === 'inline' || cs.display === 'contents') continue
+      // scrollLeft counts up from 0 where the start edge is the left, and down from 0 where it is
+      // the right, so the scrollable range's left end sits at start either way.
+      const port = a.getBoundingClientRect().left + a.clientLeft
+      const flipped = cs.writingMode === 'horizontal-tb' ? cs.direction === 'rtl' : /-rl$/.test(cs.writingMode)
+      const start = flipped ? port + a.clientWidth - a.scrollLeft - a.scrollWidth : port - a.scrollLeft
+      return r.left >= start - 0.5 && r.right <= start + a.scrollWidth + 0.5
     }
     return false
   }
@@ -271,9 +307,9 @@ function probe(cfg) {
     if (r.width === 0 || r.height === 0) continue
     const left = r.left + scrollX, right = r.right + scrollX
     if (left >= -0.5 && right <= cw + 0.5) continue
-    if (scroller(el)) continue
+    if (reachable(el, r)) continue
     clipped.push(el)
-    add('clipped', el, `spans ${Math.round(left)} to ${Math.round(right)} px, outside 0 to ${cw} px, with no horizontal scroller around it`)
+    add('clipped', el, `spans ${Math.round(left)} to ${Math.round(right)} px, outside 0 to ${cw} px, where no horizontal scroller can bring it into view`)
   }
 
   for (const a of document.querySelectorAll('a[target]')) add('a-target', a, `target="${a.getAttribute('target')}"`)

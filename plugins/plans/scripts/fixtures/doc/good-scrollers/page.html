@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wide boxes a scroller can reach</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Within reach</h1>
+<p>Each box below is wider than the page or placed past its edge, inside a horizontal scroller that can bring every part of it into view.</p>
+<div dir="rtl" style="overflow-x: auto">
+  <p style="width: 2000px">A wide paragraph in a right-to-left scroller overflows its end edge, to the left.</p>
+</div>
+<div style="overflow-x: auto; position: relative; height: 4em">
+  <p style="position: absolute; left: 1200px; width: 300px; margin: 0">An absolute box whose containing block is the scroller.</p>
+</div>
+<div style="overflow-x: auto">
+  <div style="transform: translateX(0); height: 4em">
+    <p style="position: fixed; left: 1500px; top: 0; width: 300px; margin: 0">A fixed box whose containing block is a transformed box inside the scroller.</p>
+  </div>
+</div>
+</main>
+</body>
+</html>

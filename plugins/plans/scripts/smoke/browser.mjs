@@ -392,6 +392,12 @@ const CASES = [
   { dir: 'good-lazy', args: [], exit: 0 },
   // url() text inside CSS strings and comments loads nothing, so it raises no css-url.
   { dir: 'good-css-strings', args: [], exit: 0 },
+  // Boxes inside a horizontal scroller that can never bring them into view: a fixed box and an
+  // absolute one that escape it, and boxes past its start edge, left to right and right to left.
+  { dir: 'bad/clipped-in-scroller', args: [], exit: 1, fault: 'clipped', matches: [/^p#fixed /, /^p#start /, /^p#escaped /, /^p#rtl-start /] },
+  // Boxes past the page's edge that their scroller does reach: end-edge overflow in a
+  // right-to-left scroller, and absolute and fixed boxes whose containing block is inside it.
+  { dir: 'good-scrollers', args: [], exit: 0 },
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
 ]
 
