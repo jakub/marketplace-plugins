@@ -384,6 +384,9 @@ const CASES = [
   { dir: 'bad-kit/copy', args: [], exit: 1, fault: 'copy', match: /says "Copied", but the clipboard holds the check's sentinel/ },
   ...KIT_BAD.map(([dir, fault, match]) => ({ dir: `bad-kit/${dir}`, args: [], exit: 1, fault, match })),
   { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: ['360', '728'] },
+  // Absolute media paths in an Inline page, through a src and a <source> list: html_preview
+  // inlines them, so the check serves none of them and raises no fault for them.
+  { dir: 'inline-skipped-media', args: ['--inline'], exit: 0 },
   ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind })),
   ...CSS_URL.map(([dir, matches]) => ({ dir: `bad/${dir}`, args: [], exit: 1, fault: 'css-url', matches })),
   // Two broken loading="lazy" images far down the page, which the browser never loads by itself.

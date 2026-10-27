@@ -317,6 +317,9 @@ function probe(cfg) {
     else if (!img.complete && img.loading === 'lazy' && cfg.lazyBroken.includes(img.src)) add('media-decode', img, `${src} decoded to 0 px wide, loaded eagerly since it is loading="lazy"`)
   }
   for (const m of document.querySelectorAll('video, audio')) {
+    // Skipped as settle skips it: the server never admits a skipped src, so its error is expected.
+    const srcs = m.hasAttribute('src') ? [m.getAttribute('src')] : [...m.children].filter((c) => c.localName === 'source').map((s) => s.getAttribute('src') ?? '')
+    if (srcs.some((s) => cfg.skipped.includes(s))) continue
     if (m.error) { add('media-decode', m, `MediaError code ${m.error.code}${m.error.message ? ` (${m.error.message})` : ''}`); continue }
     if (m.readyState >= 1) continue
     // Keyed as settle keys its copy: the tag, then the resolved src or each <source> child's.
