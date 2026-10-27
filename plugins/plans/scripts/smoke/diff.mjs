@@ -114,6 +114,37 @@ export default async function ({ ROOT, check }) {
     check('a changed fence falls back to pre.plans-pre', /<pre class="plans-pre">[^]*<del class="plans-cut">1<\/del><ins class="plans-new">2<\/ins>[^]*<\/pre>/.test(f.html), f.html)
   }
 
+  // A table or fence on either side selects the fallback, including one that only the before text
+  // holds, so a cut fence never parses as inline code and a cut table never becomes a paragraph.
+  {
+    const table = '| a | b |\n|---|---|\n| 1 | 2 |\n'
+    const inPre = (h, re) => [...h.matchAll(/<pre class="plans-pre">([^]*?)<\/pre>/g)].some((m) => re.test(m[1]))
+    const cases = [
+      ['deleted table', table, '', /<del class="plans-cut">\| a \| b \|/],
+      ['added table', '', table, /<ins class="plans-new">\| a \| b \|/],
+      ['deleted fence', 'Text.\n\n```js\nconst a = 1\n```\n', 'Text.\n', /<del class="plans-cut">[^<]*(<span [^>]*>¶<\/span>)? ```js/],
+      ['added fence', 'Text.\n', 'Text.\n\n```js\nconst a = 1\n```\n', /<ins class="plans-new">\n?```js/],
+      ['fence delimiters removed', '```\nhello\n```\n', 'hello\n', /<del class="plans-cut">```[^]*hello[^]*<del class="plans-cut">```/],
+      ['fence delimiters added', 'hello\n', '```\nhello\n```\n', /<ins class="plans-new">```[^]*hello[^]*<ins class="plans-new">```/],
+      ['table row removed', `${table}| 3 | 4 |\n`, table, /<del class="plans-cut">\| 3 \| 4 \|/],
+      ['table row added', table, `${table}| 3 | 4 |\n`, /<ins class="plans-new">\| 3 \| 4 \|/],
+    ]
+    for (const [name, before, after, re] of cases) {
+      const d = run(before, after)
+      check(`${name}: eq+del rebuilds before`, same(rebuilt(d.ops, 'del'), before))
+      check(`${name}: eq+ins rebuilds after`, same(rebuilt(d.ops, 'ins'), after))
+      check(`${name}: falls back to pre.plans-pre with the change inside`, inPre(d.html, re), d.html)
+      check(`${name}: renders no table, no code and no ¶ outside the pre`, !/<table|<code/.test(d.html) &&
+        !d.html.replace(/<pre class="plans-pre">[^]*?<\/pre>/g, '').includes('plans-pil'), d.html)
+    }
+    const after = run(`Intro.\n\n${table}\nOutro stays a paragraph.\n`, 'Intro.\n\nOutro stays a paragraph.\n')
+    check('a deleted table leaves the paragraph after it outside the pre', after.html.includes('<p>Outro stays a paragraph.</p>') &&
+      inPre(after.html, /<del class="plans-cut">\| a \| b \|/), after.html)
+    const fenced = run('Intro.\n\n```\ncode\n```\n\nOutro stays a paragraph.\n', 'Intro.\n\nOutro stays a paragraph.\n')
+    check('a deleted fence leaves the paragraph after it outside the pre', fenced.html.includes('<p>Outro stays a paragraph.</p>') &&
+      inPre(fenced.html, /<del class="plans-cut">```/), fenced.html)
+  }
+
   // The pair cap applies after prefix and suffix trimming, at both levels.
   {
     const distinct = (n, p) => Array.from({ length: n }, (_, i) => `${p}${i}`)

@@ -62,7 +62,9 @@
 // U+2029 in input stays text.
 //
 // Fallbacks. A changed table or a changed fence shows as pre.plans-pre with del and ins, with each
-// run of cut line breaks shown as a ¶. A coarse hunk shows as a .plans-coarse-label paragraph and
+// run of cut line breaks shown as a ¶. Fences and tables are the one place the setter reads the
+// before-text too, so a cut table, a cut fence, or fence lines cut around kept text take this
+// fallback rather than being set as paragraphs or inline code. A coarse hunk shows as a .plans-coarse-label paragraph and
 // a pre.plans-pre holding the whole cut and then the whole new text, widened to whole lines with
 // the unchanged text around it. Margin notes never appear inside a pre.
 //
@@ -233,6 +235,19 @@ export function toLines(items) {
 
 const aft = (ln) => ln.filter((x) => x.t === '=' || x.t === '+').map((x) => x.s).join('')
 const isCut = (x) => x.t === '-' || x.t === 'n' || x.t === 'p'
+// The before-side lines a line of the after-text stands for: its kept text and its cuts.
+const bef = (ln) => ln.filter((x) => x.t !== '+').map((x) => x.s).join('').split('\n')
+const FENCE = /^\s*(```|~~~)/, ROW = /^\s*\|/
+const structural = (s) => s.split('\n').some((l) => FENCE.test(l) || ROW.test(l))
+
+// Cut table rows or fence lines at the head of a line go on a line of their own, so the structure
+// takes the fallback and the after-text behind it keeps its own block.
+function splitLead(ln) {
+  let k = 0
+  while (k < ln.length && isCut(ln[k])) k++
+  const lead = ln.slice(0, k).map((x) => x.s).join('')
+  return k && k < ln.length && lead.endsWith('\n') && structural(lead) ? [ln.slice(0, k), ln.slice(k)] : [ln]
+}
 
 function strip(ln, k) {
   const out = []
@@ -247,29 +262,35 @@ function strip(ln, k) {
 }
 
 // start is false for text that follows a coarse hunk, so front matter is read only at the top.
+// Fences and tables are read from both sides: a fence stays open while either side is inside one,
+// and a line is a table row when its after-text or any before-side line it holds starts with `|`.
 export function toBlocks(lines, start = true) {
   const B = []
-  let fence = false, fm = false, blank = true
-  lines.forEach((ln, idx) => {
-    const a = aft(ln), hasDel = ln.some(isCut), last = B[B.length - 1]
+  let fa = false, fb = false, code = null, fm = false, blank = true
+  const step = (ln, idx) => {
+    const a = aft(ln), b = bef(ln), hasDel = ln.some(isCut), last = B[B.length - 1]
     let m
     if (start && idx === 0 && a.trim() === '---') { fm = true; B.push({ k: 'pre', lines: [ln] }); return }
     if (fm) { last.lines.push(ln); if (a.trim() === '---') fm = false; blank = false; return }
-    if (/^\s*(```|~~~)/.test(a)) {
-      if (!fence) { fence = true; B.push({ k: 'pre', lines: [ln] }) } else { last.lines.push(ln); fence = false }
+    const da = FENCE.test(a), db = b.filter((l) => FENCE.test(l)).length
+    if (code || da || db) {
+      if (code) code.lines.push(ln)
+      else B.push((code = { k: 'pre', lines: [ln] }))
+      if (da) fa = !fa
+      if (db % 2) fb = !fb
+      if (!fa && !fb) code = null
       blank = false
       return
     }
-    if (fence) { last.lines.push(ln); return }
+    if (ROW.test(a) || b.some((l) => ROW.test(l))) {
+      if (last && last.k === 'table' && !blank) last.lines.push(ln)
+      else B.push({ k: 'table', lines: [ln] })
+      blank = !a.trim()
+      return
+    }
     if (!a.trim()) { if (hasDel) B.push({ k: 'gone', items: ln }); blank = true; return }
     if ((m = a.match(/^(#{1,6})\s+/))) { B.push({ k: 'h', lv: m[1].length, items: strip(ln, m[0].length) }); blank = false; return }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(a)) { B.push({ k: 'hr' }); blank = false; return }
-    if (/^\s*\|/.test(a)) {
-      if (last && last.k === 'table' && !blank) last.lines.push(ln)
-      else B.push({ k: 'table', lines: [ln] })
-      blank = false
-      return
-    }
     if ((m = a.match(/^>\s?/))) {
       const it = strip(ln, m[0].length)
       if (last && last.k === 'bq' && !blank) last.items.push({ t: '=', s: ' ' }, ...it)
@@ -296,7 +317,8 @@ export function toBlocks(lines, start = true) {
     }
     B.push({ k: 'p', items: strip(ln, lead) })
     blank = false
-  })
+  }
+  lines.forEach((ln, idx) => { for (const part of splitLead(ln)) step(part, idx) })
   return B
 }
 
