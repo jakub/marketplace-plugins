@@ -83,7 +83,7 @@ A watcher only wakes you. Only a gather tells you about the PR. While anything's
 - **In Claude Code**, use `Monitor` in slices of at most five minutes, with an until-condition that covers comments, reviews and threads as well as checks. End every slice with a full gather, whether it fired, timed out or errored.
 - **In Codex**, sleep in the shell for at most five minutes at a time inside the turn, each ending in a full gather. If the wait is too long for one turn, end it with a status line naming what's pending. The user's next message resumes from a fresh gather, never from what you remember.
 
-An errored or timed-out watcher is unknown, not quiet. In T3 Code, when a wake brings nothing that needs action, end your turn without a message, because the watch and the scheduled wake bring you back. Everywhere else, keep waiting the way your host's bullet says, since nothing else resumes the babysit. Never post "still waiting" on the PR.
+An errored or timed-out watcher is unknown, not quiet. When you armed both the watch and a scheduled wake you showed returns to this thread, a wake that brings nothing needing action ends your turn without a message, because those two bring you back. On any other path, the T3 fallback included, keep waiting the way your host's bullet says, since nothing else resumes the babysit. Never post "still waiting" on the PR.
 
 ## GitHub rate limits
 
