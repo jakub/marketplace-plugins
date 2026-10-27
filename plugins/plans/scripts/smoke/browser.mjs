@@ -659,6 +659,27 @@ function runBuild(BUILD, args, env, { onSpawn } = {}) {
   })
 }
 
+// runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
+// chosen point. Each case checks the leak state the moment runChecks returns.
+async function runUnits({ check, skip, why, chromium, runMod, base, priv }) {
+  const page = (body) => Buffer.from(`<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>run unit</title>\n</head>\n<body>\n<main>\n${body}\n</main>\n</body>\n</html>\n`)
+  const cases = [
+    // The initial state holds a fault, and opening <details> blocks the page past the deadline.
+    ['runChecks: a cell measured before the deadline keeps its fault, so the run fails', 4000,
+      page('<p><a href="#top" target="_blank">a fault in the initial state</a></p>\n<details><summary>More</summary><p>Hidden.</p></details>\n<script>document.querySelector("details").addEventListener("toggle", () => { const t = Date.now(); while (Date.now() - t < 20000) {} })</script>'),
+      (out) => out.result === 'fail' && out.reason.kind === 'a-target'
+        && out.matrix.some((c) => c.view === '390-light' && c.state === 'initial' && c.faults.some((f) => f.kind === 'a-target'))
+        && out.checks.some((c) => c.name === 'browser' && c.result === 'unknown' && /^deadline: /.test(c.detail))],
+  ]
+  for (const [name, deadlineMs, buffer, ok] of cases) {
+    if (why) { skip(name, why); continue }
+    const before = leaks(priv)
+    const out = await runMod.runChecks({ buffer, dir: base, chromium, tmp: priv, deadlineMs })
+    const after = leaks(priv)
+    check(name, ok(out) && clean(before) && clean(after), JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), before, after }))
+  }
+}
+
 // The fixture directories: every directory under root holding a page.html, relative to root.
 function fixtureDirs(root, rel = '') {
   const out = []
@@ -677,6 +698,7 @@ async function browserSection({ ROOT, check, skip }) {
   const FIX = join(ROOT, 'plugins/plans/scripts/fixtures/doc')
   const cdp = await import(pathToFileURL(join(DOC, 'check/cdp.mjs')).href)
   const serveMod = await import(pathToFileURL(join(DOC, 'check/serve.mjs')).href)
+  const runMod = await import(pathToFileURL(join(DOC, 'check/run.mjs')).href)
 
   const base = mkdtempSync(join(tmpdir(), 'plans-browser-smoke-'))
   try {
@@ -762,6 +784,8 @@ async function browserSection({ ROOT, check, skip }) {
       const left = readdirSync(work).filter((f) => f !== 'page.html' && f !== 'assets')
       check(sigName, caught && r.status === 143 && gone && left.length === 0, `caught ${caught} status ${r.status} signal ${r.signal} leaks ${JSON.stringify(leaks(priv))} left ${left.join(',')}\n${r.stderr}`)
     }
+
+    await runUnits({ check, skip, why, chromium: found.path, runMod, base, priv })
   } finally {
     // Any Chromium a failed case left is killed by its profile path before the directory goes.
     for (const pid of procsNaming(join(base, 'tmp', 'plans-chromium-'))) { try { process.kill(pid, 'SIGKILL') } catch {} }

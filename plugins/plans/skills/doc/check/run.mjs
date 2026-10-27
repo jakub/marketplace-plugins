@@ -104,7 +104,10 @@
 // while the browser answers the ping is retried once in a fresh context: again is a fail, with
 // the fault `deadline` or `target-crashed` on that cell, and a pass on the retry is unknown
 // `flaky`, never a pass. The whole run has deadlineMs (180 s) and passing it is unknown
-// `deadline`. Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A
+// `deadline`. A cell is kept once its probe has run, so a view that stops early, by an error, a
+// retry or the deadline, keeps the cells it completed, and a cell that two attempts both reached
+// holds the faults of both. The interaction steps and copy verdicts come from each view's last
+// attempt. Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A
 // required matrix cell that is missing is unknown `incomplete`.
 
 import { closeSync, constants, mkdirSync, openSync, writeSync } from 'node:fs'
@@ -867,29 +870,47 @@ async function runView(browser, ctx, v, rec) {
 
 const hang = (e) => e instanceof CdpError && (e.kind === 'timeout' || e.kind === 'crashed')
 
-// One view with the retry rule. Returns { rec, flaky } or throws for an unknown.
+// One view with the retry rule. Each attempt's record joins recs before it runs, so runChecks
+// sees the cells it completed even when the attempt, or the whole run, stops early. Returns
+// { flaky } or throws for an unknown.
 const freshRec = () => ({ cells: [], steps: [], copies: [], unknowns: [] })
-async function viewWithRetry(browser, ctx, v) {
-  const first = freshRec()
+async function viewWithRetry(browser, ctx, v, recs) {
+  const attempt = () => { const r = freshRec(); recs.push(r); return r }
   try {
-    await runView(browser, ctx, v, first)
-    return { rec: first, flaky: null }
+    await runView(browser, ctx, v, attempt())
+    return { flaky: null }
   } catch (e) {
     if (!hang(e)) throw e
     if (!(await browser.ping())) throw new CdpError('deadline', `${v.name}: ${e.message}, and the browser stopped answering`)
-    const again = freshRec()
+    const again = attempt()
     try {
       await runView(browser, ctx, v, again)
-      return { rec: again, flaky: `${v.name}: ${e.message} once, then passed on a retry` }
+      return { flaky: `${v.name}: ${e.message} once, then passed on a retry` }
     } catch (e2) {
       if (!hang(e2)) throw e2
       if (!(await browser.ping())) throw new CdpError('deadline', `${v.name}: ${e2.message}, and the browser stopped answering`)
       const all = [...STATES, INTERACTION]
       const state = all[again.cells.length] ?? all[all.length - 1]
       again.cells.push({ view: v.name, state, faults: [{ kind: e2.kind === 'crashed' ? 'target-crashed' : 'deadline', detail: `${e2.message}, twice, in a browser that still answers` }] })
-      return { rec: again, flaky: null }
+      return { flaky: null }
     }
   }
+}
+
+// The matrix from every attempt of every view: one cell per view and state, in the order first
+// reached, holding each distinct fault any attempt saw there.
+function mergeCells(recsPerView) {
+  const cells = new Map()
+  for (const recs of recsPerView) {
+    for (const rec of recs) {
+      for (const c of rec.cells) {
+        const key = `${c.view}/${c.state}`
+        if (!cells.has(key)) cells.set(key, { view: c.view, state: c.state, faults: new Map() })
+        for (const f of c.faults) cells.get(key).faults.set(`${f.kind}\0${f.detail}`, f)
+      }
+    }
+  }
+  return [...cells.values()].map((c) => ({ view: c.view, state: c.state, faults: [...c.faults.values()] }))
 }
 
 const unknownOf = (e) => {
@@ -902,8 +923,9 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
   const out = { result: 'unknown', reason: null, matrix: [], checks: [], copy: null, undriven: [] }
   const unknowns = []
   let server = null, browser = null, timer
-  const steps = []
-  const copies = []
+  // One { recs, flaky } per view, with every attempt's record, filled as the views run and read
+  // after the run stops.
+  const runs = []
   const ctx = {
     inline, shots, undriven: null, kitDoc: false,
     declared: [...new Set(media.map((m) => (typeof m === 'string' ? m : m.src)))],
@@ -917,12 +939,9 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
     ctx.refused = new Map(server.refused.map((r) => [r.src, r.reason]))
     browser = await launch(chromium, { tmp })
     for (const v of views) {
-      const { rec, flaky } = await viewWithRetry(browser, ctx, v)
-      out.matrix.push(...rec.cells)
-      steps.push(...rec.steps)
-      copies.push(...rec.copies)
-      unknowns.push(...rec.unknowns)
-      if (flaky) unknowns.push({ kind: 'flaky', detail: flaky })
+      const run = { recs: [], flaky: null }
+      runs.push(run)
+      run.flaky = (await viewWithRetry(browser, ctx, v, run.recs)).flaky
     }
   })()
   work.catch(() => {})
@@ -937,6 +956,12 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
   }
 
   out.undriven = ctx.undriven ?? []
+  out.matrix = mergeCells(runs.map((r) => r.recs))
+  const last = runs.map((r) => r.recs.at(-1) ?? freshRec())
+  const steps = last.flatMap((r) => r.steps)
+  const copies = last.flatMap((r) => r.copies)
+  // Each view's own unknowns, then its flaky retry, in view order, and the run's own error last.
+  unknowns.unshift(...runs.flatMap((r, i) => [...last[i].unknowns, ...(r.flaky ? [{ kind: 'flaky', detail: r.flaky }] : [])]))
   const have = new Set(out.matrix.map((c) => `${c.view}/${c.state}`))
   const required = ctx.kitDoc ? [...STATES, INTERACTION] : STATES
   const missing = views.flatMap((v) => required.map((s) => `${v.name}/${s}`)).filter((k) => !have.has(k))
