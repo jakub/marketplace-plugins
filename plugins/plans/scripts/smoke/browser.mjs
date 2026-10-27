@@ -405,6 +405,15 @@ const CASES = [
   // Scrollers drawn larger than their layout box, by a transform on the scroller or on an ancestor
   // and by zoom, that still reach their content, and fractional widths that pixel snapping rounds.
   { dir: 'good-scaled-scroller', args: [], exit: 0 },
+  // Figures that fill boxes drawn at another size than their layout box, by a transform on the box
+  // or on an ancestor and by zoom, larger and smaller: none is wider than its box.
+  { dir: 'good-scaled-svg', args: [], exit: 0 },
+  // Figures wider than boxes drawn at half their size, by a transform and by zoom, which clip them
+  // though the drawn figure fits on the screen.
+  { dir: 'bad/svg-wide-scaled', args: [], exit: 1, fault: 'svg-wide', matches: [
+    /^svg#scaled "A strip the scaled box clips": 400 px wide in a 300 px <div>$/,
+    /^svg#zoomed "A strip the zoomed box clips": 400 px wide in a 300 px <div>$/,
+  ] },
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
 ]
 

@@ -110,13 +110,16 @@
 // still count. The box and the scroll range are compared in the scroller's own layout px: the
 // box's viewport rect maps there through the scroller's effective zoom times the horizontal scale
 // of every transform and scale property on it and its ancestors, so a scroller drawn larger or
-// smaller than its layout box is read at the size it scrolls. Shadow roots are not walked by any
-// probe. In Inline mode the skipped absolute media paths raise no network or decode fault, since
-// html_preview inlines them. An SVG that is not rendered (getScreenCTM null, or no client rects)
-// is skipped by svg-wide and svg-text-small, and SVG text size is font size times the CTM's
+// smaller than its layout box is read at the size it scrolls. svg-wide compares an SVG's drawn
+// width with its parent's clientWidth the same way, in the parent's layout px, so a figure in a box
+// drawn at another size is measured at the size that box holds it. Shadow roots are not walked by
+// any probe. In Inline mode the skipped absolute media paths raise no network or decode fault,
+// since html_preview inlines them. An SVG that is not rendered (getScreenCTM null, or no client
+// rects) is skipped by svg-wide and svg-text-small, and SVG text size is font size times the CTM's
 // vertical scale times visualViewport.scale, so a page without a viewport meta that mobile
-// emulation shrinks shows its real on-screen size. Console messages and exceptions inside workers
-// are not captured.
+// emulation shrinks shows its real on-screen size. The CTM already holds every transform and zoom
+// above the text, and the computed font size holds neither, so that product needs no pxScale.
+// Console messages and exceptions inside workers are not captured.
 //
 // Unknown versus fail. A launch or handshake failure, a lost transport, a protocol error on a
 // driver command, an exception in this code (`checker-error`), or a deadline while the browser
@@ -473,7 +476,9 @@ function probe(cfg) {
     if (!s.getScreenCTM() || s.getClientRects().length === 0) continue
     let p = s.parentElement
     while (p && /^(inline|contents)$/.test(getComputedStyle(p).display)) p = p.parentElement
-    const w = s.getBoundingClientRect().width
+    // The drawn width meets clientWidth in p's own layout px, through p's scale, so a box drawn at
+    // another size than its layout box holds the figure at the size it is drawn.
+    const w = p ? s.getBoundingClientRect().width / pxScale(p) : 0
     if (p && w > p.clientWidth + 0.5) add('svg-wide', s, `${Math.round(w)} px wide in a ${p.clientWidth} px <${p.localName}>`)
     if (!cfg.small) continue
     for (const t of s.querySelectorAll('text, tspan, textPath')) {

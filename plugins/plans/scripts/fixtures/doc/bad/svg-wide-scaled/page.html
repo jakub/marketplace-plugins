@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: svg-wide in a box drawn smaller</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>SVG wide, drawn smaller</h1>
+<p>Each box is drawn at half its size and clips what overflows it. The figure in it is wider than the box, so part of it is cut off, though it fits on the screen.</p>
+<div style="width: 300px; overflow: hidden; margin-bottom: 1em; transform: scale(0.5); transform-origin: top left"><svg id="scaled" viewBox="0 0 400 40" width="400" height="40" style="max-width: none; display: block"><title>A strip the scaled box clips</title><rect width="400" height="40" fill="currentColor"/></svg></div>
+<div style="width: 300px; overflow: hidden; zoom: 0.5"><svg id="zoomed" viewBox="0 0 400 40" width="400" height="40" style="max-width: none; display: block"><title>A strip the zoomed box clips</title><rect width="400" height="40" fill="currentColor"/></svg></div>
+</main>
+</body>
+</html>
