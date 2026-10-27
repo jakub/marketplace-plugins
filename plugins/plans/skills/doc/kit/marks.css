@@ -1,11 +1,14 @@
 /* plans-kit:marks.css */
 /* Change marks for the markup kit/diff.mjs renders. The builder inlines this file in both modes,
-   so it must stand alone on tokens.css: Inline output carries no look.css. It reads only the
+   so it must stand alone on tokens.css: Inline output carries no look.css, so the markdown
+   structure inside a diff (quotes, rules, code, tables) is styled here too. It reads only the
    --plans-* names tokens.css declares.
    Orange is a mark, never the message. A cut is ink-2 text under an accent strike line, new words
    are ink text over an accent underline, and the ¶ and the caret are bold glyphs in accent-text.
-   A margin note (.plans-note) is one node and always folds under its paragraph here. Only
-   look.css, in a Document at 900px and up, lifts it into the outer column. */
+   A margin note is `span.plans-note` holding `<b>n</b> <del class="plans-cut">the cut</del>`,
+   placed right after the block that holds its caret, `sup.plans-caret` holding `‸<b>n</b>`. Here
+   it always folds under that block. Only look.css, in a Document at 900px and up, lifts it into
+   the outer column. */
 .plans-diff { margin: 0 0 1.25rem; color: var(--plans-ink); font-family: var(--plans-sans); overflow-wrap: break-word; }
 .plans-diff p { margin: 0 0 .8rem; }
 
@@ -34,28 +37,25 @@ sup.plans-caret {
 }
 sup.plans-caret b { font-weight: 700; }
 
-/* The note: an accent bar beside the full cut text, which is never collapsed. Its number and its
-   "dele" label are ink and ink-2. The cut inside it is struck by its label, not by a line. */
+/* The note: an accent bar, its number with the caret glyph, then the whole cut, never collapsed.
+   The cut keeps its strike line, at 1px so a long passage stays readable. */
 .plans-note {
   display: block;
-  margin: .3rem 0 .9rem;
+  margin: -.4rem 0 .9rem;
   padding: .1rem 0 .1rem .7rem;
   border-left: 3px solid var(--plans-accent);
-  color: var(--plans-ink);
+  color: var(--plans-ink-2);
   font-size: .88em;
   line-height: 1.45;
 }
-.plans-note b { font-family: var(--plans-mono); font-weight: 700; margin-right: .35em; }
-.plans-note i {
-  font-style: normal;
-  font-size: .78em;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  color: var(--plans-ink-2);
-  margin-right: .45em;
+.plans-note > b {
+  margin-right: .35em;
+  color: var(--plans-accent-text);
+  font-family: var(--plans-mono);
+  font-weight: 700;
 }
-.plans-note del, .plans-note .plans-cut { color: var(--plans-ink-2); text-decoration: none; }
-.plans-note code { background: none; padding: 0; }
+.plans-note > b::before { content: "‸"; }
+.plans-note del.plans-cut { text-decoration-thickness: 1px; }
 
 /* A changed table, a changed fence or a coarse hunk falls back to preformatted text. */
 pre.plans-pre {
@@ -68,19 +68,15 @@ pre.plans-pre {
   font: .84em/1.5 var(--plans-mono);
   white-space: pre;
 }
-.plans-coarse-label {
-  display: block;
+.plans-diff .plans-coarse-label {
   margin: 0 0 .35rem;
   color: var(--plans-ink-2);
-  font-family: var(--plans-sans);
-  font-size: .72rem;
-  font-weight: 700;
-  letter-spacing: .12em;
-  text-transform: uppercase;
+  font-size: .88em;
+  font-weight: 600;
 }
 
 /* Markdown structure inside a diff. Headings stay small: this is a document within a page. */
-.plans-h1, .plans-h2, .plans-h3, .plans-h4, .plans-h5, .plans-h6 { font-weight: 700; margin: 1.1rem 0 .35rem; }
+.plans-diff .plans-h1, .plans-diff .plans-h2, .plans-diff .plans-h3, .plans-diff .plans-h4, .plans-diff .plans-h5, .plans-diff .plans-h6 { margin: 1.1rem 0 .35rem; font-weight: 700; line-height: 1.25; }
 .plans-h1 { font-size: 1.25em; }
 .plans-h2 { font-size: 1.12em; }
 .plans-diff > :first-child { margin-top: 0; }
@@ -98,7 +94,11 @@ pre.plans-pre {
 .plans-li.plans-i4 { padding-left: 7em; }
 .plans-li.plans-i5 { padding-left: 8.4em; }
 .plans-li.plans-i6 { padding-left: 9.8em; }
-.plans-li .plans-note, .plans-li pre.plans-pre { text-indent: 0; }
+.plans-li > span:first-child { color: var(--plans-ink-2); }
+
+.plans-diff blockquote { margin: 0 0 .8rem; padding-left: .9rem; border-left: 2px solid var(--plans-rule); color: var(--plans-ink-2); }
+.plans-diff hr { height: 0; margin: 1.2rem 0; border: 0; border-top: 1px solid var(--plans-rule); }
+.plans-diff code { padding: .05em .25em; background: var(--plans-code); border-radius: var(--plans-radius); font-family: var(--plans-mono); font-size: .86em; }
 
 .plans-tw { margin: 0 0 1rem; overflow-x: auto; }
 .plans-tw table { border-collapse: collapse; font-size: .94em; line-height: 1.4; }

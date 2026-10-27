@@ -6,7 +6,9 @@
    grays with one orange accent. Light and dark change only the fallbacks. Nothing here paints a
    background: T3 output stays transparent, and only the Document frame paints --plans-fb-ground.
    --plans-accent is for marks (rules, strike and underline lines, bars), at 3:1 or better on the
-   ground. Text that must be orange uses --plans-accent-text, at 4.5:1 or better. --plans-chart-*
+   ground. Text that must be orange uses --plans-accent-text, whose fallbacks reach 4.5:1 or better.
+   Under T3 both read --warning, so accent text follows the host theme rather than the OS scheme:
+   a dark T3 theme under a light OS scheme never gets the light fallback on a dark ground. --plans-chart-*
    is for multi-series data only. */
 :root {
   --plans-fb-ground: #fff;
@@ -35,7 +37,7 @@
   /* The rule color at 40% over transparent: on the fallback grounds, about #d6d9dc and #2d3136. */
   --plans-hair: color-mix(in srgb, var(--border, var(--plans-fb-rule)) 40%, transparent);
   --plans-accent: var(--warning, var(--plans-fb-accent));
-  --plans-accent-text: var(--plans-fb-accent-text);
+  --plans-accent-text: var(--warning, var(--plans-fb-accent-text));
   --plans-accent-surface: var(--warning-surface, var(--plans-fb-accent-surface));
   --plans-focus: var(--ring, var(--plans-fb-ink));
   --plans-radius: var(--radius, var(--plans-fb-radius));

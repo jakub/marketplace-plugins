@@ -4,7 +4,8 @@
    output, which T3 frames itself. It reads only the --plans-* names tokens.css declares.
    The page is one main column of about 66ch. At 900px and up it gains an outer column on the
    right, behind a hairline, for .margin notes and diff notes (.plans-note). Below 900px both fold
-   under the text they belong to.
+   under the text they belong to. Labels (table heads, title-block labels, h3) are sentence case
+   at ink-2 or ink and a readable size, never tiny tracked capitals.
    Opt-in primitives, and the only ones:
    - .title-block: the drawing's revision facts, real ones only. A <dl> whose children are
      <div><dt>Label</dt><dd>Value</dd></div> cells, ruled into a grid.
@@ -38,7 +39,7 @@ body {
 h1, h2, h3, h4, h5, h6 { margin: 2.25rem 0 .8rem; font-weight: 700; line-height: 1.2; }
 h1 { margin-top: 0; padding-top: .6rem; border-top: 3px solid var(--plans-ink); font-size: 2em; letter-spacing: -.01em; }
 h2 { padding-top: .5rem; border-top: 2px solid var(--plans-ink); font-size: 1.45em; }
-h3 { padding-top: .45rem; border-top: 1px solid var(--plans-rule); font-size: 1em; letter-spacing: .06em; text-transform: uppercase; }
+h3 { padding-top: .45rem; border-top: 1px solid var(--plans-rule); font-size: 1.1em; }
 h4, h5, h6 { font-size: 1em; }
 
 p, ul, ol, dl, blockquote, figure, table, details { margin: 0 0 .9rem; }
@@ -72,10 +73,8 @@ thead th {
   padding-top: 0;
   border-bottom: 1px solid var(--plans-ink);
   color: var(--plans-ink-2);
-  font-size: .74em;
-  font-weight: 400;
-  letter-spacing: .12em;
-  text-transform: uppercase;
+  font-size: .94em;
+  font-weight: 600;
 }
 
 img, svg, video { max-width: 100%; height: auto; }
@@ -100,12 +99,7 @@ summary { cursor: pointer; font-weight: 700; }
   border-right: 1px solid var(--plans-rule);
   border-bottom: 1px solid var(--plans-rule);
 }
-.title-block dt {
-  color: var(--plans-ink-2);
-  font-size: .68rem;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-}
+.title-block dt { color: var(--plans-ink-2); font-size: .84rem; }
 .title-block dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
 
 /* Below 900px a margin note folds under its text, behind a hairline. */
@@ -134,16 +128,35 @@ summary { cursor: pointer; font-weight: 700; }
     border-left: 1px solid var(--plans-hair);
     pointer-events: none;
   }
-  /* .plans-diff raises the specificity over marks.css, which the builder inlines after this file. */
-  .margin, .plans-diff .plans-note {
+  .margin {
     position: relative;
     float: right;
     clear: right;
     width: 15rem;
     margin: .15rem calc(-2.5rem - 15rem) .9rem 0;
+    padding: 0;
+    border-left: 0;
     font-size: .84rem;
   }
-  .margin { padding: 0; border-left: 0; }
+  /* A diff note is a sibling right after the block that holds its caret, so a float would line up
+     with the next block. Instead the diff becomes a two-column grid reaching into the outer column:
+     every block sits in the first column, and each note takes the second column of the row its
+     block opened. Sparse auto-placement keeps a note beside its own block, and a second note from
+     the same block starts the next row. div.plans-diff and .plans-diff > * raise the specificity
+     over marks.css, which the builder inlines after this file. */
+  div.plans-diff {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 15rem;
+    column-gap: 2.5rem;
+    margin-right: calc(-2.5rem - 15rem);
+  }
+  .plans-diff > * { grid-column: 1; min-width: 0; }
+  .plans-diff > .plans-note {
+    grid-column: 2;
+    align-self: start;
+    margin: .15rem 0 .9rem;
+    font-size: .84rem;
+  }
   /* The leader: a hairline from the column rule to the note's first line. */
   .margin::before {
     content: "";

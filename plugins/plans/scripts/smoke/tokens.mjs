@@ -12,11 +12,11 @@ const T3 = ['background', 'foreground', 'muted', 'muted-foreground', 'card', 'bo
   'accent', 'accent-surface', 'destructive', 'destructive-surface', 'warning', 'warning-surface', 'success', 'info',
   'code-background', 'ring', 'radius', 'font-sans', 'font-mono', 'chart-1', 'chart-2', 'chart-3', 'chart-4', 'chart-5', 'chart-6']
 
-// The token contract: each non-fallback token and the T3 variable it reads, or null for a token
-// that reads its fallback alone.
+// The token contract: each non-fallback token and the T3 variable it reads. Accent text reads
+// --warning like the accent, so it follows a T3 theme; its contrast is checked on the fallbacks.
 const CONTRACT = {
   panel: 'card', code: 'code-background', ink: 'foreground', 'ink-2': 'muted-foreground', rule: 'border', hair: 'border',
-  accent: 'warning', 'accent-text': null, 'accent-surface': 'warning-surface', focus: 'ring', radius: 'radius',
+  accent: 'warning', 'accent-text': 'warning', 'accent-surface': 'warning-surface', focus: 'ring', radius: 'radius',
   sans: 'font-sans', mono: 'font-mono',
   ...Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`chart-${n}`, `chart-${n}`])),
 }
@@ -69,7 +69,7 @@ function undeclaredReads(css) {
 }
 
 // Each contract token is declared once in the light block and reads exactly its T3 source, with a
-// --plans-fb-* fallback, and no other T3 variable. A null source reads one fallback and nothing else.
+// --plans-fb-* fallback, and no other T3 variable.
 function contractFaults(css) {
   const { light } = schemes(css), out = []
   const tokens = decls(light).filter((d) => d.name.startsWith('--plans-') && !d.name.startsWith('--plans-fb-'))
@@ -78,10 +78,6 @@ function contractFaults(css) {
     if (!(key in CONTRACT)) { out.push(`${name} is not in the token contract`); continue }
     const src = CONTRACT[key]
     const t3Read = reads(value).filter((n) => !n.startsWith('--plans-'))
-    if (src === null) {
-      if (!/^var\(\s*--plans-fb-[\w-]+\s*\)$/.test(value)) out.push(`${name} should read only its fallback: ${value}`)
-      continue
-    }
     if (!new RegExp(`var\\(\\s*--${src}\\s*,\\s*var\\(\\s*--plans-fb-[\\w-]+\\s*\\)\\s*\\)`).test(value)) out.push(`${name} does not read var(--${src}, var(--plans-fb-*)): ${value}`)
     if (t3Read.some((n) => n !== `--${src}`)) out.push(`${name} reads another T3 variable: ${t3Read.join(' ')}`)
   }
@@ -188,6 +184,7 @@ export default async function ({ ROOT, check }) {
     ['a T3 read with no fallback (stray name)', strayNames, mutate('var(--card, var(--plans-fb-panel))', 'var(--card)')],
     ['a declared T3 name', foreignDeclarations, mutate(':root {', ':root {\n  --background: #fff;')],
     ['the accent read from --primary', primaryMentions, mutate('var(--warning, var(--plans-fb-accent))', 'var(--primary, var(--plans-fb-accent))')],
+    ['accent text reading only its fallback', contractFaults, mutate('var(--warning, var(--plans-fb-accent-text))', 'var(--plans-fb-accent-text)')],
     ['a token reading the wrong T3 variable', contractFaults, mutate('var(--ring, var(--plans-fb-ink))', 'var(--accent, var(--plans-fb-ink))')],
     ['a token outside the contract', contractFaults, mutate('--plans-panel:', '--plans-bg: var(--background, var(--plans-fb-ground));\n  --plans-panel:')],
     ['an undeclared --plans-* read', undeclaredReads, mutate('var(--plans-fb-panel))', 'var(--plans-fb-sunk))')],
