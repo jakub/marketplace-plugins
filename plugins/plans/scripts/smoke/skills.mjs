@@ -1,7 +1,8 @@
 // Section module for smoke-plans.mjs: the first-party skill prose of plans:show, plans:doc and
 // plans:publish, and doc's three guides (kit.md, style.md and diagrams.md). It holds the contracts
-// that live only in prose: show's routing rules and budget, the delivery policy stated once in
-// publish, publish's render check, and doc's builder path, exit-3 rule and response trust rules.
+// that live only in prose: show's routing rules, question tool, Inline budget and Inline writing
+// rules, the delivery policy stated once in publish, publish's render check, doc's builder path,
+// exit-3 rule and response trust rules, and the absence of the retired runtime's names.
 // A phrase asserted here is the phrase the skill must keep, so a rewording that drops one fails
 // this section instead of drifting silently.
 
@@ -83,12 +84,14 @@ function policyFailures(texts) {
   return failed
 }
 
-// The sentences show's one-screen budget must keep. The interaction-state bullet is the one a
-// reader skips when a tab or an open row is taller than the first view.
-const BUDGET = ['640 CSS px', '728', '360', '500,000 UTF-8 bytes', 'after fonts and media settle',
+// The sentences show's Inline budget must keep. The interaction-state bullet is the one a reader
+// skips when a tab or an open row is taller than the first view.
+const BUDGET_HEADING = '## Measure the Inline budget'
+const BUDGET = ['2,000 CSS px of `contentHeight`', '728', '360', 'Both heights must be 2,000 or less',
+  '500,000 UTF-8 bytes', 'after fonts and media settle',
   'Measure every interaction state the reader needs, such as an open row or a selected tab. Each state must fit inside the budget.',
   'Collapsed content does not hide length', 'If you cannot measure eligibility, use a Sketch']
-const budgetFailures = (show) => BUDGET.filter((needle) => !section(show, '## Measure one screen').includes(needle))
+const budgetFailures = (show) => BUDGET.filter((needle) => !section(show, BUDGET_HEADING).includes(needle))
 
 function count(text, needle) {
   return text.split(needle).length - 1
@@ -122,9 +125,9 @@ export default async function (t) {
     'An explicit user constraint on format or delivery',
     'PR evidence: Document',
     'Requested sharing or retention: Document',
-    'Two or more choices the reader must answer before you act: Document',
-    'Longer than one screen: Document',
-    'Fits one screen, and the render tools are in the tool list: Inline',
+    'Choices the reader must answer before you act, when they need a note per item, a question with more than 4 options, more than 8 questions, or a reader outside this thread: Document.',
+    'Over the Inline budget: Document',
+    'Fits the Inline budget, and the render tools are in the tool list: Inline',
     'Otherwise: Sketch',
   ]
   const routed = section(show, '## Route the visual').split('\n').filter((l) => /^\d+\. /.test(l))
@@ -133,9 +136,15 @@ export default async function (t) {
     check(`skills: show rule ${i + 1} is "${phrase}"`, routed[i]?.startsWith(`${i + 1}. ${phrase}`), routed[i])
   })
   check('skills: show says the first match wins', show.includes('The first rule that matches wins.'))
-  check('skills: show asks a single choice in chat', show.includes('Ask a single choice in chat.'))
+  check('skills: show rule 4 sends every other choice to the host question tool, after any visual',
+    routed[3]?.includes('Ask every other choice with the host question tool, after any visual'), routed[3])
+  const ask = section(show, '## Ask with the host question tool')
+  const askNeedles = ['Put the recommendation first', '**In Claude Code**, use `AskUserQuestion`',
+    'up to 4 questions per call, with 2 to 4 options each', '**In Codex**', 'numbered options in the reply, then end the turn',
+    'Never ask through the page.']
+  for (const needle of askNeedles) check(`skills: show question tool says ${needle}`, ask.includes(needle))
 
-  const budget = section(show, '## Measure one screen')
+  const budget = section(show, BUDGET_HEADING)
   for (const needle of BUDGET) check(`skills: show budget names ${needle}`, budget.includes(needle))
   const noInteractionState = show.replace(/^- Measure every interaction state[^\n]*\n/m, '')
   check('skills: deleting the interaction-state bullet fails the budget check',
@@ -150,7 +159,20 @@ export default async function (t) {
     show.includes('by presence') && show.includes('Never assume they exist.') && show.includes('Look under both prefixes.'))
 
   check('skills: show builds Inline on tokens.css', show.includes('`tokens.css`'))
-  check('skills: show keeps the html-plan runtime out of Inline', show.includes('Never use the html-plan runtime'))
+  const inline = section(show, '## Write an Inline render')
+  const inlineNeedles = [
+    'Never put the question kit or `look.css` in Inline output.',
+    'no background, outer card, border, banner title or side padding',
+    '16 px of padding and `var(--plans-radius)` corners',
+    'Never use `vh` units, and never set `height:100%` on `html` or `body`.',
+    'write its absolute path in `src`. `html_preview` inlines it.',
+    'measure every state it produces',
+    'Build it with `build.mjs --inline`.',
+    'or `../doc/build.mjs` relative to this SKILL.md when the variable arrives unexpanded',
+    'The builder\'s check never replaces `html_preview`.',
+    'Call `html_render` with the larger of the two `contentHeight` values as `height`.',
+  ]
+  for (const needle of inlineNeedles) check(`skills: show Inline writing says ${needle}`, inline.includes(needle))
 
   const fallbacks = section(show, '## Use the fallbacks')
   const fallbackNeedles = {
@@ -158,7 +180,9 @@ export default async function (t) {
     'plans missing': ['**Plans missing or not configured.**', 'Do not install the client', 'do not guess an endpoint',
       'Keep the saved source file', 'numbered questions in chat', '"not evidenced (unknown)"',
       'An Inline render never counts as evidence.'],
-    'node missing': ['**Node missing.**', 'cannot pack', 'no Respond', 'report that the runtime was unavailable'],
+    'node or chromium missing': ['**Node or Chromium missing, or a build exit 3.**', '`build.mjs` cannot run', 'with no questions',
+      'report that the page was not built or checked', 'exits 3, and the browser result is unknown',
+      'Show a Document built with exit 3 only after the live render check in `plans:publish` passes.'],
   }
   for (const [name, needles] of Object.entries(fallbackNeedles)) {
     for (const needle of needles) check(`skills: show fallback ${name} says ${needle}`, fallbacks.includes(needle))
@@ -236,8 +260,9 @@ export default async function (t) {
   const render = section(publish, '## Render check')
   const renderNeedles = [
     'before you navigate', '390×844', '1440×900', 'emulated `prefers-color-scheme`', 'light and in dark',
-    'every claim open', 'If the page takes feedback', 'the Respond sheet open', '<body data-feedback="off">',
-    'no Respond, comment, strike, or edit control', 'report each one separately',
+    'For a page that `plans:doc` built', 'change one answer and type one note', 'check each of the four views again',
+    'If the page has a response region', '**Copy response** either reports "Copied" or selects the whole response',
+    'A page with no response region shows no response controls', 'report each one separately',
     'horizontal overflow on the root element', 'clipped outside a scroller', '"Refused to"', 'an uncaught error',
     'fails to load or decode', 'A `206` response is healthy', 'record the render check as unknown',
     'Unknown is never a pass.', 'keep the publish result and its attachment keys', 'under the same authorization',
@@ -271,4 +296,15 @@ export default async function (t) {
   check('skills: doc checks the _build_ line', section(doc, '## Read the response').includes('`_build_` line'))
   check('skills: doc frontmatter names no runtime and no kinds',
     !/runtime|four kinds/i.test(doc.split('\n---\n')[0]), doc.split('\n')[2])
+
+  // The retired runtime's names appear nowhere under plugins/plans. Each needle is built from
+  // parts so this file does not match its own search.
+  const RETIRED = [['html', '-plan'], ['claim', ' tree'], ['data', '-feedback'], ['pack', '.mjs']].map((parts) => parts.join(''))
+  const retiredIn = (files, name) => Object.keys(files).filter((rel) => files[rel].toLowerCase().includes(name))
+  for (const name of RETIRED) {
+    const found = retiredIn(tree, name)
+    check(`skills: nothing under plugins/plans names ${name}`, found.length === 0, found.join(', '))
+    const planted = retiredIn({ ...tree, 'plugins/plans/skills/show/SKILL.md': `${show}\n${name.toUpperCase()}\n` }, name)
+    check(`skills: ${name} written into show/SKILL.md in any case fails`, planted.includes('plugins/plans/skills/show/SKILL.md'), planted.join(', '))
+  }
 }

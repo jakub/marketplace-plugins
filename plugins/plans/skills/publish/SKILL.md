@@ -134,7 +134,7 @@ The render check loads the live page in a real browser and looks for the faults 
 
 1. Start to capture console messages, page errors, and failed requests before you navigate. A fault that occurs during the first load is lost if capture starts late.
 2. Load the live URL at 390×844 and at 1440×900. At each size, load it in light and in dark through emulated `prefers-color-scheme`.
-3. For a runtime document, which is a page that `plans:doc` packed, check each of the four views again with every claim open. If the page takes feedback, check the four views again with the Respond sheet open. A page in reading mode, such as a walkthrough or report page with `<body data-feedback="off">`, has no Respond sheet. For that page, check instead that it shows no Respond, comment, strike, or edit control.
+3. For a page that `plans:doc` built, change one answer and type one note, where the page has them, then check each of the four views again. If the page has a response region, check that **Copy response** either reports "Copied" or selects the whole response. A page with no response region shows no response controls, such as a note box or a **Copy response** button.
 4. Fail the check on any of these faults, and report each one separately:
    - horizontal overflow on the root element
    - an element clipped outside a scroller the reader can reach
