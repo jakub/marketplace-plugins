@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: css-url, in an adopted stylesheet</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Adopted stylesheet</h1>
+<p>A script adopts a constructed stylesheet whose rule names a URL that is neither data: nor a fragment. The sheet sits in document.adoptedStyleSheets, outside document.styleSheets.</p>
+<script>
+const sheet = new CSSStyleSheet()
+sheet.replaceSync('.never-used { background: url(adopted.png) }')
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet]
+</script>
+</main>
+</body>
+</html>

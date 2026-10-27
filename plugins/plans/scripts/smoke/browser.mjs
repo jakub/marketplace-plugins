@@ -351,6 +351,15 @@ const KIT_BAD = [
   ['response-mismatch', 'response-mismatch', /^engine picks pg: option 30d of question retention is not checked in the DOM/],
   ['kit-silenced', 'kit-error', /data-plans-kit was already set when the kit started/],
 ]
+// css-url beyond a plain stylesheet rule, under bad/: [directory, patterns]. Each pattern must
+// match the detail of some css-url fault.
+const CSS_URL = [
+  // An escaped url() in a style attribute, naming a file the double serves for an <img>.
+  ['css-url-escaped', [/^url\(dot\.png\) in div style=""$/]],
+  ['css-url-adopted', [/^url\(adopted\.png\) in adopted stylesheet 1$/]],
+  // Escaped url() text the CSSOM keeps raw: a custom property and an @property initial value.
+  ['css-url-raw', [/^url\(property\.png\) in style /, /^url\(custom\.png\) in style /]],
+]
 const CASES = [
   { dir: 'reading', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'] },
   { dir: 'good', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'], states: KIT_STATES, copy: 'copied-verified', named: NAMED },
@@ -365,6 +374,7 @@ const CASES = [
   ...KIT_BAD.map(([dir, fault, match]) => ({ dir: `bad-kit/${dir}`, args: [], exit: 1, fault, match })),
   { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: ['360', '728'] },
   ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind })),
+  ...CSS_URL.map(([dir, matches]) => ({ dir: `bad/${dir}`, args: [], exit: 1, fault: 'css-url', matches })),
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
 ]
 
@@ -792,7 +802,8 @@ async function browserSection({ ROOT, check, skip }) {
         }
       } else {
         const named = (j.matrix ?? []).flatMap((cell) => cell.faults).filter((f) => f.kind === c.fault && (!c.match || c.match.test(f.detail)))
-        check(name, r.status === 1 && j.result === 'fail' && named.length > 0 && !existsSync(out) && j.digest === null,
+        const every = (c.matches ?? []).every((re) => named.some((f) => re.test(f.detail)))
+        check(name, r.status === 1 && j.result === 'fail' && named.length > 0 && every && !existsSync(out) && j.digest === null,
           `status ${r.status} result ${j.result} faults ${kinds.join(',')}\n${r.stderr}`)
       }
       check(`browser: ${c.dir} leaves no profile or Chromium behind`, clean(before) && clean(after), JSON.stringify({ before, after }))

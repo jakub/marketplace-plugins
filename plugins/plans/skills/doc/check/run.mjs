@@ -91,12 +91,16 @@
 // only), empty-title (Document only), media-undeclared, and in Inline mode inline-height,
 // inline-kit-hook and inline-frame. Chromium 155 prints no "Refused to" line for a CSP block, so
 // console-csp also reads Log.entryAdded with source `security` and loadingFailed with
-// blockedReason `csp`. In Inline mode the skipped absolute media paths raise no network or decode
-// fault, since html_preview inlines them. An SVG that is not rendered (getScreenCTM null, or no
-// client rects) is skipped by svg-wide and svg-text-small, and SVG text size is font size times
-// the CTM's vertical scale times visualViewport.scale, so a page without a viewport meta that
-// mobile emulation shrinks shows its real on-screen size. Console messages and exceptions inside
-// workers are not captured.
+// blockedReason `csp`. css-url reads the declarations the CSSOM parsed, in document.styleSheets,
+// document.adoptedStyleSheets and every [style], so CSS escapes arrive decoded, and it decodes
+// them itself in the text the CSSOM keeps raw: custom properties and @property initial values.
+// SVG attributes are read as written: an escaped external url() there is a load the sandboxed
+// page refuses, so load-failed reports it. Shadow roots are not walked by any probe. In Inline
+// mode the skipped absolute media paths raise no network or decode fault, since html_preview
+// inlines them. An SVG that is not rendered (getScreenCTM null, or no client rects) is skipped
+// by svg-wide and svg-text-small, and SVG text size is font size times the CTM's vertical scale
+// times visualViewport.scale, so a page without a viewport meta that mobile emulation shrinks
+// shows its real on-screen size. Console messages and exceptions inside workers are not captured.
 //
 // Unknown versus fail. A launch or handshake failure, a lost transport, a protocol error on a
 // driver command, an exception in this code (`checker-error`), or a deadline while the browser
@@ -267,25 +271,44 @@ function probe(cfg) {
     return out
   }
   const cssFault = (where, text) => { for (const v of badUrls(text)) add('css-url', null, `url(${v}) in ${where}`) }
+  // CSS escapes decoded as the tokenizer decodes them, so u\72l( reads as url(. The CSSOM
+  // serializes a parsed declaration decoded, but keeps raw text for a custom property and an
+  // @property initial-value, and a raw u\72l( there still loads through var().
+  const unescape = (s) => s.replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|([^\n\r\f]))/g, (_, hex, ch) => {
+    if (ch !== undefined) return ch
+    const n = parseInt(hex, 16)
+    return n === 0 || (n >= 0xd800 && n <= 0xdfff) || n > 0x10ffff ? '�' : String.fromCodePoint(n)
+  })
+  // Every declaration of a CSSStyleDeclaration, as the CSSOM parsed it.
+  const declFaults = (where, style) => {
+    for (let i = 0; i < style.length; i++) {
+      const p = style.item(i)
+      const v = style.getPropertyValue(p)
+      cssFault(where, p.startsWith('--') ? unescape(v) : v)
+    }
+  }
   const walk = (rules, where) => {
     for (const r of rules) {
       if (r.type === 3) {
         if (!/^data:/i.test(r.href)) add('css-url', null, `@import ${r.href} in ${where}`)
         try { if (r.styleSheet) walk(r.styleSheet.cssRules, where) } catch {}
       }
-      if (r.style) cssFault(where, r.style.cssText)
+      if (r.style) declFaults(where, r.style)
+      if (typeof r.initialValue === 'string') cssFault(where, unescape(r.initialValue))
       if (r.cssRules) walk(r.cssRules, where)
     }
   }
-  for (const [i, sheet] of [...document.styleSheets].entries()) {
+  const sheets = [...[...document.styleSheets].map((s, i) => [s, `stylesheet ${i + 1}`]), ...[...document.adoptedStyleSheets].map((s, i) => [s, `adopted stylesheet ${i + 1}`])]
+  for (const [sheet, name] of sheets) {
     const owner = sheet.ownerNode
-    const where = owner ? `${desc(owner).split(' ')[0]} (stylesheet ${i + 1})` : `stylesheet ${i + 1}`
+    const where = owner ? `${desc(owner).split(' ')[0]} (${name})` : name
     // A sheet that cannot be read came from another origin, which request-outside already reports.
     let rules = null
     try { rules = sheet.cssRules } catch {}
     if (rules) walk(rules, where)
   }
-  for (const el of document.querySelectorAll('[style]')) cssFault(`${desc(el).split(' ')[0]} style=""`, el.getAttribute('style'))
+  // An element outside HTML, SVG and MathML has no .style, and its style attribute styles nothing.
+  for (const el of document.querySelectorAll('[style]')) if (el.style) declFaults(`${desc(el).split(' ')[0]} style=""`, el.style)
 
   const svgEls = [...document.querySelectorAll('svg, svg *')].filter((el) => el.namespaceURI === SVGNS)
   for (const el of svgEls) {
