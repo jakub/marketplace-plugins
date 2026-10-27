@@ -115,11 +115,12 @@
 // `flaky`, never a pass. The whole run has deadlineMs (180 s) and passing it is unknown
 // `deadline`. However the run stops, runChecks waits for a launch still in flight (up to its 10 s
 // handshake), closes the browser, waits for its own work to unwind and closes the server before
-// it returns, so no Chromium process, profile, timer or screenshot write outlives it. A cell is kept once its probe has run, so a view that stops early, by an error, a
-// retry or the deadline, keeps the cells it completed, and a cell that two attempts both reached
-// holds the faults of both. The interaction steps and copy verdicts come from each view's last
-// attempt. Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A
-// required matrix cell that is missing is unknown `incomplete`.
+// it returns, so no Chromium process, profile, timer or screenshot write outlives it. A cell is
+// kept once its probe has run, so a view that stops early, by an error, a retry or the deadline,
+// keeps the cells it completed, and a cell that two attempts both reached holds the faults of
+// both. The interaction steps and copy verdicts come from each view's last attempt.
+// Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A required matrix
+// cell that is missing is unknown `incomplete`.
 
 import { closeSync, constants, mkdirSync, openSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -296,7 +297,7 @@ function probe(cfg) {
   const unescape = (s) => s.replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|([^\n\r\f]))/g, (_, hex, ch) => {
     if (ch !== undefined) return ch
     const n = parseInt(hex, 16)
-    return n === 0 || (n >= 0xd800 && n <= 0xdfff) || n > 0x10ffff ? '�' : String.fromCodePoint(n)
+    return n === 0 || (n >= 0xd800 && n <= 0xdfff) || n > 0x10ffff ? '\ufffd' : String.fromCodePoint(n)
   })
   // Every declaration of a CSSStyleDeclaration, as the CSSOM parsed it.
   const declFaults = (where, style) => {
