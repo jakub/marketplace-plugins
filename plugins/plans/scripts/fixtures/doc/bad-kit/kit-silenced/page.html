@@ -10,7 +10,7 @@
 <body>
 <main>
 <h1>Store engine and retention</h1>
-<!-- A head script sets data-plans-kit before the kit starts, so the kit stops without logging an error and fills no response region. -->
+<!-- A head script sets data-plans-kit before the kit starts. The kit must report that as a kit error rather than stop silently. -->
 <fieldset data-ask="engine">
   <legend>Which engine backs the store?</legend>
   <label><input type="radio" name="engine" value="sqlite" checked> SQLite <span data-hint>One file on disk.</span></label>

@@ -349,7 +349,7 @@ const KIT_BAD = [
   ['second-init', 'kit-error', /initialized a second time/],
   ['local-storage', 'exception', /localStorage/],
   ['response-mismatch', 'response-mismatch', /^engine picks pg: option 30d of question retention is not checked in the DOM/],
-  ['kit-silenced', 'response-mismatch', /no kit error was logged and the response region holds no response textarea/],
+  ['kit-silenced', 'kit-error', /data-plans-kit was already set when the kit started/],
 ]
 const CASES = [
   { dir: 'reading', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'] },

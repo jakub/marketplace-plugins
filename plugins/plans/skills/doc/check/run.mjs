@@ -65,7 +65,7 @@
 // byte for byte. The first difference is the fault `response-mismatch`, and the script stops
 // there, since every later step would compare against a record the page has left. A kit page
 // that logged no kit error but has no response textarea is `response-mismatch` too: its kit never
-// ran, as when a page sets data-plans-kit itself before the kit starts.
+// ran and never said so.
 //
 // Copy check (after step 7). The clipboard is shared by the whole browser, so a /__plans-probe
 // target in the view's browser context first writes a fresh sentinel. Browser.grantPermissions

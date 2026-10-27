@@ -9,6 +9,7 @@ The kit checks every rule below in the live DOM when the page loads. A violation
 - Put exactly one `<!-- plans:kit -->` line inside `<head>`, never inside a `<script>` or `<style>`.
 - Give the page a non-empty `<title>`. The response opens with it.
 - Never write a `<meta name="plans-build">` yourself. The builder writes it, and it refuses an input that already holds one.
+- Never set `data-plans-kit` on any element, in markup or from a script. The kit owns that attribute, and a `data-plans-kit` already on `<html>` when the kit starts is a kit error.
 - A page that asks questions contains no `<form>`, no outbound links and no `target` on any link. Every `a[href]` and `area[href]` starts with `#`. Write a URL as plain selectable text instead. A reading page may link out, still with no `target`.
 
 ## Write a question
