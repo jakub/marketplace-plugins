@@ -10,7 +10,14 @@ body { margin: 0; color: var(--plans-ink); font: 15px/1.5 var(--plans-sans); }
 h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
 figure { margin: 1rem 0 0; }
 figcaption { color: var(--plans-ink-2); font-size: .9em; }
-svg { display: block; max-width: 100%; height: auto; }
+.fig { display: block; width: 100%; max-width: 26rem; height: auto; color: var(--plans-ink); }
+.fig text { font-family: var(--plans-sans); font-size: 14px; fill: currentColor; font-variant-numeric: tabular-nums; }
+.fig .soft { fill: var(--plans-ink-2); }
+.fig line, .fig path { vector-effect: non-scaling-stroke; }
+.fig .ln { fill: none; stroke: currentColor; stroke-width: 1; }
+.fig .hair { fill: none; stroke: var(--plans-rule); stroke-width: 1; }
+.fig .chg { stroke: var(--plans-accent); }
+.fig text.chg { fill: var(--plans-accent-text); stroke: none; }
 </style>
 </head>
 <body>
@@ -18,9 +25,14 @@ svg { display: block; max-width: 100%; height: auto; }
 <h2>The retry paragraph, before and after</h2>
 <div data-diff-before="before.md" data-diff-after="after.md" aria-label="The retry paragraph"></div>
 <figure>
-  <svg viewBox="0 0 320 90" role="img" aria-label="Three tries, each twice as far apart as the last">
-    <g fill="none" stroke="currentColor" stroke-width="2"><path d="M10 60 H310"/><path d="M30 50 V70 M90 50 V70 M210 50 V70"/></g>
-    <g fill="currentColor" font-size="15" text-anchor="middle"><text x="30" y="38">try 1</text><text x="90" y="38">try 2</text><text x="210" y="38">try 3</text></g>
+  <svg class="fig" viewBox="0 0 344 100" role="img" aria-labelledby="f1-title">
+    <title id="f1-title">Three tries, each wait twice as long as the last, then the send is marked failed</title>
+    <path class="hair" d="M8 52 H336"/>
+    <path class="ln" d="M24 42 V62 M64 42 V62 M144 42 V62"/>
+    <path class="ln chg" d="M304 42 V62"/>
+    <g text-anchor="middle"><text x="24" y="32">try 1</text><text x="64" y="32">try 2</text><text x="144" y="32">try 3</text><text class="chg" x="304" y="32">failed</text></g>
+    <path class="hair" d="M24 74 V84 M64 74 V84 M144 74 V84 M304 74 V84 M24 79 H304"/>
+    <g class="soft" text-anchor="middle"><text x="44" y="97">1 s</text><text x="104" y="97">2 s</text><text x="224" y="97">4 s</text></g>
   </svg>
   <figcaption>Each retry waits twice as long as the one before.</figcaption>
 </figure>
