@@ -748,8 +748,28 @@ const onceAfter = (first, method, re) => () => {
   }
 }
 
+// A page exception made to arrive while one exact command is pending, after the last probe that
+// read the event stream. Before that command goes out, the page throws in its main world through
+// an evaluate whose reply comes 50 ms after the throw, so the event is in before the command is
+// sent. hit(method, params) picks the command. The real send is back in place when the run returns.
+const THROW = 'new Promise((r) => setTimeout(() => { setTimeout(r, 50); throw new Error("thrown after the last probe") }))'
+async function withPageThrow(cdp, hit, run) {
+  const real = cdp.Pipe.prototype.send
+  cdp.Pipe.prototype.send = async function (method, params, sessionId, ...rest) {
+    if (hit(method, params ?? {})) await real.call(this, 'Runtime.evaluate', { expression: THROW, awaitPromise: true }, sessionId)
+    return real.call(this, method, params, sessionId, ...rest)
+  }
+  try { return await run() } finally { cdp.Pipe.prototype.send = real }
+}
+// A hit factory: the nth command named method whose params match re.
+const nth = (method, re, n) => () => {
+  let k = 0
+  return (m, p) => m === method && re.test(JSON.stringify(p)) && ++k === n
+}
+
 // runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
-// chosen point, and a driver command or a screenshot write that fails after a fault was measured.
+// chosen point, a driver command or a screenshot write that fails after a fault was measured, and
+// a page event that arrives after a view's last probe.
 // Each case checks the leak state the moment runChecks returns, and counts this process's pending
 // timers, since a wait the run left behind rejects later with nobody listening.
 const timers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
@@ -796,9 +816,17 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     ['runChecks: an exception the page threw survives a probe that fails', undefined, page('<p>A script throws at load.</p>\n<script>throw new Error("thrown at load")</script>'),
       (out) => out.result === 'fail' && out.reason.kind === 'exception' && has(out, '390-light', 'initial', 'exception') && unknownRow(out, /^protocol: Runtime\.evaluate: /),
       { fail: once('Runtime.evaluate', /function probe\(cfg\)/) }],
+    // An event the stream delivered after the view's last probe, while its last screenshot or the
+    // read of its controls is pending: the view drains it into its last state before it detaches.
+    ['runChecks: an exception thrown during the last screenshot of a view fails the run', undefined, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'fail' && out.reason.kind === 'exception' && has(out, '390-light', 'details-open', 'exception'),
+      { shots: true, pageThrow: nth('Page.captureScreenshot', /./, 2) }],
+    ['runChecks: an exception thrown while the controls are read fails the run', undefined, page('<p>A quiet page.</p>'),
+      (out) => out.result === 'fail' && out.reason.kind === 'exception' && has(out, '390-light', 'details-open', 'exception'),
+      { pageThrow: nth('Runtime.evaluate', /function controls/, 1) }],
   ]
   let u = 0
-  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null } = {}] of cases) {
+  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null } = {}] of cases) {
     if (why) { skip(name, why); continue }
     let shotsDir = null
     if (shots) {
@@ -808,7 +836,7 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     }
     const before = { ...leaks(priv), timers: timers() }
     const go = () => runMod.runChecks({ buffer, dir: base, chromium, tmp: priv, deadlineMs, shots: shotsDir })
-    const out = fail ? await withFailing(cdp, fail(), go) : await go()
+    const out = fail ? await withFailing(cdp, fail(), go) : pageThrow ? await withPageThrow(cdp, pageThrow(), go) : await go()
     const after = { ...leaks(priv), timers: timers() }
     check(name, ok(out) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), before, after }))
   }

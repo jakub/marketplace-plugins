@@ -123,11 +123,13 @@
 // it returns, so no Chromium process, profile, timer or screenshot write outlives it. A fault joins
 // the record the moment it is measured, in the cell of the state being measured: a probe's faults
 // before the cell's screenshot, an interaction fault and a copy verdict at their step, and the
-// event stream's faults at the state's probe or when the view stops. So a view that stops early,
-// by an error, a retry, a failed screenshot or the deadline, keeps every fault it measured, and the
-// error that stopped it is an unknown beside them. A cell with no fault is kept once its probe has
-// run, and a cell that two attempts both reached holds the faults of both. The interaction steps
-// and copy verdicts come from each view's last attempt.
+// event stream's faults at the state's probe and when the view ends, finished or stopped, before
+// its listener detaches, so an event that arrives during the last screenshot or the controls read
+// counts in the last state. So a view that stops early, by an error, a retry, a failed screenshot
+// or the deadline, keeps every fault it measured, and the error that stopped it is an unknown
+// beside them. A cell with no fault is kept once its probe has run, and a cell that two attempts
+// both reached holds the faults of both. The interaction steps and copy verdicts come from each
+// view's last attempt.
 // Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A required matrix
 // cell that is missing is unknown `incomplete`.
 
@@ -954,7 +956,7 @@ async function runView(browser, ctx, v, rec) {
       return r.result.value
     }
     // A fault joins rec the moment it is measured. Events wait in `events` until the state's probe,
-    // or until the view stops, whichever comes first.
+    // or until the view ends, whichever comes first.
     const fault = (kind, detail) => cellOf(rec, v.name, rec.state).faults.push({ kind, detail })
     const add = eventFaults(ctx.origin, ctx.skipped, ctx.refused)
     let seen = 0
@@ -1009,11 +1011,11 @@ async function runView(browser, ctx, v, rec) {
         }
       }
       if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls, driven))
-    } catch (e) {
-      // Events that arrived before the view stopped are measured faults of the state it stopped in.
-      drain()
-      throw e
     } finally {
+      // Events that arrived after the last drain, while the last screenshot or the controls read
+      // was pending or before an error stopped the view, are measured faults of the state it ended
+      // in. They are drained before the listener goes, on success and on failure alike.
+      drain()
       browser.off(sessionId, listener)
     }
   } finally {
