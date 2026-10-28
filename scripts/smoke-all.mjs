@@ -4,7 +4,8 @@
 // time, stopping at the first failure. There is no CI, so this is the whole of the check.
 //
 // Each script runs from the repository root under this node, with its output captured and shown
-// only when it fails, so a green run is one line per script. A script that runs past ten minutes
+// only when it fails, so a green run is a PASS line per script plus the script's last stdout line
+// (a summary such as the plans smoke's skip count). A script that runs past ten minutes
 // is killed with SIGKILL, which it cannot trap, and counts as a failure, because a hung smoke must
 // not read as a slow pass.
 
@@ -27,6 +28,8 @@ for (const script of scripts) {
   const seconds = ((Date.now() - started) / 1000).toFixed(1)
   if (!run.error && run.status === 0) {
     console.log(`PASS ${script} (${seconds}s)`)
+    const last = (run.stdout ?? '').split('\n').map((l) => l.trimEnd()).filter(Boolean).pop()
+    if (last) console.log(`  ${last.trimStart()}`)
     continue
   }
   const why = run.error ? run.error.message : run.signal ? `killed by ${run.signal}` : `exit ${run.status}`

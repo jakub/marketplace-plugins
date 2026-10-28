@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: svg-wide in a mirrored box</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>SVG wide, mirrored</h1>
+<p>The box is mirrored and drawn at half its size by a negative scale, and it clips what overflows it. The figure in it is wider than the box, so part of it is cut off, though it fits on the screen.</p>
+<div style="width: 300px; overflow: hidden; scale: -0.5 0.5"><svg id="mirrored" viewBox="0 0 400 40" width="400" height="40" style="max-width: none; display: block"><title>A strip the mirrored box clips</title><rect width="400" height="40" fill="currentColor"/></svg></div>
+</main>
+</body>
+</html>

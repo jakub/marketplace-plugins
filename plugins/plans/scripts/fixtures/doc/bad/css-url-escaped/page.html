@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: css-url, escaped in a style attribute</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Escaped CSS url</h1>
+<p>The image below declares dot.png, so the viewer double serves it. The box after it names the same file through a CSS escape that Chromium reads as url(dot.png), and the plans CLI never rewrites it.</p>
+<img src="dot.png" alt="A one-pixel dot">
+<div style="background-image:u\72l(dot.png);width:24px;height:24px"></div>
+</main>
+</body>
+</html>

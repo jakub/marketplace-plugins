@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store engine and retention</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Store engine and retention</h1>
+<!-- Two questions share the id "engine". -->
+<fieldset data-ask="engine">
+  <legend>Which engine backs the store?</legend>
+  <label><input type="radio" name="engine" value="sqlite" checked> SQLite <span data-hint>One file on disk.</span></label>
+  <label><input type="radio" name="engine" value="pg"> Postgres <span data-then>Then a server needs running and backing up.</span></label>
+</fieldset>
+<fieldset data-ask="engine">
+  <legend>Which engine, again, backs the store?</legend>
+  <label><input type="radio" name="engine" value="mysql" checked> SQLite <span data-hint>One file on disk.</span></label>
+  <label><input type="radio" name="engine" value="pg"> Postgres <span data-then>Then a server needs running and backing up.</span></label>
+</fieldset>
+<p><label for="risks">Risks</label></p>
+<textarea id="risks" data-note="Risks"></textarea>
+<section data-respond><h2>Your response</h2></section>
+</main>
+</body>
+</html>

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: a local source the browser never fetches</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Unfetched source</h1>
+<p>The video's first source names a sibling that does not exist, with a type the browser can't play, so the browser skips it and plays the second. plans:publish still reads it and aborts.</p>
+<video controls width="160" height="160"><source type="video/x-unplayable" src="missing.webm"><source type="video/webm" src="clip.webm"></video>
+</main>
+</body>
+</html>

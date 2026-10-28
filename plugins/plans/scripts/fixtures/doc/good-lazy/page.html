@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lazy images that decode</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Lazy images</h1>
+<p>Each image below is loading="lazy" and decodes. The first sits far below the first screen, the second inside a closed details element, and the third is never rendered.</p>
+<div style="height:4000px"></div>
+<img loading="lazy" src="dot.png" alt="A one-pixel dot" width="24" height="24">
+<details>
+<summary>One more dot</summary>
+<img loading="lazy" src="dot.png" alt="A one-pixel dot inside details" width="24" height="24">
+</details>
+<img loading="lazy" src="dot.png" alt="A dot that is never rendered" style="display:none">
+</main>
+</body>
+</html>

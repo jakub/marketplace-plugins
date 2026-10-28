@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>url() text inside CSS strings and comments</title>
+<!-- plans:kit -->
+<style>
+@property --plans-fixture-label { syntax: '*'; inherits: false; initial-value: "url(property.png)" }
+.quote::before { content: "url(before.png) "; }
+.escaped::after { content: " \"url(escaped.png)\""; }
+.note { --plans-fixture-note: 'see url(custom.png)' /* url(comment.png) */; }
+</style>
+</head>
+<body>
+<main>
+<h1>CSS strings</h1>
+<p class="quote">A generated quote holds url() text inside a CSS string.</p>
+<p class="escaped">An escaped quote keeps url() text inside its string.</p>
+<p class="note">A custom property holds url() text in a string and in a comment.</p>
+<p style="font-family: 'url(font.png)', serif">A quoted font family names url() text.</p>
+</main>
+</body>
+</html>

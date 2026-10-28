@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media references the publisher accepts</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Media references</h1>
+<p>Each src below is written a way plans:publish accepts: a ./ prefix, a query, a percent-escaped space in the file name, a fragment, a .. that stays inside the page's directory, the same .. between encoded slashes, and a leading no-break space.</p>
+<img src="./dot.png" alt="A dot behind a ./ prefix" width="24" height="24">
+<img src="dot.png?v=2" alt="A dot behind a query" width="24" height="24">
+<img src="my%20dot.png" alt="A dot whose file name holds a space" width="24" height="24">
+<img src="assets/../dot.png#layer" alt="A dot behind a .. and a fragment" width="24" height="24">
+<img src="assets%2f..%2fdot.png" alt="A dot behind encoded slashes around a .." width="24" height="24">
+<img src=" dot.png" alt="A dot behind a leading no-break space" width="24" height="24">
+<video preload="none" width="160" height="160"><source src="./assets/clip.webm?v=2" type="video/webm"></video>
+</main>
+</body>
+</html>

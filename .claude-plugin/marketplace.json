@@ -45,8 +45,8 @@
     },
     {
       "name": "plans",
-      "description": "Three skills for HTML output. show picks a Sketch in chat, an Inline render or a published Document for each visual. doc writes plan, review, walkthrough and report pages on a vendored, patched html-plan runtime. publish uploads, render-checks and deletes HTML, images and video through the plans CLI and a self-hosted plansd server.",
-      "version": "0.1.0",
+      "description": "Three skills for HTML output. show picks a Sketch in chat, an Inline render in the T3 thread or a published Document for each visual. doc writes explainer pages, such as plans, reviews and reports, with optional questions that return one markdown response, then builds and browser-checks them. publish uploads, render-checks and deletes HTML, images and video through the plans CLI and a self-hosted plansd server.",
+      "version": "0.2.0",
       "author": {
         "name": "jakub"
       },

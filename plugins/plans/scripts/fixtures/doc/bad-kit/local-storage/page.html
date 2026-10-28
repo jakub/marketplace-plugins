@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store engine and retention</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Store engine and retention</h1>
+<!-- The page tries to remember answers in localStorage. The viewer sandbox gives the page an opaque origin, so the call throws. -->
+<fieldset data-ask="engine">
+  <legend>Which engine backs the store?</legend>
+  <label><input type="radio" name="engine" value="sqlite" checked> SQLite <span data-hint>One file on disk.</span></label>
+  <label><input type="radio" name="engine" value="pg"> Postgres <span data-then>Then a server needs running and backing up.</span></label>
+</fieldset>
+<fieldset data-ask="retention">
+  <legend>How long do logs stay?</legend>
+  <label><input type="radio" name="retention" value="30d" checked> 30 days</label>
+  <label><input type="radio" name="retention" value="90d"> 90 days</label>
+</fieldset>
+<p><label for="risks">Risks</label></p>
+<textarea id="risks" data-note="Risks"></textarea>
+<section data-respond><h2>Your response</h2></section>
+</main>
+<script>
+  // Restore the last answer across reloads.
+  const last = localStorage.getItem('engine')
+  if (last) document.querySelector('input[value="' + last + '"]').checked = true
+</script>
+</body>
+</html>

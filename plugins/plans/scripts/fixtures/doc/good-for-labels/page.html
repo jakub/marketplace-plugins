@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retire the legacy send path</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Retire the legacy send path</h1>
+<p>Both questions use the form where each input sits just before a label that names it with <code>for</code>.</p>
+
+<fieldset data-ask="drop-files">
+  <legend>Which files does this change delete?</legend>
+  <input type="checkbox" id="drop-legacy" name="drop-files" value="legacy.mjs" checked>
+  <label for="drop-legacy">legacy.mjs <span data-hint>The old send path.</span></label>
+  <input type="checkbox" id="drop-shim" name="drop-files" value="shim.mjs">
+  <label for="drop-shim">shim.mjs <span data-hint>Still named in the README.</span></label>
+</fieldset>
+
+<fieldset data-ask="cutover">
+  <legend>When does the new path take over?</legend>
+  <input type="radio" id="cutover-now" name="cutover" value="now" checked>
+  <label for="cutover-now">With this change</label>
+  <input type="radio" id="cutover-next" name="cutover" value="next">
+  <label for="cutover-next">In the next release</label>
+</fieldset>
+
+<section data-respond>
+  <h2>Your response</h2>
+</section>
+</main>
+</body>
+</html>

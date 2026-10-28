@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scaled scrollers that can reach their content</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Drawn larger or mirrored, still within reach</h1>
+<p>Each scroller below is drawn larger than its layout box, or mirrored. Scrolling it still brings every part of its content into view.</p>
+<div style="width: 150px; height: 3em; margin-bottom: 4em; overflow-x: auto; transform: scale(2); transform-origin: top left">
+  <p style="width: 500px; margin: 0">A 500 px paragraph in a 150 px scroller drawn at twice its size.</p>
+</div>
+<div style="width: 160px; margin-bottom: 3em; transform: scale(1.5); transform-origin: top left">
+  <div style="width: 149.6px; overflow-x: auto">
+    <p style="width: 1999.6px; margin: 0">A long paragraph in a scroller with a fractional width, inside a box drawn at one and a half times its size.</p>
+  </div>
+</div>
+<div style="width: 149.6px; overflow-x: auto">
+  <p style="width: 1999.6px; margin: 0">A long paragraph in a scroller with a fractional width, drawn at its own size.</p>
+</div>
+<div style="width: 120px; overflow-x: auto; zoom: 2">
+  <p style="width: 600px; margin: 0">A paragraph in a scroller zoomed to twice its size.</p>
+</div>
+<div style="width: 300px; height: 3em; margin-top: 1em; overflow-x: auto; scale: -1 1">
+  <p style="width: 600px; margin: 0">A 600 px paragraph in a 300 px scroller its scale property mirrors.</p>
+</div>
+<div style="width: 300px; height: 3em; overflow-x: auto; transform: scaleX(-1)">
+  <p style="width: 600px; margin: 0">A 600 px paragraph in a 300 px scroller its transform mirrors.</p>
+</div>
+</main>
+</body>
+</html>

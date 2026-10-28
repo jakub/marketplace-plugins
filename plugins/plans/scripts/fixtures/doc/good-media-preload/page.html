@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media that loads nothing until it plays</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Preload none, still read</h1>
+<p>Neither element below fetches its bytes before it plays. Both point at a sibling WebM that decodes, the second through a list whose first source has a type the browser can't play.</p>
+<video id="direct" preload="none" src="clip.webm" width="160" height="160"></video>
+<audio id="listed" preload="none"><source src="clip.webm" type="video/x-unplayable"><source src="clip.webm" type="video/webm"></audio>
+</main>
+</body>
+</html>

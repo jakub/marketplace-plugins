@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log retention for the spool</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Log retention for the spool</h1>
+<p role="alert">The spool disk filled once last week, so this question is due before Friday.</p>
+<p>Closed spool files stay on disk for 7 days after they ship. The disk holds about 9 days of files at today's rate.</p>
+
+<fieldset data-ask="spool-days">
+  <legend>How many days do shipped spool files stay on disk?</legend>
+  <label><input type="radio" name="spool-days" value="7" checked> 7 days, as today</label>
+  <label><input type="radio" name="spool-days" value="3"> 3 days</label>
+</fieldset>
+
+<section data-respond>
+  <h2>Your response</h2>
+</section>
+</main>
+</body>
+</html>

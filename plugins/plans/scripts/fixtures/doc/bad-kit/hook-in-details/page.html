@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retention, asked late</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Retention, asked late</h1>
+<!-- The page has no kit hook at load. Opening the details adds a question and a response region
+     from a script, after the kit started. -->
+<details id="more">
+  <summary>One more question</summary>
+  <p>The question below appears when this opens.</p>
+</details>
+</main>
+<script>
+  document.getElementById('more').addEventListener('toggle', (e) => {
+    if (!e.target.open || document.querySelector('[data-ask]')) return
+    const fs = document.createElement('fieldset')
+    fs.setAttribute('data-ask', 'retention')
+    const legend = document.createElement('legend')
+    legend.textContent = 'How long do logs stay?'
+    fs.append(legend)
+    for (const [value, text, checked] of [['30d', '30 days', true], ['90d', '90 days', false]]) {
+      const label = document.createElement('label')
+      const input = document.createElement('input')
+      input.type = 'radio'
+      input.name = 'retention'
+      input.value = value
+      input.defaultChecked = checked
+      label.append(input, ' ' + text)
+      fs.append(label)
+    }
+    const respond = document.createElement('section')
+    respond.setAttribute('data-respond', '')
+    e.target.append(fs)
+    document.querySelector('main').append(respond)
+  })
+</script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: clipped inside a scroller that can't reach it</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Out of a scroller's reach</h1>
+<p>Each box below sits inside a horizontal scroller, but scrolling it never brings the box into view.</p>
+<div style="overflow-x: auto">
+  <p id="fixed" style="position: fixed; left: -200px; top: 100px; width: 100px">A fixed box escapes the scroller.</p>
+</div>
+<div style="overflow-x: auto">
+  <p id="start" style="margin-left: -400px">This paragraph runs past the scroller's start edge.</p>
+</div>
+<div style="position: relative">
+  <div style="overflow-x: auto">
+    <p id="escaped" style="position: absolute; left: -300px; width: 100px">Its containing block is outside the scroller.</p>
+  </div>
+</div>
+<div dir="rtl" style="overflow-x: auto">
+  <p id="rtl-start" style="margin-right: -2000px">This paragraph runs past the start edge of a right-to-left scroller.</p>
+</div>
+<div style="width: 150px; margin-bottom: 4em; overflow-x: auto; transform: scale(2); transform-origin: top left">
+  <p id="scaled-start" style="width: 100px; margin: 0 0 0 -60px">This box runs past the start edge of a scroller drawn at twice its size.</p>
+</div>
+<div style="width: 300px; height: 6em; overflow-x: auto; scale: -1 1">
+  <p id="mirrored-start" style="width: 200px; margin: 0 0 0 -100px">This box runs past the start edge of a scroller its scale property mirrors.</p>
+  <p style="width: 600px; margin: 0">A wide paragraph gives the scroller a range to scroll.</p>
+</div>
+<div style="width: 300px; height: 6em; overflow-x: auto; transform: scaleX(-1)">
+  <p id="turned-start" style="width: 200px; margin: 0 0 0 -100px">This box runs past the start edge of a scroller its transform mirrors.</p>
+  <p style="width: 600px; margin: 0">A wide paragraph gives the scroller a range to scroll.</p>
+</div>
+</main>
+</body>
+</html>

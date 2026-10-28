@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: css-url, escaped where the CSSOM keeps raw text</title>
+<!-- plans:kit -->
+<style>
+@property --plans-fixture-image { syntax: '<image>'; inherits: false; initial-value: u\72l(property.png) }
+.never-used { --plans-fixture-var: u\72l(custom.png) }
+</style>
+</head>
+<body>
+<main>
+<h1>Raw CSS text</h1>
+<p>A custom property and an @property initial value each name a URL through a CSS escape. The CSSOM keeps both as written, and Chromium still reads each as url() once var() uses it.</p>
+</main>
+</body>
+</html>

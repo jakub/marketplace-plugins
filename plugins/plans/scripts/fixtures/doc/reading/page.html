@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log shipping, as it stands</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Log shipping, as it stands</h1>
+<dl class="title-block">
+  <div><dt>Kind</dt><dd>Walkthrough</dd></div>
+  <div><dt>Scope</dt><dd>The collector and its spool</dd></div>
+  <div><dt>Read</dt><dd>2026-10-26</dd></div>
+</dl>
+<p>The collector reads every journal on the host, batches lines into one spool file per minute, and ships each closed file to the store. <span class="margin">Measured on a four-core host with the default batch size.</span> A file that fails to ship stays in the spool until the next pass.</p>
+<h2>The spool</h2>
+<p>Each file is named after the minute it covers, so a restart picks up where it stopped. The store answers each upload with a digest, and the collector deletes a file only after that digest matches its own.</p>
+<pre><code>spool/2026-10-26T10:41Z.ndjson.zst   closed, shipped, digest 9f2c41d07a3be1188e5d2f6b0c4a9e7d31f08b6a5c2e94d17f3a08c6b5e21d94
+spool/2026-10-26T10:42Z.ndjson.zst   open</code></pre>
+<figure>
+  <svg viewBox="0 0 640 160" role="img" aria-labelledby="flow-title">
+    <title id="flow-title">Journal to collector to spool to store</title>
+    <g fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="10" y="50" width="130" height="60"/>
+      <rect x="180" y="50" width="130" height="60"/>
+      <rect x="350" y="50" width="130" height="60"/>
+      <rect x="520" y="50" width="110" height="60"/>
+      <path d="M140 80 H180 M310 80 H350 M480 80 H520"/>
+    </g>
+    <g fill="currentColor" font-size="34" text-anchor="middle">
+      <text x="75" y="92">journal</text>
+      <text x="245" y="92">collect</text>
+      <text x="415" y="92">spool</text>
+      <text x="575" y="92">store</text>
+    </g>
+  </svg>
+  <figcaption>Figure 1. One line's path from the journal to the store.</figcaption>
+</figure>
+<figure>
+  <img src="assets/spool.png" alt="A block that stands for one spool file" width="240" height="120">
+  <figcaption>Figure 2. One spool file, as a block.</figcaption>
+</figure>
+<h2>Costs</h2>
+<table>
+  <thead><tr><th>Batch</th><th class="num">Files per hour</th><th class="num">Upload p95</th></tr></thead>
+  <tbody>
+    <tr><td>1 minute</td><td class="num">60</td><td class="num">180 ms</td></tr>
+    <tr><td>5 minutes</td><td class="num">12</td><td class="num">640 ms</td></tr>
+  </tbody>
+</table>
+<details>
+  <summary>Why not ship each line as it arrives?</summary>
+  <p>One request per line costs a round trip per line. At a few thousand lines a second, the store spends its time on headers.</p>
+  <pre><code>for line in journal: post(store, line)   # one round trip per line, thousands per second</code></pre>
+</details>
+<p>The source lives at https://example.com/collector, and the store's own notes are <a href="https://example.com/store">on its site</a>.</p>
+</main>
+</body>
+</html>
