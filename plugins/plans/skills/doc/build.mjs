@@ -125,7 +125,7 @@
 // KIT_FILES and the limits.
 
 import { createHash, randomBytes } from 'node:crypto'
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -685,4 +685,7 @@ async function main(argv) {
   return finish(3)
 }
 
-if (import.meta.main) process.exitCode = await main(process.argv.slice(2))
+// Run as a script, not imported. import.meta.main is missing before Node 22.18 and 24.2, where it
+// would skip main() and exit 0 having checked and written nothing, so compare real paths instead.
+const entry = (() => { try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch { return false } })()
+if (entry) process.exitCode = await main(process.argv.slice(2))
