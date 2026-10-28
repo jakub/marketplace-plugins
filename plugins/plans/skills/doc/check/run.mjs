@@ -713,6 +713,9 @@ function eventFaults(origin, skipped, refused) {
       return u.origin === origin && skipped.has(decodeURIComponent(u.pathname))
     } catch { return false }
   }
+  // The serve.mjs refusal behind a failed local request. build.mjs refuses every src the double
+  // would refuse before the check starts, so from the builder this names only a file that changed
+  // between that check and the double's own read.
   const why = (url) => {
     try {
       const u = new URL(url)

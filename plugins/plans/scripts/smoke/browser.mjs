@@ -316,7 +316,8 @@ import { PassThrough, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 
 // The fixture table. dir is relative to fixtures/doc/. A pass case expects exit 0; a fault case
-// expects exit 1 and its named fault in some matrix cell. Every fixture directory (one holding a
+// expects exit 1 and its named fault in some matrix cell, or with `static`, a failed check of that
+// name before the browser runs, with an empty matrix. Every fixture directory (one holding a
 // page.html) must appear here, and every row must have its directory.
 const BAD = ['exception', 'console-csp', 'request-outside', 'load-failed', 'http-status', 'media-decode', 'page-overflow',
   'clipped', 'a-target', 'form', 'outbound-link', 'srcset', 'poster', 'css-url', 'svg-href', 'svg-viewbox', 'svg-label',
@@ -407,6 +408,9 @@ const CASES = [
     /^audio#listed: broken\.webm: (MediaError code \d+.*|no <source> could be loaded), in a copy loaded with preload="metadata" since the element had loaded no metadata$/,
   ] },
   { dir: 'good-media-preload', args: [], exit: 0 },
+  // A missing sibling in a <source> whose type the browser skips, so no request ever fails:
+  // plans:publish still reads it, so the builder refuses it before the browser runs.
+  { dir: 'bad/media-unfetched', args: [], exit: 1, fault: 'media', static: true, match: /^<source> src="missing\.webm" does not exist: plans:publish would refuse the page$/ },
   // Srcs written as plans:publish accepts them: a ./ prefix, a query, a percent-escaped space, a
   // fragment and a .. that stays inside, each resolved and served as the CLI resolves it.
   { dir: 'good-media-refs', args: [], exit: 0 },
@@ -1107,9 +1111,12 @@ async function browserSection({ ROOT, check, skip }) {
           check(`browser: ${c.dir} --shots writes one PNG per cell and result.json`, pngs && res.result === 'pass' && res.buildId === j.buildId, have.join(','))
         }
       } else {
-        const named = (j.matrix ?? []).flatMap((cell) => cell.faults).filter((f) => f.kind === c.fault && (!c.match || c.match.test(f.detail)))
+        const found = c.static
+          ? (j.checks ?? []).filter((x) => x.result === 'fail').map((x) => ({ kind: x.name, detail: x.detail }))
+          : (j.matrix ?? []).flatMap((cell) => cell.faults)
+        const named = found.filter((f) => f.kind === c.fault && (!c.match || c.match.test(f.detail)))
         const every = (c.matches ?? []).every((re) => named.some((f) => re.test(f.detail)))
-        check(name, r.status === 1 && j.result === 'fail' && named.length > 0 && every && !existsSync(out) && j.digest === null,
+        check(name, r.status === 1 && j.result === 'fail' && named.length > 0 && every && !existsSync(out) && j.digest === null && (!c.static || (j.matrix ?? []).length === 0),
           `status ${r.status} result ${j.result} faults ${kinds.join(',')}\n${r.stderr}`)
       }
       check(`browser: ${c.dir} leaves no profile or Chromium behind`, clean(before) && clean(after), JSON.stringify({ before, after }))

@@ -222,6 +222,22 @@ export default async function ({ ROOT, check, skip }) {
 
     // Media.
     refuse('a media src holding an unknown named entity', { input: page({ body: '<img src="a&nbsp;b.png" alt="">' }), kind: 'media' })
+    // A local src plans:publish would abort on is refused before the browser runs, fetched or not.
+    {
+      const r = refuse('a missing sibling in a <source> the browser would skip', { input: page({ body: '<video><source type="video/x-unplayable" src="missing.webm"><source type="video/webm" src="clip.webm"></video>' }), kind: 'media', setup: (d) => writeFileSync(join(d, 'clip.webm'), 'webm') })
+      check('the media refusal names the tag, the src as written and the reason, at its line', /p\.html:10: <source> src="missing\.webm" does not exist: plans:publish would refuse the page$/m.test(r.stderr) && !/clip\.webm/.test(r.stderr), r.stderr)
+    }
+    refuse('a media src that escapes the directory', { input: page({ body: '<img src="sub/../../x.png" alt="">' }), kind: 'media' })
+    refuse('a media src with a malformed percent escape', { input: page({ body: '<img src="a%zz.png" alt="">' }), kind: 'media' })
+    refuse('a media src naming a symlink', { input: page({ body: '<img src="./link.png?v=1" alt="">' }), kind: 'media', setup: (d) => { writeFileSync(join(d, 'a.png'), 'png'); symlinkSync('a.png', join(d, 'link.png')) } })
+    refuse('a media src naming a local .html file', { input: page({ body: '<img src="other.html" alt="">' }), kind: 'media', setup: (d) => writeFileSync(join(d, 'other.html'), '<p>x</p>') })
+    {
+      const d = fresh()
+      writeFileSync(join(d, 'my shot.png'), 'png')
+      writeFileSync(join(d, 'p.html'), page({ body: '<img src="./my%20shot.png?v=2#x" alt=""><img src="data:image/png;base64,AAAA" alt=""><img src="https://example.com/x.png" alt="">' }))
+      const r = run(['--json', join(d, 'p.html')])
+      check('build: publisher-accepted, data: and remote media srcs pass the static half', r.status === 3 && r.json?.reason?.kind === 'no-chromium', `${r.status} ${r.stderr}`)
+    }
 
     // Inline mode.
     for (const hook of ['data-ask="q"', 'data-note="n"', 'data-ask-summary', 'data-respond']) {

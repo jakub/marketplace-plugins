@@ -72,6 +72,14 @@
 //     524,288 bytes or not UTF-8. Each distinct file is read once.
 //   - a media `src` on img, video, audio or source holding a named entity other than the five the
 //     scanner decodes
+//   - a local media `src` that plans:publish would abort on, one fault per tag (mediaFaults): one
+//     that won't parse or escapes INPUT's directory, or names a file check/serve.mjs would not
+//     admit (missing, a symlink, not a regular file, or outside the publish table). It uses
+//     serve.mjs's resolveRef and admission, so the builder and the viewer double hold one rule,
+//     and it runs whether or not Chromium would ever request the src: a <source> whose type the
+//     browser skips is checked too. A data: or remote src is not local and passes to the browser
+//     check. The double reads the files again when it starts, so a file that changes between the
+//     two reads is the only refusal left for the check's http-status detail to name.
 //   - in Document mode, a viewport that may not lay the page out at the device's width (kind
 //     `viewport`). Without width=device-width a phone, and the 390 px views, lay the page out 980 px
 //     wide, so page-overflow and clipped mean little there. The Plans viewer serves a Document
@@ -121,8 +129,8 @@
 // failure shows only in the printed result and the exit code.
 //
 // The module exports its pure helpers for smoke imports and runs the CLI only when it is the entry
-// point: kitRefusals(name, text), readKit(), assemble(text, opts), pinDir(path, procRoot),
-// KIT_FILES and the limits.
+// point: kitRefusals(name, text), readKit(), assemble(text, opts), mediaFaults(dir, media,
+// skipped), pinDir(path, procRoot), KIT_FILES and the limits.
 
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs'
@@ -133,6 +141,7 @@ import { render, diff } from './kit/diff.mjs'
 import { attr, lineOf, scan } from './check/scan.mjs'
 import { findChromium } from './check/cdp.mjs'
 import { runChecks } from './check/run.mjs'
+import { mediaRoutes } from './check/serve.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -228,6 +237,15 @@ function readText(path, max, kind = 'input') {
 
 const escAttr = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
 const bareName = (n) => n !== '' && n !== '.' && n !== '..' && !/[/\\\0]/.test(n)
+
+// The local media srcs plans:publish would abort on, as `media` faults, one per tag in document
+// order. media is assemble()'s list; skipped srcs are never checked, as the double never admits
+// them. The files are opened and checked, not read.
+export function mediaFaults(dir, media, skipped = []) {
+  const { refused } = mediaRoutes(dir, media.map((m) => m.src), skipped, { read: false })
+  const why = new Map(refused.map((r) => [r.src, r.reason]))
+  return media.filter((m) => why.has(m.src)).map((m) => ({ kind: 'media', line: m.line, message: `<${m.tag}> src="${m.src}" ${why.get(m.src)}: plans:publish would refuse the page` }))
+}
 
 // Assembles a page from its text. Pure apart from opts.readSibling, which reads one diff input by
 // bare name and returns its text or throws a Refusal.
@@ -626,7 +644,8 @@ async function main(argv) {
   const built = assemble(source.text, { inline: opts.inline, kit, readSibling })
   result.buildId = built.buildId
   result.skippedMedia = built.skippedMedia
-  if (built.faults.length) return refuse(built.faults)
+  const faults = [...built.faults, ...mediaFaults(dir, built.media, built.skippedMedia)]
+  if (faults.length) return refuse(faults)
   result.checks.push({ name: 'static', result: 'pass', detail: '' })
 
   // The browser half, over the exact bytes that will be written.
