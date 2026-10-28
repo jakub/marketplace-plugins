@@ -435,6 +435,9 @@ const CASES = [
     /^svg#mirrored "A strip the mirrored box clips": 400 px wide in a 300 px <div>$/,
   ] },
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
+  // An Inline page with no viewport meta and a block wider than 360 px. T3's iframe lays it out at
+  // 360 whatever the meta says, so the 360 views must too.
+  { dir: 'bad-inline/inline-no-viewport', args: ['--inline'], exit: 1, fault: 'page-overflow' },
 ]
 
 const tick = () => new Promise((r) => setImmediate(r))

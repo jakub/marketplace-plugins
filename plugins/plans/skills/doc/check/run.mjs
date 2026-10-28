@@ -13,9 +13,11 @@
 //   fail or unknown across the views that ran it.
 //
 // Views. Document mode: 390x844 with mobile emulation at dsf 2, and 1440x900 at dsf 1, each in
-// light and dark through Emulation.setEmulatedMedia. Inline mode: 360 (mobile, dsf 2) and 728
-// (dsf 1), each at height 80 so the content height is read from scrollHeight rather than from the
-// viewport, in light and dark, with sample T3 theme variables. The variables arrive through
+// light and dark through Emulation.setEmulatedMedia. Inline mode: 360 (dsf 2) and 728 (dsf 1),
+// both without mobile emulation, because T3 renders an Inline page in an iframe, which lays out at
+// its own width and ignores a viewport meta, where mobile emulation would lay a page without one
+// out 980 px wide. Each is at height 80 so the content height is read from scrollHeight rather
+// than from the viewport, in light and dark, with sample T3 theme variables. The variables arrive through
 // Page.addScriptToEvaluateOnNewDocument as a constructed stylesheet in document.adoptedStyleSheets,
 // which sits outside the DOM, so the bytes under test stay those served and the html and body
 // probes see only the page's own styles. Emulation.setDefaultBackgroundColorOverride paints the
@@ -186,7 +188,7 @@ export const DOC_VIEWS = [
   view(1440, 900, 1, false, 'light', false), view(1440, 900, 1, false, 'dark', false),
 ]
 export const INLINE_VIEWS = [
-  view(360, 80, 2, true, 'light', true), view(360, 80, 2, true, 'dark', true),
+  view(360, 80, 2, false, 'light', true), view(360, 80, 2, false, 'dark', true),
   view(728, 80, 1, false, 'light', false), view(728, 80, 1, false, 'dark', false),
 ]
 
@@ -1081,6 +1083,9 @@ async function runView(browser, ctx, v, rec) {
       if (ctx.inline) {
         await send('Page.addScriptToEvaluateOnNewDocument', { source: themeScript(v.scheme) })
         await send('Emulation.setDefaultBackgroundColorOverride', { color: T3[v.scheme].ground })
+        // T3 sizes its iframe to the content, so the frame never shows a scrollbar that would take
+        // width from the page, as a classic one does in a window 80 px tall.
+        await send('Emulation.setScrollbarsHidden', { hidden: true })
       } else {
         await send('Emulation.setFocusEmulationEnabled', { enabled: true })
       }
