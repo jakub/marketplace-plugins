@@ -676,7 +676,8 @@ async function serveUnits({ check, serveMod, serveUrl, base }) {
   symlinkSync('a.png', join(dir, 'link.png'))
   symlinkSync('sub', join(dir, 'ln'))
   const html = Buffer.from('<!doctype html><title>candidate</title><p>from memory</p>')
-  const media = ['a.png', 'sub/b.png', 'link.png', 'ln/b.png', 'notes.txt', 'other.html', 'gone.png', '../escape.png', 'https://example.com/x.png', 'data:image/png;base64,AAAA']
+  const media = ['a.png', 'sub/b.png', 'link.png', 'ln/b.png', 'notes.txt', 'other.html', 'gone.png', '../escape.png', 'https://example.com/x.png', 'data:image/png;base64,AAAA',
+    'sub%2f..%2fa.png', '\u00a0a.png']
   const srv = await serve({ html, dir, media })
   try {
     const host = `127.0.0.1:${srv.port}`
@@ -709,6 +710,12 @@ async function serveUnits({ check, serveMod, serveUrl, base }) {
     for (const [what, target] of [['a query, which the lookup ignores', '/a.png?x=1'], ['a query holding a malformed escape and ..', '/a.png?%zz/../x'], ['an empty segment and a trailing slash, which Clean drops', '//a.png/']]) {
       const q = await get(target)
       check(`serve: declared media behind ${what} is served`, q.status === 200 && q.body.equals(A), `${q.status} ${q.body}`)
+    }
+    // A browser keeps the escapes a src was written with, so these requests differ from the
+    // cleaned path the CLI opens, and each is served at the exact path a browser sends.
+    for (const [what, target] of [['encoded slashes around ..', '/sub%2f..%2fa.png'], ['a leading no-break space', '/%C2%A0a.png']]) {
+      const q = await get(target)
+      check(`serve: a src written with ${what} is served at its browser request path`, q.status === 200 && q.body.equals(A), `${q.status} ${q.body}`)
     }
     const post = await get('/a.png', { method: 'POST', extra: 'Content-Length: 0\r\n' })
     check('serve: methods other than GET and HEAD get 405', post.status === 405)

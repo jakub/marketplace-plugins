@@ -12,7 +12,8 @@
 //              the cleaned relative path, or null when the src names none (it won't parse, or it
 //              escapes the directory)
 //   resolveRef(src) -> { local: false } | { path } | { reason }
-//   mediaRoutes(dir, srcs, skipped, { read }) -> { routes: Map('/' + path -> { type, body }), refused }
+//   mediaRoutes(dir, srcs, skipped, { read }) -> { routes: Map('/' + path -> { type, body }),
+//     requests: Map(request path as a browser sends it -> the same route), refused }
 //     read false opens and checks each file as admission does but holds no body, for build.mjs's
 //     static refusal, so the builder and the double apply one rule
 //
@@ -57,7 +58,11 @@
 // `/shot.png`. The decoded pathname, with empty segments dropped as Clean drops them (`a//b.png`,
 // `a.png/`), must equal a route exactly, or the answer is 404, so a double-encoded `..` is a plain
 // miss. A browser resolves `.` and `..` segments, encoded ones included, before it sends a
-// request, so a page's `./a.png` arrives as `/a.png`. GET and HEAD are answered; any other method
+// request, so a page's `./a.png` arrives as `/a.png`. Before any of that, a pathname that equals
+// exactly, as sent, the request path of an admitted src (its WHATWG pathname, escapes kept) is
+// that src's file: `assets%2f..%2fdot.png` keeps its encoded slashes in the request, and a leading
+// no-break space arrives as `%C2%A0`, though both name a file the CLI accepts. Only an admitted
+// src has such an alias, so it reaches nothing the lookup below could not. GET and HEAD are answered; any other method
 // gets 405. Range is not supported: a Range request gets the whole body with 200, which the
 // browser accepts.
 //
@@ -194,8 +199,14 @@ function admit(dir, path, read) {
   }
 }
 
+// The pathname a browser requests for src, as the WHATWG URL parser resolves it against the
+// candidate at the root: percent-escapes stay as written, so it can differ from the cleaned path
+// (`assets%2f..%2fdot.png`, or a leading no-break space that the CLI's trim drops).
+const requestPath = (src) => { try { return new URL(src, 'http://plans.invalid/').pathname } catch { return null } }
+
 export function mediaRoutes(dir, srcs, skipped = [], { read = true } = {}) {
   const routes = new Map()
+  const requests = new Map()
   const refused = []
   const byPath = new Map()
   for (const src of new Set(srcs)) {
@@ -205,14 +216,18 @@ export function mediaRoutes(dir, srcs, skipped = [], { read = true } = {}) {
     if (ref.reason) { refused.push({ src, path: null, reason: ref.reason }); continue }
     if (!byPath.has(ref.path)) byPath.set(ref.path, admit(dir, ref.path, read))
     const got = byPath.get(ref.path)
-    if (got.route) routes.set('/' + ref.path, got.route)
-    else refused.push({ src, path: ref.path, reason: got.reason })
+    if (got.route) {
+      routes.set('/' + ref.path, got.route)
+      const key = requestPath(src)
+      if (key !== null) requests.set(key, got.route)
+    } else refused.push({ src, path: ref.path, reason: got.reason })
   }
-  return { routes, refused }
+  return { routes, requests, refused }
 }
 
 export async function serve({ html, dir, media = [], skipped = [] }) {
-  const { routes, refused } = mediaRoutes(dir, media, skipped)
+  const { routes, requests, refused } = mediaRoutes(dir, media, skipped)
+  Object.freeze(requests)
   routes.set(CANDIDATE, { type: 'text/html; charset=utf-8', body: html })
   routes.set('/favicon.ico', { status: 204 })
   routes.set(PROBE, { type: 'text/html; charset=utf-8', body: PROBE_PAGE, open: true })
@@ -225,6 +240,8 @@ export async function serve({ html, dir, media = [], skipped = [] }) {
     const target = req.url ?? ''
     if (!target.startsWith('/')) return end(400)
     const q = target.indexOf('?')
+    const exact = requests.get(q === -1 ? target : target.slice(0, q))
+    if (exact && (req.method === 'GET' || req.method === 'HEAD')) return send(exact)
     let path
     try { path = decodeURIComponent(q === -1 ? target : target.slice(0, q)) } catch { return end(400) }
     const segments = path.split('/')
@@ -233,10 +250,13 @@ export async function serve({ html, dir, media = [], skipped = [] }) {
     const route = routes.get('/' + segments.filter((s) => s !== '').join('/'))
     if (!route) return end(404)
     if (route.status) return end(route.status)
-    const headers = { 'content-type': route.type, 'content-length': route.body.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }
-    if (!route.open) headers['content-security-policy'] = CSP
-    res.writeHead(200, headers)
-    res.end(req.method === 'HEAD' ? undefined : route.body)
+    send(route)
+    function send(route) {
+      const headers = { 'content-type': route.type, 'content-length': route.body.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }
+      if (!route.open) headers['content-security-policy'] = CSP
+      res.writeHead(200, headers)
+      res.end(req.method === 'HEAD' ? undefined : route.body)
+    }
   })
   server.on('clientError', (e, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n'); else socket.destroy() })
   await new Promise((resolve, reject) => {
