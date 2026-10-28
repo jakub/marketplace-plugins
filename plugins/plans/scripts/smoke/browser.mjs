@@ -407,6 +407,9 @@ const CASES = [
     /^audio#listed: broken\.webm: (MediaError code \d+.*|no <source> could be loaded), in a copy loaded with preload="metadata" since the element had loaded no metadata$/,
   ] },
   { dir: 'good-media-preload', args: [], exit: 0 },
+  // Srcs written as plans:publish accepts them: a ./ prefix, a query, a percent-escaped space, a
+  // fragment and a .. that stays inside, each resolved and served as the CLI resolves it.
+  { dir: 'good-media-refs', args: [], exit: 0 },
   // url() text inside CSS strings and comments loads nothing, so it raises no css-url.
   { dir: 'good-css-strings', args: [], exit: 0 },
   // Boxes inside a horizontal scroller that can never bring them into view: a fixed box and an
@@ -607,7 +610,56 @@ function raw(port, text) {
 }
 
 async function serveUnits({ check, serveMod, serveUrl, base }) {
-  const { serve, CSP, CANDIDATE, PROBE } = serveMod
+  const { serve, resolveRef, mediaRoutes, CSP, CANDIDATE, PROBE } = serveMod
+
+  // resolveRef against the plans CLI's localRefPath plus filepath.Clean.
+  const RESOLVE = [
+    ['a ./ prefix', './a.png', { path: 'a.png' }],
+    ['a query', 'a.png?v=2', { path: 'a.png' }],
+    ['a fragment', 'a.png#x', { path: 'a.png' }],
+    ['a fragment no URL parser accepts', 'chart.png#50%', { path: 'chart.png' }],
+    ['a percent-escaped space', 'my%20shot.png', { path: 'my shot.png' }],
+    ['a .. that stays inside', 'a/../b.png', { path: 'b.png' }],
+    ['surrounding whitespace', ' \tsub/b.png\n', { path: 'sub/b.png' }],
+    ['an empty segment', 'sub//b.png', { path: 'sub/b.png' }],
+    ['a ../ out of the directory', '../x.png', { reason: /escapes/ }],
+    ['a .. past the start', 'a/../../x.png', { reason: /escapes/ }],
+    ['a malformed escape', '%zz.png', { reason: /malformed percent escape/ }],
+    ['a truncated escape', 'a.png%4', { reason: /malformed percent escape/ }],
+    ['an escape that is not UTF-8', '%ff.png', { reason: /not UTF-8/ }],
+    ['a control character', 'a\tb.png', { reason: /control character/ }],
+    ['a colon in the first segment', '1a:b.png', { reason: /colon/ }],
+    ['a leading colon', ':a.png', { reason: /colon/ }],
+    ['an encoded NUL', 'a%00.png', { reason: /NUL/ }],
+    ['a backslash', 'sub\\b.png', { reason: /backslash/ }],
+    ['a data: URI', 'data:image/png;base64,AAAA', { local: false }],
+    ['an https: URL', 'https://example.com/x.png', { local: false }],
+    ['a protocol-relative URL', '//example.com/x.png', { local: false }],
+    ['a site-absolute path', '/x.png', { local: false }],
+    ['a bare fragment', '#x', { local: false }],
+    ['an empty value', '  ', { local: false }],
+    ['a bare query', '?v=2', { local: false }],
+    ['an escaped leading slash', '%2Fx.png', { local: false }],
+  ]
+  for (const [what, src, want] of RESOLVE) {
+    const got = resolveRef(src)
+    const ok = want.reason ? want.reason.test(got.reason ?? '') && !('path' in got)
+      : want.path ? got.path === want.path && !('reason' in got)
+        : got.local === false
+    check(`serve resolveRef: ${what} (${JSON.stringify(src)})`, ok, JSON.stringify(got))
+  }
+  {
+    const d = join(base, 'resolved')
+    mkdirSync(d)
+    writeFileSync(join(d, 'my shot.png'), 'spaced')
+    const got = mediaRoutes(d, ['my%20shot.png', './my shot.png', 'data:image/png;base64,AAAA', 'https://example.com/x.png', 'missing.png'])
+    check('serve mediaRoutes: my%20shot.png opens "my shot.png", one route for two spellings, and remote srcs are neither routed nor refused',
+      [...got.routes.keys()].join(',') === '/my shot.png' && got.routes.get('/my shot.png').body.toString() === 'spaced'
+        && got.refused.length === 1 && got.refused[0].src === 'missing.png' && got.refused[0].path === 'missing.png' && got.refused[0].reason === 'does not exist', JSON.stringify(got.refused))
+    const dry = mediaRoutes(d, ['my%20shot.png', 'missing.png'], [], { read: false })
+    check('serve mediaRoutes: read false refuses the same srcs and holds no body', dry.refused.map((r) => r.src).join(',') === 'missing.png' && dry.routes.get('/my shot.png')?.body === null, JSON.stringify(dry.refused))
+  }
+
   const dir = join(base, 'served')
   mkdirSync(join(dir, 'sub'), { recursive: true })
   const A = Buffer.from('a.png bytes'), B = Buffer.from('b.png bytes')
@@ -620,14 +672,16 @@ async function serveUnits({ check, serveMod, serveUrl, base }) {
   symlinkSync('a.png', join(dir, 'link.png'))
   symlinkSync('sub', join(dir, 'ln'))
   const html = Buffer.from('<!doctype html><title>candidate</title><p>from memory</p>')
-  const media = ['a.png', 'sub/b.png', 'link.png', 'ln/b.png', 'notes.txt', 'other.html', 'gone.png', '../escape.png', 'https://example.com/x.png']
+  const media = ['a.png', 'sub/b.png', 'link.png', 'ln/b.png', 'notes.txt', 'other.html', 'gone.png', '../escape.png', 'https://example.com/x.png', 'data:image/png;base64,AAAA']
   const srv = await serve({ html, dir, media })
   try {
     const host = `127.0.0.1:${srv.port}`
     const get = (target, { h = host, method = 'GET', extra = '' } = {}) => raw(srv.port, `${method} ${target} HTTP/1.1\r\n${h === null ? '' : `Host: ${h}\r\n`}${extra}Connection: close\r\n\r\n`)
     const refused = Object.fromEntries(srv.refused.map((r) => [r.src, r.reason]))
     check('serve: refuses to admit symlinks, a symlinked directory, non-media, html, missing and escaping srcs',
-      ['link.png', 'ln/b.png', 'notes.txt', 'other.html', 'gone.png', '../escape.png', 'https://example.com/x.png'].every((s) => s in refused) && !('a.png' in refused) && !('sub/b.png' in refused), JSON.stringify(refused))
+      ['link.png', 'ln/b.png', 'notes.txt', 'other.html', 'gone.png', '../escape.png'].every((s) => s in refused) && !('a.png' in refused) && !('sub/b.png' in refused), JSON.stringify(refused))
+    check('serve: a remote src and a data: URI are not local, so they are neither refused nor routed',
+      !('https://example.com/x.png' in refused) && !('data:image/png;base64,AAAA' in refused) && srv.refused.length === 6, JSON.stringify(refused))
 
     // The tree changes after serve() returns: nothing a handler serves may follow it.
     writeFileSync(join(dir, 'a.png'), 'rewritten on disk')
@@ -648,6 +702,10 @@ async function serveUnits({ check, serveMod, serveUrl, base }) {
     check('serve: /favicon.ico answers 204', fav.status === 204)
     const probe = await get(PROBE)
     check('serve: the probe page is HTML without the sandbox CSP', probe.status === 200 && !('content-security-policy' in probe.headers) && /<!doctype html>/i.test(probe.body.toString()))
+    for (const [what, target] of [['a query, which the lookup ignores', '/a.png?x=1'], ['a query holding a malformed escape and ..', '/a.png?%zz/../x'], ['an empty segment and a trailing slash, which Clean drops', '//a.png/']]) {
+      const q = await get(target)
+      check(`serve: declared media behind ${what} is served`, q.status === 200 && q.body.equals(A), `${q.status} ${q.body}`)
+    }
     const post = await get('/a.png', { method: 'POST', extra: 'Content-Length: 0\r\n' })
     check('serve: methods other than GET and HEAD get 405', post.status === 405)
 
@@ -677,7 +735,7 @@ async function serveUnits({ check, serveMod, serveUrl, base }) {
       ['a declared non-media file', '/notes.txt', 404],
       ['a symlinked sibling', '/link.png', 404],
       ['a path through a symlinked directory', '/ln/b.png', 404],
-      ['a query on declared media', '/a.png?x=1', 404],
+      ['a query on an undeclared neighbour', '/secret.png?a.png', 404],
       ['the root', '/', 404],
     ]
     for (const [what, target, status, opts] of expect) {

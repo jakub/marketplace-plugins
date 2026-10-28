@@ -717,8 +717,8 @@ function eventFaults(origin, skipped, refused) {
     try {
       const u = new URL(url)
       if (u.origin !== origin) return ''
-      const r = refused.get(decodeURIComponent(u.pathname).slice(1))
-      return r ? ` (not served: the src ${r})` : ''
+      const r = refused.get(decodeURIComponent(u.pathname).split('/').filter((s) => s !== '').join('/'))
+      return r ? ` (not served: the src "${r.src}" ${r.reason})` : ''
     } catch { return '' }
   }
   return (ev, add) => {
@@ -1226,7 +1226,7 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
     const server = await serving
     ctx.url = server.url
     ctx.origin = server.origin
-    ctx.refused = new Map(server.refused.map((r) => [r.src, r.reason]))
+    ctx.refused = new Map(server.refused.filter((r) => r.path !== null).map((r) => [r.path, r]))
     if (halted) return
     launching = launch(chromium, { tmp })
     const browser = await launching
