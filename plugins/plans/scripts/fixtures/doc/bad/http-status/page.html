@@ -9,8 +9,9 @@
 <body>
 <main>
 <h1>Status</h1>
-<p>The image below names a sibling that does not exist.</p>
-<img src="missing.png" alt="A missing sibling">
+<p>A script asks for a sibling that does not exist. The builder refuses a missing file named in a
+src before the browser runs, so only a request the page makes at run time reaches the server.</p>
+<script>new Image().src = 'missing.png'</script>
 </main>
 </body>
 </html>
