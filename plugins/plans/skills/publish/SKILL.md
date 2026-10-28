@@ -138,7 +138,7 @@ The render check loads the live page in a real browser and looks for the faults 
 4. Fail the check on any of these faults, and report each one separately:
    - horizontal overflow on the root element
    - an element clipped outside a scroller the reader can reach
-   - a CSP console message that starts with "Refused to"
+   - a CSP block: a console message that starts with "Refused to", a log entry with source `security`, or a failed request with `blockedReason: csp`. Chromium 155 prints no "Refused to" line for a CSP block, so a check that matches only that text misses it.
    - an uncaught error
    - media that fails to load or decode. A `206` response is healthy, because the browser requests media in ranges.
 5. If the browser tooling is unavailable, record the render check as unknown. Unknown is never a pass.
