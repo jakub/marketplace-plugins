@@ -39,8 +39,8 @@ export default async function ({ ROOT, check }) {
     'repeated whitespace': ['a   b\t\tc  \n\n\n\nd', 'a b  c\t\n\nd   '],
     'emoji': ['Thumbs 👍 ok 😀 and 👨‍👩‍👧 family.\n', 'Thumbs 👎 ok 😃 and 👨‍👩‍👦 family.\n'],
     'combining marks': ['The café is open. Ñ = Ñ.\n', 'The cafe is open. Ñ = Ǹ.\n'],
-    'U+2028': ['one two three\n', 'one two three\n'],
-    'U+2029': ['alpha beta gamma\n', 'alpha beta delta \n'],
+    'U+2028': ['one\u2028two three\n', 'one two\u2028three\n'],
+    'U+2029': ['alpha\u2029beta gamma\n', 'alpha\u2029beta delta\u2029\n'],
     'empty to text': ['', 'Some text.\n'],
     'text to empty': ['Some text.\n', ''],
     'both empty': ['', ''],
@@ -62,11 +62,11 @@ export default async function ({ ROOT, check }) {
 
   // A literal U+2029 is text, never a generated ¶.
   {
-    const d = run('Keep alpha beta gamma.\n', 'Keep alpha beta delta.\n')
-    check('a literal U+2029 renders as text', d.html.includes(' '), d.html)
+    const d = run('Keep alpha\u2029beta gamma.\n', 'Keep alpha\u2029beta delta.\n')
+    check('a literal U+2029 renders as text', d.html.includes('\u2029'), d.html)
     check('a literal U+2029 renders no plans-pil', !d.html.includes('plans-pil'), d.html)
-    const cut = run('Keep this  and drop these words.\n', 'Keep this.\n')
-    check('a U+2029 inside a cut renders no plans-pil', !cut.html.includes('plans-pil') && cut.html.includes(' '), cut.html)
+    const cut = run('Keep this\u2029 and drop these words.\n', 'Keep this.\n')
+    check('a U+2029 inside a cut renders no plans-pil', !cut.html.includes('plans-pil') && cut.html.includes('\u2029'), cut.html)
   }
 
   // A pure paragraph merge draws exactly one ¶.
