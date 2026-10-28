@@ -22,7 +22,7 @@ A hand-off line that mentions this stage is not an invocation. A number that isn
 
 **Done** is an open PR, pushed, reviewed, evidenced and linked with `Closes #N`. Invoke the `babysit` skill with it right away, without asking.
 
-The PR body carries a `## Risk` section (the tier, why, and any tripwire that raised it) and a `## Revert` section, both written from the diff that ships. Revert says what a rollback leaves behind, judged against the data stance in the repo's `AGENTS.md`. With no stance there, a change to persisted state isn't reversible, so say that.
+The PR body leads with the problem, then the fix, then one changelog line per commit. It carries a `## Risk` section (the tier, why, and any tripwire that raised it) and a `## Revert` section, both written from the diff that ships. Revert says what a rollback leaves behind, judged against the data stance in the repo's `AGENTS.md`. With no stance there, a change to persisted state isn't reversible, so say that.
 
 BAD
 

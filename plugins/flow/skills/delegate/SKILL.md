@@ -9,7 +9,7 @@ The charter says when to cross the family line. This page says how.
 
 There are two routes:
 
-- **In T3 Code**, every seat is a T3 seat: a `delegate_task` child that flow's own hooks hold to the Seat Contract. See "T3 seats" below. `flow_delegate` is the cross-family fallback.
+- **In T3 Code**, route each seat the way T3's own prompt says. A seat that goes through `delegate_task` is a T3 seat, a child that flow's own hooks hold to the Seat Contract. See "T3 seats" below. `flow_delegate` is the cross-family fallback.
 - **Everywhere else**, `flow_delegate` reaches the other family. It drives Codex from a Claude host through `codex app-server`, and Claude from a Codex host through `claude -p`'s stream-json channel. Same-family seats are native (`Agent`, `spawn_agent`).
 
 Never call a model CLI through the shell. Flow can't contain or track it there.

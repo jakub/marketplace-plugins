@@ -72,7 +72,7 @@ For each task class, estimate how often it passes compared with the evals. Settl
 Edit `## Models` in `plugins/flow/charter/charter.md`:
 
 - **The table**: columns `Rung | Pass | $/solve | Threshold`, padded so the raw file reads aligned. No outer pipes, the rung left-aligned, the numbers right-aligned (`---: |`), and no trailing spaces. A bare row with the work family's name goes before the ladder, and a bare `Review and mentors` row before the reviewer and the mentors. A rung is its model and effort, like `Opus medium`, plus `, tools` for the tool-call rung, `, hard rows` for a kept rung, `, review` for the reviewer and `, mentor` for a mentor. Pass is a whole percent, $/solve has two decimals, and the top rung's threshold is `—`, as is every reviewer and mentor row's.
-- **The sentence above the table**: the as-of date, both evals with their versions, how the ladder is built, the tie band, and what a threshold means.
+- **The sentence above the table**: the as-of date, the price basis, and both evals with their versions. How the ladder is built and what a threshold means stay in this skill and the rung-picking paragraph.
 - One line each for the off-ladder models and why, the taste scores, and the classifiers that can refuse.
 - **The starting rungs**: one line per task class, `task: rung`.
 
