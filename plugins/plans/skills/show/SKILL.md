@@ -33,6 +33,7 @@ Decisions that are already made and only recorded are not choices. Write them in
 
 Ask after the visual, so the reader sees what each option means before they pick. Put the recommendation first, and say in the option text what it costs.
 
+- **In T3 Code**, ask the way your provider asks, by the two bullets below. T3 shows `AskUserQuestion` as tappable options, and a reader can miss the reply text above them, so put what they need to choose inside the question and option text.
 - **In Claude Code**, use `AskUserQuestion`: up to 4 questions per call, with 2 to 4 options each.
 - **In Codex**, write the questions as numbered options in the reply, then end the turn.
 

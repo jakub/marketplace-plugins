@@ -139,10 +139,12 @@ export default async function (t) {
   check('skills: show rule 4 sends every other choice to the host question tool, after any visual',
     routed[3]?.includes('Ask every other choice with the host question tool, after any visual'), routed[3])
   const ask = section(show, '## Ask with the host question tool')
-  const askNeedles = ['Put the recommendation first', '**In Claude Code**, use `AskUserQuestion`',
+  const askNeedles = ['Put the recommendation first', '**In T3 Code**, ask the way your provider asks',
+    'put what they need to choose inside the question and option text', '**In Claude Code**, use `AskUserQuestion`',
     'up to 4 questions per call, with 2 to 4 options each', '**In Codex**', 'numbered options in the reply, then end the turn',
     'Never ask through the page.']
   for (const needle of askNeedles) check(`skills: show question tool says ${needle}`, ask.includes(needle))
+  check('skills: show question tool routes T3 first', ask.indexOf('**In T3 Code**') >= 0 && ask.indexOf('**In T3 Code**') < ask.indexOf('**In Claude Code**'))
 
   const budget = section(show, BUDGET_HEADING)
   for (const needle of BUDGET) check(`skills: show budget names ${needle}`, budget.includes(needle))
