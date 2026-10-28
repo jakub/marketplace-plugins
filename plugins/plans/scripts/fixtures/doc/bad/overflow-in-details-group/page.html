@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: page-overflow in a named details group</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Grouped details</h1>
+<p>Both details share one name, so opening one closes the other. The block wider than the page is in the first, and a closed body takes no width.</p>
+<details name="g">
+<summary>First</summary>
+<div id="first" style="width: 2000px">A block wider than any view.</div>
+</details>
+<details name="g">
+<summary>Second</summary>
+<p>Plain text, nothing to flag.</p>
+</details>
+</main>
+</body>
+</html>

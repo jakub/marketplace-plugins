@@ -43,7 +43,8 @@
 // `media-unsettled`, so bytes the check never read never pass.
 //
 // States. `initial`; `details-open`, with every native <details> opened and the page settled
-// again; and on a Document page with kit hooks in either of those states, `interaction`, probed
+// again, where a named group, whose members close each other, is probed once per member and the
+// state ends with each group's first member open; and on a Document page with kit hooks in either of those states, `interaction`, probed
 // after the interaction script and the copy check below, with <details> still open. A hook that
 // first appears when <details> opens counts the same as one at load, so it needs a kit error or a
 // response the script can drive. A kit page whose kit already logged an error gets the cell
@@ -287,10 +288,23 @@ async function settle(capMs, skipped) {
   }
 }
 
-function openDetails() {
-  const all = document.querySelectorAll('details')
-  for (const d of all) d.open = true
-  return all.length
+// Opens every <details>. Members of a named group (one non-empty name) close each other, so only
+// the k-th member of each group opens, and the return value is the largest group's size: the
+// number of passes that open every member once.
+function openDetails(k) {
+  const groups = new Map()
+  for (const d of document.querySelectorAll('details')) {
+    const name = d.getAttribute('name')
+    if (!name) { d.open = true; continue }
+    if (!groups.has(name)) groups.set(name, [])
+    groups.get(name).push(d)
+  }
+  let passes = 1
+  for (const members of groups.values()) {
+    passes = Math.max(passes, members.length)
+    if (k < members.length) members[k].open = true
+  }
+  return passes
 }
 
 function probe(cfg) {
@@ -1106,26 +1120,37 @@ async function runView(browser, ctx, v, rec) {
       for (const state of [...STATES, INTERACTION]) {
         if (state === INTERACTION && (ctx.inline || !kitPage)) break
         rec.state = state
-        if (state === 'details-open') {
-          await evaluate(call(openDetails))
-          settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+        // details-open probes once per member of the largest named <details> group, last member
+        // first, so the state ends, is captured and is driven with each group's first member open.
+        const passes = state === 'details-open' ? await evaluate(call(openDetails, 0)) : 1
+        const measured = new Set()
+        let got
+        for (let k = passes - 1; k >= 0; k--) {
+          if (state === 'details-open') {
+            await evaluate(call(openDetails, k))
+            settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+          }
+          if (state === INTERACTION) {
+            ctx.kitDoc = true
+            // A kit that already logged an error has turned its response off: nothing to drive.
+            const kitFailed = rec.cells.some((c) => c.view === v.name && c.faults.some((f) => f.kind === 'kit-error'))
+            if (!kitFailed) driven = await interact({ send, evaluate, fault, browser, browserContextId, origin: ctx.origin, stopped: ctx.stopped }, rec, v.name)
+            await evaluate(call(scrollHome))
+            settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+          }
+          // Media the settle cap cut off was never read, so its state can't pass.
+          for (const u of settled.unsettled) rec.unknowns.push({ kind: 'media-unsettled', detail: `${v.name} ${state}: ${u} neither loaded nor failed within ${SETTLE_MS} ms` })
+          got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken, mediaBroken: settled.mediaBroken }))
+          // Hooks in any measured state make it a kit page. A hook that appears when <details> opens
+          // needs a kit error, or the response and interaction checks, as much as one at load.
+          if (got.kitPage) kitPage = true
+          drain()
+          // A fault every pass sees joins the cell once.
+          for (const f of got.faults) {
+            const key = f.kind + '\0' + f.detail
+            if (!measured.has(key)) { measured.add(key); fault(f.kind, f.detail) }
+          }
         }
-        if (state === INTERACTION) {
-          ctx.kitDoc = true
-          // A kit that already logged an error has turned its response off: nothing to drive.
-          const kitFailed = rec.cells.some((c) => c.view === v.name && c.faults.some((f) => f.kind === 'kit-error'))
-          if (!kitFailed) driven = await interact({ send, evaluate, fault, browser, browserContextId, origin: ctx.origin, stopped: ctx.stopped }, rec, v.name)
-          await evaluate(call(scrollHome))
-          settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
-        }
-        // Media the settle cap cut off was never read, so its state can't pass.
-        for (const u of settled.unsettled) rec.unknowns.push({ kind: 'media-unsettled', detail: `${v.name} ${state}: ${u} neither loaded nor failed within ${SETTLE_MS} ms` })
-        const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken, mediaBroken: settled.mediaBroken }))
-        // Hooks in any measured state make it a kit page. A hook that appears when <details> opens
-        // needs a kit error, or the response and interaction checks, as much as one at load.
-        if (got.kitPage) kitPage = true
-        drain()
-        for (const f of got.faults) fault(f.kind, f.detail)
         // The cell is in rec before its screenshot, so a capture or write that fails keeps it.
         cellOf(rec, v.name, state)
         if (ctx.shots) {

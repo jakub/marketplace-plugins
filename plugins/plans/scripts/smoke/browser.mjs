@@ -444,6 +444,9 @@ const CASES = [
   { dir: 'bad/svg-wide-mirrored', args: [], exit: 1, fault: 'svg-wide', matches: [
     /^svg#mirrored "A strip the mirrored box clips": 400 px wide in a 300 px <div>$/,
   ] },
+  // A block wider than the page in the first of two <details> that share a name. Opening the
+  // second closes the first, so the details-open state probes each member in turn.
+  { dir: 'bad/overflow-in-details-group', args: [], exit: 1, fault: 'page-overflow' },
   ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
   // An Inline page with no viewport meta and a block wider than 360 px. T3's iframe lays it out at
   // 360 whatever the meta says, so the 360 views must too.
