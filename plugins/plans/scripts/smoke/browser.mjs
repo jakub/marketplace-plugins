@@ -660,6 +660,13 @@ async function serveUnits({ check, serveMod, serveUrl, base }) {
     check('serve mediaRoutes: my%20shot.png opens "my shot.png", one route for two spellings, and remote srcs are neither routed nor refused',
       [...got.routes.keys()].join(',') === '/my shot.png' && got.routes.get('/my shot.png').body.toString() === 'spaced'
         && got.refused.length === 1 && got.refused[0].src === 'missing.png' && got.refused[0].path === 'missing.png' && got.refused[0].reason === 'does not exist', JSON.stringify(got.refused))
+    mkdirSync(join(d, 'sub'))
+    writeFileSync(join(d, 'a.png'), 'top')
+    writeFileSync(join(d, 'sub', 'a.png'), 'nested')
+    const clash = mediaRoutes(d, ['a.png', 'sub%2fdir/../a.png', './a.png'])
+    check('serve mediaRoutes: a src requested at another src\'s path but naming another file is refused, and one naming the same file is not',
+      clash.refused.length === 1 && clash.refused[0].src === 'sub%2fdir/../a.png' && /requested at \/a\.png, as "a\.png" is/.test(clash.refused[0].reason)
+        && clash.requests.get('/a.png')?.body.toString() === 'top', JSON.stringify(clash.refused))
     const dry = mediaRoutes(d, ['my%20shot.png', 'missing.png'], [], { read: false })
     check('serve mediaRoutes: read false refuses the same srcs and holds no body', dry.refused.map((r) => r.src).join(',') === 'missing.png' && dry.routes.get('/my shot.png')?.body === null, JSON.stringify(dry.refused))
   }

@@ -62,7 +62,9 @@
 // exactly, as sent, the request path of an admitted src (its WHATWG pathname, escapes kept) is
 // that src's file: `assets%2f..%2fdot.png` keeps its encoded slashes in the request, and a leading
 // no-break space arrives as `%C2%A0`, though both name a file the CLI accepts. Only an admitted
-// src has such an alias, so it reaches nothing the lookup below could not. GET and HEAD are answered; any other method
+// src has such an alias, so it reaches nothing the lookup below could not. A src whose request
+// path is already another admitted src's, naming a different file, is refused rather than
+// served either file, since the browser would check only one of the two files. GET and HEAD are answered; any other method
 // gets 405. Range is not supported: a Range request gets the whole body with 200, which the
 // browser accepts.
 //
@@ -207,6 +209,7 @@ const requestPath = (src) => { try { return new URL(src, 'http://plans.invalid/'
 export function mediaRoutes(dir, srcs, skipped = [], { read = true } = {}) {
   const routes = new Map()
   const requests = new Map()
+  const owners = new Map()
   const refused = []
   const byPath = new Map()
   for (const src of new Set(srcs)) {
@@ -216,11 +219,17 @@ export function mediaRoutes(dir, srcs, skipped = [], { read = true } = {}) {
     if (ref.reason) { refused.push({ src, path: null, reason: ref.reason }); continue }
     if (!byPath.has(ref.path)) byPath.set(ref.path, admit(dir, ref.path, read))
     const got = byPath.get(ref.path)
-    if (got.route) {
-      routes.set('/' + ref.path, got.route)
-      const key = requestPath(src)
-      if (key !== null) requests.set(key, got.route)
-    } else refused.push({ src, path: ref.path, reason: got.reason })
+    if (!got.route) { refused.push({ src, path: ref.path, reason: got.reason }); continue }
+    // Two srcs a browser requests at one path must name one file, or one of the two files would
+    // go unchecked while plans:publish uploads both.
+    const key = requestPath(src)
+    const owner = key === null ? undefined : owners.get(key)
+    if (owner && owner.path !== ref.path) {
+      refused.push({ src, path: ref.path, reason: `is requested at ${key}, as "${owner.src}" is, but names another file` })
+      continue
+    }
+    routes.set('/' + ref.path, got.route)
+    if (key !== null && !owner) { owners.set(key, { src, path: ref.path }); requests.set(key, got.route) }
   }
   return { routes, requests, refused }
 }
