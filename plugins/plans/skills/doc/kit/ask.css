@@ -39,8 +39,25 @@ fieldset[data-ask] label > input {
   margin: 0;
   accent-color: var(--plans-ink);
 }
-fieldset[data-ask] label:has(> input[checked]) { padding-right: 5.5rem; }
-fieldset[data-ask] label:has(> input[checked])::after {
+/* The <label for> form, with the input just before its label: a float with a negative right
+   margin as wide as itself takes no line space, so it sits in the label's left padding where the
+   wrapped input sits, above the label so a click on it reaches it. */
+fieldset[data-ask] > input:is([type="radio"], [type="checkbox"]) {
+  float: left;
+  position: relative;
+  z-index: 1;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: calc(.75rem + 1px) -1.25rem 0 0;
+  accent-color: var(--plans-ink);
+}
+/* Its label is a block formatting context, so it starts below the floated legend rather than
+   behind it, and level with its input, whose float takes no width. */
+fieldset[data-ask] > input + label { display: flow-root; }
+fieldset[data-ask] label:has(> input[checked]),
+fieldset[data-ask] > input[checked] + label { padding-right: 5.5rem; }
+fieldset[data-ask] label:has(> input[checked])::after,
+fieldset[data-ask] > input[checked] + label::after {
   content: "proposed";
   position: absolute;
   top: .75rem;

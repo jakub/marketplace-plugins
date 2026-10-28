@@ -380,6 +380,9 @@ const CASES = [
   { dir: 'good-alert', args: [], exit: 0, states: KIT_STATES, copy: 'copied-verified', named: [
     ['an authored role=alert leaves the initial response to the kit', /^interaction: initial response$/],
   ] },
+  // Options in the <label for> form, each input just before the label that names it, through a
+  // checkbox question and a radio question.
+  { dir: 'good-for-labels', args: [], exit: 0, states: KIT_STATES, copy: 'copied-verified' },
   // A page script turns the kit's "blocked" status into "Copied". The read-back finds the sentinel.
   { dir: 'bad-kit/copy', args: [], exit: 1, fault: 'copy', match: /says "Copied", but the clipboard holds the check's sentinel/ },
   ...KIT_BAD.map(([dir, fault, match]) => ({ dir: `bad-kit/${dir}`, args: [], exit: 1, fault, match })),
