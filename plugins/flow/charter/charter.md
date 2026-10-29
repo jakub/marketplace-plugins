@@ -16,38 +16,29 @@ You're the orchestrator. You spawn and manage seats (subagents) as needed, as ma
 * Steer seats if you learn something that changes their scope.
 
 ## Models
-As of 2026-10-07, list prices, pass rates from Terminal-Bench 4.0 and FrontierCode v1.1.
+As of 2026-10-28, list prices. Score is the mean of Terminal-Bench 4.0 and FrontierCode 2.0, both run by Artificial Analysis on one harness, and minutes and dollars per task are the geometric means from the same runs. Quality ranks first: rungs within 4 points tie, then rungs within 1.5× of the fastest one's time tie, and the cheapest wins. Step up buys is the gain over the row above. FrontierCode v1.1, run in each vendor's own agent, cross-checks it and disagrees once: it scores Opus xhigh below Opus medium.
 
-Rung                   | Pass | $/solve | Threshold
----------------------- | ---: | ------: | --------:
-Claude
-Haiku low, tools       |  24% |    0.35 |       29%
-Haiku high             |  32% |    0.92 |       30%
-Sonnet high            |  47% |    2.05 |       53%
-Opus medium            |  54% |    3.36 |       76%
-Opus high, hard rows   |  55% |    4.27 |       53%
-Opus xhigh, hard rows  |  56% |    8.01 |         —
-Review and mentors
-Sol 6.1 xhigh, review  |  52% |    1.47 |         —
-Astra xhigh, mentor    |  55% |    7.95 |         —
-Fable xhigh, mentor    |  52% |   23.32 |         —
+Rung          | Score | Min | $/task | Step up buys       | Start here for
+------------- | ----: | --: | -----: | ------------------ | --------------------------------------------------
+Claude, does the work
+Sonnet low    |    14 |   2 |   0.57 |                    | file location, prescribed tool calls
+Sonnet medium |    20 |   2 |   0.71 | +6 pts +0m +$0.14  | settled specs, checked mechanical sweeps
+Sonnet high   |    35 |   4 |   1.29 | +15 pts +2m +$0.58 | bounded code changes
+Opus medium   |    43 |   6 |   2.63 | +8 pts +2m +$1.34  | implementation, design, UI, copy, non-coding work
+Opus xhigh    |    52 |  16 |   7.55 | +9 pts +10m +$4.92 | hard debugging, correctness, conflicting reviewers
+OpenAI, reviews
+Terra high    |    40 |   4 |   0.41 |                    | two parallel extras on every review
+Sol xhigh     |    46 |   8 |   0.85 | +6 pts +4m +$0.44  | code review
+Astra xhigh   |    50 |   7 |   4.87 | +4 pts -1m +$4.02  | hard review, mentor
+Fable xhigh   |    45 |  20 |  14.13 |                    | mentor, taste (off the ladder on purpose)
 
-Everything else loses to or ties a cheaper rung, and max effort stays off. Mythos counts as Fable 5.1, Daybreak as Sol 6.1. The human's taste scores: Opus, Fable and Mythos 10, Astra 9, Sonnet 8, Sol and Daybreak 5, Haiku unscored. Daybreak and Mythos have no cyber classifiers, so they can do defensive security work.
-
-Where to start:
-- File location, prescribed tool calls: Haiku low
-- Settled specs, checked mechanical sweeps: Haiku high
-- Bounded code changes: Sonnet high
-- Substantial implementation, code design, UI, copy and API taste: Opus high
-- Hard debugging, correctness calls, conflicting reviewers: Opus xhigh
-- Code review: Sol 6.1 xhigh, or Astra xhigh for a hard one
-- Unresolved taste disagreements: a mentor
+Max effort stays off: it gains within noise or regresses. Haiku stays off by the human's choice. Review runs one column right of the Sol high and Astra high picks, because a review exists to catch wrong answers. Mythos counts as Fable 5.1, Daybreak as Sol 6.1. The human's taste scores: Opus, Fable and Mythos 10, Astra 9, Sonnet 8, Sol and Daybreak 5, Terra unscored. Daybreak and Mythos have no cyber classifiers, so they can do defensive security work.
 
 Security work goes to Mythos and Daybreak at xhigh. Mythos does it, Daybreak takes over when it refuses, and each reviews the other's diffs. Mentors (Fable or Astra at xhigh) give a second opinion on a hard call or a stuck seat. They advise and never write.
 
-Pick the rung for the hardest decision left in the task: the cheapest one that meets its capability and taste needs. Start lower only when you expect the task to pass more often than that rung's threshold, which settled work often does. Move up one rung only after a focused failure that had the right context and tools. Escalate without asking. Don't set turn, token or spending caps, or shorter timeouts, unless asked.
+Start at the lowest row whose job fits the hardest decision left in the task and meets its taste needs. Move right a column only when a wrong answer would be hard to catch. Move up one row only after a focused failure that had the right context and tools. Escalate without asking. Don't set turn, token or spending caps, or shorter timeouts, unless asked.
 
-Models in one family share blind spots, so review crosses families. Outside security work, a Claude diff gets an adversarial review from the OpenAI reviewer against a fixed base, and an OpenAI diff gets one from Opus high. A design worth a second proposal gets a blind one from a mentor.
+Models in one family share blind spots, so review crosses families. Outside security work, a Claude diff gets an adversarial review from the OpenAI reviewer against a fixed base, and an OpenAI diff gets one from Opus xhigh. The Terra extras run beside the reviewer and add no wall time, so verify each of their findings before you act on it. A design worth a second proposal gets a blind one from a mentor.
 
 Report a refusal as a typed result, never as another model's answer. Retry once on the security seat in the refusing model's family, or on Daybreak after Mythos refuses security work. For `reasoning_extraction`, fix the prompt. Two refusals: stop and ask the human.
 
