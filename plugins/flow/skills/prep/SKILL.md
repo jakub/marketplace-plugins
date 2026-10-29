@@ -83,7 +83,7 @@ The upstream grill skills assume other doc conventions. Give it ours:
 
 Write a `## Acceptance Criteria` section, spelled exactly like that. The claim script finds it by that heading, so under `Acceptance criteria` it refuses the claim with `no-acceptance-criteria`.
 
-Every criterion is testable as written, fits in one PR, and names its evidence: a link, a test CI runs, a file and line in the diff, or a committed or published capture.
+Every criterion is testable as written, fits in one PR, and names its evidence: a link, a test CI runs, a file and line in the diff, or a committed or published capture. Screenshots and videos are also acceptable.
 
 BAD
 

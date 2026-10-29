@@ -1,6 +1,6 @@
 ---
 name: issue
-description: Implement one ready-for-agent issue hands-off, through a pushed, reviewed, evidenced PR, then hand it to babysit. Never merges. Use only when the user asks to run a specific issue number. Never start it from a finished prep, a defect you found, or a survey.
+description: Implement one ready-for-agent issue hands-off, through a pushed, reviewed, evidenced PR, then hand it to babysit. Never merges. Use when the user asks to run a specific issue number. Never start it from a finished prep, a defect you found, or a survey.
 allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor, mcp__t3-code__orchestrator_capabilities, mcp__t3-code__delegate_task, mcp__t3-code__task_status, mcp__t3-code__task_cancel
 ---
 
@@ -58,7 +58,7 @@ node <plugin-root>/scripts/issue-claim.mjs claim <N> [--kind feat|fix|chore]
 
 Pass `--kind` only if the label default is wrong: `bug` is fix, `documentation` without `enhancement` is chore, and anything else is feat. It prints one JSON line, and `result` is the whole answer:
 
-- **`claimed`**: go. Record `base`, `branch`, `worktree`, `head` and `acDigest`, the sha256 of the exact `## Acceptance Criteria` bytes. The run is judged against that snapshot. If the body moves mid-run, flag it and don't chase it. Post the launch comment.
+- **`claimed`**: go. Record `base`, `branch`, `worktree`, `head` and `acDigest`, the sha256 of the exact `## Acceptance Criteria` bytes. The run is judged against that snapshot. If the body moves mid-run, flag it and don't chase it. Post the pre-flight comment.
 - **`refused`**: nothing was left behind, and `reason` says why. `not-ready` goes back through prep. `blocked` goes to the blocking label, which only the user clears. `live-run` means another run owns it, and `found` says where. Fix anything else it names, or report it.
 - **`held`**: another run holds the claim tag. Stop.
 - **`unknown`**: something broke, or a cleanup couldn't be confirmed. Report `reason`, `retained` and `cleanup` verbatim and stop. Don't read it as another run owning the issue, and never delete a tag this run didn't create. A stale tag goes to the user with the branch and PR state it guards.
@@ -67,7 +67,7 @@ Pass `--kind` only if the label default is wrong: `bug` is fix, `documentation` 
 
 Three kinds of issue comment, and no others:
 
-1. **Launch**, before work starts: the base SHA, the AC digest, the risk tier, and the seats with their models, efforts and why.
+1. **Pre-flight**, before work starts: the base SHA, the AC digest, the risk tier, and the seats with their models, efforts and why.
 2. **Events**, as they happen: a tripwire fired, the run widened or narrowed, a fork guessed, a seat re-run on a stronger model, the breaker tripped, a stale answer rejected.
 3. **Final**: a verdict per criterion, and coverage: which seats actually looked at the diff versus the ones you planned, by name.
 
@@ -78,11 +78,11 @@ When you recover from anything, re-read live state. A journal line never authori
 Every `standard` or `high` run gets one, even when prep or an ADR settled the spec. A `low` run skips it, because prep's dialectic already shaped the change. Start the native leg, then the other-family leg, so both land in the same turn:
 
 - The native leg frames the smallest change with the most reuse, grounded in the real code seams.
-- The other-family leg is blind. It proposes its own shape and names what the issue left unsaid.
+- The other-family leg is blind. It proposes its own shape and explicitly calls out what the issue left unsaid or poorly defined.
 
 Synthesize them yourself, and resolve each disagreement out loud instead of averaging. Say where each new thing lives and why, which layer enforces each invariant, and the checkpoints with a difficulty for each. Difficulty is about what could break, never file count, and it picks each write seat's rung.
 
-Open design found mid-run means prep missed something. A small shape question is a fork (step 8), journaled as a prep-gap event. A genuinely open design is `needs-info`, back through prep.
+Open design questions found mid-run means prep missed something. A small shape question is a fork (step 8), journaled as a prep-gap event. A genuinely open design is `needs-info`, back through prep.
 
 ## 5. Invariants
 
