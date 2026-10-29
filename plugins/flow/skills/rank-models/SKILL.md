@@ -13,7 +13,7 @@ One family does the work and the other reviews. As of 2026-10-28, Claude works a
 
 ## 1. Candidates
 
-List every model each family can run, new releases included, and find each one's release page on Artificial Analysis (`artificialanalysis.ai/models/<release>`). Every work-family model is a ladder candidate. Every other-family model is a reviewer candidate. Max effort is never a candidate: on 2026-10-28 it gained within the tie band over xhigh or regressed, on both sources.
+List every model each family can run, new releases included, and find each one's release page on Artificial Analysis (`artificialanalysis.ai/models/<release>`). Every work-family model is a ladder candidate. Every other-family model is a reviewer candidate. Max effort stays off by the user's choice. On 2026-10-28 no max rung won its tie group, although Sonnet, Terra and Haiku max scored 4 to 7 points over xhigh on AA. A max rung lives on the bare release page, not a `-max` slug, and that page's first score record belongs to another model, so read the max model's own record when you check it.
 
 Ask the user for what no benchmark publishes:
 
@@ -26,10 +26,10 @@ A model with no public score, price or time is unmeasured and stays off the ladd
 
 ## 2. Sources
 
-- **Terminal-Bench 4.0** (`terminalbench-4-0`) and **FrontierCode 2.0** (`frontiercode-2-0`), both run by Artificial Analysis, as of 2026-10-28. One harness for every model, and each record carries score, cost per task and time per task from the same run. The ladder ranks on these two.
+- **Terminal-Bench 4.0** (`terminalbench-4-0`) and **FrontierCode 2.0** (`frontiercode-2-0`), both run by Artificial Analysis, as of 2026-10-28. Each eval runs every model on one fixed harness, Terminal-Bench on mini-swe-agent (66 tasks) and FrontierCode on stirrup (132 tasks), three repeats each, and each record carries score, cost per task and time per task from the same run. The ladder ranks on these two.
 - **FrontierCode v1.1**, Cognition's own run at `cognition.com/data/frontiercode-leaderboard/data.json`: the `v1_1` key's `main` subset, with `new_score`, `cost` and `duration_min`. It runs each model in its vendor's own agent, so it's the only source with times from a harness close to ours. `duration_min` is missing for some models. It cross-checks the ladder and never sets a rung.
 
-Record each eval's version and task count, from its evaluation page and the data file's `subsets` field. Use the newest version of each and say which. AA's harness is neither host's, and its times can disagree with the vendor-agent times: on 2026-10-28, Sol 6.1 took 5–8 minutes on AA and 14–17 on FrontierCode v1.1. Flag every pick whose step disagrees in direction between the two sources.
+Record each eval's version and task count, from its evaluation page and the data file's `subsets` field. Use the newest version of each and say which. AA's harnesses are neither host's, and its times can disagree with the vendor-agent times: on 2026-10-28, Sol 6.1 took 5–8 minutes on AA and 14–17 on FrontierCode v1.1. Flag every pick whose step disagrees in direction between the two sources.
 
 `slopalytics.com` plots the same data. Its **Code only** toggle is this ladder's composite (the two AA evals, weighted equally), and its headline number is the overall Intelligence Index, which mixes in knowledge and QA evals. Its copy lagged AA by 1–2 points on 2026-10-28. Use it to see the shape, never for a number.
 
@@ -59,7 +59,7 @@ Ask the user about each change to a current row: a rung the rules removed, and a
 
 Apply rules 3 and 4 to the other family and show the user what's left. They pick the reviewer and a stronger rung for hard reviews. **Review runs one column right of its pick**, because a review exists to catch wrong answers, and that's the charter's rule for moving right. As of 2026-10-28, the picks are Sol 6.1 high and Astra high, so Sol 6.1 xhigh reviews and Astra xhigh takes the hard reviews.
 
-The extras are the other family's fastest cheap rung, run twice beside the reviewer. They finish before it and add no wall time. Their cost is the triage of their findings, which the orchestrator verifies. As of 2026-10-28, they're two Terra 6.1 high.
+The user picks the extras, a rung of the other family run twice beside the reviewer. Show them the reviewer family's rungs that finish before the reviewer: the extras add no wall time, and their cost is the triage of their findings, which the orchestrator verifies. As of 2026-10-28, they're two Terra 6.1 high.
 
 The user picks the mentors, one per family at xhigh. Benchmarks don't. As of 2026-10-28, they're Fable 5.1 and Astra, and the orchestrator picks one per question. Fable sits off the ladder on purpose: no benchmark here measures taste.
 

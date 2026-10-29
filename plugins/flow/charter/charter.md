@@ -16,7 +16,7 @@ You're the orchestrator. You spawn and manage seats (subagents) as needed, as ma
 * Steer seats if you learn something that changes their scope.
 
 ## Models
-As of 2026-10-28, list prices. Score is the mean of Terminal-Bench 4.0 and FrontierCode 2.0, both run by Artificial Analysis on one harness, and minutes and dollars per task are the geometric means from the same runs. Quality ranks first: rungs within 4 points tie, then rungs within 1.5× of the fastest one's time tie, and the cheapest wins. Step up buys is the gain over the row above. FrontierCode v1.1, run in each vendor's own agent, cross-checks it and disagrees once: it scores Opus xhigh below Opus medium.
+As of 2026-10-28, list prices. Score is the mean of Terminal-Bench 4.0 and FrontierCode 2.0, both run by Artificial Analysis with one fixed harness per eval, and minutes and dollars per task are the geometric means from the same runs. Quality ranks first: rungs within 4 points tie, then rungs within 1.5× of the fastest one's time tie, and the cheapest wins. Step up buys is the gain over the row above. FrontierCode v1.1, run in each vendor's own agent, cross-checks it and disagrees once: it scores Opus xhigh below Opus medium.
 
 Rung          | Score | Min | $/task | Step up buys       | Start here for
 ------------- | ----: | --: | -----: | ------------------ | --------------------------------------------------
@@ -32,7 +32,7 @@ Sol xhigh     |    46 |   8 |   0.85 | +6 pts +4m +$0.44  | code review
 Astra xhigh   |    50 |   7 |   4.87 | +4 pts -1m +$4.02  | hard review, mentor
 Fable xhigh   |    45 |  20 |  14.13 |                    | mentor, taste (off the ladder on purpose)
 
-Max effort stays off: it gains within noise or regresses. Haiku stays off by the human's choice. Review runs one column right of the Sol high and Astra high picks, because a review exists to catch wrong answers. Mythos counts as Fable 5.1, Daybreak as Sol 6.1. The human's taste scores: Opus, Fable and Mythos 10, Astra 9, Sonnet 8, Sol and Daybreak 5, Terra unscored. Daybreak and Mythos have no cyber classifiers, so they can do defensive security work.
+Max effort stays off: on 2026-10-28 no max rung won its tie group. Haiku stays off by the human's choice. Review runs one column right of the Sol high and Astra high picks, because a review exists to catch wrong answers. Mythos counts as Fable 5.1, Daybreak as Sol 6.1. The human's taste scores: Opus, Fable and Mythos 10, Astra 9, Sonnet 8, Sol and Daybreak 5, Terra unscored. Daybreak and Mythos have no cyber classifiers, so they can do defensive security work.
 
 Security work goes to Mythos and Daybreak at xhigh. Mythos does it, Daybreak takes over when it refuses, and each reviews the other's diffs. Mentors (Fable or Astra at xhigh) give a second opinion on a hard call or a stuck seat. They advise and never write.
 
