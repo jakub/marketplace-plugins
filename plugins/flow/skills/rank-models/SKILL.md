@@ -77,7 +77,7 @@ Generate the table with a script from the extracted numbers, never by hand, so t
 - **The sentence above the table**: the as-of date, the price basis, both evals with their versions and harness, the ranking rule in one clause, and every disagreement the cross-check found.
 - **The lines below it**: what stays off and why (max effort, each override), the review column rule, the taste scores, and the classifiers that can refuse.
 
-Check every "ties", "beats" and "faster" against the new numbers. Then search `plugins/flow` for each model you removed or added: `scripts/flow-cron.mjs` names the scheduled jobs' default model, `skills/delegate/SKILL.md` and `delegate/server.mjs` show example ids, and `agents/bridge.md` fixes the transport model, which changes only when the user asks.
+Check every "ties", "beats" and "faster" against the new numbers. Then search `plugins/flow` for each model you removed or added: `skills/delegate/SKILL.md` and `delegate/server.mjs` show example ids, and `agents/bridge.md` fixes the transport model, which changes only when the user asks.
 
 ## 8. Verify and report
 

@@ -20,7 +20,7 @@ const decide = (input) => {
   const command = input?.tool_input?.command
   if (typeof command !== 'string' || command === '') return null
 
-  const merge = mergeDenialFor({ command, cwd: input?.cwd, env: process.env })
+  const merge = mergeDenialFor({ command, cwd: input?.cwd })
   if (merge !== null) return preToolDeny(merge)
 
   const registry = publishReason(command)

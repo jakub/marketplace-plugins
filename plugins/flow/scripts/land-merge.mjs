@@ -7,7 +7,7 @@
 // taken from the conversation: the repository comes from origin (github.com or a host in
 // FLOW_GH_HOSTS, no port, query or userinfo), and every gh call is pinned to it.
 //
-// The cron, usage, origin and pull-request reads end the run at the first refusal. After that
+// The usage, origin and pull-request reads end the run at the first refusal. After that
 // every stop is collected before deciding: the pull request is open, not a draft, at exactly the
 // argument head, based on the default branch, with no auto-merge armed and no merge queue on the
 // base; `compare/<default>...<head>` shows it 0 commits behind; its checks are all green; and no
@@ -206,7 +206,7 @@ const parseFlakes = (text, names) => {
 
 /**
  * Gate and merge. Returns { code, stdout, stderr } rather than exiting. `runGh(args, { timeoutMs })`
- * is injected; `env` is read for FLOW_CRON_JOB and FLOW_GH_HOSTS.
+ * is injected; `env` is read for FLOW_GH_HOSTS.
  */
 export function landMerge({ argv, env, cwd, runGh }) {
   const out = { pr: null, repo: null, head: null }
@@ -225,8 +225,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
     return { code: 4, stdout: `${JSON.stringify({ result: 'unknown', ...out, detail })}\n`, stderr: `land-merge: #${out.pr} is unknown: ${detail}\n` }
   }
 
-  // ---- 1 to 3: nobody watching, the arguments, the origin
-  if (env.FLOW_CRON_JOB) return refuseNow('cron', `FLOW_CRON_JOB=${env.FLOW_CRON_JOB} means nobody is watching this run, and an unattended job does not merge`)
+  // ---- 1 and 2: the arguments, the origin
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) return { code: 0, stdout: USAGE, stderr: '' }
   const acceptFlakes = []
   const positional = []
@@ -277,7 +276,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
     return repository == null || typeof repository !== 'object' ? null : repository.mergeQueue != null
   }
 
-  // ---- 4 to 12: the gate. Every read a stop depends on happens in readGate, which runs once for
+  // ---- 3 to 11: the gate. Every read a stop depends on happens in readGate, which runs once for
   // the verdict and once more right before the merge, so a re-read covers every gate fact and not
   // only the ones some reviewer thought of. It returns the stops in order; the read failures among
   // them as problems, which leave the read unknown; an early refusal that ends the read; and a
@@ -289,7 +288,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
     const problems = []
     const stop = (code, detail) => stops.push({ code, detail })
     const unreadable = (code, detail) => { problems.push({ code, detail }); stop(code, detail) }
-    // ---- 4: the pull request, which has to be origin's
+    // ---- 3: the pull request, which has to be origin's
     const first = view(PR_FIELDS)
     if (first.value === null) return { early: { code: 'read-failed', detail: `gh pr view ${pr} ${first.why}, so the live state of the pull request is unknown` } }
     const pull = first.value
@@ -297,7 +296,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
       return { early: { code: 'redirected', detail: `the pull request GitHub returned (${JSON.stringify(scrubUserinfo(pull.url ?? '') || null)}) is not #${pr} of ${id.full}, so the read was redirected` } }
     }
 
-    // The commit headlines, paged to the end like the review threads in step 12. Every page has to
+    // The commit headlines, paged to the end like the review threads in step 11. Every page has to
     // report the same totalCount, and the commits collected have to match it.
     const title = nonEmpty(pull.title)
     if (title === null) unreadable('read-failed', `the title of #${pr} could not be read, so the squash subject cannot be built`)
@@ -337,7 +336,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
     const message = title === null || !Array.isArray(headlines) ? null
       : { subject: `${stripLinks(oneLine(title))} (#${pr})`, body: headlines.map((h) => `- ${stripLinks(oneLine(h))}`).join('\n') }
 
-    // ---- 5 to 7: state, head, base, arming. From here every stop is collected.
+    // ---- 4 to 6: state, head, base, arming. From here every stop is collected.
     const state = nonEmpty(pull.state)
     if (state !== 'OPEN') stop('not-open', `#${pr} is ${state ?? 'in an unreadable state'}, and only an open pull request is merged`)
     if (pull.isDraft !== false) stop('draft', pull.isDraft === true ? `#${pr} is a draft` : `the draft status of #${pr} could not be read, so it cannot be shown ready`)
@@ -361,7 +360,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
       else if (queued) stop('merge-queue', `${id.slug} uses a merge queue on ${base}; land it through the queue by hand`)
     }
 
-    // ---- 8: behind the default branch, at a tip kept for the re-read before the merge
+    // ---- 7: behind the default branch, at a tip kept for the re-read before the merge
     let baseTip = null
     let behind = null
     if (defaultBranch !== null) {
@@ -377,7 +376,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
       }
     }
 
-    // ---- 9: every check on the argument head, both sources to the end, and the suites they sit in
+    // ---- 8: every check on the argument head, both sources to the end, and the suites they sit in
     // One CI read, made for the verdict and again right before the merge, so both are held to the
     // same completeness rules. It returns the problems that keep it from being whole, each a stop
     // code and detail; the entries the verdict judges; and a snapshot, null unless the read is whole:
@@ -463,7 +462,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
     const entries = ci.entries
     const reportedNames = new Set(entries.map((e) => e.name).filter((n) => n !== null))
 
-    // ---- 10: known flakes, from the base ref alone
+    // ---- 9: known flakes, from the base ref alone
     let flakeText = null
     if (base !== null) {
       const r = api(`repos/${id.owner}/${id.repo}/contents/${FLAKES_PATH}?ref=${encodeURIComponent(base)}`)
@@ -523,14 +522,14 @@ export function landMerge({ argv, env, cwd, runGh }) {
     }
     for (const { name } of checks.failed) if (flakes.tests.has(name)) checks.flakeCandidates[name] = flakes.tests.get(name)
 
-    // ---- 11: the verdict on the checks
+    // ---- 10: the verdict on the checks
     const names = (list) => list.map((c) => c.name ?? '(unnamed)').join(', ')
     if (checksComplete && entries.length === 0) stop('ci-unknown', `#${pr} reported no checks at all on ${head.slice(0, 12)}, which is also how a pull request looks in the seconds after a push`)
     if (checks.pending.length > 0) stop('ci-pending', `${checks.pending.length} check(s) have not finished: ${names(checks.pending)}`)
     if (checks.failed.length > 0) stop('ci-failed', `${checks.failed.length} check(s) failed: ${names(checks.failed)}`)
     if (checks.unknown.length > 0) stop('ci-unknown', `${checks.unknown.length} check(s) could not be read as pass or fail: ${names(checks.unknown)}`)
 
-    // ---- 12: review threads, paged to the end
+    // ---- 11: review threads, paged to the end
     const threads = []
     const threadFacts = []
     let cursor = null
@@ -569,7 +568,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
   for (const { code, detail } of verdict.stops) stop(code, detail)
   const { base, defaultBranch, baseTip } = verdict
 
-  // ---- 13: the patch, when the head is not the --reviewed one. Read once and kept out of the
+  // ---- 12: the patch, when the head is not the --reviewed one. Read once and kept out of the
   // snapshot; the header says why. Each side is a patch id or the reason there is none.
   if (reviewed !== null && reviewed !== head) {
     const patchOf = (sha) => {
@@ -596,7 +595,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
     }
   }
 
-  // ---- 14 and 15: any stop refuses; else the whole gate is read again right before the merge, and
+  // ---- 13 and 14: any stop refuses; else the whole gate is read again right before the merge, and
   // a re-read that is not whole, or a snapshot that moved, refuses. That shrinks every window the
   // merge cannot close. The default branch's tip goes last, nearest the merge.
   if (stops.length > 0) return refused()
@@ -621,7 +620,7 @@ export function landMerge({ argv, env, cwd, runGh }) {
   }
   if (stops.length > 0) return refused()
 
-  // ---- 16: the merge, proven by a re-read
+  // ---- 15: the merge, proven by a re-read
   const merge = gh(['pr', 'merge', String(pr), '--repo', id.full, '--squash', '--match-head-commit', head,
     '--subject', again.message.subject, '--body', again.message.body], 120_000)
   const failure = merge.code === 0 ? null : said(merge)

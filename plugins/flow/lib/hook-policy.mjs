@@ -145,8 +145,7 @@ export function publishReason(command) {
 // recognize is denied, and the denial names scripts/land-merge.mjs, which derives the repository
 // from origin, runs every land gate itself against GitHub, and merges only when none stops it. The
 // human asking to land is the authorization; the deny only keeps the merge on the path that
-// verifies what it merges. Elsewhere nothing here gates a merge, and scheduled jobs merge nothing,
-// executor included.
+// verifies what it merges. Elsewhere nothing here gates a merge.
 //
 // The one hard requirement is that the tripwire never matches the executor's own invocation.
 // Each regex needs a `gh` command word in the bare segment. The executor's argv is a pull request
@@ -197,23 +196,14 @@ function isManagedRepo(cwd) {
 /**
  * The reason this command must not run as written, or null. One decision, both hosts.
  *
- * `cwd` is the session's directory as the hook reported it, and `env` is the hook process's own
- * environment: the cron session's when a scheduled job launched it, so a command that strips
- * FLOW_CRON_JOB off its own child is still denied here.
+ * `cwd` is the session's directory as the hook reported it.
  *
- * @param {{ command: unknown, cwd?: unknown, env?: Record<string, string | undefined> }} call
+ * @param {{ command: unknown, cwd?: unknown }} call
  * @returns {string | null}
  */
-export function mergeDenialFor({ command, cwd, env = {} }) {
+export function mergeDenialFor({ command, cwd }) {
   if (typeof command !== 'string') return null
   const shapes = mergeShapes(command)
-
-  if (env.FLOW_CRON_JOB && (shapes.length > 0 || /\bland-merge\.mjs\b/.test(command))) {
-    const what = shapes.length > 0 ? `this looks like a pull request merge (${shapes.join('; ')})` : 'this runs flow\'s merge executor'
-    return `flow: ${what}, and scheduled jobs do not merge anything. FLOW_CRON_JOB is set, which means ` +
-      'nobody is watching this run. Leave the pull request for a human session to land.'
-  }
-
   if (shapes.length === 0) return null
   if (!isManagedRepo(typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd())) return null
 

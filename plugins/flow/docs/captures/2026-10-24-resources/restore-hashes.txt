@@ -1,4 +1,0 @@
-# restore at 2026-10-24T19:57:14Z, reinstalled from main 92c9117
-claude  23019d213239dade05086f2ef53ef892e74bd6a390c6b19a222edf984835e14f lib/seat-policy.mjs
-codex  23019d213239dade05086f2ef53ef892e74bd6a390c6b19a222edf984835e14f lib/seat-policy.mjs
-base    23019d213239dade05086f2ef53ef892e74bd6a390c6b19a222edf984835e14f lib/seat-policy.mjs

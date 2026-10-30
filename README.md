@@ -28,7 +28,7 @@ claude plugin marketplace update jakub
 claude plugin update flow@jakub
 ```
 
-`claude plugin install` defaults to `--scope user`. Keep the default: flow's scheduled jobs find the plugin through the user-scope registry and nothing else. For a clean re-registration, run `claude plugin uninstall flow@jakub` and install again.
+`claude plugin install` defaults to `--scope user`. For a clean re-registration, run `claude plugin uninstall flow@jakub` and install again.
 
 ### Codex
 
@@ -48,13 +48,22 @@ codex plugin add flow@jakub
 
 The refresh changes the bytes Codex could install, not the registration you already made. Until `remove` and `add` run, every session loads the version you added. Start a new thread afterwards, because a running thread keeps the registration it read when it started. Codex also asks you to review a plugin's hook definitions before they run.
 
-Flow needs one more step on each machine before its first Codex session. Codex reaches flow's delegate server through a `flow-delegate` command on PATH, and it starts MCP servers before any hook runs. Ask an agent to run the flow skill's `setup`, or run the installer from the copy Codex installed:
+Flow needs two more steps on each machine before Codex can use it. Codex reaches flow's delegate server through a `flow-delegate` command on PATH, and it starts MCP servers before any hook runs. So, before the first Codex session, run the installer from the copy Codex installed:
 
 ```bash
 node ~/.codex/plugins/cache/jakub/flow/<version>/scripts/install-delegate.mjs install
 ```
 
 The installer copies the dispatcher to `~/.local/bin/flow-delegate`, which must be on the PATH Codex starts with. From then on, flow's Codex SessionStart hook keeps that copy current.
+
+Codex also skips any hook it doesn't trust, and a reinstall untrusts every flow hook. List flow's hooks, read the list, then trust exactly that list:
+
+```bash
+node ~/.codex/plugins/cache/jakub/flow/<version>/scripts/seat.mjs trust
+node ~/.codex/plugins/cache/jakub/flow/<version>/scripts/seat.mjs trust --write --expect <digest>
+```
+
+The first command prints each hook's key and command, and the `digest` the second one needs. "Codex host setup" in `plugins/flow/skills/delegate/reference.md` explains each refusal.
 
 ### Update both hosts in one sitting
 
@@ -105,8 +114,6 @@ The server speaks the other family's session protocol by hand, `codex app-server
 
 All four run on Codex too. Each stage is one skill, and where the hosts differ it says so inline, one bullet per host. On Codex, open the canonical checkout and name the stage, for example "run issue #42".
 
-Two timers run in the background once the flow skill's `setup` has installed them: a nightly lint that keeps labels, worktrees and branches honest, and a weekly doc sweep that reports doc drift. Both are headless `claude -p` sessions whose one shell command is `lint-actions.mjs`. The sweep may run only its read-only `survey`, so it changes nothing.
-
 Two supporting skills sit outside the pipeline:
 
 - [`hillclimb`](plugins/flow/skills/hillclimb/SKILL.md) agrees a workload, benchmark, target and constraints with you. After you say "run it", it tries independent hypotheses in parallel and measures them one at a time. It keeps every attempt on a local branch, rejected ones included, and delivers a reviewed local branch. Pushing or opening a PR needs your go-ahead.
@@ -118,9 +125,9 @@ Two supporting skills sit outside the pipeline:
 | `plugins/flow/skills/{prep,issue,babysit,land}/` | One `SKILL.md` per stage, and the invocation on both hosts. |
 | `plugins/flow/agents/` | `implementer` (writes, cannot spawn), `reader` (reads and runs commands, no edit tools), and `bridge` (makes one delegate call on a fixed cheap model). The orchestrator picks the model for the first two at spawn. |
 | `plugins/flow/delegate/`, `plugins/flow/bin/flow-delegate` | The delegate MCP server, and the dispatcher Codex starts it through. |
-| `plugins/flow/scripts/` | The three executors (`issue-claim`, `land-merge`, `lint-actions`), `tree-snapshot`, the scheduled-job runner and the installers, and the smokes. |
+| `plugins/flow/scripts/` | The executors (`issue-claim`, `land-merge`, `lint-actions`, `seat`), `tree-snapshot`, the dispatcher installer, and the smokes. |
 | `plugins/flow/hooks/` | Charter injection, plus the no-backlog, git, publication and merge, and protected-file guards, with an adapter per host where the hosts differ. |
-| `plugins/flow/skills/flow/` | The `flow` skill's `setup`, `drift`, `labels`, `charter` and `cron` subcommands, the label contract, and the scheduled-job prompts. |
+| `plugins/flow/skills/flow/` | The `flow` skill's `setup`, `drift`, `labels` and `charter` subcommands, the label contract, and the repository templates. |
 | `plugins/flow/skills/delegate/` | The operating manual for the five delegate tools. |
 
 flow works best when the global `~/.claude/CLAUDE.md` carries only persona and interaction preferences, and all engineering doctrine arrives through the charter. The doctrine then lives in a git repo, where a change is diffable and reviewable, and one `plugin install` carries the whole practice to a new machine. Leave one pointer in the personal file so a session notices a missing charter instead of improvising one: if no `<flow-charter>` block is in context, the plugin is missing or broken. That matters on desktop and claude.ai bridge sessions, which load plugins from service-pushed snapshots with hooks stripped, so the charter never arrives there.

@@ -579,7 +579,7 @@ async function seatTrust(cwd) {
   const digest = hooksDigest(keys)
   const still = untrusted(keys)
   if (still.length > 0) {
-    fail('HOOKS_UNTRUSTED', `Codex does not run ${still.length} of flow's hooks (not trusted, modified or disabled), so a Codex seat would run unguarded. Run seat.mjs trust as the flow skill's setup says.`,
+    fail('HOOKS_UNTRUSTED', `Codex does not run ${still.length} of flow's hooks (not trusted, modified or disabled), so a Codex seat would run unguarded. Run seat.mjs trust as the delegate skill's reference.md says under "Codex host setup".`,
       { hooksDigest: digest, keys: shown(still) })
   }
   return digest

@@ -25,7 +25,7 @@ Type modifiers stack with any label and keep GitHub's stock colors and descripti
 - Issues are born only in the two sanctioned lanes, `FLOW_SANCTION=prep` and `FLOW_SANCTION=land`, which the no-backlog hook enforces. Neither lane files into `agent-found`.
 - Nothing promotes itself: only a prep pass sets `ready-for-agent`.
 - A claim is the assignee plus `in-progress`. The claim tag on origin lives only from the claim's scan to the first push of the work branch. After that, the branch, the worktree and the PR mark the run as live, and a tag that stays is a stale claim for the human.
-- The nightly lint moves labels only through `lint-actions.mjs relabel`, in three moves: an orphaned `in-progress` issue back to `ready-for-agent` after six hours, a `ready-for-agent` issue that fails the contract to `needs-triage`, and an issue with no lifecycle label to `needs-triage`. The first two hold the claim tag while they re-check, edit and read back, so a claim that starts meanwhile stands down as `held`.
+- Label reconciliation moves issues only through `lint-actions.mjs relabel`, in three moves: an orphaned `in-progress` issue back to `ready-for-agent` after six hours, a `ready-for-agent` issue that fails the contract to `needs-triage`, and an issue with no lifecycle label to `needs-triage`. The first two hold the claim tag while they re-check, edit and read back, so a claim that starts meanwhile stands down as `held`.
 
 ## The ready-for-agent contract
 
@@ -40,7 +40,7 @@ An issue holds `ready-for-agent` only while all six points hold. The contract is
 
 ## Reconciling labels
 
-The `labels` subcommand does this interactively. The nightly lint does the same checks but only reports label drift, and moves issues only through `relabel`.
+The `labels` subcommand does this. The drift audit checks the same contract in section 3 and reports changes unless the user asks it to apply them. Apply issue-label changes through `relabel`.
 
 1. Run `node <plugin-root>/scripts/lint-actions.mjs survey <repo>`. Create each label in `labels.missing` with `gh label create`, and fix each one in `labels.drifted` with `gh label edit`. Report `labels.extra` for the human, and delete nothing.
 2. Check every open `ready-for-agent` issue's body against the six points, with one read-only seat per issue when there are many. Move a failure with `lint-actions.mjs relabel <repo> <N> --from ready-for-agent --to needs-triage --seen <updatedAt> --reason <the_failed_point>`.

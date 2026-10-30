@@ -53,7 +53,7 @@ Each stop has one answer:
 | `auto-merge-armed`, `merge-queue` | Someone armed a merge that would land the PR out of sight. Tell the user, and never merge over it. |
 | `read-failed`, `head-unreadable`, `gate-moved` | Re-read and run again. The gate reads through GraphQL, so if `gh api rate_limit --jq .resources.graphql` shows `remaining` near 0, wait for `reset` first. A read that keeps failing is a report, not a pass. |
 | `merge-rejected` | GitHub refused, for a conflict or branch protection. Show it and stop. |
-| `redirected`, `origin`, `usage`, `cron` | Fix the call or report it. |
+| `redirected`, `origin`, `usage` | Fix the call or report it. |
 
 **The rerun-once valve** covers a suite check that fails on one test, when all three hold:
 

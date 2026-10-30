@@ -90,7 +90,7 @@ node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|rev
 - A writer names `--worktree`. A review names `--base` and `--head`, and `open` pins a detached worktree at the head under `.flow-worktrees/` for the seat to review in.
 - `--schema` is the JSON Schema for the envelope's `answer`, 16 KiB at most. A review uses the findings schema and takes none.
 
-`open` prints one JSON line with the `tag`, `clientRequestId`, `runtimeMode`, `providerInstanceId`, `model` and, for a review, the `worktree`. If it refuses, it exits 1 and leaves nothing behind. For a Codex-family seat it refuses with `HOOKS_UNTRUSTED` unless every flow hook is trusted, because Codex skips an untrusted hook without a word. The `flow` skill's `setup` fixes that. A refused seat goes to the fallback.
+`open` prints one JSON line with the `tag`, `clientRequestId`, `runtimeMode`, `providerInstanceId`, `model` and, for a review, the `worktree`. If it refuses, it exits 1 and leaves nothing behind. For a Codex-family seat it refuses with `HOOKS_UNTRUSTED` unless every flow hook is trusted, because Codex skips an untrusted hook without a word. `reference.md`'s "Codex host setup" fixes that. A refused seat goes to the fallback.
 
 ### 2. Start
 

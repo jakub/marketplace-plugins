@@ -113,7 +113,7 @@ const pushStatus = (stdout, ref) => {
 
 /**
  * Create the claim tag at origin's main. `ctx` is { cwd, redact, env? }, env being git's environment
- * when the caller pins one (the nightly lint's non-interactive ssh). `observed` says whether a tag
+ * when the caller pins one (lint-actions.mjs's non-interactive ssh). `observed` says whether a tag
  * of this run can be on origin: pre-push (nothing was pushed), post-push (a push went out and its
  * outcome is ambiguous: a lost response and a rival's tag read the same) or absent (a push went
  * out and the re-read proved no tag). --no-tags keeps live claim tags out of the clone, where a

@@ -102,7 +102,7 @@ reviews:
         wrappers, heredocs, and mutating options. Pair a denied execution
         example with an allowed literal-report example. Verify that the
         fixture delivers those exact bytes. Inspect the complete command
-        and the applicable interactive or cron policy. A prompt describing
+        and the applicable guard policy. A prompt describing
         permission does not widen an executable allowlist or guard.
 
         For each automatic handoff, identify the required completion state

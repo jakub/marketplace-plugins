@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Copies bin/flow-delegate to ~/.local/bin/flow-delegate when it is missing or differs. Codex
-// starts MCP servers before any SessionStart hook runs, so setup runs this once before the first
-// Codex session; the Codex SessionStart hook then runs it on every session, and a new plugin
-// version's dispatcher is in place for the session after. It reports on stderr, because a Codex
-// SessionStart hook's stdout becomes session context.
+// starts MCP servers before any SessionStart hook runs, so you run this once per machine before the
+// first Codex session, as "Codex host setup" in the delegate skill's reference.md says. The Codex
+// SessionStart hook then runs it on every session, and a new plugin version's dispatcher is in
+// place for the session after. It reports on stderr, because a Codex SessionStart hook's stdout
+// becomes session context.
 //
 // Differing bytes do not make a file ours. The installer replaces a file only when it opens with
 // the shebang and a `// flow-delegate-` line, which every flow dispatcher has carried, and refuses

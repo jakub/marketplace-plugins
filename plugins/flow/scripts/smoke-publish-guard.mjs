@@ -21,11 +21,10 @@ const check = (name, ok, detail = '') => {
 }
 
 // Throwaway repositories, because "managed" is a property of the repository: the marker has to
-// be committed at HEAD, not merely present in the working tree. FLOW_CRON_JOB is blanked
-// wherever it is not the point, so a stray one in the operator's shell changes nothing here.
+// be committed at HEAD, not merely present in the working tree.
 const tmp = mkdtempSync(join(tmpdir(), 'flow-publish-guard-'))
 const env = {
-  ...process.env, HOME: tmp, FLOW_CRON_JOB: '',
+  ...process.env, HOME: tmp,
   GIT_CONFIG_GLOBAL: join(tmp, 'none'), GIT_CONFIG_SYSTEM: join(tmp, 'none'),
   GIT_AUTHOR_NAME: 'flow smoke', GIT_AUTHOR_EMAIL: 'smoke@example.invalid',
   GIT_COMMITTER_NAME: 'flow smoke', GIT_COMMITTER_EMAIL: 'smoke@example.invalid',
@@ -52,10 +51,10 @@ const dropped = repo('dropped', { marker: true, dropMarker: true }) // committed
 const untracked = repo('untracked', { untracked: true })           // never committed: not managed
 const unborn = repo('unborn', { commit: false })                   // the probe cannot read HEAD: fails closed
 
-const run = (script, command, { cwd = managed, cron, raw, spawnCwd, path } = {}) => {
+const run = (script, command, { cwd = managed, raw, spawnCwd, path } = {}) => {
   const out = execFileSync(process.execPath, [join(ROOT, 'hooks', 'scripts', script)], {
     input: raw ?? JSON.stringify(cwd === null ? { tool_name: 'Bash', tool_input: { command } } : { tool_name: 'Bash', tool_input: { command }, cwd }),
-    encoding: 'utf8', env: { ...env, ...(cron ? { FLOW_CRON_JOB: cron } : {}), ...(path ? { PATH: path } : {}) }, cwd: spawnCwd,
+    encoding: 'utf8', env: { ...env, ...(path ? { PATH: path } : {}) }, cwd: spawnCwd,
   }).trim()
   return out ? JSON.parse(out).hookSpecificOutput : null
 }
@@ -187,12 +186,6 @@ console.log('\nin a repo without a committed marker, flow gates no merges')
 answers('pass', MERGE, 'a plain merge', { cwd: plain })
 answers('pass', 'gh api repos/someone/x/pulls/12/merge -X PUT', 'the REST endpoint', { cwd: plain })
 answers('pass', MERGE, 'an untracked marker opts nothing in', { cwd: untracked })
-
-console.log('\nscheduled jobs merge nothing, executor included')
-deniesWith(MERGE, 'scheduled jobs do not merge', 'a merge in a managed repo', { cron: 'lint' })
-deniesWith(MERGE, 'scheduled jobs do not merge', 'a merge in an unmanaged repo', { cwd: plain, cron: 'lint' })
-deniesWith(`node ${EXECUTOR} 12 ${SHA}`, 'merge executor', 'the executor', { cron: 'lint' })
-deniesWith(`env -u FLOW_CRON_JOB node ${EXECUTOR} 12 ${SHA}`, 'merge executor', 'the executor with the variable stripped off the child', { cron: 'lint' })
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(bad === 0 ? '\npublish-guard: ALL PASS' : `\npublish-guard: ${bad} FAILURE(S)`)

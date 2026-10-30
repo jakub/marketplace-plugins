@@ -26,7 +26,7 @@ const decide = (input) => {
       'Registry publication stays manual. Ask the human to run the publish command in their own terminal after they check the version number and the package contents.'
   }
 
-  return mergeDenialFor({ command, cwd: input?.cwd, env: process.env })
+  return mergeDenialFor({ command, cwd: input?.cwd })
 }
 
 const denial = decide(await readHookInput())

@@ -304,7 +304,6 @@ for (const [name, code, text, over, opts = {}] of [
   ['a retarget before the merge', 'gate-moved', 'base changed', { recheck: { baseRefName: 'release' } }],
   ['a head moved before the merge', 'gate-moved', 'head changed', { recheck: { headRefOid: 'd'.repeat(40) } }],
   ['a directory with no origin', 'origin', 'no readable origin remote', {}, { cwd: NO_ORIGIN }],
-  ['an unattended job, before even the origin read', 'cron', 'nobody is watching', {}, { cwd: NO_ORIGIN, env: { FLOW_CRON_JOB: 'lint' } }],
 ]) {
   const r = run(ARGS, { st: freshState(over), ...opts })
   check(`${name} is refused ${code} and nothing merged`, refusedWith(r, code, text), shown(r))
@@ -399,7 +398,7 @@ for (const [name, origin, text] of [
   check('git run through execCapture never reaches an ssh the repository plants behind a relative PATH entry', !existsSync(ran) && existsSync(quickRan), JSON.stringify(r))
   // git also takes a helper directory from the environment and resolves a relative one inside
   // the repository, so a relative GIT_EXEC_PATH is dropped. GIT_SSH and GIT_SSH_COMMAND are the
-  // operator's and pass through; the nightly lint's own GIT_SSH_COMMAND still reaches ssh.
+  // operator's and pass through; lint-actions.mjs's own GIT_SSH_COMMAND still reaches ssh.
   const absEnv = { ...sshEnv, PATH: `${quickSsh}:${process.env.PATH}` }
   rmSync(ran, { force: true })
   rmSync(quickRan, { force: true })
@@ -408,7 +407,7 @@ for (const [name, origin, text] of [
   rmSync(ran, { force: true })
   rmSync(quickRan, { force: true })
   const lint = execCapture('git', ['-C', inspected, 'ls-remote', 'origin'], { timeoutMs: 20_000, env: { ...absEnv, GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' } })
-  check('the nightly lint\'s GIT_SSH_COMMAND still reaches ssh through the absolute PATH', existsSync(quickRan) && !existsSync(ran), JSON.stringify(lint))
+  check('lint-actions.mjs\'s GIT_SSH_COMMAND still reaches ssh through the absolute PATH', existsSync(quickRan) && !existsSync(ran), JSON.stringify(lint))
 }
 {
   // The same rule for git, through the executor: the repository it is run in plants bin/git,

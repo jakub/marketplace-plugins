@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Smoke harness for the two Bash guards that are one script on both hosts: hooks/scripts/
-// git-guard.mjs (the charter git rules, plus the cron regex) and no-backlog-guard.mjs. Deny
+// git-guard.mjs (the charter git rules) and no-backlog-guard.mjs. Deny
 // cases are the rules; allow cases are the false positives that would make a guard something
 // people route around. Every interactive case runs once in each host's PreToolUse envelope.
 // Run: node plugins/flow/scripts/smoke-git-guard.mjs
@@ -21,7 +21,7 @@ const SHAPES = {
 const run = (command, env = {}, shape = 'claude', script = G) => {
   const out = execFileSync(process.execPath, [script], {
     input: JSON.stringify(SHAPES[shape](command)),
-    env: { ...process.env, FLOW_CRON_JOB: '', ...env },
+    env: { ...process.env, ...env },
   }).toString()
   return out.trim().length > 0
 }
@@ -60,102 +60,6 @@ expect(true, 'git clean -xdf', 'clean force in a flag cluster')
 expect(true, "bash -lc 'git push --force origin main'", 'force-push in a bash -lc string')
 expect(true, 'sh -c "git commit --no-verify -m hi"', '--no-verify in a sh -c string')
 expect(true, "bash <<'S'\ngit clean -fd\nS", 'clean force in a heredoc on a shell\'s stdin')
-console.log('cron mode (FLOW_CRON_JOB): the executor line and nothing else')
-// Every cron case pins the root: CLAUDE_PLUGIN_ROOT first, then PLUGIN_ROOT, then the guard's own
-// location, blanked here so the ambient environment cannot decide a case.
-const cronOut = (command, { job = 'lint', root = '/x/flow', pluginRoot = '' } = {}) =>
-  execFileSync(process.execPath, [G], {
-    input: JSON.stringify(SHAPES.claude(command)),
-    env: { ...process.env, FLOW_CRON_JOB: job, CLAUDE_PLUGIN_ROOT: root, PLUGIN_ROOT: pluginRoot },
-  }).toString().trim()
-const cron = (want, command, name, opts) => {
-  const got = cronOut(command, opts) !== ''
-  const ok = got === want
-  if (!ok) bad++
-  console.log(`  ${ok ? 'ok' : 'FAIL'}: cron: ${name} → ${got ? 'DENY' : 'allow'} (want ${want ? 'DENY' : 'allow'})`)
-}
-const EX = 'node /x/flow/scripts/lint-actions.mjs'
-const R = '/home/x/code/r'
-cron(false, `${EX} survey ${R}`, 'survey')
-cron(false, `${EX} remove-worktree ${R} ${R}/.flow-worktrees/feat-issue-7-x`, 'remove-worktree')
-cron(false, `${EX} delete-branch ${R} feat/issue-7-x`, 'delete-branch')
-cron(false, `${EX} delete-remote-branch ${R} feat/issue-7-x`, 'delete-remote-branch')
-cron(false, `${EX} delete-remote-branch ${R} feat/issue-7-x --expect ${'0123456789abcdef'.repeat(2)}01234567`, 'delete-remote-branch --expect <sha>')
-cron(true, `${EX} delete-remote-branch ${R} feat/issue-7-x; git push origin --delete main`, 'delete-remote-branch with a git write behind a semicolon')
-cron(true, `${EX} delete-remote-branch ${R} $(git rev-parse HEAD)`, 'delete-remote-branch with a command substitution')
-cron(true, `${EX} delete-remote-branch ${R} 'feat/a b'`, 'delete-remote-branch with a quoted argument')
-cron(true, `${EX} delete-remote-branchx ${R} feat/x`, 'a verb that only starts with delete-remote-branch')
-cron(false, `${EX} relabel ${R} 7 --from in-progress --to ready-for-agent --seen 2026-09-29T03:30:00Z --reason no_live_run_for_six_hours`, 'relabel an orphan')
-cron(false, `${EX} relabel ${R} 9 --from none --to needs-triage --seen 2026-09-29T03:30:00Z --reason no_lifecycle_label`, 'relabel an unlabelled issue')
-cron(false, `${EX} survey ${R}`, 'the doc sweep runs the same line (its allowlist narrows it to survey)', { job: 'doc-sweep' })
-cron(false, `node ${ROOT}/scripts/lint-actions.mjs survey ${R}`, 'no root variable: the guard\'s own plugin', { root: '' })
-cron(false, `node /p/scripts/lint-actions.mjs survey ${R}`, 'PLUGIN_ROOT when CLAUDE_PLUGIN_ROOT is empty', { root: '', pluginRoot: '/p' })
-cron(true, `node /p/scripts/lint-actions.mjs survey ${R}`, 'CLAUDE_PLUGIN_ROOT wins over PLUGIN_ROOT', { pluginRoot: '/p' })
-// Every character outside the argument class, inside an argument, at the end, and as its own word.
-for (const c of [';', '&', '|', '>', '<', '$', '`', '(', ')', '{', '}', '[', ']', '\\', "'", '"', '\n', '\t', '*', '?', '~', '#', '!', '=', '%', ',', '^']) {
-  const shown = JSON.stringify(c)
-  cron(true, `${EX} survey /home/x/co${c}de/r`, `${shown} inside an argument`)
-  cron(true, `${EX} survey ${R}${c}`, `${shown} at the end`)
-  cron(true, `${EX} survey ${R} ${c} x`, `${shown} as a word`)
-}
-// The shapes the old grammar was attacked with, each riding behind a legitimate executor call.
-cron(true, `${EX} survey ${R}; git push origin main`, 'a git write behind a semicolon')
-cron(true, `${EX} survey ${R} && gh issue edit 7 --repo x/y --add-label ready-for-agent`, 'a gh write behind &&')
-cron(true, `${EX} survey ${R} || bash /x/flow/scripts/install-cron.sh uninstall`, 'a plugin script behind ||')
-cron(true, `${EX} survey ${R} | sh`, 'a pipe into a shell')
-cron(true, `${EX} survey ${R}\ngit push origin main`, 'a second line')
-cron(true, `${EX} survey $(git push origin main)`, 'a command substitution')
-cron(true, `${EX} survey "$(cat /home/x/.ssh/id_ed25519)"`, 'a substitution in double quotes')
-cron(true, `${EX} relabel ${R} 7 --from none --to needs-triage --seen 2026-09-29T03:30:00Z --reason 'two words'`, 'a quoted reason')
-cron(true, `${EX} survey ${R} > /home/x/.bashrc`, 'a redirection')
-cron(true, `${EX} survey ${R} &`, 'the background operator')
-cron(true, ` ${EX} survey ${R}`, 'a leading space')
-cron(true, `${EX} survey ${R} `, 'a trailing space')
-cron(true, `${EX}  survey ${R}`, 'a doubled space')
-// Every other command word, and every other way of naming the executor.
-for (const [command, name] of [
-  ['git status', 'git status'],
-  [`git -C ${R} log -1`, 'a git read'],
-  [`git -C ${R} fetch --prune origin`, 'git fetch'],
-  ['gh issue list --repo x/y --json number', 'a gh read'],
-  ['gh issue edit 7 --repo x/y --add-label ready-for-agent', 'a gh write'],
-  ['gh api graphql -f query=x', 'gh api'],
-  ['bash /x/flow/scripts/install-cron.sh uninstall', 'bash on a plugin script'],
-  [`sh -c '${EX} survey ${R}'`, 'the executor inside sh -c'],
-  [`node -e "require('child_process').execSync('git push')"`, 'node -e'],
-  ['node /x/flow/scripts/land-merge.mjs 12 0123456789abcdef', 'the merge executor'],
-  ['node /x/flow/scripts/issue-claim.mjs claim 7', 'the claim executor'],
-  [`${EX} clear-orphan ${R} 7`, 'a retired verb'],
-  [`${EX} survey-all ${R}`, 'a verb prefix'],
-  [EX, 'no verb'],
-  [`node /x/flow/scripts/lint-actions.mjsx survey ${R}`, 'a longer script name'],
-  [`node /x/flow/scripts/../scripts/lint-actions.mjs survey ${R}`, 'a path through ..'],
-  [`node /x/flowX/scripts/lint-actions.mjs survey ${R}`, 'a sibling of the root'],
-  [`node /tmp/scripts/lint-actions.mjs survey ${R}`, 'another root'],
-  [`/usr/bin/node /x/flow/scripts/lint-actions.mjs survey ${R}`, 'a path-qualified node'],
-  [`node --require /tmp/x.js /x/flow/scripts/lint-actions.mjs survey ${R}`, 'a node option before the script'],
-  [`NODE_OPTIONS=--require=/tmp/x.js ${EX} survey ${R}`, 'an assignment prefix'],
-  [`FLOW_SANCTION=git ${EX} survey ${R}`, 'the sanction string on the executor'],
-  ['FLOW_SANCTION=git git push origin main', 'the sanction string on a git write'],
-  ['claude plugin list', 'claude'],
-  ["gripe add <<'G'\nx\nG", 'gripe'],
-  ['echo ok', 'echo'],
-  ['', 'an empty command'],
-]) cron(true, command, name)
-const unreadable = execFileSync(process.execPath, [G], { input: '{', env: { ...process.env, FLOW_CRON_JOB: 'lint', CLAUDE_PLUGIN_ROOT: '/x/flow' } }).toString().trim()
-if (unreadable === '') bad++
-console.log(`  ${unreadable !== '' ? 'ok' : 'FAIL'}: cron: an unparseable body → ${unreadable !== '' ? 'DENY' : 'allow'} (want DENY)`)
-// The root is matched as a literal, and a root the shell would split or expand admits nothing.
-cron(true, `node /x/flow/scripts/lint-actions.mjs survey ${R}`, 'a dot in the root is literal', { root: '/x/fl.w' })
-cron(false, `node /x/fl.w/scripts/lint-actions.mjs survey ${R}`, 'the dotted root itself', { root: '/x/fl.w' })
-cron(true, `node /x/aab/scripts/lint-actions.mjs survey ${R}`, 'a plus in the root is literal', { root: '/x/a+b' })
-cron(false, `node /x/a+b/scripts/lint-actions.mjs survey ${R}`, 'the plus root itself', { root: '/x/a+b' })
-cron(true, `node /x/my flow/scripts/lint-actions.mjs survey ${R}`, 'a root with a space', { root: '/x/my flow' })
-cron(true, `node /x/a;b/scripts/lint-actions.mjs survey ${R}`, 'a root with a semicolon', { root: '/x/a;b' })
-const told = cronOut('git status')
-const names = told.includes('node /x/flow/scripts/lint-actions.mjs <survey|remove-worktree|delete-branch|delete-remote-branch|relabel>')
-if (!names) bad++
-console.log(`  ${names ? 'ok' : 'FAIL'}: cron: the denial spells out the one line a job may run`)
 console.log('must ALLOW')
 expect(false, 'git commit -m "feat: add the thing"', 'clean commit')
 expect(false, 'git commit -m "refactor: drop the Co-Authored-By trailers from docs"', 'trailer named mid-subject')
@@ -185,9 +89,8 @@ expect(false, 'git clean --dry-run -d', 'clean --dry-run')
 expect(false, 'gh pr comment -b "this repo bans git push --force"', 'force-push named in prose')
 expect(false, 'cargo test --no-fail-fast', 'non-git')
 expect(false, 'gh pr create --title x', 'gh')
-expect(false, `${EX} survey ${R}`, 'the lint executor outside cron mode')
 // A body the guard cannot read blocks nothing: never block on our own bug.
-const unparseable = execFileSync(process.execPath, [G], { input: '{', env: { ...process.env, FLOW_CRON_JOB: '' } }).toString().trim()
+const unparseable = execFileSync(process.execPath, [G], { input: '{' }).toString().trim()
 if (unparseable !== '') bad++
 console.log(`  ${unparseable === '' ? 'ok' : 'FAIL'}: an unparseable body → allow`)
 console.log('no-backlog-guard: issues enter the tracker only through the two sanctioned lanes')

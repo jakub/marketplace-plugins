@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Smoke for scripts/lint-actions.mjs, the nightly lint's survey and its only mutations, run as a
-// child process the way the cron job runs it.
+// Smoke for scripts/lint-actions.mjs, the drift audit's survey and its only mutations, run as a
+// child process the way an agent runs it.
 //
 // Git is real: each world is a bare origin at git@github.com:jakub/demo.git, reached through a
-// GIT_SSH_COMMAND shim that serves it from disk, and a clone that is a direct child of the
-// FLOW_WORKSPACE the executor is bound to. GitHub is a fake `gh` first on PATH that answers from a
+// GIT_SSH_COMMAND shim that serves it from disk, and a clone of it. GitHub is a fake `gh` first on PATH that answers from a
 // JSON state file, records every call, and fails any call not pinned to github.com/jakub/demo or
 // made with GH_REPO or GH_HOST in its environment, so a case that passes proved the pin.
 //
@@ -125,7 +124,7 @@ fail('unexpected ' + argv.join(' '))
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-lint-actions-')))
 const baseEnv = { ...process.env, HOME: tmp, GIT_CONFIG_GLOBAL: join(tmp, 'none'), GIT_CONFIG_SYSTEM: join(tmp, 'none'), GIT_TERMINAL_PROMPT: '0',
   GIT_AUTHOR_NAME: 's', GIT_AUTHOR_EMAIL: 's@example.invalid', GIT_COMMITTER_NAME: 's', GIT_COMMITTER_EMAIL: 's@example.invalid' }
-for (const key of ['GH_REPO', 'GH_HOST', 'FLOW_CRON_JOB', 'FLOW_WORKSPACE', 'FLOW_GH_HOSTS']) delete baseEnv[key]
+for (const key of ['GH_REPO', 'GH_HOST', 'FLOW_GH_HOSTS']) delete baseEnv[key]
 let worlds = 0
 
 /** A workspace holding one clone of a host-qualified origin served from disk, and a fake gh. */
@@ -140,7 +139,7 @@ const makeWorld = (state = {}, { branch = 'main' } = {}) => {
   writeFileSync(ssh, `#!/bin/sh\ncd ${base} || exit 1\nfor a; do last=$a; done\nexec /bin/sh -c "$last"\n`)
   writeFileSync(join(bin, 'gh'), FAKE_GH)
   for (const f of [ssh, join(bin, 'gh')]) chmodSync(f, 0o755)
-  const env = { ...baseEnv, GIT_SSH_COMMAND: ssh, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: join(workspace, '.gh.json'), FLOW_WORKSPACE: workspace }
+  const env = { ...baseEnv, GIT_SSH_COMMAND: ssh, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: join(workspace, '.gh.json') }
   const oldEnv = { ...env, GIT_AUTHOR_DATE: OLD.toISOString(), GIT_COMMITTER_DATE: OLD.toISOString() }
   const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', env: oldEnv, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   execFileSync('git', ['init', '-q', '--bare', '-b', branch, origin], { env })
@@ -638,15 +637,11 @@ console.log('\nancestry is judged against the default branch, whatever it is nam
   check('an old clean detached worktree at a trunk commit is removed', gone.code === 0 && gone.json?.reason?.includes('origin/trunk'), `${JSON.stringify(gone.json)} ${gone.stderr}`)
 }
 
-console.log('\nevery verb is bound to the workspace and fetches first')
+console.log('\nevery verb fetches first')
 {
   const w = makeWorld()
   const verbs = [['survey', w.repo], ['remove-worktree', w.repo, join(w.workspace, 'x')], ['delete-branch', w.repo, 'feat/x'], ['delete-remote-branch', w.repo, 'feat/x'],
     ['relabel', w.repo, '7', '--from', 'none', '--to', 'needs-triage', '--seen', new Date().toISOString(), '--reason', 'x']]
-  for (const args of verbs) {
-    refused(`${args[0]} under cron outside the workspace`, run(w, args, { FLOW_CRON_JOB: 'lint', FLOW_WORKSPACE: tmp }), 'direct child')
-    refused(`${args[0]} under cron with no workspace`, run(w, args, { FLOW_CRON_JOB: 'lint', FLOW_WORKSPACE: '' }), 'unbounded')
-  }
   w.git(w.repo, 'remote', 'set-url', 'origin', 'git@github.com:jakub/missing.git')
   for (const args of verbs) refused(`${args[0]} on a failed fetch`, run(w, args), 'fetch')
   check('a usage error prints the usage and exits 2', run(w, ['clear-orphan', w.repo, '7']).code === 2)

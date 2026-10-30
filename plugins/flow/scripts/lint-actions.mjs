@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// lint-actions.mjs: the nightly lint's read of what there is to change, and its only way to
+// lint-actions.mjs: the drift audit's read of what there is to change, and its only way to
 // change it.
 //
 //   survey <repo>
@@ -9,10 +9,8 @@
 //   relabel <repo> <N> --from <label|none> --to <label> --seen <updatedAt> --reason <words_joined_by_underscores>
 //
 // The model picks candidates from the survey; this code re-derives every condition from fresh
-// state and refuses unless all of them hold. Every verb: the repository must resolve, and when
-// FLOW_WORKSPACE is set (always, under FLOW_CRON_JOB) it must be a main checkout directly under it,
-// because the path decides which repository the ambient token acts on. `git fetch --prune --no-tags
-// origin` runs first and a failure refuses. That fetch follows remote.origin.fetch, which a clone
+// state and refuses unless all of them hold. Every verb: the repository must resolve, and
+// `git fetch --prune --no-tags origin` runs first and a failure refuses. That fetch follows remote.origin.fetch, which a clone
 // can narrow, so a verb that deletes then fetches every origin branch it judges against by name,
 // with forced refspecs, and judges only those. Every gh call is pinned to the repository origin
 // parses to, and every verb but the survey refuses when GitHub names that repository otherwise, as
@@ -30,8 +28,7 @@
 // loses its head branch. The land stage retires a pull request's head branch through it with
 // --expect, which refuses unless origin's tip is exactly the head it merged.
 // stdout is one JSON line {action, repo, target, ok, reason, ...}; exit 0 when the action happened
-// (or the survey was read), 1 on a refusal, 2 on usage. Every argument fits git-guard's cron
-// regex, which is why the relabel reason is a single token.
+// (or the survey was read), 1 on a refusal, 2 on usage.
 
 import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -83,7 +80,7 @@ export function lintActions({ argv, env }) {
 }
 
 function run({ action, repoArg, target, rest, env }) {
-  // Unattended: ssh must never prompt, since a prompt is a hang until the job's timeout.
+  // ssh must never prompt: an agent's shell has no terminal, so a prompt is a hang.
   const gitEnv = { ...env, GIT_SSH_COMMAND: env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes -o ConnectTimeout=10', GIT_TERMINAL_PROMPT: '0' }
   const gitIn = (dir, args, timeoutMs = 10_000) => {
     const r = execCapture('git', ['-C', dir, ...args], { timeoutMs, env: gitEnv })
@@ -91,15 +88,9 @@ function run({ action, repoArg, target, rest, env }) {
   }
   const real = (path) => { try { return realpathSync(path) } catch { return null } }
 
-  // ---- the workspace bound, the fetch and the pin, for every verb
+  // ---- the fetch and the pin, for every verb
   const repo = real(repoArg)
   if (repo === null) refuse('the repository path does not resolve')
-  if (env.FLOW_CRON_JOB && !env.FLOW_WORKSPACE) refuse('FLOW_CRON_JOB is set and FLOW_WORKSPACE is not, so the repository path is unbounded')
-  if (env.FLOW_WORKSPACE) {
-    if (dirname(repo) !== real(env.FLOW_WORKSPACE)) refuse(`${repo} is not a direct child of the workspace; the lint acts only on the repositories it enumerated`)
-    const common = gitIn(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
-    if (common === null || real(common) !== join(repo, '.git')) refuse(`${repo} is not a main checkout with its own .git; a linked worktree acts on another repository`)
-  }
   if ((action === 'delete-branch' || action === 'delete-remote-branch') && PROTECTED.has(target)) refuse(`${target} is a protected branch`)
   const originUrl = gitIn(repo, ['remote', 'get-url', 'origin'])
   if (originUrl === null) refuse('the repository has no origin remote')
@@ -541,7 +532,7 @@ function run({ action, repoArg, target, rest, env }) {
       kept = underClaimTag(() => { judge(readIssue()); liveRun({ tagCounts: false }); move() })
     } else move()
     const words = reason.replace(/_/g, ' ').trim()
-    const body = `${from === 'none' ? `Added \`${to}\`` : `Moved \`${from}\` to \`${to}\``}: ${words}.\n\n- flow nightly lint`
+    const body = `${from === 'none' ? `Added \`${to}\`` : `Moved \`${from}\` to \`${to}\``}: ${words}.\n\n- flow lint`
     const commented = runGh(['issue', 'comment', target, '--repo', id.full, '--body', body], { cwd: repo }).code === 0
     finish(true, `relabelled ${from} to ${to}${commented ? '' : '; the comment failed, the labels moved'}${kept ? `; ${kept}` : ''}`, kept ? { retained: ['claim-tag'] } : {})
   }

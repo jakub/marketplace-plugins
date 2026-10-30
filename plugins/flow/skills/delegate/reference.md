@@ -72,8 +72,6 @@ The handshake's result is `transport`:
 - `profile` is the permission profile the Codex thread read back: `flow_delegation_` and a random suffix, a name no config layer can define first. It is null on Claude.
 - `mcpServersDisabled` counts the MCP servers the session read back as disabled. On Codex these are the servers your Codex config defines. On Claude it is 0, because the CLI loads none.
 
-Codex starts MCP servers before any hook runs, so on a new machine the flow skill's `setup` runs `node <plugin-root>/scripts/install-delegate.mjs install` once before the first Codex session. After that, the Codex SessionStart hook keeps `~/.local/bin/flow-delegate` current.
-
 The server depends on these provider interfaces, checked against Codex CLI 0.159.0 and Claude Code 2.1.284 on 2026-09-30.
 
 - Codex: `app-server --stdio` with `experimentalApi`, and the methods `initialize`, `model/list`, `config/read`, `thread/start`, `thread/resume`, `mcpServerStatus/list`, `turn/start`, `turn/steer` and `turn/interrupt`. The thread fields `permissions`, `runtimeWorkspaceRoots`, `allowProviderModelFallback` and `activePermissionProfile` appear only in the experimental schema.
@@ -85,6 +83,19 @@ The dates above describe the provider transports. The server also depends on how
 
 - Claude Code 2.1.309 probes `server/discover` first and falls back to `initialize` when that fails. After the probe every request carries `io.modelcontextprotocol/protocolVersion`, `clientInfo` and `clientCapabilities` in `_meta`, for protocol 2026-07-28. It declares `io.modelcontextprotocol/tasks` per `tools/call`, never from an `Agent` subagent, and it polls a task with `tasks/get`. The server builds no multi-round-trip roots exchange for it.
 - Codex 0.164.0 sends a legacy `initialize` at protocol 2025-06-18. It sends no `server/discover`, declares no tasks extension and gets the legacy path unchanged.
+
+## Codex host setup
+
+A machine needs two things before Codex can use flow, and neither belongs to any one repository. Do both with the user present.
+
+1. **The dispatcher**, once per machine, before the first Codex session. Codex starts MCP servers before any hook runs, so the hook that keeps the dispatcher current can't cover the first launch. From the flow copy Codex installed, run `node <codex-plugin-root>/scripts/install-delegate.mjs install`. It copies `bin/flow-delegate` to `~/.local/bin/flow-delegate`, which must be on the PATH Codex starts with. It refuses with exit 1 to replace a file there that isn't a flow dispatcher. After that, the Codex SessionStart hook keeps the copy current.
+2. **Hook trust**, once per machine, and again after any reinstall or hook change. Codex skips an untrusted hook without a word, so a T3 seat on Codex runs unguarded, and `seat.mjs open` refuses it with `HOOKS_UNTRUSTED`.
+   1. Run `node <plugin-root>/scripts/seat.mjs trust` from either host's flow copy. It lists flow's Codex hook keys, the command each runs, and a `digest` of the list.
+   2. Show the user the list.
+   3. If the user agrees, run `node <plugin-root>/scripts/seat.mjs trust --write --expect <digest>`. It writes only flow's keys, leaves every other entry alone, and reads them back. Report success only when every key reads `trusted`.
+   - `HOOKS_CHANGED` means the hooks changed since you listed them, and nothing was written. List again and show the user the new list.
+   - `HOOKS_MISMATCH` means Codex has a different flow version installed than this `seat.mjs`. Get both hosts on one version, then run it again.
+   - Never run this from a hook.
 
 ## T3 seats: posture and identity
 
@@ -117,7 +128,7 @@ On Claude Code the T3 tools are `mcp__t3-code__<tool>`, and on Codex they are `m
  "worktree": "<path>", "reviewWorktree": null}
 ```
 
-Copy its `tag`, `clientRequestId`, `runtimeMode`, `providerInstanceId` and `model` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. Either host's flow copy may open a Codex-family seat. It counts as flow's hooks only those of `flow@<marketplace>`, the plugin id of the copy you run, and only when their `hooks/codex.json` matches that copy's byte for byte, so both hosts must carry one version of flow. The flow skill's `setup` grants that trust once per machine in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
+Copy its `tag`, `clientRequestId`, `runtimeMode`, `providerInstanceId` and `model` into the call below, and give a review seat the `worktree` the line names. A refused `open` prints `{"ok": false, "error": {"kind", "message", "details"?}}` and exits 1, with nothing left behind. The kinds are `BAD_REQUEST`, `BAD_SCHEMA`, `GIT_REF`, `WORKSPACE_BUSY`, `HOOKS_UNTRUSTED` and `INTERNAL`. `open` refuses a writer while a `flow_delegate` write job holds that worktree. Before a Codex-family seat, it reads Codex's hook trust and refuses the seat with `HOOKS_UNTRUSTED` unless every flow hook is listed, enabled and trusted, because Codex skips an untrusted hook without a word. Either host's flow copy may open a Codex-family seat. It counts as flow's hooks only those of `flow@<marketplace>`, the plugin id of the copy you run, and only when their `hooks/codex.json` matches that copy's byte for byte, so both hosts must carry one version of flow. The "Codex host setup" procedure above grants that trust in two steps: `seat.mjs trust` lists flow's keys with a `digest` for the human to see, and `seat.mjs trust --write --expect <digest>` writes trust only for that list, refusing with `HOOKS_CHANGED` if the hooks changed since. A refused seat goes to the fallback.
 
 ## Admission and what the hooks enforce
 

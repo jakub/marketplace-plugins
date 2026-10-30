@@ -1,6 +1,6 @@
 # Drift audit (the flow skill's `drift` subcommand)
 
-Check the framework's invariants against the real state. Report findings ranked by severity, and fix nothing unless asked. Give each section to a scoped read-only seat, then reconcile and judge the combined report on the main thread. The scope is the current repository, or every repository under the workspace root (such as `~/code`) when you run it from there. The weekly doc sweep runs sections 1 and 2.
+Check the framework's invariants against the real state. Report findings ranked by severity, and fix nothing unless asked. Give each section to a scoped read-only seat, then reconcile and judge the combined report on the main thread. The scope is the current repository, or every repository under the workspace root (such as `~/code`) when you run it from there.
 
 ## 1. Doc stack conformance
 
@@ -10,7 +10,6 @@ Check the framework's invariants against the real state. Report findings ranked 
 - There is no `context-map.md` (fold it into `## Contexts` and delete it) and no `CLAUDE.local.md` (move its content into a committed file).
 - Glossary files are lowercase `context.md`. An uppercase `CONTEXT.md`, usually a vendored skill's default, is drift: fold it down and delete it.
 - Domain docs: spot-check the claims in each crate's `context.md` or `AGENTS.md` against the code. Flag a crate without domain files only when it shows domain depth, such as its own vocabulary or ADR references.
-- The workspace registry, `CLAUDE.md` at the workspace root, lists every project that exists and every active project, one line each.
 
 ## 2. Glossary drift
 

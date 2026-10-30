@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { stripLiterals } from '../../lib/hook-policy.mjs'
 import { preToolDeny, readHookInput } from './wire.mjs'
 // git guard: the charter's git rules at the hook layer, one script registered on both hosts -
@@ -22,9 +19,6 @@ import { preToolDeny, readHookInput } from './wire.mjs'
 // PreToolUse protocol: read tool call JSON on stdin; deny via hookSpecificOutput JSON.
 // Deliberately narrow, same posture as the no-backlog guard: false negatives are
 // acceptable (the policy is also in the charter), false positives are not.
-//
-// Cron mode (FLOW_CRON_JOB set) is a separate rule further down: one whole-command regex that
-// admits the lint executor and nothing else.
 
 const TRAILERS = [
   /^\s*Co-Authored-By\s*:/im,
@@ -86,56 +80,10 @@ const deny = (reason) => {
   process.exit(0)
 }
 
-const pluginRoot = () =>
-  process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT || resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-
-// Cron mode's one accepted shape. The scheduled jobs read untrusted text (issue bodies, PR
-// titles, repository files), so under FLOW_CRON_JOB a Bash command runs only when the whole
-// string is the lint executor, one of its verbs, and plain arguments:
-//
-//   node <root>/scripts/lint-actions.mjs <verb>( <arg>)*    every <arg> in [A-Za-z0-9_./:@+-]
-//
-// Nothing in that class is shell syntax: no quote, `$`, backtick, backslash, parenthesis, brace,
-// glob, tilde, `#`, `=`, redirection, pipe, separator or newline. So the string the shell runs is
-// the string checked here, word for word, and there is no second command to find. Every other
-// command word is refused - git, gh, bash, sh and `node -e` included. This replaced a 300-line
-// shell grammar that two review rounds found eleven ways past; do not grow it back into a
-// scanner. A job that needs another read gets a field in `lint-actions.mjs survey`, not a shell.
-//
-// <root> is the plugin root, regex-escaped. A root holding a character outside the class allows
-// nothing, since the shell would split or expand it and the checked string would not be the one
-// that runs.
-const CRON_ARG = '[A-Za-z0-9_./:@+-]'
-const cronAllows = (cmd, root) => {
-  if (!new RegExp(`^${CRON_ARG}+$`).test(root)) return false
-  const literal = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`^node ${literal}/scripts/lint-actions\\.mjs (survey|remove-worktree|delete-branch|delete-remote-branch|relabel)( ${CRON_ARG}+)*$`).test(cmd)
-}
-
 // An unparseable body is the harness's problem, not a policy breach: never block on our own
-// bug, and never block on a body this could not read. Cron mode is the exception below.
+// bug, and never block on a body this could not read.
 const input = await readHookInput()
 const cmd = input?.tool_input?.command || ''
-
-// Cron mode: when flow-cron.mjs spawned this session it exported FLOW_CRON_JOB, and hooks inherit
-// that env, which nothing inside the session can change. So FLOW_SANCTION is ignored here: an
-// injected instruction can type the sanction string but cannot unset this. An unreadable body is
-// denied, because the job's authority is the one shape above and an empty command is not it.
-// flow-cron.mjs's allowlists grant a prefix of the same executor line and nothing else under
-// Bash, so the two agree by construction. Interactive sessions are untouched.
-const cronJob = process.env.FLOW_CRON_JOB || ''
-if (cronJob) {
-  const root = pluginRoot()
-  if (!cronAllows(cmd, root)) {
-    deny(
-      `flow cron guard (${cronJob}): an unattended job runs one command shape and nothing else: ` +
-        `node ${root}/scripts/lint-actions.mjs <survey|remove-worktree|delete-branch|delete-remote-branch|relabel> <args>, ` +
-        'typed plainly, every argument in [A-Za-z0-9_./:@+-]. No git, gh, shell, quotes, variables, ' +
-        'pipes, redirects or separators. A refusal is a report line; do not work around it.',
-    )
-  }
-  process.exit(0) // cron sessions never commit, so the trailer rules below are moot
-}
 
 if (!/\bgit\b/.test(cmd)) process.exit(0)
 

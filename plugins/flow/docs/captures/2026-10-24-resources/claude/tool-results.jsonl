@@ -1,4 +1,0 @@
-{"tool":"ToolSearch","is_error":false,"text":"(not an error; a schema load, omitted)"}
-{"tool":"ReadMcpResourceTool","is_error":true,"text":"PreToolUse:ReadMcpResourceTool hook error: flow seat (MCP resources): \"ReadMcpResourceTool\" reads an MCP server's resources, and a seat reaches no MCP server but Context7's two lookups. Report what you needed instead."}
-{"tool":"ListMcpResourcesTool","is_error":true,"text":"PreToolUse:ListMcpResourcesTool hook error: flow seat (MCP resources): \"ListMcpResourcesTool\" reads an MCP server's resources, and a seat reaches no MCP server but Context7's two lookups. Report what you needed instead."}
-{"tool":"ReadMcpResourceDirTool","is_error":true,"text":"PreToolUse:ReadMcpResourceDirTool hook error: flow seat (MCP resources): \"ReadMcpResourceDirTool\" reads an MCP server's resources, and a seat reaches no MCP server but Context7's two lookups. Report what you needed instead."}

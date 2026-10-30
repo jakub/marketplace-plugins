@@ -1,1 +1,0 @@
-{"type":"object","additionalProperties":false,"required":["calls"],"properties":{"calls":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["name","resultText"],"properties":{"name":{"type":"string"},"resultText":{"type":"string"}}}}}}
