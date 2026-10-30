@@ -11,10 +11,6 @@ recorded, and next week a different agent pays the same cost. Gripe writes it do
 SQLite file, local only, agents write, and once in a while a model (you, if you were
 invoked for this) reads the pile and tells the user what it means.
 
-The full design with every measured claim lives in the marketplace repo at
-`docs/gripe/DESIGN.md`. This skill is self-contained for day-to-day use; go there when you
-need the reasoning behind a sharp edge.
-
 ## The machine, briefly
 
 Everything lives under `$XDG_STATE_HOME/gripe/` (default `~/.local/state/gripe/`): the

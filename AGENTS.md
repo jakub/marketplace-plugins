@@ -82,7 +82,7 @@ Issue worktrees live under the canonical checkout's `.flow-worktrees/`, which th
 
 ## gripe
 
-`plugins/gripe/` is first-party. `lib/` holds `store.mjs` (SQLite and migrations), `context.mjs` (repo and session identity), and `gate.mjs` (noise policy and bounded state). The hook scripts under `hooks/scripts/` stay thin, and `bin/gripe` is the CLI. `docs/gripe/DESIGN.md` holds the measured facts and the shim's resolution rules, and `scripts/smoke-shim.mjs` holds the shim's contract. Read both before touching `bin/shim.mjs`.
+`plugins/gripe/` is first-party. `lib/` holds `store.mjs` (SQLite and migrations), `context.mjs` (repo and session identity), and `gate.mjs` (noise policy and bounded state). The hook scripts under `hooks/scripts/` stay thin, and `bin/gripe` is the CLI. `scripts/smoke-shim.mjs` holds the shim's contract. Read it before touching `bin/shim.mjs`.
 
 **Filing must stay free**: `gripe add` always exits 0 and never prompts, and every hook relies on that. Every hook reads its call through `readHookEvent` in `lib/context.mjs`, which validates `session_id` and `agent_id` before either reaches a filename.
 

@@ -3,8 +3,8 @@
 //
 // ~/.local/bin/gripe is a copy of this file rather than a symlink to a versioned path, so it
 // finds the newest installed gripe at exec time across both plugin caches and runs that one.
-// Node builtins only: this runs before any plugin root is known. Why it works this way, and
-// what each exit code promises, is in docs/gripe/DESIGN.md.
+// Node builtins only: this runs before any plugin root is known. scripts/smoke-shim.mjs holds
+// what each exit code promises.
 
 import { spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs'
@@ -57,7 +57,7 @@ function scanCache(cacheRoot) {
       // Claude Code stamps `.orphaned_at` into a version directory when it uninstalls that
       // version or supersedes it, then leaves the files there until a later sweep. Without
       // this skip, a rollback keeps running the version it rolled back from. Codex writes no
-      // such marker, so there the stale directory has to be deleted; see docs/gripe/DESIGN.md.
+      // such marker, so there the stale directory has to be deleted.
       if (existsSync(join(root, '.orphaned_at'))) continue
       const bin = binOf(root)
       if (bin !== null) found.push({ version: name.split('.').map(Number), bin })

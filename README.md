@@ -110,4 +110,3 @@ The `/gripe` skill is unneeded day-to-day, but tells the agent how to read the d
 | `plugins/gripe/bin/shim.mjs` | The resolver. A copy of it sits on PATH at `~/.local/bin/gripe`, picks the newest live install of this plugin in either plugin cache at exec time, and hands off to that install's `bin/gripe`, so reinstalls and version bumps don't strand it. |
 | `plugins/gripe/hooks/` | Claude and Codex registrations plus thin adapters for advertisements, observations, and nudges. |
 | `plugins/gripe/skills/gripe/` | How to read the gripe database. For doing analysis, not for normal work. |
-| `docs/gripe/DESIGN.md` | The measured facts behind gripe's design, and the shim's resolution rules. |
