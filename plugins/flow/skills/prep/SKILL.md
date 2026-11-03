@@ -48,21 +48,31 @@ If the subject is small and fully specified (clear criteria, no open questions, 
 
 Only the user's yes authorizes a shortcut. Never start implementing because it looks small to you.
 
-Too big for one PR? Recommend slices that each run end to end: a thin path through the whole system, not one layer. Each slice gets its own prep. None gets an issue yet.
+Too big for one PR? Recommend slices that each run end to end: a thin path through the whole system, not one layer. Also recommend separate slices when parts share no implementation changes and each part is correct, testable and safe to land alone. A part that would take a lower tier strengthens that case, and each slice gets its own tier (step 6).
+
+- A split found here gets one prep per slice, and none gets an issue yet.
+- A late split is one you find after the dialectic. Finish both slices inside this prep, reusing the finished dialectic. Each slice gets its own grill, acceptance criteria and `## Risk` section. That split needs the user's yes, and the user names which slice keeps the original issue. A split slice is a planned issue, not a loose end, so step 7 creates its issue.
 
 ## 4. Design dialectic
 
 Two models from different families design it blind, then attack each other's design. The argument is the point, so don't average it away.
 
-1. **Blind proposals.** Start the native leg, then the other-family leg, so both land in the same turn. Both are read-only, get the same scout material, and never see each other. The other-family leg gets that material inline, because a delegated job can see the repo and nothing else. Each proposes its own design and names what the issue left unsaid about shape, boundaries, protocols and trust rules. Leave placement and signatures to the issue run. For UI or copy, the native leg is a taste call.
+1. **Blind proposals.** Start the native leg, then the other-family leg, so both land in the same turn. Both are read-only, get the same scout material, and never see each other. The other-family leg gets that material inline, because a delegated job can see the repo and nothing else. Each proposes its own design and names what the issue left unsaid about shape, boundaries, protocols and trust rules, plus its design-critical premises (step 3). Leave placement and signatures to the issue run. For UI or copy, the native leg is a taste call.
 2. **Critique.** Give each leg the rival's sheet and ask for the strongest form of the disagreement. Continue the other-family leg with `continue: <jobId>` so it keeps its context. A null, an error or a timeout from either leg is unknown: check it before you retry.
 3. **Sort the objections.** Each objection names the obligation it serves and what breaks if you leave it out. An established requirement becomes an acceptance criterion, a real choice or trust question becomes a grill question, and anything else is journaled as "considered, not adopted: <reason>". An agreement between the legs is a recommendation with its reasons, never an automatic criterion.
+
+   Check each leg's design-critical premises now, because a false one found mid-run sends the issue back to the user. A premise is a claim that some code, event or protocol exists, or that a chosen limit achieves a measured bound. It's design-critical when its falsification would change the architecture, a promised bound, a trust decision, or what a consumer checkpoint builds against.
+   - Check each one passively, against pinned source or with an existing command that changes nothing, because prep still writes no code and makes no worktree.
+   - Journal the command, the revision, the input and the result. Keep that record in the prep result until the issue exists, and put it in the ADR where the repo keeps one.
+   - A premise that only new code can settle becomes a premise checkpoint in the issue, with its pass criterion and its failure outcome agreed now.
+   - When the missing result would decide the design, prep stays blocked, as step 7's "Blocked?" says.
+   - A policy limit the user picked needs a rationale, not a probe.
 
 Decide cheap design forks yourself and journal the call. A trust-model fork always goes to the user: who can reach what, what an unattended tool will read or publish, the security posture. An exclusion that would let a protected-topic finding (the list in `babysit` §Triage) be rejected is a trust-model fork too. Quote the user's answer verbatim in the journal, and link that comment from the `## Risk` line. When the answer comes back, re-read what you asked against (the issue body in issue mode, and `HEAD`) before you act on it. If either moved, the answer is stale.
 
 How the legs run:
 
-- **In T3 Code**, every scout and both legs are T3 seats through `delegate_task` (see the `delegate` skill's `## T3 seats`). Start them together and let their wakes bring the sheets in. Use `task_status` only if you need one mid-turn. Act on each seat's `seat close` verdict, never its `summary`. For the critique, send the rival sheet to a finished leg's `childThreadId` with `t3_thread_send` before you close it. It answers in a new turn with a fresh envelope, and you close it after that turn.
+- **In T3 Code**, every scout and both legs are T3 seats through `delegate_task` (see the `delegate` skill's `## T3 seats`). Start them together and let their wakes bring the sheets in. Wait, give each finished leg its critique round, and close as `delegate` §3–§5 say. Act on each seat's `seat close` verdict, never its `summary`.
 - **In Claude Code**, run the native leg as a background `Agent` call, so `SendMessage` can carry the rival sheet to it.
 - **In Codex**, `followup_task` carries the sheet and starts the native leg's next turn. `send_message` only queues text and resumes nothing.
 
@@ -117,12 +127,14 @@ The intended case names the callers, their inputs and the promised behavior, and
 
 `low` is work where a bug costs one quick fix-forward: copy, log levels, docs, a contained UI tweak. `high` is a trust boundary, data that outlives a revert, CI and release workflows, installers. Everything else is `standard`, and an issue with no `## Risk` section runs as `standard`.
 
+If the criteria or the tier show the work should split, follow step 3's late split.
+
 ## 7. Finalize
 
 1. **Docs.** If the repo keeps a design record (`context.md`, `docs/adr/`, or whatever its instructions name), commit the grill's docs to current main in one `docs(...)` commit and push. Otherwise skip it and say so in the journal. If a path the grill wrote was already dirty at the post-scout snapshot, stop and ask, because you can't tell their changes from the grill's. Stage only the grill's paths by name, and stop if `git status --porcelain` shows anything else moved since that snapshot.
-2. **Spec.** Edit the issue body into the hardened spec: goal and why, context, agreed approach, key decisions with ADR links, acceptance criteria. In free-text mode, create the issue now with `FLOW_SANCTION=prep gh issue create ...`, the only command that carries that sanction.
+2. **Spec.** Edit the issue body into the hardened spec: goal and why, context, agreed approach, key decisions with ADR links, acceptance criteria. In free-text mode, or for a late split's new slice in issue mode (step 3), create the issue now with `FLOW_SANCTION=prep gh issue create ...`, the only command that carries that sanction.
 3. **Journal.** Post one comment with the synthesized design, the trail of decisions and the "considered, not adopted" list. Step 2 wrote the body before this comment existed, so now point the `## Risk` authority link at the comment that quotes the user's answer verbatim: this one, unless an earlier journal comment already does.
-4. **Blocked?** If only the user or an outside party has the missing information, add `needs-info`, comment the questions, and stop. That keeps `ready-for-agent` off a blocked issue.
+4. **Blocked?** If only the user or an outside party has the missing information, or an unchecked premise would decide the design (step 4), add `needs-info`, comment the questions, and stop the way `issue` §8's "Suspending" says. That keeps `ready-for-agent` off a blocked issue.
 5. **Label.** Check the issue against the ready-for-agent contract in the `flow` skill's `label-contract.md`. Add `ready-for-agent`, and remove `needs-triage`, `agent-found` and `needs-info`.
 
 ## 8. Hand-off
