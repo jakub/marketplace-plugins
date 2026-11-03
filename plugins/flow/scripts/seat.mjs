@@ -6,16 +6,17 @@
 //   seat.mjs open --access read-only|workspace-write|review --provider claude|codex
 //                 [--provider-instance-id <id>] --model <id> [--expected-served-model <id>]
 //                 --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>]
-//   seat.mjs close <seat-id> --task-status <json>
+//   seat.mjs close <seat-id> --task-status <json|->
 //   seat.mjs close <seat-id> --abandon
 //   seat.mjs trust [--write --expect <digest>]
 //
 // stdout is one JSON line. open prints {ok: true, id, tag, clientRequestId, runtimeMode, provider,
 // providerInstanceId, model, expectedServedModel, effort, worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
-// servedModels, blocks, errors, cleanupProblems?}, with or without --abandon, trust prints {ok: true, keys: [{key, command, trustStatus,
+// servedModels, blocks, errors, cleanupProblems?, recorded?}, with or without --abandon, trust prints {ok: true, keys: [{key, command, trustStatus,
 // currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
-// details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and
-// HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_TERMINAL and TASK_MISMATCH from close; BAD_REQUEST,
+// details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY,
+// HOOKS_MISMATCH, HOOKS_CHANGED and HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_TERMINAL,
+// TASK_MISMATCH and TASK_INCOMPLETE from close; BAD_REQUEST,
 // HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App
 // Server's own failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for
 // anything this script did not expect, INTERNAL.
@@ -40,8 +41,10 @@
 // add a detached worktree at the head under <canonical>/.flow-worktrees/review-<id>, the seat's
 // worktree, recording its admin directory (`git rev-parse --absolute-git-dir` there) as
 // reviewGitDir, with the findings schema as its answer schema; for a Codex seat, read flow's Codex
-// hook trust (below) and refuse with HOOKS_UNTRUSTED unless every flow hook is there, enabled and
-// trusted, recording the digest of the keys and hashes it read as hooksDigest; for a writer, hold
+// hook trust (below) between two digests of its plugin root (The plugin root, below) and refuse
+// with HOOKS_UNTRUSTED unless every flow hook is there, enabled and trusted, recording the digest
+// of the keys and hashes it read as hooksDigest and the root and its digest as codexPluginRoot and
+// codexPluginDigest; for a writer, hold
 // the worktree's write lease directory (below); for a review, snapshot the canonical checkout
 // with tree-snapshot.mjs and add its HEAD commit and the branch HEAD names; then write the schema and the record, last, through lib/seat-store.mjs. Before the holder, open builds the seat's context as the prompt hook will (with the real schema.json path) and refuses BAD_REQUEST when the paths make it past the 6000-byte hook budget even with the schema left out by path.
 // A failure undoes whatever this run created, the review worktree and the lease holder, so a
@@ -61,13 +64,39 @@
 // closed record, and refuses WORKSPACE_BUSY. Writer seats share a worktree with each other, each
 // committing its own paths, as native writers do.
 //
-// close first refuses TASK_NOT_TERMINAL, writing nothing, unless --task-status is a task_status
+// The plugin root. Codex keeps one trust hash for the whole installed plugin, so a change to any
+// file under flow's Codex plugin root, from a cache refresh or a reinstall, untrusts every flow
+// hook, and Codex then skips them without a word. A turn after that leaves nothing on record. The
+// root's digest is the sha256 of the JSON of one entry per directory and file under it, the root
+// included as '': [<relative path>, 'dir', null] or [<relative path>, 'file', <sha256 of its
+// bytes>], with / between path segments, sorted by code unit. Every entry is read through lstat,
+// and a file through an O_NOFOLLOW and O_NONBLOCK open and fstat, so no link is followed and no
+// FIFO blocks the walk. A symlink, any other entry type or an entry that cannot be read is a problem.
+// open lists the hooks in one App Server session to learn the root, digests it, reads the trust in
+// a second session, and digests it again. A walk problem refuses HOOKS_MISMATCH. A second session
+// that names another root, or a second digest unlike the first, refuses HOOKS_CHANGED. All of it
+// runs before the lease holder, so a refusal leaves no record, holder or review worktree. A Claude
+// record carries neither codexPluginRoot nor codexPluginDigest.
+//
+// close reads the task status from --task-status <json>, at most 64 KiB, or with --task-status -
+// from stdin, at most 256 KiB of raw bytes (a trailing newline counts) that must decode as UTF-8.
+// A single argv string fails with E2BIG at 128 KiB on Linux, so a parent passes a whole status on
+// stdin. A status over its cap, not UTF-8 or not JSON is refused BAD_REQUEST. No refusal of close
+// writes anything: no stamp is added or changed, and the writer's lease holder and the review
+// worktree stay, so a retry with the whole status can still close the seat.
+// close then refuses TASK_NOT_TERMINAL, writing nothing, unless --task-status is a task_status
 // answer T3 gives for a finished task: an object whose status is completed, failed, cancelled or
 // interrupted, whose workState is not working or waiting_for_children, and whose
 // hasPendingChildRuns is not true. A writer's lease stays held until then. Once the seat was
 // admitted, close also refuses TASK_MISMATCH, writing nothing, unless the task status's taskId
 // carries flow-seat-<id>, the clientRequestId the admitted call named, plainly or URL-encoded, so
-// one seat is never closed on another task's status. It then judges the seat
+// one seat is never closed on another task's status. It then refuses TASK_INCOMPLETE unless the
+// status has its own childRunId, latestTerminalRunId, latestTerminalStatus, summary and
+// latestTerminalSummary keys (a key set to null is present), and TASK_MISMATCH unless both run ids
+// follow one grammar: run:thread:<seg>:ordinal:<n>, split at the last :ordinal:, where seg equals
+// encodeURIComponent(childThreadId), compared encoded, childThreadId is a non-empty string, n
+// matches [1-9][0-9]* and is a safe integer, and the latest ordinal is not below the child's.
+// childThreadId is a T3 id and is never compared with a hook's sessionId. It then judges the seat
 // from its record and the stamps and results the hooks wrote, in this order of precedence, the
 // first that holds being the verdict:
 //   unknown         no readable record; a record that fails seatIdentityProblem, such as one
@@ -95,9 +124,31 @@
 //   capped          the last turn was capped
 //   invalid         the last stop in the last turn was blocked
 //   valid           otherwise; result is the envelope Stop recorded
+// close then checks a valid verdict against the task status, as negative evidence only. T3's
+// text can withhold a valid, and the result is still the envelope Stop recorded, never T3's
+// summary. The latest run's text is summary when latestTerminalRunId is childRunId. Otherwise,
+// when latestTerminalStatus is completed, it is latestTerminalSummary when that is a string and
+// summary when it is null (T3 0.1.6 nulls it when it repeats summary), and for any other status
+// there is none. Reason stale-turn comes first, for no text, for text whose store.textDigest (the
+// raw bytes Stop hashed, nothing trimmed or unfenced) is not the turn state's messageSha256, or
+// for a latest ordinal above the child's when the turn state has no own opened key. The ordinal is
+// a one-way signal and never a turn count: a failed run takes an ordinal and has no Stop, and a
+// steer adds no run. Reason hooks-changed comes after it, for a Codex record whose plugin root
+// changed. close scans the root twice in a row, and a problem in either scan, a digest unlike
+// codexPluginDigest or two unequal digests is a change. A Codex record with neither key predates
+// the check and is not scanned, one with a single key or a malformed digest reads hooks-changed,
+// and a Claude record is never scanned. Either reason makes the verdict unknown and the result
+// null, and keeps turn, servedModels, blocks and errors. close checks only a valid verdict, so the
+// two reasons only ever turn valid into unknown, and every verdict above keeps its precedence.
+// Two gaps are known and not fixed:
+//   - a later run whose hooks were dark and whose text is byte-identical to the recorded message
+//     passes when the turn state already holds an opened key, from an earlier follow-up or steer;
+//   - the scan sees endpoint drift only, so a change restored byte for byte before close passes.
+//     The change seen on 2026-11-03 was a cache refresh that stayed.
 // It writes the closed stamp first, with the verdict, the reasons, the task status the parent
-// read from T3, and the facts the output reports: the turn, the sha256 of that turn's result bytes
-// as judge read them (null with no result), the served models, the blocks and the errors. It
+// read from T3, the latest run's id as runId, the turn state's messageSha256, and the facts the
+// output reports: the turn, the sha256 of that turn's result bytes as judge read them (null with
+// no result), the served models, the blocks and the errors. It
 // then drops the writer's lease holder and removes the review worktree it created, only while the
 // path still resolves to the recorded worktree, its admin directory is still reviewGitDir, and
 // `git worktree list` still lists it; a worktree that is not the one open added is left in place
@@ -106,7 +157,16 @@
 // and facts, with the result read again from the pinned turn: that result while its bytes still
 // hash to the pinned sha256, and otherwise null, with result-changed-after-close among the
 // reasons and the verdict unchanged. It also retries the cleanup. Cleanup that fails is listed in
-// cleanupProblems and does not change the verdict.
+// cleanupProblems and does not change the verdict. A stamp that holds valid and is not an abandon
+// is first checked against the status this close was given, so a later close never certifies a
+// run the stamp did not judge. A latest run id other than the stamp's runId adds stale-turn, and a
+// stamp written before close recorded runId has none, so it reads as another run. The same run with
+// text whose store.textDigest is not the stamp's messageSha256 adds stale-turn too, and the root
+// scan above adds hooks-changed. With either reason, close prints verdict unknown with those
+// reasons, result null and, last, recorded: {verdict, turn} from the stamp. It never rewrites the
+// stamp, judges the seat again or reads its trees, because a review's worktree is gone by then. A
+// stamp that holds any other verdict certified nothing and prints as before. A close that lost the
+// race for the stamp takes the same path, so two first closes on one status print one outcome.
 //
 // close --abandon closes a seat whose delegate_task call made no task: T3 refused or lost the call
 // after the parent's PreToolUse admitted it, so no task_status will ever name the seat, and close
@@ -165,7 +225,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../delegate/codex-app-server.mjs'
@@ -190,6 +250,7 @@ const SEAT_ID = /^[0-9a-f]{32}$/
 const DIGEST = /^[0-9a-f]{64}$/
 const SCHEMA_BYTES = 16 * 1024
 const TASK_STATUS_BYTES = 64 * 1024
+const TASK_STATUS_STDIN_BYTES = 256 * 1024
 const GIT_MS = 60_000
 const RUNTIME_MODE = 'auto'
 
@@ -387,10 +448,12 @@ async function open(argv) {
     }
     // The trust read can take a minute, so it comes before the holder: nothing slow may sit between
     // the holder and the record (see The lease, above).
-    const digest = provider === 'codex' ? await seatTrust(repoRoot) : null
+    const trusted = provider === 'codex' ? await seatTrust(repoRoot) : null
     const record = {
       v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, reviewGitDir, baseSha, headSha,
-      provider, providerInstanceId, model, expectedServedModel, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot: null, hooksDigest: digest,
+      provider, providerInstanceId, model, expectedServedModel, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot: null, hooksDigest: trusted?.hooksDigest ?? null,
+      // A Claude record carries neither key, so their absence also marks a Codex record from before.
+      ...(trusted ? { codexPluginRoot: trusted.codexPluginRoot, codexPluginDigest: trusted.codexPluginDigest } : {}),
     }
     // The seat's context repeats its paths, and the prompt hook cannot deliver one past the hook
     // budget, so a seat whose context cannot fit is refused here, before the holder and the record.
@@ -466,8 +529,9 @@ function sameBytes(path, own, seen) {
   return seen.get(path)
 }
 
-// Flow's entries in a hooks/list answer: one per handler, from this copy's plugin id and one root
-// whose hooks/codex.json is byte for byte this copy's.
+// Flow's entries in a hooks/list answer, {keys, root}: one key per handler, from this copy's plugin
+// id and one root, the plugin root Codex runs them from, whose hooks/codex.json is byte for byte
+// this copy's.
 function flowKeys(listed, handlers) {
   if (!Array.isArray(listed?.data)) fail('PROVIDER_ERROR', 'Codex answered hooks/list without a list.')
   const pluginId = ownPluginId()
@@ -496,11 +560,59 @@ function flowKeys(listed, handlers) {
     fail('HOOKS_MISMATCH', `Codex lists ${found.length} hook(s) of ${pluginId} that run flow's Codex handlers from a hooks/codex.json identical to this copy's, and this copy of flow registers ${handlers.length}, one each, from one root; the installed flow is another version, so its trust cannot be read against this one.`,
       { pluginId, expected: handlers.length, found: found.length, unmatched: missing.map((handler) => handler.command) })
   }
-  return found.map(({ hook }) => ({ key: hook.key, command: hook.command, trustStatus: hook.trustStatus, currentHash: hook.currentHash, enabled: hook.enabled !== false }))
+  const keys = found.map(({ hook }) => ({ key: hook.key, command: hook.command, trustStatus: hook.trustStatus, currentHash: hook.currentHash, enabled: hook.enabled !== false }))
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+  return { keys, root: [...roots][0] }
 }
 
 const hooksDigest = (keys) => createHash('sha256').update(JSON.stringify(keys.map(({ key, currentHash }) => [key, currentHash]))).digest('hex')
+
+// The content of a Codex flow plugin root: {digest}, or {problem} when the root or anything in it
+// is a symlink, any type but a regular file or a directory, or unreadable. Nothing is followed: each
+// entry is lstat'd, and a file is opened O_NOFOLLOW and O_NONBLOCK and checked again before it is
+// read, so a FIFO is never read and a swapped-in link is refused. The digest is the sha256 of the
+// JSON of every entry's [path, 'dir', null] or [path, 'file', sha256], the path relative to the
+// root with '/' (the root itself ''), sorted by code unit; modes and times are not content.
+function pluginTree(root) {
+  const problem = (rel, what) => ({ problem: `${rel === '' ? 'the plugin root' : rel} ${what}` })
+  if (typeof root !== 'string' || !isAbsolute(root)) return problem('', 'is not an absolute path')
+  const entries = []
+  const pending = [['', root]]
+  while (pending.length > 0) {
+    const [rel, path] = pending.pop()
+    let info
+    try { info = lstatSync(path) } catch (error) { return problem(rel, `cannot be read (${error.code ?? 'error'})`) }
+    if (info.isDirectory()) {
+      entries.push([rel, 'dir', null])
+      let names
+      try { names = readdirSync(path) } catch (error) { return problem(rel, `cannot be listed (${error.code ?? 'error'})`) }
+      for (const name of names) pending.push([rel === '' ? name : `${rel}/${name}`, join(path, name)])
+    } else if (info.isFile()) {
+      let fd = null
+      try {
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        if (!fstatSync(fd).isFile()) return problem(rel, 'stopped being a regular file while it was read')
+        entries.push([rel, 'file', createHash('sha256').update(readFileSync(fd)).digest('hex')])
+      } catch (error) {
+        return problem(rel, `cannot be read (${error.code ?? 'error'})`)
+      } finally {
+        if (fd !== null) closeSync(fd)
+      }
+    } else return problem(rel, info.isSymbolicLink() ? 'is a symlink' : 'is neither a regular file nor a directory')
+  }
+  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return { digest: createHash('sha256').update(JSON.stringify(entries)).digest('hex') }
+}
+
+// open's digest of the Codex flow plugin root, or HOOKS_MISMATCH when it holds what flow cannot
+// digest, since a change to it while the seat ran could then go unseen.
+function rootDigest(root) {
+  const tree = pluginTree(root)
+  if (tree.problem) {
+    fail('HOOKS_MISMATCH', `The flow plugin Codex installed holds what flow cannot digest (${tree.problem}), so a change to it while the seat runs could not be seen. Reinstall flow on Codex.`, { codexPluginRoot: root })
+  }
+  return tree.digest
+}
 const untrusted = (keys) => keys.filter((key) => key.trustStatus !== 'trusted' || !key.enabled || typeof key.currentHash !== 'string')
 const shown = (keys) => keys.map(({ key, command, trustStatus, currentHash }) => ({ key, command, trustStatus, currentHash }))
 
@@ -551,7 +663,7 @@ async function trust(argv) {
   const cwd = trustCwd()
   const handlers = flowHandlers()
   return withCodex(cwd, async (rpc) => {
-    const keys = await listFlowKeys(rpc, cwd, handlers)
+    const { keys } = await listFlowKeys(rpc, cwd, handlers)
     const digest = hooksDigest(keys)
     if (!write) return { ok: true, keys: shown(keys), digest, wrote: false }
     if (digest !== expected) {
@@ -560,7 +672,7 @@ async function trust(argv) {
     }
     const value = Object.fromEntries(keys.map(({ key, currentHash }) => [key, { trusted_hash: currentHash }]))
     await rpc.request('config/batchWrite', { edits: [{ keyPath: 'hooks.state', value, mergeStrategy: 'upsert' }], reloadUserConfig: true })
-    const after = await listFlowKeys(rpc, cwd, handlers)
+    const { keys: after } = await listFlowKeys(rpc, cwd, handlers)
     const still = untrusted(after)
     if (still.length > 0) {
       fail('HOOKS_UNTRUSTED', `Codex still reads ${still.length} of flow's hooks as not trusted after the write.`, { keys: shown(still) })
@@ -569,12 +681,24 @@ async function trust(argv) {
   })
 }
 
-// open's read of the trust a Codex seat depends on: the digest, or HOOKS_UNTRUSTED.
+// open's read of the trust a Codex seat depends on, bracketed by two digests of the flow plugin
+// root Codex runs the hooks from: {hooksDigest, codexPluginRoot, codexPluginDigest}, or a refusal.
+// One App Server session's hooks/list names the root, the root is digested, a second session reads
+// the trust, and the root is digested again, so a change between the first digest and the trust
+// read refuses HOOKS_CHANGED rather than pass as the trust of bytes the seat will not run.
 async function seatTrust(cwd) {
-  let keys
-  try { keys = await withCodex(cwd, (rpc) => listFlowKeys(rpc, cwd, flowHandlers())) } catch (error) {
-    if (!(error instanceof SeatError)) throw error
-    fail('HOOKS_UNTRUSTED', `Flow's Codex hook trust could not be confirmed (${error.kind}): ${error.message}`, { hooksDigest: null, cause: error.kind })
+  const handlers = flowHandlers()
+  const listed = async () => {
+    try { return await withCodex(cwd, (rpc) => listFlowKeys(rpc, cwd, handlers)) } catch (error) {
+      if (!(error instanceof SeatError)) throw error
+      fail('HOOKS_UNTRUSTED', `Flow's Codex hook trust could not be confirmed (${error.kind}): ${error.message}`, { hooksDigest: null, cause: error.kind })
+    }
+  }
+  const { root } = await listed()
+  const before = rootDigest(root)
+  const { keys, root: trustRoot } = await listed()
+  if (trustRoot !== root) {
+    fail('HOOKS_CHANGED', 'Codex moved flow\'s hooks to another plugin root while open read their trust, so nothing was written. Open the seat again.', { codexPluginRoot: root })
   }
   const digest = hooksDigest(keys)
   const still = untrusted(keys)
@@ -582,7 +706,10 @@ async function seatTrust(cwd) {
     fail('HOOKS_UNTRUSTED', `Codex does not run ${still.length} of flow's hooks (not trusted, modified or disabled), so a Codex seat would run unguarded. Run seat.mjs trust as the delegate skill's reference.md says under "Codex host setup".`,
       { hooksDigest: digest, keys: shown(still) })
   }
-  return digest
+  if (rootDigest(root) !== before) {
+    fail('HOOKS_CHANGED', 'The flow plugin Codex installed changed while open read its hook trust, and Codex untrusts every flow hook when any plugin file changes, so nothing was written. Check the trust with seat.mjs trust, then open the seat again.', { codexPluginRoot: root })
+  }
+  return { hooksDigest: digest, codexPluginRoot: root, codexPluginDigest: before }
 }
 
 // ----- close
@@ -629,9 +756,11 @@ function treeReasons(record, envelope) {
 }
 
 // The verdict, its reasons, and what the output reports from the seat's files, with the sha256 of
-// the last turn's result bytes as read here (null with none), so the closed stamp can pin them.
+// the last turn's result bytes as read here (null with none), so the closed stamp can pin them,
+// and, from the turn state, the digest of the final message Stop last checked and whether a
+// follow-up prompt is on record, which freshness reads.
 function judge(id, loaded) {
-  const facts = { turn: null, envelope: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] }
+  const facts = { turn: null, envelope: null, resultSha256: null, servedModels: [], blocks: 0, errors: [], messageSha256: null, opened: false }
   const unknown = (reason) => ({ verdict: 'unknown', reasons: [reason], facts })
   if (!loaded) return unknown('the seat record is missing or corrupt')
   const { record, digest } = loaded
@@ -655,6 +784,8 @@ function judge(id, loaded) {
   // answers an earlier turn.
   if (Object.hasOwn(state, 'opened') && state.opened !== state.turnKey) return unknown('turn-without-result')
   facts.turn = state.turn
+  facts.messageSha256 = typeof state.messageSha256 === 'string' ? state.messageSha256 : null
+  facts.opened = Object.hasOwn(state, 'opened')
   facts.blocks = Number.isSafeInteger(state.blocks) ? state.blocks : 0
   facts.errors = Array.isArray(state.errors) ? state.errors : []
   // Read once whatever the outcome, so the closed stamp pins the bytes on disk for the turn.
@@ -758,6 +889,24 @@ function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
   }
 }
 
+// A later close's output once the stamp is on record: onRecord's, unless the stamp certified a
+// valid verdict that this close's task status or the seat's hooks now contradict. A latest run
+// other than the one the stamp judged (a stamp written before close recorded runId reads as another
+// run), or the same run with text other than the message the stamp judged, is stale-turn, and a
+// changed plugin root is hooks-changed: the verdict is unknown, with those reasons, no result and
+// what the stamp recorded beside them. The stamp is never rewritten, so a later close never
+// certifies a run the stamp did not judge. A stamp that certified nothing prints as it is, and
+// judge's tree checks never run again here, since the first close removed the review worktree.
+function repeated(id, recorded, run, record) {
+  const shown = onRecord(id, recorded)
+  if (recorded.verdict !== 'valid' || recorded.abandoned === true) return shown
+  const reasons = []
+  if (run.latestRunId !== recorded.runId || store.textDigest(run.latestText) !== recorded.messageSha256) reasons.push('stale-turn')
+  if (hooksChanged(record)) reasons.push('hooks-changed')
+  if (reasons.length === 0) return shown
+  return { ...shown, verdict: 'unknown', reasons, result: null, recorded: { verdict: recorded.verdict, turn: shown.turn } }
+}
+
 const TASK_ENDED = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
 const TASK_BUSY = new Set(['working', 'waiting_for_children'])
 const terminalTask = (status) => status !== null && typeof status === 'object' && !Array.isArray(status) &&
@@ -772,6 +921,117 @@ function taskOf(status, id) {
   return [status.taskId, decoded].some((text) => text.includes(clientRequestIdOf(id)))
 }
 
+// stdin's bytes, or null once there are more than cap of them. It reads synchronously, so close
+// stays one synchronous pass, and it never reads more than cap + 1 bytes.
+function readStdin(cap) {
+  const buffer = Buffer.alloc(cap + 1)
+  const nap = new Int32Array(new SharedArrayBuffer(4))
+  let length = 0
+  while (length <= cap) {
+    let read
+    try { read = readSync(0, buffer, length, buffer.length - length, null) } catch (error) {
+      if (error.code === 'EAGAIN') { Atomics.wait(nap, 0, 0, 10); continue }
+      if (error.code === 'EOF') break
+      fail('BAD_REQUEST', `--task-status - could not read stdin (${String(error.code ?? 'error').slice(0, 32)}).`)
+    }
+    if (read === 0) break
+    length += read
+  }
+  return length > cap ? null : buffer.subarray(0, length)
+}
+
+// The task status close was given: one argument of up to 64 KiB, or, for `-`, up to 256 KiB of
+// UTF-8 on stdin, counted in raw bytes, so a parent never has to build a long argv.
+function readTaskStatus(value) {
+  let text = value
+  if (value === '-') {
+    const bytes = readStdin(TASK_STATUS_STDIN_BYTES)
+    if (bytes === null) fail('BAD_REQUEST', '--task-status - is over 256 KiB on stdin.')
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) } catch { fail('BAD_REQUEST', '--task-status - is not UTF-8.') }
+  } else if (Buffer.byteLength(value) > TASK_STATUS_BYTES) {
+    fail('BAD_REQUEST', '--task-status is over 64 KiB; pass the task status on stdin with --task-status - instead.')
+  }
+  try { return JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
+}
+
+// The keys a task status must carry for close to tell which run's answer it would certify.
+const RUN_KEYS = ['childRunId', 'latestTerminalRunId', 'latestTerminalStatus', 'summary', 'latestTerminalSummary']
+const RUN_PREFIX = 'run:thread:'
+const RUN_ORDINAL = ':ordinal:'
+
+// A T3 run id's ordinal, when the id is run:thread:<encodeURIComponent(thread)>:ordinal:<n> with n
+// a positive safe integer in canonical digits; null for anything else, another thread's included.
+function runOrdinal(runId, thread) {
+  if (typeof runId !== 'string' || typeof thread !== 'string' || thread === '' || !runId.startsWith(RUN_PREFIX)) return null
+  let segment
+  try { segment = encodeURIComponent(thread) } catch { return null }
+  const at = runId.lastIndexOf(RUN_ORDINAL)
+  if (at < RUN_PREFIX.length || runId.slice(RUN_PREFIX.length, at) !== segment) return null
+  const digits = runId.slice(at + RUN_ORDINAL.length)
+  const ordinal = /^[1-9][0-9]*$/.test(digits) ? Number(digits) : NaN
+  return Number.isSafeInteger(ordinal) ? ordinal : null
+}
+
+// The task's runs as close judges them: the ordinal of the child's run and of its latest finished
+// run, and the latest one's id. Refuses TASK_INCOMPLETE a status missing a run key (a key present
+// with a null value is not missing) and TASK_MISMATCH run ids that are not the status's own thread's
+// or that put the latest run first, both before anything is written.
+function runsOf(status) {
+  const missing = RUN_KEYS.filter((key) => !Object.hasOwn(status, key))
+  if (missing.length > 0) {
+    fail('TASK_INCOMPLETE', `The task status lacks ${missing.join(', ')}, so close cannot tell which run's answer it would certify. Pass the whole task_status answer, unedited, with --task-status - on stdin.`, { missing })
+  }
+  const childOrdinal = runOrdinal(status.childRunId, status.childThreadId)
+  const latestOrdinal = runOrdinal(status.latestTerminalRunId, status.childThreadId)
+  if (childOrdinal === null || latestOrdinal === null) {
+    fail('TASK_MISMATCH', 'The task status\'s childRunId and latestTerminalRunId must each read run:thread:<childThreadId, URL-encoded>:ordinal:<n>, with n a positive integer, for the status\'s own childThreadId. Pass the task_status answer as T3 gave it.')
+  }
+  if (latestOrdinal < childOrdinal) fail('TASK_MISMATCH', 'The task status\'s latest finished run comes before its child run, so it is not one task\'s status. Pass the task_status answer as T3 gave it.')
+  return { childOrdinal, latestOrdinal, latestRunId: status.latestTerminalRunId, latestText: latestText(status) }
+}
+
+// The final text T3 reports for the task's latest finished run, or null when that run left none:
+// the summary when the latest run is the child's; for a later run that completed, its
+// latestTerminalSummary, or the summary when T3 nulled latestTerminalSummary for repeating it; and
+// no text for a later run that ended any other way.
+function latestText(status) {
+  const text = (value) => (typeof value === 'string' ? value : null)
+  if (status.latestTerminalRunId === status.childRunId) return text(status.summary)
+  if (status.latestTerminalStatus !== 'completed') return null
+  return status.latestTerminalSummary === null ? text(status.summary) : text(status.latestTerminalSummary)
+}
+
+// Whether a Codex seat's hooks may have gone dark while it ran: the flow plugin root open recorded
+// no longer holds what open digested. Codex untrusts every flow hook when any plugin file changes
+// and skips an untrusted hook without a word. The root is scanned twice in a row, and a scan that
+// fails, either scan's digest other than the record's, or two scans that differ all count. A Codex
+// record with neither key predates the check and is not checked; one with a single key or a
+// malformed value is; a Claude record never is.
+function hooksChanged(record) {
+  if (record?.provider !== 'codex') return false
+  const hasRoot = Object.hasOwn(record, 'codexPluginRoot')
+  const hasDigest = Object.hasOwn(record, 'codexPluginDigest')
+  if (!hasRoot && !hasDigest) return false
+  if (!hasRoot || !hasDigest || typeof record.codexPluginDigest !== 'string' || !DIGEST.test(record.codexPluginDigest)) return true
+  const first = pluginTree(record.codexPluginRoot)
+  const second = pluginTree(record.codexPluginRoot)
+  return first.digest === undefined || first.digest !== record.codexPluginDigest || second.digest !== first.digest
+}
+
+// Why a seat judge read valid is not proven to have answered T3's latest finished run under its
+// hooks, as reasons in this order, none when it is. T3's text is negative evidence only: it can
+// turn a valid into unknown, and the answer still comes from the result Stop wrote. stale-turn:
+// the latest run left no text, its text is not byte for byte the final message Stop recorded, or it
+// is a later run than the child's while no follow-up prompt is on record. hooks-changed: see
+// hooksChanged.
+function freshness(facts, run, record) {
+  const reasons = []
+  const latest = store.textDigest(run.latestText)
+  if (latest === null || latest !== facts.messageSha256 || (run.latestOrdinal > run.childOrdinal && !facts.opened)) reasons.push('stale-turn')
+  if (hooksChanged(record)) reasons.push('hooks-changed')
+  return reasons
+}
+
 function close(argv) {
   const [id, ...rest] = argv
   if (typeof id !== 'string' || !SEAT_ID.test(id)) fail('BAD_REQUEST', 'close takes a seat id, 32 lowercase hex characters.')
@@ -781,27 +1041,31 @@ function close(argv) {
   }
   const opts = flags(rest, ['--task-status'])
   const text = opts['--task-status']
-  if (text === undefined) fail('BAD_REQUEST', 'close needs --task-status, the task_status answer for the seat\'s task, as JSON.')
-  if (Buffer.byteLength(text) > TASK_STATUS_BYTES) fail('BAD_REQUEST', '--task-status is over 64 KiB.')
-  let taskStatus
-  try { taskStatus = JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
+  if (text === undefined) fail('BAD_REQUEST', 'close needs --task-status, the task_status answer for the seat\'s task, as JSON, or - to read it from stdin.')
+  const taskStatus = readTaskStatus(text)
   if (!terminalTask(taskStatus)) {
     fail('TASK_NOT_TERMINAL', 'close records a seat whose task T3 reports finished: a task_status answer whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs. Wait for the task to finish, then close it.')
   }
   if (store.readStamp(id, 'admitted') !== null && !taskOf(taskStatus, id)) {
     fail('TASK_MISMATCH', `The task status is not this seat's task: its taskId does not carry ${clientRequestIdOf(id)}, the clientRequestId the seat's delegate_task call was admitted with. Pass the task_status answer for this seat's own task.`)
   }
+  const run = runsOf(taskStatus)
 
   const loaded = store.readRecord(id)
-  const { verdict, reasons, facts } = judge(id, loaded)
-  const { turn, resultSha256, servedModels, blocks, errors } = facts
-  const closed = { verdict, reasons, taskStatus, turn, resultSha256, servedModels, blocks, errors }
+  const judged = judge(id, loaded)
+  // Only a valid verdict is checked against T3's latest run, so every other verdict keeps its
+  // precedence, and the check can only turn a valid into unknown.
+  const doubts = judged.verdict === 'valid' ? freshness(judged.facts, run, loaded.record) : []
+  const { verdict, reasons } = doubts.length > 0 ? { verdict: 'unknown', reasons: doubts } : judged
+  const { facts } = judged
+  const { turn, resultSha256, servedModels, blocks, errors, messageSha256 } = facts
+  const closed = { verdict, reasons, taskStatus, runId: run.latestRunId, turn, resultSha256, messageSha256, servedModels, blocks, errors }
   let out = { ok: true, id, verdict, reasons, turn, result: verdict === 'valid' ? facts.envelope : null, servedModels, blocks, errors }
   if (!store.stamp(id, 'closed', closed)) {
     // An earlier or racing close holds the stamp, and its record stands; or the record directory
     // is gone, and nothing can be recorded.
     const recorded = store.readStamp(id, 'closed')
-    if (recorded) out = onRecord(id, recorded)
+    if (recorded) out = repeated(id, recorded, run, loaded?.record ?? null)
   }
   const problems = cleanup(id, loaded?.record ?? null)
   if (problems.length > 0) out.cleanupProblems = problems
@@ -834,7 +1098,7 @@ function abandon(id) {
 
 // ----- main
 
-const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
+const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json|-> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
 const [verb, ...argv] = process.argv.slice(2)
 let answer
 try {

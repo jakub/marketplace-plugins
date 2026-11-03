@@ -22,6 +22,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { performance } from 'node:perf_hooks'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -213,8 +214,9 @@ const median = (values) => {
 // otherwise, against the same state directory as the store.
 const SEAT_SCRIPT = join(PLUGIN, 'scripts', 'seat.mjs')
 const jobs = await import(pathToFileURL(join(PLUGIN, 'delegate', 'jobs.mjs')).href)
-function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT } = {}) {
-  const run = spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...trustedCodex.env, ...env } })
+// input, a string or a Buffer, goes to its stdin; a run past timeout ms is killed and fails.
+function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT, input = undefined, nodeArgs = [], timeout = 0 } = {}) {
+  const run = spawnSync(process.execPath, [...nodeArgs, script, ...args], { cwd, input, timeout, encoding: 'utf8', maxBuffer: 1 << 24, env: { ...process.env, ...trustedCodex.env, ...env } })
   const lines = run.stdout.split('\n').filter(Boolean)
   assert.equal(lines.length, 1, `seat.mjs ${args[0]} printed ${JSON.stringify(run.stdout)} ${run.stderr}`)
   const out = JSON.parse(lines[0])
@@ -226,7 +228,9 @@ function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT } = {}) {
 // upsert into hooks.state the way Codex does (a key whose trusted_hash is its current hash reads
 // trusted), unless the state says to ignore writes. It records every message it is sent in
 // sent.jsonl. The hook entries take the shape codex 0.160.0's hooks/list answered with live, the
-// command carrying the plugin root already expanded.
+// command carrying the plugin root already expanded. The state's onList maps n to what the n-th
+// hooks/list in that state directory does first, across processes: append [path, text] appends
+// text to a file, and hooks answers with those entries in place of the state's.
 const fakeCodexBin = join(tmp, 'fake-codex-bin')
 mkdirSync(fakeCodexBin, { recursive: true })
 writeFileSync(join(fakeCodexBin, 'codex'), `#!${process.execPath}
@@ -241,7 +245,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   appendFileSync(dir + '/sent.jsonl', JSON.stringify(message) + '\\n')
   if (message.id === undefined) return
   if (message.method === 'initialize') return reply(message.id, { result: { userAgent: 'fake-codex/0.160.0' } })
-  if (message.method === 'hooks/list') return reply(message.id, { result: { data: [{ cwd: message.params.cwds[0], hooks: state().hooks, errors: [], warnings: [] }] } })
+  if (message.method === 'hooks/list') {
+    appendFileSync(dir + '/lists', '.')
+    const step = (state().onList ?? {})[readFileSync(dir + '/lists', 'utf8').length] ?? {}
+    if (step.append) appendFileSync(step.append[0], step.append[1])
+    return reply(message.id, { result: { data: [{ cwd: message.params.cwds[0], hooks: step.hooks ?? state().hooks, errors: [], warnings: [] }] } })
+  }
   if (message.method === 'config/batchWrite') {
     const now = state()
     if (!now.ignoreWrites) {
@@ -273,6 +282,25 @@ function installedRoot(name, bytes = OWN_HOOKS) {
   return root
 }
 const FAKE_ROOT = installedRoot('codex')
+// The digest open records for a Codex plugin root, computed here apart from seat.mjs, for a root of
+// regular files and directories only: the sha256 of the JSON of every entry's [path, 'dir', null]
+// or [path, 'file', sha256], the path relative to the root with '/' (the root itself ''), sorted
+// by code unit.
+function treeDigest(root) {
+  const entries = [['', 'dir', null]]
+  const walk = (dir, rel) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = rel === '' ? entry.name : `${rel}/${entry.name}`
+      if (entry.isDirectory()) {
+        entries.push([path, 'dir', null])
+        walk(join(dir, entry.name), path)
+      } else entries.push([path, 'file', sha256(readFileSync(join(dir, entry.name)))])
+    }
+  }
+  walk(root, '')
+  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return sha256(JSON.stringify(entries))
+}
 // A Codex install whose hooks/codex.json is this copy's with its final newline a space: one byte
 // apart and the same JSON.
 assert.equal(OWN_HOOKS.at(-1), 0x0a)
@@ -300,9 +328,9 @@ const FOREIGN = [
   { key: '/home/u/.codex/hooks.json:pre_tool_use:0:0', command: `node "${FAKE_ROOT}/hooks/scripts/seat-guard.mjs" pre codex`, handlerType: 'command', currentHash: 'sha256:u', enabled: true, pluginId: null, source: 'user', trustStatus: 'untrusted' },
 ]
 // A fake Codex state directory holding hooks, and the environment that puts the fake first on PATH.
-function codexState(hooks, { ignoreWrites = false } = {}) {
+function codexState(hooks, { ignoreWrites = false, onList = {} } = {}) {
   const dir = mkdtempSync(join(tmp, 'codex-state-'))
-  writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks, ignoreWrites }))
+  writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks, ignoreWrites, onList }))
   return { dir, env: { PATH: `${fakeCodexBin}:${process.env.PATH}`, FAKE_CODEX_STATE: dir } }
 }
 const codexSent = (dir) => (existsSync(join(dir, 'sent.jsonl')) ? readFileSync(join(dir, 'sent.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
@@ -312,10 +340,26 @@ const flowDigest = (entries) => sha256(JSON.stringify(entries.map(({ key, curren
 // names another state.
 const trustedCodex = codexState([...flowEntries({ trusted: true }), ...FOREIGN])
 
-// A finished task_status answer for the seat's own task: T3 builds the task id from the call's
-// clientRequestId, URL-encoded.
-const taskStatusOf = (id, fields = {}) => ({ status: 'completed', taskId: `thread-1:delegate-task%3Aflow-seat-${id}`, ...fields })
-const closeSeat = (id, taskStatus = taskStatusOf(id)) => seatCli(['close', id, '--task-status', JSON.stringify(taskStatus)])
+// A finished task_status answer for the seat's own task, in the shape T3 0.1.6 answered with live.
+// T3 builds the task id from the call's clientRequestId, URL-encoded, and each run id from the
+// child thread id, URL-encoded once more (so its `%` reads `%25`), and the run's ordinal. By
+// default the task ran once and that run completed with MESSAGE_OK as its final message, which is
+// the summary; T3 nulls latestTerminalSummary when it repeats the summary. A case's fields replace
+// these as given: nothing here makes a summary match the seat.
+const MESSAGE_OK = JSON.stringify(ENVELOPE_OK)
+const childThreadOf = (id) => `thread:delegated-task:command%3Amcp%3A0b6c2f1e-7200-4f3f-b16b-3d1e5a9c8f20%3Adelegate-task%3Aflow-seat-${id}`
+const runIdOf = (thread, ordinal) => `run:thread:${encodeURIComponent(thread)}:ordinal:${ordinal}`
+const taskStatusOf = (id, fields = {}) => {
+  const thread = childThreadOf(id)
+  return {
+    taskId: `thread-1:delegate-task%3Aflow-seat-${id}`, childThreadId: thread, childRunId: runIdOf(thread, 1), status: 'completed', workState: 'result_available',
+    hasPendingChildRuns: false, latestTerminalRunId: runIdOf(thread, 1), latestTerminalStatus: 'completed', latestTerminalSummary: null, summary: MESSAGE_OK, ...fields,
+  }
+}
+// close as the delegate skill tells a parent to run it: the whole task status on stdin.
+const closeSeat = (id, taskStatus = taskStatusOf(id)) => seatCli(['close', id, '--task-status', '-'], { input: JSON.stringify(taskStatus) })
+// The five run keys close requires of a task status.
+const RUN_KEYS = ['childRunId', 'latestTerminalRunId', 'latestTerminalStatus', 'summary', 'latestTerminalSummary']
 
 // The executor's repositories: a canonical checkout with two commits (base adds a.txt, b.txt and
 // sub/x.txt; head changes a.txt and adds c.txt), which keeps .flow-worktrees/ in its exclude file
@@ -363,10 +407,12 @@ function jobRecord(worktree, status) {
 // admitted stamp pinning admittedDigest and the bound stamp digest (each the record's own by
 // default), the bound session's index entry naming the seat (index 'own'; 'none' writes none),
 // and turn 1 ending as outcome with models as the models seen serving it, the record's expected
-// served model by default, with a result for a valid turn unless result is false.
+// served model by default, with a result for a valid turn unless result is false. The turn's final
+// message is message, the envelope as JSON by default, and its sha256 goes into the turn state and
+// the result as Stop writes it; the returned message is what a task status's summary would carry.
 function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], record = {}, stamps = ['admitted', 'bound', 'receipt'], digest = null, admittedDigest = null,
   boundModel = null, outcome = 'valid', blocks = 0, errors = [], served = [record.expectedServedModel ?? model], models = served, envelope = ENVELOPE_OK, result = true,
-  index = 'own' } = {}) {
+  index = 'own', message = JSON.stringify(envelope) } = {}) {
   const seatId = id ?? store.writeRecord(RECORD({ provider, model, worktree: canon, repoRoot: canon, ...record }), null).id
   const loaded = store.readRecord(seatId)
   const bound = { sessionId: `s-${seatId}`, host: provider, permissionMode: PERMISSION[provider], cwd: canon, recordDigest: digest ?? loaded.digest }
@@ -376,10 +422,47 @@ function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], 
   for (const name of stamps) assert.equal(store.stamp(seatId, name, bodies[name]), true)
   if (index === 'own') assert.equal(store.indexSession(provider, bound.sessionId, { id: seatId }), true)
   if (outcome !== null) {
-    store.writeState(seatId, { turn: 1, turnKey: 'k1', blocks, outcome, errors, stops: blocks + 1, messageSha256: 'c'.repeat(64), models })
-    if (outcome === 'valid' && result) store.writeResult(seatId, 1, { envelope, servedModels: served, messageSha256: 'c'.repeat(64), at: new Date().toISOString() })
+    const messageSha256 = sha256(message)
+    store.writeState(seatId, { turn: 1, turnKey: 'k1', blocks, outcome, errors, stops: blocks + 1, messageSha256, models })
+    if (outcome === 'valid' && result) store.writeResult(seatId, 1, { envelope, servedModels: served, messageSha256, at: new Date().toISOString() })
   }
-  return { id: seatId }
+  return { id: seatId, message }
+}
+// A Codex seat run through the real hooks, so its turn state holds the bytes the hooks write: the
+// bind prompt opens turn 1, a tool call stamps the receipt, and a stop with message (none when it
+// is null) ends the turn. stop(message, key) is another stop in the turn key names; followUp() is
+// the parent's next message, a prompt that opens a turn, and returns that turn's key. With id, it
+// admits the record seat open wrote rather than writing one.
+function guardedSeat(message = MESSAGE_OK, { id = null } = {}) {
+  const host = 'codex'
+  const seat = id === null ? admittedSeat(host) : (assert.equal(admit(id), true), { id, tag: store.seatTag(id) })
+  const session = randomUUID()
+  const first = randomUUID()
+  context(guard('prompt', host, promptCall(host, session, seat.tag, { turn_id: first })), 'bind')
+  silent(guard('pre', host, preCall(host, session, 'Bash', { command: 'ls' }, { turn_id: first })), 'receipt')
+  const stop = (text, key) => guard('stop', host, stopCall(host, session, text, key))
+  if (message !== null) silent(stop(message, first), 'turn 1 stop')
+  const followUp = () => {
+    const key = randomUUID()
+    silent(guard('prompt', host, promptCall(host, session, 'Look again at b.txt and answer again.', { turn_id: key })), 'follow-up prompt')
+    return key
+  }
+  return { id: seat.id, session, first, stop, followUp }
+}
+// A final message that passes, other than MESSAGE_OK.
+const messageWith = (notes) => JSON.stringify({ ...ENVELOPE_OK, notes })
+// A read-only Codex seat that seat open made against a Codex install of its own, under name, which
+// holds a README and a script beside the hooks file: {id, root, message}. With hooks false it has
+// turn 1 recorded valid through the store; with hooks true the caller runs it through the hooks.
+function rootedCodexSeat(name, { hooks = false } = {}) {
+  const root = installedRoot(name)
+  mkdirSync(join(root, 'scripts'), { recursive: true })
+  writeFileSync(join(root, 'README.md'), 'flow\n')
+  writeFileSync(join(root, 'scripts', 'seat.mjs'), '// seat\n')
+  const opened = seatCli(['open', '--access', 'read-only', '--provider', 'codex', '--model', MODELS.codex, '--effort', 'high'], { env: codexState(flowEntries({ trusted: true, root })).env })
+  assert.equal(opened.ok, true, JSON.stringify(opened))
+  assert.deepEqual([store.readRecord(opened.id).record.codexPluginRoot, store.readRecord(opened.id).record.codexPluginDigest], [root, treeDigest(root)])
+  return { ...(hooks ? { id: opened.id, message: MESSAGE_OK } : hookedSeat({ id: opened.id, provider: 'codex' })), root }
 }
 // Preloaded into a seat process: it holds the process at the write of its lease holder file, or
 // with SEAT_GATE_AT=record at the write of its record's temp file, until <SEAT_GATE>.go exists,
@@ -441,6 +524,20 @@ if (process.env.STAMP_GATE_AT === 'bound') {
     if (typeof to === 'string' && /\\/seats\\/[0-9a-f]{32}\\/closed\\.json$/.test(to)) hold()
     return out
   }
+}
+syncBuiltinESMExports()
+`)
+// Preloaded into seat.mjs close, test-only: when the readdir of SCAN_ROOT that starts its second
+// scan of the root comes, it first appends a byte to SCAN_ROOT/README.md, so the first scan sees the
+// tree open recorded and the second sees another.
+const scanGate = join(tmp, 'scan-gate.mjs')
+writeFileSync(scanGate, `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const real = fs.readdirSync
+let scans = 0
+fs.readdirSync = function (path, ...rest) {
+  if (path === process.env.SCAN_ROOT && ++scans === 2) fs.appendFileSync(process.env.SCAN_ROOT + '/README.md', 'x')
+  return real.call(this, path, ...rest)
 }
 syncBuiltinESMExports()
 `)
@@ -2363,8 +2460,8 @@ const cases = {
     const fine = boundSeat('codex', 'read-only')
     received(fine, 'codex')
     silent(guard('stop', 'codex', stopCall('codex', fine.session, JSON.stringify(ENVELOPE_OK), randomUUID())), 'a valid stop')
-    silent(guard('stop', 'codex', stopCall('codex', fine.session, JSON.stringify({ ...ENVELOPE_OK, notes: 'turn 2' }), randomUUID())), 'turn 2')
-    const fineOut = closeSeat(fine.id)
+    silent(guard('stop', 'codex', stopCall('codex', fine.session, messageWith('turn 2'), randomUUID())), 'turn 2')
+    const fineOut = closeSeat(fine.id, taskStatusOf(fine.id, { summary: messageWith('turn 2') }))
     assert.deepEqual([fineOut.verdict, fineOut.servedModels], ['valid', [MODELS.codex]], JSON.stringify(fineOut))
     ok('every stop adds the models it saw to a cumulative set in the turn state, a repeated message on a settled turn included, and close reads model-mismatch when any turn saw another model, unknown when none was seen, and valid when every one is the record\'s')
   },
@@ -2537,7 +2634,7 @@ const cases = {
     const second = hookedSeat({ id: openReview(repo).id, envelope })
     assert.equal(gitOut(repo.path, 'status', '--porcelain'), '', 'a review worktree shows in the canonical checkout')
     for (const seat of [first, second]) {
-      const out = closeSeat(seat.id)
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message }))
       assert.deepEqual([out.verdict, out.reasons], ['valid', []], JSON.stringify(out))
     }
     ok('two overlapping review seats in a repository whose exclude lacked the line each close valid, neither reading the other\'s worktree as tree-moved')
@@ -3139,54 +3236,56 @@ const cases = {
       assert.equal(opened.ok, true, JSON.stringify(opened))
       return hookedSeat({ id: opened.id, envelope, ...fields })
     }
+    // The task status of a review whose one run answered with the seat's final message.
+    const closeReview = (seat) => closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message }))
 
     const clean = reviewSeat()
     const path = store.readRecord(clean.id).record.reviewWorktree
-    const out = closeSeat(clean.id)
+    const out = closeReview(clean)
     assert.equal(out.verdict, 'valid', JSON.stringify(out.reasons))
     assert.equal(existsSync(path), false, 'close removed the review worktree')
     assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(path), 'git still lists the review worktree')
     const absolute = reviewSeat(covering({ coverage: { read: [], partial: [], unopened: [], checksRun: [] } }))
     const absPath = store.readRecord(absolute.id).record.reviewWorktree
     store.writeResult(absolute.id, 1, { envelope: covering({ coverage: { read: [join(absPath, 'a.txt')], partial: [], unopened: ['c.txt'], checksRun: [] } }), servedModels: ['claude-opus-5-5'], messageSha256: 'b'.repeat(64), at: new Date().toISOString() })
-    assert.equal(closeSeat(absolute.id).verdict, 'valid', 'an absolute coverage path inside the review worktree counts')
+    assert.equal(closeReview(absolute).verdict, 'valid', 'an absolute coverage path inside the review worktree counts')
     ok('a review whose worktree stayed at the head and clean, whose canonical checkout did not move, and whose coverage lists every diffed file (read, partial or unopened, relative, ./ or absolute) is valid, and close removes its worktree')
 
     const moved = reviewSeat()
     spawnSync('git', ['-C', store.readRecord(moved.id).record.reviewWorktree, 'checkout', '-q', '--detach', baseSha])
-    assert.equal(closeSeat(moved.id).verdict, 'tree-moved')
+    assert.equal(closeReview(moved).verdict, 'tree-moved')
     const dirty = reviewSeat()
     writeFileSync(join(store.readRecord(dirty.id).record.reviewWorktree, 'scratch.txt'), 'x')
-    const dirtyOut = closeSeat(dirty.id)
+    const dirtyOut = closeReview(dirty)
     assert.equal(dirtyOut.verdict, 'tree-moved')
     assert.ok(dirtyOut.reasons.some((reason) => /dirty/.test(reason)), JSON.stringify(dirtyOut.reasons))
     const canonical = reviewSeat()
     writeFileSync(join(canon, 'stray.txt'), 'x')
-    const canonOut = closeSeat(canonical.id)
+    const canonOut = closeReview(canonical)
     rmSync(join(canon, 'stray.txt'))
     assert.equal(canonOut.verdict, 'tree-moved')
     assert.ok(canonOut.reasons.some((reason) => /canonical checkout changed/.test(reason)), JSON.stringify(canonOut.reasons))
     const partial = reviewSeat(covering({ coverage: { read: ['a.txt'], partial: [], unopened: [], checksRun: [] } }))
-    const partialOut = closeSeat(partial.id)
+    const partialOut = closeReview(partial)
     assert.equal(partialOut.verdict, 'tree-moved')
     assert.ok(partialOut.reasons.some((reason) => /coverage misses 1 file\(s\) in the pinned diff: c\.txt/.test(reason)), JSON.stringify(partialOut.reasons))
-    assert.equal(closeSeat(reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] }).id).verdict, 'capped', 'a capped review with no envelope is not judged on coverage')
+    assert.equal(closeReview(reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })).verdict, 'capped', 'a capped review with no envelope is not judged on coverage')
     const cappedMoved = reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })
     writeFileSync(join(store.readRecord(cappedMoved.id).record.reviewWorktree, 'scratch.txt'), 'x')
-    assert.equal(closeSeat(cappedMoved.id).verdict, 'tree-moved', 'tree-moved outranks capped')
+    assert.equal(closeReview(cappedMoved).verdict, 'tree-moved', 'tree-moved outranks capped')
     ok('tree-moved: the review worktree\'s HEAD moved, it is dirty, the canonical checkout changed, or the coverage misses a diffed file; it outranks capped')
 
     // The canonical checkout's HEAD is part of what a review pins: a detach or a commit that leaves
     // the tree as it was still moves it.
     const detached = reviewSeat()
     gitOut(canon, 'checkout', '-q', '--detach', 'HEAD')
-    const detachedOut = closeSeat(detached.id)
+    const detachedOut = closeReview(detached)
     gitOut(canon, 'checkout', '-q', 'main')
     assert.equal(detachedOut.verdict, 'tree-moved', JSON.stringify(detachedOut))
     assert.ok(detachedOut.reasons.some((reason) => /canonical checkout's HEAD/.test(reason)), JSON.stringify(detachedOut.reasons))
     const committed = reviewSeat()
     gitOut(canon, 'commit', '-q', '--allow-empty', '-m', 'empty')
-    const committedOut = closeSeat(committed.id)
+    const committedOut = closeReview(committed)
     gitOut(canon, 'reset', '-q', '--soft', headSha)
     assert.equal(gitOut(canon, 'rev-parse', 'HEAD'), headSha)
     assert.equal(committedOut.verdict, 'tree-moved', JSON.stringify(committedOut))
@@ -3202,7 +3301,7 @@ const cases = {
     const movedTo = join(tmp, `moved-${swapped.id}`)
     gitOut(canon, 'worktree', 'move', swappedRecord.reviewWorktree, movedTo)
     gitOut(canon, 'worktree', 'add', '-q', '--detach', swappedRecord.reviewWorktree, headSha)
-    const swappedOut = closeSeat(swapped.id)
+    const swappedOut = closeReview(swapped)
     assert.ok(existsSync(swappedRecord.reviewWorktree), 'close removed a worktree it did not add')
     assert.ok(existsSync(movedTo), 'close touched the moved worktree')
     assert.ok(swappedOut.cleanupProblems?.some((problem) => /not the one this seat opened/.test(problem)), JSON.stringify(swappedOut))
@@ -3213,7 +3312,7 @@ const cases = {
     gitOut(canon, 'worktree', 'remove', '--force', plainPath)
     mkdirSync(plainPath)
     writeFileSync(join(plainPath, 'keep.txt'), 'x')
-    const plainOut = closeSeat(plain.id)
+    const plainOut = closeReview(plain)
     assert.ok(existsSync(join(plainPath, 'keep.txt')), 'close removed a plain directory at the review path')
     assert.ok(plainOut.cleanupProblems?.length > 0, JSON.stringify(plainOut))
     rmSync(plainPath, { recursive: true })
@@ -3224,13 +3323,15 @@ const cases = {
     const writerWt = gitWorktree('close-rerun')
     const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
     const seat = hookedSeat({ id: opened.id, envelope: { ...ENVELOPE_OK, commits: [{ sha: 'a'.repeat(40), subject: 'feat: x' }] } })
-    const first = closeSeat(seat.id, taskStatusOf(seat.id, { run: 1 }))
+    // The seat's one run answered with its final message, so every status here carries it.
+    const summary = seat.message
+    const first = closeSeat(seat.id, taskStatusOf(seat.id, { run: 1, summary }))
     assert.equal(first.verdict, 'valid')
     assert.equal(existsSync(join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)), false, 'close dropped the writer\'s holder')
     store.writeState(seat.id, { ...store.readState(seat.id), outcome: 'blocked', blocks: 1 })
-    const again = closeSeat(seat.id, taskStatusOf(seat.id, { status: 'failed', run: 2 }))
+    const again = closeSeat(seat.id, taskStatusOf(seat.id, { status: 'failed', run: 2, summary }))
     assert.equal(again.verdict, 'valid', 'a second close re-judged the seat')
-    assert.deepEqual(store.readStamp(seat.id, 'closed').taskStatus, taskStatusOf(seat.id, { run: 1 }))
+    assert.deepEqual(store.readStamp(seat.id, 'closed').taskStatus, taskStatusOf(seat.id, { run: 1, summary }))
     ok('a second close prints the verdict and reasons on record, keeps the first task status, and the first close dropped the writer\'s lease holder')
 
     const resultPath = join(seats, seat.id, 'result-1.json')
@@ -3239,7 +3340,7 @@ const cases = {
     assert.equal(stamped.turn, 1)
     assert.deepEqual([again.reasons, again.result, again.turn, again.servedModels], [[], first.result, 1, ['claude-opus-5-5']], 'a second close did not return the result on record')
     store.writeResult(seat.id, 1, { envelope: { ...first.result, notes: 'rewritten after close' }, servedModels: ['claude-opus-5-5'], at: new Date().toISOString() })
-    const third = closeSeat(seat.id)
+    const third = closeSeat(seat.id, taskStatusOf(seat.id, { summary }))
     assert.equal(third.verdict, 'valid', 'the verdict on record changed')
     assert.equal(third.result, null, 'a result rewritten after the close was returned')
     assert.ok(third.reasons.includes('result-changed-after-close'), JSON.stringify(third.reasons))
@@ -3283,6 +3384,106 @@ const cases = {
     ok('close refuses a missing or malformed seat id, a missing, unparsable or oversized --task-status, and an unknown flag, with BAD_REQUEST')
   },
 
+  'close-rerun-later-run': async () => {
+    const KEYS = ['ok', 'id', 'verdict', 'reasons', 'turn', 'result', 'servedModels', 'blocks', 'errors']
+    const stampPath = (id) => join(seats, id, 'closed.json')
+    const laterRun = (id, ordinal, fields = {}) => taskStatusOf(id, { latestTerminalRunId: runIdOf(childThreadOf(id), ordinal), ...fields })
+    // A seat closed valid on run 1, and the closed stamp's bytes as that close wrote them.
+    const closedValid = () => {
+      const seat = guardedSeat()
+      const first = closeSeat(seat.id)
+      assert.deepEqual([first.verdict, first.reasons], ['valid', []], JSON.stringify(first))
+      return { ...seat, first, bytes: readFileSync(stampPath(seat.id)) }
+    }
+    const contradicted = (seat, status, what) => {
+      const out = closeSeat(seat.id, status)
+      assert.deepEqual(Object.keys(out), [...KEYS, 'recorded'], what)
+      assert.deepEqual(out, { ...seat.first, verdict: 'unknown', reasons: ['stale-turn'], result: null, recorded: { verdict: 'valid', turn: 1 } }, `${what}: ${JSON.stringify(out)}`)
+      assert.ok(readFileSync(stampPath(seat.id)).equals(seat.bytes), `${what} rewrote the closed stamp`)
+    }
+
+    const later = closedValid()
+    contradicted(later, laterRun(later.id, 2, { latestTerminalSummary: messageWith('run 2, unhooked') }), 'a later close with a later run')
+    ok('a closed seat\'s later close whose status names a later run than the stamp judged prints unknown (stale-turn) with no result and recorded {verdict, turn}, and the closed stamp stays byte-identical')
+
+    // The parent's follow-up after the first close: even a recorded turn is a run the stamp did
+    // not judge, and a later close never certifies it.
+    const followed = closedValid()
+    const key = followed.followUp()
+    denied(seatCall('codex', followed.session, 'Bash', { command: 'ls' }, { turn_id: key }), /this seat was closed/, 'a tool call after the close')
+    silent(followed.stop(messageWith('run 2 after the close'), key), 'turn 2 stop')
+    contradicted(followed, laterRun(followed.id, 2, { latestTerminalSummary: messageWith('run 2 after the close') }), 'a later close after a recorded follow-up')
+    ok('a later close after a follow-up the hooks recorded still reads stale-turn: the stamp judged run 1, not run 2')
+
+    for (const [what, summary] of [['one byte changed', MESSAGE_OK.replace('"ok"', '"oK"')], ['null', null]]) {
+      const seat = closedValid()
+      contradicted(seat, taskStatusOf(seat.id, { summary }), `the same run with ${what}`)
+    }
+    ok('a later close on the same run whose text contradicts the message the stamp judged prints unknown (stale-turn) with recorded, the stamp unchanged')
+
+    const same = closedValid()
+    for (const status of [taskStatusOf(same.id), taskStatusOf(same.id, { status: 'failed', latestTerminalStatus: 'failed' })]) {
+      assert.deepEqual(closeSeat(same.id, status), same.first, 'a later close on the run the stamp judged printed something else')
+    }
+    assert.ok(readFileSync(stampPath(same.id)).equals(same.bytes))
+    ok('a later close on the run the stamp judged, with the text it judged, prints the stamp\'s valid verdict and result as before')
+
+    // A valid stamp from before close recorded runId and messageSha256 reads as another run.
+    const legacy = hookedSeat({})
+    assert.equal(store.stamp(legacy.id, 'closed', { verdict: 'valid', reasons: [], taskStatus: { status: 'completed', taskId: 'x' }, turn: 1, resultSha256: store.readResult(legacy.id, 1).sha256, servedModels: [MODELS.claude], blocks: 0, errors: [] }), true)
+    const legacyBytes = readFileSync(stampPath(legacy.id))
+    const legacyOut = closeSeat(legacy.id)
+    assert.deepEqual([legacyOut.verdict, legacyOut.reasons, legacyOut.result, legacyOut.recorded], ['unknown', ['stale-turn'], null, { verdict: 'valid', turn: 1 }], JSON.stringify(legacyOut))
+    assert.ok(readFileSync(stampPath(legacy.id)).equals(legacyBytes))
+    ok('a valid closed stamp written before close recorded the run it judged reads as another run: unknown (stale-turn) with recorded')
+
+    // A stamp that certified nothing prints as before, whatever the status: invalid, unknown and
+    // an abandon.
+    const invalid = hookedSeat({ outcome: 'blocked', blocks: 1, errors: ['$: x'] })
+    const invalidFirst = closeSeat(invalid.id)
+    assert.equal(invalidFirst.verdict, 'invalid')
+    const stale = guardedSeat()
+    const staleFirst = closeSeat(stale.id, laterRun(stale.id, 2, { latestTerminalSummary: messageWith('run 2') }))
+    assert.deepEqual([staleFirst.verdict, staleFirst.reasons], ['unknown', ['stale-turn']])
+    for (const [seat, first] of [[invalid, invalidFirst], [stale, staleFirst]]) {
+      const bytes = readFileSync(stampPath(seat.id))
+      const out = closeSeat(seat.id, laterRun(seat.id, 3, { latestTerminalSummary: messageWith('run 3') }))
+      assert.deepEqual(out, first, `a ${first.verdict} stamp printed something else on a later run`)
+      assert.ok(readFileSync(stampPath(seat.id)).equals(bytes))
+    }
+    const abandonWt = gitWorktree('close-rerun-later-run-abandon')
+    const abandoned = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', abandonWt])
+    const abandonOut = seatCli(['close', abandoned.id, '--abandon'])
+    const abandonBytes = readFileSync(stampPath(abandoned.id))
+    assert.deepEqual(closeSeat(abandoned.id, laterRun(abandoned.id, 2)), abandonOut, 'an abandoned stamp printed something else on a later run')
+    assert.ok(readFileSync(stampPath(abandoned.id)).equals(abandonBytes))
+    ok('a later close of a seat closed invalid, unknown or abandoned prints the stamp\'s verdict as before, with no recorded key, whatever run the status names')
+
+    // A review's later close reads the stamp, not the tree: the first close removed the worktree.
+    const reviewOpened = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    const review = hookedSeat({ id: reviewOpened.id, envelope: { ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read: ['a.txt', 'c.txt'], partial: [], unopened: [], checksRun: [] } } })
+    const reviewStatus = taskStatusOf(review.id, { summary: review.message })
+    const reviewFirst = closeSeat(review.id, reviewStatus)
+    assert.deepEqual([reviewFirst.verdict, existsSync(reviewOpened.reviewWorktree)], ['valid', false], JSON.stringify(reviewFirst))
+    assert.deepEqual(closeSeat(review.id, reviewStatus), reviewFirst, 'a review\'s later close re-judged the removed worktree')
+    const reviewLater = closeSeat(review.id, laterRun(review.id, 2, { latestTerminalSummary: messageWith('run 2') }))
+    assert.deepEqual([reviewLater.verdict, reviewLater.reasons, reviewLater.recorded], ['unknown', ['stale-turn'], { verdict: 'valid', turn: 1 }], JSON.stringify(reviewLater))
+    ok('a review\'s later close on its judged run prints valid without re-reading the removed worktree, and on a later run prints stale-turn with recorded')
+
+    // Two first closes with one status: the first is held just after its stamp is linked, and the
+    // second, which loses the stamp, prints the winner's record.
+    const raced = guardedSeat()
+    const gate = join(tmp, 'close-rerun-race')
+    const winner = await heldAt([SEAT_SCRIPT, 'close', raced.id, '--task-status', '-'], gate, 'closed', taskStatusOf(raced.id))
+    const loser = closeSeat(raced.id)
+    writeFileSync(`${gate}.go`, '')
+    const won = await winner.done
+    assert.equal(won.code, 0, won.out)
+    assert.deepEqual([loser.verdict, loser.reasons, Object.hasOwn(loser, 'recorded')], ['valid', [], false], JSON.stringify(loser))
+    assert.deepEqual(JSON.parse(won.out), loser, 'the racing closes printed different records')
+    ok('two first closes on one status keep the write-once outcome: the one that loses the stamp prints the winner\'s valid record')
+  },
+
   'close-task-match': () => {
     const writerWt = gitWorktree('close-task-match')
     const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
@@ -3305,10 +3506,329 @@ const cases = {
       assert.equal(closeSeat(each.id, taskStatusOf(each.id, { taskId: taskId.replace(seat.id, each.id) })).verdict, 'valid', taskId)
     }
     assert.equal(closeSeat(seat.id).verdict, 'valid')
+    // A seat that was never admitted has no clientRequestId to match, but its status still carries
+    // the five run keys: no seat is exempt from them.
     const unadmitted = hookedSeat({ stamps: [], index: 'none', outcome: null })
-    const closed = closeSeat(unadmitted.id, { status: 'cancelled', taskId: 'whatever' })
+    const closed = closeSeat(unadmitted.id, taskStatusOf(unadmitted.id, { status: 'cancelled', taskId: 'whatever', latestTerminalStatus: 'cancelled', summary: null }))
     assert.deepEqual([closed.ok, closed.verdict], [true, 'unknown'], JSON.stringify(closed))
-    ok('close accepts the seat\'s own task id, plain or URL-encoded, and closes a seat that was never admitted on any finished task status, as unknown')
+    ok('close accepts the seat\'s own task id, plain or URL-encoded, and closes a seat that was never admitted on any finished task status with its run keys, as unknown')
+  },
+
+  'close-trimmed-status': () => {
+    const writerWt = gitWorktree('close-trimmed-status')
+    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const seat = hookedSeat({ id: opened.id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
+    const without = (keys, fields = {}) => {
+      const status = taskStatusOf(seat.id, fields)
+      for (const key of keys) delete status[key]
+      return status
+    }
+    const unchanged = (what) => {
+      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
+    }
+    // The incident's trimmed status: what the parent kept of T3's answer, with no run keys at all.
+    const incident = { status: 'completed', taskId: `thread-1:delegate-task%3Aflow-seat-${seat.id}`, workState: 'result_available', hasPendingChildRuns: false }
+    for (const keys of [...RUN_KEYS.map((key) => [key]), ['childRunId', 'summary'], RUN_KEYS]) {
+      const status = without(keys)
+      for (const [how, refused] of [['stdin', closeSeat(seat.id, status)], ['argv', seatCli(['close', seat.id, '--task-status', JSON.stringify(status)])]]) {
+        assert.equal(refused.error?.kind, 'TASK_INCOMPLETE', `${keys.join(', ')} on ${how}: ${JSON.stringify(refused)}`)
+        assert.deepEqual(refused.error.details?.missing, RUN_KEYS.filter((key) => keys.includes(key)), `${keys.join(', ')}: the refusal does not name what is missing`)
+        unchanged(`a status without ${keys.join(', ')} on ${how}`)
+      }
+    }
+    assert.equal(closeSeat(seat.id, incident).error?.kind, 'TASK_INCOMPLETE')
+    unchanged('the incident\'s trimmed status')
+    ok('close refuses TASK_INCOMPLETE, naming each missing key and writing nothing, a task status that lacks any of childRunId, latestTerminalRunId, latestTerminalStatus, summary and latestTerminalSummary, on stdin or argv, the incident\'s trimmed {status, taskId} included')
+
+    // The older refusals come first: a trimmed status that is not finished, or not this seat's.
+    assert.equal(closeSeat(seat.id, without(RUN_KEYS, { status: 'running' })).error?.kind, 'TASK_NOT_TERMINAL')
+    assert.equal(closeSeat(seat.id, without(RUN_KEYS, { taskId: 'task-1' })).error?.kind, 'TASK_MISMATCH')
+    unchanged('a trimmed status refused for another reason')
+    ok('a trimmed status that is not finished reads TASK_NOT_TERMINAL, and one that is not the seat\'s own task reads TASK_MISMATCH, before TASK_INCOMPLETE')
+
+    // A key that is present with a null value is not missing.
+    for (const key of ['latestTerminalStatus', 'summary', 'latestTerminalSummary']) {
+      const each = hookedSeat({})
+      const out = closeSeat(each.id, taskStatusOf(each.id, { [key]: null }))
+      assert.equal(out.ok, true, `${key}: null: ${JSON.stringify(out)}`)
+    }
+    const whole = closeSeat(seat.id)
+    assert.deepEqual([whole.verdict, existsSync(holder)], ['valid', false], JSON.stringify(whole))
+    ok('a run key present with a null value is no missing key, and the whole status then closes the seat that refused the trimmed ones')
+  },
+
+  'close-run-id-grammar': () => {
+    const writerWt = gitWorktree('close-run-id-grammar')
+    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const seat = hookedSeat({ id: opened.id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
+    const thread = childThreadOf(seat.id)
+    const encoded = encodeURIComponent(thread)
+    const withOrdinal = (text) => `run:thread:${encoded}:ordinal:${text}`
+    const refuse = (status, what) => {
+      const refused = closeSeat(seat.id, status)
+      assert.equal(refused.error?.kind, 'TASK_MISMATCH', `${what}: ${JSON.stringify(refused)}`)
+      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
+    }
+    const badIds = [
+      ['null', null], ['a number', 1], ['an object', { thread, ordinal: 1 }], ['an empty string', ''],
+      ['no prefix', `${encoded}:ordinal:1`], ['another prefix', `run:node:${encoded}:ordinal:1`],
+      ['the thread not encoded', `run:thread:${thread}:ordinal:1`], ['the thread encoded twice', `run:thread:${encodeURIComponent(encoded)}:ordinal:1`],
+      ['lower-case escapes', `run:thread:${encoded.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase())}:ordinal:1`],
+      ['another thread', runIdOf(childThreadOf(store.newId()), 1)], ['no ordinal', `run:thread:${encoded}`], ['an empty ordinal', withOrdinal('')],
+      ['ordinal 0', withOrdinal('0')], ['a leading zero', withOrdinal('01')], ['a negative ordinal', withOrdinal('-1')], ['a fraction', withOrdinal('1.5')],
+      ['an exponent', withOrdinal('1e3')], ['past the safe integers', withOrdinal('9007199254740993')], ['a space', withOrdinal(' 1')],
+      ['trailing text', withOrdinal('1:x')], ['a second ordinal', `run:thread:${encoded}:ordinal:1:ordinal:1`],
+    ]
+    for (const [what, value] of badIds) {
+      for (const key of ['childRunId', 'latestTerminalRunId']) refuse(taskStatusOf(seat.id, { [key]: value }), `${key} ${what}`)
+      refuse(taskStatusOf(seat.id, { childRunId: value, latestTerminalRunId: value }), `both run ids ${what}`)
+    }
+    ok(`close refuses TASK_MISMATCH, writing nothing and keeping the lease, a child or latest run id that is not run:thread:<encodeURIComponent(childThreadId)>:ordinal:<n> with n a positive safe integer in canonical digits (${badIds.length} malformed, foreign or wrong-type forms)`)
+
+    const { childThreadId, ...noThread } = taskStatusOf(seat.id)
+    refuse(noThread, 'no childThreadId')
+    for (const [what, value] of [['empty', ''], ['a number', 7], ['null', null], ['a lone surrogate', '\ud800'], ['another thread', childThreadOf(store.newId())]]) {
+      refuse(taskStatusOf(seat.id, { childThreadId: value }), `a childThreadId that is ${what}`)
+    }
+    refuse(taskStatusOf(seat.id, { childRunId: runIdOf(thread, 3), latestTerminalRunId: runIdOf(thread, 2) }), 'a latest run before the child run')
+    ok('a missing, empty, wrong-type, unencodable or foreign childThreadId, and a latest run whose ordinal comes before the child run\'s, are refused TASK_MISMATCH too')
+
+    // Any thread id encodes, and a later latest run is in order.
+    for (const odd of ['a/b:c%d e', 'thread:été/\u{1F600}', '%%', ':ordinal:1']) {
+      const each = hookedSeat({})
+      const out = closeSeat(each.id, taskStatusOf(each.id, { childThreadId: odd, childRunId: runIdOf(odd, 1), latestTerminalRunId: runIdOf(odd, 1) }))
+      assert.equal(out.ok, true, `${odd}: ${JSON.stringify(out)}`)
+    }
+    const later = hookedSeat({})
+    assert.equal(closeSeat(later.id, taskStatusOf(later.id, { latestTerminalRunId: runIdOf(childThreadOf(later.id), 4) })).ok, true, 'a later latest run')
+    assert.equal(closeSeat(seat.id).verdict, 'valid')
+    assert.equal(existsSync(holder), false)
+    ok('a thread id with :, /, %, spaces, non-ASCII text or :ordinal: inside it is accepted through its encoded form, a latest run after the child run is accepted, and the whole status then closes the refused seat')
+  },
+
+  'close-status-size': () => {
+    // A status of exactly `bytes` UTF-8 bytes as JSON: the status with a pad field of ASCII filler.
+    const sized = (status, bytes) => {
+      const base = Buffer.byteLength(JSON.stringify({ ...status, pad: '' }))
+      assert.ok(bytes >= base, `a ${bytes}-byte status cannot hold ${base} bytes of fields`)
+      const text = JSON.stringify({ ...status, pad: 'x'.repeat(bytes - base) })
+      assert.equal(Buffer.byteLength(text), bytes)
+      return Buffer.from(text)
+    }
+    const writerWt = gitWorktree('close-status-size')
+    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const seat = hookedSeat({ id: opened.id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
+    const STDIN_CAP = 256 * 1024
+    const ARGV_CAP = 64 * 1024
+    const stdin = (input) => seatCli(['close', seat.id, '--task-status', '-'], { input })
+    const refused = (out, pattern, what) => {
+      assert.equal(out.error?.kind, 'BAD_REQUEST', `${what}: ${JSON.stringify(out)}`)
+      if (pattern) assert.match(out.error.message, pattern, what)
+      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
+    }
+    const status = taskStatusOf(seat.id)
+    refused(stdin(sized(status, STDIN_CAP + 1)), /256 KiB/, 'one byte over 256 KiB')
+    refused(stdin(Buffer.concat([sized(status, STDIN_CAP), Buffer.from('\n')])), /256 KiB/, '256 KiB of JSON and a trailing newline')
+    refused(stdin(Buffer.alloc(STDIN_CAP * 4, 0x20)), /256 KiB/, 'a megabyte of spaces')
+    refused(stdin(Buffer.concat([Buffer.from('{"status":"completed","pad":"'), Buffer.from([0xc3, 0x28]), Buffer.from('"}')])), /UTF-8/, 'invalid UTF-8')
+    refused(stdin(''), /not JSON/, 'an empty stdin')
+    refused(stdin('{"status":'), /not JSON/, 'a torn JSON document')
+    refused(seatCli(['close', seat.id, '--task-status', sized(status, ARGV_CAP + 1).toString()]), /64 KiB/, 'an argv status one byte over 64 KiB')
+    ok('close refuses BAD_REQUEST, writing nothing and keeping the lease, a stdin status over 256 KiB of raw bytes (a trailing newline counts), stdin that is not UTF-8 or not JSON, and an argv status over 64 KiB')
+
+    // Accepted: 200 KiB whose final message carries non-ASCII text and JSON escapes, exactly 64 KiB
+    // as one argument, and exactly 256 KiB on stdin.
+    const notes = `résumé \u{1F600} "quoted" \\ back\tslash\n\u0001 `.repeat(2_500)
+    const long = hookedSeat({ envelope: { ...ENVELOPE_OK, notes } })
+    const longStatus = sized(taskStatusOf(long.id, { summary: long.message }), 200 * 1024)
+    assert.ok(long.message.length > 100_000 && /\\u0001/.test(longStatus.toString()) && /é/.test(longStatus.toString()))
+    const longOut = seatCli(['close', long.id, '--task-status', '-'], { input: longStatus })
+    assert.deepEqual([longOut.verdict, longOut.result?.notes], ['valid', notes], JSON.stringify(longOut).slice(0, 400))
+    const argvSeat = hookedSeat({})
+    assert.equal(seatCli(['close', argvSeat.id, '--task-status', sized(taskStatusOf(argvSeat.id), ARGV_CAP).toString()]).verdict, 'valid', 'exactly 64 KiB as one argument')
+    const atCap = stdin(sized(status, STDIN_CAP))
+    assert.deepEqual([atCap.verdict, existsSync(holder)], ['valid', false], JSON.stringify(atCap).slice(0, 400))
+    assert.equal(store.readStamp(seat.id, 'closed').taskStatus.pad.length > 200_000, true, 'the closed stamp does not hold the whole status')
+    ok('close accepts a 200 KiB stdin status with non-ASCII text and escapes in its final message, exactly 64 KiB as one argument, and exactly 256 KiB on stdin, which closes the seat that refused the larger ones')
+  },
+
+  // The stale-turn cases run their seats through the real hooks, so the state close reads (turn,
+  // turnKey, opened, messageSha256) holds the bytes the hooks write, and each task status is the
+  // one T3 would answer for that history: the child's run 1 and its summary, and the latest
+  // finished run's id, status and summary.
+  'close-stale-run': () => {
+    // The incident: turn 1 recorded valid, then two more runs with every flow hook dark, the last
+    // completing with an answer the hooks never saw.
+    const seat = guardedSeat()
+    const status = taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 3), latestTerminalSummary: messageWith('run 3, unhooked') })
+    const out = closeSeat(seat.id, status)
+    assert.deepEqual([out.verdict, out.reasons, out.result, out.turn], ['unknown', ['stale-turn'], null, 1], JSON.stringify(out))
+    const stamped = store.readStamp(seat.id, 'closed')
+    assert.deepEqual([stamped.verdict, stamped.reasons, stamped.runId, stamped.messageSha256], ['unknown', ['stale-turn'], status.latestTerminalRunId, sha256(MESSAGE_OK)])
+    ok('a seat whose turn 1 is recorded valid closes unknown (stale-turn) with no result when T3\'s latest finished run is a later one with other text and no hook recorded it, and the closed stamp records that run and the digest it judged')
+  },
+
+  'close-later-run-recorded': () => {
+    const seat = guardedSeat()
+    const key = seat.followUp()
+    const second = messageWith('run 2, recorded')
+    silent(seat.stop(second, key), 'turn 2 stop')
+    const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalSummary: second }))
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 2, JSON.parse(second)], JSON.stringify(out))
+    ok('a follow-up the hooks recorded closes valid on turn 2 when T3\'s latest run is run 2 with that turn\'s text, the summary still run 1\'s')
+  },
+
+  'close-later-run-duplicate-text': () => {
+    const seat = guardedSeat()
+    const key = seat.followUp()
+    silent(seat.stop(MESSAGE_OK, key), 'turn 2 repeats turn 1')
+    assert.deepEqual([store.readState(seat.id).turn, store.readState(seat.id).messageSha256], [2, sha256(MESSAGE_OK)])
+    // T3 nulls latestTerminalSummary when it repeats the summary.
+    const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalSummary: null }))
+    assert.deepEqual([out.verdict, out.reasons, out.turn], ['valid', [], 2], JSON.stringify(out))
+    ok('a recorded follow-up whose text repeats turn 1\'s closes valid on turn 2: T3 nulls latestTerminalSummary, and the summary is the recorded message')
+  },
+
+  'close-same-run': () => {
+    const seat = guardedSeat()
+    const out = closeSeat(seat.id)
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 1, ENVELOPE_OK], JSON.stringify(out))
+    const other = guardedSeat()
+    const ignored = closeSeat(other.id, taskStatusOf(other.id, { latestTerminalSummary: messageWith('not the child run\'s summary') }))
+    assert.deepEqual([ignored.verdict, ignored.reasons], ['valid', []], JSON.stringify(ignored))
+    ok('a task whose latest run is the child run closes valid on the child run\'s summary, whatever latestTerminalSummary holds')
+  },
+
+  'close-same-run-raw-bytes': () => {
+    for (const [what, message] of [
+      ['a trailing newline', `${MESSAGE_OK}\n`], ['a fenced envelope', `\`\`\`json\n${MESSAGE_OK}\n\`\`\``], ['CRLF and spaces around it', `  ${MESSAGE_OK}\r\n`],
+    ]) {
+      const seat = guardedSeat(message)
+      assert.deepEqual([store.readState(seat.id).outcome, store.readState(seat.id).messageSha256], ['valid', sha256(message)], `${what}: the hook did not record the raw message`)
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary: message }))
+      assert.deepEqual([out.verdict, out.reasons, out.result], ['valid', [], ENVELOPE_OK], `${what}: ${JSON.stringify(out)}`)
+      const normalized = guardedSeat(message)
+      const stale = closeSeat(normalized.id, taskStatusOf(normalized.id, { summary: MESSAGE_OK }))
+      assert.deepEqual([stale.verdict, stale.reasons], ['unknown', ['stale-turn']], `${what} compared after normalizing`)
+    }
+    ok('a final message with a trailing newline, a fence, or CRLF and spaces closes valid against a summary of the same raw bytes, and stale-turn against the bare envelope: nothing is trimmed or unfenced')
+  },
+
+  'close-blocked-then-valid': () => {
+    const seat = guardedSeat(null)
+    stopBlocked(seat.stop('not an envelope', seat.first), 'the first final message fails')
+    silent(seat.stop(MESSAGE_OK, seat.first), 'the resumed turn answers')
+    assert.deepEqual([store.readState(seat.id).outcome, store.readState(seat.id).blocks], ['valid', 1])
+    const out = closeSeat(seat.id)
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.blocks, out.result], ['valid', [], 1, 1, ENVELOPE_OK], JSON.stringify(out))
+    ok('a turn whose first final message was blocked and whose resumed answer passed closes valid on the run\'s summary, the resumed answer')
+  },
+
+  'close-same-run-mismatch': () => {
+    for (const [what, summary] of [
+      ['one byte changed', MESSAGE_OK.replace('"ok"', '"oK"')], ['one byte added', `${MESSAGE_OK} `], ['one byte dropped', MESSAGE_OK.slice(0, -1)], ['null', null], ['a number', 7],
+    ]) {
+      const seat = guardedSeat()
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary }))
+      assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['stale-turn'], null], `${what}: ${JSON.stringify(out)}`)
+    }
+    ok('a same-run summary one byte apart from the recorded message, or none, closes unknown (stale-turn)')
+  },
+
+  'close-failed-latest-run': () => {
+    const errorText = 'Error: the provider exited with code 1'
+    // A later run with no hook call that failed.
+    for (const latestTerminalSummary of [null, errorText]) {
+      const seat = guardedSeat()
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalStatus: 'failed', latestTerminalSummary }))
+      assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['stale-turn'], null], `failed with ${latestTerminalSummary}: ${JSON.stringify(out)}`)
+    }
+    // A recorded turn 2 whose run T3 then reports ended otherwise: no text, whatever the summary
+    // holds, so the opened key cannot vouch for it.
+    for (const latestTerminalStatus of ['failed', 'cancelled', 'interrupted']) {
+      for (const pick of ['null', 'error', 'the recorded text']) {
+        const seat = guardedSeat()
+        const key = seat.followUp()
+        const second = messageWith(`run 2, then ${latestTerminalStatus}`)
+        silent(seat.stop(second, key), 'turn 2 stop')
+        const latestTerminalSummary = { null: null, error: errorText, 'the recorded text': second }[pick]
+        const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalStatus, latestTerminalSummary }))
+        assert.deepEqual([out.verdict, out.reasons], ['unknown', ['stale-turn']], `${latestTerminalStatus} with ${pick}: ${JSON.stringify(out)}`)
+      }
+    }
+    ok('a latest run that ended failed, cancelled or interrupted gives no text, so close reads unknown (stale-turn) with a null summary, an error summary, or even the recorded text, hooked or not')
+  },
+
+  'close-ordinal-without-prompt': () => {
+    for (const latestTerminalSummary of [null, MESSAGE_OK]) {
+      const seat = guardedSeat()
+      assert.equal(Object.hasOwn(store.readState(seat.id), 'opened'), false)
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalSummary }))
+      assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['stale-turn'], null], `${latestTerminalSummary}: ${JSON.stringify(out)}`)
+    }
+    ok('a latest run past the child run with no follow-up prompt on record closes unknown (stale-turn), even when its text is turn 1\'s byte for byte')
+  },
+
+  'close-failed-then-retried': () => {
+    // T3 run 2 failed with no stop: once after its prompt was recorded, once before any hook ran.
+    // Run 3 is then flow's turn 2: a run ordinal is never a turn count.
+    for (const run2 of ['prompt recorded', 'no hook']) {
+      const seat = guardedSeat()
+      if (run2 === 'prompt recorded') seat.followUp()
+      const key = seat.followUp()
+      const third = messageWith(`run 3 after a failed run 2 (${run2})`)
+      silent(seat.stop(third, key), 'run 3 stop')
+      assert.equal(store.readState(seat.id).turn, 2)
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 3), latestTerminalSummary: third }))
+      assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 2, JSON.parse(third)], `${run2}: ${JSON.stringify(out)}`)
+    }
+    ok('a failed run 2 followed by a hooked run 3 closes valid on flow turn 2, whether run 2\'s prompt was recorded or not')
+  },
+
+  'close-recorded-then-dark': () => {
+    const seat = guardedSeat()
+    const key = seat.followUp()
+    silent(seat.stop(messageWith('run 2, recorded'), key), 'turn 2 stop')
+    const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 3), latestTerminalSummary: messageWith('run 3, unhooked') }))
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['unknown', ['stale-turn'], 2, null], JSON.stringify(out))
+    ok('a recorded follow-up followed by an unhooked run with new text closes unknown (stale-turn): the opened key of turn 2 does not vouch for run 3')
+  },
+
+  'close-refusal-retry': () => {
+    // Every file in the seat's record directory, by sha256: a refusal changes none of them.
+    const files = (id) => Object.fromEntries(readdirSync(join(seats, id)).sort().map((name) => [name, sha256(readFileSync(join(seats, id, name)))]))
+    const refusals = (id) => {
+      const thread = childThreadOf(id)
+      const { summary, ...trimmed } = taskStatusOf(id)
+      return [['TASK_INCOMPLETE', trimmed], ['TASK_MISMATCH', taskStatusOf(id, { childRunId: `run:thread:${thread}:ordinal:1` })],
+        ['TASK_MISMATCH', taskStatusOf(id, { childRunId: runIdOf(thread, 2), latestTerminalRunId: runIdOf(thread, 1) })]]
+    }
+    const writerWt = gitWorktree('close-refusal-retry')
+    const writer = hookedSeat({ id: seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt]).id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${writer.id}.live`)
+    const covering = { ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read: ['a.txt', 'c.txt'], partial: [], unopened: [], checksRun: [] } }
+    const opened = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    const review = hookedSeat({ id: opened.id, envelope: covering })
+    for (const [seat, kept] of [[writer, holder], [review, opened.reviewWorktree]]) {
+      for (const [kind, status] of refusals(seat.id)) {
+        const before = files(seat.id)
+        const refused = closeSeat(seat.id, status)
+        assert.equal(refused.error?.kind, kind, JSON.stringify(refused))
+        assert.deepEqual(files(seat.id), before, `a ${kind} refusal changed the record directory`)
+        assert.ok(existsSync(kept), `a ${kind} refusal released ${kept}`)
+      }
+      const retried = closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message }))
+      assert.deepEqual([retried.verdict, retried.reasons], ['valid', []], JSON.stringify(retried))
+      assert.equal(existsSync(kept), false, `the retry kept ${kept}`)
+    }
+    assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(opened.reviewWorktree), 'git still lists the review worktree')
+    ok('a TASK_INCOMPLETE or TASK_MISMATCH refusal changes no file of the record, keeps the writer\'s lease holder and the review worktree, and a retry with the whole status closes the seat valid and releases both')
   },
 
   'close-abandon': () => {
@@ -3733,6 +4253,255 @@ const cases = {
       assert.deepEqual([refused.error?.kind, refused.error?.details.cause], ['HOOKS_UNTRUSTED', 'HOOKS_MISMATCH'], what)
     }
     ok('a source copy whose marketplace manifest is missing, names no marketplace, or names another directory as flow names no plugin id: trust and open fail closed, and nothing is written')
+  },
+
+  // B at open: a Codex seat records the flow plugin root Codex lists its hooks under and a digest
+  // of everything in it, taken before and after the trust read. Each case has its own root and
+  // its own fake Codex state, so FAKE_ROOT is never touched.
+  'open-hooks-entry-types': async () => {
+    const args = (access = 'read-only', extra = []) => ['open', '--access', access, '--provider', 'codex', '--model', MODELS.codex, '--effort', 'high', ...extra]
+    const records = () => (existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [])
+    // A Codex install of this flow with more in it than its hooks file, as a real one has.
+    const fullRoot = (name) => {
+      const root = installedRoot(name)
+      mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
+      mkdirSync(join(root, 'empty'))
+      writeFileSync(join(root, 'scripts', 'seat.mjs'), '// seat\n')
+      writeFileSync(join(root, 'scripts', 'lib', 'x.mjs'), 'export {}\n')
+      writeFileSync(join(root, '.codex-plugin.json'), '{}\n')
+      return root
+    }
+    const root = fullRoot('entry-plain')
+    const codex = codexState(flowEntries({ trusted: true, root }))
+    const opened = seatCli(args(), { env: codex.env })
+    assert.equal(opened.ok, true, JSON.stringify(opened))
+    const { record } = store.readRecord(opened.id)
+    assert.notEqual(root, realpathSync(PLUGIN))
+    assert.deepEqual([record.codexPluginRoot, record.codexPluginDigest, record.hooksDigest], [root, treeDigest(root), flowDigest(flowEntries({ trusted: true, root }))])
+    assert.deepEqual(codexSent(codex.dir).map(({ method }) => method), ['initialize', 'initialized', 'hooks/list', 'initialize', 'initialized', 'hooks/list'], 'the root was not listed and the trust read in a second session')
+    const claude = store.readRecord(seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', MODELS.claude, '--effort', 'high']).id).record
+    assert.deepEqual([Object.hasOwn(claude, 'codexPluginRoot'), Object.hasOwn(claude, 'codexPluginDigest')], [false, false])
+    ok('a Codex seat records the root Codex listed its flow hooks under, apart from this checkout, and the digest of every regular file and directory in it, empty and nested ones and dotfiles included, reading the root and then the trust in two App Server sessions; a Claude seat records neither key')
+
+    // Each odd root refuses open HOOKS_MISMATCH for every access, writing nothing: no record, no
+    // writer's holder, no review worktree, and no trust.
+    let made = 0
+    const refuses = (bad, what) => {
+      for (const [access, extra] of [['read-only', []], ['workspace-write', ['--worktree', gitWorktree(`open-hooks-entry-${made++}`)]], ['review', ['--base', baseSha, '--head', headSha]]]) {
+        const { dir, env } = codexState(flowEntries({ trusted: true, root: bad }))
+        const before = [records(), gitOut(canon, 'worktree', 'list', '--porcelain')]
+        const out = seatCli(args(access, extra), { env, timeout: 30_000 })
+        assert.equal(out.error?.kind, 'HOOKS_MISMATCH', `${what}, ${access}: ${JSON.stringify(out)}`)
+        assert.equal(out.error.details?.codexPluginRoot, bad, what)
+        assert.deepEqual([records(), gitOut(canon, 'worktree', 'list', '--porcelain')], before, `${what}, ${access}: the refused open left a record or a review worktree`)
+        if (access === 'workspace-write') assert.equal(existsSync(jobs.leaseDirOf(extra[1])), false, `${what}: the refused writer left its lease holder`)
+        assert.ok(!codexSent(dir).some((message) => message.method === 'config/batchWrite'), `${what}: open wrote trust`)
+      }
+    }
+    const fileLink = fullRoot('entry-file-link')
+    symlinkSync(join(fileLink, 'hooks', 'codex.json'), join(fileLink, 'scripts', 'hooks.json'))
+    refuses(fileLink, 'a symlink to a file in the root')
+    const dirLink = fullRoot('entry-dir-link')
+    symlinkSync(join(dirLink, 'scripts'), join(dirLink, 'tools'))
+    refuses(dirLink, 'a symlink to a directory in the root')
+    const dangling = fullRoot('entry-dangling')
+    symlinkSync(join(dangling, 'nowhere'), join(dangling, 'scripts', 'gone.mjs'))
+    refuses(dangling, 'a dangling symlink')
+    const real = fullRoot('entry-root-real')
+    const linkedRoot = join(dirname(real), '9.9.8')
+    symlinkSync(real, linkedRoot)
+    refuses(linkedRoot, 'a root that is itself a symlink')
+    const socketRoot = fullRoot('entry-socket')
+    const server = createServer()
+    await new Promise((resolve, reject) => server.once('error', reject).listen(join(socketRoot, 's'), resolve))
+    try { refuses(socketRoot, 'a unix socket in the root') } finally { await new Promise((resolve) => server.close(resolve)) }
+    const fifoRoot = fullRoot('entry-fifo')
+    const fifo = spawnSync('mkfifo', [join(fifoRoot, 'scripts', 'pipe')])
+    if (fifo.status === 0) refuses(fifoRoot, 'a FIFO in the root, which is never opened for a read that would block')
+    ok(`open refuses a Codex seat HOOKS_MISMATCH, for every access and writing nothing, when the root is a symlink or holds a symlink to a file, a directory or nothing, a unix socket${fifo.status === 0 ? ' or a FIFO' : ' (no mkfifo here, so no FIFO)'}`)
+
+    if (process.getuid?.() === 0) ok('unreadable entries are not checked as root, which reads them anyway')
+    else {
+      const unreadableFile = fullRoot('entry-unreadable-file')
+      const unreadableDir = fullRoot('entry-unreadable-dir')
+      chmodSync(join(unreadableFile, 'scripts', 'seat.mjs'), 0o000)
+      chmodSync(join(unreadableDir, 'scripts', 'lib'), 0o000)
+      try {
+        refuses(unreadableFile, 'an unreadable file')
+        refuses(unreadableDir, 'an unreadable directory')
+      } finally {
+        chmodSync(join(unreadableFile, 'scripts', 'seat.mjs'), 0o644)
+        chmodSync(join(unreadableDir, 'scripts', 'lib'), 0o755)
+      }
+      ok('open refuses a Codex seat HOOKS_MISMATCH, writing nothing, when the root holds a file or a directory it cannot read')
+    }
+  },
+
+  'open-hooks-race': () => {
+    const args = (access = 'read-only', extra = []) => ['open', '--access', access, '--provider', 'codex', '--model', MODELS.codex, '--effort', 'high', ...extra]
+    const records = () => (existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [])
+    let made = 0
+    // An open whose Codex does step on its n-th hooks/list, refused kind for every access, with
+    // nothing written.
+    const refused = (root, onList, kind, what) => {
+      for (const [access, extra] of [['read-only', []], ['workspace-write', ['--worktree', gitWorktree(`open-hooks-race-${made++}`)]], ['review', ['--base', baseSha, '--head', headSha]]]) {
+        const { dir, env } = codexState(flowEntries({ trusted: true, root }), { onList })
+        const before = [records(), gitOut(canon, 'worktree', 'list', '--porcelain')]
+        const out = seatCli(args(access, extra), { env })
+        assert.equal(out.error?.kind, kind, `${what}, ${access}: ${JSON.stringify(out)}`)
+        assert.deepEqual([records(), gitOut(canon, 'worktree', 'list', '--porcelain')], before, `${what}, ${access}: the refused open left a record or a review worktree`)
+        if (access === 'workspace-write') assert.equal(existsSync(jobs.leaseDirOf(extra[1])), false, `${what}: the refused writer left its lease holder`)
+        assert.deepEqual(codexSent(dir).map(({ method }) => method), ['initialize', 'initialized', 'hooks/list', 'initialize', 'initialized', 'hooks/list'], what)
+      }
+    }
+    const byte = installedRoot('race-byte')
+    writeFileSync(join(byte, 'README.md'), 'flow\n')
+    refused(byte, { 2: { append: [join(byte, 'README.md'), 'x'] } }, 'HOOKS_CHANGED', 'a non-hook byte changed before the trust read answered')
+    const added = installedRoot('race-added')
+    refused(added, { 2: { append: [join(added, 'NEW'), 'x'] } }, 'HOOKS_CHANGED', 'a file added before the trust read answered')
+    const moved = installedRoot('race-moved')
+    refused(moved, { 2: { hooks: flowEntries({ trusted: true, root: installedRoot('race-moved-to') }) } }, 'HOOKS_CHANGED', 'a trust read that lists another root')
+    ok('open refuses a Codex seat HOOKS_CHANGED, for every access and writing nothing, when a byte of the root changes or a file is added between the first digest and the trust read, or when the trust read lists flow under another root')
+
+    const untrusting = installedRoot('race-untrusted')
+    refused(untrusting, { 2: { hooks: flowEntries({ root: untrusting }) } }, 'HOOKS_UNTRUSTED', 'a trust read that reads untrusted')
+    const early = installedRoot('race-early')
+    writeFileSync(join(early, 'README.md'), 'flow\n')
+    const { env } = codexState(flowEntries({ trusted: true, root: early }), { onList: { 1: { append: [join(early, 'README.md'), 'x'] } } })
+    const opened = seatCli(args(), { env })
+    assert.equal(opened.ok, true, JSON.stringify(opened))
+    assert.equal(store.readRecord(opened.id).record.codexPluginDigest, treeDigest(early))
+    ok('the trust comes from the second hooks/list, so one that reads untrusted refuses HOOKS_UNTRUSTED; a change before the first digest is no race, and the record holds the digest of the root as changed')
+  },
+
+  // B at close: Codex untrusts every flow hook when any file of the plugin changes and then skips
+  // them without a word, so a Codex seat whose plugin root no longer holds what open digested may
+  // have run unguarded, and an otherwise valid close reads unknown (hooks-changed).
+  'close-hooks-changed': () => {
+    const README = (seat) => join(seat.root, 'README.md')
+    const changes = [
+      ['one non-hook byte appended', (root) => writeFileSync(join(root, 'README.md'), 'flow\nx')],
+      ['one non-hook byte changed', (root) => writeFileSync(join(root, 'README.md'), 'flaw\n')],
+      ['a file added', (root) => writeFileSync(join(root, 'scripts', 'new.mjs'), '')],
+      ['an empty directory added', (root) => mkdirSync(join(root, 'empty'))],
+      ['a file removed', (root) => rmSync(join(root, 'scripts', 'seat.mjs'))],
+      ['a file renamed', (root) => renameSync(join(root, 'scripts', 'seat.mjs'), join(root, 'scripts', 'moved.mjs'))],
+    ]
+    changes.forEach(([what, change], at) => {
+      const seat = rootedCodexSeat(`close-hooks-changed-${at}`)
+      assert.notEqual(seat.root, realpathSync(PLUGIN))
+      change(seat.root)
+      const out = closeSeat(seat.id)
+      assert.deepEqual([out.verdict, out.reasons, out.result, out.turn], ['unknown', ['hooks-changed'], null, 1], `${what}: ${JSON.stringify(out)}`)
+      assert.deepEqual([store.readStamp(seat.id, 'closed').verdict, store.readStamp(seat.id, 'closed').reasons], ['unknown', ['hooks-changed']])
+    })
+    ok('a Codex seat whose plugin root, apart from this checkout, gained, lost, renamed or changed a non-hook file or directory between open and close closes unknown (hooks-changed) with no result')
+
+    // The two scans at close: a tree that changes between them reads hooks-changed even though
+    // the first scan matched what open recorded.
+    const scanned = rootedCodexSeat('close-hooks-changed-scan')
+    const scanOut = seatCli(['close', scanned.id, '--task-status', '-'], { input: JSON.stringify(taskStatusOf(scanned.id)), nodeArgs: ['--import', pathToFileURL(scanGate).href], env: { SCAN_ROOT: scanned.root } })
+    assert.equal(readFileSync(README(scanned), 'utf8'), 'flow\nx', 'the scan gate never fired, so close scanned the root once')
+    assert.deepEqual([scanOut.verdict, scanOut.reasons], ['unknown', ['hooks-changed']], JSON.stringify(scanOut))
+    ok('close scans the root twice in a row, and a root that changes between the scans reads hooks-changed')
+
+    // A later close after a valid first close checks the root again, and never rewrites the stamp.
+    const later = rootedCodexSeat('close-hooks-changed-later')
+    const first = closeSeat(later.id)
+    assert.equal(first.verdict, 'valid', JSON.stringify(first))
+    const bytes = readFileSync(join(seats, later.id, 'closed.json'))
+    writeFileSync(README(later), 'flow\nx')
+    const again = closeSeat(later.id)
+    assert.deepEqual(again, { ...first, verdict: 'unknown', reasons: ['hooks-changed'], result: null, recorded: { verdict: 'valid', turn: 1 } }, JSON.stringify(again))
+    assert.ok(readFileSync(join(seats, later.id, 'closed.json')).equals(bytes), 'the later close rewrote the closed stamp')
+    ok('a later close of a seat closed valid reads hooks-changed with recorded once its root changed, the closed stamp byte-identical')
+
+    // The check is endpoint drift: a change restored byte for byte before close is not seen.
+    const restored = rootedCodexSeat('close-hooks-changed-restored')
+    writeFileSync(README(restored), 'flow\nx')
+    writeFileSync(README(restored), 'flow\n')
+    assert.equal(closeSeat(restored.id).verdict, 'valid')
+    ok('a root changed and then restored byte for byte before close closes valid: the documented endpoint-drift limit')
+  },
+
+  'close-hooks-missing': () => {
+    const gone = rootedCodexSeat('close-hooks-missing')
+    rmSync(gone.root, { recursive: true })
+    const goneOut = closeSeat(gone.id)
+    assert.deepEqual([goneOut.verdict, goneOut.reasons, goneOut.result], ['unknown', ['hooks-changed'], null], JSON.stringify(goneOut))
+    // The same bytes behind a symlink are no longer the root open digested.
+    const linked = rootedCodexSeat('close-hooks-missing-link')
+    const copy = `${linked.root}-copy`
+    cpSync(linked.root, copy, { recursive: true })
+    rmSync(linked.root, { recursive: true })
+    symlinkSync(copy, linked.root)
+    assert.equal(treeDigest(copy), store.readRecord(linked.id).record.codexPluginDigest)
+    const linkedOut = closeSeat(linked.id)
+    assert.deepEqual([linkedOut.verdict, linkedOut.reasons], ['unknown', ['hooks-changed']], JSON.stringify(linkedOut))
+    ok('a Codex seat whose plugin root is gone at close, or became a symlink to the same bytes, closes unknown (hooks-changed)')
+  },
+
+  'close-hooks-unchanged': () => {
+    const seat = rootedCodexSeat('close-hooks-unchanged')
+    const out = closeSeat(seat.id)
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 1, ENVELOPE_OK], JSON.stringify(out))
+    // The same through the real hooks, with a recorded follow-up.
+    const hooked = rootedCodexSeat('close-hooks-unchanged-hooked', { hooks: true })
+    const run = guardedSeat(MESSAGE_OK, { id: hooked.id })
+    const key = run.followUp()
+    const second = messageWith('turn 2 on an unchanged root')
+    silent(run.stop(second, key), 'turn 2 stop')
+    const followed = closeSeat(hooked.id, taskStatusOf(hooked.id, { latestTerminalRunId: runIdOf(childThreadOf(hooked.id), 2), latestTerminalSummary: second }))
+    assert.deepEqual([followed.verdict, followed.reasons, followed.turn], ['valid', [], 2], JSON.stringify(followed))
+    ok('a Codex seat whose plugin root holds at close exactly what open digested closes on its turn as before, through the store or the real hooks')
+  },
+
+  'close-hooks-legacy-record': () => {
+    // A Codex record from before open recorded the root carries neither key, and closes as before.
+    const legacy = hookedSeat({ provider: 'codex' })
+    assert.equal(Object.hasOwn(store.readRecord(legacy.id).record, 'codexPluginRoot'), false)
+    assert.deepEqual([closeSeat(legacy.id).verdict], ['valid'])
+    // One key alone or a malformed value is no legacy record.
+    const root = installedRoot('close-hooks-legacy')
+    const digest = treeDigest(root)
+    for (const [what, fields] of [
+      ['the root alone', { codexPluginRoot: root }], ['the digest alone', { codexPluginDigest: digest }], ['a digest that is no sha256', { codexPluginRoot: root, codexPluginDigest: 'x' }],
+      ['a relative root', { codexPluginRoot: 'plugins/flow', codexPluginDigest: digest }], ['a root that is no string', { codexPluginRoot: 7, codexPluginDigest: digest }],
+      ['both null', { codexPluginRoot: null, codexPluginDigest: null }],
+    ]) {
+      const out = closeSeat(hookedSeat({ provider: 'codex', record: fields }).id)
+      assert.deepEqual([out.verdict, out.reasons], ['unknown', ['hooks-changed']], `${what}: ${JSON.stringify(out)}`)
+    }
+    assert.equal(closeSeat(hookedSeat({ provider: 'codex', record: { codexPluginRoot: root, codexPluginDigest: digest } }).id).verdict, 'valid', 'both keys, matching')
+    ok('a Codex record without codexPluginRoot and codexPluginDigest closes as before; one with only one of them, or a malformed one, closes unknown (hooks-changed)')
+  },
+
+  'close-hooks-claude-ignored': () => {
+    const root = installedRoot('close-hooks-claude')
+    for (const [what, fields] of [['no keys', {}], ['a root that is gone', { codexPluginRoot: join(tmp, 'nowhere'), codexPluginDigest: 'f'.repeat(64) }], ['the root alone', { codexPluginRoot: root }]]) {
+      const out = closeSeat(hookedSeat({ provider: 'claude', record: fields }).id)
+      assert.deepEqual([out.verdict, out.reasons], ['valid', []], `${what}: ${JSON.stringify(out)}`)
+    }
+    const opened = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', MODELS.claude, '--effort', 'high'])
+    assert.equal(Object.hasOwn(store.readRecord(opened.id).record, 'codexPluginRoot'), false)
+    assert.equal(closeSeat(hookedSeat({ id: opened.id }).id).verdict, 'valid')
+    ok('a Claude seat records no plugin root and checks none at close, whatever its record carries')
+  },
+
+  'close-both-reasons': () => {
+    const laterRun = (id) => taskStatusOf(id, { latestTerminalRunId: runIdOf(childThreadOf(id), 2), latestTerminalSummary: messageWith('run 2, unhooked') })
+    const first = rootedCodexSeat('close-both-first')
+    writeFileSync(join(first.root, 'README.md'), 'flow\nx')
+    const out = closeSeat(first.id, laterRun(first.id))
+    assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['stale-turn', 'hooks-changed'], null], JSON.stringify(out))
+    assert.deepEqual(closeSeat(first.id, laterRun(first.id)), out, 'a later close of the seat printed something else')
+
+    const repeated = rootedCodexSeat('close-both-repeated')
+    assert.equal(closeSeat(repeated.id).verdict, 'valid')
+    writeFileSync(join(repeated.root, 'README.md'), 'flow\nx')
+    const again = closeSeat(repeated.id, laterRun(repeated.id))
+    assert.deepEqual([again.verdict, again.reasons, again.result, again.recorded], ['unknown', out.reasons, null, { verdict: 'valid', turn: 1 }], JSON.stringify(again))
+    ok('when stale-turn and hooks-changed both hold, close reads unknown with both reasons in that order, on a first close and on a later close of a seat closed valid alike')
   },
 
   'fastpath-silent': () => {

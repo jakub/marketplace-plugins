@@ -130,11 +130,13 @@ A finished child wakes your thread, so end your turn instead of polling. Use `ta
 
 ### 5. Close and act on the verdict
 
-When `task_status` says the task finished (`completed`, `failed`, `cancelled` or `interrupted`, not `working` or `waiting_for_children`, and no pending child runs), pass that whole answer to `close`:
+When `task_status` says the task finished (`completed`, `failed`, `cancelled` or `interrupted`, not `working` or `waiting_for_children`, and no pending child runs), write that whole answer to a file with your file tool, then pass the file to `close` on stdin:
 
 ```sh
-node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status '<task_status JSON>'
+node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status - < <file>
 ```
+
+Don't send it through a heredoc or `$(cat)`. Both put the bytes back on the command line, and a long status fails there with `E2BIG`.
 
 If `delegate_task` errored or never returned a `taskId`, close with `--abandon` instead.
 
