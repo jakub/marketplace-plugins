@@ -1,0 +1,160 @@
+{
+  "captured": "2026-11-03",
+  "what": "Issue #45 AC: two Codex T3 seats closed through the new seat.mjs close with --task-status - on stdin. Message bodies (summary, latestTerminalSummary) are replaced by sha256 of their exact bytes.",
+  "codeRevision": "1649a994b1e4b0b1ff1ab4f0d8a30197c1594b27",
+  "codexCli": "0.166.0",
+  "seats": [
+    {
+      "seat": "5aeee9bc31cfe78851095ec07da4d1bc",
+      "kind": "single turn",
+      "record": {
+        "provider": "codex",
+        "providerInstanceId": "codex",
+        "model": "gpt-6.1-terra",
+        "effort": "low",
+        "access": "read-only",
+        "codexPluginRoot": "/home/jakub/.codex/plugins/cache/jakub/flow/0.43.0",
+        "codexPluginDigest": "dffd6d4044d50445db85dc133f1ae10b9c276feb54e0dd07065c36005034b141"
+      },
+      "taskStatus": {
+        "taskId": "node:delegated-task:command%3Amcp%3A1aa00ca7-5432-40cc-8176-89afa54f27c0%3Adelegate-task%3Aflow-seat-5aeee9bc31cfe78851095ec07da4d1bc",
+        "childThreadId": "thread:delegated-task:command%3Amcp%3A1aa00ca7-5432-40cc-8176-89afa54f27c0%3Adelegate-task%3Aflow-seat-5aeee9bc31cfe78851095ec07da4d1bc",
+        "link": "<t3-thread://v2/161c18e7-f955-4b72-9ea9-1b3dfb3eb1b7/thread:delegated-task:command%3Amcp%3A1aa00ca7-5432-40cc-8176-89afa54f27c0%3Adelegate-task%3Aflow-seat-5aeee9bc31cfe78851095ec07da4d1bc>",
+        "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253A1aa00ca7-5432-40cc-8176-89afa54f27c0%253Adelegate-task%253Aflow-seat-5aeee9bc31cfe78851095ec07da4d1bc:ordinal:1",
+        "childNodeId": "node:delegated-task:command%3Amcp%3A1aa00ca7-5432-40cc-8176-89afa54f27c0%3Adelegate-task%3Aflow-seat-5aeee9bc31cfe78851095ec07da4d1bc",
+        "status": "completed",
+        "workState": "result_available",
+        "hasPendingChildRuns": false,
+        "latestTerminalRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253A1aa00ca7-5432-40cc-8176-89afa54f27c0%253Adelegate-task%253Aflow-seat-5aeee9bc31cfe78851095ec07da4d1bc:ordinal:1",
+        "latestTerminalStatus": "completed",
+        "latestTerminalSummary": null,
+        "latestTerminalResultContextTransferId": null,
+        "providerInstanceId": "codex",
+        "model": "gpt-6.1-terra",
+        "options": [
+          {
+            "id": "reasoningEffort",
+            "value": "low"
+          }
+        ],
+        "summary": "sha256:e2f9265b68922f41dc50b7b9f0ceec07e76ee615639fa165ae0f42cc26600e0f",
+        "resultContextTransferId": "context-transfer:type:subagent_result:source-thread:thread%3Adelegated-task%3Acommand%253Amcp%253A1aa00ca7-5432-40cc-8176-89afa54f27c0%253Adelegate-task%253Aflow-seat-5aeee9bc31cfe78851095ec07da4d1bc:target-thread:0d78f67b-9052-48a3-90f6-f4817f7f3ab7:8ab8ee5c-86f7-428f-9d1d-ab52b3d38be3",
+        "hasPendingQuestion": false,
+        "pendingApproval": null,
+        "waitTimedOut": false
+      },
+      "state": {
+        "turn": 1,
+        "turnKey": "01a1a393-0dee-7930-bb73-f590cd6b6982",
+        "blocks": 0,
+        "outcome": "valid",
+        "errors": [],
+        "stops": 1,
+        "messageSha256": "e2f9265b68922f41dc50b7b9f0ceec07e76ee615639fa165ae0f42cc26600e0f",
+        "models": [
+          "gpt-6.1-terra"
+        ]
+      },
+      "close": {
+        "verdict": "valid",
+        "turn": 1,
+        "reasons": [],
+        "servedModels": [
+          "gpt-6.1-terra"
+        ],
+        "result": {
+          "status": "done",
+          "coverage": {
+            "read": [],
+            "partial": [],
+            "unopened": [],
+            "checksRun": [
+              "git rev-parse"
+            ]
+          },
+          "notes": "",
+          "answer": {
+            "head": "b391d79"
+          }
+        }
+      }
+    },
+    {
+      "seat": "1c9dc4c1c25bd30d3828ebb2991afc07",
+      "kind": "recorded follow-up (t3_thread_send after turn 1)",
+      "record": {
+        "provider": "codex",
+        "providerInstanceId": "codex",
+        "model": "gpt-6.1-terra",
+        "effort": "low",
+        "access": "read-only",
+        "codexPluginRoot": "/home/jakub/.codex/plugins/cache/jakub/flow/0.43.0",
+        "codexPluginDigest": "dffd6d4044d50445db85dc133f1ae10b9c276feb54e0dd07065c36005034b141"
+      },
+      "taskStatus": {
+        "taskId": "node:delegated-task:command%3Amcp%3A1aa00ca7-5432-40cc-8176-89afa54f27c0%3Adelegate-task%3Aflow-seat-1c9dc4c1c25bd30d3828ebb2991afc07",
+        "childThreadId": "thread:delegated-task:command%3Amcp%3A1aa00ca7-5432-40cc-8176-89afa54f27c0%3Adelegate-task%3Aflow-seat-1c9dc4c1c25bd30d3828ebb2991afc07",
+        "link": "<t3-thread://v2/161c18e7-f955-4b72-9ea9-1b3dfb3eb1b7/thread:delegated-task:command%3Amcp%3A1aa00ca7-5432-40cc-8176-89afa54f27c0%3Adelegate-task%3Aflow-seat-1c9dc4c1c25bd30d3828ebb2991afc07>",
+        "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253A1aa00ca7-5432-40cc-8176-89afa54f27c0%253Adelegate-task%253Aflow-seat-1c9dc4c1c25bd30d3828ebb2991afc07:ordinal:1",
+        "childNodeId": "node:delegated-task:command%3Amcp%3A1aa00ca7-5432-40cc-8176-89afa54f27c0%3Adelegate-task%3Aflow-seat-1c9dc4c1c25bd30d3828ebb2991afc07",
+        "status": "completed",
+        "workState": "result_available",
+        "hasPendingChildRuns": false,
+        "latestTerminalRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253A1aa00ca7-5432-40cc-8176-89afa54f27c0%253Adelegate-task%253Aflow-seat-1c9dc4c1c25bd30d3828ebb2991afc07:ordinal:2",
+        "latestTerminalStatus": "completed",
+        "latestTerminalSummary": "sha256:89466d5f8864d7ff81e50610bb7124f7595c4531119bf6dcf0f749205fce4895",
+        "latestTerminalResultContextTransferId": "context-transfer:type:subagent_result:source-thread:thread%3Adelegated-task%3Acommand%253Amcp%253A1aa00ca7-5432-40cc-8176-89afa54f27c0%253Adelegate-task%253Aflow-seat-1c9dc4c1c25bd30d3828ebb2991afc07:target-thread:0d78f67b-9052-48a3-90f6-f4817f7f3ab7:15e1b0e0-173e-4e4a-bfe3-b60a1deb73ac",
+        "providerInstanceId": "codex",
+        "model": "gpt-6.1-terra",
+        "options": [
+          {
+            "id": "reasoningEffort",
+            "value": "low"
+          }
+        ],
+        "summary": "sha256:cde5c2f335162bd2bf2f9e8fa9d3fa21aa8d11d72ed860a3ad59e647308c8d42",
+        "resultContextTransferId": "context-transfer:type:subagent_result:source-thread:thread%3Adelegated-task%3Acommand%253Amcp%253A1aa00ca7-5432-40cc-8176-89afa54f27c0%253Adelegate-task%253Aflow-seat-1c9dc4c1c25bd30d3828ebb2991afc07:target-thread:0d78f67b-9052-48a3-90f6-f4817f7f3ab7:6e70d1da-3250-41f1-9598-d0578663b8f5",
+        "hasPendingQuestion": false,
+        "pendingApproval": null,
+        "waitTimedOut": false
+      },
+      "state": {
+        "opened": "01a1a393-ec17-7f42-9efa-3c9d0d3255cf",
+        "turn": 2,
+        "turnKey": "01a1a393-ec17-7f42-9efa-3c9d0d3255cf",
+        "blocks": 0,
+        "outcome": "valid",
+        "errors": [],
+        "stops": 1,
+        "messageSha256": "89466d5f8864d7ff81e50610bb7124f7595c4531119bf6dcf0f749205fce4895",
+        "models": [
+          "gpt-6.1-terra"
+        ]
+      },
+      "close": {
+        "verdict": "valid",
+        "turn": 2,
+        "reasons": [],
+        "servedModels": [
+          "gpt-6.1-terra"
+        ],
+        "result": {
+          "status": "done",
+          "coverage": {
+            "read": [],
+            "partial": [],
+            "unopened": [],
+            "checksRun": [
+              "git rev-parse"
+            ]
+          },
+          "notes": "",
+          "answer": {
+            "head": "b391d79",
+            "turn": "second"
+          }
+        }
+      }
+    }
+  ]
+}
