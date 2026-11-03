@@ -165,7 +165,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../delegate/codex-app-server.mjs'
@@ -388,10 +388,12 @@ async function open(argv) {
     }
     // The trust read can take a minute, so it comes before the holder: nothing slow may sit between
     // the holder and the record (see The lease, above).
-    const digest = provider === 'codex' ? await seatTrust(repoRoot) : null
+    const trusted = provider === 'codex' ? await seatTrust(repoRoot) : null
     const record = {
       v: 1, id, createdAt: new Date().toISOString(), access, repoRoot, worktree, reviewWorktree, reviewGitDir, baseSha, headSha,
-      provider, providerInstanceId, model, expectedServedModel, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot: null, hooksDigest: digest,
+      provider, providerInstanceId, model, expectedServedModel, effort, runtimeMode: RUNTIME_MODE, canonicalSnapshot: null, hooksDigest: trusted?.hooksDigest ?? null,
+      // A Claude record carries neither key, so their absence also marks a Codex record from before.
+      ...(trusted ? { codexPluginRoot: trusted.codexPluginRoot, codexPluginDigest: trusted.codexPluginDigest } : {}),
     }
     // The seat's context repeats its paths, and the prompt hook cannot deliver one past the hook
     // budget, so a seat whose context cannot fit is refused here, before the holder and the record.
@@ -467,8 +469,9 @@ function sameBytes(path, own, seen) {
   return seen.get(path)
 }
 
-// Flow's entries in a hooks/list answer: one per handler, from this copy's plugin id and one root
-// whose hooks/codex.json is byte for byte this copy's.
+// Flow's entries in a hooks/list answer, {keys, root}: one key per handler, from this copy's plugin
+// id and one root, the plugin root Codex runs them from, whose hooks/codex.json is byte for byte
+// this copy's.
 function flowKeys(listed, handlers) {
   if (!Array.isArray(listed?.data)) fail('PROVIDER_ERROR', 'Codex answered hooks/list without a list.')
   const pluginId = ownPluginId()
@@ -497,11 +500,59 @@ function flowKeys(listed, handlers) {
     fail('HOOKS_MISMATCH', `Codex lists ${found.length} hook(s) of ${pluginId} that run flow's Codex handlers from a hooks/codex.json identical to this copy's, and this copy of flow registers ${handlers.length}, one each, from one root; the installed flow is another version, so its trust cannot be read against this one.`,
       { pluginId, expected: handlers.length, found: found.length, unmatched: missing.map((handler) => handler.command) })
   }
-  return found.map(({ hook }) => ({ key: hook.key, command: hook.command, trustStatus: hook.trustStatus, currentHash: hook.currentHash, enabled: hook.enabled !== false }))
+  const keys = found.map(({ hook }) => ({ key: hook.key, command: hook.command, trustStatus: hook.trustStatus, currentHash: hook.currentHash, enabled: hook.enabled !== false }))
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+  return { keys, root: [...roots][0] }
 }
 
 const hooksDigest = (keys) => createHash('sha256').update(JSON.stringify(keys.map(({ key, currentHash }) => [key, currentHash]))).digest('hex')
+
+// The content of a Codex flow plugin root: {digest}, or {problem} when the root or anything in it
+// is a symlink, any type but a regular file or a directory, or unreadable. Nothing is followed: each
+// entry is lstat'd, and a file is opened O_NOFOLLOW and O_NONBLOCK and checked again before it is
+// read, so a FIFO is never read and a swapped-in link is refused. The digest is the sha256 of the
+// JSON of every entry's [path, 'dir', null] or [path, 'file', sha256], the path relative to the
+// root with '/' (the root itself ''), sorted by code unit; modes and times are not content.
+function pluginTree(root) {
+  const problem = (rel, what) => ({ problem: `${rel === '' ? 'the plugin root' : rel} ${what}` })
+  if (typeof root !== 'string' || !isAbsolute(root)) return problem('', 'is not an absolute path')
+  const entries = []
+  const pending = [['', root]]
+  while (pending.length > 0) {
+    const [rel, path] = pending.pop()
+    let info
+    try { info = lstatSync(path) } catch (error) { return problem(rel, `cannot be read (${error.code ?? 'error'})`) }
+    if (info.isDirectory()) {
+      entries.push([rel, 'dir', null])
+      let names
+      try { names = readdirSync(path) } catch (error) { return problem(rel, `cannot be listed (${error.code ?? 'error'})`) }
+      for (const name of names) pending.push([rel === '' ? name : `${rel}/${name}`, join(path, name)])
+    } else if (info.isFile()) {
+      let fd = null
+      try {
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        if (!fstatSync(fd).isFile()) return problem(rel, 'stopped being a regular file while it was read')
+        entries.push([rel, 'file', createHash('sha256').update(readFileSync(fd)).digest('hex')])
+      } catch (error) {
+        return problem(rel, `cannot be read (${error.code ?? 'error'})`)
+      } finally {
+        if (fd !== null) closeSync(fd)
+      }
+    } else return problem(rel, info.isSymbolicLink() ? 'is a symlink' : 'is neither a regular file nor a directory')
+  }
+  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return { digest: createHash('sha256').update(JSON.stringify(entries)).digest('hex') }
+}
+
+// open's digest of the Codex flow plugin root, or HOOKS_MISMATCH when it holds what flow cannot
+// digest, since a change to it while the seat ran could then go unseen.
+function rootDigest(root) {
+  const tree = pluginTree(root)
+  if (tree.problem) {
+    fail('HOOKS_MISMATCH', `The flow plugin Codex installed holds what flow cannot digest (${tree.problem}), so a change to it while the seat runs could not be seen. Reinstall flow on Codex.`, { codexPluginRoot: root })
+  }
+  return tree.digest
+}
 const untrusted = (keys) => keys.filter((key) => key.trustStatus !== 'trusted' || !key.enabled || typeof key.currentHash !== 'string')
 const shown = (keys) => keys.map(({ key, command, trustStatus, currentHash }) => ({ key, command, trustStatus, currentHash }))
 
@@ -552,7 +603,7 @@ async function trust(argv) {
   const cwd = trustCwd()
   const handlers = flowHandlers()
   return withCodex(cwd, async (rpc) => {
-    const keys = await listFlowKeys(rpc, cwd, handlers)
+    const { keys } = await listFlowKeys(rpc, cwd, handlers)
     const digest = hooksDigest(keys)
     if (!write) return { ok: true, keys: shown(keys), digest, wrote: false }
     if (digest !== expected) {
@@ -561,7 +612,7 @@ async function trust(argv) {
     }
     const value = Object.fromEntries(keys.map(({ key, currentHash }) => [key, { trusted_hash: currentHash }]))
     await rpc.request('config/batchWrite', { edits: [{ keyPath: 'hooks.state', value, mergeStrategy: 'upsert' }], reloadUserConfig: true })
-    const after = await listFlowKeys(rpc, cwd, handlers)
+    const { keys: after } = await listFlowKeys(rpc, cwd, handlers)
     const still = untrusted(after)
     if (still.length > 0) {
       fail('HOOKS_UNTRUSTED', `Codex still reads ${still.length} of flow's hooks as not trusted after the write.`, { keys: shown(still) })
@@ -570,12 +621,24 @@ async function trust(argv) {
   })
 }
 
-// open's read of the trust a Codex seat depends on: the digest, or HOOKS_UNTRUSTED.
+// open's read of the trust a Codex seat depends on, bracketed by two digests of the flow plugin
+// root Codex runs the hooks from: {hooksDigest, codexPluginRoot, codexPluginDigest}, or a refusal.
+// One App Server session's hooks/list names the root, the root is digested, a second session reads
+// the trust, and the root is digested again, so a change between the first digest and the trust
+// read refuses HOOKS_CHANGED rather than pass as the trust of bytes the seat will not run.
 async function seatTrust(cwd) {
-  let keys
-  try { keys = await withCodex(cwd, (rpc) => listFlowKeys(rpc, cwd, flowHandlers())) } catch (error) {
-    if (!(error instanceof SeatError)) throw error
-    fail('HOOKS_UNTRUSTED', `Flow's Codex hook trust could not be confirmed (${error.kind}): ${error.message}`, { hooksDigest: null, cause: error.kind })
+  const handlers = flowHandlers()
+  const listed = async () => {
+    try { return await withCodex(cwd, (rpc) => listFlowKeys(rpc, cwd, handlers)) } catch (error) {
+      if (!(error instanceof SeatError)) throw error
+      fail('HOOKS_UNTRUSTED', `Flow's Codex hook trust could not be confirmed (${error.kind}): ${error.message}`, { hooksDigest: null, cause: error.kind })
+    }
+  }
+  const { root } = await listed()
+  const before = rootDigest(root)
+  const { keys, root: trustRoot } = await listed()
+  if (trustRoot !== root) {
+    fail('HOOKS_CHANGED', 'Codex moved flow\'s hooks to another plugin root while open read their trust, so nothing was written. Open the seat again.', { codexPluginRoot: root })
   }
   const digest = hooksDigest(keys)
   const still = untrusted(keys)
@@ -583,7 +646,10 @@ async function seatTrust(cwd) {
     fail('HOOKS_UNTRUSTED', `Codex does not run ${still.length} of flow's hooks (not trusted, modified or disabled), so a Codex seat would run unguarded. Run seat.mjs trust as the delegate skill's reference.md says under "Codex host setup".`,
       { hooksDigest: digest, keys: shown(still) })
   }
-  return digest
+  if (rootDigest(root) !== before) {
+    fail('HOOKS_CHANGED', 'The flow plugin Codex installed changed while open read its hook trust, and Codex untrusts every flow hook when any plugin file changes, so nothing was written. Check the trust with seat.mjs trust, then open the seat again.', { codexPluginRoot: root })
+  }
+  return { hooksDigest: digest, codexPluginRoot: root, codexPluginDigest: before }
 }
 
 // ----- close

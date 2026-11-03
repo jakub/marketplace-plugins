@@ -22,6 +22,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { performance } from 'node:perf_hooks'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -213,9 +214,9 @@ const median = (values) => {
 // otherwise, against the same state directory as the store.
 const SEAT_SCRIPT = join(PLUGIN, 'scripts', 'seat.mjs')
 const jobs = await import(pathToFileURL(join(PLUGIN, 'delegate', 'jobs.mjs')).href)
-// input, a string or a Buffer, goes to its stdin.
-function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT, input = undefined, nodeArgs = [] } = {}) {
-  const run = spawnSync(process.execPath, [...nodeArgs, script, ...args], { cwd, input, encoding: 'utf8', maxBuffer: 1 << 24, env: { ...process.env, ...trustedCodex.env, ...env } })
+// input, a string or a Buffer, goes to its stdin; a run past timeout ms is killed and fails.
+function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT, input = undefined, nodeArgs = [], timeout = 0 } = {}) {
+  const run = spawnSync(process.execPath, [...nodeArgs, script, ...args], { cwd, input, timeout, encoding: 'utf8', maxBuffer: 1 << 24, env: { ...process.env, ...trustedCodex.env, ...env } })
   const lines = run.stdout.split('\n').filter(Boolean)
   assert.equal(lines.length, 1, `seat.mjs ${args[0]} printed ${JSON.stringify(run.stdout)} ${run.stderr}`)
   const out = JSON.parse(lines[0])
@@ -227,7 +228,9 @@ function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT, input = un
 // upsert into hooks.state the way Codex does (a key whose trusted_hash is its current hash reads
 // trusted), unless the state says to ignore writes. It records every message it is sent in
 // sent.jsonl. The hook entries take the shape codex 0.160.0's hooks/list answered with live, the
-// command carrying the plugin root already expanded.
+// command carrying the plugin root already expanded. The state's onList maps n to what the n-th
+// hooks/list in that state directory does first, across processes: append [path, text] appends
+// text to a file, and hooks answers with those entries in place of the state's.
 const fakeCodexBin = join(tmp, 'fake-codex-bin')
 mkdirSync(fakeCodexBin, { recursive: true })
 writeFileSync(join(fakeCodexBin, 'codex'), `#!${process.execPath}
@@ -242,7 +245,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   appendFileSync(dir + '/sent.jsonl', JSON.stringify(message) + '\\n')
   if (message.id === undefined) return
   if (message.method === 'initialize') return reply(message.id, { result: { userAgent: 'fake-codex/0.160.0' } })
-  if (message.method === 'hooks/list') return reply(message.id, { result: { data: [{ cwd: message.params.cwds[0], hooks: state().hooks, errors: [], warnings: [] }] } })
+  if (message.method === 'hooks/list') {
+    appendFileSync(dir + '/lists', '.')
+    const step = (state().onList ?? {})[readFileSync(dir + '/lists', 'utf8').length] ?? {}
+    if (step.append) appendFileSync(step.append[0], step.append[1])
+    return reply(message.id, { result: { data: [{ cwd: message.params.cwds[0], hooks: step.hooks ?? state().hooks, errors: [], warnings: [] }] } })
+  }
   if (message.method === 'config/batchWrite') {
     const now = state()
     if (!now.ignoreWrites) {
@@ -274,6 +282,25 @@ function installedRoot(name, bytes = OWN_HOOKS) {
   return root
 }
 const FAKE_ROOT = installedRoot('codex')
+// The digest open records for a Codex plugin root, computed here apart from seat.mjs, for a root of
+// regular files and directories only: the sha256 of the JSON of every entry's [path, 'dir', null]
+// or [path, 'file', sha256], the path relative to the root with '/' (the root itself ''), sorted
+// by code unit.
+function treeDigest(root) {
+  const entries = [['', 'dir', null]]
+  const walk = (dir, rel) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = rel === '' ? entry.name : `${rel}/${entry.name}`
+      if (entry.isDirectory()) {
+        entries.push([path, 'dir', null])
+        walk(join(dir, entry.name), path)
+      } else entries.push([path, 'file', sha256(readFileSync(join(dir, entry.name)))])
+    }
+  }
+  walk(root, '')
+  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return sha256(JSON.stringify(entries))
+}
 // A Codex install whose hooks/codex.json is this copy's with its final newline a space: one byte
 // apart and the same JSON.
 assert.equal(OWN_HOOKS.at(-1), 0x0a)
@@ -301,9 +328,9 @@ const FOREIGN = [
   { key: '/home/u/.codex/hooks.json:pre_tool_use:0:0', command: `node "${FAKE_ROOT}/hooks/scripts/seat-guard.mjs" pre codex`, handlerType: 'command', currentHash: 'sha256:u', enabled: true, pluginId: null, source: 'user', trustStatus: 'untrusted' },
 ]
 // A fake Codex state directory holding hooks, and the environment that puts the fake first on PATH.
-function codexState(hooks, { ignoreWrites = false } = {}) {
+function codexState(hooks, { ignoreWrites = false, onList = {} } = {}) {
   const dir = mkdtempSync(join(tmp, 'codex-state-'))
-  writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks, ignoreWrites }))
+  writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks, ignoreWrites, onList }))
   return { dir, env: { PATH: `${fakeCodexBin}:${process.env.PATH}`, FAKE_CODEX_STATE: dir } }
 }
 const codexSent = (dir) => (existsSync(join(dir, 'sent.jsonl')) ? readFileSync(join(dir, 'sent.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
@@ -4199,6 +4226,125 @@ const cases = {
       assert.deepEqual([refused.error?.kind, refused.error?.details.cause], ['HOOKS_UNTRUSTED', 'HOOKS_MISMATCH'], what)
     }
     ok('a source copy whose marketplace manifest is missing, names no marketplace, or names another directory as flow names no plugin id: trust and open fail closed, and nothing is written')
+  },
+
+  // B at open: a Codex seat records the flow plugin root Codex lists its hooks under and a digest
+  // of everything in it, taken before and after the trust read. Each case has its own root and
+  // its own fake Codex state, so FAKE_ROOT is never touched.
+  'open-hooks-entry-types': async () => {
+    const args = (access = 'read-only', extra = []) => ['open', '--access', access, '--provider', 'codex', '--model', MODELS.codex, '--effort', 'high', ...extra]
+    const records = () => (existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [])
+    // A Codex install of this flow with more in it than its hooks file, as a real one has.
+    const fullRoot = (name) => {
+      const root = installedRoot(name)
+      mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
+      mkdirSync(join(root, 'empty'))
+      writeFileSync(join(root, 'scripts', 'seat.mjs'), '// seat\n')
+      writeFileSync(join(root, 'scripts', 'lib', 'x.mjs'), 'export {}\n')
+      writeFileSync(join(root, '.codex-plugin.json'), '{}\n')
+      return root
+    }
+    const root = fullRoot('entry-plain')
+    const codex = codexState(flowEntries({ trusted: true, root }))
+    const opened = seatCli(args(), { env: codex.env })
+    assert.equal(opened.ok, true, JSON.stringify(opened))
+    const { record } = store.readRecord(opened.id)
+    assert.notEqual(root, realpathSync(PLUGIN))
+    assert.deepEqual([record.codexPluginRoot, record.codexPluginDigest, record.hooksDigest], [root, treeDigest(root), flowDigest(flowEntries({ trusted: true, root }))])
+    assert.deepEqual(codexSent(codex.dir).map(({ method }) => method), ['initialize', 'initialized', 'hooks/list', 'initialize', 'initialized', 'hooks/list'], 'the root was not listed and the trust read in a second session')
+    const claude = store.readRecord(seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', MODELS.claude, '--effort', 'high']).id).record
+    assert.deepEqual([Object.hasOwn(claude, 'codexPluginRoot'), Object.hasOwn(claude, 'codexPluginDigest')], [false, false])
+    ok('a Codex seat records the root Codex listed its flow hooks under, apart from this checkout, and the digest of every regular file and directory in it, empty and nested ones and dotfiles included, reading the root and then the trust in two App Server sessions; a Claude seat records neither key')
+
+    // Each odd root refuses open HOOKS_MISMATCH for every access, writing nothing: no record, no
+    // writer's holder, no review worktree, and no trust.
+    let made = 0
+    const refuses = (bad, what) => {
+      for (const [access, extra] of [['read-only', []], ['workspace-write', ['--worktree', gitWorktree(`open-hooks-entry-${made++}`)]], ['review', ['--base', baseSha, '--head', headSha]]]) {
+        const { dir, env } = codexState(flowEntries({ trusted: true, root: bad }))
+        const before = [records(), gitOut(canon, 'worktree', 'list', '--porcelain')]
+        const out = seatCli(args(access, extra), { env, timeout: 30_000 })
+        assert.equal(out.error?.kind, 'HOOKS_MISMATCH', `${what}, ${access}: ${JSON.stringify(out)}`)
+        assert.equal(out.error.details?.codexPluginRoot, bad, what)
+        assert.deepEqual([records(), gitOut(canon, 'worktree', 'list', '--porcelain')], before, `${what}, ${access}: the refused open left a record or a review worktree`)
+        if (access === 'workspace-write') assert.equal(existsSync(jobs.leaseDirOf(extra[1])), false, `${what}: the refused writer left its lease holder`)
+        assert.ok(!codexSent(dir).some((message) => message.method === 'config/batchWrite'), `${what}: open wrote trust`)
+      }
+    }
+    const fileLink = fullRoot('entry-file-link')
+    symlinkSync(join(fileLink, 'hooks', 'codex.json'), join(fileLink, 'scripts', 'hooks.json'))
+    refuses(fileLink, 'a symlink to a file in the root')
+    const dirLink = fullRoot('entry-dir-link')
+    symlinkSync(join(dirLink, 'scripts'), join(dirLink, 'tools'))
+    refuses(dirLink, 'a symlink to a directory in the root')
+    const dangling = fullRoot('entry-dangling')
+    symlinkSync(join(dangling, 'nowhere'), join(dangling, 'scripts', 'gone.mjs'))
+    refuses(dangling, 'a dangling symlink')
+    const real = fullRoot('entry-root-real')
+    const linkedRoot = join(dirname(real), '9.9.8')
+    symlinkSync(real, linkedRoot)
+    refuses(linkedRoot, 'a root that is itself a symlink')
+    const socketRoot = fullRoot('entry-socket')
+    const server = createServer()
+    await new Promise((resolve, reject) => server.once('error', reject).listen(join(socketRoot, 's'), resolve))
+    try { refuses(socketRoot, 'a unix socket in the root') } finally { await new Promise((resolve) => server.close(resolve)) }
+    const fifoRoot = fullRoot('entry-fifo')
+    const fifo = spawnSync('mkfifo', [join(fifoRoot, 'scripts', 'pipe')])
+    if (fifo.status === 0) refuses(fifoRoot, 'a FIFO in the root, which is never opened for a read that would block')
+    ok(`open refuses a Codex seat HOOKS_MISMATCH, for every access and writing nothing, when the root is a symlink or holds a symlink to a file, a directory or nothing, a unix socket${fifo.status === 0 ? ' or a FIFO' : ' (no mkfifo here, so no FIFO)'}`)
+
+    if (process.getuid?.() === 0) ok('unreadable entries are not checked as root, which reads them anyway')
+    else {
+      const unreadableFile = fullRoot('entry-unreadable-file')
+      const unreadableDir = fullRoot('entry-unreadable-dir')
+      chmodSync(join(unreadableFile, 'scripts', 'seat.mjs'), 0o000)
+      chmodSync(join(unreadableDir, 'scripts', 'lib'), 0o000)
+      try {
+        refuses(unreadableFile, 'an unreadable file')
+        refuses(unreadableDir, 'an unreadable directory')
+      } finally {
+        chmodSync(join(unreadableFile, 'scripts', 'seat.mjs'), 0o644)
+        chmodSync(join(unreadableDir, 'scripts', 'lib'), 0o755)
+      }
+      ok('open refuses a Codex seat HOOKS_MISMATCH, writing nothing, when the root holds a file or a directory it cannot read')
+    }
+  },
+
+  'open-hooks-race': () => {
+    const args = (access = 'read-only', extra = []) => ['open', '--access', access, '--provider', 'codex', '--model', MODELS.codex, '--effort', 'high', ...extra]
+    const records = () => (existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [])
+    let made = 0
+    // An open whose Codex does step on its n-th hooks/list, refused kind for every access, with
+    // nothing written.
+    const refused = (root, onList, kind, what) => {
+      for (const [access, extra] of [['read-only', []], ['workspace-write', ['--worktree', gitWorktree(`open-hooks-race-${made++}`)]], ['review', ['--base', baseSha, '--head', headSha]]]) {
+        const { dir, env } = codexState(flowEntries({ trusted: true, root }), { onList })
+        const before = [records(), gitOut(canon, 'worktree', 'list', '--porcelain')]
+        const out = seatCli(args(access, extra), { env })
+        assert.equal(out.error?.kind, kind, `${what}, ${access}: ${JSON.stringify(out)}`)
+        assert.deepEqual([records(), gitOut(canon, 'worktree', 'list', '--porcelain')], before, `${what}, ${access}: the refused open left a record or a review worktree`)
+        if (access === 'workspace-write') assert.equal(existsSync(jobs.leaseDirOf(extra[1])), false, `${what}: the refused writer left its lease holder`)
+        assert.deepEqual(codexSent(dir).map(({ method }) => method), ['initialize', 'initialized', 'hooks/list', 'initialize', 'initialized', 'hooks/list'], what)
+      }
+    }
+    const byte = installedRoot('race-byte')
+    writeFileSync(join(byte, 'README.md'), 'flow\n')
+    refused(byte, { 2: { append: [join(byte, 'README.md'), 'x'] } }, 'HOOKS_CHANGED', 'a non-hook byte changed before the trust read answered')
+    const added = installedRoot('race-added')
+    refused(added, { 2: { append: [join(added, 'NEW'), 'x'] } }, 'HOOKS_CHANGED', 'a file added before the trust read answered')
+    const moved = installedRoot('race-moved')
+    refused(moved, { 2: { hooks: flowEntries({ trusted: true, root: installedRoot('race-moved-to') }) } }, 'HOOKS_CHANGED', 'a trust read that lists another root')
+    ok('open refuses a Codex seat HOOKS_CHANGED, for every access and writing nothing, when a byte of the root changes or a file is added between the first digest and the trust read, or when the trust read lists flow under another root')
+
+    const untrusting = installedRoot('race-untrusted')
+    refused(untrusting, { 2: { hooks: flowEntries({ root: untrusting }) } }, 'HOOKS_UNTRUSTED', 'a trust read that reads untrusted')
+    const early = installedRoot('race-early')
+    writeFileSync(join(early, 'README.md'), 'flow\n')
+    const { env } = codexState(flowEntries({ trusted: true, root: early }), { onList: { 1: { append: [join(early, 'README.md'), 'x'] } } })
+    const opened = seatCli(args(), { env })
+    assert.equal(opened.ok, true, JSON.stringify(opened))
+    assert.equal(store.readRecord(opened.id).record.codexPluginDigest, treeDigest(early))
+    ok('the trust comes from the second hooks/list, so one that reads untrusted refuses HOOKS_UNTRUSTED; a change before the first digest is no race, and the record holds the digest of the root as changed')
   },
 
   'fastpath-silent': () => {
