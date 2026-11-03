@@ -32,7 +32,7 @@ Check each finding against the current head first. Its `basis` (`reproduced`, `c
 Every finding ends one of three ways, and there's no fourth:
 
 - **Fixed.** It shows a failure the intended case reaches, and that failure breaks a behavior the work promises. Name both in the reply, with the commit and the test that covers it, and resolve the thread.
-- **Rejected.** Wrong, stale, about code this PR doesn't touch, outside the intended case, or breaking nothing the work promises. A decline is a Rejected finding that asks for behavior the work doesn't owe. Reply with the concrete reason, such as the guard it missed or the file it misread, and resolve.
+- **Rejected.** Wrong, stale, about code this PR doesn't touch, or breaking nothing the work promises, judged against all three sources above and never against the Risk line alone. A decline is a Rejected finding that asks for behavior the work doesn't owe. Reply with the concrete reason, such as the guard it missed or the file it misread, and resolve.
 - **The user's.** A contested design point, a scope question, a protected-topic finding with no matching recorded answer, an inconclusive investigation, or a remedy that expands the work. Reply with your read, report it, and leave the thread open, a bot's or a person's, because `land` stops on an unresolved thread.
 
 A remedy that changes the approved responsibility, the supported behavior or the trust posture goes to the user before anyone writes it, even for a real finding. A guardrail that takes on more shell semantics is one. Extracting a helper isn't.
