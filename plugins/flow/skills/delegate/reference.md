@@ -99,7 +99,20 @@ A machine needs two things before Codex can use flow, and neither belongs to any
 
 ## T3 seats: posture and identity
 
-A T3 seat is a T3 Code child that `delegate_task` starts for a flow stage, held to the Seat Contract by flow's own hooks. It is neither a native seat (`Agent` or `spawn_agent`) nor a delegated job. Like a native seat, it runs with flow's hooks, the user's config, their credentials and the network. The hooks deny what the Seat Contract forbids and stamp each step they see. They are a guardrail under your authority, not a sandbox. A child that runs as the same user can edit its seat record through Bash. The shell rules catch the plain forms a confused seat writes. They do not catch a command that is quoted, escaped or expanded, run by `source`, run from a command substitution or built at run time, and they do not see a Bash write outside the worktree. Native seats (`flow:reader`, `flow:implementer` and Explore) run Bash with the same posture, under the git, publish and protect-files guards, which also load in a T3 child. A Codex T3 seat also runs in Codex's sandbox with the network off under `auto`. A read-only seat is read-only for Bash by instruction alone. `close` checks trees only for a review seat, the pinned review worktree and the canonical checkout.
+A T3 seat is a T3 Code child that `delegate_task` starts for a flow stage, held to the Seat Contract by flow's own hooks. It is neither a native seat (`Agent` or `spawn_agent`) nor a delegated job. Like a native seat, it runs with flow's hooks, the user's config and their credentials. The hooks deny what the Seat Contract forbids and stamp each step they see. They are a guardrail under your authority, not a sandbox. A child that runs as the same user can edit its seat record through Bash. The shell rules catch the plain forms a confused seat writes. They do not catch a command that is quoted, escaped or expanded, run by `source`, run from a command substitution or built at run time, and they do not see a Bash write outside the worktree. Native seats (`flow:reader`, `flow:implementer` and Explore) run Bash with the same posture, under the git, publish and protect-files guards, which also load in a T3 child. A read-only seat is read-only for Bash by instruction alone. `close` checks trees only for a review seat, the pinned review worktree and the canonical checkout.
+
+The list below says what each route can't reach. Each entry says how it's known (verified, documented or observed), with its version and date.
+
+- **`flow_delegate` Codex job: no network.** Verified: `delegate/codex-app-server.mjs` builds the job's permission profile with the network disabled (read at flow `704ac55`, 2026-11-03).
+- **Codex T3 seat under `auto`: network off by default.** Documented: Codex's sandbox config turns the network off for `workspace-write` unless `sandbox_workspace_write.network_access` is set (codex-cli 0.166.0, 2026-11-03).
+- **Codex T3 review seats, observed 2026-11-03 on codex-cli 0.166.0** in issue #45's review round:
+  - `api.github.com` was unreachable;
+  - `node`'s `spawnSync` of a child returned `EPERM`;
+  - two seats finished those checks only after an escalation lifted the restriction.
+- **Codex T3 review seats, observed 2026-11-03 on a trawl run** (CLI version not recorded):
+  - loopback to a host service, a disposable Postgres, was blocked;
+  - a dependency download had no network;
+  - the seat's `/tmp` was private, so a brief written to `/tmp` was invisible to it.
 
 An MCP task for a job is not a seat. A task is the MCP view of a `flow_delegate` job. Its `taskId` is the job id, the job store is its only authority, and it ends when the job does. A seat is a T3 `delegate_task` child. Its task id comes from T3, never from the `flow_delegate` server, the seat record is its authority, and `seat.mjs close` ends it. Never pass a job's `taskId` to `task_status` or `seat.mjs close`, and never pass a seat's task id to `delegation_result` or `tasks/get`.
 

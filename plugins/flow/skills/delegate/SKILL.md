@@ -68,7 +68,7 @@ Every tool answers `{ok, job?, error?}`. `job.status` is `queued`, `running`, `s
 
 ## T3 seats
 
-A T3 seat is a `delegate_task` child that a flow stage starts and flow's hooks hold to the Seat Contract. It runs like a native seat: with flow's hooks, the user's config, their credentials and the network. The hooks deny what the contract forbids and stamp each step. They're a guardrail, not a sandbox, and a child running as the same user could edit its own seat record through Bash.
+A T3 seat is a `delegate_task` child that a flow stage starts and flow's hooks hold to the Seat Contract. It runs like a native seat: with flow's hooks, the user's config and their credentials. What each route can't reach is listed in `reference.md`, under "T3 seats: posture and identity". The hooks deny what the contract forbids and stamp each step. They're a guardrail, not a sandbox, and a child running as the same user could edit its own seat record through Bash.
 
 You're inside T3 when `delegate_task` is in your tool list and `orchestrator_capabilities` answers for this thread. The tools are `mcp__t3-code__<tool>` in Claude Code and `mcp__t3_code__<tool>` in Codex.
 
@@ -96,7 +96,7 @@ node <plugin-root>/scripts/seat.mjs open --access <read-only|workspace-write|rev
 
 Call `delegate_task` with:
 
-- `task`: the seat `tag` alone on line 1, then the worktree, the checkpoints and the work. A tag anywhere but line 1 voids the seat. Say that the final message is the flow envelope (step 3).
+- `task`: the seat `tag` alone on line 1, then the worktree, the checkpoints and the work. A tag anywhere but line 1 voids the seat. Say that the final message is the flow envelope (step 3). End the task with one line that names the Seat Contract's "Stay in the foreground" rule, such as `Follow the Seat Contract's "Stay in the foreground" rule.` Name the rule and don't reword it, so the task can't drift from the contract.
 - `role: "general"`, so T3 prepends nothing.
 - `runtimeMode`: what `open` printed, `auto` today. Never `full-access`, and never `inherit`: a child copies its parent's mode, so one widened parent widens every later child. Every `delegate_task` call in a flow session names a `runtimeMode`, seat or not, and the hooks deny one that doesn't.
 - `clientRequestId`: what `open` printed.
@@ -122,15 +122,17 @@ The child's final message is one JSON object:
 
 `answer` follows your schema. A writer adds `commits: [{sha, subject}]`. A review's `answer` is the findings schema, and its `coverage` is the file list you'd otherwise have to ask a `flow_delegate` review for. The Stop hook holds the child to this shape, blocking it up to 3 times.
 
-To give a finished seat another round, send it a message with `t3_thread_send` to its `childThreadId` before you close it. It answers in a new turn with a fresh envelope.
+To hand verified state to a running seat, send it with `t3_thread_send`, `mode: steer`, to the seat's `childThreadId`, then close the seat the normal way. The 2026-11-03 probe held on both families (flow's `docs/captures/2026-11-03-t3-steer/probe.json`). A successful send isn't proof the seat applied the correction, so check its envelope against what you sent.
+
+To give a finished seat another round, on either family, send it a message with `t3_thread_send` to its `childThreadId` before you close it. It answers in a new turn with a fresh envelope. A review or re-review never takes another round. It's always a new seat pinned to the head under review, on either family, because T3's own prompt requires that. Continuing a design leg isn't a re-check, so a leg may take its critique round this way.
 
 ### 4. Wait
 
-A finished child wakes your thread, so end your turn instead of polling. Use `task_status` only when you need the outcome mid-turn. **Never take the answer from `summary`.** After a Stop block, it's the child's last message, not its answer. `task_cancel` stops a seat you don't need.
+A finished child wakes your thread, so end your turn instead of polling. On the wake, make the one `task_status` call that close needs (step 5). Otherwise, use `task_status` only when you need the outcome mid-turn. **Never take the answer from `summary`.** After a Stop block, it's the child's last message, not its answer. `task_cancel` stops a seat you don't need.
 
 ### 5. Close and act on the verdict
 
-When `task_status` says the task finished (`completed`, `failed`, `cancelled` or `interrupted`, not `working` or `waiting_for_children`, and no pending child runs), write that whole answer to a file with your file tool, then pass the file to `close` on stdin:
+Keep the `taskId` that `delegate_task` returned, and never rebuild it from a seat id or an old connection prefix. `close` checks only that the status's `taskId` contains the seat's `clientRequestId`, not that it's the id `delegate_task` returned. When that task's `task_status` says it finished (`completed`, `failed`, `cancelled` or `interrupted`, not `working` or `waiting_for_children`, and no pending child runs), write that whole answer, unchanged, to a file with your file tool, then pass the file to `close` on stdin:
 
 ```sh
 node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status - < <file>
