@@ -64,7 +64,7 @@ Every tool answers `{ok, job?, error?}`. `job.status` is `queued`, `running`, `s
 - `commandFailures` counts failed shell commands. A succeeded job with a nonzero count answered without working shell evidence, so don't trust its "tests pass".
 - `error.kind` is typed. A `REFUSAL` carries the provider's category in `details`, and the charter's refusal rule handles it.
 
-**A succeeded review with `findings: []` isn't a pass yet.** A reviewer that never looked answers in the same shape. Continue the job and ask which files it read and which it skipped. An `unknown` job is never a pass.
+**A succeeded review isn't a pass yet, whatever its findings count.** A reviewer that never looked answers in the same shape, and one that listed three nits may have read one file. It counts only once it lists what it read and skipped, so continue the job and ask when it doesn't. `babysit` §Triage decides whether the pass is clean. An `unknown` job is never a pass.
 
 ## T3 seats
 

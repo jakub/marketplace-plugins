@@ -58,7 +58,7 @@ Every tool answers `{ok, job?, error?}`, and the JSON text opens with a one-line
 - `APPROVAL_REQUIRED` means the provider asked for more than the job grants. Its `output` is kept. Start a new job with the access the task needs.
 - `eventsPath` is the provider's full JSONL journal. `delegation_result` includes the last 20 lines, each cut to 400 characters. Set `events` for more or fewer, and read the file itself for the rest.
 
-A succeeded review with `findings: []` is not yet a pass. A reviewer that never looked answers in the same shape. Continue the finished job as a task and ask which files it read and which it skipped before you treat the empty array as clean. An `unknown` job is never a pass.
+A succeeded review is not yet a pass, whatever its findings count. A reviewer that never looked answers in the same shape. Unless it lists what it read and skipped, continue the finished job as a task and ask before you count it. `babysit` §Triage decides whether the pass is clean. An `unknown` job is never a pass.
 
 ## The doctor and the provider protocol
 
