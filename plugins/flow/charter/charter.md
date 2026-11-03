@@ -14,6 +14,7 @@ You're the orchestrator. You spawn and manage seats (subagents) as needed, as ma
 * If a task or design could go two ways, try both in parallel, score them, keep the better one.
 * Keep decisions, small tasks, and checks of your own work in the main thread.
 * Steer seats if you learn something that changes their scope.
+* A finding is a claim: a repro proves behavior, not obligation. Accept it only when it breaks something the work promises; `babysit` has the steps.
 
 ## Models
 As of 2026-10-28. Score is the mean of Terminal-Bench 4.0 and FrontierCode 2.0, both run by Artificial Analysis with one fixed harness per eval, and minutes and dollars per task are the geometric means from the same runs. Quality ranks first: rungs within 4 points tie, then rungs within 1.5× of the fastest one's time tie, and the cheapest wins. Step up buys is the gain over the preceeding row above.

@@ -10,7 +10,7 @@ Prep is the front door. You take an issue number or a free-text idea and harden 
 
 Only the user starts a prep, by naming an issue or an idea (`/flow:prep 42` in Claude Code, or in words anywhere). Adjacent work, a defect you found along the way, or a "what's next" survey never starts one. Mention it and move on.
 
-Prep writes no code and makes no worktree, except for the quick fix in step 3. The issue is the spec and the record: edit the body in place, and put findings in journal comments the user can read back later. At a design fork, pick one and say why. A loose end becomes an acceptance criterion or an ADR line in this issue, never a second issue.
+Prep writes no code and makes no worktree, except for the quick fix in step 3. The issue is the spec and the record: edit the body in place, and put findings in journal comments the user can read back later. At a design fork, pick one and say why. A loose end is never a second issue: an established requirement becomes an acceptance criterion, a real choice becomes a grill question, and anything else is journaled as "considered, not adopted" with its reason.
 
 ## 1. Entry
 
@@ -56,9 +56,9 @@ Two models from different families design it blind, then attack each other's des
 
 1. **Blind proposals.** Start the native leg, then the other-family leg, so both land in the same turn. Both are read-only, get the same scout material, and never see each other. The other-family leg gets that material inline, because a delegated job can see the repo and nothing else. Each proposes its own design and names what the issue left unsaid about shape, boundaries, protocols and trust rules. Leave placement and signatures to the issue run. For UI or copy, the native leg is a taste call.
 2. **Critique.** Give each leg the rival's sheet and ask for the strongest form of the disagreement. Continue the other-family leg with `continue: <jobId>` so it keeps its context. A null, an error or a timeout from either leg is unknown: check it before you retry.
-3. **Grill material.** Agreements become recommended answers. Each disagreement becomes one grill question.
+3. **Sort the objections.** Each objection names the obligation it serves and what breaks if you leave it out. An established requirement becomes an acceptance criterion, a real choice or trust question becomes a grill question, and anything else is journaled as "considered, not adopted: <reason>". An agreement between the legs is a recommendation with its reasons, never an automatic criterion.
 
-Decide cheap design forks yourself and journal the call. A trust-model fork always goes to the user: who can reach what, what an unattended tool will read or publish, the security posture. When the answer comes back, re-read what you asked against (the issue body in issue mode, and `HEAD`) before you act on it. If either moved, the answer is stale.
+Decide cheap design forks yourself and journal the call. A trust-model fork always goes to the user: who can reach what, what an unattended tool will read or publish, the security posture. An exclusion that would let a protected-topic finding (the list in `babysit` §Triage) be rejected is a trust-model fork too. Quote the user's answer verbatim in the journal, and link that comment from the `## Risk` line. When the answer comes back, re-read what you asked against (the issue body in issue mode, and `HEAD`) before you act on it. If either moved, the answer is stale.
 
 How the legs run:
 
@@ -83,7 +83,7 @@ The upstream grill skills assume other doc conventions. Give it ours:
 
 Write a `## Acceptance Criteria` section, spelled exactly like that. The claim script finds it by that heading, so under `Acceptance criteria` it refuses the claim with `no-acceptance-criteria`.
 
-Every criterion is testable as written, fits in one PR, and names its evidence: a link, a test CI runs, a file and line in the diff, or a committed or published capture. Screenshots and videos are also acceptable.
+Every criterion is testable as written, fits in one PR, and names its evidence: a link, a test CI runs, a file and line in the diff, or a committed or published capture, such as a screenshot or video.
 
 BAD
 
@@ -110,7 +110,10 @@ Then write a `## Risk` section. Its tier sets how much review `issue` spends, so
 - tier: high
 - why: changes how the WAL replays at boot, and a bug there loses acknowledged events
 - persisted state: WAL segment layout
+- intended case: the boot path replays segments the writer closed or crashed mid-append; it stops a torn tail record, not a hand-edited segment (exclusion: <journal link>)
 ```
+
+The intended case names the callers, their inputs and the promised behavior, and for a guard or check, which adversary it stops and which it doesn't. A boundary the grill couldn't settle is written `unresolved: <question>`, never guessed.
 
 `low` is work where a bug costs one quick fix-forward: copy, log levels, docs, a contained UI tweak. `high` is a trust boundary, data that outlives a revert, CI and release workflows, installers. Everything else is `standard`, and an issue with no `## Risk` section runs as `standard`.
 
@@ -118,7 +121,7 @@ Then write a `## Risk` section. Its tier sets how much review `issue` spends, so
 
 1. **Docs.** If the repo keeps a design record (`context.md`, `docs/adr/`, or whatever its instructions name), commit the grill's docs to current main in one `docs(...)` commit and push. Otherwise skip it and say so in the journal. If a path the grill wrote was already dirty at the post-scout snapshot, stop and ask, because you can't tell their changes from the grill's. Stage only the grill's paths by name, and stop if `git status --porcelain` shows anything else moved since that snapshot.
 2. **Spec.** Edit the issue body into the hardened spec: goal and why, context, agreed approach, key decisions with ADR links, acceptance criteria. In free-text mode, create the issue now with `FLOW_SANCTION=prep gh issue create ...`, the only command that carries that sanction.
-3. **Journal.** Post one comment with the synthesized design and the trail of decisions.
+3. **Journal.** Post one comment with the synthesized design, the trail of decisions and the "considered, not adopted" list. Step 2 wrote the body before this comment existed, so now point the `## Risk` authority link at the comment that quotes the user's answer verbatim: this one, unless an earlier journal comment already does.
 4. **Blocked?** If only the user or an outside party has the missing information, add `needs-info`, comment the questions, and stop. That keeps `ready-for-agent` off a blocked issue.
 5. **Label.** Check the issue against the ready-for-agent contract in the `flow` skill's `label-contract.md`. Add `ready-for-agent`, and remove `needs-triage`, `agent-found` and `needs-info`.
 

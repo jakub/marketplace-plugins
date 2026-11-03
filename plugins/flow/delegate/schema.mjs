@@ -8,6 +8,8 @@
 // share a subschema along branches that multiply at every level, and a pattern can backtrack
 // without end on the string it meets. The runner holds the job and its lease until the outcome is
 // written, so checkAnswer runs this file as a child process and kills it after CHECK_SECONDS.
+//
+// It also holds the findings schema and the reviewer instruction, so every review route reads one copy.
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -113,7 +115,7 @@ export const FINDINGS_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['severity', 'confidence', 'title', 'file', 'line', 'detail', 'systemic'],
+        required: ['severity', 'confidence', 'title', 'file', 'line', 'detail', 'basis'],
         properties: {
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
           confidence: { type: 'integer', minimum: 0, maximum: 100 },
@@ -121,11 +123,23 @@ export const FINDINGS_SCHEMA = {
           file: { type: 'string' },
           line: { type: 'integer', minimum: 0 },
           detail: { type: 'string' },
-          systemic: { type: 'boolean' },
+          basis: { type: 'string', enum: ['reproduced', 'code-path', 'grounded-unresolved'] },
         },
       },
     },
   },
+}
+
+// What every review route gives the reviewer: the flow_delegate prompt below, a T3 review seat's
+// context in lib/seat-policy.mjs, and the marked block in agents/reader.md, which smoke-delegate.mjs
+// holds byte for byte to this value. It names no SHAs, no route and no answer format, because each
+// route pins its own refs and answers in its own shape.
+export const REVIEW_INSTRUCTION = 'Act as an adversarial code reviewer and try to refute the change. Hunt for reachable correctness, security, concurrency and trust-boundary defects, never style or formatting, and read surrounding code and tests as needed. Do not edit files. Each finding is a claim the orchestrator checks against the intended case your brief names. In `detail`, give the entry point, the input, who sends that input, and the consequence. Set `basis` to `reproduced` when you ran it, `code-path` when you traced it through the code, or `grounded-unresolved` when the code makes it credible but you could not settle it, and then say what evidence is missing. If a concern falls outside the intended case, report it and say so instead of leaving it out. Cite a repository-relative file and the first affected line in the new code. A decision your brief marks user-settled stands unless you bring new evidence: a materially different reachable path, a different consequence, a different broken obligation, or a refuted premise. Another reviewer repeating the same repro is not new evidence. An orchestrator call may also be challenged on its premise.'
+
+/** The prompt of a flow_delegate review job: the pinned diff, the instruction, and the caller's focus. */
+export function reviewPrompt(baseSha, headSha, focus) {
+  const extra = focus.trim() ? `\n\nAdditional focus from the caller:\n${focus.trim()}` : ''
+  return `Review the diff \`git diff ${baseSha} ${headSha}\` in this repository.\n\n${REVIEW_INSTRUCTION}\n\nAnswer in the output schema.${extra}`
 }
 
 /**

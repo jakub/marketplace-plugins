@@ -22,7 +22,7 @@ A hand-off line that mentions this stage is not an invocation. A number that isn
 
 **Done** is an open PR, pushed, reviewed, evidenced and linked with `Closes #N`. Invoke the `babysit` skill with it right away, without asking.
 
-The PR body leads with the problem, then the fix, then one changelog line per commit. It carries a `## Risk` section (the tier, why, and any tripwire that raised it) and a `## Revert` section, both written from the diff that ships. Revert says what a rollback leaves behind, judged against the data stance in the repo's `AGENTS.md`. With no stance there, a change to persisted state isn't reversible, so say that.
+The PR body leads with the problem, then the fix, then one changelog line per commit. It carries a `## Risk` section (the tier, why, any tripwire that raised it, and the issue's `- intended case:` line, unchanged in meaning) and a `## Revert` section, both written from the diff that ships. Never narrow that line, because triage judges findings against it. Revert says what a rollback leaves behind, judged against the data stance in the repo's `AGENTS.md`. With no stance there, a change to persisted state isn't reversible, so say that.
 
 BAD
 
@@ -68,7 +68,7 @@ Pass `--kind` only if the label default is wrong: `bug` is fix, `documentation` 
 Three kinds of issue comment, and no others:
 
 1. **Pre-flight**, before work starts: the base SHA, the AC digest, the risk tier, and the seats with their models, efforts and why.
-2. **Events**, as they happen: a tripwire fired, the run widened or narrowed, a fork guessed, a seat re-run on a stronger model, the breaker tripped, a stale answer rejected.
+2. **Events**, as they happen: a tripwire fired, the run widened or narrowed, a fork guessed, a seat re-run on a stronger model, the fix-round total, the breaker tripped, a stale answer rejected. Each review round adds one triage line per finding: the reviewed head, the finding's title and location, its basis, its disposition, the obligation or exclusion, the reason, and an evidence link. Several lines can share one comment.
 3. **Final**: a verdict per criterion, and coverage: which seats actually looked at the diff versus the ones you planned, by name.
 
 When you recover from anything, re-read live state. A journal line never authorizes a later action on its own.
@@ -87,10 +87,10 @@ Open design questions found mid-run means prep missed something. A small shape q
 ## 5. Invariants
 
 1. **Review crosses families per diff.** A PR with native-written and delegated-written work needs a reviewer from each family.
-2. **Someone tries to break it.** Tell at least one review seat to refute the change, not summarize it. A finding backed by a failing test it wrote skips adjudication, and its fix keeps that test as the regression guard. If the fixer thinks the test encodes the wrong requirement, it says so instead of satisfying it.
+2. **Someone tries to break it.** Tell at least one review seat to refute the change, not summarize it. Brief the first review as `babysit` §Rounds says, on every route. A reviewer's failing test is evidence, not a way past triage, and a Fixed finding's fix keeps it as the regression guard. If the fixer thinks the test encodes the wrong requirement, it says so instead of satisfying it.
 3. **Unknown is not a pass.** CI is green only on a head you checked is in sync (the local SHA equals the PR's `headRefOid`) and that you actually saw. Never infer it from an exit code. A `failed`, `cancelled` or `unknown` review job is a missing seat, not a clean review.
 4. **Every criterion has evidence a stranger can re-run.** Each gets a verdict and a pointer in the PR's evidence ledger, reproducible from the merged repo alone with a committed test, script or artifact. Journal prose is narrative. An expiring URL is evidence with a TTL.
-5. **Stop on evidence, not exhaustion.** The issue's `## Risk` tier sets the bar, and no section means `standard`. `low` and `standard` converge on one clean adversarial pass from the family that didn't write the fix. `high` needs two clean passes in a row from different seats, and a security seat is one of the reviewers. The final pass sweeps the whole diff file by file and lists what it read and skipped, and a file no reviewer named since the last fix round is a gap. `findings: []` carries no such list, so continue that job and ask for one before the pass counts. A finding that leaves no defect in the intended case or in code this PR touches, such as a test nobody needs, a guard for a case that doesn't matter, extra compatibility or a small cost, is declined with a one-line reason and goes in the PR body's `## follow-up draft`, so review can't grow the PR. A real bug the PR introduces, a finding backed by a failing test, and a finding on a topic `babysit` says never to reject yourself are never declined this way. Past about five fix rounds (three on `low`), stop fixing: hand the survivors to a seat picked for settling conflicting reviewers, and escalate the real ones to the user instead of shipping them.
+5. **Stop on evidence, not exhaustion.** The issue's `## Risk` tier sets the bar, and no section means `standard`. `low` and `standard` converge on one clean adversarial pass from the family that didn't write the fix. `high` needs two clean passes in a row from different seats, and a security seat is one of the reviewers. Triage every finding as `babysit` §Triage says, and count a pass as clean only by its definition there. The final pass sweeps the whole diff file by file and lists what it read and skipped, and a file no reviewer named since the last fix round is a gap. A `flow_delegate` review returns no such list, so continue that job and ask for one before the pass counts. Count fix rounds against the breaker in `babysit` §Rounds, exactly 3 on `low` and 5 otherwise, which says what a round is and what to do when it trips. Journal the running total after every fix round, because `babysit` continues the count instead of resetting it.
 6. **One file, one writer.** No two seats hold the same file at once, and each stages only its own paths, because the index is shared. Notes, logs, captures and anything else the run won't commit go in the worktree's `.flow-scratch/`, which the claim git-ignores. Never put them in /tmp or the workspace root, because `land` retires scratch with the worktree. Say so in each seat's task.
    - A `flow_delegate` writer can edit but not commit, so tell it that. When it returns, verify it (invariant 8), stage its files by path, and commit them. Name the seat in the journal, never in the commit.
    - A T3 writer commits its own paths with `git -C <wt> commit -- <paths>`, and invariant 8 checks those commits.
@@ -109,7 +109,7 @@ Size isn't fixed at launch. Each of these raises the tier one step and forces a 
 
 - the diff touches a trust boundary the issue never mentioned: auth, input parsing, shell, SQL or template construction, secrets;
 - the diff grows past about twice the planned file count;
-- fix rounds churn on one area, with each fix spawning findings where it lands;
+- fix rounds churn on one area, with each fix spawning findings where it lands. Re-triage the churning findings against the intended case first, and raise the tier only if intended-case defects survive;
 - the two families' reviewers disagree hard on the same code.
 
 A trust boundary makes the run `high` outright. Nothing lowers the tier mid-run, because a run that talks itself into less review is exactly what the tier guards against.
@@ -118,7 +118,7 @@ A trust boundary makes the run `high` outright. Nothing lowers the tier mid-run,
 
 A fork is the user's only when it's genuinely theirs to pick: two designs both defensible on the merits, a contested finding whose dismissal changes the risk posture, or a scope question the issue can't settle.
 
-**Optional forks.** If you can ask and get the answer in the same turn, ask, with the consequence on each option. If they dismiss it, decide and journal. If asking would end the turn, don't ask. Decide, journal a `fork guessed` event naming the rejected option and why, and keep going.
+**Optional forks.** A remedy that expands the approved responsibility, the supported behavior or the trust posture is never one. It goes to the user before anyone writes it, because guessing it grows the work. Otherwise, if you can ask and get the answer in the same turn, ask, with the consequence on each option. If they dismiss it, decide and journal. If asking would end the turn, don't ask. Decide, journal a `fork guessed` event naming the rejected option and why, and keep going.
 
 **Trust-model forks** set the posture of a trust boundary: who can reach what, what an unattended tool reads or publishes, where authority ends. Always ask these, on every host, because reviewers will ratify a coherent guessed posture instead of contesting it. If nobody answers, take the conservative posture (confine, refuse, least reach), label `needs-human`, journal it, and stop.
 

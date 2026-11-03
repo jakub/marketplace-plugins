@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { hasRecord, readStamp } from '../lib/seat-store.mjs'
 import { inside, RETENTION_MS, stateDir } from '../lib/state-dir.mjs'
-import { FINDINGS_SCHEMA, outputSchemaProblem } from './schema.mjs'
+import { FINDINGS_SCHEMA, outputSchemaProblem, reviewPrompt } from './schema.mjs'
 
 const execFileAsync = promisify(execFile)
 const MAIN = fileURLToPath(new URL('./main.mjs', import.meta.url))
@@ -295,11 +295,6 @@ async function commit(cwd, ref) {
 const preview = (text) => {
   const chars = Array.from(String(text).replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim())
   return chars.length > 240 ? `${chars.slice(0, 237).join('')}...` : chars.join('')
-}
-
-export function reviewPrompt(baseSha, headSha, focus) {
-  const extra = focus.trim() ? `\n\nAdditional focus from the caller:\n${focus.trim()}` : ''
-  return `Act as an adversarial code reviewer. Review the diff \`git diff ${baseSha} ${headSha}\` in this repository and try to refute the change. Hunt for reachable correctness, security, concurrency and trust-boundary defects; read surrounding code and tests as needed. Report only findings you verified against the code, never style or formatting. Cite a repository-relative file and the first affected line in the new code. Do not edit files. Answer in the output schema; a clean review has an empty findings array.${extra}`
 }
 
 export async function admit(input, { host, roots, signal }) {
