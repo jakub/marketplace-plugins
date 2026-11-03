@@ -6,16 +6,17 @@
 //   seat.mjs open --access read-only|workspace-write|review --provider claude|codex
 //                 [--provider-instance-id <id>] --model <id> [--expected-served-model <id>]
 //                 --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>]
-//   seat.mjs close <seat-id> --task-status <json>
+//   seat.mjs close <seat-id> --task-status <json|->
 //   seat.mjs close <seat-id> --abandon
 //   seat.mjs trust [--write --expect <digest>]
 //
 // stdout is one JSON line. open prints {ok: true, id, tag, clientRequestId, runtimeMode, provider,
 // providerInstanceId, model, expectedServedModel, effort, worktree, reviewWorktree}, close prints {ok: true, id, verdict, reasons, turn, result,
-// servedModels, blocks, errors, cleanupProblems?}, with or without --abandon, trust prints {ok: true, keys: [{key, command, trustStatus,
+// servedModels, blocks, errors, cleanupProblems?, recorded?}, with or without --abandon, trust prints {ok: true, keys: [{key, command, trustStatus,
 // currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
-// details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY and
-// HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_TERMINAL and TASK_MISMATCH from close; BAD_REQUEST,
+// details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY,
+// HOOKS_MISMATCH, HOOKS_CHANGED and HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_TERMINAL,
+// TASK_MISMATCH and TASK_INCOMPLETE from close; BAD_REQUEST,
 // HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App
 // Server's own failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for
 // anything this script did not expect, INTERNAL.
@@ -40,8 +41,10 @@
 // add a detached worktree at the head under <canonical>/.flow-worktrees/review-<id>, the seat's
 // worktree, recording its admin directory (`git rev-parse --absolute-git-dir` there) as
 // reviewGitDir, with the findings schema as its answer schema; for a Codex seat, read flow's Codex
-// hook trust (below) and refuse with HOOKS_UNTRUSTED unless every flow hook is there, enabled and
-// trusted, recording the digest of the keys and hashes it read as hooksDigest; for a writer, hold
+// hook trust (below) between two digests of its plugin root (The plugin root, below) and refuse
+// with HOOKS_UNTRUSTED unless every flow hook is there, enabled and trusted, recording the digest
+// of the keys and hashes it read as hooksDigest and the root and its digest as codexPluginRoot and
+// codexPluginDigest; for a writer, hold
 // the worktree's write lease directory (below); for a review, snapshot the canonical checkout
 // with tree-snapshot.mjs and add its HEAD commit and the branch HEAD names; then write the schema and the record, last, through lib/seat-store.mjs. Before the holder, open builds the seat's context as the prompt hook will (with the real schema.json path) and refuses BAD_REQUEST when the paths make it past the 6000-byte hook budget even with the schema left out by path.
 // A failure undoes whatever this run created, the review worktree and the lease holder, so a
@@ -61,13 +64,39 @@
 // closed record, and refuses WORKSPACE_BUSY. Writer seats share a worktree with each other, each
 // committing its own paths, as native writers do.
 //
-// close first refuses TASK_NOT_TERMINAL, writing nothing, unless --task-status is a task_status
+// The plugin root. Codex keeps one trust hash for the whole installed plugin, so a change to any
+// file under flow's Codex plugin root, from a cache refresh or a reinstall, untrusts every flow
+// hook, and Codex then skips them without a word. A turn after that leaves nothing on record. The
+// root's digest is the sha256 of the JSON of one entry per directory and file under it, the root
+// included as '': [<relative path>, 'dir', null] or [<relative path>, 'file', <sha256 of its
+// bytes>], with / between path segments, sorted by code unit. Every entry is read through lstat,
+// and a file through an O_NOFOLLOW and O_NONBLOCK open and fstat, so no link is followed and no
+// FIFO blocks the walk. A symlink, any other entry type or an entry that cannot be read is a problem.
+// open lists the hooks in one App Server session to learn the root, digests it, reads the trust in
+// a second session, and digests it again. A walk problem refuses HOOKS_MISMATCH. A second session
+// that names another root, or a second digest unlike the first, refuses HOOKS_CHANGED. All of it
+// runs before the lease holder, so a refusal leaves no record, holder or review worktree. A Claude
+// record carries neither codexPluginRoot nor codexPluginDigest.
+//
+// close reads the task status from --task-status <json>, at most 64 KiB, or with --task-status -
+// from stdin, at most 256 KiB of raw bytes (a trailing newline counts) that must decode as UTF-8.
+// A single argv string fails with E2BIG at 128 KiB on Linux, so a parent passes a whole status on
+// stdin. A status over its cap, not UTF-8 or not JSON is refused BAD_REQUEST. No refusal of close
+// writes anything: no stamp is added or changed, and the writer's lease holder and the review
+// worktree stay, so a retry with the whole status can still close the seat.
+// close then refuses TASK_NOT_TERMINAL, writing nothing, unless --task-status is a task_status
 // answer T3 gives for a finished task: an object whose status is completed, failed, cancelled or
 // interrupted, whose workState is not working or waiting_for_children, and whose
 // hasPendingChildRuns is not true. A writer's lease stays held until then. Once the seat was
 // admitted, close also refuses TASK_MISMATCH, writing nothing, unless the task status's taskId
 // carries flow-seat-<id>, the clientRequestId the admitted call named, plainly or URL-encoded, so
-// one seat is never closed on another task's status. It then judges the seat
+// one seat is never closed on another task's status. It then refuses TASK_INCOMPLETE unless the
+// status has its own childRunId, latestTerminalRunId, latestTerminalStatus, summary and
+// latestTerminalSummary keys (a key set to null is present), and TASK_MISMATCH unless both run ids
+// follow one grammar: run:thread:<seg>:ordinal:<n>, split at the last :ordinal:, where seg equals
+// encodeURIComponent(childThreadId), compared encoded, childThreadId is a non-empty string, n
+// matches [1-9][0-9]* and is a safe integer, and the latest ordinal is not below the child's.
+// childThreadId is a T3 id and is never compared with a hook's sessionId. It then judges the seat
 // from its record and the stamps and results the hooks wrote, in this order of precedence, the
 // first that holds being the verdict:
 //   unknown         no readable record; a record that fails seatIdentityProblem, such as one
@@ -95,9 +124,31 @@
 //   capped          the last turn was capped
 //   invalid         the last stop in the last turn was blocked
 //   valid           otherwise; result is the envelope Stop recorded
+// close then checks a valid verdict against the task status, as negative evidence only. T3's
+// text can withhold a valid, and the result is still the envelope Stop recorded, never T3's
+// summary. The latest run's text is summary when latestTerminalRunId is childRunId. Otherwise,
+// when latestTerminalStatus is completed, it is latestTerminalSummary when that is a string and
+// summary when it is null (T3 0.1.6 nulls it when it repeats summary), and for any other status
+// there is none. Reason stale-turn comes first, for no text, for text whose store.textDigest (the
+// raw bytes Stop hashed, nothing trimmed or unfenced) is not the turn state's messageSha256, or
+// for a latest ordinal above the child's when the turn state has no own opened key. The ordinal is
+// a one-way signal and never a turn count: a failed run takes an ordinal and has no Stop, and a
+// steer adds no run. Reason hooks-changed comes after it, for a Codex record whose plugin root
+// changed. close scans the root twice in a row, and a problem in either scan, a digest unlike
+// codexPluginDigest or two unequal digests is a change. A Codex record with neither key predates
+// the check and is not scanned, one with a single key or a malformed digest reads hooks-changed,
+// and a Claude record is never scanned. Either reason makes the verdict unknown and the result
+// null, and keeps turn, servedModels, blocks and errors. close checks only a valid verdict, so the
+// two reasons only ever turn valid into unknown, and every verdict above keeps its precedence.
+// Two gaps are known and not fixed:
+//   - a later run whose hooks were dark and whose text is byte-identical to the recorded message
+//     passes when the turn state already holds an opened key, from an earlier follow-up or steer;
+//   - the scan sees endpoint drift only, so a change restored byte for byte before close passes.
+//     The change seen on 2026-11-03 was a cache refresh that stayed.
 // It writes the closed stamp first, with the verdict, the reasons, the task status the parent
-// read from T3, and the facts the output reports: the turn, the sha256 of that turn's result bytes
-// as judge read them (null with no result), the served models, the blocks and the errors. It
+// read from T3, the latest run's id as runId, the turn state's messageSha256, and the facts the
+// output reports: the turn, the sha256 of that turn's result bytes as judge read them (null with
+// no result), the served models, the blocks and the errors. It
 // then drops the writer's lease holder and removes the review worktree it created, only while the
 // path still resolves to the recorded worktree, its admin directory is still reviewGitDir, and
 // `git worktree list` still lists it; a worktree that is not the one open added is left in place
@@ -106,7 +157,16 @@
 // and facts, with the result read again from the pinned turn: that result while its bytes still
 // hash to the pinned sha256, and otherwise null, with result-changed-after-close among the
 // reasons and the verdict unchanged. It also retries the cleanup. Cleanup that fails is listed in
-// cleanupProblems and does not change the verdict.
+// cleanupProblems and does not change the verdict. A stamp that holds valid and is not an abandon
+// is first checked against the status this close was given, so a later close never certifies a
+// run the stamp did not judge. A latest run id other than the stamp's runId adds stale-turn, and a
+// stamp written before close recorded runId has none, so it reads as another run. The same run with
+// text whose store.textDigest is not the stamp's messageSha256 adds stale-turn too, and the root
+// scan above adds hooks-changed. With either reason, close prints verdict unknown with those
+// reasons, result null and, last, recorded: {verdict, turn} from the stamp. It never rewrites the
+// stamp, judges the seat again or reads its trees, because a review's worktree is gone by then. A
+// stamp that holds any other verdict certified nothing and prints as before. A close that lost the
+// race for the stamp takes the same path, so two first closes on one status print one outcome.
 //
 // close --abandon closes a seat whose delegate_task call made no task: T3 refused or lost the call
 // after the parent's PreToolUse admitted it, so no task_status will ever name the seat, and close
