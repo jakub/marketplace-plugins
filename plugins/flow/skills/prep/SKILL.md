@@ -65,7 +65,7 @@ Two models from different families design it blind, then attack each other's des
    - Check each one passively, against pinned source or with an existing command that changes nothing, because prep still writes no code and makes no worktree.
    - Journal the command, the revision, the input and the result. Keep that record in the prep result until the issue exists, and put it in the ADR where the repo keeps one.
    - A premise that only new code can settle becomes a premise checkpoint in the issue, with its pass criterion and its failure outcome agreed now.
-   - When the missing result would decide the design, prep stays blocked, as step 7's "Blocked?" says.
+   - When the missing result would decide which design to write, so no failure outcome can be agreed now, prep stays blocked, as step 7's "Blocked?" says. A premise that already has an agreed checkpoint doesn't block.
    - A policy limit the user picked needs a rationale, not a probe.
 
 Decide cheap design forks yourself and journal the call. A trust-model fork always goes to the user: who can reach what, what an unattended tool will read or publish, the security posture. An exclusion that would let a protected-topic finding (the list in `babysit` §Triage) be rejected is a trust-model fork too. Quote the user's answer verbatim in the journal, and link that comment from the `## Risk` line. When the answer comes back, re-read what you asked against (the issue body in issue mode, and `HEAD`) before you act on it. If either moved, the answer is stale.
