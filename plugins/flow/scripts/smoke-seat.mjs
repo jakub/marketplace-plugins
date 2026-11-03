@@ -451,6 +451,19 @@ function guardedSeat(message = MESSAGE_OK, { id = null } = {}) {
 }
 // A final message that passes, other than MESSAGE_OK.
 const messageWith = (notes) => JSON.stringify({ ...ENVELOPE_OK, notes })
+// A read-only Codex seat that seat open made against a Codex install of its own, under name, which
+// holds a README and a script beside the hooks file: {id, root, message}. With hooks false it has
+// turn 1 recorded valid through the store; with hooks true the caller runs it through the hooks.
+function rootedCodexSeat(name, { hooks = false } = {}) {
+  const root = installedRoot(name)
+  mkdirSync(join(root, 'scripts'), { recursive: true })
+  writeFileSync(join(root, 'README.md'), 'flow\n')
+  writeFileSync(join(root, 'scripts', 'seat.mjs'), '// seat\n')
+  const opened = seatCli(['open', '--access', 'read-only', '--provider', 'codex', '--model', MODELS.codex, '--effort', 'high'], { env: codexState(flowEntries({ trusted: true, root })).env })
+  assert.equal(opened.ok, true, JSON.stringify(opened))
+  assert.deepEqual([store.readRecord(opened.id).record.codexPluginRoot, store.readRecord(opened.id).record.codexPluginDigest], [root, treeDigest(root)])
+  return { ...(hooks ? { id: opened.id, message: MESSAGE_OK } : hookedSeat({ id: opened.id, provider: 'codex' })), root }
+}
 // Preloaded into a seat process: it holds the process at the write of its lease holder file, or
 // with SEAT_GATE_AT=record at the write of its record's temp file, until <SEAT_GATE>.go exists,
 // having written <SEAT_GATE>.waiting, so a case can act in that window.
@@ -511,6 +524,20 @@ if (process.env.STAMP_GATE_AT === 'bound') {
     if (typeof to === 'string' && /\\/seats\\/[0-9a-f]{32}\\/closed\\.json$/.test(to)) hold()
     return out
   }
+}
+syncBuiltinESMExports()
+`)
+// Preloaded into seat.mjs close, test-only: when the readdir of SCAN_ROOT that starts its second
+// scan of the root comes, it first appends a byte to SCAN_ROOT/README.md, so the first scan sees the
+// tree open recorded and the second sees another.
+const scanGate = join(tmp, 'scan-gate.mjs')
+writeFileSync(scanGate, `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const real = fs.readdirSync
+let scans = 0
+fs.readdirSync = function (path, ...rest) {
+  if (path === process.env.SCAN_ROOT && ++scans === 2) fs.appendFileSync(process.env.SCAN_ROOT + '/README.md', 'x')
+  return real.call(this, path, ...rest)
 }
 syncBuiltinESMExports()
 `)
@@ -4345,6 +4372,136 @@ const cases = {
     assert.equal(opened.ok, true, JSON.stringify(opened))
     assert.equal(store.readRecord(opened.id).record.codexPluginDigest, treeDigest(early))
     ok('the trust comes from the second hooks/list, so one that reads untrusted refuses HOOKS_UNTRUSTED; a change before the first digest is no race, and the record holds the digest of the root as changed')
+  },
+
+  // B at close: Codex untrusts every flow hook when any file of the plugin changes and then skips
+  // them without a word, so a Codex seat whose plugin root no longer holds what open digested may
+  // have run unguarded, and an otherwise valid close reads unknown (hooks-changed).
+  'close-hooks-changed': () => {
+    const README = (seat) => join(seat.root, 'README.md')
+    const changes = [
+      ['one non-hook byte appended', (root) => writeFileSync(join(root, 'README.md'), 'flow\nx')],
+      ['one non-hook byte changed', (root) => writeFileSync(join(root, 'README.md'), 'flaw\n')],
+      ['a file added', (root) => writeFileSync(join(root, 'scripts', 'new.mjs'), '')],
+      ['an empty directory added', (root) => mkdirSync(join(root, 'empty'))],
+      ['a file removed', (root) => rmSync(join(root, 'scripts', 'seat.mjs'))],
+      ['a file renamed', (root) => renameSync(join(root, 'scripts', 'seat.mjs'), join(root, 'scripts', 'moved.mjs'))],
+    ]
+    changes.forEach(([what, change], at) => {
+      const seat = rootedCodexSeat(`close-hooks-changed-${at}`)
+      assert.notEqual(seat.root, realpathSync(PLUGIN))
+      change(seat.root)
+      const out = closeSeat(seat.id)
+      assert.deepEqual([out.verdict, out.reasons, out.result, out.turn], ['unknown', ['hooks-changed'], null, 1], `${what}: ${JSON.stringify(out)}`)
+      assert.deepEqual([store.readStamp(seat.id, 'closed').verdict, store.readStamp(seat.id, 'closed').reasons], ['unknown', ['hooks-changed']])
+    })
+    ok('a Codex seat whose plugin root, apart from this checkout, gained, lost, renamed or changed a non-hook file or directory between open and close closes unknown (hooks-changed) with no result')
+
+    // The two scans at close: a tree that changes between them reads hooks-changed even though
+    // the first scan matched what open recorded.
+    const scanned = rootedCodexSeat('close-hooks-changed-scan')
+    const scanOut = seatCli(['close', scanned.id, '--task-status', '-'], { input: JSON.stringify(taskStatusOf(scanned.id)), nodeArgs: ['--import', pathToFileURL(scanGate).href], env: { SCAN_ROOT: scanned.root } })
+    assert.equal(readFileSync(README(scanned), 'utf8'), 'flow\nx', 'the scan gate never fired, so close scanned the root once')
+    assert.deepEqual([scanOut.verdict, scanOut.reasons], ['unknown', ['hooks-changed']], JSON.stringify(scanOut))
+    ok('close scans the root twice in a row, and a root that changes between the scans reads hooks-changed')
+
+    // A later close after a valid first close checks the root again, and never rewrites the stamp.
+    const later = rootedCodexSeat('close-hooks-changed-later')
+    const first = closeSeat(later.id)
+    assert.equal(first.verdict, 'valid', JSON.stringify(first))
+    const bytes = readFileSync(join(seats, later.id, 'closed.json'))
+    writeFileSync(README(later), 'flow\nx')
+    const again = closeSeat(later.id)
+    assert.deepEqual(again, { ...first, verdict: 'unknown', reasons: ['hooks-changed'], result: null, recorded: { verdict: 'valid', turn: 1 } }, JSON.stringify(again))
+    assert.ok(readFileSync(join(seats, later.id, 'closed.json')).equals(bytes), 'the later close rewrote the closed stamp')
+    ok('a later close of a seat closed valid reads hooks-changed with recorded once its root changed, the closed stamp byte-identical')
+
+    // The check is endpoint drift: a change restored byte for byte before close is not seen.
+    const restored = rootedCodexSeat('close-hooks-changed-restored')
+    writeFileSync(README(restored), 'flow\nx')
+    writeFileSync(README(restored), 'flow\n')
+    assert.equal(closeSeat(restored.id).verdict, 'valid')
+    ok('a root changed and then restored byte for byte before close closes valid: the documented endpoint-drift limit')
+  },
+
+  'close-hooks-missing': () => {
+    const gone = rootedCodexSeat('close-hooks-missing')
+    rmSync(gone.root, { recursive: true })
+    const goneOut = closeSeat(gone.id)
+    assert.deepEqual([goneOut.verdict, goneOut.reasons, goneOut.result], ['unknown', ['hooks-changed'], null], JSON.stringify(goneOut))
+    // The same bytes behind a symlink are no longer the root open digested.
+    const linked = rootedCodexSeat('close-hooks-missing-link')
+    const copy = `${linked.root}-copy`
+    cpSync(linked.root, copy, { recursive: true })
+    rmSync(linked.root, { recursive: true })
+    symlinkSync(copy, linked.root)
+    assert.equal(treeDigest(copy), store.readRecord(linked.id).record.codexPluginDigest)
+    const linkedOut = closeSeat(linked.id)
+    assert.deepEqual([linkedOut.verdict, linkedOut.reasons], ['unknown', ['hooks-changed']], JSON.stringify(linkedOut))
+    ok('a Codex seat whose plugin root is gone at close, or became a symlink to the same bytes, closes unknown (hooks-changed)')
+  },
+
+  'close-hooks-unchanged': () => {
+    const seat = rootedCodexSeat('close-hooks-unchanged')
+    const out = closeSeat(seat.id)
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 1, ENVELOPE_OK], JSON.stringify(out))
+    // The same through the real hooks, with a recorded follow-up.
+    const hooked = rootedCodexSeat('close-hooks-unchanged-hooked', { hooks: true })
+    const run = guardedSeat(MESSAGE_OK, { id: hooked.id })
+    const key = run.followUp()
+    const second = messageWith('turn 2 on an unchanged root')
+    silent(run.stop(second, key), 'turn 2 stop')
+    const followed = closeSeat(hooked.id, taskStatusOf(hooked.id, { latestTerminalRunId: runIdOf(childThreadOf(hooked.id), 2), latestTerminalSummary: second }))
+    assert.deepEqual([followed.verdict, followed.reasons, followed.turn], ['valid', [], 2], JSON.stringify(followed))
+    ok('a Codex seat whose plugin root holds at close exactly what open digested closes on its turn as before, through the store or the real hooks')
+  },
+
+  'close-hooks-legacy-record': () => {
+    // A Codex record from before open recorded the root carries neither key, and closes as before.
+    const legacy = hookedSeat({ provider: 'codex' })
+    assert.equal(Object.hasOwn(store.readRecord(legacy.id).record, 'codexPluginRoot'), false)
+    assert.deepEqual([closeSeat(legacy.id).verdict], ['valid'])
+    // One key alone or a malformed value is no legacy record.
+    const root = installedRoot('close-hooks-legacy')
+    const digest = treeDigest(root)
+    for (const [what, fields] of [
+      ['the root alone', { codexPluginRoot: root }], ['the digest alone', { codexPluginDigest: digest }], ['a digest that is no sha256', { codexPluginRoot: root, codexPluginDigest: 'x' }],
+      ['a relative root', { codexPluginRoot: 'plugins/flow', codexPluginDigest: digest }], ['a root that is no string', { codexPluginRoot: 7, codexPluginDigest: digest }],
+      ['both null', { codexPluginRoot: null, codexPluginDigest: null }],
+    ]) {
+      const out = closeSeat(hookedSeat({ provider: 'codex', record: fields }).id)
+      assert.deepEqual([out.verdict, out.reasons], ['unknown', ['hooks-changed']], `${what}: ${JSON.stringify(out)}`)
+    }
+    assert.equal(closeSeat(hookedSeat({ provider: 'codex', record: { codexPluginRoot: root, codexPluginDigest: digest } }).id).verdict, 'valid', 'both keys, matching')
+    ok('a Codex record without codexPluginRoot and codexPluginDigest closes as before; one with only one of them, or a malformed one, closes unknown (hooks-changed)')
+  },
+
+  'close-hooks-claude-ignored': () => {
+    const root = installedRoot('close-hooks-claude')
+    for (const [what, fields] of [['no keys', {}], ['a root that is gone', { codexPluginRoot: join(tmp, 'nowhere'), codexPluginDigest: 'f'.repeat(64) }], ['the root alone', { codexPluginRoot: root }]]) {
+      const out = closeSeat(hookedSeat({ provider: 'claude', record: fields }).id)
+      assert.deepEqual([out.verdict, out.reasons], ['valid', []], `${what}: ${JSON.stringify(out)}`)
+    }
+    const opened = seatCli(['open', '--access', 'read-only', '--provider', 'claude', '--model', MODELS.claude, '--effort', 'high'])
+    assert.equal(Object.hasOwn(store.readRecord(opened.id).record, 'codexPluginRoot'), false)
+    assert.equal(closeSeat(hookedSeat({ id: opened.id }).id).verdict, 'valid')
+    ok('a Claude seat records no plugin root and checks none at close, whatever its record carries')
+  },
+
+  'close-both-reasons': () => {
+    const laterRun = (id) => taskStatusOf(id, { latestTerminalRunId: runIdOf(childThreadOf(id), 2), latestTerminalSummary: messageWith('run 2, unhooked') })
+    const first = rootedCodexSeat('close-both-first')
+    writeFileSync(join(first.root, 'README.md'), 'flow\nx')
+    const out = closeSeat(first.id, laterRun(first.id))
+    assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['stale-turn', 'hooks-changed'], null], JSON.stringify(out))
+    assert.deepEqual(closeSeat(first.id, laterRun(first.id)), out, 'a later close of the seat printed something else')
+
+    const repeated = rootedCodexSeat('close-both-repeated')
+    assert.equal(closeSeat(repeated.id).verdict, 'valid')
+    writeFileSync(join(repeated.root, 'README.md'), 'flow\nx')
+    const again = closeSeat(repeated.id, laterRun(repeated.id))
+    assert.deepEqual([again.verdict, again.reasons, again.result, again.recorded], ['unknown', out.reasons, null, { verdict: 'valid', turn: 1 }], JSON.stringify(again))
+    ok('when stale-turn and hooks-changed both hold, close reads unknown with both reasons in that order, on a first close and on a later close of a seat closed valid alike')
   },
 
   'fastpath-silent': () => {

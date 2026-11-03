@@ -830,17 +830,19 @@ function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
 }
 
 // A later close's output once the stamp is on record: onRecord's, unless the stamp certified a
-// valid verdict that this close's task status contradicts. A latest run other than the one the
-// stamp judged (a stamp written before close recorded runId reads as another run), or the same
-// run with text other than the message the stamp judged, is stale-turn: the verdict is unknown,
-// with no result and what the stamp recorded beside it. The stamp is never rewritten, so a later
-// close never certifies a run the stamp did not judge. A stamp that certified nothing prints as it
-// is, and judge's tree checks never run again here, since the first close removed the worktree.
-function repeated(id, recorded, run) {
+// valid verdict that this close's task status or the seat's hooks now contradict. A latest run
+// other than the one the stamp judged (a stamp written before close recorded runId reads as another
+// run), or the same run with text other than the message the stamp judged, is stale-turn, and a
+// changed plugin root is hooks-changed: the verdict is unknown, with those reasons, no result and
+// what the stamp recorded beside them. The stamp is never rewritten, so a later close never
+// certifies a run the stamp did not judge. A stamp that certified nothing prints as it is, and
+// judge's tree checks never run again here, since the first close removed the review worktree.
+function repeated(id, recorded, run, record) {
   const shown = onRecord(id, recorded)
   if (recorded.verdict !== 'valid' || recorded.abandoned === true) return shown
   const reasons = []
   if (run.latestRunId !== recorded.runId || store.textDigest(run.latestText) !== recorded.messageSha256) reasons.push('stale-turn')
+  if (hooksChanged(record)) reasons.push('hooks-changed')
   if (reasons.length === 0) return shown
   return { ...shown, verdict: 'unknown', reasons, result: null, recorded: { verdict: recorded.verdict, turn: shown.turn } }
 }
@@ -939,15 +941,34 @@ function latestText(status) {
   return status.latestTerminalSummary === null ? text(status.summary) : text(status.latestTerminalSummary)
 }
 
-// Why a seat judge read valid is not proven to have answered T3's latest finished run, as
-// reasons, none when it is. T3's text is negative evidence only: it can turn a valid into unknown,
-// and the answer still comes from the result Stop wrote. stale-turn: the latest run left no text,
-// its text is not byte for byte the final message Stop recorded, or it is a later run than the
-// child's while no follow-up prompt is on record.
-function freshness(facts, run) {
+// Whether a Codex seat's hooks may have gone dark while it ran: the flow plugin root open recorded
+// no longer holds what open digested. Codex untrusts every flow hook when any plugin file changes
+// and skips an untrusted hook without a word. The root is scanned twice in a row, and a scan that
+// fails, either scan's digest other than the record's, or two scans that differ all count. A Codex
+// record with neither key predates the check and is not checked; one with a single key or a
+// malformed value is; a Claude record never is.
+function hooksChanged(record) {
+  if (record?.provider !== 'codex') return false
+  const hasRoot = Object.hasOwn(record, 'codexPluginRoot')
+  const hasDigest = Object.hasOwn(record, 'codexPluginDigest')
+  if (!hasRoot && !hasDigest) return false
+  if (!hasRoot || !hasDigest || typeof record.codexPluginDigest !== 'string' || !DIGEST.test(record.codexPluginDigest)) return true
+  const first = pluginTree(record.codexPluginRoot)
+  const second = pluginTree(record.codexPluginRoot)
+  return first.digest === undefined || first.digest !== record.codexPluginDigest || second.digest !== first.digest
+}
+
+// Why a seat judge read valid is not proven to have answered T3's latest finished run under its
+// hooks, as reasons in this order, none when it is. T3's text is negative evidence only: it can
+// turn a valid into unknown, and the answer still comes from the result Stop wrote. stale-turn:
+// the latest run left no text, its text is not byte for byte the final message Stop recorded, or it
+// is a later run than the child's while no follow-up prompt is on record. hooks-changed: see
+// hooksChanged.
+function freshness(facts, run, record) {
   const reasons = []
   const latest = store.textDigest(run.latestText)
   if (latest === null || latest !== facts.messageSha256 || (run.latestOrdinal > run.childOrdinal && !facts.opened)) reasons.push('stale-turn')
+  if (hooksChanged(record)) reasons.push('hooks-changed')
   return reasons
 }
 
@@ -974,7 +995,7 @@ function close(argv) {
   const judged = judge(id, loaded)
   // Only a valid verdict is checked against T3's latest run, so every other verdict keeps its
   // precedence, and the check can only turn a valid into unknown.
-  const doubts = judged.verdict === 'valid' ? freshness(judged.facts, run) : []
+  const doubts = judged.verdict === 'valid' ? freshness(judged.facts, run, loaded.record) : []
   const { verdict, reasons } = doubts.length > 0 ? { verdict: 'unknown', reasons: doubts } : judged
   const { facts } = judged
   const { turn, resultSha256, servedModels, blocks, errors, messageSha256 } = facts
@@ -984,7 +1005,7 @@ function close(argv) {
     // An earlier or racing close holds the stamp, and its record stands; or the record directory
     // is gone, and nothing can be recorded.
     const recorded = store.readStamp(id, 'closed')
-    if (recorded) out = repeated(id, recorded, run)
+    if (recorded) out = repeated(id, recorded, run, loaded?.record ?? null)
   }
   const problems = cleanup(id, loaded?.record ?? null)
   if (problems.length > 0) out.cleanupProblems = problems
