@@ -26,7 +26,7 @@ import { seatPayload } from '../lib/charter-payload.mjs'
 import { transport as claudeTransport } from '../delegate/claude-control.mjs'
 import { transport as codexTransport } from '../delegate/codex-app-server.mjs'
 import * as jobs from '../delegate/jobs.mjs'
-import { checkAnswer, FINDINGS_SCHEMA, schemaProblem, validate } from '../delegate/schema.mjs'
+import { checkAnswer, FINDINGS_SCHEMA, REVIEW_INSTRUCTION, reviewPrompt, schemaProblem, validate } from '../delegate/schema.mjs'
 import * as seatStore from '../lib/seat-store.mjs'
 import { RETENTION_MS } from '../lib/state-dir.mjs'
 
@@ -825,6 +825,41 @@ try {
   const claudeReview = await start(codexHost, { prompt: 'FLOW_FAKE_MODE=happy', mode: 'adversarial-review', base: baseSha })
   assert.equal(claudeReview.job.structured.findings[0].file, 'a.txt')
   ok('adversarial review pins base and head to SHAs, forces read-only and the findings schema, and returns typed findings')
+
+  // Every review route reads REVIEW_INSTRUCTION from schema.mjs. Both providers get it exactly
+  // once, after the resolved refs and before the caller's focus.
+  const times = (text, part) => text.split(part).length - 1
+  const claudeBaseSha = claudeReview.job.baseSha
+  for (const [text, base] of [[turnText(review.job.id), baseSha], [userTexts(claudeReview.job.id)[0], claudeBaseSha]]) {
+    assert.equal(text, reviewPrompt(base, headSha, 'FLOW_FAKE_MODE=happy'))
+    assert.equal(times(text, REVIEW_INSTRUCTION), 1)
+    assert.ok(text.startsWith(`Review the diff \`git diff ${base} ${headSha}\``))
+    assert.ok(text.endsWith('\n\nAdditional focus from the caller:\nFLOW_FAKE_MODE=happy'))
+  }
+  assert.equal(jobs.reviewPrompt, undefined, 'jobs.mjs keeps its own reviewPrompt')
+  for (const clause of ['entry point', 'who sends', 'consequence', 'grounded-unresolved', 'missing', 'intended case', 'user-settled', 'new evidence', 'orchestrator call', 'premise']) {
+    assert.ok(REVIEW_INSTRUCTION.includes(clause), `the reviewer instruction lost "${clause}"`)
+  }
+  for (const banned of ['report only findings you verified', 'a clean review has an empty findings array']) {
+    assert.ok(!REVIEW_INSTRUCTION.toLowerCase().includes(banned), `the reviewer instruction says "${banned}"`)
+  }
+  // The native reader's copy sits between one ordered marker pair. The rule strips the newline
+  // after the start marker and the one before the end marker, and nothing else.
+  const [START, END] = ['<!-- flow-review-instruction:start -->', '<!-- flow-review-instruction:end -->']
+  const readerBlock = (text) => {
+    if (times(text, START) !== 1 || times(text, END) !== 1) return null
+    const from = text.indexOf(`${START}\n`) + START.length + 1
+    const to = text.indexOf(`\n${END}`)
+    return from > START.length && to >= from ? text.slice(from, to) : null
+  }
+  const reader = readFileSync(join(PLUGIN, 'agents', 'reader.md'), 'utf8')
+  assert.equal(readerBlock(reader), REVIEW_INSTRUCTION, 'agents/reader.md drifted from REVIEW_INSTRUCTION')
+  assert.notEqual(readerBlock(reader.replace('adversarial code reviewer', 'friendly code reviewer')), REVIEW_INSTRUCTION, 'a changed word passed')
+  assert.equal(readerBlock(reader.replace(START, '')), null, 'a missing start marker passed')
+  assert.equal(readerBlock(reader.replace(END, '')), null, 'a missing end marker passed')
+  assert.equal(readerBlock(`${reader}\n${START}\n${REVIEW_INSTRUCTION}\n${END}\n`), null, 'a duplicated block passed')
+  assert.equal(readerBlock(reader.replace(START, 'x').replace(END, START).replace(/^x$/m, END)), null, 'markers out of order passed')
+  ok('the reviewer instruction lives in schema.mjs alone, reaches both providers once after the pinned refs, carries every required clause and neither banned phrase, and agents/reader.md holds it byte for byte')
 
   const schema = { type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } }
   for (const client of [claudeHost, codexHost]) {
