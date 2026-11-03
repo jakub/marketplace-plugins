@@ -3330,6 +3330,106 @@ const cases = {
     ok('close refuses a missing or malformed seat id, a missing, unparsable or oversized --task-status, and an unknown flag, with BAD_REQUEST')
   },
 
+  'close-rerun-later-run': async () => {
+    const KEYS = ['ok', 'id', 'verdict', 'reasons', 'turn', 'result', 'servedModels', 'blocks', 'errors']
+    const stampPath = (id) => join(seats, id, 'closed.json')
+    const laterRun = (id, ordinal, fields = {}) => taskStatusOf(id, { latestTerminalRunId: runIdOf(childThreadOf(id), ordinal), ...fields })
+    // A seat closed valid on run 1, and the closed stamp's bytes as that close wrote them.
+    const closedValid = () => {
+      const seat = guardedSeat()
+      const first = closeSeat(seat.id)
+      assert.deepEqual([first.verdict, first.reasons], ['valid', []], JSON.stringify(first))
+      return { ...seat, first, bytes: readFileSync(stampPath(seat.id)) }
+    }
+    const contradicted = (seat, status, what) => {
+      const out = closeSeat(seat.id, status)
+      assert.deepEqual(Object.keys(out), [...KEYS, 'recorded'], what)
+      assert.deepEqual(out, { ...seat.first, verdict: 'unknown', reasons: ['stale-turn'], result: null, recorded: { verdict: 'valid', turn: 1 } }, `${what}: ${JSON.stringify(out)}`)
+      assert.ok(readFileSync(stampPath(seat.id)).equals(seat.bytes), `${what} rewrote the closed stamp`)
+    }
+
+    const later = closedValid()
+    contradicted(later, laterRun(later.id, 2, { latestTerminalSummary: messageWith('run 2, unhooked') }), 'a later close with a later run')
+    ok('a closed seat\'s later close whose status names a later run than the stamp judged prints unknown (stale-turn) with no result and recorded {verdict, turn}, and the closed stamp stays byte-identical')
+
+    // The parent's follow-up after the first close: even a recorded turn is a run the stamp did
+    // not judge, and a later close never certifies it.
+    const followed = closedValid()
+    const key = followed.followUp()
+    denied(seatCall('codex', followed.session, 'Bash', { command: 'ls' }, { turn_id: key }), /this seat was closed/, 'a tool call after the close')
+    silent(followed.stop(messageWith('run 2 after the close'), key), 'turn 2 stop')
+    contradicted(followed, laterRun(followed.id, 2, { latestTerminalSummary: messageWith('run 2 after the close') }), 'a later close after a recorded follow-up')
+    ok('a later close after a follow-up the hooks recorded still reads stale-turn: the stamp judged run 1, not run 2')
+
+    for (const [what, summary] of [['one byte changed', MESSAGE_OK.replace('"ok"', '"oK"')], ['null', null]]) {
+      const seat = closedValid()
+      contradicted(seat, taskStatusOf(seat.id, { summary }), `the same run with ${what}`)
+    }
+    ok('a later close on the same run whose text contradicts the message the stamp judged prints unknown (stale-turn) with recorded, the stamp unchanged')
+
+    const same = closedValid()
+    for (const status of [taskStatusOf(same.id), taskStatusOf(same.id, { status: 'failed', latestTerminalStatus: 'failed' })]) {
+      assert.deepEqual(closeSeat(same.id, status), same.first, 'a later close on the run the stamp judged printed something else')
+    }
+    assert.ok(readFileSync(stampPath(same.id)).equals(same.bytes))
+    ok('a later close on the run the stamp judged, with the text it judged, prints the stamp\'s valid verdict and result as before')
+
+    // A valid stamp from before close recorded runId and messageSha256 reads as another run.
+    const legacy = hookedSeat({})
+    assert.equal(store.stamp(legacy.id, 'closed', { verdict: 'valid', reasons: [], taskStatus: { status: 'completed', taskId: 'x' }, turn: 1, resultSha256: store.readResult(legacy.id, 1).sha256, servedModels: [MODELS.claude], blocks: 0, errors: [] }), true)
+    const legacyBytes = readFileSync(stampPath(legacy.id))
+    const legacyOut = closeSeat(legacy.id)
+    assert.deepEqual([legacyOut.verdict, legacyOut.reasons, legacyOut.result, legacyOut.recorded], ['unknown', ['stale-turn'], null, { verdict: 'valid', turn: 1 }], JSON.stringify(legacyOut))
+    assert.ok(readFileSync(stampPath(legacy.id)).equals(legacyBytes))
+    ok('a valid closed stamp written before close recorded the run it judged reads as another run: unknown (stale-turn) with recorded')
+
+    // A stamp that certified nothing prints as before, whatever the status: invalid, unknown and
+    // an abandon.
+    const invalid = hookedSeat({ outcome: 'blocked', blocks: 1, errors: ['$: x'] })
+    const invalidFirst = closeSeat(invalid.id)
+    assert.equal(invalidFirst.verdict, 'invalid')
+    const stale = guardedSeat()
+    const staleFirst = closeSeat(stale.id, laterRun(stale.id, 2, { latestTerminalSummary: messageWith('run 2') }))
+    assert.deepEqual([staleFirst.verdict, staleFirst.reasons], ['unknown', ['stale-turn']])
+    for (const [seat, first] of [[invalid, invalidFirst], [stale, staleFirst]]) {
+      const bytes = readFileSync(stampPath(seat.id))
+      const out = closeSeat(seat.id, laterRun(seat.id, 3, { latestTerminalSummary: messageWith('run 3') }))
+      assert.deepEqual(out, first, `a ${first.verdict} stamp printed something else on a later run`)
+      assert.ok(readFileSync(stampPath(seat.id)).equals(bytes))
+    }
+    const abandonWt = gitWorktree('close-rerun-later-run-abandon')
+    const abandoned = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', abandonWt])
+    const abandonOut = seatCli(['close', abandoned.id, '--abandon'])
+    const abandonBytes = readFileSync(stampPath(abandoned.id))
+    assert.deepEqual(closeSeat(abandoned.id, laterRun(abandoned.id, 2)), abandonOut, 'an abandoned stamp printed something else on a later run')
+    assert.ok(readFileSync(stampPath(abandoned.id)).equals(abandonBytes))
+    ok('a later close of a seat closed invalid, unknown or abandoned prints the stamp\'s verdict as before, with no recorded key, whatever run the status names')
+
+    // A review's later close reads the stamp, not the tree: the first close removed the worktree.
+    const reviewOpened = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    const review = hookedSeat({ id: reviewOpened.id, envelope: { ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read: ['a.txt', 'c.txt'], partial: [], unopened: [], checksRun: [] } } })
+    const reviewStatus = taskStatusOf(review.id, { summary: review.message })
+    const reviewFirst = closeSeat(review.id, reviewStatus)
+    assert.deepEqual([reviewFirst.verdict, existsSync(reviewOpened.reviewWorktree)], ['valid', false], JSON.stringify(reviewFirst))
+    assert.deepEqual(closeSeat(review.id, reviewStatus), reviewFirst, 'a review\'s later close re-judged the removed worktree')
+    const reviewLater = closeSeat(review.id, laterRun(review.id, 2, { latestTerminalSummary: messageWith('run 2') }))
+    assert.deepEqual([reviewLater.verdict, reviewLater.reasons, reviewLater.recorded], ['unknown', ['stale-turn'], { verdict: 'valid', turn: 1 }], JSON.stringify(reviewLater))
+    ok('a review\'s later close on its judged run prints valid without re-reading the removed worktree, and on a later run prints stale-turn with recorded')
+
+    // Two first closes with one status: the first is held just after its stamp is linked, and the
+    // second, which loses the stamp, prints the winner's record.
+    const raced = guardedSeat()
+    const gate = join(tmp, 'close-rerun-race')
+    const winner = await heldAt([SEAT_SCRIPT, 'close', raced.id, '--task-status', '-'], gate, 'closed', taskStatusOf(raced.id))
+    const loser = closeSeat(raced.id)
+    writeFileSync(`${gate}.go`, '')
+    const won = await winner.done
+    assert.equal(won.code, 0, won.out)
+    assert.deepEqual([loser.verdict, loser.reasons, Object.hasOwn(loser, 'recorded')], ['valid', [], false], JSON.stringify(loser))
+    assert.deepEqual(JSON.parse(won.out), loser, 'the racing closes printed different records')
+    ok('two first closes on one status keep the write-once outcome: the one that loses the stamp prints the winner\'s valid record')
+  },
+
   'close-task-match': () => {
     const writerWt = gitWorktree('close-task-match')
     const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])

@@ -763,6 +763,22 @@ function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
   }
 }
 
+// A later close's output once the stamp is on record: onRecord's, unless the stamp certified a
+// valid verdict that this close's task status contradicts. A latest run other than the one the
+// stamp judged (a stamp written before close recorded runId reads as another run), or the same
+// run with text other than the message the stamp judged, is stale-turn: the verdict is unknown,
+// with no result and what the stamp recorded beside it. The stamp is never rewritten, so a later
+// close never certifies a run the stamp did not judge. A stamp that certified nothing prints as it
+// is, and judge's tree checks never run again here, since the first close removed the worktree.
+function repeated(id, recorded, run) {
+  const shown = onRecord(id, recorded)
+  if (recorded.verdict !== 'valid' || recorded.abandoned === true) return shown
+  const reasons = []
+  if (run.latestRunId !== recorded.runId || store.textDigest(run.latestText) !== recorded.messageSha256) reasons.push('stale-turn')
+  if (reasons.length === 0) return shown
+  return { ...shown, verdict: 'unknown', reasons, result: null, recorded: { verdict: recorded.verdict, turn: shown.turn } }
+}
+
 const TASK_ENDED = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
 const TASK_BUSY = new Set(['working', 'waiting_for_children'])
 const terminalTask = (status) => status !== null && typeof status === 'object' && !Array.isArray(status) &&
@@ -902,7 +918,7 @@ function close(argv) {
     // An earlier or racing close holds the stamp, and its record stands; or the record directory
     // is gone, and nothing can be recorded.
     const recorded = store.readStamp(id, 'closed')
-    if (recorded) out = onRecord(id, recorded)
+    if (recorded) out = repeated(id, recorded, run)
   }
   const problems = cleanup(id, loaded?.record ?? null)
   if (problems.length > 0) out.cleanupProblems = problems
