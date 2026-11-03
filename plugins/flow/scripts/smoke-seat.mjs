@@ -401,6 +401,29 @@ function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], 
   }
   return { id: seatId, message }
 }
+// A Codex seat run through the real hooks, so its turn state holds the bytes the hooks write: the
+// bind prompt opens turn 1, a tool call stamps the receipt, and a stop with message (none when it
+// is null) ends the turn. stop(message, key) is another stop in the turn key names; followUp() is
+// the parent's next message, a prompt that opens a turn, and returns that turn's key. With id, it
+// admits the record seat open wrote rather than writing one.
+function guardedSeat(message = MESSAGE_OK, { id = null } = {}) {
+  const host = 'codex'
+  const seat = id === null ? admittedSeat(host) : (assert.equal(admit(id), true), { id, tag: store.seatTag(id) })
+  const session = randomUUID()
+  const first = randomUUID()
+  context(guard('prompt', host, promptCall(host, session, seat.tag, { turn_id: first })), 'bind')
+  silent(guard('pre', host, preCall(host, session, 'Bash', { command: 'ls' }, { turn_id: first })), 'receipt')
+  const stop = (text, key) => guard('stop', host, stopCall(host, session, text, key))
+  if (message !== null) silent(stop(message, first), 'turn 1 stop')
+  const followUp = () => {
+    const key = randomUUID()
+    silent(guard('prompt', host, promptCall(host, session, 'Look again at b.txt and answer again.', { turn_id: key })), 'follow-up prompt')
+    return key
+  }
+  return { id: seat.id, session, first, stop, followUp }
+}
+// A final message that passes, other than MESSAGE_OK.
+const messageWith = (notes) => JSON.stringify({ ...ENVELOPE_OK, notes })
 // Preloaded into a seat process: it holds the process at the write of its lease holder file, or
 // with SEAT_GATE_AT=record at the write of its record's temp file, until <SEAT_GATE>.go exists,
 // having written <SEAT_GATE>.waiting, so a case can act in that window.
@@ -2383,8 +2406,8 @@ const cases = {
     const fine = boundSeat('codex', 'read-only')
     received(fine, 'codex')
     silent(guard('stop', 'codex', stopCall('codex', fine.session, JSON.stringify(ENVELOPE_OK), randomUUID())), 'a valid stop')
-    silent(guard('stop', 'codex', stopCall('codex', fine.session, JSON.stringify({ ...ENVELOPE_OK, notes: 'turn 2' }), randomUUID())), 'turn 2')
-    const fineOut = closeSeat(fine.id)
+    silent(guard('stop', 'codex', stopCall('codex', fine.session, messageWith('turn 2'), randomUUID())), 'turn 2')
+    const fineOut = closeSeat(fine.id, taskStatusOf(fine.id, { summary: messageWith('turn 2') }))
     assert.deepEqual([fineOut.verdict, fineOut.servedModels], ['valid', [MODELS.codex]], JSON.stringify(fineOut))
     ok('every stop adds the models it saw to a cumulative set in the turn state, a repeated message on a settled turn included, and close reads model-mismatch when any turn saw another model, unknown when none was seen, and valid when every one is the record\'s')
   },
@@ -2557,7 +2580,7 @@ const cases = {
     const second = hookedSeat({ id: openReview(repo).id, envelope })
     assert.equal(gitOut(repo.path, 'status', '--porcelain'), '', 'a review worktree shows in the canonical checkout')
     for (const seat of [first, second]) {
-      const out = closeSeat(seat.id)
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message }))
       assert.deepEqual([out.verdict, out.reasons], ['valid', []], JSON.stringify(out))
     }
     ok('two overlapping review seats in a repository whose exclude lacked the line each close valid, neither reading the other\'s worktree as tree-moved')
@@ -3159,54 +3182,56 @@ const cases = {
       assert.equal(opened.ok, true, JSON.stringify(opened))
       return hookedSeat({ id: opened.id, envelope, ...fields })
     }
+    // The task status of a review whose one run answered with the seat's final message.
+    const closeReview = (seat) => closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message }))
 
     const clean = reviewSeat()
     const path = store.readRecord(clean.id).record.reviewWorktree
-    const out = closeSeat(clean.id)
+    const out = closeReview(clean)
     assert.equal(out.verdict, 'valid', JSON.stringify(out.reasons))
     assert.equal(existsSync(path), false, 'close removed the review worktree')
     assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(path), 'git still lists the review worktree')
     const absolute = reviewSeat(covering({ coverage: { read: [], partial: [], unopened: [], checksRun: [] } }))
     const absPath = store.readRecord(absolute.id).record.reviewWorktree
     store.writeResult(absolute.id, 1, { envelope: covering({ coverage: { read: [join(absPath, 'a.txt')], partial: [], unopened: ['c.txt'], checksRun: [] } }), servedModels: ['claude-opus-5-5'], messageSha256: 'b'.repeat(64), at: new Date().toISOString() })
-    assert.equal(closeSeat(absolute.id).verdict, 'valid', 'an absolute coverage path inside the review worktree counts')
+    assert.equal(closeReview(absolute).verdict, 'valid', 'an absolute coverage path inside the review worktree counts')
     ok('a review whose worktree stayed at the head and clean, whose canonical checkout did not move, and whose coverage lists every diffed file (read, partial or unopened, relative, ./ or absolute) is valid, and close removes its worktree')
 
     const moved = reviewSeat()
     spawnSync('git', ['-C', store.readRecord(moved.id).record.reviewWorktree, 'checkout', '-q', '--detach', baseSha])
-    assert.equal(closeSeat(moved.id).verdict, 'tree-moved')
+    assert.equal(closeReview(moved).verdict, 'tree-moved')
     const dirty = reviewSeat()
     writeFileSync(join(store.readRecord(dirty.id).record.reviewWorktree, 'scratch.txt'), 'x')
-    const dirtyOut = closeSeat(dirty.id)
+    const dirtyOut = closeReview(dirty)
     assert.equal(dirtyOut.verdict, 'tree-moved')
     assert.ok(dirtyOut.reasons.some((reason) => /dirty/.test(reason)), JSON.stringify(dirtyOut.reasons))
     const canonical = reviewSeat()
     writeFileSync(join(canon, 'stray.txt'), 'x')
-    const canonOut = closeSeat(canonical.id)
+    const canonOut = closeReview(canonical)
     rmSync(join(canon, 'stray.txt'))
     assert.equal(canonOut.verdict, 'tree-moved')
     assert.ok(canonOut.reasons.some((reason) => /canonical checkout changed/.test(reason)), JSON.stringify(canonOut.reasons))
     const partial = reviewSeat(covering({ coverage: { read: ['a.txt'], partial: [], unopened: [], checksRun: [] } }))
-    const partialOut = closeSeat(partial.id)
+    const partialOut = closeReview(partial)
     assert.equal(partialOut.verdict, 'tree-moved')
     assert.ok(partialOut.reasons.some((reason) => /coverage misses 1 file\(s\) in the pinned diff: c\.txt/.test(reason)), JSON.stringify(partialOut.reasons))
-    assert.equal(closeSeat(reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] }).id).verdict, 'capped', 'a capped review with no envelope is not judged on coverage')
+    assert.equal(closeReview(reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })).verdict, 'capped', 'a capped review with no envelope is not judged on coverage')
     const cappedMoved = reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })
     writeFileSync(join(store.readRecord(cappedMoved.id).record.reviewWorktree, 'scratch.txt'), 'x')
-    assert.equal(closeSeat(cappedMoved.id).verdict, 'tree-moved', 'tree-moved outranks capped')
+    assert.equal(closeReview(cappedMoved).verdict, 'tree-moved', 'tree-moved outranks capped')
     ok('tree-moved: the review worktree\'s HEAD moved, it is dirty, the canonical checkout changed, or the coverage misses a diffed file; it outranks capped')
 
     // The canonical checkout's HEAD is part of what a review pins: a detach or a commit that leaves
     // the tree as it was still moves it.
     const detached = reviewSeat()
     gitOut(canon, 'checkout', '-q', '--detach', 'HEAD')
-    const detachedOut = closeSeat(detached.id)
+    const detachedOut = closeReview(detached)
     gitOut(canon, 'checkout', '-q', 'main')
     assert.equal(detachedOut.verdict, 'tree-moved', JSON.stringify(detachedOut))
     assert.ok(detachedOut.reasons.some((reason) => /canonical checkout's HEAD/.test(reason)), JSON.stringify(detachedOut.reasons))
     const committed = reviewSeat()
     gitOut(canon, 'commit', '-q', '--allow-empty', '-m', 'empty')
-    const committedOut = closeSeat(committed.id)
+    const committedOut = closeReview(committed)
     gitOut(canon, 'reset', '-q', '--soft', headSha)
     assert.equal(gitOut(canon, 'rev-parse', 'HEAD'), headSha)
     assert.equal(committedOut.verdict, 'tree-moved', JSON.stringify(committedOut))
@@ -3222,7 +3247,7 @@ const cases = {
     const movedTo = join(tmp, `moved-${swapped.id}`)
     gitOut(canon, 'worktree', 'move', swappedRecord.reviewWorktree, movedTo)
     gitOut(canon, 'worktree', 'add', '-q', '--detach', swappedRecord.reviewWorktree, headSha)
-    const swappedOut = closeSeat(swapped.id)
+    const swappedOut = closeReview(swapped)
     assert.ok(existsSync(swappedRecord.reviewWorktree), 'close removed a worktree it did not add')
     assert.ok(existsSync(movedTo), 'close touched the moved worktree')
     assert.ok(swappedOut.cleanupProblems?.some((problem) => /not the one this seat opened/.test(problem)), JSON.stringify(swappedOut))
@@ -3233,7 +3258,7 @@ const cases = {
     gitOut(canon, 'worktree', 'remove', '--force', plainPath)
     mkdirSync(plainPath)
     writeFileSync(join(plainPath, 'keep.txt'), 'x')
-    const plainOut = closeSeat(plain.id)
+    const plainOut = closeReview(plain)
     assert.ok(existsSync(join(plainPath, 'keep.txt')), 'close removed a plain directory at the review path')
     assert.ok(plainOut.cleanupProblems?.length > 0, JSON.stringify(plainOut))
     rmSync(plainPath, { recursive: true })
@@ -3244,13 +3269,15 @@ const cases = {
     const writerWt = gitWorktree('close-rerun')
     const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
     const seat = hookedSeat({ id: opened.id, envelope: { ...ENVELOPE_OK, commits: [{ sha: 'a'.repeat(40), subject: 'feat: x' }] } })
-    const first = closeSeat(seat.id, taskStatusOf(seat.id, { run: 1 }))
+    // The seat's one run answered with its final message, so every status here carries it.
+    const summary = seat.message
+    const first = closeSeat(seat.id, taskStatusOf(seat.id, { run: 1, summary }))
     assert.equal(first.verdict, 'valid')
     assert.equal(existsSync(join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)), false, 'close dropped the writer\'s holder')
     store.writeState(seat.id, { ...store.readState(seat.id), outcome: 'blocked', blocks: 1 })
-    const again = closeSeat(seat.id, taskStatusOf(seat.id, { status: 'failed', run: 2 }))
+    const again = closeSeat(seat.id, taskStatusOf(seat.id, { status: 'failed', run: 2, summary }))
     assert.equal(again.verdict, 'valid', 'a second close re-judged the seat')
-    assert.deepEqual(store.readStamp(seat.id, 'closed').taskStatus, taskStatusOf(seat.id, { run: 1 }))
+    assert.deepEqual(store.readStamp(seat.id, 'closed').taskStatus, taskStatusOf(seat.id, { run: 1, summary }))
     ok('a second close prints the verdict and reasons on record, keeps the first task status, and the first close dropped the writer\'s lease holder')
 
     const resultPath = join(seats, seat.id, 'result-1.json')
@@ -3259,7 +3286,7 @@ const cases = {
     assert.equal(stamped.turn, 1)
     assert.deepEqual([again.reasons, again.result, again.turn, again.servedModels], [[], first.result, 1, ['claude-opus-5-5']], 'a second close did not return the result on record')
     store.writeResult(seat.id, 1, { envelope: { ...first.result, notes: 'rewritten after close' }, servedModels: ['claude-opus-5-5'], at: new Date().toISOString() })
-    const third = closeSeat(seat.id)
+    const third = closeSeat(seat.id, taskStatusOf(seat.id, { summary }))
     assert.equal(third.verdict, 'valid', 'the verdict on record changed')
     assert.equal(third.result, null, 'a result rewritten after the close was returned')
     assert.ok(third.reasons.includes('result-changed-after-close'), JSON.stringify(third.reasons))
@@ -3475,6 +3502,179 @@ const cases = {
     assert.deepEqual([atCap.verdict, existsSync(holder)], ['valid', false], JSON.stringify(atCap).slice(0, 400))
     assert.equal(store.readStamp(seat.id, 'closed').taskStatus.pad.length > 200_000, true, 'the closed stamp does not hold the whole status')
     ok('close accepts a 200 KiB stdin status with non-ASCII text and escapes in its final message, exactly 64 KiB as one argument, and exactly 256 KiB on stdin, which closes the seat that refused the larger ones')
+  },
+
+  // The stale-turn cases run their seats through the real hooks, so the state close reads (turn,
+  // turnKey, opened, messageSha256) holds the bytes the hooks write, and each task status is the
+  // one T3 would answer for that history: the child's run 1 and its summary, and the latest
+  // finished run's id, status and summary.
+  'close-stale-run': () => {
+    // The incident: turn 1 recorded valid, then two more runs with every flow hook dark, the last
+    // completing with an answer the hooks never saw.
+    const seat = guardedSeat()
+    const status = taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 3), latestTerminalSummary: messageWith('run 3, unhooked') })
+    const out = closeSeat(seat.id, status)
+    assert.deepEqual([out.verdict, out.reasons, out.result, out.turn], ['unknown', ['stale-turn'], null, 1], JSON.stringify(out))
+    const stamped = store.readStamp(seat.id, 'closed')
+    assert.deepEqual([stamped.verdict, stamped.reasons, stamped.runId, stamped.messageSha256], ['unknown', ['stale-turn'], status.latestTerminalRunId, sha256(MESSAGE_OK)])
+    ok('a seat whose turn 1 is recorded valid closes unknown (stale-turn) with no result when T3\'s latest finished run is a later one with other text and no hook recorded it, and the closed stamp records that run and the digest it judged')
+  },
+
+  'close-later-run-recorded': () => {
+    const seat = guardedSeat()
+    const key = seat.followUp()
+    const second = messageWith('run 2, recorded')
+    silent(seat.stop(second, key), 'turn 2 stop')
+    const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalSummary: second }))
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 2, JSON.parse(second)], JSON.stringify(out))
+    ok('a follow-up the hooks recorded closes valid on turn 2 when T3\'s latest run is run 2 with that turn\'s text, the summary still run 1\'s')
+  },
+
+  'close-later-run-duplicate-text': () => {
+    const seat = guardedSeat()
+    const key = seat.followUp()
+    silent(seat.stop(MESSAGE_OK, key), 'turn 2 repeats turn 1')
+    assert.deepEqual([store.readState(seat.id).turn, store.readState(seat.id).messageSha256], [2, sha256(MESSAGE_OK)])
+    // T3 nulls latestTerminalSummary when it repeats the summary.
+    const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalSummary: null }))
+    assert.deepEqual([out.verdict, out.reasons, out.turn], ['valid', [], 2], JSON.stringify(out))
+    ok('a recorded follow-up whose text repeats turn 1\'s closes valid on turn 2: T3 nulls latestTerminalSummary, and the summary is the recorded message')
+  },
+
+  'close-same-run': () => {
+    const seat = guardedSeat()
+    const out = closeSeat(seat.id)
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 1, ENVELOPE_OK], JSON.stringify(out))
+    const other = guardedSeat()
+    const ignored = closeSeat(other.id, taskStatusOf(other.id, { latestTerminalSummary: messageWith('not the child run\'s summary') }))
+    assert.deepEqual([ignored.verdict, ignored.reasons], ['valid', []], JSON.stringify(ignored))
+    ok('a task whose latest run is the child run closes valid on the child run\'s summary, whatever latestTerminalSummary holds')
+  },
+
+  'close-same-run-raw-bytes': () => {
+    for (const [what, message] of [
+      ['a trailing newline', `${MESSAGE_OK}\n`], ['a fenced envelope', `\`\`\`json\n${MESSAGE_OK}\n\`\`\``], ['CRLF and spaces around it', `  ${MESSAGE_OK}\r\n`],
+    ]) {
+      const seat = guardedSeat(message)
+      assert.deepEqual([store.readState(seat.id).outcome, store.readState(seat.id).messageSha256], ['valid', sha256(message)], `${what}: the hook did not record the raw message`)
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary: message }))
+      assert.deepEqual([out.verdict, out.reasons, out.result], ['valid', [], ENVELOPE_OK], `${what}: ${JSON.stringify(out)}`)
+      const normalized = guardedSeat(message)
+      const stale = closeSeat(normalized.id, taskStatusOf(normalized.id, { summary: MESSAGE_OK }))
+      assert.deepEqual([stale.verdict, stale.reasons], ['unknown', ['stale-turn']], `${what} compared after normalizing`)
+    }
+    ok('a final message with a trailing newline, a fence, or CRLF and spaces closes valid against a summary of the same raw bytes, and stale-turn against the bare envelope: nothing is trimmed or unfenced')
+  },
+
+  'close-blocked-then-valid': () => {
+    const seat = guardedSeat(null)
+    stopBlocked(seat.stop('not an envelope', seat.first), 'the first final message fails')
+    silent(seat.stop(MESSAGE_OK, seat.first), 'the resumed turn answers')
+    assert.deepEqual([store.readState(seat.id).outcome, store.readState(seat.id).blocks], ['valid', 1])
+    const out = closeSeat(seat.id)
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.blocks, out.result], ['valid', [], 1, 1, ENVELOPE_OK], JSON.stringify(out))
+    ok('a turn whose first final message was blocked and whose resumed answer passed closes valid on the run\'s summary, the resumed answer')
+  },
+
+  'close-same-run-mismatch': () => {
+    for (const [what, summary] of [
+      ['one byte changed', MESSAGE_OK.replace('"ok"', '"oK"')], ['one byte added', `${MESSAGE_OK} `], ['one byte dropped', MESSAGE_OK.slice(0, -1)], ['null', null], ['a number', 7],
+    ]) {
+      const seat = guardedSeat()
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary }))
+      assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['stale-turn'], null], `${what}: ${JSON.stringify(out)}`)
+    }
+    ok('a same-run summary one byte apart from the recorded message, or none, closes unknown (stale-turn)')
+  },
+
+  'close-failed-latest-run': () => {
+    const errorText = 'Error: the provider exited with code 1'
+    // A later run with no hook call that failed.
+    for (const latestTerminalSummary of [null, errorText]) {
+      const seat = guardedSeat()
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalStatus: 'failed', latestTerminalSummary }))
+      assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['stale-turn'], null], `failed with ${latestTerminalSummary}: ${JSON.stringify(out)}`)
+    }
+    // A recorded turn 2 whose run T3 then reports ended otherwise: no text, whatever the summary
+    // holds, so the opened key cannot vouch for it.
+    for (const latestTerminalStatus of ['failed', 'cancelled', 'interrupted']) {
+      for (const pick of ['null', 'error', 'the recorded text']) {
+        const seat = guardedSeat()
+        const key = seat.followUp()
+        const second = messageWith(`run 2, then ${latestTerminalStatus}`)
+        silent(seat.stop(second, key), 'turn 2 stop')
+        const latestTerminalSummary = { null: null, error: errorText, 'the recorded text': second }[pick]
+        const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalStatus, latestTerminalSummary }))
+        assert.deepEqual([out.verdict, out.reasons], ['unknown', ['stale-turn']], `${latestTerminalStatus} with ${pick}: ${JSON.stringify(out)}`)
+      }
+    }
+    ok('a latest run that ended failed, cancelled or interrupted gives no text, so close reads unknown (stale-turn) with a null summary, an error summary, or even the recorded text, hooked or not')
+  },
+
+  'close-ordinal-without-prompt': () => {
+    for (const latestTerminalSummary of [null, MESSAGE_OK]) {
+      const seat = guardedSeat()
+      assert.equal(Object.hasOwn(store.readState(seat.id), 'opened'), false)
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 2), latestTerminalSummary }))
+      assert.deepEqual([out.verdict, out.reasons, out.result], ['unknown', ['stale-turn'], null], `${latestTerminalSummary}: ${JSON.stringify(out)}`)
+    }
+    ok('a latest run past the child run with no follow-up prompt on record closes unknown (stale-turn), even when its text is turn 1\'s byte for byte')
+  },
+
+  'close-failed-then-retried': () => {
+    // T3 run 2 failed with no stop: once after its prompt was recorded, once before any hook ran.
+    // Run 3 is then flow's turn 2: a run ordinal is never a turn count.
+    for (const run2 of ['prompt recorded', 'no hook']) {
+      const seat = guardedSeat()
+      if (run2 === 'prompt recorded') seat.followUp()
+      const key = seat.followUp()
+      const third = messageWith(`run 3 after a failed run 2 (${run2})`)
+      silent(seat.stop(third, key), 'run 3 stop')
+      assert.equal(store.readState(seat.id).turn, 2)
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 3), latestTerminalSummary: third }))
+      assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 2, JSON.parse(third)], `${run2}: ${JSON.stringify(out)}`)
+    }
+    ok('a failed run 2 followed by a hooked run 3 closes valid on flow turn 2, whether run 2\'s prompt was recorded or not')
+  },
+
+  'close-recorded-then-dark': () => {
+    const seat = guardedSeat()
+    const key = seat.followUp()
+    silent(seat.stop(messageWith('run 2, recorded'), key), 'turn 2 stop')
+    const out = closeSeat(seat.id, taskStatusOf(seat.id, { latestTerminalRunId: runIdOf(childThreadOf(seat.id), 3), latestTerminalSummary: messageWith('run 3, unhooked') }))
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['unknown', ['stale-turn'], 2, null], JSON.stringify(out))
+    ok('a recorded follow-up followed by an unhooked run with new text closes unknown (stale-turn): the opened key of turn 2 does not vouch for run 3')
+  },
+
+  'close-refusal-retry': () => {
+    // Every file in the seat's record directory, by sha256: a refusal changes none of them.
+    const files = (id) => Object.fromEntries(readdirSync(join(seats, id)).sort().map((name) => [name, sha256(readFileSync(join(seats, id, name)))]))
+    const refusals = (id) => {
+      const thread = childThreadOf(id)
+      const { summary, ...trimmed } = taskStatusOf(id)
+      return [['TASK_INCOMPLETE', trimmed], ['TASK_MISMATCH', taskStatusOf(id, { childRunId: `run:thread:${thread}:ordinal:1` })],
+        ['TASK_MISMATCH', taskStatusOf(id, { childRunId: runIdOf(thread, 2), latestTerminalRunId: runIdOf(thread, 1) })]]
+    }
+    const writerWt = gitWorktree('close-refusal-retry')
+    const writer = hookedSeat({ id: seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt]).id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${writer.id}.live`)
+    const covering = { ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read: ['a.txt', 'c.txt'], partial: [], unopened: [], checksRun: [] } }
+    const opened = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    const review = hookedSeat({ id: opened.id, envelope: covering })
+    for (const [seat, kept] of [[writer, holder], [review, opened.reviewWorktree]]) {
+      for (const [kind, status] of refusals(seat.id)) {
+        const before = files(seat.id)
+        const refused = closeSeat(seat.id, status)
+        assert.equal(refused.error?.kind, kind, JSON.stringify(refused))
+        assert.deepEqual(files(seat.id), before, `a ${kind} refusal changed the record directory`)
+        assert.ok(existsSync(kept), `a ${kind} refusal released ${kept}`)
+      }
+      const retried = closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message }))
+      assert.deepEqual([retried.verdict, retried.reasons], ['valid', []], JSON.stringify(retried))
+      assert.equal(existsSync(kept), false, `the retry kept ${kept}`)
+    }
+    assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(opened.reviewWorktree), 'git still lists the review worktree')
+    ok('a TASK_INCOMPLETE or TASK_MISMATCH refusal changes no file of the record, keeps the writer\'s lease holder and the review worktree, and a retry with the whole status closes the seat valid and releases both')
   },
 
   'close-abandon': () => {

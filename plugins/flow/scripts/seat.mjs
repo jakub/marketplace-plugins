@@ -630,9 +630,11 @@ function treeReasons(record, envelope) {
 }
 
 // The verdict, its reasons, and what the output reports from the seat's files, with the sha256 of
-// the last turn's result bytes as read here (null with none), so the closed stamp can pin them.
+// the last turn's result bytes as read here (null with none), so the closed stamp can pin them,
+// and, from the turn state, the digest of the final message Stop last checked and whether a
+// follow-up prompt is on record, which freshness reads.
 function judge(id, loaded) {
-  const facts = { turn: null, envelope: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] }
+  const facts = { turn: null, envelope: null, resultSha256: null, servedModels: [], blocks: 0, errors: [], messageSha256: null, opened: false }
   const unknown = (reason) => ({ verdict: 'unknown', reasons: [reason], facts })
   if (!loaded) return unknown('the seat record is missing or corrupt')
   const { record, digest } = loaded
@@ -656,6 +658,8 @@ function judge(id, loaded) {
   // answers an earlier turn.
   if (Object.hasOwn(state, 'opened') && state.opened !== state.turnKey) return unknown('turn-without-result')
   facts.turn = state.turn
+  facts.messageSha256 = typeof state.messageSha256 === 'string' ? state.messageSha256 : null
+  facts.opened = Object.hasOwn(state, 'opened')
   facts.blocks = Number.isSafeInteger(state.blocks) ? state.blocks : 0
   facts.errors = Array.isArray(state.errors) ? state.errors : []
   // Read once whatever the outcome, so the closed stamp pins the bytes on disk for the turn.
@@ -839,7 +843,30 @@ function runsOf(status) {
     fail('TASK_MISMATCH', 'The task status\'s childRunId and latestTerminalRunId must each read run:thread:<childThreadId, URL-encoded>:ordinal:<n>, with n a positive integer, for the status\'s own childThreadId. Pass the task_status answer as T3 gave it.')
   }
   if (latestOrdinal < childOrdinal) fail('TASK_MISMATCH', 'The task status\'s latest finished run comes before its child run, so it is not one task\'s status. Pass the task_status answer as T3 gave it.')
-  return { childOrdinal, latestOrdinal, latestRunId: status.latestTerminalRunId }
+  return { childOrdinal, latestOrdinal, latestRunId: status.latestTerminalRunId, latestText: latestText(status) }
+}
+
+// The final text T3 reports for the task's latest finished run, or null when that run left none:
+// the summary when the latest run is the child's; for a later run that completed, its
+// latestTerminalSummary, or the summary when T3 nulled latestTerminalSummary for repeating it; and
+// no text for a later run that ended any other way.
+function latestText(status) {
+  const text = (value) => (typeof value === 'string' ? value : null)
+  if (status.latestTerminalRunId === status.childRunId) return text(status.summary)
+  if (status.latestTerminalStatus !== 'completed') return null
+  return status.latestTerminalSummary === null ? text(status.summary) : text(status.latestTerminalSummary)
+}
+
+// Why a seat judge read valid is not proven to have answered T3's latest finished run, as
+// reasons, none when it is. T3's text is negative evidence only: it can turn a valid into unknown,
+// and the answer still comes from the result Stop wrote. stale-turn: the latest run left no text,
+// its text is not byte for byte the final message Stop recorded, or it is a later run than the
+// child's while no follow-up prompt is on record.
+function freshness(facts, run) {
+  const reasons = []
+  const latest = store.textDigest(run.latestText)
+  if (latest === null || latest !== facts.messageSha256 || (run.latestOrdinal > run.childOrdinal && !facts.opened)) reasons.push('stale-turn')
+  return reasons
 }
 
 function close(argv) {
@@ -859,12 +886,17 @@ function close(argv) {
   if (store.readStamp(id, 'admitted') !== null && !taskOf(taskStatus, id)) {
     fail('TASK_MISMATCH', `The task status is not this seat's task: its taskId does not carry ${clientRequestIdOf(id)}, the clientRequestId the seat's delegate_task call was admitted with. Pass the task_status answer for this seat's own task.`)
   }
-  runsOf(taskStatus)
+  const run = runsOf(taskStatus)
 
   const loaded = store.readRecord(id)
-  const { verdict, reasons, facts } = judge(id, loaded)
-  const { turn, resultSha256, servedModels, blocks, errors } = facts
-  const closed = { verdict, reasons, taskStatus, turn, resultSha256, servedModels, blocks, errors }
+  const judged = judge(id, loaded)
+  // Only a valid verdict is checked against T3's latest run, so every other verdict keeps its
+  // precedence, and the check can only turn a valid into unknown.
+  const doubts = judged.verdict === 'valid' ? freshness(judged.facts, run) : []
+  const { verdict, reasons } = doubts.length > 0 ? { verdict: 'unknown', reasons: doubts } : judged
+  const { facts } = judged
+  const { turn, resultSha256, servedModels, blocks, errors, messageSha256 } = facts
+  const closed = { verdict, reasons, taskStatus, runId: run.latestRunId, turn, resultSha256, messageSha256, servedModels, blocks, errors }
   let out = { ok: true, id, verdict, reasons, turn, result: verdict === 'valid' ? facts.envelope : null, servedModels, blocks, errors }
   if (!store.stamp(id, 'closed', closed)) {
     // An earlier or racing close holds the stamp, and its record stands; or the record directory
